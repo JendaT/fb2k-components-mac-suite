@@ -25,6 +25,7 @@ static const char *kTreeNodeKey = "treeNode";
 @property (nonatomic, strong) PathMappingWindowController *pathMappingController;
 @property (nonatomic, copy) NSString *pendingThemePath;
 @property (nonatomic, copy) NSString *pendingPlaylistsDir;
+@property (nonatomic, copy) NSString *activePlaylistName;  // Currently active playlist in foobar2000
 @end
 
 @implementation PlaylistOrganizerController
@@ -98,6 +99,9 @@ static const char *kTreeNodeKey = "treeNode";
     // Load tree from config
     [self.treeModel loadFromConfig];
 
+    // Get initial active playlist
+    [self refreshActivePlaylist];
+
     // Sync any missing playlists from foobar2000 (delayed to not block startup)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self.treeModel syncWithFoobarPlaylists];
@@ -115,6 +119,12 @@ static const char *kTreeNodeKey = "treeNode";
                                                  name:@"PlorgSettingsChanged"
                                                object:nil];
 
+    // Register for active playlist changes
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(activePlaylistDidChange:)
+                                                 name:@"PlorgActivePlaylistChanged"
+                                               object:nil];
+
     // Size columns after layout (delayed to ensure proper bounds)
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.outlineView sizeLastColumnToFit];
@@ -125,6 +135,30 @@ static const char *kTreeNodeKey = "treeNode";
 
     // Initial reload
     [self reloadTree];
+}
+
+- (void)refreshActivePlaylist {
+    @try {
+        auto pm = playlist_manager::get();
+        t_size activeIndex = pm->get_active_playlist();
+        if (activeIndex != pfc_infinite) {
+            pfc::string8 name;
+            pm->playlist_get_name(activeIndex, name);
+            self.activePlaylistName = [NSString stringWithUTF8String:name.c_str()];
+        } else {
+            self.activePlaylistName = nil;
+        }
+    } @catch (...) {
+        self.activePlaylistName = nil;
+    }
+}
+
+- (void)activePlaylistDidChange:(NSNotification *)notification {
+    NSString *newName = notification.userInfo[@"playlistName"];
+    if (![self.activePlaylistName isEqualToString:newName]) {
+        self.activePlaylistName = newName;
+        [self.outlineView reloadData];
+    }
 }
 
 - (void)dealloc {
@@ -657,17 +691,29 @@ static const char *kTreeNodeKey = "treeNode";
     cellView.textField.delegate = self;
     objc_setAssociatedObject(cellView.textField, kTreeNodeKey, node, OBJC_ASSOCIATION_ASSIGN);
 
+    // Check if this is the active playlist
+    BOOL isActivePlaylist = !node.isFolder && self.activePlaylistName &&
+                            [node.name isEqualToString:self.activePlaylistName];
+
     // Set icon if showing
     if (showIcons && cellView.imageView) {
         if (node.isFolder) {
             cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"folder" accessibilityDescription:@"Folder"];
+        } else if (isActivePlaylist) {
+            // Use a different icon for active playlist (playing indicator)
+            cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:@"Active Playlist"];
         } else {
             cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"music.note.list" accessibilityDescription:@"Playlist"];
         }
     }
 
-    // Set text
+    // Set text with bold for active playlist
     cellView.textField.stringValue = node.name;
+    if (isActivePlaylist) {
+        cellView.textField.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
+    } else {
+        cellView.textField.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    }
 
     return cellView;
 }

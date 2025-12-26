@@ -11,9 +11,18 @@ A collection of macOS components for foobar2000 v2.
 | [Waveform Seekbar](extensions/foo_wave_seekbar_mac/) | Audio visualization seekbar with effects | 1.0.0 |
 | [Last.fm Scrobbler](extensions/foo_scrobble_mac/) | Last.fm integration and scrobbling | 1.0.0 |
 
+## Downloads
+
+| Component | Download | Forum |
+|-----------|----------|-------|
+| SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
+| Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
+| Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
+| Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
+
 ## Installation
 
-1. Download the `.fb2k-component` file from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases)
+1. Download the `.fb2k-component` file from the links above
 2. Double-click to install, or manually copy to `~/Library/foobar2000-v2/user-components/`
 3. Restart foobar2000
 

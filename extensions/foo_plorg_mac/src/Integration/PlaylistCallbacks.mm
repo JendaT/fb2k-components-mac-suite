@@ -69,9 +69,9 @@ public:
 
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter]
-                        postNotificationName:@"PlaylistActivated"
+                        postNotificationName:@"PlorgActivePlaylistChanged"
                                       object:nil
-                                    userInfo:@{@"name": playlistName}];
+                                    userInfo:@{@"playlistName": playlistName}];
                 });
             }
         } @catch (...) {

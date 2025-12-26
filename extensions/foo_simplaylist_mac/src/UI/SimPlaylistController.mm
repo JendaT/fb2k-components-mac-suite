@@ -40,6 +40,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
 @property (nonatomic, assign) NSInteger playingPlaylistIndex;  // Track which playlist item is playing
 @property (nonatomic, assign) BOOL needsRedraw;  // Coalesced redraw flag
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSValue *> *scrollPositions;  // Scroll position per playlist
+@property (nonatomic, strong) NSValue *pendingScrollRestore;  // Scroll position to restore after group detection
 @end
 
 @implementation SimPlaylistController
@@ -302,15 +303,14 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     [_playlistView reloadData];
 
     // Restore scroll position only when SWITCHING to a different playlist
+    _pendingScrollRestore = nil;  // Clear any pending restore
     if (isSwitchingPlaylist) {
         NSValue *savedScrollValue = _scrollPositions[@(activePlaylist)];
         if (savedScrollValue) {
-            NSPoint savedPoint = [savedScrollValue pointValue];
-            // Clamp to valid range (in case playlist content changed)
-            CGFloat maxY = MAX(0, _playlistView.frame.size.height - _scrollView.contentView.bounds.size.height);
-            savedPoint.y = MAX(0, MIN(savedPoint.y, maxY));
-            [_scrollView.contentView scrollToPoint:savedPoint];
-            [_scrollView reflectScrolledClipView:_scrollView.contentView];
+            // Store for restoration after group detection completes (frame size may change)
+            _pendingScrollRestore = savedScrollValue;
+            // Also restore now for immediate feedback
+            [self restoreScrollPosition:savedScrollValue];
         } else if (_playlistView.focusIndex >= 0) {
             // No saved position - scroll to focus item (first time viewing this playlist)
             NSInteger focusRow = [_playlistView rowForPlaylistIndex:_playlistView.focusIndex];
@@ -320,6 +320,16 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
         }
     }
     // When NOT switching (just refreshing same playlist), keep current scroll position
+}
+
+- (void)restoreScrollPosition:(NSValue *)scrollValue {
+    if (!scrollValue || !_scrollView) return;
+    NSPoint savedPoint = [scrollValue pointValue];
+    // Clamp to valid range (in case playlist content changed)
+    CGFloat maxY = MAX(0, _playlistView.frame.size.height - _scrollView.contentView.bounds.size.height);
+    savedPoint.y = MAX(0, MIN(savedPoint.y, maxY));
+    [_scrollView.contentView scrollToPoint:savedPoint];
+    [_scrollView reflectScrolledClipView:_scrollView.contentView];
 }
 
 // Generation counter to cancel stale group detection
@@ -421,6 +431,13 @@ static NSInteger _groupDetectionGeneration = 0;
             // Recalculate height with group headers and padding
             CGFloat newHeight = [_playlistView totalContentHeightCached];
             [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
+
+            // Restore scroll position after frame size change (if we have a pending restore)
+            if (_pendingScrollRestore) {
+                [self restoreScrollPosition:_pendingScrollRestore];
+                _pendingScrollRestore = nil;
+            }
+
             [_playlistView setNeedsDisplay:YES];
         });
     });

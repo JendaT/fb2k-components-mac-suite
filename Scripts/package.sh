@@ -5,27 +5,47 @@
 # Usage: ./package.sh <extension_name>
 # Example: ./package.sh simplaylist
 #
-# Creates foo_<name>.fb2k-component in the current directory
+# Creates foo_<name>.fb2k-component in the project root
 #
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Component name mapping (short name -> directory suffix and output name)
+declare -A DIR_MAP=(
+    ["simplaylist"]="simplaylist"
+    ["plorg"]="plorg"
+    ["waveform"]="wave_seekbar"
+    ["wave_seekbar"]="wave_seekbar"
+    ["scrobble"]="scrobble"
+)
+
 if [ -z "$1" ]; then
     echo "Usage: $0 <extension_name>"
-    echo "Example: $0 simplaylist"
     echo ""
     echo "Available extensions:"
-    ls -d extensions/foo_*_mac 2>/dev/null | xargs -I{} basename {} | sed 's/foo_//;s/_mac//'
+    echo "  simplaylist  - SimPlaylist"
+    echo "  plorg        - Playlist Organizer"
+    echo "  waveform     - Waveform Seekbar"
+    echo "  scrobble     - Last.fm Scrobbler"
     exit 1
 fi
 
-NAME="$1"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-EXT_DIR="$PROJECT_ROOT/extensions/foo_${NAME}_mac"
+INPUT_NAME="$1"
+DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
+
+if [ -z "$DIR_NAME" ]; then
+    echo "Error: Unknown extension '$INPUT_NAME'"
+    echo "Valid names: simplaylist, plorg, waveform, scrobble"
+    exit 1
+fi
+
+EXT_DIR="$PROJECT_ROOT/extensions/foo_${DIR_NAME}_mac"
 BUILD_DIR="$EXT_DIR/build/Release"
-COMPONENT_NAME="foo_${NAME}.component"
-OUTPUT_FILE="foo_${NAME}.fb2k-component"
+COMPONENT_NAME="foo_${DIR_NAME}.component"
+OUTPUT_FILE="foo_${DIR_NAME}.fb2k-component"
 
 # Check extension exists
 if [ ! -d "$EXT_DIR" ]; then
