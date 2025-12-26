@@ -39,8 +39,8 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
 @property (nonatomic, assign) NSInteger currentPlaylistIndex;
 @property (nonatomic, assign) NSInteger playingPlaylistIndex;  // Track which playlist item is playing
 @property (nonatomic, assign) BOOL needsRedraw;  // Coalesced redraw flag
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSValue *> *scrollPositions;  // Scroll position per playlist
-@property (nonatomic, strong) NSValue *pendingScrollRestore;  // Scroll position to restore after group detection
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *scrollAnchorIndices;  // First visible playlist index per playlist
+@property (nonatomic, assign) NSInteger scrollRestorePlaylistIndex;  // Playlist index for pending scroll restore (-1 = none)
 @end
 
 @implementation SimPlaylistController
@@ -55,7 +55,8 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
         _activePresetIndex = 0;
         _currentPlaylistIndex = -1;
         _playingPlaylistIndex = -1;
-        _scrollPositions = [NSMutableDictionary dictionary];
+        _scrollAnchorIndices = [NSMutableDictionary dictionary];
+        _scrollRestorePlaylistIndex = -1;
     }
     return self;
 }
@@ -234,10 +235,12 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     BOOL isSwitchingPlaylist = (activePlaylist != SIZE_MAX &&
                                  (isFirstLoad || (NSInteger)activePlaylist != _currentPlaylistIndex));
 
-    // Save scroll position of current playlist BEFORE switching to a different one
-    if (!isFirstLoad && isSwitchingPlaylist && _scrollView) {
-        NSPoint scrollPoint = _scrollView.contentView.bounds.origin;
-        _scrollPositions[@(_currentPlaylistIndex)] = [NSValue valueWithPoint:scrollPoint];
+    // Save scroll anchor (first visible playlist index) BEFORE switching to a different one
+    if (!isFirstLoad && isSwitchingPlaylist && _scrollView && _scrollAnchorIndices) {
+        NSInteger anchorIndex = [self firstVisiblePlaylistIndex];
+        if (anchorIndex >= 0) {
+            _scrollAnchorIndices[@(_currentPlaylistIndex)] = @(anchorIndex);
+        }
     }
 
     // Clear cached data on any playlist change
@@ -274,8 +277,17 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     BOOL useGrouping = (activePreset && activePreset.headerPattern.length > 0);
 
     if (useGrouping) {
-        // EFFICIENT: Detect groups using batch handle retrieval
-        [self detectGroupsForPlaylist:activePlaylist itemCount:itemCount preset:activePreset];
+        // Check if we have a saved scroll position for this playlist
+        BOOL hasSavedPosition = (isSwitchingPlaylist && _scrollAnchorIndices[@(activePlaylist)] != nil);
+
+        if (hasSavedPosition) {
+            // SYNCHRONOUS: Detect groups immediately for instant scroll restore
+            // This avoids the visual "jump" from flat mode to grouped mode
+            [self detectGroupsForPlaylistSync:activePlaylist itemCount:itemCount preset:activePreset];
+        } else {
+            // ASYNC: First visit or no saved position - async is fine
+            [self detectGroupsForPlaylist:activePlaylist itemCount:itemCount preset:activePreset];
+        }
     } else {
         // No grouping - just set item count
         _playlistView.itemCount = itemCount;
@@ -302,38 +314,253 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     // Display
     [_playlistView reloadData];
 
-    // Restore scroll position only when SWITCHING to a different playlist
-    _pendingScrollRestore = nil;  // Clear any pending restore
+    // Mark playlist for scroll restoration if switching
     if (isSwitchingPlaylist) {
-        NSValue *savedScrollValue = _scrollPositions[@(activePlaylist)];
-        if (savedScrollValue) {
-            // Store for restoration after group detection completes (frame size may change)
-            _pendingScrollRestore = savedScrollValue;
-            // Also restore now for immediate feedback
-            [self restoreScrollPosition:savedScrollValue];
-        } else if (_playlistView.focusIndex >= 0) {
-            // No saved position - scroll to focus item (first time viewing this playlist)
-            NSInteger focusRow = [_playlistView rowForPlaylistIndex:_playlistView.focusIndex];
-            if (focusRow >= 0) {
-                [_playlistView scrollRowToVisible:focusRow];
+        // Check if sync detection already handled the restore
+        BOOL alreadyRestored = (useGrouping && _scrollAnchorIndices[@(activePlaylist)] != nil);
+
+        if (!alreadyRestored) {
+            _scrollRestorePlaylistIndex = activePlaylist;
+            // Only restore immediately if NOT using grouping (groups change row positions)
+            // If using grouping, restore will happen after group detection completes
+            if (!useGrouping) {
+                [self scheduleDeferredScrollRestore];
             }
         }
     }
     // When NOT switching (just refreshing same playlist), keep current scroll position
 }
 
-- (void)restoreScrollPosition:(NSValue *)scrollValue {
-    if (!scrollValue || !_scrollView) return;
-    NSPoint savedPoint = [scrollValue pointValue];
-    // Clamp to valid range (in case playlist content changed)
-    CGFloat maxY = MAX(0, _playlistView.frame.size.height - _scrollView.contentView.bounds.size.height);
-    savedPoint.y = MAX(0, MIN(savedPoint.y, maxY));
-    [_scrollView.contentView scrollToPoint:savedPoint];
-    [_scrollView reflectScrolledClipView:_scrollView.contentView];
+- (void)scheduleDeferredScrollRestore {
+    // Use weak self to avoid retain cycles and crashes if controller is deallocated
+    __weak SimPlaylistController *weakSelf = self;
+    NSInteger targetPlaylist = _scrollRestorePlaylistIndex;
+
+    // Defer to next run loop iteration to let layout settle
+    dispatch_async(dispatch_get_main_queue(), ^{
+        SimPlaylistController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        // Only restore if we're still on the same playlist and still need to restore
+        if (strongSelf.scrollRestorePlaylistIndex != targetPlaylist) return;
+        if (strongSelf.currentPlaylistIndex != targetPlaylist) return;
+
+        [strongSelf performScrollRestore];
+    });
+}
+
+- (void)performScrollRestore {
+    if (_scrollRestorePlaylistIndex < 0) return;
+    if (!_playlistView || !_scrollView || !_scrollAnchorIndices) {
+        _scrollRestorePlaylistIndex = -1;
+        return;
+    }
+
+    NSNumber *savedAnchorIndex = _scrollAnchorIndices[@(_scrollRestorePlaylistIndex)];
+    if (savedAnchorIndex) {
+        NSInteger playlistIndex = [savedAnchorIndex integerValue];
+        // Convert playlist index to row (works correctly regardless of grouping state)
+        NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
+        if (row >= 0) {
+            [_playlistView scrollRowToVisible:row];
+        }
+    } else if (_playlistView.focusIndex >= 0) {
+        // No saved position - scroll to focus item (first time viewing this playlist)
+        NSInteger focusRow = [_playlistView rowForPlaylistIndex:_playlistView.focusIndex];
+        if (focusRow >= 0) {
+            [_playlistView scrollRowToVisible:focusRow];
+        }
+    }
+
+    // Clear the restore marker
+    _scrollRestorePlaylistIndex = -1;
+}
+
+// Get the playlist index of the first visible item (for scroll position saving)
+- (NSInteger)firstVisiblePlaylistIndex {
+    if (!_scrollView || !_playlistView) return -1;
+    if (_playlistView.itemCount == 0) return -1;
+
+    NSRect visibleRect = _scrollView.contentView.bounds;
+    if (visibleRect.size.height <= 0) return -1;
+
+    NSInteger firstRow = [_playlistView rowAtPoint:NSMakePoint(0, NSMinY(visibleRect))];
+    if (firstRow < 0) firstRow = 0;
+
+    // Find the first row that corresponds to an actual playlist item (not header/padding)
+    NSInteger totalRows = [_playlistView rowCount];
+    if (totalRows == 0) return -1;
+
+    for (NSInteger row = firstRow; row < totalRows && row < firstRow + 50; row++) {
+        NSInteger playlistIndex = [_playlistView playlistIndexForRow:row];
+        if (playlistIndex >= 0) {
+            return playlistIndex;
+        }
+    }
+
+    return -1;
 }
 
 // Generation counter to cancel stale group detection
 static NSInteger _groupDetectionGeneration = 0;
+
+// FAST PARTIAL GROUP DETECTION: Only detect groups up to scroll anchor for instant restore
+- (void)detectGroupsForPlaylistSync:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
+    // Get the anchor position we need to scroll to
+    NSNumber *anchorNum = _scrollAnchorIndices[@(playlist)];
+    NSInteger anchorIndex = anchorNum ? [anchorNum integerValue] : 0;
+
+    // Only detect groups up to anchor + buffer (for visible area)
+    // This is O(anchor) instead of O(all tracks) - much faster for large playlists
+    t_size detectUpTo = MIN(itemCount, (t_size)(anchorIndex + 200));
+
+    // Increment generation to cancel any in-progress async detection
+    NSInteger currentGeneration = ++_groupDetectionGeneration;
+
+    // Get handles only up to what we need
+    auto pm = playlist_manager::get();
+    metadb_handle_list handles;
+    pm->playlist_get_all_items(playlist, handles);
+
+    // Compile header pattern
+    titleformat_object::ptr headerScript;
+    static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
+        headerScript,
+        [preset.headerPattern UTF8String],
+        nullptr
+    );
+
+    // Build group data synchronously - only up to detectUpTo
+    NSMutableArray<NSNumber *> *groupStarts = [NSMutableArray array];
+    NSMutableArray<NSString *> *groupHeaders = [NSMutableArray array];
+    NSMutableArray<NSString *> *groupArtKeys = [NSMutableArray array];
+
+    pfc::string8 currentHeader;
+    pfc::string8 formattedHeader;
+
+    for (t_size i = 0; i < detectUpTo && i < handles.get_count(); i++) {
+        handles[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
+
+        if (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0) {
+            [groupStarts addObject:@(i)];
+            [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
+            [groupArtKeys addObject:[NSString stringWithUTF8String:handles[i]->get_path()]];
+            currentHeader = formattedHeader;
+        }
+    }
+
+    // Estimate total groups based on what we've detected
+    // groupsPerTrack = detected groups / detected tracks
+    // estimated total groups = groupsPerTrack * total tracks
+    CGFloat groupsPerTrack = (detectUpTo > 0) ? (CGFloat)groupStarts.count / detectUpTo : 0.1;
+    NSInteger estimatedTotalGroups = (NSInteger)(groupsPerTrack * itemCount);
+
+    // Set partial data immediately - enough for visible area
+    _playlistView.itemCount = itemCount;
+    _playlistView.groupStarts = groupStarts;
+    _playlistView.groupHeaders = groupHeaders;
+    _playlistView.groupArtKeys = groupArtKeys;
+
+    // Calculate padding rows for detected groups
+    CGFloat rowHeight = _playlistView.rowHeight;
+    CGFloat albumArtSize = _playlistView.albumArtSize;
+    CGFloat padding = 6.0;
+    NSInteger minContentRows = (NSInteger)ceil((albumArtSize + padding * 2) / rowHeight);
+
+    NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
+    for (NSUInteger g = 0; g < groupStarts.count; g++) {
+        NSInteger groupStart = [groupStarts[g] integerValue];
+        NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : (NSInteger)detectUpTo;
+        NSInteger trackCount = groupEnd - groupStart;
+        NSInteger neededPadding = MAX(0, minContentRows - trackCount);
+        [paddingRows addObject:@(neededPadding)];
+    }
+    _playlistView.groupPaddingRows = paddingRows;
+
+    // Set frame size (will be updated when full detection completes)
+    CGFloat newHeight = [_playlistView totalContentHeightCached];
+    [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
+
+    // Restore scroll position immediately (we have enough groups)
+    [self performScrollRestore];
+
+    [_playlistView setNeedsDisplay:YES];
+
+    // Continue detecting remaining groups in background
+    if (detectUpTo < itemCount) {
+        auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
+        NSString *headerPattern = preset.headerPattern;
+        NSString *lastHeader = (groupHeaders.count > 0) ? [groupHeaders lastObject] : @"";
+
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            if (_groupDetectionGeneration != currentGeneration) return;
+
+            // Continue from where we left off
+            NSMutableArray<NSNumber *> *moreGroupStarts = [NSMutableArray array];
+            NSMutableArray<NSString *> *moreGroupHeaders = [NSMutableArray array];
+            NSMutableArray<NSString *> *moreGroupArtKeys = [NSMutableArray array];
+
+            pfc::string8 bgCurrentHeader([lastHeader UTF8String]);
+            pfc::string8 bgFormattedHeader;
+
+            titleformat_object::ptr bgHeaderScript;
+            static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
+                bgHeaderScript,
+                [headerPattern UTF8String],
+                nullptr
+            );
+
+            for (t_size i = detectUpTo; i < handlesPtr->get_count(); i++) {
+                if (_groupDetectionGeneration != currentGeneration) return;
+
+                (*handlesPtr)[i]->format_title(nullptr, bgFormattedHeader, bgHeaderScript, nullptr);
+
+                if (strcmp(bgFormattedHeader.c_str(), bgCurrentHeader.c_str()) != 0) {
+                    [moreGroupStarts addObject:@(i)];
+                    [moreGroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedHeader.c_str()]];
+                    [moreGroupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
+                    bgCurrentHeader = bgFormattedHeader;
+                }
+            }
+
+            if (_groupDetectionGeneration != currentGeneration) return;
+
+            // Merge results on main thread
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (_groupDetectionGeneration != currentGeneration) return;
+
+                // Merge with existing groups
+                NSMutableArray *allStarts = [_playlistView.groupStarts mutableCopy];
+                NSMutableArray *allHeaders = [_playlistView.groupHeaders mutableCopy];
+                NSMutableArray *allArtKeys = [_playlistView.groupArtKeys mutableCopy];
+
+                [allStarts addObjectsFromArray:moreGroupStarts];
+                [allHeaders addObjectsFromArray:moreGroupHeaders];
+                [allArtKeys addObjectsFromArray:moreGroupArtKeys];
+
+                _playlistView.groupStarts = allStarts;
+                _playlistView.groupHeaders = allHeaders;
+                _playlistView.groupArtKeys = allArtKeys;
+
+                // Recalculate all padding rows
+                NSMutableArray<NSNumber *> *allPaddingRows = [NSMutableArray arrayWithCapacity:allStarts.count];
+                for (NSUInteger g = 0; g < allStarts.count; g++) {
+                    NSInteger gStart = [allStarts[g] integerValue];
+                    NSInteger gEnd = (g + 1 < allStarts.count) ? [allStarts[g + 1] integerValue] : (NSInteger)itemCount;
+                    NSInteger trackCount = gEnd - gStart;
+                    NSInteger neededPadding = MAX(0, minContentRows - trackCount);
+                    [allPaddingRows addObject:@(neededPadding)];
+                }
+                _playlistView.groupPaddingRows = allPaddingRows;
+
+                // Update frame size with complete data
+                CGFloat finalHeight = [_playlistView totalContentHeightCached];
+                [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, finalHeight)];
+                [_playlistView setNeedsDisplay:YES];
+            });
+        });
+    }
+}
 
 // PROGRESSIVE GROUP DETECTION: Shows UI immediately, detects groups without freezing
 - (void)detectGroupsForPlaylist:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
@@ -432,10 +659,9 @@ static NSInteger _groupDetectionGeneration = 0;
             CGFloat newHeight = [_playlistView totalContentHeightCached];
             [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
 
-            // Restore scroll position after frame size change (if we have a pending restore)
-            if (_pendingScrollRestore) {
-                [self restoreScrollPosition:_pendingScrollRestore];
-                _pendingScrollRestore = nil;
+            // Schedule scroll restore after frame size change settles
+            if (_scrollRestorePlaylistIndex >= 0) {
+                [self scheduleDeferredScrollRestore];
             }
 
             [_playlistView setNeedsDisplay:YES];

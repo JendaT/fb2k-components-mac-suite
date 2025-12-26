@@ -17,6 +17,7 @@
 
 static const char *kTreeNodeKey = "treeNode";
 
+
 @interface PlaylistOrganizerController () <NSTextFieldDelegate, PathMappingWindowDelegate>
 @property (nonatomic, strong) NSOutlineView *outlineView;
 @property (nonatomic, strong) NSScrollView *scrollView;
@@ -135,6 +136,33 @@ static const char *kTreeNodeKey = "treeNode";
 
     // Initial reload
     [self reloadTree];
+
+    // Select and reveal active playlist on startup (delayed to ensure view is ready)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self selectActivePlaylist];
+    });
+}
+
+- (void)selectActivePlaylist {
+    if (!self.activePlaylistName) return;
+
+    TreeNode *node = [self.treeModel findPlaylistWithName:self.activePlaylistName];
+    if (!node) return;
+
+    // Expand parent folders to make it visible
+    TreeNode *parent = node.parent;
+    while (parent) {
+        parent.isExpanded = YES;
+        [self.outlineView expandItem:parent];
+        parent = parent.parent;
+    }
+
+    // Select and scroll to the playlist
+    NSInteger row = [self.outlineView rowForItem:node];
+    if (row >= 0) {
+        [self.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
+        [self.outlineView scrollRowToVisible:row];
+    }
 }
 
 - (void)refreshActivePlaylist {
@@ -156,8 +184,27 @@ static const char *kTreeNodeKey = "treeNode";
 - (void)activePlaylistDidChange:(NSNotification *)notification {
     NSString *newName = notification.userInfo[@"playlistName"];
     if (![self.activePlaylistName isEqualToString:newName]) {
+        // Find old and new active playlist nodes to refresh only those rows
+        TreeNode *oldActiveNode = self.activePlaylistName ? [self.treeModel findPlaylistWithName:self.activePlaylistName] : nil;
+        TreeNode *newActiveNode = newName ? [self.treeModel findPlaylistWithName:newName] : nil;
+
         self.activePlaylistName = newName;
-        [self.outlineView reloadData];
+
+        // Refresh only the affected rows (preserves selection)
+        if (oldActiveNode) {
+            NSInteger row = [self.outlineView rowForItem:oldActiveNode];
+            if (row >= 0) {
+                [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                           columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
+            }
+        }
+        if (newActiveNode) {
+            NSInteger row = [self.outlineView rowForItem:newActiveNode];
+            if (row >= 0) {
+                [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                           columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
+            }
+        }
     }
 }
 
@@ -1188,10 +1235,19 @@ static const char *kTreeNodeKey = "treeNode";
                             NSString *url = [NSString stringWithUTF8String:urlStr];
                             // Convert file:// URL to path
                             if ([url hasPrefix:@"file://"]) {
+                                // Handle URL-encoded paths
                                 NSURL *fileURL = [NSURL URLWithString:url];
-                                if (fileURL.path) {
+                                if (!fileURL) {
+                                    // URL might have unescaped characters, try percent-encoding
+                                    NSString *encoded = [url stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+                                    fileURL = [NSURL URLWithString:encoded];
+                                }
+                                if (fileURL && fileURL.path) {
                                     [trackPaths addObject:fileURL.path];
                                 }
+                            } else if ([url hasPrefix:@"/"]) {
+                                // Already a path
+                                [trackPaths addObject:url];
                             }
                         }
                     }
@@ -1199,7 +1255,18 @@ static const char *kTreeNodeKey = "treeNode";
                 }
 
                 // Create foobar2000 playlist with tracks
-                t_size newPlaylistIndex = pm->create_playlist([name UTF8String], pfc_infinite, pfc_infinite);
+                FB2K_console_formatter() << "[Plorg] Creating playlist: " << [name UTF8String] << " with " << trackPaths.count << " tracks";
+
+                t_size newPlaylistIndex = pfc_infinite;
+                try {
+                    newPlaylistIndex = pm->create_playlist([name UTF8String], pfc_infinite, pfc_infinite);
+                } catch (const std::exception& e) {
+                    FB2K_console_formatter() << "[Plorg] Exception creating playlist: " << e.what();
+                    continue;
+                } catch (...) {
+                    FB2K_console_formatter() << "[Plorg] Unknown exception creating playlist";
+                    continue;
+                }
 
                 if (newPlaylistIndex != pfc_infinite && trackPaths.count > 0) {
                     // Add tracks to playlist using file paths
@@ -1211,8 +1278,15 @@ static const char *kTreeNodeKey = "treeNode";
                         pathList.add_item(pathStrings.back().c_str());
                     }
                     if (pathList.get_count() > 0) {
-                        pm->playlist_add_locations(newPlaylistIndex, pathList, false, nullptr);
-                        tracksImported += pathList.get_count();
+                        FB2K_console_formatter() << "[Plorg] Adding " << pathList.get_count() << " tracks to playlist index " << newPlaylistIndex;
+                        try {
+                            pm->playlist_add_locations(newPlaylistIndex, pathList, false, nullptr);
+                            tracksImported += pathList.get_count();
+                        } catch (const std::exception& e) {
+                            FB2K_console_formatter() << "[Plorg] Exception adding tracks: " << e.what();
+                        } catch (...) {
+                            FB2K_console_formatter() << "[Plorg] Unknown exception adding tracks";
+                        }
                     }
                 }
 

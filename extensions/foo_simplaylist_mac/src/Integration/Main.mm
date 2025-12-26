@@ -27,9 +27,10 @@ VALIDATE_COMPONENT_FILENAME("foo_simplaylist.component");
 
 // UI Element service registration (embeddable view)
 namespace {
+    // {8FE5C4B4-619D-4D89-8567-1D96C32E2162}
     static const GUID g_guid_simplaylist = {
-        0xa1b2c3d4, 0xe5f6, 0x7890,
-        {0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90}
+        0x8FE5C4B4, 0x619D, 0x4D89,
+        {0x85, 0x67, 0x1D, 0x96, 0xC3, 0x2E, 0x21, 0x62}
     };
 
     class simplaylist_ui_element : public ui_element_mac {
