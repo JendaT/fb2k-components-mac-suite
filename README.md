@@ -129,7 +129,9 @@ Or build all extensions:
 
 ## Author
 
-**Jenda Legenda** (Jenda Tresnak)
+Hi there, I'm a random long-term foobar2000 enjoyer, who had to migrate to MacOS a few years back and have been waiting for some movement on the components field for quite some time. Now after some experience with Claude I put together what was necessary for it to start building the tools which I loved so much when I used foobar on windows.
+
+If you like this project, you can support it here.
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/jendalegenda)
 
