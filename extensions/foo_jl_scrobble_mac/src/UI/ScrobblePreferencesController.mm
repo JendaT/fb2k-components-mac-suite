@@ -325,8 +325,9 @@
 }
 
 - (void)authStateChanged:(NSNotification *)notification {
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self updateAuthUI];
+        [weakSelf updateAuthUI];
     });
 }
 
@@ -350,14 +351,16 @@
 }
 
 - (void)cacheChanged:(NSNotification *)notification {
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self updateStatusLabels];
+        [weakSelf updateStatusLabels];
     });
 }
 
 - (void)serviceStateChanged:(NSNotification *)notification {
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self updateStatusLabels];
+        [weakSelf updateStatusLabels];
     });
 }
 

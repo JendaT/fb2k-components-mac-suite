@@ -25,9 +25,9 @@ for arg in "$@"; do
 done
 
 EXTENSIONS=(
-    "foo_simplaylist_mac"
-    "foo_plorg_mac"
-    "foo_wave_seekbar_mac"
+    "foo_jl_simplaylist_mac"
+    "foo_jl_plorg_mac"
+    "foo_jl_wave_seekbar_mac"
     "foo_jl_scrobble_mac"
 )
 

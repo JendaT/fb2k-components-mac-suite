@@ -93,7 +93,9 @@ public:
                     m_scrobbled = true;
                     finalizeTrackLocked();
                 }
-            } catch (...) {}
+            } catch (...) {
+                FB2K_console_formatter() << "[Scrobble] Exception in on_playback_time";
+            }
         }
     }
 
@@ -109,7 +111,9 @@ public:
                     }
                     m_currentTrack = nil;
                 }
-            } catch (...) {}
+            } catch (...) {
+                FB2K_console_formatter() << "[Scrobble] Exception in on_playback_stop";
+            }
         }
     }
 
@@ -130,7 +134,9 @@ public:
                     // Preserve accumulated time and state
                     m_currentTrack = updated;
                 }
-            } catch (...) {}
+            } catch (...) {
+                FB2K_console_formatter() << "[Scrobble] Exception in on_playback_edited";
+            }
         }
     }
 

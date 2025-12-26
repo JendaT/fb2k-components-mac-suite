@@ -6,6 +6,9 @@ SDK-*/
 # Reference sources for analysis (Windows code, etc.)
 reference_sources/
 
+# Code review outputs (generated locally)
+code_reviews/
+
 # Xcode build artifacts
 build/
 DerivedData/

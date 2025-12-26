@@ -14,11 +14,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Component name mapping (short name -> directory suffix and output name)
+# All components use jl_ prefix for namespace clarity
 declare -A DIR_MAP=(
-    ["simplaylist"]="simplaylist"
-    ["plorg"]="plorg"
-    ["waveform"]="wave_seekbar"
-    ["wave_seekbar"]="wave_seekbar"
+    ["simplaylist"]="jl_simplaylist"
+    ["jl_simplaylist"]="jl_simplaylist"
+    ["plorg"]="jl_plorg"
+    ["jl_plorg"]="jl_plorg"
+    ["waveform"]="jl_wave_seekbar"
+    ["wave_seekbar"]="jl_wave_seekbar"
+    ["jl_wave_seekbar"]="jl_wave_seekbar"
     ["scrobble"]="jl_scrobble"
     ["jl_scrobble"]="jl_scrobble"
 )

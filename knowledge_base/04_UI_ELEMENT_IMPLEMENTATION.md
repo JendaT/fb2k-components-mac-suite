@@ -4,7 +4,79 @@
 
 This document covers implementing custom UI elements for foobar2000 on macOS using Cocoa (NSView/NSViewController) and integrating them with the SDK's ui_element_mac interface.
 
-## 1. NSView vs NSViewController
+## 1. Layout Editor Name Matching (CRITICAL)
+
+The foobar2000 Layout Editor finds and instantiates UI elements by name using the `match_name()` method. This is **critical for backward compatibility** when renaming components.
+
+### 1.1 How Layout Editor Finds Components
+
+When a user's layout config references a component by name (e.g., `"SimPlaylist"`), the layout editor queries all registered `ui_element_mac` services, calling `match_name()` on each until one returns `true`.
+
+```cpp
+// The layout editor essentially does:
+for (auto& element : ui_element_services) {
+    if (element->match_name(saved_name)) {
+        return element->instantiate(arg);
+    }
+}
+```
+
+### 1.2 Supporting Multiple Name Variations
+
+Always support **all possible variations** users might have saved in their layouts:
+
+```cpp
+bool match_name(const char* name) override {
+    return strcmp(name, "SimPlaylist") == 0 ||           // Display name
+           strcmp(name, "simplaylist") == 0 ||           // lowercase
+           strcmp(name, "sim_playlist") == 0 ||          // snake_case
+           strcmp(name, "Simple Playlist") == 0 ||       // Human readable
+           // Legacy names (before renaming)
+           strcmp(name, "foo_simplaylist") == 0 ||       // Old component name
+           // New jl-prefixed names
+           strcmp(name, "foo_jl_simplaylist") == 0 ||    // New component name
+           strcmp(name, "jl_simplaylist") == 0;          // Short prefix form
+}
+```
+
+### 1.3 Why This Matters
+
+| Scenario | Without Proper match_name() | With Proper match_name() |
+|----------|----------------------------|--------------------------|
+| User upgrades from old version | Layout breaks, component not found | Seamless - works with old saved name |
+| Component renamed | Users lose their layouts | Backward compatible |
+| Different naming conventions | Only one form works | All reasonable forms work |
+
+### 1.4 Best Practices
+
+1. **Always include the display name** (what `get_name()` returns)
+2. **Include lowercase and snake_case variants**
+3. **Include legacy names when renaming components** - users may have old layouts
+4. **Include both old and new foo_xxx component names**
+5. **Document supported names in comments**
+
+### 1.5 Example from JL Components
+
+All JL components support both legacy (pre-jl prefix) and new naming:
+
+```cpp
+// foo_jl_plorg_mac/src/Integration/Main.mm
+bool match_name(const char* name) override {
+    return strcmp(name, "Playlist Organizer") == 0 ||
+           strcmp(name, "playlist_organizer") == 0 ||
+           strcmp(name, "playlist-organizer") == 0 ||
+           strcmp(name, "plorg") == 0 ||
+           // Legacy names (pre-jl prefix)
+           strcmp(name, "foo_plorg") == 0 ||
+           // New jl-prefixed names
+           strcmp(name, "foo_jl_plorg") == 0 ||
+           strcmp(name, "jl_plorg") == 0;
+}
+```
+
+---
+
+## 2. NSView vs NSViewController
 
 ### 1.1 When to Use NSView
 

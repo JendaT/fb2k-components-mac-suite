@@ -64,7 +64,9 @@ inline void setConfigBool(const char* key, bool value) {
         auto store = fb2k::configStore::get();
         if (!store.is_valid()) return;
         store->setConfigBool(getFullKey(key).c_str(), value);
-    } catch (...) {}
+    } catch (...) {
+        console::error("[Scrobble] Failed to save config value");
+    }
 }
 
 /// Get integer config value with default
@@ -84,7 +86,9 @@ inline void setConfigInt(const char* key, int64_t value) {
         auto store = fb2k::configStore::get();
         if (!store.is_valid()) return;
         store->setConfigInt(getFullKey(key).c_str(), value);
-    } catch (...) {}
+    } catch (...) {
+        console::error("[Scrobble] Failed to save config value");
+    }
 }
 
 /// Get string config value with default
@@ -108,7 +112,9 @@ inline void setConfigString(const char* key, const std::string& value) {
         auto store = fb2k::configStore::get();
         if (!store.is_valid()) return;
         store->setConfigString(getFullKey(key).c_str(), value.c_str());
-    } catch (...) {}
+    } catch (...) {
+        console::error("[Scrobble] Failed to save config value");
+    }
 }
 
 // Convenience accessors

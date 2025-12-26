@@ -109,7 +109,7 @@ Last.fm integration for scrobbling and now-playing updates.
 Each extension can be built independently:
 
 ```bash
-cd extensions/foo_<name>_mac
+cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
 ruby Scripts/generate_xcode_project.rb
 ./Scripts/build.sh
 ./Scripts/install.sh
@@ -118,7 +118,7 @@ ruby Scripts/generate_xcode_project.rb
 Or build all extensions:
 
 ```bash
-./Scripts/build_all.sh
+./Scripts/build_all.sh [--clean] [--install]
 ```
 
 ## Documentation

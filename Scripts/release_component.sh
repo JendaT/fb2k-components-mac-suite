@@ -21,12 +21,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-# Component name mapping
+# Component name mapping (all use jl_ prefix)
 declare -A COMPONENT_MAP=(
-    ["simplaylist"]="foo_simplaylist_mac"
-    ["plorg"]="foo_plorg_mac"
-    ["waveform"]="foo_wave_seekbar_mac"
-    ["wave_seekbar"]="foo_wave_seekbar_mac"
+    ["simplaylist"]="foo_jl_simplaylist_mac"
+    ["jl_simplaylist"]="foo_jl_simplaylist_mac"
+    ["plorg"]="foo_jl_plorg_mac"
+    ["jl_plorg"]="foo_jl_plorg_mac"
+    ["waveform"]="foo_jl_wave_seekbar_mac"
+    ["wave_seekbar"]="foo_jl_wave_seekbar_mac"
+    ["jl_wave_seekbar"]="foo_jl_wave_seekbar_mac"
     ["scrobble"]="foo_jl_scrobble_mac"
     ["jl_scrobble"]="foo_jl_scrobble_mac"
 )
@@ -34,9 +37,12 @@ declare -A COMPONENT_MAP=(
 # Version constant mapping in shared/version.h
 declare -A VERSION_MAP=(
     ["simplaylist"]="SIMPLAYLIST_VERSION"
+    ["jl_simplaylist"]="SIMPLAYLIST_VERSION"
     ["plorg"]="PLORG_VERSION"
+    ["jl_plorg"]="PLORG_VERSION"
     ["waveform"]="WAVEFORM_VERSION"
     ["wave_seekbar"]="WAVEFORM_VERSION"
+    ["jl_wave_seekbar"]="WAVEFORM_VERSION"
     ["scrobble"]="SCROBBLE_VERSION"
     ["jl_scrobble"]="SCROBBLE_VERSION"
 )
@@ -44,9 +50,12 @@ declare -A VERSION_MAP=(
 # Display names for release titles
 declare -A DISPLAY_NAME_MAP=(
     ["simplaylist"]="SimPlaylist"
+    ["jl_simplaylist"]="SimPlaylist"
     ["plorg"]="Playlist Organizer"
+    ["jl_plorg"]="Playlist Organizer"
     ["waveform"]="Waveform Seekbar"
     ["wave_seekbar"]="Waveform Seekbar"
+    ["jl_wave_seekbar"]="Waveform Seekbar"
     ["scrobble"]="Last.fm Scrobbler"
     ["jl_scrobble"]="Last.fm Scrobbler"
 )
@@ -131,11 +140,21 @@ fi
 VERSION=$(get_version "$COMPONENT")
 DISPLAY_NAME="${DISPLAY_NAME_MAP[$COMPONENT]}"
 TAG_NAME="${COMPONENT}-v${VERSION}"
-COMPONENT_FILE="foo_${COMPONENT}.fb2k-component"
+COMPONENT_FILE="foo_jl_${COMPONENT}.fb2k-component"
 
-# Handle special naming conventions
-if [ "$COMPONENT" = "waveform" ] || [ "$COMPONENT" = "wave_seekbar" ]; then
-    COMPONENT_FILE="foo_wave_seekbar.fb2k-component"
+# Handle special naming conventions (normalize to canonical tag names)
+if [ "$COMPONENT" = "simplaylist" ] || [ "$COMPONENT" = "jl_simplaylist" ]; then
+    COMPONENT_FILE="foo_jl_simplaylist.fb2k-component"
+    TAG_NAME="simplaylist-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "plorg" ] || [ "$COMPONENT" = "jl_plorg" ]; then
+    COMPONENT_FILE="foo_jl_plorg.fb2k-component"
+    TAG_NAME="plorg-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "waveform" ] || [ "$COMPONENT" = "wave_seekbar" ] || [ "$COMPONENT" = "jl_wave_seekbar" ]; then
+    COMPONENT_FILE="foo_jl_wave_seekbar.fb2k-component"
     TAG_NAME="waveform-v${VERSION}"
 fi
 

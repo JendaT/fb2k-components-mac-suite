@@ -28,9 +28,9 @@ BACKUP_DIR="$PROJECT_ROOT/.settings_backups"
 
 # Our developed components
 OUR_COMPONENTS=(
-    "foo_simplaylist"
-    "foo_plorg"
-    "foo_wave_seekbar"
+    "foo_jl_simplaylist"
+    "foo_jl_plorg"
+    "foo_jl_wave_seekbar"
     "foo_jl_scrobble"
 )
 

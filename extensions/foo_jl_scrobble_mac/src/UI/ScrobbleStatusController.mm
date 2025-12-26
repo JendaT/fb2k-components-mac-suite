@@ -143,8 +143,9 @@
 }
 
 - (void)stateChanged:(NSNotification *)notification {
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self updateUI];
+        [weakSelf updateUI];
     });
 }
 
