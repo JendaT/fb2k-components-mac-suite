@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 #
 # Package a foobar2000 macOS extension as .fb2k-component
 #
@@ -10,12 +10,12 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Component name mapping (short name -> directory suffix and output name)
 # All components use jl_ prefix for namespace clarity
-declare -A DIR_MAP=(
+typeset -A DIR_MAP=(
     ["simplaylist"]="jl_simplaylist"
     ["jl_simplaylist"]="jl_simplaylist"
     ["plorg"]="jl_plorg"
