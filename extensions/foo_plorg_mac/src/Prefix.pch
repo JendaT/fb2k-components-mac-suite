@@ -1,0 +1,19 @@
+//
+//  Prefix.pch
+//  foo_plorg_mac
+//
+//  Precompiled header
+//
+
+#ifndef foo_plorg_Prefix_pch
+#define foo_plorg_Prefix_pch
+
+#ifdef __OBJC__
+    #import <Cocoa/Cocoa.h>
+#endif
+
+#ifdef __cplusplus
+    #include "fb2k_sdk.h"
+#endif
+
+#endif /* foo_plorg_Prefix_pch */

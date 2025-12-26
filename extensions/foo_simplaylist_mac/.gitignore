@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+DerivedData/
+*.build/
+foo_simplaylist-*/
+
+# Xcode
+xcuserdata/
+*.xcworkspace
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Temporary files
+*.swp
+*.swo
+*~

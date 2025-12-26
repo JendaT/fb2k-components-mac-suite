@@ -1,0 +1,19 @@
+splitter horizontal style=thin
+ waveform-seekbar-mac
+ splitter vertical style=thin
+  splitter horizontal style=thin
+   playlist-picker tab-name="Playlists"
+   foo_plorg
+   tabs
+    albumlist tab-name="Library"
+    refacets tab-name="Refacets"
+  splitter horizontal style=thin
+   playlist
+   simplaylist
+  splitter horizontal style=thin   
+   tabs
+    splitter horizontal style=thin tab-name="Now Playing"
+     albumart
+     selection-properties sections=metadata
+    audiounit mode=visualization name=AUGraphicEQ vendor=Apple tab-name="EQ"
+   playback-controls

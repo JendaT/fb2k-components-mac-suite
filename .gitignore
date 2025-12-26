@@ -1,0 +1,50 @@
+# foobar2000 macOS Extensions - .gitignore
+
+# SDK folders (download separately from foobar2000.org)
+SDK-*/
+
+# Reference sources for analysis (Windows code, etc.)
+reference_sources/
+
+# Xcode build artifacts
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# Generated Xcode projects (regenerate via Scripts/generate_xcode_project.rb)
+*.xcodeproj/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Thumbnails
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Compiled binaries
+*.o
+*.a
+*.dylib
+*.component
+
+# Distribution packages (generated via Scripts/package.sh)
+*.fb2k-component
+
+# Local configuration
+.env
+.env.local
+sdk_config.sh
+
+# Settings backups (for clean install testing)
+.settings_backups/

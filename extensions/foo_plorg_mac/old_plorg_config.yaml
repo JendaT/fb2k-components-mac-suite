@@ -1,0 +1,41 @@
+# Playlist Organizer Configuration
+# Imported from old Windows foobar2000 foo_plorg
+# This contains all 25 playlists that were organized in plorg
+
+node_format: "%node_name%$if(%is_folder%, [%count%],)"
+
+tree:
+  - folder: "klídek"
+    expanded: true
+    items:
+      - playlist: "liquid/space"
+      - playlist: "ambient"
+      - playlist: "berlin electro"
+      - playlist: "psychill"
+      - playlist: "electronic/world"
+      - playlist: "ambient/space komplet"
+  - folder: "elektro nářez"
+    expanded: true
+    items:
+      - playlist: "goa"
+      - playlist: "psytrance (full-on, klasika)"
+      - playlist: "darkpsy"
+      - playlist: "progressive"
+      - playlist: "electronica"
+      - playlist: "IDM"
+  - folder: "jiný věci"
+    expanded: false
+    items:
+      - playlist: "psychedelia"
+      - playlist: "Povídání"
+      - playlist: "TO DEWAL WITH"
+      - playlist: "jazz"
+      - playlist: "reggae/dub"
+      - playlist: "classical"
+      - playlist: "art/alt/rock"
+      - playlist: "darkwave"
+  - playlist: "local/temp"
+  - playlist: "plugged/temp"
+  - playlist: "Zuzanka"
+  - playlist: "Library view"
+  - playlist: "Filter Results"
