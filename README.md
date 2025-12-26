@@ -1,6 +1,8 @@
 # foobar2000 macOS Components
 
-A collection of macOS components for foobar2000 v2.
+A collection of macOS components for foobar2000 v2 – mostly remakes of the components, which I used to love back then on windows.
+
+DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but WIP nonetheless, it may crash your foobar.
 
 ## Extensions
 
@@ -15,7 +17,7 @@ A collection of macOS components for foobar2000 v2.
 
 ### SimPlaylist
 
-A flat playlist view with album grouping, embedded album art, and metadata display.
+A flat playlist view with album grouping, embedded album art, and metadata display. The one plugin, which makes playlists nicer.
 
 | Overview | Settings |
 |----------|----------|
@@ -32,7 +34,7 @@ A flat playlist view with album grouping, embedded album art, and metadata displ
 
 ### Playlist Organizer
 
-Tree-based playlist management with folder organization and smart import.
+Tree-based playlist management with folder organization and smart import. Necesity to manage playlists more managable. No nice screenshots of hyper-organized playlists yet, they are scattered, but there are some import tools to import either from old windows thheme.fth or from Strawberry, which became an alternative for a time being.
 
 | Overview | Import Menu |
 |----------|-------------|
@@ -53,7 +55,7 @@ Tree-based playlist management with folder organization and smart import.
 
 ### Waveform Seekbar
 
-Audio visualization seekbar with real-time waveform display and visual effects.
+Audio visualization seekbar with real-time waveform display and visual effects. This one was my favorite, a neat way to navigate through tracks.
 
 | Overview | Settings |
 |----------|----------|
@@ -70,7 +72,7 @@ Audio visualization seekbar with real-time waveform display and visual effects.
 
 ### Last.fm Scrobbler
 
-Last.fm integration for scrobbling and now-playing updates.
+Last.fm integration for scrobbling and now-playing updates. An absolute necesity for us, who celebrated 20 years of last.fm scrobbling this year.
 
 ![Last.fm Scrobbler Settings](docs/images/scrobbler-settings.png)
 
