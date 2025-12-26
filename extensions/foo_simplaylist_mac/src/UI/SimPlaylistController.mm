@@ -41,6 +41,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
 @property (nonatomic, assign) BOOL needsRedraw;  // Coalesced redraw flag
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *scrollAnchorIndices;  // First visible playlist index per playlist
 @property (nonatomic, assign) NSInteger scrollRestorePlaylistIndex;  // Playlist index for pending scroll restore (-1 = none)
+@property (nonatomic, assign) BOOL currentPlaylistInitialized;  // True after groups loaded and scroll position set
 @end
 
 @implementation SimPlaylistController
@@ -57,6 +58,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
         _playingPlaylistIndex = -1;
         _scrollAnchorIndices = [NSMutableDictionary dictionary];
         _scrollRestorePlaylistIndex = -1;
+        _currentPlaylistInitialized = NO;
     }
     return self;
 }
@@ -236,12 +238,16 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
                                  (isFirstLoad || (NSInteger)activePlaylist != _currentPlaylistIndex));
 
     // Save scroll anchor (first visible playlist index) BEFORE switching to a different one
-    if (!isFirstLoad && isSwitchingPlaylist && _scrollView && _scrollAnchorIndices) {
+    // Only save if the current playlist was initialized (groups loaded, scroll position set)
+    if (!isFirstLoad && isSwitchingPlaylist && _scrollView && _scrollAnchorIndices && _currentPlaylistInitialized) {
         NSInteger anchorIndex = [self firstVisiblePlaylistIndex];
         if (anchorIndex >= 0) {
             _scrollAnchorIndices[@(_currentPlaylistIndex)] = @(anchorIndex);
         }
     }
+
+    // Reset initialized flag for the new playlist
+    _currentPlaylistInitialized = NO;
 
     // Clear cached data on any playlist change
     [_playlistView clearFormattedValuesCache];
@@ -372,7 +378,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
         }
     }
 
-    // Clear the restore marker
+    // Clear the restore marker (initialized flag is set when full detection completes)
     _scrollRestorePlaylistIndex = -1;
 }
 
@@ -556,9 +562,16 @@ static NSInteger _groupDetectionGeneration = 0;
                 // Update frame size with complete data
                 CGFloat finalHeight = [_playlistView totalContentHeightCached];
                 [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, finalHeight)];
+
+                // NOW it's safe to save scroll positions - full data available
+                _currentPlaylistInitialized = YES;
+
                 [_playlistView setNeedsDisplay:YES];
             });
         });
+    } else {
+        // No background detection needed - full data already available
+        _currentPlaylistInitialized = YES;
     }
 }
 
@@ -658,6 +671,9 @@ static NSInteger _groupDetectionGeneration = 0;
             // Recalculate height with group headers and padding
             CGFloat newHeight = [_playlistView totalContentHeightCached];
             [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
+
+            // Full detection complete - safe to save scroll positions now
+            _currentPlaylistInitialized = YES;
 
             // Schedule scroll restore after frame size change settles
             if (_scrollRestorePlaylistIndex >= 0) {

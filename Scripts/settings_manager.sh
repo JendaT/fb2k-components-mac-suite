@@ -31,7 +31,7 @@ OUR_COMPONENTS=(
     "foo_simplaylist"
     "foo_plorg"
     "foo_wave_seekbar"
-    "foo_scrobble"
+    "foo_jl_scrobble"
 )
 
 # Component-specific config files in settings folder

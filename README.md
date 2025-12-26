@@ -6,10 +6,82 @@ A collection of macOS components for foobar2000 v2.
 
 | Extension | Description | Version |
 |-----------|-------------|---------|
-| [Simple Playlist](extensions/foo_simplaylist_mac/) | Lightweight playlist viewer with album art and grouping | 1.0.0 |
-| [Playlist Organizer](extensions/foo_plorg_mac/) | Tree-based playlist management | 1.0.0 |
-| [Waveform Seekbar](extensions/foo_wave_seekbar_mac/) | Audio visualization seekbar with effects | 1.0.0 |
-| [Last.fm Scrobbler](extensions/foo_scrobble_mac/) | Last.fm integration and scrobbling | 1.0.0 |
+| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.0.0 |
+| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.0.0 |
+| [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.0.0 |
+| [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.0.0 |
+
+---
+
+### SimPlaylist
+
+A flat playlist view with album grouping, embedded album art, and metadata display.
+
+| Overview | Settings |
+|----------|----------|
+| ![SimPlaylist Overview](docs/images/simplaylist-overview.png) | ![SimPlaylist Settings](docs/images/simplaylist-settings.png) |
+
+**Features:**
+- Album-based grouping with customizable patterns
+- Embedded album art thumbnails
+- Multi-column track display
+- Selection sync with foobar2000 playlist manager
+- Virtual scrolling for large playlists
+
+---
+
+### Playlist Organizer
+
+Tree-based playlist management with folder organization and smart import.
+
+| Overview | Import Menu |
+|----------|-------------|
+| ![Playlist Organizer](docs/images/plorg-overview.png) | ![Import Menu](docs/images/plorg-import-menu.png) |
+
+| Path Mapping | Settings |
+|--------------|----------|
+| ![Path Mapping](docs/images/plorg-path-mapping.png) | ![Settings](docs/images/plorg-settings.png) |
+
+**Features:**
+- Hierarchical folder organization
+- Drag-and-drop playlist reordering
+- Smart import from filesystem with path mapping
+- Autoplaylist support
+- Playlist search and filtering
+
+---
+
+### Waveform Seekbar
+
+Audio visualization seekbar with real-time waveform display and visual effects.
+
+| Overview | Settings |
+|----------|----------|
+| ![Waveform Seekbar](docs/images/waveform-overview.png) | ![Waveform Settings](docs/images/waveform-settings.png) |
+
+**Features:**
+- Real-time waveform visualization
+- Multiple display modes (bars, lines, filled)
+- Customizable colors and effects
+- Click-to-seek functionality
+- Downmix/channel selection
+
+---
+
+### Last.fm Scrobbler
+
+Last.fm integration for scrobbling and now-playing updates.
+
+![Last.fm Scrobbler Settings](docs/images/scrobbler-settings.png)
+
+**Features:**
+- Automatic track scrobbling after 50% or 4 minutes
+- Now Playing notifications
+- Browser-based Last.fm authentication
+- Offline queue with automatic retry
+- Library-only and dynamic source filtering
+
+---
 
 ## Downloads
 

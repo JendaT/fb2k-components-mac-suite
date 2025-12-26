@@ -1,6 +1,6 @@
 //
 //  Main.mm
-//  foo_scrobble_mac
+//  foo_jl_scrobble_mac
 //
 //  Component registration and entry point
 //
@@ -29,7 +29,7 @@ JL_COMPONENT_ABOUT(
 );
 
 // Validate bundle filename
-VALIDATE_COMPONENT_FILENAME("foo_scrobble.component");
+VALIDATE_COMPONENT_FILENAME("foo_jl_scrobble.component");
 
 // Component initialization handler
 namespace {

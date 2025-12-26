@@ -28,7 +28,7 @@ EXTENSIONS=(
     "foo_simplaylist_mac"
     "foo_plorg_mac"
     "foo_wave_seekbar_mac"
-    "foo_scrobble_mac"
+    "foo_jl_scrobble_mac"
 )
 
 echo "Building all foobar2000 macOS extensions..."

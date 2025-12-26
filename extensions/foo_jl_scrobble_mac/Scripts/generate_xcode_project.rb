@@ -1,5 +1,5 @@
 #!/usr/bin/env ruby
-# Generate Xcode project for foo_scrobble_mac
+# Generate Xcode project for foo_jl_scrobble_mac
 
 require 'fileutils'
 require 'securerandom'
@@ -11,8 +11,8 @@ def generate_uuid
 end
 
 # Project configuration
-PROJECT_NAME = "foo_scrobble"
-BUNDLE_ID = "com.foobar2000.foo-scrobble"
+PROJECT_NAME = "foo_jl_scrobble"
+BUNDLE_ID = "com.foobar2000.foo-jl-scrobble"
 SDK_PATH = Fb2kSdk.path
 
 # Generate all the UUIDs we'll need

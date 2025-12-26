@@ -19,7 +19,8 @@ declare -A DIR_MAP=(
     ["plorg"]="plorg"
     ["waveform"]="wave_seekbar"
     ["wave_seekbar"]="wave_seekbar"
-    ["scrobble"]="scrobble"
+    ["scrobble"]="jl_scrobble"
+    ["jl_scrobble"]="jl_scrobble"
 )
 
 if [ -z "$1" ]; then

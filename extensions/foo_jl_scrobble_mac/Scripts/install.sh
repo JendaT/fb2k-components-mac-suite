@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# install.sh - Install foo_scrobble_mac to foobar2000
+# install.sh - Install foo_jl_scrobble_mac to foobar2000
 #
 # Usage:
 #   ./Scripts/install.sh [OPTIONS]
@@ -12,7 +12,7 @@
 set -e
 
 # Configuration
-PROJECT_NAME="foo_scrobble"
+PROJECT_NAME="foo_jl_scrobble"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIG="Release"
 # foobar2000 v2 for Mac uses this path structure:

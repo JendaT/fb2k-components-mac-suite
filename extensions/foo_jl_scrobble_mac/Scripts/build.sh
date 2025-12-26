@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# build.sh - Build foo_scrobble_mac component
+# build.sh - Build foo_jl_scrobble_mac component
 #
 # Usage:
 #   ./Scripts/build.sh [OPTIONS]
@@ -16,7 +16,7 @@
 set -e
 
 # Configuration
-PROJECT_NAME="foo_scrobble"
+PROJECT_NAME="foo_jl_scrobble"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_CONFIG="Release"
 CLEAN_FIRST=false

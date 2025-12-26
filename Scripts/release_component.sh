@@ -27,7 +27,8 @@ declare -A COMPONENT_MAP=(
     ["plorg"]="foo_plorg_mac"
     ["waveform"]="foo_wave_seekbar_mac"
     ["wave_seekbar"]="foo_wave_seekbar_mac"
-    ["scrobble"]="foo_scrobble_mac"
+    ["scrobble"]="foo_jl_scrobble_mac"
+    ["jl_scrobble"]="foo_jl_scrobble_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -37,6 +38,7 @@ declare -A VERSION_MAP=(
     ["waveform"]="WAVEFORM_VERSION"
     ["wave_seekbar"]="WAVEFORM_VERSION"
     ["scrobble"]="SCROBBLE_VERSION"
+    ["jl_scrobble"]="SCROBBLE_VERSION"
 )
 
 # Display names for release titles
@@ -46,6 +48,7 @@ declare -A DISPLAY_NAME_MAP=(
     ["waveform"]="Waveform Seekbar"
     ["wave_seekbar"]="Waveform Seekbar"
     ["scrobble"]="Last.fm Scrobbler"
+    ["jl_scrobble"]="Last.fm Scrobbler"
 )
 
 show_help() {
@@ -130,10 +133,15 @@ DISPLAY_NAME="${DISPLAY_NAME_MAP[$COMPONENT]}"
 TAG_NAME="${COMPONENT}-v${VERSION}"
 COMPONENT_FILE="foo_${COMPONENT}.fb2k-component"
 
-# Handle waveform naming
+# Handle special naming conventions
 if [ "$COMPONENT" = "waveform" ] || [ "$COMPONENT" = "wave_seekbar" ]; then
     COMPONENT_FILE="foo_wave_seekbar.fb2k-component"
     TAG_NAME="waveform-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "scrobble" ] || [ "$COMPONENT" = "jl_scrobble" ]; then
+    COMPONENT_FILE="foo_jl_scrobble.fb2k-component"
+    TAG_NAME="scrobble-v${VERSION}"
 fi
 
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="

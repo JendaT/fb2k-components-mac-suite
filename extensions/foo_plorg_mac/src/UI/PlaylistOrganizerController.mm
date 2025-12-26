@@ -17,6 +17,59 @@
 
 static const char *kTreeNodeKey = "treeNode";
 
+// Helper class for async track import - stores paths to keep them alive
+class PlorgTracksImportNotify : public process_locations_notify {
+public:
+    t_size m_playlistIndex;
+    std::string m_playlistName;
+    pfc::string_list_impl m_paths;  // Keeps paths alive during async operation
+
+    PlorgTracksImportNotify(t_size playlistIndex, const char* name)
+        : m_playlistIndex(playlistIndex), m_playlistName(name) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() > 0) {
+            auto pm = playlist_manager::get();
+            pm->playlist_insert_items(m_playlistIndex, 0, items, pfc::bit_array_false());
+            FB2K_console_formatter() << "[Plorg] Added " << items.get_count() << " tracks to playlist: " << m_playlistName.c_str();
+        }
+    }
+
+    void on_aborted() override {
+        FB2K_console_formatter() << "[Plorg] Track import aborted for playlist: " << m_playlistName.c_str();
+    }
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_no_filter,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
+
+// Helper function to add tracks asynchronously
+static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistName, NSArray<NSString*>* paths) {
+    if (paths.count == 0) return;
+
+    auto notify = fb2k::service_new<PlorgTracksImportNotify>(playlistIndex, playlistName);
+
+    // Copy paths into the notify object so they stay alive
+    for (NSString* path in paths) {
+        notify->m_paths.add_item([path UTF8String]);
+    }
+
+    notify->startImport();
+}
+
 
 @interface PlaylistOrganizerController () <NSTextFieldDelegate, PathMappingWindowDelegate>
 @property (nonatomic, strong) NSOutlineView *outlineView;
@@ -1235,15 +1288,12 @@ static const char *kTreeNodeKey = "treeNode";
                             NSString *url = [NSString stringWithUTF8String:urlStr];
                             // Convert file:// URL to path
                             if ([url hasPrefix:@"file://"]) {
-                                // Handle URL-encoded paths
-                                NSURL *fileURL = [NSURL URLWithString:url];
-                                if (!fileURL) {
-                                    // URL might have unescaped characters, try percent-encoding
-                                    NSString *encoded = [url stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-                                    fileURL = [NSURL URLWithString:encoded];
-                                }
-                                if (fileURL && fileURL.path) {
-                                    [trackPaths addObject:fileURL.path];
+                                // Strip file:// prefix and decode percent-encoding manually
+                                // Don't use NSURL - it double-encodes already-encoded URLs
+                                NSString *encodedPath = [url substringFromIndex:7];  // Remove "file://"
+                                NSString *path = [encodedPath stringByRemovingPercentEncoding];
+                                if (path && path.length > 0) {
+                                    [trackPaths addObject:path];
                                 }
                             } else if ([url hasPrefix:@"/"]) {
                                 // Already a path
@@ -1268,26 +1318,10 @@ static const char *kTreeNodeKey = "treeNode";
                     continue;
                 }
 
+                // Add tracks asynchronously using process_locations_async
                 if (newPlaylistIndex != pfc_infinite && trackPaths.count > 0) {
-                    // Add tracks to playlist using file paths
-                    pfc::list_t<const char*> pathList;
-                    std::vector<std::string> pathStrings;  // Keep strings alive
-                    pathStrings.reserve(trackPaths.count);  // Prevent reallocation that would invalidate pointers
-                    for (NSString *trackPath in trackPaths) {
-                        pathStrings.push_back([trackPath UTF8String]);
-                        pathList.add_item(pathStrings.back().c_str());
-                    }
-                    if (pathList.get_count() > 0) {
-                        FB2K_console_formatter() << "[Plorg] Adding " << pathList.get_count() << " tracks to playlist index " << newPlaylistIndex;
-                        try {
-                            pm->playlist_add_locations(newPlaylistIndex, pathList, false, nullptr);
-                            tracksImported += pathList.get_count();
-                        } catch (const std::exception& e) {
-                            FB2K_console_formatter() << "[Plorg] Exception adding tracks: " << e.what();
-                        } catch (...) {
-                            FB2K_console_formatter() << "[Plorg] Unknown exception adding tracks";
-                        }
-                    }
+                    addTracksToPlaylistAsync(newPlaylistIndex, [name UTF8String], trackPaths);
+                    tracksImported += trackPaths.count;
                 }
 
                 // Add to plorg tree
@@ -1321,7 +1355,7 @@ static const char *kTreeNodeKey = "treeNode";
         [self reloadTree];
         [self.treeModel saveToConfig];
 
-        FB2K_console_formatter() << "[Plorg] Imported " << imported << " playlists with " << tracksImported << " tracks from Strawberry";
+        FB2K_console_formatter() << "[Plorg] Imported " << imported << " playlists with " << tracksImported << " tracks from Strawberry (loading async)";
     } @catch (...) {
         FB2K_console_formatter() << "[Plorg] Failed to import from Strawberry";
     }
