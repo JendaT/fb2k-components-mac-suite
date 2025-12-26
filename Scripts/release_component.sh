@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 #
 # Release a foobar2000 macOS component
 #
@@ -18,11 +18,11 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Component name mapping (all use jl_ prefix)
-declare -A COMPONENT_MAP=(
+typeset -A COMPONENT_MAP=(
     ["simplaylist"]="foo_jl_simplaylist_mac"
     ["jl_simplaylist"]="foo_jl_simplaylist_mac"
     ["plorg"]="foo_jl_plorg_mac"
@@ -35,7 +35,7 @@ declare -A COMPONENT_MAP=(
 )
 
 # Version constant mapping in shared/version.h
-declare -A VERSION_MAP=(
+typeset -A VERSION_MAP=(
     ["simplaylist"]="SIMPLAYLIST_VERSION"
     ["jl_simplaylist"]="SIMPLAYLIST_VERSION"
     ["plorg"]="PLORG_VERSION"
@@ -48,7 +48,7 @@ declare -A VERSION_MAP=(
 )
 
 # Display names for release titles
-declare -A DISPLAY_NAME_MAP=(
+typeset -A DISPLAY_NAME_MAP=(
     ["simplaylist"]="SimPlaylist"
     ["jl_simplaylist"]="SimPlaylist"
     ["plorg"]="Playlist Organizer"
@@ -88,7 +88,7 @@ get_version() {
         exit 1
     fi
 
-    local version=$(grep "#define $version_const" "$PROJECT_ROOT/shared/version.h" | sed 's/.*"\([^"]*\)".*/\1/')
+    local version=$(grep "#define ${version_const} \"" "$PROJECT_ROOT/shared/version.h" | sed 's/.*"\([^"]*\)".*/\1/')
 
     if [ -z "$version" ]; then
         echo "Error: Could not find version for $component in shared/version.h" >&2
