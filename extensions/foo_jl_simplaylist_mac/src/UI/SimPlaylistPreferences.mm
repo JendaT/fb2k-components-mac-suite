@@ -12,8 +12,10 @@
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 
-// Implementation of shared JLFlippedView
-@implementation JLFlippedView
+// Flipped view for top-to-bottom layout (unique class name per extension)
+@interface SimPlaylistFlippedView : NSView
+@end
+@implementation SimPlaylistFlippedView
 - (BOOL)isFlipped { return YES; }
 @end
 
@@ -32,7 +34,7 @@
 
 - (void)loadView {
     // Use flipped view so y=0 is at top
-    NSView *container = [[JLFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 400)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 400)];
     self.view = container;
 
     CGFloat y = 20;  // Start from top

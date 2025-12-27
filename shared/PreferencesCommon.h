@@ -8,16 +8,15 @@
 #import <Cocoa/Cocoa.h>
 
 //
-// Flipped view for top-to-bottom layout
-// macOS coordinate system has y=0 at bottom; this flips it so y=0 is at top
+// Flipped view pattern for top-to-bottom layout
+// macOS coordinate system has y=0 at bottom; flipping makes y=0 at top
 //
-@interface JLFlippedView : NSView
-@end
-
-// Implementation must be in a .mm file that imports this header
-// Add this to ONE .mm file per extension (typically the preferences controller):
+// Each extension must define its own uniquely-named FlippedView class to avoid
+// Objective-C runtime conflicts when multiple components are loaded:
 //
-// @implementation JLFlippedView
+// @interface MyExtensionFlippedView : NSView
+// @end
+// @implementation MyExtensionFlippedView
 // - (BOOL)isFlipped { return YES; }
 // @end
 

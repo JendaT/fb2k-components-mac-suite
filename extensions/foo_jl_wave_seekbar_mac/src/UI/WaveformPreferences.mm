@@ -12,8 +12,10 @@
 #include "../Core/WaveformCache.h"
 #import "../../../../shared/PreferencesCommon.h"
 
-// Implementation of shared JLFlippedView
-@implementation JLFlippedView
+// Flipped view for top-to-bottom layout (unique class name per extension)
+@interface WaveformFlippedView : NSView
+@end
+@implementation WaveformFlippedView
 - (BOOL)isFlipped { return YES; }
 @end
 
@@ -61,7 +63,7 @@
 }
 
 - (void)loadView {
-    JLFlippedView *view = [[JLFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 420)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 420)];
     self.view = view;
 
     [self buildUI];
