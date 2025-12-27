@@ -15,6 +15,10 @@ PROJECT_NAME = "foo_jl_plorg"
 BUNDLE_ID = "com.foobar2000.foo-jl-plorg"
 SDK_PATH = Fb2kSdk.path
 
+# Version from shared/version.h (single source of truth)
+COMPONENT_VERSION = Fb2kVersions.get("plorg")
+BUILD_NUMBER = Fb2kVersions.get_build_number("plorg")
+
 # Generate all the UUIDs we'll need
 uuid_project = generate_uuid
 uuid_main_group = generate_uuid
@@ -464,11 +468,11 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = #{BUILD_NUMBER};
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = #{COMPONENT_VERSION};
 				PRODUCT_BUNDLE_IDENTIFIER = "#{BUNDLE_ID}";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -495,11 +499,11 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = #{BUILD_NUMBER};
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = #{COMPONENT_VERSION};
 				PRODUCT_BUNDLE_IDENTIFIER = "#{BUNDLE_ID}";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;

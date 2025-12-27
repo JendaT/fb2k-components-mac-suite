@@ -121,6 +121,53 @@ JL_COMPONENT_ABOUT(
 );
 ```
 
+## Versioning
+
+### Single Source of Truth: `shared/version.h`
+
+**CRITICAL:** All component versions are defined in `shared/version.h`. This is the ONLY place to update versions.
+
+```cpp
+// shared/version.h
+#define SIMPLAYLIST_VERSION "1.1.0"
+#define SIMPLAYLIST_VERSION_INT 110
+
+#define PLORG_VERSION "1.0.0"
+#define PLORG_VERSION_INT 100
+// ... etc
+```
+
+### Version Update Checklist
+
+When releasing a new version:
+
+1. **Update `shared/version.h`** - Change BOTH the string and int versions
+2. **Update CHANGELOG.md** in the extension's directory
+3. **Rebuild the component** - The version propagates automatically via `common_about.h`
+4. **Commit and push**
+5. **Run release script**: `./Scripts/release_component.sh <name> --draft`
+
+### What NOT to Do
+
+- ❌ Do NOT edit `MARKETING_VERSION` in `generate_xcode_project.rb` directly
+- ❌ Do NOT edit version in `Info.plist` directly
+- ❌ Do NOT hardcode versions in `Main.mm`
+
+The Xcode project generator and `JL_COMPONENT_ABOUT` macro read from `version.h` automatically.
+
+### Independent Versioning
+
+Each extension has its own version - they are completely independent:
+
+| Extension | Version Constant | Release Tag |
+|-----------|-----------------|-------------|
+| SimPlaylist | `SIMPLAYLIST_VERSION` | `simplaylist-v1.1.0` |
+| Playlist Organizer | `PLORG_VERSION` | `plorg-v1.0.0` |
+| Waveform Seekbar | `WAVEFORM_VERSION` | `waveform-v1.0.0` |
+| Last.fm Scrobbler | `SCROBBLE_VERSION` | `scrobble-v1.0.0` |
+
+Releasing one extension does not affect others.
+
 ## Building
 
 1. Generate Xcode project: `ruby Scripts/generate_xcode_project.rb`
