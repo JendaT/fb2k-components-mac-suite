@@ -15,12 +15,16 @@
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "SimPlaylist",
-    "1.0.0",
+    "1.1.0",
     "Simple playlist view for foobar2000 macOS\n\n"
     "Features:\n"
-    "- Flat list view with virtual scrolling\n"
+    "- Album grouping with cover art display\n"
+    "- Three header display styles\n"
+    "- Subgroup support (disc numbers)\n"
+    "- Virtual scrolling for large playlists\n"
     "- Keyboard navigation\n"
-    "- Selection sync with playlist manager"
+    "- Now playing highlighting\n"
+    "- Drag & drop reordering"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_simplaylist.component");

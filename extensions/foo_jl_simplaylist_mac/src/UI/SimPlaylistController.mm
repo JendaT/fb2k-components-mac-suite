@@ -436,36 +436,66 @@ static NSInteger _groupDetectionGeneration = 0;
         nullptr
     );
 
+    // Compile subgroup pattern (if any)
+    NSString *subgroupPattern = [preset subgroupPattern];
+    titleformat_object::ptr subgroupScript;
+    BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
+    if (hasSubgroups) {
+        static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
+            subgroupScript,
+            [subgroupPattern UTF8String],
+            nullptr
+        );
+    }
+
     // Build group data synchronously - only up to detectUpTo
     NSMutableArray<NSNumber *> *groupStarts = [NSMutableArray array];
     NSMutableArray<NSString *> *groupHeaders = [NSMutableArray array];
     NSMutableArray<NSString *> *groupArtKeys = [NSMutableArray array];
 
+    // Build subgroup data
+    NSMutableArray<NSNumber *> *subgroupStarts = [NSMutableArray array];
+    NSMutableArray<NSString *> *subgroupHeaders = [NSMutableArray array];
+
     pfc::string8 currentHeader;
     pfc::string8 formattedHeader;
+    pfc::string8 currentSubgroup;
+    pfc::string8 formattedSubgroup;
 
     for (t_size i = 0; i < detectUpTo && i < handles.get_count(); i++) {
         handles[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
 
-        if (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0) {
+        BOOL isNewGroup = (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0);
+
+        if (isNewGroup) {
             [groupStarts addObject:@(i)];
             [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
             [groupArtKeys addObject:[NSString stringWithUTF8String:handles[i]->get_path()]];
             currentHeader = formattedHeader;
+            currentSubgroup.reset();
+        }
+
+        // Check for subgroup change
+        if (hasSubgroups) {
+            handles[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
+
+            if (!isNewGroup &&
+                formattedSubgroup.get_length() > 0 &&
+                strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0) {
+                [subgroupStarts addObject:@(i)];
+                [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
+            }
+            currentSubgroup = formattedSubgroup;
         }
     }
-
-    // Estimate total groups based on what we've detected
-    // groupsPerTrack = detected groups / detected tracks
-    // estimated total groups = groupsPerTrack * total tracks
-    CGFloat groupsPerTrack = (detectUpTo > 0) ? (CGFloat)groupStarts.count / detectUpTo : 0.1;
-    NSInteger estimatedTotalGroups = (NSInteger)(groupsPerTrack * itemCount);
 
     // Set partial data immediately - enough for visible area
     _playlistView.itemCount = itemCount;
     _playlistView.groupStarts = groupStarts;
     _playlistView.groupHeaders = groupHeaders;
     _playlistView.groupArtKeys = groupArtKeys;
+    _playlistView.subgroupStarts = subgroupStarts;
+    _playlistView.subgroupHeaders = subgroupHeaders;
 
     // Calculate padding rows for detected groups
     CGFloat rowHeight = _playlistView.rowHeight;
@@ -497,6 +527,7 @@ static NSInteger _groupDetectionGeneration = 0;
         auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
         NSString *headerPattern = preset.headerPattern;
         NSString *lastHeader = (groupHeaders.count > 0) ? [groupHeaders lastObject] : @"";
+        NSString *lastSubgroup = (subgroupHeaders.count > 0) ? [subgroupHeaders lastObject] : @"";
 
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -506,9 +537,13 @@ static NSInteger _groupDetectionGeneration = 0;
             NSMutableArray<NSNumber *> *moreGroupStarts = [NSMutableArray array];
             NSMutableArray<NSString *> *moreGroupHeaders = [NSMutableArray array];
             NSMutableArray<NSString *> *moreGroupArtKeys = [NSMutableArray array];
+            NSMutableArray<NSNumber *> *moreSubgroupStarts = [NSMutableArray array];
+            NSMutableArray<NSString *> *moreSubgroupHeaders = [NSMutableArray array];
 
             pfc::string8 bgCurrentHeader([lastHeader UTF8String]);
             pfc::string8 bgFormattedHeader;
+            pfc::string8 bgCurrentSubgroup([lastSubgroup UTF8String]);
+            pfc::string8 bgFormattedSubgroup;
 
             titleformat_object::ptr bgHeaderScript;
             static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
@@ -517,16 +552,41 @@ static NSInteger _groupDetectionGeneration = 0;
                 nullptr
             );
 
+            titleformat_object::ptr bgSubgroupScript;
+            if (hasSubgroups) {
+                static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
+                    bgSubgroupScript,
+                    [subgroupPattern UTF8String],
+                    nullptr
+                );
+            }
+
             for (t_size i = detectUpTo; i < handlesPtr->get_count(); i++) {
                 if (_groupDetectionGeneration != currentGeneration) return;
 
                 (*handlesPtr)[i]->format_title(nullptr, bgFormattedHeader, bgHeaderScript, nullptr);
 
-                if (strcmp(bgFormattedHeader.c_str(), bgCurrentHeader.c_str()) != 0) {
+                BOOL isNewGroup = (strcmp(bgFormattedHeader.c_str(), bgCurrentHeader.c_str()) != 0);
+
+                if (isNewGroup) {
                     [moreGroupStarts addObject:@(i)];
                     [moreGroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedHeader.c_str()]];
                     [moreGroupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
                     bgCurrentHeader = bgFormattedHeader;
+                    bgCurrentSubgroup.reset();
+                }
+
+                // Check for subgroup change
+                if (hasSubgroups) {
+                    (*handlesPtr)[i]->format_title(nullptr, bgFormattedSubgroup, bgSubgroupScript, nullptr);
+
+                    if (!isNewGroup &&
+                        bgFormattedSubgroup.get_length() > 0 &&
+                        strcmp(bgFormattedSubgroup.c_str(), bgCurrentSubgroup.c_str()) != 0) {
+                        [moreSubgroupStarts addObject:@(i)];
+                        [moreSubgroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedSubgroup.c_str()]];
+                    }
+                    bgCurrentSubgroup = bgFormattedSubgroup;
                 }
             }
 
@@ -550,6 +610,14 @@ static NSInteger _groupDetectionGeneration = 0;
                 strongSelf.playlistView.groupStarts = allStarts;
                 strongSelf.playlistView.groupHeaders = allHeaders;
                 strongSelf.playlistView.groupArtKeys = allArtKeys;
+
+                // Merge subgroups
+                NSMutableArray *allSubgroupStarts = [strongSelf.playlistView.subgroupStarts mutableCopy];
+                NSMutableArray *allSubgroupHeaders = [strongSelf.playlistView.subgroupHeaders mutableCopy];
+                [allSubgroupStarts addObjectsFromArray:moreSubgroupStarts];
+                [allSubgroupHeaders addObjectsFromArray:moreSubgroupHeaders];
+                strongSelf.playlistView.subgroupStarts = allSubgroupStarts;
+                strongSelf.playlistView.subgroupHeaders = allSubgroupHeaders;
 
                 // Recalculate all padding rows
                 NSMutableArray<NSNumber *> *allPaddingRows = [NSMutableArray arrayWithCapacity:allStarts.count];
@@ -589,6 +657,8 @@ static NSInteger _groupDetectionGeneration = 0;
     _playlistView.groupHeaders = @[];
     _playlistView.groupArtKeys = @[];
     _playlistView.groupPaddingRows = @[];
+    _playlistView.subgroupStarts = @[];
+    _playlistView.subgroupHeaders = @[];
 
     // Set frame size and display immediately
     CGFloat totalHeight = [_playlistView totalContentHeightCached];
@@ -603,6 +673,7 @@ static NSInteger _groupDetectionGeneration = 0;
     // Copy handles to a shared_ptr for thread safety
     auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
     NSString *headerPattern = preset.headerPattern;
+    NSString *subgroupPattern = [preset subgroupPattern];  // Get first subgroup pattern
 
     // PROGRESSIVE: Detect groups in background without blocking UI
     __weak typeof(self) weakSelf = self;
@@ -617,13 +688,30 @@ static NSInteger _groupDetectionGeneration = 0;
             nullptr
         );
 
+        // Compile subgroup pattern (if any)
+        titleformat_object::ptr subgroupScript;
+        BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
+        if (hasSubgroups) {
+            static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
+                subgroupScript,
+                [subgroupPattern UTF8String],
+                nullptr
+            );
+        }
+
         // Build group data
         NSMutableArray<NSNumber *> *groupStarts = [NSMutableArray array];
         NSMutableArray<NSString *> *groupHeaders = [NSMutableArray array];
         NSMutableArray<NSString *> *groupArtKeys = [NSMutableArray array];
 
+        // Build subgroup data
+        NSMutableArray<NSNumber *> *subgroupStarts = [NSMutableArray array];
+        NSMutableArray<NSString *> *subgroupHeaders = [NSMutableArray array];
+
         pfc::string8 currentHeader;
         pfc::string8 formattedHeader;
+        pfc::string8 currentSubgroup;
+        pfc::string8 formattedSubgroup;
 
         for (t_size i = 0; i < handlesPtr->get_count(); i++) {
             if (_groupDetectionGeneration != currentGeneration) return;
@@ -631,11 +719,31 @@ static NSInteger _groupDetectionGeneration = 0;
             // format_title with metadb_handle is thread-safe for reading
             (*handlesPtr)[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
 
-            if (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0) {
+            BOOL isNewGroup = (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0);
+
+            if (isNewGroup) {
                 [groupStarts addObject:@(i)];
                 [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
                 [groupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
                 currentHeader = formattedHeader;
+                currentSubgroup.reset();  // Reset subgroup when group changes
+            }
+
+            // Check for subgroup change within the same group
+            if (hasSubgroups) {
+                (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
+
+                // Only add subgroup if:
+                // 1. It's not at the start of a group (first track of group)
+                // 2. The subgroup text changed
+                // 3. The subgroup text is not empty
+                if (!isNewGroup &&
+                    formattedSubgroup.get_length() > 0 &&
+                    strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0) {
+                    [subgroupStarts addObject:@(i)];
+                    [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
+                }
+                currentSubgroup = formattedSubgroup;
             }
         }
 
@@ -650,6 +758,8 @@ static NSInteger _groupDetectionGeneration = 0;
             strongSelf.playlistView.groupStarts = groupStarts;
             strongSelf.playlistView.groupHeaders = groupHeaders;
             strongSelf.playlistView.groupArtKeys = groupArtKeys;
+            strongSelf.playlistView.subgroupStarts = subgroupStarts;
+            strongSelf.playlistView.subgroupHeaders = subgroupHeaders;
 
             // Calculate padding rows for each group based on minimum height for album art
             CGFloat rowHeight = strongSelf.playlistView.rowHeight;
@@ -674,7 +784,7 @@ static NSInteger _groupDetectionGeneration = 0;
 
             strongSelf.playlistView.groupPaddingRows = paddingRows;
 
-            // Recalculate height with group headers and padding
+            // Recalculate height with group headers, subgroups, and padding
             CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
             [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, newHeight)];
 

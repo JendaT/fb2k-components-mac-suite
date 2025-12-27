@@ -26,6 +26,8 @@
 @property (nonatomic, strong) NSTextField *subgroupPatternField;
 @property (nonatomic, strong) NSSlider *albumArtSizeSlider;
 @property (nonatomic, strong) NSTextField *albumArtSizeLabel;
+@property (nonatomic, strong) NSPopUpButton *headerStylePopup;
+@property (nonatomic, strong) NSButton *nowPlayingShadingCheckbox;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
 @end
@@ -34,7 +36,7 @@
 
 - (void)loadView {
     // Use flipped view so y=0 is at top
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 400)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 480)];
     self.view = container;
 
     CGFloat y = 20;  // Start from top
@@ -120,6 +122,34 @@
     _albumArtSizeLabel = [NSTextField labelWithString:@"80 px"];
     _albumArtSizeLabel.frame = NSMakeRect(leftMargin + labelWidth + 210, y + 2, 60, 20);
     [container addSubview:_albumArtSizeLabel];
+    y += rowHeight + 15;
+
+    // Separator
+    NSBox *sep3 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 1)];
+    sep3.boxType = NSBoxSeparator;
+    [container addSubview:sep3];
+    y += 15;
+
+    // Header Display Style
+    NSTextField *headerStyleLabel = [NSTextField labelWithString:@"Header Display:"];
+    headerStyleLabel.frame = NSMakeRect(leftMargin, y + 3, labelWidth, 20);
+    [container addSubview:headerStyleLabel];
+
+    _headerStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, 200, 26) pullsDown:NO];
+    [_headerStylePopup addItemWithTitle:@"Above tracks"];
+    [_headerStylePopup addItemWithTitle:@"Album art aligned"];
+    [_headerStylePopup addItemWithTitle:@"Inline (no header row)"];
+    _headerStylePopup.target = self;
+    _headerStylePopup.action = @selector(headerStyleChanged:);
+    [container addSubview:_headerStylePopup];
+    y += rowHeight;
+
+    // Now Playing Shading
+    _nowPlayingShadingCheckbox = [NSButton checkboxWithTitle:@"Highlight now playing row"
+                                                     target:self
+                                                     action:@selector(nowPlayingShadingChanged:)];
+    _nowPlayingShadingCheckbox.frame = NSMakeRect(leftMargin + labelWidth, y, 250, 20);
+    [container addSubview:_nowPlayingShadingCheckbox];
     y += rowHeight + 20;
 
     // Help text
@@ -157,10 +187,22 @@
 
     // Load album art size
     int64_t artSize = simplaylist_config::getConfigInt(
-        simplaylist_config::kGroupColumnWidth,
-        simplaylist_config::kDefaultGroupColumnWidth);
+        simplaylist_config::kAlbumArtSize,
+        simplaylist_config::kDefaultAlbumArtSize);
     _albumArtSizeSlider.integerValue = artSize;
     _albumArtSizeLabel.stringValue = [NSString stringWithFormat:@"%lld px", artSize];
+
+    // Load header display style
+    int64_t headerStyle = simplaylist_config::getConfigInt(
+        simplaylist_config::kHeaderDisplayStyle,
+        simplaylist_config::kDefaultHeaderDisplayStyle);
+    [_headerStylePopup selectItemAtIndex:headerStyle];
+
+    // Load now playing shading
+    bool nowPlayingShading = simplaylist_config::getConfigBool(
+        simplaylist_config::kNowPlayingShading,
+        simplaylist_config::kDefaultNowPlayingShading);
+    _nowPlayingShadingCheckbox.state = nowPlayingShading ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)updateFieldsForPreset:(GroupPreset *)preset {
@@ -230,6 +272,24 @@
     if (currentColWidth < minColWidth) {
         simplaylist_config::setConfigInt(simplaylist_config::kGroupColumnWidth, minColWidth);
     }
+
+    // Notify views to refresh
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+                                                        object:nil];
+}
+
+- (void)headerStyleChanged:(id)sender {
+    NSInteger style = _headerStylePopup.indexOfSelectedItem;
+    simplaylist_config::setConfigInt(simplaylist_config::kHeaderDisplayStyle, style);
+
+    // Notify views to refresh
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+                                                        object:nil];
+}
+
+- (void)nowPlayingShadingChanged:(id)sender {
+    bool enabled = (_nowPlayingShadingCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kNowPlayingShading, enabled);
 
     // Notify views to refresh
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"

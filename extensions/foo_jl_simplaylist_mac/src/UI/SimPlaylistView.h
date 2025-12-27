@@ -37,6 +37,10 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, strong) NSArray<NSString *> *groupArtKeys;  // Album art cache key per group
 @property (nonatomic, strong) NSArray<NSNumber *> *groupPaddingRows;  // Extra padding rows per group for min height
 
+// SUBGROUPS - playlist indices where subgroups start, header text per subgroup
+@property (nonatomic, strong) NSArray<NSNumber *> *subgroupStarts;  // Playlist indices where subgroups start
+@property (nonatomic, strong) NSArray<NSString *> *subgroupHeaders;  // Header text per subgroup
+
 // Formatted column values cache (lazily populated during draw)
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSString *> *> *formattedValuesCache;
 
@@ -60,6 +64,10 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, strong) NSMutableIndexSet *selectedIndices;
 @property (nonatomic, assign) NSInteger focusIndex;
 @property (nonatomic, assign) NSInteger playingIndex;  // -1 if not playing
+
+// Appearance settings
+@property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
+@property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
 
 // Reload data and redraw
 - (void)reloadData;
