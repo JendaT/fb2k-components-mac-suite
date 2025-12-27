@@ -1,4 +1,4 @@
-# foo_plorg_mac - Playlist Organizer for macOS foobar2000
+# foo_jl_plorg - Playlist Organizer for macOS foobar2000
 
 Hierarchical playlist organization with folders for foobar2000 on macOS.
 
@@ -31,7 +31,7 @@ xcodebuild -workspace foobar2000.xcworkspace -scheme "foobar2000 SDK" -configura
 ### 2. Generate Xcode Project
 
 ```bash
-cd foo_plorg_mac
+cd foo_jl_plorg_mac
 ruby Scripts/generate_xcode_project.rb
 ```
 
@@ -44,7 +44,7 @@ Using script:
 
 Or open in Xcode:
 ```bash
-open foo_plorg.xcodeproj
+open foo_jl_plorg.xcodeproj
 ```
 
 Then build with Cmd+B.
@@ -55,8 +55,8 @@ Then build with Cmd+B.
 ./Scripts/install.sh
 ```
 
-Or manually copy `build/Release/foo_plorg.component` to:
-- `~/Library/foobar2000-v2/user-components/foo_plorg/`
+Or manually copy `build/Release/foo_jl_plorg.component` to:
+- `~/Library/foobar2000-v2/user-components/foo_jl_plorg/`
 
 ## Usage
 
@@ -81,7 +81,7 @@ Default format: `%node_name%$if(%is_folder%,' ['%count%']',)`
 ## Project Structure
 
 ```
-foo_plorg_mac/
+foo_jl_plorg_mac/
 ├── src/
 │   ├── Core/
 │   │   ├── TreeNode.h/.mm      # Tree node model

@@ -388,7 +388,7 @@ Performance depends on:
 **CRITICAL**: Configure SQLite for thread safety and concurrent access:
 
 ```sql
--- Database: ~/Library/Application Support/foobar2000/waveform_cache.db
+-- Database: ~/Library/foobar2000-v2/waveform_cache/waveforms.db
 
 -- Enable WAL mode for concurrent read/write
 PRAGMA journal_mode = WAL;
@@ -1097,7 +1097,7 @@ All UI elements should support:
 ### 10.1 Cache Database Location
 
 ```
-~/Library/Application Support/foobar2000/waveform_cache.db
+~/Library/foobar2000-v2/waveform_cache/waveforms.db
 ```
 
 ### 10.2 Compressed Data Format

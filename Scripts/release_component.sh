@@ -246,7 +246,7 @@ RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
 ### Installation
 1. Download \`$COMPONENT_FILE\` below
 2. Double-click to install, or manually copy to:
-   \`~/Library/Application Support/foobar2000/user-components/\`
+   \`~/Library/foobar2000-v2/user-components/\`
 3. Restart foobar2000
 
 ### Requirements

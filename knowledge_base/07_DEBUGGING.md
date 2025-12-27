@@ -12,7 +12,7 @@ Since foobar2000 is a separate application, you need to attach the debugger:
 
 **Method 1: Attach to Running Process**
 1. Build your component in Debug configuration
-2. Install to `~/Library/Application Support/foobar2000/user-components/`
+2. Install to `~/Library/foobar2000-v2/user-components/`
 3. Launch foobar2000
 4. In Xcode: Debug > Attach to Process > foobar2000
 

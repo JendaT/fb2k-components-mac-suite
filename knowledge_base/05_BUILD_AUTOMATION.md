@@ -368,7 +368,7 @@ echo "Build successful: build/Release/$PROJECT_NAME.component"
 
 # Step 5: Optional install
 if [ "$1" == "--install" ]; then
-    DEST=~/Library/Application\ Support/foobar2000/user-components
+    DEST=~/Library/foobar2000-v2/user-components
     mkdir -p "$DEST"
     rm -rf "$DEST/$PROJECT_NAME.component"
     cp -r "build/Release/$PROJECT_NAME.component" "$DEST/"
@@ -707,9 +707,9 @@ Components must be installed to the correct path structure:
 ~/Library/foobar2000-v2/user-components/<component_name>/<component_name>.component
 ```
 
-Example for `foo_simplaylist`:
+Example for `foo_jl_simplaylist`:
 ```
-~/Library/foobar2000-v2/user-components/foo_simplaylist/foo_simplaylist.component
+~/Library/foobar2000-v2/user-components/foo_jl_simplaylist/foo_jl_simplaylist.component
 ```
 
 ### 10.4 Usage Examples

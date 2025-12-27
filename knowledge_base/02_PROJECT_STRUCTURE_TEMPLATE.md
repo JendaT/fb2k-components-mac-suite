@@ -246,7 +246,7 @@ xcodebuild -project foo_mycomponent.xcodeproj \
            -arch arm64 -arch x86_64
 
 # Install
-DEST=~/Library/Application\ Support/foobar2000/user-components
+DEST=~/Library/foobar2000-v2/user-components
 cp -r build/Release/foo_mycomponent.component "$DEST/"
 
 echo "Component installed to $DEST"
@@ -303,7 +303,7 @@ A foobar2000 macOS component that [description].
 ## Installation
 
 1. Download `foo_mycomponent.component`
-2. Copy to `~/Library/Application Support/foobar2000/user-components/`
+2. Copy to `~/Library/foobar2000-v2/user-components/`
 3. Restart foobar2000
 
 ## Building from Source

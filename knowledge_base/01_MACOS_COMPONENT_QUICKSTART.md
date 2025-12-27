@@ -269,7 +269,7 @@ xcodebuild -project foo_mycomponent.xcodeproj -configuration Release
 ```bash
 # Copy to foobar2000 components folder
 cp -r build/Release/foo_mycomponent.component \
-  ~/Library/Application\ Support/foobar2000/user-components/
+  ~/Library/foobar2000-v2/user-components/
 ```
 
 ### Step 4: Verify in foobar2000

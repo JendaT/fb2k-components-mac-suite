@@ -48,7 +48,7 @@ open foo_wave_seekbar.xcodeproj        # Open in Xcode
 
 ## Install Path
 ```
-~/Library/foobar2000-v2/user-components/foo_wave_seekbar/foo_wave_seekbar.component
+~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/foo_jl_wave_seekbar.component
 ```
 
 ## Related Resources

@@ -137,6 +137,50 @@ If you like this project, you can support it here.
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/jendalegenda)
 
+## Layout Editor
+
+To add these components to your layout, use **View → Layout → Enable Layout Editing Mode**, then right-click to add UI elements.
+
+### Component Names for Layout
+
+Use these names in the layout editor or when editing the layout text file directly:
+
+| Component | Recommended | Also Accepted |
+|-----------|-------------|---------------|
+| SimPlaylist | `simplaylist` | `SimPlaylist`, `foo_jl_simplaylist`, `jl_simplaylist` |
+| Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
+| Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
+
+### Example Layout
+
+Here's a complete layout configuration featuring all three UI components:
+
+```
+splitter horizontal style=thin
+  waveform-seekbar
+  splitter vertical style=thin
+    splitter horizontal style=thin
+      plorg tab-name="Playlists"
+    splitter horizontal style=thin
+      simplaylist
+    splitter horizontal style=thin
+      tabs
+        splitter horizontal style=thin tab-name="Now Playing"
+          albumart
+          selection-properties sections=metadata
+        audiounit mode=visualization name=AUGraphicEQ vendor=Apple tab-name="EQ"
+      playback-controls
+```
+
+This creates a layout with:
+- Waveform seekbar at the top
+- Playlist Organizer on the left sidebar
+- SimPlaylist as the main playlist view
+- Tabbed panel with Now Playing info and EQ visualization
+- Playback controls at the bottom
+
+---
+
 ## License
 
 MIT License - see [LICENSE](LICENSE)

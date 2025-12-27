@@ -22,7 +22,7 @@ BUILD_CONFIG="Release"
 CLEAN_FIRST=false
 REGENERATE=false
 INSTALL_AFTER=false
-FOOBAR_COMPONENTS="$HOME/Library/Application Support/foobar2000/user-components"
+FOOBAR_COMPONENTS="$HOME/Library/foobar2000-v2/user-components"
 
 # Colors for output
 RED='\033[0;31m'

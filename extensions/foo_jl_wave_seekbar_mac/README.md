@@ -1,4 +1,4 @@
-# foo_wave_seekbar_mac
+# foo_jl_wave_seekbar - Waveform Seekbar for macOS foobar2000
 
 A foobar2000 macOS component that displays the complete audio waveform as an interactive seekbar.
 
@@ -34,9 +34,9 @@ A foobar2000 macOS component that displays the complete audio waveform as an int
 
 ### From Binary
 
-1. Download `foo_wave_seekbar.component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_wave_seekbar/`
-3. Copy `foo_wave_seekbar.component` into that folder
+1. Download `foo_jl_wave_seekbar.fb2k-component` from Releases
+2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/`
+3. Copy `foo_jl_wave_seekbar.component` into that folder
 4. Restart foobar2000
 
 ## Build Scripts
@@ -97,7 +97,7 @@ This script:
 - Discovers all source files in `src/`
 - Configures SDK library linking
 - Sets up framework dependencies
-- Creates `foo_wave_seekbar.xcodeproj`
+- Creates `foo_jl_wave_seekbar.xcodeproj`
 
 ## Manual Build Commands
 
@@ -108,13 +108,13 @@ If you prefer using xcodebuild directly:
 ruby Scripts/generate_xcode_project.rb
 
 # Build Release
-xcodebuild -project foo_wave_seekbar.xcodeproj -target foo_wave_seekbar -configuration Release build
+xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Release build
 
 # Build Debug
-xcodebuild -project foo_wave_seekbar.xcodeproj -target foo_wave_seekbar -configuration Debug build
+xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Debug build
 
 # Clean
-xcodebuild -project foo_wave_seekbar.xcodeproj -target foo_wave_seekbar clean
+xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar clean
 ```
 
 ## Usage
@@ -148,7 +148,7 @@ Access settings in **Preferences > Display > Waveform Seekbar**
 ## Project Structure
 
 ```
-foo_wave_seekbar_mac/
+foo_jl_wave_seekbar_mac/
 ├── src/
 │   ├── Core/                        # Platform-agnostic logic
 │   │   ├── WaveformData.h/cpp       # Peak data structure (2048 buckets)
@@ -203,7 +203,7 @@ foo_wave_seekbar_mac/
 
 ### Cache
 
-- Location: `~/Library/foobar2000-v2/waveform_cache.db`
+- Location: `~/Library/foobar2000-v2/waveform_cache/waveforms.db`
 - SQLite with WAL mode for concurrent access
 - SHA-256 hash keys for file identification
 - Default max size: 2048 MB
@@ -221,7 +221,7 @@ foo_wave_seekbar_mac/
 ### Component doesn't load
 
 1. Check Preferences > Components for error messages
-2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_wave_seekbar/foo_wave_seekbar.component`
+2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/foo_jl_wave_seekbar.component`
 3. Try rebuilding with `./Scripts/test_install.sh --regenerate`
 
 ### Waveform not displaying
