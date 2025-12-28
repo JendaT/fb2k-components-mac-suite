@@ -19,6 +19,136 @@
 #include <set>
 #include <vector>
 
+// =============================================================================
+// SUBGROUP DETECTION HELPER
+// =============================================================================
+// Encapsulates subgroup detection logic to ensure all code paths use IDENTICAL logic.
+// This eliminates bugs where one path is fixed but another isn't.
+
+struct SubgroupDetector {
+    pfc::string8 currentSubgroup;  // Tracks the current subgroup value
+    bool showFirstSubgroup;         // Config setting
+
+    // Debug logging support
+    FILE* debugFile;
+    bool debugEnabled;
+
+    SubgroupDetector(bool showFirst, bool enableDebug = false)
+        : currentSubgroup("")
+        , showFirstSubgroup(showFirst)
+        , debugFile(nullptr)
+        , debugEnabled(enableDebug)
+    {
+        if (debugEnabled) {
+            debugFile = fopen("/tmp/simplaylist_subgroup_debug.txt", "a");
+            if (debugFile) {
+                fprintf(debugFile, "\n=== New SubgroupDetector created (showFirst=%d) ===\n", showFirst);
+                fflush(debugFile);
+            }
+        }
+    }
+
+    ~SubgroupDetector() {
+        if (debugFile) {
+            fclose(debugFile);
+        }
+    }
+
+    // Initialize from existing state (for continuation from partial detection)
+    void initFromState(const char* existingSubgroup) {
+        currentSubgroup = existingSubgroup;
+        if (debugEnabled && debugFile) {
+            fprintf(debugFile, "initFromState: '%s'\n", existingSubgroup);
+            fflush(debugFile);
+        }
+    }
+
+    // Call when entering a new group - clears subgroup tracking
+    void enterNewGroup() {
+        currentSubgroup = "";
+        if (debugEnabled && debugFile) {
+            fprintf(debugFile, "enterNewGroup: cleared currentSubgroup\n");
+            fflush(debugFile);
+        }
+    }
+
+    // Check if a subgroup header should be added for this track
+    // Returns: true if subgroup header should be added
+    // Updates: currentSubgroup tracking state
+    bool shouldAddSubgroup(const pfc::string8& formattedSubgroup, bool isNewGroup,
+                           NSMutableArray<NSNumber*>* subgroupStarts,
+                           NSMutableArray<NSString*>* subgroupHeaders,
+                           t_size playlistIndex, const char* debugTrackName = nullptr) {
+
+        // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
+        if (formattedSubgroup.get_length() == 0) {
+            if (debugEnabled && debugFile) {
+                fprintf(debugFile, "[%zu] '%s': empty subgroup, skipped\n",
+                        playlistIndex, debugTrackName ? debugTrackName : "");
+                fflush(debugFile);
+            }
+            return false;
+        }
+
+        bool isFirstSubgroupInGroup = (currentSubgroup.get_length() == 0);
+        bool isDifferentSubgroup = (strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0);
+
+        bool shouldAdd = false;
+        const char* reason = "";
+
+        if (isFirstSubgroupInGroup) {
+            // First non-empty subgroup in this group
+            // Only add if: (1) this is the start of a new group, AND (2) showFirstSubgroup is enabled
+            if (isNewGroup && showFirstSubgroup) {
+                shouldAdd = true;
+                reason = "first subgroup at group start (showFirst=ON)";
+            } else {
+                reason = isNewGroup ? "first subgroup but showFirst=OFF" : "first subgroup but NOT at group start";
+            }
+        } else if (isDifferentSubgroup) {
+            // Real disc change (e.g., Disc 1 -> Disc 2) - always show
+            shouldAdd = true;
+            reason = "disc change";
+        } else {
+            reason = "same subgroup";
+        }
+
+        if (debugEnabled && debugFile) {
+            fprintf(debugFile, "[%zu] '%s': subgroup='%s' (len=%zu), current='%s', isNew=%d, isFirst=%d, isDiff=%d -> %s: %s\n",
+                    playlistIndex,
+                    debugTrackName ? debugTrackName : "",
+                    formattedSubgroup.c_str(),
+                    formattedSubgroup.get_length(),
+                    currentSubgroup.c_str(),
+                    isNewGroup,
+                    isFirstSubgroupInGroup,
+                    isDifferentSubgroup,
+                    shouldAdd ? "ADD" : "SKIP",
+                    reason);
+            fflush(debugFile);
+        }
+
+        if (shouldAdd) {
+            [subgroupStarts addObject:@(playlistIndex)];
+            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
+        }
+
+        // Always update currentSubgroup when formatted value is non-empty
+        currentSubgroup = formattedSubgroup;
+
+        return shouldAdd;
+    }
+
+    // Get current subgroup value (for passing to continuation)
+    const char* getCurrentSubgroup() const {
+        return currentSubgroup.c_str();
+    }
+};
+
+// Global debug flag - set to true to enable debug logging
+// Output goes to /tmp/simplaylist_subgroup_debug.txt
+static bool g_subgroupDebugEnabled = false;
+
 // Forward declare callback manager
 @class SimPlaylistController;
 void SimPlaylistCallbackManager_registerController(SimPlaylistController* controller);
@@ -280,6 +410,57 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     _playlistView.subgroupCountPerGroup = counts;
 }
 
+// Filter out subgroups in groups that only have one subgroup (when hideSingleSubgroup is enabled)
+- (void)filterSingleSubgroupsIfNeeded {
+    bool hideSingleSubgroup = simplaylist_config::getConfigBool(
+        simplaylist_config::kHideSingleSubgroup,
+        simplaylist_config::kDefaultHideSingleSubgroup);
+
+    if (!hideSingleSubgroup) return;
+
+    NSArray<NSNumber *> *groupStarts = _playlistView.groupStarts;
+    NSArray<NSNumber *> *subgroupStarts = _playlistView.subgroupStarts;
+    NSArray<NSString *> *subgroupHeaders = _playlistView.subgroupHeaders;
+    NSArray<NSNumber *> *subgroupCountPerGroup = _playlistView.subgroupCountPerGroup;
+    NSInteger itemCount = _playlistView.itemCount;
+
+    if (subgroupStarts.count == 0 || groupStarts.count == 0) return;
+
+    // Build filtered arrays - keep only subgroups in groups with count > 1
+    NSMutableArray<NSNumber *> *filteredStarts = [NSMutableArray array];
+    NSMutableArray<NSString *> *filteredHeaders = [NSMutableArray array];
+
+    NSUInteger groupIndex = 0;
+    for (NSUInteger i = 0; i < subgroupStarts.count; i++) {
+        NSInteger sgIndex = [subgroupStarts[i] integerValue];
+
+        // Find which group this subgroup belongs to
+        while (groupIndex + 1 < groupStarts.count &&
+               [groupStarts[groupIndex + 1] integerValue] <= sgIndex) {
+            groupIndex++;
+        }
+
+        // Keep subgroup only if its group has more than one subgroup
+        if (groupIndex < subgroupCountPerGroup.count) {
+            NSInteger count = [subgroupCountPerGroup[groupIndex] integerValue];
+            if (count > 1) {
+                [filteredStarts addObject:subgroupStarts[i]];
+                if (i < subgroupHeaders.count) {
+                    [filteredHeaders addObject:subgroupHeaders[i]];
+                }
+            }
+        }
+    }
+
+    // Only update if we filtered something out
+    if (filteredStarts.count != subgroupStarts.count) {
+        _playlistView.subgroupStarts = filteredStarts;
+        _playlistView.subgroupHeaders = filteredHeaders;
+        // Recalculate counts with filtered data
+        [self updateSubgroupCountPerGroup];
+    }
+}
+
 - (void)rebuildFromPlaylist {
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
@@ -342,6 +523,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
 
         if (hasSavedPosition) {
             // SYNCHRONOUS: Detect groups immediately for instant scroll restore
+            _scrollRestorePlaylistIndex = activePlaylist;  // Set for performScrollRestore
             [self detectGroupsForPlaylistSync:activePlaylist itemCount:itemCount preset:activePreset];
         } else {
             // ASYNC: First visit or no saved position - async is fine
@@ -516,9 +698,11 @@ static NSInteger _groupDetectionGeneration = 0;
         simplaylist_config::kShowFirstSubgroupHeader,
         simplaylist_config::kDefaultShowFirstSubgroupHeader);
 
+    // Use shared SubgroupDetector to ensure consistent logic across all code paths
+    SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
+
     pfc::string8 currentHeader("");
     pfc::string8 formattedHeader;
-    pfc::string8 currentSubgroup("");
     pfc::string8 formattedSubgroup;
 
     for (t_size i = 0; i < detectUpTo && i < handles.get_count(); i++) {
@@ -531,35 +715,14 @@ static NSInteger _groupDetectionGeneration = 0;
             [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
             [groupArtKeys addObject:[NSString stringWithUTF8String:handles[i]->get_path()]];
             currentHeader = formattedHeader;
-            currentSubgroup = "";  // Clear subgroup for new group
+            subgroupDetector.enterNewGroup();  // Clear subgroup state for new group
         }
 
-        // Check for subgroup change
+        // Check for subgroup change using shared detector
         if (hasSubgroups) {
             handles[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-
-            // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
-            if (formattedSubgroup.get_length() > 0) {
-                BOOL isFirstSubgroupInGroup = (currentSubgroup.get_length() == 0);
-                BOOL isDifferentSubgroup = (strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0);
-
-                // Add subgroup header if:
-                // 1. First subgroup in group AND at group start AND showFirstSubgroup enabled
-                // 2. Actual disc change (from one non-empty value to different non-empty value)
-                if (isFirstSubgroupInGroup) {
-                    // First non-empty subgroup - only show at group start if enabled
-                    if (isNewGroup && showFirstSubgroup) {
-                        [subgroupStarts addObject:@(i)];
-                        [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
-                    }
-                } else if (isDifferentSubgroup) {
-                    // Real disc change (e.g., Disc 1 -> Disc 2) - always show
-                    [subgroupStarts addObject:@(i)];
-                    [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
-                }
-                // Only update currentSubgroup when non-empty (ignore tracks with missing tags)
-                currentSubgroup = formattedSubgroup;
-            }
+            subgroupDetector.shouldAddSubgroup(formattedSubgroup, isNewGroup,
+                                                subgroupStarts, subgroupHeaders, i);
         }
     }
 
@@ -571,7 +734,8 @@ static NSInteger _groupDetectionGeneration = 0;
     _playlistView.subgroupStarts = subgroupStarts;
     _playlistView.subgroupHeaders = subgroupHeaders;
     [self updateSubgroupCountPerGroup];
-    [_playlistView rebuildSubgroupRowCache];
+    [self filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
+    // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
 
     // Calculate padding rows for detected groups
     CGFloat rowHeight = _playlistView.rowHeight;
@@ -593,11 +757,15 @@ static NSInteger _groupDetectionGeneration = 0;
         NSInteger groupStart = [groupStarts[g] integerValue];
         NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : (NSInteger)detectUpTo;
         NSInteger trackCount = groupEnd - groupStart;
-        NSInteger neededPadding = MAX(minPadding, minContentRows - trackCount - extraHeaderSpace + extraTextSpace);
+        // Subgroup headers also take vertical space, subtract them from needed padding
+        NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
+            ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
+        NSInteger neededPadding = MAX(minPadding, minContentRows - trackCount - subgroupsInGroup - extraHeaderSpace + extraTextSpace);
         [paddingRows addObject:@(neededPadding)];
     }
     _playlistView.groupPaddingRows = paddingRows;
     [_playlistView rebuildPaddingCache];
+    [_playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
 
     // Set frame size (will be updated when full detection completes)
     CGFloat newHeight = [_playlistView totalContentHeightCached];
@@ -613,9 +781,9 @@ static NSInteger _groupDetectionGeneration = 0;
         auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
         NSString *headerPattern = preset.headerPattern;
         NSString *lastHeader = (groupHeaders.count > 0) ? [groupHeaders lastObject] : @"";
-        // IMPORTANT: Use the actual currentSubgroup value, not subgroupHeaders.lastObject
+        // IMPORTANT: Use the actual subgroup state from detector, not subgroupHeaders.lastObject
         // because if showFirstSubgroup=OFF, the first subgroup wasn't added to the list
-        NSString *lastSubgroup = [NSString stringWithUTF8String:currentSubgroup.c_str()];
+        NSString *lastSubgroup = [NSString stringWithUTF8String:subgroupDetector.getCurrentSubgroup()];
 
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -630,7 +798,6 @@ static NSInteger _groupDetectionGeneration = 0;
 
             pfc::string8 bgCurrentHeader([lastHeader UTF8String]);
             pfc::string8 bgFormattedHeader;
-            pfc::string8 bgCurrentSubgroup([lastSubgroup UTF8String]);
             pfc::string8 bgFormattedSubgroup;
 
             titleformat_object::ptr bgHeaderScript;
@@ -650,9 +817,13 @@ static NSInteger _groupDetectionGeneration = 0;
             }
 
             // Read showFirstSubgroup setting for consistent behavior with initial detection
-            bool showFirstSubgroup = simplaylist_config::getConfigBool(
+            bool bgShowFirstSubgroup = simplaylist_config::getConfigBool(
                 simplaylist_config::kShowFirstSubgroupHeader,
                 simplaylist_config::kDefaultShowFirstSubgroupHeader);
+
+            // Use shared SubgroupDetector - initialized from sync portion's final state
+            SubgroupDetector bgSubgroupDetector(bgShowFirstSubgroup, g_subgroupDebugEnabled);
+            bgSubgroupDetector.initFromState([lastSubgroup UTF8String]);
 
             for (t_size i = detectUpTo; i < handlesPtr->get_count(); i++) {
                 if (_groupDetectionGeneration != currentGeneration) return;
@@ -666,29 +837,14 @@ static NSInteger _groupDetectionGeneration = 0;
                     [moreGroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedHeader.c_str()]];
                     [moreGroupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
                     bgCurrentHeader = bgFormattedHeader;
-                    bgCurrentSubgroup = "";  // Clear subgroup for new group
+                    bgSubgroupDetector.enterNewGroup();  // Clear subgroup state for new group
                 }
 
-                // Check for subgroup change
+                // Check for subgroup change using shared detector
                 if (hasSubgroups) {
                     (*handlesPtr)[i]->format_title(nullptr, bgFormattedSubgroup, bgSubgroupScript, nullptr);
-
-                    // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
-                    if (bgFormattedSubgroup.get_length() > 0) {
-                        BOOL subgroupChanged = (strcmp(bgFormattedSubgroup.c_str(), bgCurrentSubgroup.c_str()) != 0);
-
-                        // Add subgroup if:
-                        // - It's not a new group and subgroup changed (subsequent subgroups), OR
-                        // - It's a new group and showFirstSubgroup is enabled
-                        if (subgroupChanged) {
-                            if (!isNewGroup || showFirstSubgroup) {
-                                [moreSubgroupStarts addObject:@(i)];
-                                [moreSubgroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedSubgroup.c_str()]];
-                            }
-                        }
-                        // Only update bgCurrentSubgroup when non-empty (ignore tracks with missing tags)
-                        bgCurrentSubgroup = bgFormattedSubgroup;
-                    }
+                    bgSubgroupDetector.shouldAddSubgroup(bgFormattedSubgroup, isNewGroup,
+                                                          moreSubgroupStarts, moreSubgroupHeaders, i);
                 }
             }
 
@@ -721,19 +877,29 @@ static NSInteger _groupDetectionGeneration = 0;
                 strongSelf.playlistView.subgroupStarts = allSubgroupStarts;
                 strongSelf.playlistView.subgroupHeaders = allSubgroupHeaders;
                 [strongSelf updateSubgroupCountPerGroup];
-                [strongSelf.playlistView rebuildSubgroupRowCache];
+                [strongSelf filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
+                // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
 
-                // Recalculate all padding rows
+                // Recalculate all padding rows (accounting for subgroups and header style)
+                NSInteger bgHeaderStyle = strongSelf.playlistView.headerDisplayStyle;
+                NSInteger bgMinPadding = (bgHeaderStyle == 3) ? 2 : 0;
+                NSInteger bgExtraHeaderSpace = (bgHeaderStyle == 2) ? 1 : 0;
+                NSInteger bgExtraTextSpace = (bgHeaderStyle == 3) ? 2 : 0;
+
                 NSMutableArray<NSNumber *> *allPaddingRows = [NSMutableArray arrayWithCapacity:allStarts.count];
                 for (NSUInteger g = 0; g < allStarts.count; g++) {
                     NSInteger gStart = [allStarts[g] integerValue];
                     NSInteger gEnd = (g + 1 < allStarts.count) ? [allStarts[g + 1] integerValue] : (NSInteger)itemCount;
                     NSInteger trackCount = gEnd - gStart;
-                    NSInteger neededPadding = MAX(0, minContentRows - trackCount);
+                    // Subgroup headers also take vertical space
+                    NSInteger subgroupsInGroup = (g < strongSelf.playlistView.subgroupCountPerGroup.count)
+                        ? [strongSelf.playlistView.subgroupCountPerGroup[g] integerValue] : 0;
+                    NSInteger neededPadding = MAX(bgMinPadding, minContentRows - trackCount - subgroupsInGroup - bgExtraHeaderSpace + bgExtraTextSpace);
                     [allPaddingRows addObject:@(neededPadding)];
                 }
                 strongSelf.playlistView.groupPaddingRows = allPaddingRows;
                 [strongSelf.playlistView rebuildPaddingCache];
+                [strongSelf.playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
 
                 // Update frame size with complete data
                 CGFloat finalHeight = [strongSelf.playlistView totalContentHeightCached];
@@ -823,9 +989,11 @@ static NSInteger _groupDetectionGeneration = 0;
             simplaylist_config::kShowFirstSubgroupHeader,
             simplaylist_config::kDefaultShowFirstSubgroupHeader);
 
+        // Use shared SubgroupDetector to ensure consistent logic across all code paths
+        SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
+
         pfc::string8 currentHeader("");
         pfc::string8 formattedHeader;
-        pfc::string8 currentSubgroup("");
         pfc::string8 formattedSubgroup;
 
         for (t_size i = 0; i < handlesPtr->get_count(); i++) {
@@ -841,35 +1009,14 @@ static NSInteger _groupDetectionGeneration = 0;
                 [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
                 [groupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
                 currentHeader = formattedHeader;
-                currentSubgroup = "";  // Clear subgroup for new group
+                subgroupDetector.enterNewGroup();  // Clear subgroup state for new group
             }
 
-            // Check for subgroup change within the same group
+            // Check for subgroup change using shared detector
             if (hasSubgroups) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-
-                // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
-                if (formattedSubgroup.get_length() > 0) {
-                    BOOL isFirstSubgroupInGroup = (currentSubgroup.get_length() == 0);
-                    BOOL isDifferentSubgroup = (strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0);
-
-                    // Add subgroup header if:
-                    // 1. First subgroup in group AND at group start AND showFirstSubgroup enabled
-                    // 2. Actual disc change (from one non-empty value to different non-empty value)
-                    if (isFirstSubgroupInGroup) {
-                        // First non-empty subgroup - only show at group start if enabled
-                        if (isNewGroup && showFirstSubgroup) {
-                            [subgroupStarts addObject:@(i)];
-                            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
-                        }
-                    } else if (isDifferentSubgroup) {
-                        // Real disc change (e.g., Disc 1 -> Disc 2) - always show
-                        [subgroupStarts addObject:@(i)];
-                        [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
-                    }
-                    // Always update currentSubgroup when non-empty
-                    currentSubgroup = formattedSubgroup;
-                }
+                subgroupDetector.shouldAddSubgroup(formattedSubgroup, isNewGroup,
+                                                    subgroupStarts, subgroupHeaders, i);
             }
         }
 
@@ -887,7 +1034,8 @@ static NSInteger _groupDetectionGeneration = 0;
             strongSelf.playlistView.subgroupStarts = subgroupStarts;
             strongSelf.playlistView.subgroupHeaders = subgroupHeaders;
             [strongSelf updateSubgroupCountPerGroup];
-            [strongSelf.playlistView rebuildSubgroupRowCache];
+            [strongSelf filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
+            // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
 
             // Calculate padding rows for each group based on minimum height for album art
             CGFloat rowHeight = strongSelf.playlistView.rowHeight;
@@ -914,13 +1062,16 @@ static NSInteger _groupDetectionGeneration = 0;
                 NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : totalItems;
                 NSInteger trackCount = groupEnd - groupStart;
 
-                // Padding = max(minPadding, minContentRows - trackCount - extraHeaderSpace + extraTextSpace)
-                NSInteger neededPadding = MAX(minPadding, minContentRows - trackCount - extraHeaderSpace + extraTextSpace);
+                // Subgroup headers also take vertical space, subtract them from needed padding
+                NSInteger subgroupsInGroup = (g < strongSelf.playlistView.subgroupCountPerGroup.count)
+                    ? [strongSelf.playlistView.subgroupCountPerGroup[g] integerValue] : 0;
+                NSInteger neededPadding = MAX(minPadding, minContentRows - trackCount - subgroupsInGroup - extraHeaderSpace + extraTextSpace);
                 [paddingRows addObject:@(neededPadding)];
             }
 
             strongSelf.playlistView.groupPaddingRows = paddingRows;
             [strongSelf.playlistView rebuildPaddingCache];
+            [strongSelf.playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
 
             // Recalculate height with group headers, subgroups, and padding
             CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
@@ -1396,6 +1547,18 @@ static BOOL isRemotePath(const char *path) {
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
     if (activePlaylist == SIZE_MAX) return nil;
+
+    // Check if playlistIndex is within valid range
+    t_size playlistItemCount = pm->playlist_get_item_count(activePlaylist);
+    if (playlistIndex < 0 || (t_size)playlistIndex >= playlistItemCount) {
+        FILE *f = fopen("/tmp/simplaylist_column_debug.log", "a");
+        if (f) {
+            fprintf(f, "INVALID INDEX: playlistIndex=%ld, playlistItemCount=%lu\n",
+                    (long)playlistIndex, (unsigned long)playlistItemCount);
+            fclose(f);
+        }
+        return nil;
+    }
 
     // Format column values using playlist context (supports %list_index%, etc.)
     NSMutableArray<NSString *> *columnValues = [NSMutableArray array];

@@ -43,6 +43,9 @@ static const char* const kShowFirstSubgroupHeader = "show_first_subgroup_header"
 // Dim text in parentheses (both () and [])
 static const char* const kDimParentheses = "dim_parentheses";
 
+// Hide subgroups if there's only one in the album (e.g., hide "Disc 1" if album only has Disc 1)
+static const char* const kHideSingleSubgroup = "hide_single_subgroup";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultHeaderHeight = 28;
@@ -55,6 +58,7 @@ static const bool kDefaultNowPlayingShading = true;
 static const int64_t kDefaultHeaderDisplayStyle = 0;  // 0 = above tracks
 static const bool kDefaultShowFirstSubgroupHeader = true;  // Show "Disc 1" etc.
 static const bool kDefaultDimParentheses = true;  // Dim text in () and []
+static const bool kDefaultHideSingleSubgroup = false;  // Don't hide single subgroups by default
 
 // Helper functions
 inline std::string getFullKey(const char* key) {

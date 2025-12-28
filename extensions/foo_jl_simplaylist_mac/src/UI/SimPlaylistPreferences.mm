@@ -28,6 +28,7 @@
 @property (nonatomic, strong) NSPopUpButton *headerStylePopup;
 @property (nonatomic, strong) NSButton *nowPlayingShadingCheckbox;
 @property (nonatomic, strong) NSButton *showFirstSubgroupCheckbox;
+@property (nonatomic, strong) NSButton *hideSingleSubgroupCheckbox;
 @property (nonatomic, strong) NSButton *dimParenthesesCheckbox;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
@@ -57,12 +58,12 @@
     CGFloat groupingBoxY = y;
     CGFloat groupingContentY = 22;  // Inside box, relative to box
 
-    NSBox *groupingBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, groupingBoxY, 460, 160)];
+    NSBox *groupingBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, groupingBoxY, 460, 185)];
     groupingBox.title = @"Grouping Settings";
     groupingBox.titlePosition = NSAtTop;
     [container addSubview:groupingBox];
 
-    NSView *groupingContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 140)];
+    NSView *groupingContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 165)];
     groupingBox.contentView = groupingContent;
 
     // Preset selector
@@ -104,8 +105,16 @@
                                                      action:@selector(showFirstSubgroupChanged:)];
     _showFirstSubgroupCheckbox.frame = NSMakeRect(boxMargin + labelWidth, groupingContentY, 280, 20);
     [groupingContent addSubview:_showFirstSubgroupCheckbox];
+    groupingContentY += rowHeight;
 
-    y = groupingBoxY + 170;
+    // Hide Single Subgroup
+    _hideSingleSubgroupCheckbox = [NSButton checkboxWithTitle:@"Hide subgroups if only one in album"
+                                                       target:self
+                                                       action:@selector(hideSingleSubgroupChanged:)];
+    _hideSingleSubgroupCheckbox.frame = NSMakeRect(boxMargin + labelWidth, groupingContentY, 280, 20);
+    [groupingContent addSubview:_hideSingleSubgroupCheckbox];
+
+    y = groupingBoxY + 195;
 
     // ==================== DISPLAY SETTINGS ====================
     CGFloat displayBoxY = y;
@@ -225,6 +234,12 @@
         simplaylist_config::kDefaultShowFirstSubgroupHeader);
     _showFirstSubgroupCheckbox.state = showFirstSubgroup ? NSControlStateValueOn : NSControlStateValueOff;
 
+    // Load hide single subgroup
+    bool hideSingleSubgroup = simplaylist_config::getConfigBool(
+        simplaylist_config::kHideSingleSubgroup,
+        simplaylist_config::kDefaultHideSingleSubgroup);
+    _hideSingleSubgroupCheckbox.state = hideSingleSubgroup ? NSControlStateValueOn : NSControlStateValueOff;
+
     // Load dim parentheses
     bool dimParentheses = simplaylist_config::getConfigBool(
         simplaylist_config::kDimParentheses,
@@ -327,6 +342,15 @@
     simplaylist_config::setConfigBool(simplaylist_config::kShowFirstSubgroupHeader, enabled);
 
     // Notify views to refresh
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+                                                        object:nil];
+}
+
+- (void)hideSingleSubgroupChanged:(id)sender {
+    bool enabled = (_hideSingleSubgroupCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kHideSingleSubgroup, enabled);
+
+    // Notify views to refresh (needs full rebuild to filter subgroups)
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
                                                         object:nil];
 }
