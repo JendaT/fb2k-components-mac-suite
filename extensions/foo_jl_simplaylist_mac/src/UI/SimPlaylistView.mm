@@ -332,8 +332,15 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         : _itemCount;
     NSInteger trackCount = groupEnd - groupStart;
 
-    // Row is padding if it's after all tracks in the group
-    return (rowWithinGroup > trackCount);
+    // Get subgroup count for this group (subgroup headers add to row count)
+    NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
+        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
+
+    // Total content rows = tracks + subgroup headers (header row already excluded by rowWithinGroup)
+    NSInteger contentRows = trackCount + subgroupsInGroup;
+
+    // Row is padding if it's after all content (tracks + subgroups) in the group
+    return (rowWithinGroup > contentRows);
 }
 
 // Convert row to playlist index (-1 for header rows, subgroup rows, and padding rows)
@@ -942,6 +949,10 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         if (columnValues) {
             _formattedValuesCache[@(playlistIndex)] = columnValues;
         }
+    }
+
+    if (!columnValues) {
+        return;  // Nothing to draw
     }
 
     // Draw columns
