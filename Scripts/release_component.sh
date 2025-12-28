@@ -32,6 +32,9 @@ typeset -A COMPONENT_MAP=(
     ["jl_wave_seekbar"]="foo_jl_wave_seekbar_mac"
     ["scrobble"]="foo_jl_scrobble_mac"
     ["jl_scrobble"]="foo_jl_scrobble_mac"
+    ["albumart"]="foo_jl_album_art_mac"
+    ["album_art"]="foo_jl_album_art_mac"
+    ["jl_album_art"]="foo_jl_album_art_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -45,6 +48,9 @@ typeset -A VERSION_MAP=(
     ["jl_wave_seekbar"]="WAVEFORM_VERSION"
     ["scrobble"]="SCROBBLE_VERSION"
     ["jl_scrobble"]="SCROBBLE_VERSION"
+    ["albumart"]="ALBUMART_VERSION"
+    ["album_art"]="ALBUMART_VERSION"
+    ["jl_album_art"]="ALBUMART_VERSION"
 )
 
 # Display names for release titles
@@ -58,6 +64,9 @@ typeset -A DISPLAY_NAME_MAP=(
     ["jl_wave_seekbar"]="Waveform Seekbar"
     ["scrobble"]="Last.fm Scrobbler"
     ["jl_scrobble"]="Last.fm Scrobbler"
+    ["albumart"]="Album Art"
+    ["album_art"]="Album Art"
+    ["jl_album_art"]="Album Art"
 )
 
 show_help() {
@@ -70,6 +79,7 @@ show_help() {
     echo "  plorg         - Playlist Organizer"
     echo "  waveform      - Waveform Seekbar"
     echo "  scrobble      - Last.fm Scrobbler"
+    echo "  albumart      - Album Art (extended album art display)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"
