@@ -25,6 +25,9 @@ typeset -A DIR_MAP=(
     ["jl_wave_seekbar"]="jl_wave_seekbar"
     ["scrobble"]="jl_scrobble"
     ["jl_scrobble"]="jl_scrobble"
+    ["albumart"]="jl_album_art"
+    ["album_art"]="jl_album_art"
+    ["jl_album_art"]="jl_album_art"
 )
 
 if [ -z "$1" ]; then
@@ -35,6 +38,7 @@ if [ -z "$1" ]; then
     echo "  plorg        - Playlist Organizer"
     echo "  waveform     - Waveform Seekbar"
     echo "  scrobble     - Last.fm Scrobbler"
+    echo "  albumart     - Album Art"
     exit 1
 fi
 
@@ -43,7 +47,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform, scrobble"
+    echo "Valid names: simplaylist, plorg, waveform, scrobble, albumart"
     exit 1
 fi
 
