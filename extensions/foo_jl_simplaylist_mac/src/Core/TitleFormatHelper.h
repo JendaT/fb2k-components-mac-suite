@@ -37,7 +37,7 @@ public:
         return tf;
     }
 
-    // Format a track using compiled script
+    // Format a track using compiled script (without playlist context)
     static std::string format(metadb_handle_ptr track, titleformat_object::ptr script) {
         if (!track.is_valid() || script.is_empty()) {
             return "";
@@ -45,6 +45,19 @@ public:
 
         pfc::string8 out;
         track->format_title(nullptr, out, script, nullptr);
+        return std::string(out.c_str());
+    }
+
+    // Format a track with playlist context (supports %list_index%, etc.)
+    // This is the preferred method for playlist column formatting
+    static std::string formatWithPlaylistContext(t_size playlist, t_size index, titleformat_object::ptr script) {
+        if (script.is_empty()) {
+            return "";
+        }
+
+        auto pm = playlist_manager::get();
+        pfc::string8 out;
+        pm->playlist_item_format_title(playlist, index, nullptr, out, script, nullptr, playback_control::display_level_all);
         return std::string(out.c_str());
     }
 

@@ -94,6 +94,10 @@ fi
 print_status "Installing component..."
 cp -R "$COMPONENT_PATH" "$DEST_PATH"
 
+# Clear macOS extended attributes and touch binary to invalidate dyld cache
+xattr -cr "$DEST_PATH" 2>/dev/null || true
+touch "$DEST_PATH/Contents/MacOS/$PROJECT_NAME"
+
 # Verify installation
 if [ -d "$DEST_PATH" ]; then
     print_success "Component installed successfully!"

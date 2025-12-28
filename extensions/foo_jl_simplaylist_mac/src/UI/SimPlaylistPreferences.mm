@@ -22,12 +22,13 @@
 @interface SimPlaylistPreferencesController () <NSTextFieldDelegate>
 @property (nonatomic, strong) NSPopUpButton *presetPopup;
 @property (nonatomic, strong) NSTextField *headerPatternField;
-@property (nonatomic, strong) NSTextField *groupColumnPatternField;
 @property (nonatomic, strong) NSTextField *subgroupPatternField;
 @property (nonatomic, strong) NSSlider *albumArtSizeSlider;
 @property (nonatomic, strong) NSTextField *albumArtSizeLabel;
 @property (nonatomic, strong) NSPopUpButton *headerStylePopup;
 @property (nonatomic, strong) NSButton *nowPlayingShadingCheckbox;
+@property (nonatomic, strong) NSButton *showFirstSubgroupCheckbox;
+@property (nonatomic, strong) NSButton *dimParenthesesCheckbox;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
 @end
@@ -36,127 +37,141 @@
 
 - (void)loadView {
     // Use flipped view so y=0 is at top
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 480)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 520)];
     self.view = container;
 
     CGFloat y = 20;  // Start from top
-    CGFloat labelWidth = 150;
-    CGFloat fieldWidth = 300;
+    CGFloat labelWidth = 130;
+    CGFloat fieldWidth = 280;
     CGFloat leftMargin = 20;
-    CGFloat rowHeight = 28;
+    CGFloat boxMargin = 15;
+    CGFloat rowHeight = 26;
 
     // Title (non-bold, matches foobar2000 style)
     NSTextField *title = JLCreatePreferencesTitle(@"SimPlaylist Settings");
     title.frame = NSMakeRect(leftMargin, y, 400, 20);
     [container addSubview:title];
-    y += 30;
+    y += 35;
 
-    // Group Preset selector
-    NSTextField *presetLabel = [NSTextField labelWithString:@"Grouping Preset:"];
-    presetLabel.frame = NSMakeRect(leftMargin, y + 3, labelWidth, 20);
-    [container addSubview:presetLabel];
+    // ==================== GROUPING SETTINGS ====================
+    CGFloat groupingBoxY = y;
+    CGFloat groupingContentY = 22;  // Inside box, relative to box
 
-    _presetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, fieldWidth, 26) pullsDown:NO];
+    NSBox *groupingBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, groupingBoxY, 460, 160)];
+    groupingBox.title = @"Grouping Settings";
+    groupingBox.titlePosition = NSAtTop;
+    [container addSubview:groupingBox];
+
+    NSView *groupingContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 140)];
+    groupingBox.contentView = groupingContent;
+
+    // Preset selector
+    NSTextField *presetLabel = [NSTextField labelWithString:@"Preset:"];
+    presetLabel.frame = NSMakeRect(boxMargin, groupingContentY + 3, labelWidth, 20);
+    [groupingContent addSubview:presetLabel];
+
+    _presetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, groupingContentY, fieldWidth, 26) pullsDown:NO];
     _presetPopup.target = self;
     _presetPopup.action = @selector(presetChanged:);
-    [container addSubview:_presetPopup];
-    y += rowHeight + 15;
-
-    // Separator
-    NSBox *sep1 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 1)];
-    sep1.boxType = NSBoxSeparator;
-    [container addSubview:sep1];
-    y += 15;
+    [groupingContent addSubview:_presetPopup];
+    groupingContentY += rowHeight + 4;
 
     // Header Pattern
     NSTextField *headerLabel = [NSTextField labelWithString:@"Header Pattern:"];
-    headerLabel.frame = NSMakeRect(leftMargin, y + 2, labelWidth, 20);
-    [container addSubview:headerLabel];
+    headerLabel.frame = NSMakeRect(boxMargin, groupingContentY + 2, labelWidth, 20);
+    [groupingContent addSubview:headerLabel];
 
-    _headerPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, fieldWidth, 22)];
+    _headerPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, groupingContentY, fieldWidth, 22)];
     _headerPatternField.placeholderString = @"[%album artist% - ][%album%]";
     _headerPatternField.delegate = self;
-    [container addSubview:_headerPatternField];
-    y += rowHeight;
-
-    // Group Column Pattern
-    NSTextField *groupColLabel = [NSTextField labelWithString:@"Group Column:"];
-    groupColLabel.frame = NSMakeRect(leftMargin, y + 2, labelWidth, 20);
-    [container addSubview:groupColLabel];
-
-    _groupColumnPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, fieldWidth, 22)];
-    _groupColumnPatternField.placeholderString = @"[%album%]";
-    _groupColumnPatternField.delegate = self;
-    [container addSubview:_groupColumnPatternField];
-    y += rowHeight;
+    [groupingContent addSubview:_headerPatternField];
+    groupingContentY += rowHeight;
 
     // Subgroup Pattern
     NSTextField *subgroupLabel = [NSTextField labelWithString:@"Subgroup Pattern:"];
-    subgroupLabel.frame = NSMakeRect(leftMargin, y + 2, labelWidth, 20);
-    [container addSubview:subgroupLabel];
+    subgroupLabel.frame = NSMakeRect(boxMargin, groupingContentY + 2, labelWidth, 20);
+    [groupingContent addSubview:subgroupLabel];
 
-    _subgroupPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, fieldWidth, 22)];
+    _subgroupPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, groupingContentY, fieldWidth, 22)];
     _subgroupPatternField.placeholderString = @"[Disc %discnumber%]";
     _subgroupPatternField.delegate = self;
-    [container addSubview:_subgroupPatternField];
-    y += rowHeight + 15;
+    [groupingContent addSubview:_subgroupPatternField];
+    groupingContentY += rowHeight;
 
-    // Separator
-    NSBox *sep2 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 1)];
-    sep2.boxType = NSBoxSeparator;
-    [container addSubview:sep2];
-    y += 15;
+    // Show First Subgroup Header
+    _showFirstSubgroupCheckbox = [NSButton checkboxWithTitle:@"Show first subgroup header (e.g., Disc 1)"
+                                                     target:self
+                                                     action:@selector(showFirstSubgroupChanged:)];
+    _showFirstSubgroupCheckbox.frame = NSMakeRect(boxMargin + labelWidth, groupingContentY, 280, 20);
+    [groupingContent addSubview:_showFirstSubgroupCheckbox];
+
+    y = groupingBoxY + 170;
+
+    // ==================== DISPLAY SETTINGS ====================
+    CGFloat displayBoxY = y;
+    CGFloat displayContentY = 22;
+
+    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 190)];
+    displayBox.title = @"Display Settings";
+    displayBox.titlePosition = NSAtTop;
+    [container addSubview:displayBox];
+
+    NSView *displayContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 170)];
+    displayBox.contentView = displayContent;
+
+    // Header Display Style
+    NSTextField *headerStyleLabel = [NSTextField labelWithString:@"Header Display:"];
+    headerStyleLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
+    [displayContent addSubview:headerStyleLabel];
+
+    _headerStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, displayContentY, 200, 26) pullsDown:NO];
+    [_headerStylePopup addItemWithTitle:@"Above tracks"];
+    [_headerStylePopup addItemWithTitle:@"Album art aligned"];
+    [_headerStylePopup addItemWithTitle:@"Inline (no header row)"];
+    [_headerStylePopup addItemWithTitle:@"Under album art"];
+    _headerStylePopup.target = self;
+    _headerStylePopup.action = @selector(headerStyleChanged:);
+    [displayContent addSubview:_headerStylePopup];
+    displayContentY += rowHeight + 4;
 
     // Album Art Size
     NSTextField *artSizeLabel = [NSTextField labelWithString:@"Album Art Size:"];
-    artSizeLabel.frame = NSMakeRect(leftMargin, y + 2, labelWidth, 20);
-    [container addSubview:artSizeLabel];
+    artSizeLabel.frame = NSMakeRect(boxMargin, displayContentY + 2, labelWidth, 20);
+    [displayContent addSubview:artSizeLabel];
 
-    _albumArtSizeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, 200, 20)];
+    _albumArtSizeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, displayContentY, 180, 20)];
     _albumArtSizeSlider.minValue = 40;
     _albumArtSizeSlider.maxValue = 300;
     _albumArtSizeSlider.target = self;
     _albumArtSizeSlider.action = @selector(albumArtSizeChanged:);
-    [container addSubview:_albumArtSizeSlider];
+    [displayContent addSubview:_albumArtSizeSlider];
 
     _albumArtSizeLabel = [NSTextField labelWithString:@"80 px"];
-    _albumArtSizeLabel.frame = NSMakeRect(leftMargin + labelWidth + 210, y + 2, 60, 20);
-    [container addSubview:_albumArtSizeLabel];
-    y += rowHeight + 15;
-
-    // Separator
-    NSBox *sep3 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 1)];
-    sep3.boxType = NSBoxSeparator;
-    [container addSubview:sep3];
-    y += 15;
-
-    // Header Display Style
-    NSTextField *headerStyleLabel = [NSTextField labelWithString:@"Header Display:"];
-    headerStyleLabel.frame = NSMakeRect(leftMargin, y + 3, labelWidth, 20);
-    [container addSubview:headerStyleLabel];
-
-    _headerStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + labelWidth, y, 200, 26) pullsDown:NO];
-    [_headerStylePopup addItemWithTitle:@"Above tracks"];
-    [_headerStylePopup addItemWithTitle:@"Album art aligned"];
-    [_headerStylePopup addItemWithTitle:@"Inline (no header row)"];
-    _headerStylePopup.target = self;
-    _headerStylePopup.action = @selector(headerStyleChanged:);
-    [container addSubview:_headerStylePopup];
-    y += rowHeight;
+    _albumArtSizeLabel.frame = NSMakeRect(boxMargin + labelWidth + 190, displayContentY + 2, 60, 20);
+    [displayContent addSubview:_albumArtSizeLabel];
+    displayContentY += rowHeight + 4;
 
     // Now Playing Shading
     _nowPlayingShadingCheckbox = [NSButton checkboxWithTitle:@"Highlight now playing row"
                                                      target:self
                                                      action:@selector(nowPlayingShadingChanged:)];
-    _nowPlayingShadingCheckbox.frame = NSMakeRect(leftMargin + labelWidth, y, 250, 20);
-    [container addSubview:_nowPlayingShadingCheckbox];
-    y += rowHeight + 20;
+    _nowPlayingShadingCheckbox.frame = NSMakeRect(boxMargin + labelWidth, displayContentY, 250, 20);
+    [displayContent addSubview:_nowPlayingShadingCheckbox];
+    displayContentY += rowHeight;
+
+    // Dim Parentheses
+    _dimParenthesesCheckbox = [NSButton checkboxWithTitle:@"Dim text in parentheses () and []"
+                                                  target:self
+                                                  action:@selector(dimParenthesesChanged:)];
+    _dimParenthesesCheckbox.frame = NSMakeRect(boxMargin + labelWidth, displayContentY, 280, 20);
+    [displayContent addSubview:_dimParenthesesCheckbox];
+
+    y = displayBoxY + 200;
 
     // Help text
-    NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 80)];
+    NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 60)];
     helpText.stringValue = @"Title Format Patterns:\n"
-        @"  %artist%, %album%, %title%, %tracknumber%, %date%\n"
-        @"  %length%, %path%, %filename%\n"
+        @"  %artist%, %album%, %title%, %tracknumber%, %date%, %length%\n"
         @"  Use [...] for conditional display";
     helpText.editable = NO;
     helpText.bordered = NO;
@@ -203,11 +218,22 @@
         simplaylist_config::kNowPlayingShading,
         simplaylist_config::kDefaultNowPlayingShading);
     _nowPlayingShadingCheckbox.state = nowPlayingShading ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Load show first subgroup header
+    bool showFirstSubgroup = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowFirstSubgroupHeader,
+        simplaylist_config::kDefaultShowFirstSubgroupHeader);
+    _showFirstSubgroupCheckbox.state = showFirstSubgroup ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Load dim parentheses
+    bool dimParentheses = simplaylist_config::getConfigBool(
+        simplaylist_config::kDimParentheses,
+        simplaylist_config::kDefaultDimParentheses);
+    _dimParenthesesCheckbox.state = dimParentheses ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)updateFieldsForPreset:(GroupPreset *)preset {
     _headerPatternField.stringValue = preset.headerPattern ?: @"";
-    _groupColumnPatternField.stringValue = preset.groupColumnPattern ?: @"";
     _subgroupPatternField.stringValue = preset.subgroupPattern ?: @"";
 }
 
@@ -231,7 +257,6 @@
     if (_currentPresetIndex >= 0 && _currentPresetIndex < (NSInteger)_presets.count) {
         GroupPreset *preset = _presets[_currentPresetIndex];
         preset.headerPattern = _headerPatternField.stringValue;
-        preset.groupColumnPattern = _groupColumnPatternField.stringValue;
         preset.subgroupPattern = _subgroupPatternField.stringValue;
 
         // Save presets with correct active index
@@ -253,8 +278,9 @@
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification {
-    // Real-time update as user types
-    [self saveAndNotify];
+    // Debounce text changes to avoid rebuilding on every keystroke
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveAndNotify) object:nil];
+    [self performSelector:@selector(saveAndNotify) withObject:nil afterDelay:0.5];
 }
 
 - (void)albumArtSizeChanged:(id)sender {
@@ -291,8 +317,26 @@
     bool enabled = (_nowPlayingShadingCheckbox.state == NSControlStateValueOn);
     simplaylist_config::setConfigBool(simplaylist_config::kNowPlayingShading, enabled);
 
+    // Only needs redraw, not full rebuild
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+                                                        object:nil];
+}
+
+- (void)showFirstSubgroupChanged:(id)sender {
+    bool enabled = (_showFirstSubgroupCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kShowFirstSubgroupHeader, enabled);
+
     // Notify views to refresh
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+                                                        object:nil];
+}
+
+- (void)dimParenthesesChanged:(id)sender {
+    bool enabled = (_dimParenthesesCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kDimParentheses, enabled);
+
+    // Only needs redraw, not full rebuild
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
                                                         object:nil];
 }
 

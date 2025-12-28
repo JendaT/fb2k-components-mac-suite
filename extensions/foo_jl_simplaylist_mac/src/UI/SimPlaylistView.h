@@ -36,10 +36,15 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, strong) NSArray<NSString *> *groupHeaders;  // Header text per group
 @property (nonatomic, strong) NSArray<NSString *> *groupArtKeys;  // Album art cache key per group
 @property (nonatomic, strong) NSArray<NSNumber *> *groupPaddingRows;  // Extra padding rows per group for min height
+@property (nonatomic, assign) NSInteger totalPaddingRowsCached;  // Pre-computed sum of all padding rows
+@property (nonatomic, strong) NSArray<NSNumber *> *cumulativePaddingCache;  // Pre-computed cumulative padding before each group
 
 // SUBGROUPS - playlist indices where subgroups start, header text per subgroup
 @property (nonatomic, strong) NSArray<NSNumber *> *subgroupStarts;  // Playlist indices where subgroups start
 @property (nonatomic, strong) NSArray<NSString *> *subgroupHeaders;  // Header text per subgroup
+@property (nonatomic, strong) NSArray<NSNumber *> *subgroupCountPerGroup;  // Pre-computed subgroup count per group
+@property (nonatomic, strong) NSSet<NSNumber *> *subgroupRowSet;  // Pre-computed set of subgroup row numbers for O(1) lookup
+@property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *subgroupRowToIndex;  // Map row -> subgroup index
 
 // Formatted column values cache (lazily populated during draw)
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSString *> *> *formattedValuesCache;
@@ -68,6 +73,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Appearance settings
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
 @property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
+@property (nonatomic, assign) BOOL dimParentheses;  // Dim text inside () and []
 
 // Reload data and redraw
 - (void)reloadData;
@@ -100,6 +106,8 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Clear cached data (call when playlist changes)
 - (void)clearFormattedValuesCache;
+- (void)rebuildSubgroupRowCache;  // Call after subgroups or layout changes
+- (void)rebuildPaddingCache;  // Call after groupPaddingRows changes
 
 // Update playing state
 - (void)setPlayingIndex:(NSInteger)index;

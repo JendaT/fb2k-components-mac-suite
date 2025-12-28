@@ -62,8 +62,14 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _groupStarts = @[];
     _groupHeaders = @[];
     _groupArtKeys = @[];
+    _groupPaddingRows = @[];
+    _totalPaddingRowsCached = 0;
+    _cumulativePaddingCache = @[];
     _subgroupStarts = @[];
     _subgroupHeaders = @[];
+    _subgroupCountPerGroup = @[];
+    _subgroupRowSet = [NSSet set];
+    _subgroupRowToIndex = @{};
     _formattedValuesCache = [NSMutableDictionary dictionary];
 
     // Legacy properties (keep for compatibility)
@@ -89,6 +95,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _headerDisplayStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
+    _dimParentheses = simplaylist_config::getConfigBool(
+        simplaylist_config::kDimParentheses,
+        simplaylist_config::kDefaultDimParentheses);
 
     // PERFORMANCE: Enable layer-backed async drawing
     self.wantsLayer = YES;
@@ -105,6 +114,12 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleSettingsChanged:)
                                                  name:SimPlaylistSettingsChangedNotification
+                                               object:nil];
+
+    // Register for lightweight redraw requests
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleRedrawNeeded:)
+                                                 name:@"SimPlaylistRedrawNeeded"
                                                object:nil];
 }
 
@@ -127,6 +142,12 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     [self reloadSettings];
 }
 
+- (void)handleRedrawNeeded:(NSNotification *)notification {
+    // Lightweight redraw - just reload visual settings and redraw
+    [self reloadSettings];
+    [self setNeedsDisplay:YES];
+}
+
 - (void)reloadSettings {
     using namespace simplaylist_config;
     _rowHeight = getConfigInt(kRowHeight, kDefaultRowHeight);
@@ -135,6 +156,7 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _groupColumnWidth = getConfigInt(kGroupColumnWidth, kDefaultGroupColumnWidth);
     _showNowPlayingShading = getConfigBool(kNowPlayingShading, kDefaultNowPlayingShading);
     _headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
+    _dimParentheses = getConfigBool(kDimParentheses, kDefaultDimParentheses);
 
     [self invalidateIntrinsicContentSize];
     [self setNeedsDisplay:YES];
@@ -199,32 +221,29 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 #pragma mark - Layout Calculations
 
 // Returns total row count: itemCount + groupCount + subgroupCount (each group/subgroup adds 1 header row)
-// In inline mode (style 2), group headers don't add rows - header is drawn on first track row
+// Only style 3 (under album art) has no header rows - header text is below album art
 - (NSInteger)rowCount {
     // Total rows = items + group headers + subgroup headers + padding rows
-    NSInteger totalPadding = 0;
-    for (NSNumber *padding in _groupPaddingRows) {
-        totalPadding += [padding integerValue];
-    }
+    // Uses cached totalPaddingRowsCached for O(1) instead of O(G) loop
 
-    // In inline mode (style 2), group headers don't add rows
-    NSInteger groupHeaderRows = (_headerDisplayStyle == 2) ? 0 : (NSInteger)_groupStarts.count;
+    // Only style 3 has no header rows (header is drawn below album art)
+    // Styles 0, 1, 2 all have header rows
+    NSInteger groupHeaderRows = (_headerDisplayStyle == 3) ? 0 : (NSInteger)_groupStarts.count;
 
-    return _itemCount + groupHeaderRows + (NSInteger)_subgroupStarts.count + totalPadding;
+    return _itemCount + groupHeaderRows + (NSInteger)_subgroupStarts.count + _totalPaddingRowsCached;
 }
 
-// Helper: cumulative padding rows up to (but not including) group g
+// Helper: cumulative padding rows up to (but not including) group g - O(1) using cache
 - (NSInteger)cumulativePaddingBeforeGroup:(NSInteger)groupIndex {
-    if (groupIndex <= 0 || _groupPaddingRows.count == 0) return 0;
-    NSInteger total = 0;
-    for (NSInteger i = 0; i < groupIndex && i < (NSInteger)_groupPaddingRows.count; i++) {
-        total += [_groupPaddingRows[i] integerValue];
+    if (groupIndex <= 0 || _cumulativePaddingCache.count == 0) return 0;
+    if (groupIndex >= (NSInteger)_cumulativePaddingCache.count) {
+        return [_cumulativePaddingCache.lastObject integerValue];
     }
-    return total;
+    return [_cumulativePaddingCache[groupIndex] integerValue];
 }
 
-// Helper: total rows in group g (header + tracks + padding)
-// In inline mode (style 2), no header row
+// Helper: total rows in group g (header + subgroups + tracks + padding)
+// Only style 3 has no header row (header is drawn below album art)
 - (NSInteger)totalRowsInGroup:(NSInteger)groupIndex {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return 0;
     NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
@@ -234,9 +253,14 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     NSInteger trackCount = groupEnd - groupStart;
     NSInteger padding = (groupIndex < (NSInteger)_groupPaddingRows.count)
         ? [_groupPaddingRows[groupIndex] integerValue] : 0;
-    // In inline mode (style 2), no header row
-    NSInteger headerRows = (_headerDisplayStyle == 2) ? 0 : 1;
-    return headerRows + trackCount + padding;
+    // Only style 3 has no header row
+    NSInteger headerRows = (_headerDisplayStyle == 3) ? 0 : 1;
+
+    // Use pre-computed subgroup count (O(1) instead of O(S))
+    NSInteger subgroupCount = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
+        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
+
+    return headerRows + subgroupCount + trackCount + padding;
 }
 
 #pragma mark - Row Mapping (O(log g) using binary search)
@@ -263,27 +287,21 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     return result;
 }
 
-// Row number where group header appears (or first track row in inline mode)
+// Row number where group header appears (or first track row for style 3)
 - (NSInteger)rowForGroupHeader:(NSInteger)groupIndex {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return -1;
     NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
     NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
 
-    // Count all subgroups that appear before this group
-    NSInteger subgroupsBeforeGroup = 0;
-    for (NSNumber *subgroupStart in _subgroupStarts) {
-        if ([subgroupStart integerValue] < groupStart) {
-            subgroupsBeforeGroup++;
-        } else {
-            break;  // Subgroup starts are sorted
-        }
-    }
+    // Count all subgroups that appear before this group - O(log S) using binary search
+    NSInteger subgroupsBeforeGroup = [self subgroupCountBeforePlaylistIndex:groupStart];
 
-    if (_headerDisplayStyle == 2) {
-        // Inline mode: no header rows, return position of first track
+    // Only style 3 has no header rows
+    if (_headerDisplayStyle == 3) {
+        // Style 3: no header rows, return position of first track
         return groupStart + subgroupsBeforeGroup + cumulativePadding;
     } else {
-        // Header row = groupStart[g] + g (group headers) + subgroups before + cumulative padding
+        // Styles 0, 1, 2: Header row = groupStart[g] + g (group headers) + subgroups before + cumulative padding
         return groupStart + groupIndex + subgroupsBeforeGroup + cumulativePadding;
     }
 }
@@ -291,7 +309,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 // Check if row is a group header
 - (BOOL)isRowGroupHeader:(NSInteger)row {
     if (_groupStarts.count == 0) return NO;
-    if (_headerDisplayStyle == 2) return NO;  // Inline mode has no header rows
+    // Only style 3 has no header rows (header is drawn below album art)
+    if (_headerDisplayStyle == 3) return NO;
 
     NSInteger groupIndex = [self groupIndexForRow:row];
     return row == [self rowForGroupHeader:groupIndex];
@@ -330,8 +349,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     NSInteger groupIndex = [self groupIndexForRow:row];
     NSInteger groupStartRow = [self rowForGroupHeader:groupIndex];
 
-    // In non-inline mode, check if this is a header row
-    if (_headerDisplayStyle != 2 && row == groupStartRow) {
+    // Styles 0, 1, 2 have header rows; only style 3 doesn't
+    if (_headerDisplayStyle != 3 && row == groupStartRow) {
         return -1;  // This is a header row
     }
 
@@ -341,23 +360,20 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         ? [_groupStarts[groupIndex + 1] integerValue]
         : _itemCount;
 
-    // Calculate how many subgroup rows are between the group start and this row
+    // Count subgroup rows between groupStartRow and this row using cached set - O(subgroups in group)
     NSInteger subgroupsInGroup = 0;
-    for (NSNumber *subgroupStart in _subgroupStarts) {
-        NSInteger sgIndex = [subgroupStart integerValue];
-        if (sgIndex >= groupStart && sgIndex < groupEnd) {
-            NSInteger sgRow = [self rowForSubgroupAtPlaylistIndex:sgIndex];
-            if (sgRow > groupStartRow && sgRow < row) {
-                subgroupsInGroup++;
-            }
+    for (NSNumber *sgRowNum in _subgroupRowSet) {
+        NSInteger sgRow = [sgRowNum integerValue];
+        if (sgRow > groupStartRow && sgRow < row) {
+            subgroupsInGroup++;
         }
     }
 
     // Calculate position within group accounting for subgroups
     NSInteger rowWithinGroup = row - groupStartRow - subgroupsInGroup;
 
-    // In non-inline mode, subtract 1 for the header row
-    if (_headerDisplayStyle != 2) {
+    // Styles 0, 1, 2 have header rows; only style 3 doesn't
+    if (_headerDisplayStyle != 3) {
         rowWithinGroup -= 1;
     }
 
@@ -377,22 +393,32 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     if (playlistIndex < 0 || playlistIndex >= _itemCount) return -1;
     if (_groupStarts.count == 0) return playlistIndex;  // No groups
 
-    // Find which group this playlist index belongs to
+    // Find which group this playlist index belongs to - O(log G) using binary search
     NSInteger groupIndex = 0;
-    for (NSInteger g = (NSInteger)_groupStarts.count - 1; g >= 0; g--) {
-        if ([_groupStarts[g] integerValue] <= playlistIndex) {
-            groupIndex = g;
-            break;
+    NSInteger low = 0;
+    NSInteger high = (NSInteger)_groupStarts.count - 1;
+    while (low <= high) {
+        NSInteger mid = (low + high) / 2;
+        if ([_groupStarts[mid] integerValue] <= playlistIndex) {
+            groupIndex = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
         }
     }
 
-    // Count subgroups before this playlist index
+    // Count subgroups before this playlist index - O(log S)
+    // subgroupCountBeforePlaylistIndex counts subgroups with start < playlistIndex
+    // But if a subgroup starts at exactly playlistIndex, its header row is BEFORE this track
     NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:playlistIndex];
+    if ([self hasSubgroupAtPlaylistIndex:playlistIndex]) {
+        subgroupsBefore++;
+    }
 
-    // In inline mode (style 2), no group header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 2) ? 0 : (groupIndex + 1);
+    // Only style 3 has no header rows
+    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
 
-    // Row = playlist index + group headers (if not inline) + subgroup headers + cumulative padding
+    // Row = playlist index + group headers (if not style 3) + subgroup headers + cumulative padding
     NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
     return playlistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
 }
@@ -400,6 +426,49 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 // Clear formatted values cache (call when playlist changes)
 - (void)clearFormattedValuesCache {
     [_formattedValuesCache removeAllObjects];
+}
+
+// Rebuild subgroup row cache for O(1) lookup (call when subgroups or layout changes)
+- (void)rebuildSubgroupRowCache {
+    if (_subgroupStarts.count == 0) {
+        _subgroupRowSet = [NSSet set];
+        _subgroupRowToIndex = @{};
+        return;
+    }
+
+    NSMutableSet<NSNumber *> *rowSet = [NSMutableSet setWithCapacity:_subgroupStarts.count];
+    NSMutableDictionary<NSNumber *, NSNumber *> *rowToIndex = [NSMutableDictionary dictionaryWithCapacity:_subgroupStarts.count];
+
+    for (NSUInteger i = 0; i < _subgroupStarts.count; i++) {
+        NSInteger subgroupPlaylistIndex = [_subgroupStarts[i] integerValue];
+        NSInteger subgroupRow = [self rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
+        NSNumber *rowNum = @(subgroupRow);
+        [rowSet addObject:rowNum];
+        rowToIndex[rowNum] = @(i);
+    }
+
+    _subgroupRowSet = [rowSet copy];
+    _subgroupRowToIndex = [rowToIndex copy];
+}
+
+// Rebuild padding cache for O(1) lookup (call when groupPaddingRows changes)
+- (void)rebuildPaddingCache {
+    if (_groupPaddingRows.count == 0) {
+        _totalPaddingRowsCached = 0;
+        _cumulativePaddingCache = @[];
+        return;
+    }
+
+    NSMutableArray<NSNumber *> *cumulative = [NSMutableArray arrayWithCapacity:_groupPaddingRows.count];
+    NSInteger runningTotal = 0;
+
+    for (NSNumber *padding in _groupPaddingRows) {
+        [cumulative addObject:@(runningTotal)];  // Cumulative BEFORE this group
+        runningTotal += [padding integerValue];
+    }
+
+    _totalPaddingRowsCached = runningTotal;
+    _cumulativePaddingCache = [cumulative copy];
 }
 
 // Get playlist index range for a group
@@ -414,44 +483,60 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     return NSMakeRange(groupStart, groupEnd - groupStart);
 }
 
-// Count subgroups before a given playlist index
+// Count subgroups strictly before a given playlist index - O(log S) using binary search
 - (NSInteger)subgroupCountBeforePlaylistIndex:(NSInteger)playlistIndex {
-    NSInteger count = 0;
-    for (NSNumber *subgroupStart in _subgroupStarts) {
-        if ([subgroupStart integerValue] < playlistIndex) {
-            count++;
+    if (_subgroupStarts.count == 0) return 0;
+
+    // Binary search for the first subgroup >= playlistIndex
+    NSInteger low = 0;
+    NSInteger high = (NSInteger)_subgroupStarts.count;
+
+    while (low < high) {
+        NSInteger mid = (low + high) / 2;
+        if ([_subgroupStarts[mid] integerValue] < playlistIndex) {
+            low = mid + 1;
         } else {
-            break;  // Subgroup starts are sorted
+            high = mid;
         }
     }
-    return count;
+
+    return low;  // Number of subgroups with start < playlistIndex
 }
 
-// Check if a row is a subgroup header
-- (BOOL)isRowSubgroupHeader:(NSInteger)row {
+// Check if a subgroup starts at exactly this playlist index - O(log S)
+- (BOOL)hasSubgroupAtPlaylistIndex:(NSInteger)playlistIndex {
     if (_subgroupStarts.count == 0) return NO;
 
-    // For each subgroup, calculate its row position
-    for (NSUInteger i = 0; i < _subgroupStarts.count; i++) {
-        NSInteger subgroupPlaylistIndex = [_subgroupStarts[i] integerValue];
-        NSInteger subgroupRow = [self rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
-        if (row == subgroupRow) {
+    NSInteger low = 0;
+    NSInteger high = (NSInteger)_subgroupStarts.count - 1;
+
+    while (low <= high) {
+        NSInteger mid = (low + high) / 2;
+        NSInteger midVal = [_subgroupStarts[mid] integerValue];
+        if (midVal == playlistIndex) {
             return YES;
+        } else if (midVal < playlistIndex) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
         }
     }
     return NO;
 }
 
-// Get subgroup header text for a row (returns nil if not a subgroup header)
-- (NSString *)subgroupHeaderForRow:(NSInteger)row {
-    if (_subgroupStarts.count == 0) return nil;
+// Check if a row is a subgroup header - O(1) using pre-computed cache
+- (BOOL)isRowSubgroupHeader:(NSInteger)row {
+    return [_subgroupRowSet containsObject:@(row)];
+}
 
-    for (NSUInteger i = 0; i < _subgroupStarts.count; i++) {
-        NSInteger subgroupPlaylistIndex = [_subgroupStarts[i] integerValue];
-        NSInteger subgroupRow = [self rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
-        if (row == subgroupRow && i < _subgroupHeaders.count) {
-            return _subgroupHeaders[i];
-        }
+// Get subgroup header text for a row (returns nil if not a subgroup header) - O(1) using cache
+- (NSString *)subgroupHeaderForRow:(NSInteger)row {
+    NSNumber *indexNum = _subgroupRowToIndex[@(row)];
+    if (!indexNum) return nil;
+
+    NSUInteger i = [indexNum unsignedIntegerValue];
+    if (i < _subgroupHeaders.count) {
+        return _subgroupHeaders[i];
     }
     return nil;
 }
@@ -460,12 +545,17 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 - (NSInteger)rowForSubgroupAtPlaylistIndex:(NSInteger)subgroupPlaylistIndex {
     if (_groupStarts.count == 0) return subgroupPlaylistIndex;
 
-    // Find which group this subgroup belongs to
+    // Find which group this subgroup belongs to - O(log G) using binary search
     NSInteger groupIndex = 0;
-    for (NSInteger g = (NSInteger)_groupStarts.count - 1; g >= 0; g--) {
-        if ([_groupStarts[g] integerValue] <= subgroupPlaylistIndex) {
-            groupIndex = g;
-            break;
+    NSInteger low = 0;
+    NSInteger high = (NSInteger)_groupStarts.count - 1;
+    while (low <= high) {
+        NSInteger mid = (low + high) / 2;
+        if ([_groupStarts[mid] integerValue] <= subgroupPlaylistIndex) {
+            groupIndex = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
         }
     }
 
@@ -473,8 +563,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
     NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:subgroupPlaylistIndex];
 
-    // In inline mode (style 2), no group header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 2) ? 0 : (groupIndex + 1);
+    // Only style 3 has no group header rows
+    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
 
     return subgroupPlaylistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
 }
@@ -609,12 +699,16 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         [self drawAlbumArtInRect:dirtyRect firstRow:firstRow lastRow:lastRow];
     }
 
-    // Draw focus ring
-    if (self.window.firstResponder == self && _focusIndex >= 0) {
+    // Draw focus ring - only on valid track rows
+    if (self.window.firstResponder == self && _focusIndex >= 0 && _focusIndex < _itemCount) {
         NSInteger focusRow = [self rowForPlaylistIndex:_focusIndex];
-        if (focusRow >= firstRow && focusRow <= lastRow) {
-            NSRect focusRect = [self rectForRow:focusRow];
-            [self drawFocusRingForRect:focusRect];
+        // Verify this row maps back to a valid track (not header/subgroup/padding)
+        if (focusRow >= 0 && focusRow >= firstRow && focusRow <= lastRow) {
+            NSInteger verifyIndex = [self playlistIndexForRow:focusRow];
+            if (verifyIndex == _focusIndex) {
+                NSRect focusRect = [self rectForRow:focusRow];
+                [self drawFocusRingForRect:focusRect];
+            }
         }
     }
 
@@ -661,14 +755,14 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         [self drawSparseSubgroupRow:subgroupText inRect:rect];
     } else {
         [self drawSparseTrackRow:playlistIndex inRect:rect selected:isSelected playing:isPlaying];
-        // For style 2 (inline), header text is drawn in group column by drawAlbumArtInRect
     }
 }
 
 // Draw group header row - text position depends on headerDisplayStyle
-// Style 0: Above tracks (after album art column), bold text with line, vertically centered
-// Style 1: Album art aligned (text at left, positioned at bottom to align with album art top)
-// Style 2: Not used (inline mode has no header rows)
+// Style 0: Above tracks (text in content area after album art column)
+// Style 1: Album art aligned (text aligned with album art left edge)
+// Style 2: Header row, but album art starts at same Y (text in content area)
+// Style 3: Not used (no header rows)
 - (void)drawSparseHeaderRow:(NSInteger)groupIndex inRect:(NSRect)rect {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupHeaders.count) return;
 
@@ -688,18 +782,27 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     CGFloat lineStartX;
     CGFloat lineEndX = rect.size.width - 8;
     CGFloat lineY;
+    CGFloat padding = 6;
 
     if (_headerDisplayStyle == 1) {
-        // Album art aligned: text starts at left edge, positioned at bottom
-        // to visually align with the top of album art (which has 6px padding below header)
-        textX = 8;
-        textY = rect.origin.y + rect.size.height - textSize.height + 4;  // Near bottom, +4 to align with art top
+        // Style 1 (Album art aligned): text aligned with album art left edge
+        // Calculate album art X position to align text with it
+        CGFloat artX = (_groupColumnWidth - _albumArtSize) / 2;
+        if (artX < padding) artX = padding;
+        textX = artX;
+        textY = rect.origin.y + 2;  // Near top of row for more spacing from items below
         lineStartX = textX + textSize.width + 12;
-        lineY = textY + textSize.height / 2;
-    } else {
-        // Style 0 (above tracks): text starts after album art column, vertically centered
+        lineY = rect.origin.y + rect.size.height / 2;
+    } else if (_headerDisplayStyle == 2) {
+        // Style 2 (Inline): text at top of row for more spacing from tracks below
         textX = _groupColumnWidth + 8;
-        textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
+        textY = rect.origin.y + 2;  // Near top of row
+        lineStartX = lineEndX + 1;  // No line for style 2
+        lineY = 0;
+    } else {
+        // Style 0: text starts after album art column, near top for more spacing
+        textX = _groupColumnWidth + 8;
+        textY = rect.origin.y + 2;  // Near top of row for more spacing from items below
         lineStartX = textX + textSize.width + 12;
         lineY = rect.origin.y + rect.size.height / 2;
     }
@@ -707,8 +810,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     // Draw header text
     [headerText drawAtPoint:NSMakePoint(textX, textY) withAttributes:attrs];
 
-    // Draw horizontal line after text
-    if (lineStartX < lineEndX) {
+    // Draw horizontal line after text (not for style 2 - inline mode)
+    if (_headerDisplayStyle != 2 && lineStartX < lineEndX) {
         [[NSColor separatorColor] setStroke];
         NSBezierPath *line = [NSBezierPath bezierPath];
         [line moveToPoint:NSMakePoint(lineStartX, lineY)];
@@ -718,32 +821,26 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     }
 }
 
-// Draw inline header text for style 2 - draws in the group column area below album art
+// Draw inline header text for style 3 - draws in the group column area below album art
 // This is called from drawAlbumArtInRect after album art is drawn
-- (void)drawInlineHeaderForGroup:(NSInteger)groupIndex atGroupTop:(CGFloat)groupTop artBottom:(CGFloat)artBottom {
+- (void)drawInlineHeaderForGroup:(NSInteger)groupIndex atGroupTop:(CGFloat)groupTop artBottom:(CGFloat)artBottom groupHeight:(CGFloat)groupHeight {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupHeaders.count) return;
 
     NSString *headerText = _groupHeaders[groupIndex];
 
-    // Inline header text attributes - smaller, semi-bold, secondary color
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
-
-    // Calculate text size
-    NSSize textSize = [headerText sizeWithAttributes:attrs];
-
     // Position: centered below album art in the group column
-    CGFloat textX = MAX(4, (_groupColumnWidth - textSize.width) / 2);
     CGFloat textY = artBottom + 4;  // Below album art with small padding
 
-    // Truncate text to fit in column width
-    NSRect textRect = NSMakeRect(4, textY, _groupColumnWidth - 8, textSize.height + 2);
+    // Available height for text (from artBottom to groupBottom, minus padding)
+    CGFloat availableHeight = (groupTop + groupHeight) - textY - 8;
+    if (availableHeight < 14) availableHeight = 14;  // Minimum one line
+
+    // Text rect for word-wrapped, centered text
+    NSRect textRect = NSMakeRect(4, textY, _groupColumnWidth - 8, availableHeight);
 
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.alignment = NSTextAlignmentCenter;
-    style.lineBreakMode = NSLineBreakByTruncatingTail;
+    style.lineBreakMode = NSLineBreakByWordWrapping;  // Wrap to multiple lines
 
     NSDictionary *attrsWithStyle = @{
         NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
@@ -778,13 +875,60 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     CGFloat lineEndX = rect.size.width - 8;
 
     if (lineStartX < lineEndX) {
-        [[[NSColor separatorColor] colorWithAlphaComponent:0.5] setStroke];
+        [[NSColor separatorColor] setStroke];  // Same color as main header line
         NSBezierPath *line = [NSBezierPath bezierPath];
         [line moveToPoint:NSMakePoint(lineStartX, lineY)];
         [line lineToPoint:NSMakePoint(lineEndX, lineY)];
-        line.lineWidth = 0.5;
+        line.lineWidth = 1.0;  // Same width as main header line
         [line stroke];
     }
+}
+
+// Helper: Create attributed string with dimmed parentheses
+- (NSAttributedString *)attributedString:(NSString *)text
+                                    font:(NSFont *)font
+                               textColor:(NSColor *)textColor
+                              dimmedColor:(NSColor *)dimmedColor
+                          paragraphStyle:(NSParagraphStyle *)style {
+    NSMutableAttributedString *result = [[NSMutableAttributedString alloc] initWithString:text attributes:@{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: textColor,
+        NSParagraphStyleAttributeName: style
+    }];
+
+    // Find and dim text inside () and []
+    NSUInteger length = text.length;
+    NSInteger parenDepth = 0;  // () depth
+    NSInteger bracketDepth = 0;  // [] depth
+
+    for (NSUInteger i = 0; i < length; i++) {
+        unichar c = [text characterAtIndex:i];
+
+        if (c == '(' || c == '[') {
+            // Start of parentheses/bracket - dim from this character
+            if (c == '(') parenDepth++;
+            else bracketDepth++;
+
+            [result addAttribute:NSForegroundColorAttributeName
+                           value:dimmedColor
+                           range:NSMakeRange(i, 1)];
+        } else if (c == ')' || c == ']') {
+            // End of parentheses/bracket - dim this character too
+            [result addAttribute:NSForegroundColorAttributeName
+                           value:dimmedColor
+                           range:NSMakeRange(i, 1)];
+
+            if (c == ')' && parenDepth > 0) parenDepth--;
+            else if (c == ']' && bracketDepth > 0) bracketDepth--;
+        } else if (parenDepth > 0 || bracketDepth > 0) {
+            // Inside parentheses/brackets - dim
+            [result addAttribute:NSForegroundColorAttributeName
+                           value:dimmedColor
+                           range:NSMakeRange(i, 1)];
+        }
+    }
+
+    return result;
 }
 
 // Draw track row with lazy column formatting
@@ -803,6 +947,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     // Draw columns
     CGFloat x = _groupColumnWidth;
     NSColor *textColor = selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor];
+    NSColor *dimmedColor = selected ? [[NSColor selectedMenuItemTextColor] colorWithAlphaComponent:0.5]
+                                    : [NSColor secondaryLabelColor];
     NSFont *font = [NSFont systemFontOfSize:12];
 
     for (NSUInteger colIndex = 0; colIndex < _columns.count; colIndex++) {
@@ -825,13 +971,23 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             default: style.alignment = NSTextAlignmentLeft; break;
         }
 
-        NSDictionary *attrs = @{
-            NSFontAttributeName: font,
-            NSForegroundColorAttributeName: textColor,
-            NSParagraphStyleAttributeName: style
-        };
-
-        [value drawInRect:colRect withAttributes:attrs];
+        if (_dimParentheses) {
+            // Draw with dimmed parentheses
+            NSAttributedString *attrStr = [self attributedString:value
+                                                            font:font
+                                                       textColor:textColor
+                                                      dimmedColor:dimmedColor
+                                                  paragraphStyle:style];
+            [attrStr drawInRect:colRect];
+        } else {
+            // Draw normally
+            NSDictionary *attrs = @{
+                NSFontAttributeName: font,
+                NSForegroundColorAttributeName: textColor,
+                NSParagraphStyleAttributeName: style
+            };
+            [value drawInRect:colRect withAttributes:attrs];
+        }
         x += col.width;
     }
 }
@@ -842,9 +998,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 
     NSRect visibleRect = [self visibleRect];
 
-    // For style 1 (album art aligned), we leave the header row area unfilled
-    // so the header text at x=8 won't be covered.
-    // For styles 0 and 2, fill the entire column.
+    // Style 1: Leave header row area unfilled so header text at x=8 is visible
+    // Styles 0, 2, 3: Fill entire column
 
     if (_headerDisplayStyle == 1) {
         // Style 1: Fill only the track areas (below each header row)
@@ -871,7 +1026,7 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             }
         }
     } else {
-        // Styles 0 and 2: Fill entire group column with background
+        // Styles 0, 2, 3: Fill entire group column with background
         NSRect groupColRect = NSMakeRect(0, NSMinY(visibleRect), _groupColumnWidth, visibleRect.size.height);
         if (NSIntersectsRect(groupColRect, dirtyRect)) {
             [[self backgroundColor] setFill];
@@ -898,9 +1053,10 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         CGFloat groupTop = [self yOffsetForRow:groupStartRow];
         CGFloat groupHeight = [self totalRowsInGroup:g] * _rowHeight;
 
-        // In inline mode (style 2), no header row - album art starts at group top
-        // In other modes, header row comes first
-        CGFloat headerOffset = (_headerDisplayStyle == 2) ? 0 : _rowHeight;
+        // Style 0, 1: Album art is below header row
+        // Style 2: Album art starts at header row Y (next to header text in content area)
+        // Style 3: No header row, album art at group top
+        CGFloat headerOffset = (_headerDisplayStyle == 0 || _headerDisplayStyle == 1) ? _rowHeight : 0;
 
         // Calculate available height for album art (below header if present, minus padding)
         CGFloat availableHeight = groupHeight - headerOffset - padding * 2;
@@ -935,10 +1091,10 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             [self drawAlbumArtPlaceholderInRect:artRect];
         }
 
-        // For style 2 (inline), draw header text below album art in the group column
-        if (_headerDisplayStyle == 2) {
+        // For style 3 (under album art), draw header text below album art in the group column
+        if (_headerDisplayStyle == 3) {
             CGFloat artBottom = artY + artSize;
-            [self drawInlineHeaderForGroup:g atGroupTop:groupTop artBottom:artBottom];
+            [self drawInlineHeaderForGroup:g atGroupTop:groupTop artBottom:artBottom groupHeight:groupHeight];
         }
     }
 }
@@ -1683,15 +1839,32 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     NSInteger newRow = currentRow + delta;
     newRow = MAX(0, MIN(totalRows - 1, newRow));
 
-    // Skip header rows when navigating
+    // Skip header/subgroup/padding rows when navigating
     NSInteger playlistIndex = [self playlistIndexForRow:newRow];
-    while (playlistIndex < 0 && newRow >= 0 && newRow < totalRows) {
-        newRow += (delta > 0) ? 1 : -1;
-        if (newRow < 0 || newRow >= totalRows) break;
-        playlistIndex = [self playlistIndexForRow:newRow];
+    NSInteger searchRow = newRow;
+    while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
+        searchRow += (delta > 0) ? 1 : -1;
+        if (searchRow < 0 || searchRow >= totalRows) break;
+        playlistIndex = [self playlistIndexForRow:searchRow];
     }
 
-    if (playlistIndex < 0) return;  // Couldn't find a valid track
+    // If we found a valid row, use it; otherwise try the opposite direction
+    if (playlistIndex >= 0) {
+        newRow = searchRow;
+    } else {
+        // Try opposite direction from original newRow
+        searchRow = newRow;
+        while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
+            searchRow += (delta > 0) ? -1 : 1;  // Opposite direction
+            if (searchRow < 0 || searchRow >= totalRows) break;
+            playlistIndex = [self playlistIndexForRow:searchRow];
+        }
+        if (playlistIndex >= 0) {
+            newRow = searchRow;
+        }
+    }
+
+    if (playlistIndex < 0) return;  // Couldn't find a valid track in either direction
 
     if (extend) {
         // Extend selection from anchor to new focus
@@ -1799,7 +1972,11 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     if (hasCmd) {
         // Cmd+click: toggle selection
         [self toggleSelectionAtIndex:row];
-        _focusIndex = row;
+        // _focusIndex is a playlist index, not a row index
+        NSInteger playlistIndex = [self playlistIndexForRow:row];
+        if (playlistIndex >= 0) {
+            _focusIndex = playlistIndex;
+        }
     } else if (hasShift && _focusIndex >= 0) {
         // Shift+click: extend selection
         [self selectRowAtIndex:row extendSelection:YES];

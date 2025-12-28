@@ -37,6 +37,12 @@ static const char* const kNowPlayingShading = "now_playing_shading";
 // Header display style: 0 = above tracks (current), 1 = album art aligned, 2 = inline (no header row)
 static const char* const kHeaderDisplayStyle = "header_display_style";
 
+// Show first subgroup header (e.g., "Disc 1" even when there's only one disc)
+static const char* const kShowFirstSubgroupHeader = "show_first_subgroup_header";
+
+// Dim text in parentheses (both () and [])
+static const char* const kDimParentheses = "dim_parentheses";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultHeaderHeight = 28;
@@ -47,6 +53,8 @@ static const bool kDefaultShowRowNumbers = false;
 static const bool kDefaultSmoothScrolling = true;
 static const bool kDefaultNowPlayingShading = true;
 static const int64_t kDefaultHeaderDisplayStyle = 0;  // 0 = above tracks
+static const bool kDefaultShowFirstSubgroupHeader = true;  // Show "Disc 1" etc.
+static const bool kDefaultDimParentheses = true;  // Dim text in () and []
 
 // Helper functions
 inline std::string getFullKey(const char* key) {
