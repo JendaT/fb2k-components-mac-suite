@@ -1,18 +1,12 @@
-# foo_jl_wave_seekbar - Waveform Seekbar for macOS foobar2000
+# foo_jl_wave_seekbar
 
-A foobar2000 macOS component that displays the complete audio waveform as an interactive seekbar.
+> Part of [foobar2000 macOS Components Suite](../../README.md)
 
-## Features
+**[Features & Documentation](../../docs/waveform.md)** | **[Changelog](CHANGELOG.md)**
 
-- **Complete Waveform Display** - Shows the entire track waveform, not just current audio
-- **Interactive Seeking** - Click anywhere to seek to that position
-- **Stereo & Mono Modes** - View channels separately or combined
-- **Played Position Indicator** - Visual indication of playback progress with subtle fade
-- **Dark Mode Support** - Automatic color adaptation for light and dark appearances
-- **Retina Display** - Crisp rendering on high-DPI displays
-- **Waveform Caching** - SQLite-based cache for instant loading of previously scanned tracks
-- **Configurable Colors** - Customize waveform, played area, and background colors
-- **Embeddable UI Element** - Integrates with foobar2000's layout system
+---
+
+An interactive waveform display and seekbar for foobar2000 macOS.
 
 ## Requirements
 

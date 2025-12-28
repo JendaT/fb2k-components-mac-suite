@@ -1,16 +1,12 @@
-# foo_jl_album_art - Album Art (Extended) for macOS foobar2000
+# foo_jl_album_art
 
-A foobar2000 macOS component that displays album artwork with support for multiple artwork types and selection-based display.
+> Part of [foobar2000 macOS Components Suite](../../README.md)
 
-## Features
+**[Features & Documentation](../../docs/albumart.md)** | **[Changelog](CHANGELOG.md)**
 
-- **Multiple Artwork Types** - Display front cover, back cover, disc, icon, or artist artwork
-- **Selection-Based Display** - Shows artwork for the selected track in the playlist (falls back to now playing)
-- **Right-Click Context Menu** - Switch artwork type on the fly
-- **Navigation Arrows** - Hover to reveal arrows for cycling through available artwork types
-- **Per-Instance Configuration** - Each panel remembers its own artwork type setting
-- **Layout Parameters** - Set default artwork type via layout editor
-- **Aspect Ratio Options** - Square mode and zoomable support
+---
+
+Extended album artwork display with multiple artwork types for foobar2000 macOS.
 
 ## Requirements
 

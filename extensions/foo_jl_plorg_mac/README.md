@@ -1,15 +1,12 @@
-# foo_jl_plorg - Playlist Organizer for macOS foobar2000
+# foo_jl_plorg
 
-Hierarchical playlist organization with folders for foobar2000 on macOS.
+> Part of [foobar2000 macOS Components Suite](../../README.md)
 
-## Features
+**[Features & Documentation](../../docs/plorg.md)** | **[Changelog](CHANGELOG.md)**
 
-- Organize playlists into folders with unlimited nesting
-- Drag & drop to reorder playlists and folders
-- Customizable node display formatting
-- Auto-sync with foobar2000 playlist changes
-- Native macOS UI (NSOutlineView)
-- Dark mode support
+---
+
+Hierarchical playlist organization with folders for foobar2000 macOS.
 
 ## Requirements
 
