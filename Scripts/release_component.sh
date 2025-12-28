@@ -173,6 +173,11 @@ if [ "$COMPONENT" = "scrobble" ] || [ "$COMPONENT" = "jl_scrobble" ]; then
     TAG_NAME="scrobble-v${VERSION}"
 fi
 
+if [ "$COMPONENT" = "albumart" ] || [ "$COMPONENT" = "album_art" ] || [ "$COMPONENT" = "jl_album_art" ]; then
+    COMPONENT_FILE="foo_jl_album_art.fb2k-component"
+    TAG_NAME="albumart-v${VERSION}"
+fi
+
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="
 echo ""
 echo "  Component:  $COMPONENT"
