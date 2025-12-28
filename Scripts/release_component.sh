@@ -250,8 +250,33 @@ git -C "$PROJECT_ROOT" push origin "$TAG_NAME"
 echo ""
 echo "Creating GitHub release..."
 
+# Extract changelog for this version from extension's CHANGELOG.md
+CHANGELOG_FILE="$EXT_DIR/CHANGELOG.md"
+CHANGELOG_CONTENT=""
+
+if [ -f "$CHANGELOG_FILE" ]; then
+    # Extract section for current version (from ## [x.x.x] to next ## [ or end)
+    CHANGELOG_CONTENT=$(awk -v ver="$VERSION" '
+        BEGIN { found=0; printing=0 }
+        /^## \[/ {
+            if (printing) exit
+            if (index($0, "[" ver "]") > 0) { found=1; printing=1; next }
+        }
+        printing { print }
+    ' "$CHANGELOG_FILE")
+fi
+
 RELEASE_TITLE="$DISPLAY_NAME v$VERSION"
-RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
+
+# Build release notes with changelog content
+if [ -n "$CHANGELOG_CONTENT" ]; then
+    RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
+
+### What's New
+
+$CHANGELOG_CONTENT
+
+---
 
 ### Installation
 1. Download \`$COMPONENT_FILE\` below
@@ -261,10 +286,21 @@ RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
 
 ### Requirements
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later
+- macOS 11.0 or later"
+else
+    # Fallback if no changelog found
+    RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
 
----
-See [CHANGELOG.md](https://github.com/JendaT/fb2k-components-mac-suite/blob/main/CHANGELOG.md) for details."
+### Installation
+1. Download \`$COMPONENT_FILE\` below
+2. Double-click to install, or manually copy to:
+   \`~/Library/foobar2000-v2/user-components/\`
+3. Restart foobar2000
+
+### Requirements
+- foobar2000 v2.x for macOS
+- macOS 11.0 or later"
+fi
 
 gh release create "$TAG_NAME" \
     --title "$RELEASE_TITLE" \
