@@ -2,27 +2,38 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
-## [1.1.0] - 2025-12-27
+## [1.1.0] - 2025-12-28
 
 ### Added
-- **Header Display Styles**: Three configurable header display modes
-  - "Above tracks" - Header row appears above track rows with separator line
-  - "Album art aligned" - Header text starts at left edge, aligned with album art
-  - "Inline" - Compact header style with smaller text, no separator line
-- **Now Playing Shading**: Optional yellow highlight for the currently playing track (configurable in preferences)
-- **Subgroup Support**: Display disc numbers as subgroups within album groups
-- **Preferences UI**: New settings in Preferences > Display > SimPlaylist
-  - Header Display style selector
-  - Highlight now playing row toggle
+- **Header Display Styles**: Four configurable header display modes
+  - "Above tracks" (default) - Header row appears above track rows
+  - "Album art aligned" - Header text aligned with album art left edge
+  - "Inline" - Header row with album art starting at same Y position
+  - "Under album art" - No header row, text drawn below album art
+- **Subgroup Support**: Display disc numbers (Disc 1, Disc 2, etc.) within album groups
+  - Configurable subgroup pattern (e.g., `[Disc %discnumber%]`)
+  - "Show First Subgroup Header" option
+  - "Hide subgroups if only one in album" option
+- **Now Playing Highlight**: Optional yellow shading for currently playing track
+- **Dim Parentheses Text**: Option to render text in `()` and `[]` with dimmed color
+- **Preferences UI**: Reorganized into two sections
+  - Grouping Settings (Preset, Header Pattern, Subgroup Pattern, Show First Subgroup, Hide Single Subgroup)
+  - Display Settings (Header Display, Album Art Size, Now Playing Shading, Dim Parentheses)
 
 ### Fixed
+- **Hidden tracks at end of multi-disc albums**: Tracks at the end of albums with disc subgroups were incorrectly classified as padding rows and not rendered
+- **Subgroup detection showing disc headers mid-album**: Albums with inconsistent discnumber metadata no longer show spurious headers
+- **Settings change losing scroll position**: Uses synchronous detection when scroll position exists
+- **Extra padding for multi-subgroup albums**: Padding formula now subtracts subgroup count
 - Header text now vertically centered in header rows (was bottom-aligned)
-- Album art column no longer clips header text in "album art aligned" mode
-- Inline header mode now has proper header rows instead of overlapping tracks
+- Album art column no longer clips header text
 
 ### Changed
-- Updated feature list in component About dialog
-- Improved header row spacing for better visual separation from track rows
+- **Performance**: O(1) caching for subgroup row lookups (was O(S) per lookup)
+- **Performance**: Debounced text field changes (0.5s delay) to avoid rebuild on every keystroke
+- **Performance**: Lightweight redraw for visual-only settings (Dim Parentheses, Now Playing Shading)
+- Refactored subgroup detection into unified SubgroupDetector helper struct
+- Install script clears macOS extended attributes to help invalidate dyld cache
 
 ## [1.0.0] - 2025-12-22
 
