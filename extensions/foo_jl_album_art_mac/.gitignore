@@ -1,0 +1,17 @@
+# Build output
+build/
+DerivedData/
+
+# Xcode user data
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/

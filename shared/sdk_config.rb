@@ -74,7 +74,9 @@ module Fb2kVersions
     "plorg" => "PLORG_VERSION",
     "waveform" => "WAVEFORM_VERSION",
     "wave_seekbar" => "WAVEFORM_VERSION",
-    "scrobble" => "SCROBBLE_VERSION"
+    "scrobble" => "SCROBBLE_VERSION",
+    "albumart" => "ALBUMART_VERSION",
+    "album_art" => "ALBUMART_VERSION"
   }
 
   # Parse version.h and extract versions

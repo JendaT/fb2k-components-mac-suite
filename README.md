@@ -11,6 +11,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.0.0 |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.0.0 |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.0.0 |
+| [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.0 |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.0.0 |
 
 ---
@@ -70,6 +71,32 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 
 ---
 
+### Album Art (Extended)
+
+Extended album art viewer with support for multiple artwork types and selection-based display. Unlike the built-in album art element, this one can show back covers, disc art, and more.
+
+**Features:**
+- Display front, back, disc, icon, or artist artwork
+- Shows artwork for selected track (falls back to now playing)
+- Right-click context menu to switch artwork type
+- Navigation arrows on hover to cycle through available types
+- Per-instance configuration (each panel remembers its type)
+- Layout parameters for default artwork type
+
+**Layout Usage:**
+```
+albumart_ext                    # Front cover (default)
+albumart_ext type=back          # Back cover
+albumart_ext type=disc          # Disc art
+
+# Dual panel layout (front + back side by side)
+splitter horizontal
+  albumart_ext type=front
+  albumart_ext type=back
+```
+
+---
+
 ### Last.fm Scrobbler
 
 Last.fm integration for scrobbling and now-playing updates. An absolute necesity for us, who celebrated 20 years of last.fm scrobbling this year.
@@ -92,6 +119,7 @@ Last.fm integration for scrobbling and now-playing updates. An absolute necesity
 | SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
+| Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
 
 ## Installation
@@ -150,6 +178,7 @@ Use these names in the layout editor or when editing the layout text file direct
 | SimPlaylist | `simplaylist` | `SimPlaylist`, `foo_jl_simplaylist`, `jl_simplaylist` |
 | Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
+| Album Art (Extended) | `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art` |
 
 ### Example Layout
 
