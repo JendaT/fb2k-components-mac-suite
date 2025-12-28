@@ -26,6 +26,7 @@ static const char* const kDoubleClickPlay = "double_click_play";
 static const char* const kAutoRevealPlaying = "auto_reveal_playing";
 static const char* const kShowIcons = "show_icons";
 static const char* const kSyncPlaylists = "sync_playlists";           // Auto-sync with foobar playlists
+static const char* const kShowTreeLines = "show_tree_lines";           // Show tree connection lines
 
 // Default values
 static const char* const kDefaultNodeFormat = "%node_name%$if(%is_folder%,' ['%count%']',)";
@@ -34,6 +35,7 @@ static const bool kDefaultDoubleClickPlay = true;
 static const bool kDefaultAutoRevealPlaying = true;
 static const bool kDefaultShowIcons = true;
 static const bool kDefaultSyncPlaylists = true;
+static const bool kDefaultShowTreeLines = true;
 
 // Integer config
 inline int64_t getConfigInt(const char* key, int64_t defaultVal) {

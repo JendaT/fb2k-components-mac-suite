@@ -18,6 +18,130 @@
 
 static const char *kTreeNodeKey = "treeNode";
 
+#pragma mark - Tree Lines Row View
+
+@interface PlorgTreeLinesRowView : NSTableRowView
+@property (nonatomic, weak) NSOutlineView *outlineView;
+@property (nonatomic, strong) id item;
+@end
+
+@implementation PlorgTreeLinesRowView
+
+- (void)drawBackgroundInRect:(NSRect)dirtyRect {
+    [super drawBackgroundInRect:dirtyRect];
+    [self drawTreeLinesInRect:dirtyRect];
+}
+
+- (void)drawTreeLinesInRect:(NSRect)dirtyRect {
+    if (!self.outlineView || !self.item) return;
+
+    // Use a medium gray that's visible on both light and dark backgrounds
+    NSColor *lineColor = [NSColor colorWithWhite:0.5 alpha:1.0];
+    [lineColor setStroke];
+
+    CGFloat rowHeight = self.bounds.size.height;
+    CGFloat midY = rowHeight / 2.0;
+
+    NSInteger row = [self.outlineView rowForItem:self.item];
+    if (row < 0) return;
+
+    NSInteger level = [self.outlineView levelForItem:self.item];
+    if (level < 0) return;
+
+    // Measured values: disclosure triangle is ~16px wide, centered in its column
+    // The outline view positions disclosures based on level * indentationPerLevel
+    // But the actual visual layout has additional offsets from the name column
+
+    // Get the cell frame as our ONLY reference point
+    NSInteger nameColumnIndex = [self.outlineView columnWithIdentifier:@"NameColumn"];
+    if (nameColumnIndex == NSNotFound) nameColumnIndex = 0;
+    NSRect cellFrame = [self.outlineView frameOfCellAtColumn:nameColumnIndex row:row];
+    NSRect cellInRowView = [self convertRect:cellFrame fromView:self.outlineView];
+    CGFloat textStartX = NSMinX(cellInRowView);
+
+    CGFloat indentWidth = self.outlineView.indentationPerLevel;
+
+    // Parent's disclosure triangle center is to the LEFT of our cell by:
+    // one indentation level + half the disclosure width (~7px)
+    // The disclosure triangle tip points down at its center
+    CGFloat parentDisclosureCenterX = textStartX - indentWidth - 7.0;
+
+    // Draw horizontal line from parent's disclosure center to just before text
+    if (level > 0) {
+        CGFloat horizontalEndX = textStartX - 6;
+
+        NSBezierPath *horizontalLine = [NSBezierPath bezierPath];
+        [horizontalLine moveToPoint:NSMakePoint(parentDisclosureCenterX, midY)];
+        [horizontalLine lineToPoint:NSMakePoint(horizontalEndX, midY)];
+        [horizontalLine setLineWidth:1.0];
+        [horizontalLine stroke];
+    }
+
+    // Draw vertical lines for each ancestor level
+    id currentItem = self.item;
+    for (NSInteger l = level; l > 0; l--) {
+        id parentItem = [self.outlineView parentForItem:currentItem];
+        if (!parentItem) break;
+
+        // Vertical line at ancestor's disclosure center
+        // Each ancestor level is one more indentWidth to the left
+        CGFloat ancestorOffset = (level - l + 1) * indentWidth + 7.0;
+        CGFloat verticalX = textStartX - ancestorOffset;
+
+        // Check if this item is the last child of its parent
+        NSInteger childIndex = [self indexOfItem:currentItem inParent:parentItem];
+        NSInteger siblingCount = [self.outlineView numberOfChildrenOfItem:parentItem];
+        BOOL isLastChild = (childIndex == siblingCount - 1);
+
+        // For the immediate parent level, draw vertical line
+        if (l == level) {
+            NSBezierPath *verticalLine = [NSBezierPath bezierPath];
+            [verticalLine moveToPoint:NSMakePoint(verticalX, 0)];
+            // If last child, only draw to mid-point; otherwise draw full height
+            CGFloat endY = isLastChild ? midY : rowHeight;
+            [verticalLine lineToPoint:NSMakePoint(verticalX, endY)];
+            [verticalLine setLineWidth:1.0];
+            [verticalLine stroke];
+        } else {
+            // For ancestor levels, check if the ancestor has more siblings below
+            // We need to draw a full vertical line if there are more items at that level
+            id ancestorItem = currentItem;
+            for (NSInteger i = level; i > l; i--) {
+                ancestorItem = [self.outlineView parentForItem:ancestorItem];
+            }
+            if (ancestorItem) {
+                id ancestorParent = [self.outlineView parentForItem:ancestorItem];
+                NSInteger ancestorIndex = [self indexOfItem:ancestorItem inParent:ancestorParent];
+                NSInteger ancestorSiblings = [self.outlineView numberOfChildrenOfItem:ancestorParent];
+                BOOL ancestorIsLast = (ancestorIndex == ancestorSiblings - 1);
+
+                if (!ancestorIsLast) {
+                    // Draw full vertical line for this ancestor level
+                    NSBezierPath *verticalLine = [NSBezierPath bezierPath];
+                    [verticalLine moveToPoint:NSMakePoint(verticalX, 0)];
+                    [verticalLine lineToPoint:NSMakePoint(verticalX, rowHeight)];
+                    [verticalLine setLineWidth:1.0];
+                    [verticalLine stroke];
+                }
+            }
+        }
+
+        currentItem = parentItem;
+    }
+}
+
+- (NSInteger)indexOfItem:(id)item inParent:(id)parent {
+    NSInteger count = [self.outlineView numberOfChildrenOfItem:parent];
+    for (NSInteger i = 0; i < count; i++) {
+        if ([self.outlineView child:i ofItem:parent] == item) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+@end
+
 // Helper class for async track import - stores paths to keep them alive
 class PlorgTracksImportNotify : public process_locations_notify {
 public:
@@ -84,6 +208,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 @property (nonatomic, copy) NSString *pendingThemePath;
 @property (nonatomic, copy) NSString *pendingPlaylistsDir;
 @property (nonatomic, copy) NSString *activePlaylistName;  // Currently active playlist in foobar2000
+@property (nonatomic, assign) BOOL showTreeLines;  // Show Windows Explorer-style tree lines
 @end
 
 @implementation PlaylistOrganizerController
@@ -101,6 +226,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)loadView {
+    // Load tree lines setting from config
+    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, true);
+
     // Create scroll view
     self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 250, 400)];
     self.scrollView.hasVerticalScroller = YES;
@@ -684,6 +812,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)settingsDidChange:(NSNotification *)notification {
+    // Reload tree lines setting
+    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, true);
     [self.outlineView reloadData];
 }
 
@@ -711,6 +841,16 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 #pragma mark - NSOutlineViewDelegate
+
+- (NSTableRowView *)outlineView:(NSOutlineView *)outlineView rowViewForItem:(id)item {
+    if (self.showTreeLines) {
+        PlorgTreeLinesRowView *rowView = [[PlorgTreeLinesRowView alloc] init];
+        rowView.outlineView = outlineView;
+        rowView.item = item;
+        return rowView;
+    }
+    return nil;  // Use default row view
+}
 
 - (NSView *)outlineView:(NSOutlineView *)outlineView viewForTableColumn:(NSTableColumn *)tableColumn item:(id)item {
     TreeNode *node = (TreeNode *)item;
@@ -1521,8 +1661,6 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     // Format: 04 00 ':' 'U' 'R' 'I' LL LL '/' ...
     // Where 04 00 is the key length (4 bytes for ":URI")
     // LL LL is the value length (2 bytes little-endian)
-    const uint8_t uriPattern[] = {0x04, 0x00, ':', 'U', 'R', 'I'};
-
     for (NSUInteger pos = 10; pos + 8 < length; pos++) {
         // Look for ":URI" key pattern
         if (bytes[pos] == 0x04 && bytes[pos + 1] == 0x00 &&
