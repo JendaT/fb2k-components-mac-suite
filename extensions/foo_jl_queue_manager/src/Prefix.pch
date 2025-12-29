@@ -1,0 +1,33 @@
+//
+//  Prefix.pch
+//  foo_jl_queue_manager
+//
+//  Precompiled header for macOS build
+//
+
+#pragma once
+
+// Enable legacy cfg_var API for compatibility with Windows code
+#define FOOBAR2000_HAVE_CFG_VAR_LEGACY 1
+
+// foobar2000 SDK
+#include <foobar2000/SDK/foobar2000.h>
+
+// Standard library
+#include <string>
+#include <vector>
+#include <map>
+#include <functional>
+#include <chrono>
+#include <memory>
+#include <optional>
+#include <cstdint>
+#include <algorithm>
+#include <atomic>
+#include <mutex>
+
+// macOS/Cocoa (when included from .mm files)
+#ifdef __OBJC__
+#import <Cocoa/Cocoa.h>
+#import <Foundation/Foundation.h>
+#endif
