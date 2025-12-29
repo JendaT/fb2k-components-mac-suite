@@ -69,5 +69,9 @@ static const char* const kKeyWaveColorLight = "wave_color_light";
 static const char* const kKeyBgColorLight = "bg_color_light";
 static const char* const kKeyWaveColorDark = "wave_color_dark";
 static const char* const kKeyBgColorDark = "bg_color_dark";
+static const char* const kKeyLockWidth = "lock_width";
+static const char* const kKeyLockedWidth = "locked_width";
+static const char* const kKeyLockHeight = "lock_height";
+static const char* const kKeyLockedHeight = "locked_height";
 
 } // namespace waveform_config

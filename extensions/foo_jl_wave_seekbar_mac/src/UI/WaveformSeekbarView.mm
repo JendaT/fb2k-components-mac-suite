@@ -816,6 +816,18 @@
     [self handleSeekWithEvent:event];
 }
 
+- (void)rightMouseDown:(NSEvent *)event {
+    NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+    FB2K_console_formatter() << "[WaveSeek] rightMouseDown triggered at " << location.x << "," << location.y;
+
+    if ([self.delegate respondsToSelector:@selector(waveformSeekbarViewRequestsContextMenu:atPoint:)]) {
+        FB2K_console_formatter() << "[WaveSeek] Calling delegate";
+        [self.delegate waveformSeekbarViewRequestsContextMenu:self atPoint:location];
+    } else {
+        FB2K_console_formatter() << "[WaveSeek] No delegate or delegate doesn't respond";
+    }
+}
+
 - (void)handleSeekWithEvent:(NSEvent *)event {
     if (self.trackDuration <= 0.0) return;
 

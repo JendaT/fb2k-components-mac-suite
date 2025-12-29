@@ -18,6 +18,14 @@ struct WaveformData;
 typedef struct WaveformData WaveformData;
 #endif
 
+@class WaveformSeekbarView;
+
+// Delegate protocol for view events
+@protocol WaveformSeekbarViewDelegate <NSObject>
+@optional
+- (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point;
+@end
+
 typedef NS_ENUM(NSInteger, WaveformDisplayMode) {
     WaveformDisplayModeStereo = 0,  // Separate L/R channels
     WaveformDisplayModeMono = 1     // Mixed mono waveform
@@ -40,6 +48,9 @@ typedef NS_ENUM(NSInteger, WaveformRenderStyle) {
 };
 
 @interface WaveformSeekbarView : NSView
+
+// Delegate for context menu events
+@property (nonatomic, weak, nullable) id<WaveformSeekbarViewDelegate> delegate;
 
 // Display properties
 @property (nonatomic, assign) WaveformDisplayMode displayMode;

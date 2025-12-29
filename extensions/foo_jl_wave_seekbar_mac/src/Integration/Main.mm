@@ -14,14 +14,15 @@
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "Waveform Seekbar",
-    "1.0.0",
+    "1.1.0",
     "Waveform seekbar for foobar2000 macOS\n\n"
     "Features:\n"
     "- Complete waveform display\n"
     "- Click-to-seek functionality\n"
     "- Stereo and mono display modes\n"
     "- Dark mode support\n"
-    "- Waveform caching"
+    "- Waveform caching\n"
+    "- Lock width/height via context menu"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_wave_seekbar.component");

@@ -8,14 +8,14 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import "WaveformSeekbarView.h"
 #include "../fb2k_sdk.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class WaveformSeekbarView;
 struct WaveformData;
 
-@interface WaveformSeekbarController : NSViewController
+@interface WaveformSeekbarController : NSViewController <WaveformSeekbarViewDelegate>
 
 @property (nonatomic, readonly) WaveformSeekbarView *waveformView;
 

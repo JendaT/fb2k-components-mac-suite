@@ -10,6 +10,7 @@
 #import "../Integration/PlaybackCallback.h"
 #import "../Core/WaveformService.h"
 #import "../Core/WaveformData.h"
+#import "../Core/ConfigHelper.h"
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -17,6 +18,10 @@
     NSTimer *_positionTimer;
     BOOL _isPaused;
     std::unique_ptr<WaveformData> _storedWaveform;  // We own this copy
+    NSLayoutConstraint *_widthConstraint;           // Current width constraint
+    NSLayoutConstraint *_heightConstraint;          // Current height constraint
+    BOOL _widthLocked;                              // Track if width is locked
+    BOOL _heightLocked;                             // Track if height is locked
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
@@ -36,6 +41,7 @@
 - (void)loadView {
     // Create the waveform view programmatically
     WaveformSeekbarView *view = [[WaveformSeekbarView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    view.delegate = self;  // Set delegate for context menu events
     self.waveformView = view;
     self.view = view;
 }
@@ -49,6 +55,31 @@
         [self.view.widthAnchor constraintGreaterThanOrEqualToConstant:100],
         [self.view.heightAnchor constraintGreaterThanOrEqualToConstant:40]
     ]];
+
+    // Restore locked width if previously set
+    using namespace waveform_config;
+    if (getConfigBool(kKeyLockWidth, false)) {
+        int64_t lockedWidth = getConfigInt(kKeyLockedWidth, 400);
+        if (lockedWidth >= 100) {
+            _widthLocked = YES;
+            _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedWidth)];
+            _widthConstraint.priority = NSLayoutPriorityRequired;
+            _widthConstraint.active = YES;
+            FB2K_console_formatter() << "[WaveSeek] Restored locked width: " << lockedWidth << " pixels";
+        }
+    }
+
+    // Restore locked height if previously set
+    if (getConfigBool(kKeyLockHeight, false)) {
+        int64_t lockedHeight = getConfigInt(kKeyLockedHeight, 80);
+        if (lockedHeight >= 40) {
+            _heightLocked = YES;
+            _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedHeight)];
+            _heightConstraint.priority = NSLayoutPriorityRequired;
+            _heightConstraint.active = YES;
+            FB2K_console_formatter() << "[WaveSeek] Restored locked height: " << lockedHeight << " pixels";
+        }
+    }
 
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
@@ -252,6 +283,110 @@
         }
     } catch (...) {
         // Ignore errors during timer update
+    }
+}
+
+#pragma mark - WaveformSeekbarViewDelegate
+
+- (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point {
+    FB2K_console_formatter() << "[WaveSeek] Context menu requested";
+
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Waveform Seekbar"];
+
+    // Lock Width menu item
+    NSMenuItem *lockWidthItem = [[NSMenuItem alloc]
+        initWithTitle:@"Lock Width"
+        action:@selector(menuToggleLockWidth:)
+        keyEquivalent:@""];
+    lockWidthItem.target = self;
+    lockWidthItem.state = _widthLocked ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:lockWidthItem];
+
+    // Lock Height menu item
+    NSMenuItem *lockHeightItem = [[NSMenuItem alloc]
+        initWithTitle:@"Lock Height"
+        action:@selector(menuToggleLockHeight:)
+        keyEquivalent:@""];
+    lockHeightItem.target = self;
+    lockHeightItem.state = _heightLocked ? NSControlStateValueOn : NSControlStateValueOff;
+    [menu addItem:lockHeightItem];
+
+    [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+}
+
+- (void)menuToggleLockWidth:(NSMenuItem *)sender {
+    using namespace waveform_config;
+
+    _widthLocked = !_widthLocked;
+
+    if (_widthLocked) {
+        // Lock to current width
+        CGFloat currentWidth = self.view.frame.size.width;
+
+        // Remove existing width constraint if any
+        if (_widthConstraint) {
+            [self.view removeConstraint:_widthConstraint];
+        }
+
+        // Create exact width constraint
+        _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:currentWidth];
+        _widthConstraint.priority = NSLayoutPriorityRequired;
+        _widthConstraint.active = YES;
+
+        // Save to config
+        setConfigBool(kKeyLockWidth, YES);
+        setConfigInt(kKeyLockedWidth, static_cast<int64_t>(currentWidth));
+
+        FB2K_console_formatter() << "[WaveSeek] Width locked to " << static_cast<int>(currentWidth) << " pixels";
+    } else {
+        // Unlock - remove constraint
+        if (_widthConstraint) {
+            [self.view removeConstraint:_widthConstraint];
+            _widthConstraint = nil;
+        }
+
+        // Save to config
+        setConfigBool(kKeyLockWidth, NO);
+
+        FB2K_console_formatter() << "[WaveSeek] Width unlocked";
+    }
+}
+
+- (void)menuToggleLockHeight:(NSMenuItem *)sender {
+    using namespace waveform_config;
+
+    _heightLocked = !_heightLocked;
+
+    if (_heightLocked) {
+        // Lock to current height
+        CGFloat currentHeight = self.view.frame.size.height;
+
+        // Remove existing height constraint if any
+        if (_heightConstraint) {
+            [self.view removeConstraint:_heightConstraint];
+        }
+
+        // Create exact height constraint
+        _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:currentHeight];
+        _heightConstraint.priority = NSLayoutPriorityRequired;
+        _heightConstraint.active = YES;
+
+        // Save to config
+        setConfigBool(kKeyLockHeight, YES);
+        setConfigInt(kKeyLockedHeight, static_cast<int64_t>(currentHeight));
+
+        FB2K_console_formatter() << "[WaveSeek] Height locked to " << static_cast<int>(currentHeight) << " pixels";
+    } else {
+        // Unlock - remove constraint
+        if (_heightConstraint) {
+            [self.view removeConstraint:_heightConstraint];
+            _heightConstraint = nil;
+        }
+
+        // Save to config
+        setConfigBool(kKeyLockHeight, NO);
+
+        FB2K_console_formatter() << "[WaveSeek] Height unlocked";
     }
 }
 
