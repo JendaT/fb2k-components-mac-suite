@@ -28,17 +28,22 @@ typeset -A DIR_MAP=(
     ["albumart"]="jl_album_art"
     ["album_art"]="jl_album_art"
     ["jl_album_art"]="jl_album_art"
+    ["queue_manager"]="jl_queue_manager"
+    ["queuemanager"]="jl_queue_manager"
+    ["queue"]="jl_queue_manager"
+    ["jl_queue_manager"]="jl_queue_manager"
 )
 
 if [ -z "$1" ]; then
     echo "Usage: $0 <extension_name>"
     echo ""
     echo "Available extensions:"
-    echo "  simplaylist  - SimPlaylist"
-    echo "  plorg        - Playlist Organizer"
-    echo "  waveform     - Waveform Seekbar"
-    echo "  scrobble     - Last.fm Scrobbler"
-    echo "  albumart     - Album Art"
+    echo "  simplaylist    - SimPlaylist"
+    echo "  plorg          - Playlist Organizer"
+    echo "  waveform       - Waveform Seekbar"
+    echo "  scrobble       - Last.fm Scrobbler"
+    echo "  albumart       - Album Art"
+    echo "  queue_manager  - Queue Manager"
     exit 1
 fi
 
@@ -47,7 +52,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform, scrobble, albumart"
+    echo "Valid names: simplaylist, plorg, waveform, scrobble, albumart, queue_manager"
     exit 1
 fi
 

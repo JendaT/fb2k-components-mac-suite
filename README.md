@@ -12,6 +12,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.1.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.0.0 | [📖](docs/waveform.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.0 | [📖](docs/albumart.md) |
+| [Queue Manager](#queue-manager) | Visual playback queue management | 1.0.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.0.0 | – |
 
 ---
@@ -97,6 +98,21 @@ splitter horizontal
 
 ---
 
+### Queue Manager
+
+Visual playback queue manager - functionality that exists in Windows foobar2000 but was missing on macOS. See all queued tracks and manage playback order.
+
+<!-- Screenshot: Queue Manager -->
+
+**Features:**
+- Visual queue display with configurable columns
+- Drag & drop reordering within queue
+- Live updates when queue changes
+- Double-click to play, Delete to remove
+- Context menu (Play, Remove, Clear, Show in Playlist)
+
+---
+
 ### Last.fm Scrobbler
 
 Last.fm integration for scrobbling and now-playing updates. An absolute necesity for us, who celebrated 20 years of last.fm scrobbling this year.
@@ -120,6 +136,7 @@ Last.fm integration for scrobbling and now-playing updates. An absolute necesity
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
 | Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
+| Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | TBD |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
 
 ## Installation
@@ -158,6 +175,7 @@ Or build all extensions:
 - [Playlist Organizer](docs/plorg.md) - Features, configuration, and usage
 - [Waveform Seekbar](docs/waveform.md) - Features, configuration, and usage
 - [Album Art (Extended)](docs/albumart.md) - Features, configuration, and usage
+- [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
@@ -186,6 +204,7 @@ Use these names in the layout editor or when editing the layout text file direct
 | Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
 | Album Art (Extended) | `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art` |
+| Queue Manager | `Queue Manager` | `queue_manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager` |
 
 ### Example Layout
 

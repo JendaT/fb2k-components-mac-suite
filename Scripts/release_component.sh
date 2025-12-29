@@ -35,6 +35,10 @@ typeset -A COMPONENT_MAP=(
     ["albumart"]="foo_jl_album_art_mac"
     ["album_art"]="foo_jl_album_art_mac"
     ["jl_album_art"]="foo_jl_album_art_mac"
+    ["queue_manager"]="foo_jl_queue_manager_mac"
+    ["queuemanager"]="foo_jl_queue_manager_mac"
+    ["queue"]="foo_jl_queue_manager_mac"
+    ["jl_queue_manager"]="foo_jl_queue_manager_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -51,6 +55,10 @@ typeset -A VERSION_MAP=(
     ["albumart"]="ALBUMART_VERSION"
     ["album_art"]="ALBUMART_VERSION"
     ["jl_album_art"]="ALBUMART_VERSION"
+    ["queue_manager"]="QUEUE_MANAGER_VERSION"
+    ["queuemanager"]="QUEUE_MANAGER_VERSION"
+    ["queue"]="QUEUE_MANAGER_VERSION"
+    ["jl_queue_manager"]="QUEUE_MANAGER_VERSION"
 )
 
 # Display names for release titles
@@ -67,6 +75,10 @@ typeset -A DISPLAY_NAME_MAP=(
     ["albumart"]="Album Art"
     ["album_art"]="Album Art"
     ["jl_album_art"]="Album Art"
+    ["queue_manager"]="Queue Manager"
+    ["queuemanager"]="Queue Manager"
+    ["queue"]="Queue Manager"
+    ["jl_queue_manager"]="Queue Manager"
 )
 
 show_help() {
@@ -80,6 +92,7 @@ show_help() {
     echo "  waveform      - Waveform Seekbar"
     echo "  scrobble      - Last.fm Scrobbler"
     echo "  albumart      - Album Art (extended album art display)"
+    echo "  queue_manager - Queue Manager (visual playback queue)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"
@@ -176,6 +189,11 @@ fi
 if [ "$COMPONENT" = "albumart" ] || [ "$COMPONENT" = "album_art" ] || [ "$COMPONENT" = "jl_album_art" ]; then
     COMPONENT_FILE="foo_jl_album_art.fb2k-component"
     TAG_NAME="albumart-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "queue_manager" ] || [ "$COMPONENT" = "queuemanager" ] || [ "$COMPONENT" = "queue" ] || [ "$COMPONENT" = "jl_queue_manager" ]; then
+    COMPONENT_FILE="foo_jl_queue_manager.fb2k-component"
+    TAG_NAME="queuemanager-v${VERSION}"
 fi
 
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="
