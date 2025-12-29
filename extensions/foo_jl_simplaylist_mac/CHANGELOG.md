@@ -2,6 +2,11 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.1.2] - 2025-12-29
+
+### Fixed
+- **Excessive spacing in style 4 (header under album art)**: Reduced gap between album groups by half
+
 ## [1.1.1] - 2025-12-29
 
 ### Fixed
