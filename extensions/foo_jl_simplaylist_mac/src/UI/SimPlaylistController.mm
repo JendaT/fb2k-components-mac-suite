@@ -746,11 +746,11 @@ static NSInteger _groupDetectionGeneration = 0;
     // Style 2 has header rows but album art starts at header row Y (extra row of space)
     // Style 3 needs extra rows for header text below album art + visual separation
     NSInteger headerStyle = _playlistView.headerDisplayStyle;
-    NSInteger minPadding = (headerStyle == 3) ? 2 : 0;  // Style 3: 2 rows for text area + separation
+    NSInteger minPadding = (headerStyle == 3) ? 1 : 0;  // Style 3: 1 row for separation
     // For style 2, album art starts at header row (not below), so we have 1 extra row of space
     NSInteger extraHeaderSpace = (headerStyle == 2) ? 1 : 0;
-    // For style 3, add 2 extra rows for header text below album art
-    NSInteger extraTextSpace = (headerStyle == 3) ? 2 : 0;
+    // For style 3, add 1 extra row for header text below album art
+    NSInteger extraTextSpace = (headerStyle == 3) ? 1 : 0;
 
     NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
     for (NSUInteger g = 0; g < groupStarts.count; g++) {
@@ -882,9 +882,9 @@ static NSInteger _groupDetectionGeneration = 0;
 
                 // Recalculate all padding rows (accounting for subgroups and header style)
                 NSInteger bgHeaderStyle = strongSelf.playlistView.headerDisplayStyle;
-                NSInteger bgMinPadding = (bgHeaderStyle == 3) ? 2 : 0;
+                NSInteger bgMinPadding = (bgHeaderStyle == 3) ? 1 : 0;
                 NSInteger bgExtraHeaderSpace = (bgHeaderStyle == 2) ? 1 : 0;
-                NSInteger bgExtraTextSpace = (bgHeaderStyle == 3) ? 2 : 0;
+                NSInteger bgExtraTextSpace = (bgHeaderStyle == 3) ? 1 : 0;
 
                 NSMutableArray<NSNumber *> *allPaddingRows = [NSMutableArray arrayWithCapacity:allStarts.count];
                 for (NSUInteger g = 0; g < allStarts.count; g++) {
@@ -1048,11 +1048,11 @@ static NSInteger _groupDetectionGeneration = 0;
             // Style 2 has header rows but album art starts at header row Y (extra row of space)
             // Style 3 needs extra rows for header text below album art + visual separation
             NSInteger headerStyle = strongSelf.playlistView.headerDisplayStyle;
-            NSInteger minPadding = (headerStyle == 3) ? 2 : 0;  // Style 3: 2 rows for text area + separation
+            NSInteger minPadding = (headerStyle == 3) ? 1 : 0;  // Style 3: 1 row for separation
             // For style 2, album art starts at header row (not below), so we have 1 extra row of space
             NSInteger extraHeaderSpace = (headerStyle == 2) ? 1 : 0;
-            // For style 3, add 2 extra rows for header text below album art
-            NSInteger extraTextSpace = (headerStyle == 3) ? 2 : 0;
+            // For style 3, add 1 extra row for header text below album art
+            NSInteger extraTextSpace = (headerStyle == 3) ? 1 : 0;
 
             NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
             NSInteger totalItems = strongSelf.playlistView.itemCount;
