@@ -68,6 +68,12 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
     return YES;  // Use top-left origin like UIKit
 }
 
+- (NSSize)intrinsicContentSize {
+    // Return no intrinsic size - this view should fill its container,
+    // not influence the container's size based on image dimensions
+    return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+}
+
 #pragma mark - Drawing
 
 - (void)drawRect:(NSRect)dirtyRect {
