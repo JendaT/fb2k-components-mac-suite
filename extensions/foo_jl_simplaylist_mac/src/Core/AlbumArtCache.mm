@@ -8,6 +8,7 @@
 @interface AlbumArtCache ()
 @property (nonatomic, strong) NSCache<NSString *, NSImage *> *imageCache;
 @property (nonatomic, strong) NSMutableSet<NSString *> *noImageKeys;  // Keys where we tried and found no art
+@property (nonatomic, strong) NSMutableSet<NSString *> *hasImageKeys;  // Keys that have album art (never evicted)
 @property (nonatomic, strong) NSOperationQueue *loadQueue;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingLoads;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *pendingCompletions;
@@ -31,9 +32,10 @@ static NSImage *_placeholderImage = nil;
     self = [super init];
     if (self) {
         _imageCache = [[NSCache alloc] init];
-        _imageCache.countLimit = 200;  // Max 200 images
+        _imageCache.countLimit = 500;  // Max 500 images (increased to reduce eviction during scroll)
 
         _noImageKeys = [NSMutableSet set];  // Track keys with no album art
+        _hasImageKeys = [NSMutableSet set];  // Track keys that have album art (survives cache eviction)
 
         _loadQueue = [[NSOperationQueue alloc] init];
         _loadQueue.maxConcurrentOperationCount = 4;
@@ -91,6 +93,13 @@ static NSImage *_placeholderImage = nil;
     BOOL noImage = [_noImageKeys containsObject:key];
     [_pendingLock unlock];
     return noImage;
+}
+
+- (BOOL)hasKnownImageForKey:(NSString *)key {
+    [_pendingLock lock];
+    BOOL hasImage = [_hasImageKeys containsObject:key];
+    [_pendingLock unlock];
+    return hasImage;
 }
 
 - (void)loadImageForKey:(NSString *)key
@@ -232,6 +241,7 @@ static NSImage *_placeholderImage = nil;
 
             if (image) {
                 [self->_imageCache setObject:image forKey:keyCopy];
+                [self->_hasImageKeys addObject:keyCopy];  // Remember this key has art (survives eviction)
             } else {
                 // Mark this key as having no image to prevent repeated load attempts
                 [self->_noImageKeys addObject:keyCopy];
@@ -275,6 +285,7 @@ static NSImage *_placeholderImage = nil;
     [_pendingLoads removeAllObjects];
     [_pendingCompletions removeAllObjects];
     [_noImageKeys removeAllObjects];  // Also clear "no image" markers
+    [_hasImageKeys removeAllObjects];  // Clear "has image" markers too
     [_pendingLock unlock];
 }
 

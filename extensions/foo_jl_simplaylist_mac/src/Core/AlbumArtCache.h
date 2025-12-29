@@ -31,6 +31,9 @@ NS_ASSUME_NONNULL_BEGIN
 // Check if we already tried loading this key and found no image
 - (BOOL)hasNoImageForKey:(NSString *)key;
 
+// Check if we know this key has an image (survives cache eviction)
+- (BOOL)hasKnownImageForKey:(NSString *)key;
+
 // Clear all cached images
 - (void)clearCache;
 

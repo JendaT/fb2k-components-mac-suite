@@ -1514,23 +1514,34 @@ static BOOL isRemotePath(const char *path) {
         [cache loadImageForKey:cacheKey handle:handle completion:^(NSImage *image) {
             // Only trigger redraw if we actually got an image
             if (image) {
-                // Coalesce redraws - only schedule one per run loop
+                // Coalesce redraws with small delay to batch multiple image loads
                 SimPlaylistController *strongSelf = weakSelf;
                 if (strongSelf && !strongSelf.needsRedraw) {
                     strongSelf.needsRedraw = YES;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        SimPlaylistController *s = weakSelf;
-                        if (s) {
-                            s.needsRedraw = NO;
-                            [s.playlistView setNeedsDisplay:YES];
-                        }
-                    });
+                    // Use performSelector with delay to batch multiple completions
+                    [NSObject cancelPreviousPerformRequestsWithTarget:strongSelf
+                                                             selector:@selector(performDelayedRedraw)
+                                                               object:nil];
+                    [strongSelf performSelector:@selector(performDelayedRedraw)
+                                     withObject:nil
+                                     afterDelay:0.05];  // 50ms batch window
                 }
             }
         }];
     }
 
-    return nil;  // Return nil for now, will redraw when loaded
+    // If we know this key has an image but it's evicted, return placeholder to avoid blink
+    // (consistent visual during reload vs showing nothing then image)
+    if ([cache hasKnownImageForKey:cacheKey]) {
+        return [AlbumArtCache placeholderImage];
+    }
+
+    return nil;  // First time load - view will draw inline placeholder
+}
+
+- (void)performDelayedRedraw {
+    _needsRedraw = NO;
+    [_playlistView setNeedsDisplay:YES];
 }
 
 - (void)playlistView:(SimPlaylistView *)view didChangeGroupColumnWidth:(CGFloat)newWidth {
