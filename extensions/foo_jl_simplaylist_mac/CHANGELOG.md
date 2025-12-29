@@ -21,6 +21,7 @@ All notable changes to SimPlaylist will be documented in this file.
   - Display Settings (Header Display, Album Art Size, Now Playing Shading, Dim Parentheses)
 
 ### Fixed
+- **Album art blinking during rapid scrolling**: Cache eviction no longer causes placeholder flicker
 - **Hidden tracks at end of multi-disc albums**: Tracks at the end of albums with disc subgroups were incorrectly classified as padding rows and not rendered
 - **Subgroup detection showing disc headers mid-album**: Albums with inconsistent discnumber metadata no longer show spurious headers
 - **Settings change losing scroll position**: Uses synchronous detection when scroll position exists
@@ -32,6 +33,7 @@ All notable changes to SimPlaylist will be documented in this file.
 - **Performance**: O(1) caching for subgroup row lookups (was O(S) per lookup)
 - **Performance**: Debounced text field changes (0.5s delay) to avoid rebuild on every keystroke
 - **Performance**: Lightweight redraw for visual-only settings (Dim Parentheses, Now Playing Shading)
+- **Performance**: Increased album art cache from 200 to 500 images
 - Refactored subgroup detection into unified SubgroupDetector helper struct
 - Install script clears macOS extended attributes to help invalidate dyld cache
 
