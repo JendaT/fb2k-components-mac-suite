@@ -29,6 +29,7 @@ typeset -A DIR_MAP=(
     ["album_art"]="jl_album_art"
     ["jl_album_art"]="jl_album_art"
     ["queue_manager"]="jl_queue_manager"
+    ["queue-manager"]="jl_queue_manager"
     ["queuemanager"]="jl_queue_manager"
     ["queue"]="jl_queue_manager"
     ["jl_queue_manager"]="jl_queue_manager"
