@@ -2,6 +2,12 @@
 
 All notable changes to Playlist Organizer will be documented in this file.
 
+## [1.2.0] - 2025-12-30
+
+### Added
+- **Transparent Background Option**: Preference to toggle glass effect background
+- New checkbox in Appearance section (requires restart to apply)
+
 ## [1.1.0] - 2025-12-28
 
 ### Added

@@ -14,6 +14,7 @@
 @property (nonatomic, strong) NSButton *autoRevealPlayingCheckbox;
 @property (nonatomic, strong) NSButton *showIconsCheckbox;
 @property (nonatomic, strong) NSButton *showTreeLinesCheckbox;
+@property (nonatomic, strong) NSButton *transparentBackgroundCheckbox;
 @property (nonatomic, strong) NSButton *syncPlaylistsCheckbox;
 @property (nonatomic, strong) NSTextField *nodeFormatField;
 @end
@@ -110,7 +111,13 @@
     self.showTreeLinesCheckbox = [NSButton checkboxWithTitle:@"Show tree connection lines (best for 1 nesting level)"
                                                       target:self
                                                       action:@selector(settingsChanged:)];
-    addIndentedRow(self.showTreeLinesCheckbox, rowHeight + 8);
+    addIndentedRow(self.showTreeLinesCheckbox, rowHeight);
+
+    // Transparent background
+    self.transparentBackgroundCheckbox = [NSButton checkboxWithTitle:@"Transparent background (glass effect) - requires restart"
+                                                              target:self
+                                                              action:@selector(settingsChanged:)];
+    addIndentedRow(self.transparentBackgroundCheckbox, rowHeight + 8);
 
     // Node format label
     NSTextField *formatLabel = [NSTextField labelWithString:@"Node format:"];
@@ -156,8 +163,9 @@
     BOOL doubleClickPlay = plorg_config::getConfigBool(plorg_config::kDoubleClickPlay, true);
     BOOL autoReveal = plorg_config::getConfigBool(plorg_config::kAutoRevealPlaying, true);
     BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, true);
-    BOOL showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, true);
-    BOOL syncPlaylists = plorg_config::getConfigBool(plorg_config::kSyncPlaylists, true);
+    BOOL showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, plorg_config::kDefaultShowTreeLines);
+    BOOL transparentBackground = plorg_config::getConfigBool(plorg_config::kTransparentBackground, plorg_config::kDefaultTransparentBackground);
+    BOOL syncPlaylists = plorg_config::getConfigBool(plorg_config::kSyncPlaylists, plorg_config::kDefaultSyncPlaylists);
     NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, "%node_name%");
 
     self.singleClickActivateCheckbox.state = singleClick ? NSControlStateValueOn : NSControlStateValueOff;
@@ -165,6 +173,7 @@
     self.autoRevealPlayingCheckbox.state = autoReveal ? NSControlStateValueOn : NSControlStateValueOff;
     self.showIconsCheckbox.state = showIcons ? NSControlStateValueOn : NSControlStateValueOff;
     self.showTreeLinesCheckbox.state = showTreeLines ? NSControlStateValueOn : NSControlStateValueOff;
+    self.transparentBackgroundCheckbox.state = transparentBackground ? NSControlStateValueOn : NSControlStateValueOff;
     self.syncPlaylistsCheckbox.state = syncPlaylists ? NSControlStateValueOn : NSControlStateValueOff;
     self.nodeFormatField.stringValue = format ?: @"%node_name%";
 }
@@ -180,6 +189,8 @@
                                 self.showIconsCheckbox.state == NSControlStateValueOn);
     plorg_config::setConfigBool(plorg_config::kShowTreeLines,
                                 self.showTreeLinesCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kTransparentBackground,
+                                self.transparentBackgroundCheckbox.state == NSControlStateValueOn);
     plorg_config::setConfigBool(plorg_config::kSyncPlaylists,
                                 self.syncPlaylistsCheckbox.state == NSControlStateValueOn);
 
@@ -203,6 +214,7 @@
     self.autoRevealPlayingCheckbox.state = NSControlStateValueOn;
     self.showIconsCheckbox.state = NSControlStateValueOn;
     self.showTreeLinesCheckbox.state = NSControlStateValueOn;
+    self.transparentBackgroundCheckbox.state = NSControlStateValueOn;
     self.syncPlaylistsCheckbox.state = NSControlStateValueOn;
     self.nodeFormatField.stringValue = @"%node_name%";
     [self saveSettings];

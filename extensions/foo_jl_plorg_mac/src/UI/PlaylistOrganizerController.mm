@@ -209,6 +209,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 @property (nonatomic, copy) NSString *pendingPlaylistsDir;
 @property (nonatomic, copy) NSString *activePlaylistName;  // Currently active playlist in foobar2000
 @property (nonatomic, assign) BOOL showTreeLines;  // Show Windows Explorer-style tree lines
+@property (nonatomic, assign) BOOL transparentBackground;  // Glass effect background
 @end
 
 @implementation PlaylistOrganizerController
@@ -226,8 +227,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)loadView {
-    // Load tree lines setting from config
-    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, true);
+    // Load settings from config
+    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, plorg_config::kDefaultShowTreeLines);
+    self.transparentBackground = plorg_config::getConfigBool(plorg_config::kTransparentBackground, plorg_config::kDefaultTransparentBackground);
 
     // Create scroll view
     self.scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 250, 400)];
@@ -274,6 +276,14 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     // Style as source list
     self.outlineView.selectionHighlightStyle = NSTableViewSelectionHighlightStyleSourceList;
+
+    // Apply opaque background if transparent is disabled
+    // (Source list style provides glass effect by default - only override when user wants opaque)
+    if (!self.transparentBackground) {
+        self.scrollView.drawsBackground = YES;
+        self.scrollView.backgroundColor = [NSColor windowBackgroundColor];
+        self.outlineView.backgroundColor = [NSColor windowBackgroundColor];
+    }
 
     self.scrollView.documentView = self.outlineView;
     self.view = self.scrollView;

@@ -10,8 +10,8 @@
 #define SIMPLAYLIST_VERSION_INT 112
 
 // Playlist Organizer
-#define PLORG_VERSION "1.1.0"
-#define PLORG_VERSION_INT 110
+#define PLORG_VERSION "1.2.0"
+#define PLORG_VERSION_INT 120
 
 // Waveform Seekbar
 #define WAVEFORM_VERSION "1.1.0"
