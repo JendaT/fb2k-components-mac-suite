@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "../../../../shared/version.h"
 
 #import "../UI/WaveformSeekbarView.h"
 #import "../UI/WaveformSeekbarController.h"
@@ -14,7 +15,7 @@
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "Waveform Seekbar",
-    "1.1.0",
+    WAVEFORM_VERSION,
     "Waveform seekbar for foobar2000 macOS\n\n"
     "Features:\n"
     "- Complete waveform display\n"
