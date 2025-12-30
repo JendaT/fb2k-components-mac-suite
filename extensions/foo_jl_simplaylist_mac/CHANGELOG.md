@@ -2,6 +2,17 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.1.3] - 2025-12-30
+
+### Fixed
+- **Delete tracks not working**: Delete key now correctly removes selected tracks
+- **Drag and drop reordering not working**: Internal track reordering now works properly
+- **External file drop not working**: Dropping files from Finder now inserts at correct position
+
+### Technical
+- Sparse model stores playlist indices directly in selection, not row indices
+- Removed dead node-based code paths that were silently failing
+
 ## [1.1.2] - 2025-12-29
 
 ### Fixed
