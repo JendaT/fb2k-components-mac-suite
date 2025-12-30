@@ -22,6 +22,11 @@ static const char* const kEnableNowPlaying = "enable_now_playing";
 static const char* const kSubmitOnlyInLibrary = "submit_only_library";
 static const char* const kSubmitDynamicSources = "submit_dynamic";
 
+// Widget settings
+static const char* const kWidgetStatsEnabled = "widget_stats_enabled";
+static const char* const kWidgetMaxAlbums = "widget_max_albums";
+static const char* const kWidgetRefreshInterval = "widget_refresh_interval";
+
 // Titleformat mappings (advanced)
 static const char* const kArtistFormat = "artist_format";
 static const char* const kTitleFormat = "title_format";
@@ -161,6 +166,32 @@ inline std::string getTitleFormat() {
 
 inline std::string getAlbumFormat() {
     return getConfigString(kAlbumFormat, kDefaultAlbumFormat);
+}
+
+// Widget accessors
+
+inline bool isWidgetStatsEnabled() {
+    return getConfigBool(kWidgetStatsEnabled, true);
+}
+
+inline void setWidgetStatsEnabled(bool enabled) {
+    setConfigBool(kWidgetStatsEnabled, enabled);
+}
+
+inline int64_t getWidgetMaxAlbums() {
+    return getConfigInt(kWidgetMaxAlbums, 10);
+}
+
+inline void setWidgetMaxAlbums(int64_t count) {
+    setConfigInt(kWidgetMaxAlbums, count);
+}
+
+inline int64_t getWidgetRefreshInterval() {
+    return getConfigInt(kWidgetRefreshInterval, 300);  // 5 minutes default
+}
+
+inline void setWidgetRefreshInterval(int64_t seconds) {
+    setConfigInt(kWidgetRefreshInterval, seconds);
 }
 
 } // namespace scrobble_config

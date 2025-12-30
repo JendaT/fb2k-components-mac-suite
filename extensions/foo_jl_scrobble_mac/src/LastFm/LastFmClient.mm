@@ -8,6 +8,7 @@
 #import "LastFmClient.h"
 #import "LastFmConstants.h"
 #import "../Core/ScrobbleTrack.h"
+#import "../Core/TopAlbum.h"
 #import "../Core/MD5.h"
 
 @interface LastFmClient ()
@@ -122,6 +123,62 @@
         }
 
         // Check for API error
+        if (json[@"error"]) {
+            NSInteger errorCode = [json[@"error"] integerValue];
+            NSString* message = json[@"message"] ?: @"Unknown error";
+            NSError* apiError = LastFmMakeError((LastFmErrorCode)errorCode, message);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, apiError);
+            });
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completion(json, nil);
+        });
+    }] resume];
+}
+
+- (void)executeUnsignedGETRequest:(NSDictionary<NSString*, NSString*>*)baseParams
+                       completion:(void(^)(NSDictionary* _Nullable response, NSError* _Nullable error))completion {
+    // Build URL with query parameters (no signing needed for public API methods)
+    NSMutableDictionary* params = [baseParams mutableCopy];
+    params[@"api_key"] = @(LastFm::kApiKey);
+    params[@"format"] = @"json";
+
+    NSURLComponents* components = [NSURLComponents componentsWithString:@(LastFm::kBaseUrl)];
+    NSMutableArray* queryItems = [NSMutableArray array];
+    for (NSString* key in params) {
+        [queryItems addObject:[NSURLQueryItem queryItemWithName:key value:params[key]]];
+    }
+    components.queryItems = queryItems;
+
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:components.URL];
+    request.HTTPMethod = @"GET";
+    [request setValue:@"foo_scrobble_mac/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    [[_urlSession dataTaskWithRequest:request
+                    completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+        if (error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, error);
+            });
+            return;
+        }
+
+        NSError* jsonError = nil;
+        NSDictionary* json = [NSJSONSerialization JSONObjectWithData:data
+                                                             options:0
+                                                               error:&jsonError];
+        if (jsonError || ![json isKindOfClass:[NSDictionary class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, jsonError ?: [NSError errorWithDomain:LastFmErrorDomain
+                                                                 code:LastFmErrorOperationFailed
+                                                             userInfo:@{NSLocalizedDescriptionKey: @"Invalid response"}]);
+            });
+            return;
+        }
+
         if (json[@"error"]) {
             NSInteger errorCode = [json[@"error"] integerValue];
             NSString* message = json[@"message"] ?: @"Unknown error";
@@ -365,6 +422,80 @@
         NSInteger ignored = [scrobbles[@"@attr"][@"ignored"] integerValue];
 
         completion(accepted, ignored, nil);
+    }];
+}
+
+#pragma mark - Statistics
+
+- (void)fetchTopAlbums:(NSString*)username
+                period:(NSString*)period
+                 limit:(NSInteger)limit
+            completion:(LastFmTopAlbumsCompletion)completion {
+
+    if (!username || username.length == 0) {
+        completion(nil, LastFmMakeError(LastFmErrorInvalidParameters, @"Username required"));
+        return;
+    }
+
+    NSDictionary* params = @{
+        @"method": @(LastFm::kMethodGetTopAlbums),
+        @"user": username,
+        @"period": period ?: @"7day",
+        @"limit": [NSString stringWithFormat:@"%ld", (long)MIN(limit, 50)]
+    };
+
+    [self executeUnsignedGETRequest:params completion:^(NSDictionary* response, NSError* error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<TopAlbum*>* albums = [NSMutableArray array];
+        NSDictionary* topAlbums = response[@"topalbums"];
+        NSArray* albumArray = topAlbums[@"album"];
+
+        if ([albumArray isKindOfClass:[NSArray class]]) {
+            for (NSDictionary* albumDict in albumArray) {
+                TopAlbum* album = [TopAlbum albumFromDictionary:albumDict];
+                if (album) {
+                    [albums addObject:album];
+                }
+            }
+        }
+
+        completion(albums, nil);
+    }];
+}
+
+- (void)fetchRecentTracksCount:(NSString*)username
+                          from:(NSTimeInterval)fromTimestamp
+                    completion:(LastFmRecentTracksCountCompletion)completion {
+
+    if (!username || username.length == 0) {
+        completion(0, LastFmMakeError(LastFmErrorInvalidParameters, @"Username required"));
+        return;
+    }
+
+    // Request just 1 track to get total count from pagination info
+    NSDictionary* params = @{
+        @"method": @(LastFm::kMethodGetRecentTracks),
+        @"user": username,
+        @"from": [NSString stringWithFormat:@"%.0f", fromTimestamp],
+        @"limit": @"1"
+    };
+
+    [self executeUnsignedGETRequest:params completion:^(NSDictionary* response, NSError* error) {
+        if (error) {
+            completion(0, error);
+            return;
+        }
+
+        // Total count is in the @attr pagination info
+        NSDictionary* recentTracks = response[@"recenttracks"];
+        NSDictionary* attr = recentTracks[@"@attr"];
+        NSInteger total = [attr[@"total"] integerValue];
+
+        completion(total, nil);
     }];
 }
 

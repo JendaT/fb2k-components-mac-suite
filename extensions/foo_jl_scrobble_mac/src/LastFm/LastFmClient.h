@@ -14,6 +14,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class ScrobbleTrack;
+@class TopAlbum;
 
 /// Completion handler for authentication token request
 typedef void (^LastFmTokenCompletion)(NSString* _Nullable token, NSError* _Nullable error);
@@ -32,6 +33,12 @@ typedef void (^LastFmValidationCompletion)(BOOL valid, NSString* _Nullable usern
 
 /// Completion handler for user info request (includes profile image URL)
 typedef void (^LastFmUserInfoCompletion)(NSString* _Nullable username, NSURL* _Nullable imageURL, NSError* _Nullable error);
+
+/// Completion handler for top albums request
+typedef void (^LastFmTopAlbumsCompletion)(NSArray* _Nullable albums, NSError* _Nullable error);
+
+/// Completion handler for recent tracks count request
+typedef void (^LastFmRecentTracksCountCompletion)(NSInteger count, NSError* _Nullable error);
 
 
 @interface LastFmClient : NSObject
@@ -59,6 +66,19 @@ typedef void (^LastFmUserInfoCompletion)(NSString* _Nullable username, NSURL* _N
 
 /// Fetch user info including profile image
 - (void)fetchUserInfoWithCompletion:(LastFmUserInfoCompletion)completion;
+
+#pragma mark - Statistics
+
+/// Fetch top albums for a user
+- (void)fetchTopAlbums:(NSString*)username
+                period:(NSString*)period
+                 limit:(NSInteger)limit
+            completion:(LastFmTopAlbumsCompletion)completion;
+
+/// Fetch count of recent tracks since a timestamp
+- (void)fetchRecentTracksCount:(NSString*)username
+                          from:(NSTimeInterval)fromTimestamp
+                    completion:(LastFmRecentTracksCountCompletion)completion;
 
 #pragma mark - Scrobbling
 

@@ -26,6 +26,8 @@ static const char* const kMethodGetSession = "auth.getSession";
 static const char* const kMethodScrobble = "track.scrobble";
 static const char* const kMethodNowPlaying = "track.updateNowPlaying";
 static const char* const kMethodGetUserInfo = "user.getInfo";
+static const char* const kMethodGetTopAlbums = "user.getTopAlbums";
+static const char* const kMethodGetRecentTracks = "user.getRecentTracks";
 
 // Timing constants
 static const double kAuthPollInterval = 3.0;      // Poll for approval every 3s
