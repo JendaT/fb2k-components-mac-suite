@@ -7,17 +7,17 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "../../../../shared/version.h"
 #import "../Core/ScrobbleConfig.h"
 #import "../Services/ScrobbleService.h"
 #import "../LastFm/LastFmAuth.h"
 #import "../UI/ScrobblePreferencesController.h"
-// Note: UI elements (toolbar widgets) are not supported in macOS SDK v2
-// The ScrobbleStatusController is available for future use if API is added
+#import "../UI/ScrobbleWidgetController.h"
 
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "Last.fm Scrobbler",
-    "1.0.0",
+    SCROBBLE_VERSION,
     "Scrobbles played tracks to Last.fm.\n\n"
     "Features:\n"
     "- Automatic scrobbling after 50% or 4 minutes played\n"
@@ -113,7 +113,47 @@ namespace {
     preferences_page_factory_t<scrobble_preferences_page> g_prefs_factory;
 }
 
-// UI Element registration
-// Note: ui_element_mac is not available in macOS SDK v2
-// Status widget would require API support from foobar2000
-// For now, status is shown in the Preferences page
+// UI Element registration for Last.fm widget
+namespace {
+    static const GUID g_guid_lastfm_widget = {
+        0x9C3E5B2A, 0x1D4F, 0x6E8A,
+        {0xBC, 0xDE, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD}
+    };
+
+    class lastfm_scrobbler_ui_element : public ui_element_mac {
+    public:
+        service_ptr instantiate(service_ptr arg) override {
+            @autoreleasepool {
+                NSDictionary<NSString*, NSString*>* params = nil;
+                if (arg.is_valid()) {
+                    id obj = fb2k::unwrapNSObject(arg);
+                    if ([obj isKindOfClass:[NSDictionary class]]) {
+                        params = (NSDictionary<NSString*, NSString*>*)obj;
+                    }
+                }
+
+                ScrobbleWidgetController* controller = [[ScrobbleWidgetController alloc] initWithParameters:params];
+                return fb2k::wrapNSObject(controller);
+            }
+        }
+
+        bool match_name(const char* name) override {
+            return strcmp(name, "Last.fm Scrobbler") == 0 ||
+                   strcmp(name, "lastfm_scrobbler") == 0 ||
+                   strcmp(name, "lastfm-scrobbler") == 0 ||
+                   strcmp(name, "foo_jl_scrobble") == 0 ||
+                   strcmp(name, "jl_scrobble") == 0 ||
+                   strcmp(name, "scrobbler") == 0;
+        }
+
+        fb2k::stringRef get_name() override {
+            return fb2k::makeString("Last.fm Scrobbler");
+        }
+
+        GUID get_guid() override {
+            return g_guid_lastfm_widget;
+        }
+    };
+
+    FB2K_SERVICE_FACTORY(lastfm_scrobbler_ui_element);
+}

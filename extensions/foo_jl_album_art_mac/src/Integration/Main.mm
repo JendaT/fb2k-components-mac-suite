@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "../../../../shared/version.h"
 
 #import "../UI/AlbumArtController.h"
 #import "../Core/AlbumArtFetcher.h"
@@ -14,7 +15,7 @@
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "Album Art (Extended)",
-    "1.0.0",
+    ALBUMART_VERSION,
     "Extended album art viewer for foobar2000 macOS\n\n"
     "Features:\n"
     "- Display front, back, disc, icon, and artist artwork\n"

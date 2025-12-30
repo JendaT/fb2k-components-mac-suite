@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "../../../../shared/version.h"
 
 #import "../UI/PlaylistOrganizerController.h"
 #import "../UI/OrganizerPreferencesController.h"
@@ -14,7 +15,7 @@
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "Playlist Organizer",
-    "1.0.0",
+    PLORG_VERSION,
     "Playlist Organizer for foobar2000 macOS\n\n"
     "Features:\n"
     "- Hierarchical playlist organization with folders\n"
