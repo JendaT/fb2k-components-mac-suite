@@ -33,6 +33,9 @@ typeset -A DIR_MAP=(
     ["queuemanager"]="jl_queue_manager"
     ["queue"]="jl_queue_manager"
     ["jl_queue_manager"]="jl_queue_manager"
+    ["biography"]="jl_biography"
+    ["bio"]="jl_biography"
+    ["jl_biography"]="jl_biography"
 )
 
 if [ -z "$1" ]; then
@@ -45,6 +48,7 @@ if [ -z "$1" ]; then
     echo "  scrobble       - Last.fm Scrobbler"
     echo "  albumart       - Album Art"
     echo "  queue_manager  - Queue Manager"
+    echo "  biography      - Artist Biography"
     exit 1
 fi
 
@@ -53,7 +57,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform, scrobble, albumart, queue_manager"
+    echo "Valid names: simplaylist, plorg, waveform, scrobble, albumart, queue_manager, biography"
     exit 1
 fi
 
