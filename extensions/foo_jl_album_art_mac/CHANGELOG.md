@@ -2,6 +2,11 @@
 
 All notable changes to Album Art (Extended) will be documented in this file.
 
+## [1.0.2] - 2025-12-30
+
+### Fixed
+- Fixed layout compression when no album art is available by setting low content hugging and compression resistance priorities
+
 ## [1.0.1] - 2025-12-29
 
 ### Fixed

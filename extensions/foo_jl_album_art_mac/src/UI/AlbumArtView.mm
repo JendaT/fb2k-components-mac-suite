@@ -45,6 +45,12 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
     _arrowOpacity = 0.0;
     _canNavigatePrevious = NO;
     _canNavigateNext = NO;
+
+    // Ensure the view doesn't resist being resized by the layout system
+    [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 }
 
 - (void)updateTrackingAreas {
