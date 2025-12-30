@@ -121,6 +121,31 @@ get_version() {
     echo "$version"
 }
 
+# Update version in README.md after release
+update_readme_version() {
+    local display_name="$1"
+    local version="$2"
+    local readme="$PROJECT_ROOT/README.md"
+
+    # Escape special characters for sed
+    local escaped_name=$(echo "$display_name" | sed 's/\./\\./g')
+
+    # Update version in table row
+    # Pattern: | [DisplayName](#...) | Description | VERSION |
+    sed -i '' "s/\(| \[${escaped_name}\][^|]*|[^|]*| \)[0-9]*\.[0-9]*\.[0-9]*/\1${version}/" "$readme"
+
+    # Check if there were changes
+    if git -C "$PROJECT_ROOT" diff --quiet README.md 2>/dev/null; then
+        echo "README.md already up to date"
+    else
+        echo "Updating README.md with $display_name v$version..."
+        git -C "$PROJECT_ROOT" add README.md
+        git -C "$PROJECT_ROOT" commit -m "Update $display_name version to $version in README"
+        git -C "$PROJECT_ROOT" push origin main
+        echo "README.md updated and pushed"
+    fi
+}
+
 # Parse arguments
 if [ -z "$1" ] || [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     show_help
@@ -333,6 +358,12 @@ gh release create "$TAG_NAME" \
 
 # Clean up package file
 rm -f "$PROJECT_ROOT/$COMPONENT_FILE"
+
+# Update README.md with new version (skip for draft releases)
+if [ -z "$DRAFT" ]; then
+    echo ""
+    update_readme_version "$DISPLAY_NAME" "$VERSION"
+fi
 
 echo ""
 echo "=== Release complete ==="

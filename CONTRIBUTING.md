@@ -189,3 +189,105 @@ Releasing one extension does not affect others.
 3. Test thoroughly
 4. Update CHANGELOG.md
 5. Submit PR with clear description
+
+## Git Worktree Development Workflow
+
+This project uses Git worktrees for parallel component development. Each component has its own worktree with a dedicated development branch.
+
+### Directory Structure
+
+```
+~/Projects/
+  Foobar2000/                    # Main repo (main branch) - reference only
+  Foobar2000-worktrees/          # All worktrees live here
+    simplaylist/                 # dev/simplaylist branch
+    plorg/                       # dev/plorg branch
+    scrobble/                    # dev/scrobble branch
+    waveform/                    # dev/waveform branch
+    albumart/                    # dev/albumart branch
+    queue-manager/               # dev/queue-manager branch
+    biography/                   # dev/biography branch
+    cloud-streamer/              # dev/cloud-streamer branch
+    playback-controls/           # dev/playback-controls branch
+```
+
+### Starting Development
+
+Use the `fb2k-dev` launcher from anywhere:
+
+```bash
+fb2k-dev biography    # Opens Claude in ~/Projects/Foobar2000-worktrees/biography
+fb2k-dev plorg        # Opens Claude in ~/Projects/Foobar2000-worktrees/plorg
+```
+
+Tab completion is available for component names.
+
+### Merge Strategy: Fast-Forward Only
+
+**CRITICAL:** We use fast-forward merges only. No merge commits.
+
+```bash
+# 1. Rebase your branch onto latest main
+git fetch origin && git rebase origin/main
+
+# 2. Use the merge script (from main repo)
+./Scripts/ff-merge.sh biography
+```
+
+The `ff-merge.sh` script:
+1. Rebases the component branch onto main
+2. Pushes the rebased branch
+3. Fast-forward merges to main (no merge commit)
+4. Pushes main
+
+### Component Naming Convention
+
+| Item | Pattern | Example |
+|------|---------|---------|
+| Branch | `dev/<name>` | `dev/biography` |
+| Directory | `foo_jl_<name>_mac` | `foo_jl_biography_mac` |
+| Component file | `foo_jl_<name>.fb2k-component` | `foo_jl_biography.fb2k-component` |
+
+### Worktree Files
+
+Each worktree contains:
+
+- **CLAUDE.md** - Instructions for Claude Code (workflow, build commands)
+- **BACKLOG.md** - Feature backlog with status tracking
+
+### Daily Workflow
+
+| Task | Command |
+|------|---------|
+| Start work | `fb2k-dev <component>` |
+| Sync with main | `git fetch origin && git rebase origin/main` |
+| Merge to main | `./Scripts/ff-merge.sh <component>` |
+| Release | `./Scripts/release_component.sh <component>` |
+| List worktrees | `git worktree list` |
+
+### Setup Scripts
+
+- `Scripts/worktree-setup.sh` - Creates all worktrees with SDK symlinks
+- `Scripts/ff-merge.sh <component>` - Fast-forward merge to main
+- `Scripts/init-worktree-docs.sh` - Creates CLAUDE.md and BACKLOG.md in worktrees
+- `Scripts/new-component.sh <name> "<Display Name>"` - Scaffolds a new component
+
+### Adding a New Component
+
+Use the automated script:
+
+```bash
+./Scripts/new-component.sh lyrics "Lyrics Display"
+```
+
+This creates:
+1. Version constants in `shared/version.h`
+2. Mappings in all release/package scripts
+3. Extension directory structure
+4. Worktree with CLAUDE.md and BACKLOG.md
+5. Updates to fb2k-dev and completions
+
+**Manual steps after:**
+1. Create `generate_xcode_project.rb` in the extension
+2. Implement the extension code
+3. Add to README.md Extensions table
