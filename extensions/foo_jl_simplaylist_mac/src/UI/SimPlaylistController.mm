@@ -1444,27 +1444,16 @@ static NSInteger _groupDetectionGeneration = 0;
     // Create undo point
     pm->playlist_undo_backup(activePlaylist);
 
-    // Build removal mask - convert row indices to playlist indices
+    // Build removal mask from selected playlist indices
+    // Note: selectedIndices contains playlist indices directly (not row indices)
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
-    bit_array_bittable mask(itemCount);
+    __block bit_array_bittable mask(itemCount);
 
-    // Collect playlist indices from selected rows
-    NSMutableArray<NSNumber *> *playlistIndices = [NSMutableArray array];
-    [view.selectedIndices enumerateIndexesUsingBlock:^(NSUInteger row, BOOL *stop) {
-        if (row < view.nodes.count) {
-            GroupNode *node = view.nodes[row];
-            if (node.type == GroupNodeTypeTrack && node.playlistIndex >= 0) {
-                [playlistIndices addObject:@(node.playlistIndex)];
-            }
+    [view.selectedIndices enumerateIndexesUsingBlock:^(NSUInteger playlistIndex, BOOL *stop) {
+        if (playlistIndex < itemCount) {
+            mask.set((t_size)playlistIndex, true);
         }
     }];
-
-    for (NSNumber *num in playlistIndices) {
-        t_size idx = [num unsignedLongValue];
-        if (idx < itemCount) {
-            mask.set(idx, true);
-        }
-    }
 
     // Remove items
     pm->playlist_remove_items(activePlaylist, mask);
@@ -1814,14 +1803,12 @@ static BOOL isRemotePath(const char *path) {
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
     if (itemCount == 0) return;
 
-    // Convert row indices to playlist indices
+    // sourceRowIndices actually contains playlist indices (from _selectedIndices in view)
+    // They're already playlist indices, no conversion needed
     NSMutableArray<NSNumber *> *sourcePlaylistIndices = [NSMutableArray array];
-    [sourceRowIndices enumerateIndexesUsingBlock:^(NSUInteger rowIdx, BOOL *stop) {
-        if (rowIdx < view.nodes.count) {
-            GroupNode *node = view.nodes[rowIdx];
-            if (node.type == GroupNodeTypeTrack && node.playlistIndex >= 0) {
-                [sourcePlaylistIndices addObject:@(node.playlistIndex)];
-            }
+    [sourceRowIndices enumerateIndexesUsingBlock:^(NSUInteger playlistIdx, BOOL *stop) {
+        if (playlistIdx < itemCount) {
+            [sourcePlaylistIndices addObject:@(playlistIdx)];
         }
     }];
 
@@ -1833,19 +1820,20 @@ static BOOL isRemotePath(const char *path) {
     }];
 
     // Convert destination row to playlist index
+    NSInteger totalRows = [view rowCount];
     NSInteger destPlaylistIndex = 0;
-    if (destinationRow >= (NSInteger)view.nodes.count) {
+    if (destinationRow >= totalRows) {
         destPlaylistIndex = itemCount;
-    } else if (destinationRow >= 0 && destinationRow < (NSInteger)view.nodes.count) {
-        GroupNode *destNode = view.nodes[destinationRow];
-        if (destNode.type == GroupNodeTypeTrack) {
-            destPlaylistIndex = destNode.playlistIndex;
+    } else if (destinationRow >= 0) {
+        NSInteger destIdx = [view playlistIndexForRow:destinationRow];
+        if (destIdx >= 0) {
+            destPlaylistIndex = destIdx;
         } else {
-            // Find the next track node
-            for (NSInteger r = destinationRow; r < (NSInteger)view.nodes.count; r++) {
-                GroupNode *n = view.nodes[r];
-                if (n.type == GroupNodeTypeTrack) {
-                    destPlaylistIndex = n.playlistIndex;
+            // Row is header/subgroup/padding - find next valid track
+            for (NSInteger r = destinationRow; r < totalRows; r++) {
+                NSInteger idx = [view playlistIndexForRow:r];
+                if (idx >= 0) {
+                    destPlaylistIndex = idx;
                     break;
                 }
             }
@@ -1924,16 +1912,17 @@ static BOOL isRemotePath(const char *path) {
 
     // Convert row index to playlist index for insertion point
     t_size insertAt = SIZE_MAX;  // Default: append at end
-    if (row >= 0 && row < (NSInteger)view.nodes.count) {
-        GroupNode *node = view.nodes[row];
-        if (node.type == GroupNodeTypeTrack) {
-            insertAt = node.playlistIndex;
+    NSInteger totalRows = [view rowCount];
+    if (row >= 0 && row < totalRows) {
+        NSInteger playlistIdx = [view playlistIndexForRow:row];
+        if (playlistIdx >= 0) {
+            insertAt = (t_size)playlistIdx;
         } else {
-            // Find next track
-            for (NSInteger r = row; r < (NSInteger)view.nodes.count; r++) {
-                GroupNode *n = view.nodes[r];
-                if (n.type == GroupNodeTypeTrack) {
-                    insertAt = n.playlistIndex;
+            // Row is header/subgroup/padding - find next valid track
+            for (NSInteger r = row; r < totalRows; r++) {
+                NSInteger idx = [view playlistIndexForRow:r];
+                if (idx >= 0) {
+                    insertAt = (t_size)idx;
                     break;
                 }
             }

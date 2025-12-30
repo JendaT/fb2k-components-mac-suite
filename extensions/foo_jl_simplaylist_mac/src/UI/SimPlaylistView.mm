@@ -1114,14 +1114,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     CGFloat y;
     NSInteger count = [self rowCount];
     if (row >= count) {
-        // Drop at end
-        if (_flatModeEnabled) {
-            y = count * _rowHeight;
-        } else if (_nodes.count > 0) {
-            y = [self yOffsetForRow:_nodes.count - 1] + [self heightForNode:_nodes.lastObject];
-        } else {
-            y = 0;
-        }
+        // Drop at end - use total content height
+        y = count * _rowHeight;
     } else {
         y = [self yOffsetForRow:row];
     }
