@@ -1,0 +1,17 @@
+# Xcode
+*.xcodeproj/
+build/
+DerivedData/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# Secrets - DO NOT COMMIT
+src/API/SecretConfig.h
+
+# IDE
+.vscode/
+.idea/
