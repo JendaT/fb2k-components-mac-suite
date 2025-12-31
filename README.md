@@ -180,6 +180,7 @@ Or build all extensions:
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
 - [Contributing](CONTRIBUTING.md) - Code standards and conventions
+- [Troubleshooting](docs/TROUBLESHOOTING.md) - Debug tools and common issues
 - [Changelog](CHANGELOG.md) - Version history
 
 ## Author
