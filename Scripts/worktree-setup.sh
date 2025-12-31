@@ -12,7 +12,7 @@ COMPONENTS=(
     simplaylist
     plorg
     scrobble
-    waveform
+    waveform-seekbar
     albumart
     queue-manager
     biography
