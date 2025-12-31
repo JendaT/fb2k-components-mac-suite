@@ -163,7 +163,7 @@ Each extension has its own version - they are completely independent:
 |-----------|-----------------|-------------|
 | SimPlaylist | `SIMPLAYLIST_VERSION` | `simplaylist-v1.1.0` |
 | Playlist Organizer | `PLORG_VERSION` | `plorg-v1.0.0` |
-| Waveform Seekbar | `WAVEFORM_VERSION` | `waveform-v1.0.0` |
+| Waveform Seekbar | `WAVEFORM_VERSION` | `waveform-seekbar-v1.0.0` |
 | Last.fm Scrobbler | `SCROBBLE_VERSION` | `scrobble-v1.0.0` |
 
 Releasing one extension does not affect others.
@@ -203,7 +203,7 @@ This project uses Git worktrees for parallel component development. Each compone
     simplaylist/                 # dev/simplaylist branch
     plorg/                       # dev/plorg branch
     scrobble/                    # dev/scrobble branch
-    waveform/                    # dev/waveform branch
+    waveform-seekbar/            # dev/waveform-seekbar branch
     albumart/                    # dev/albumart branch
     queue-manager/               # dev/queue-manager branch
     biography/                   # dev/biography branch

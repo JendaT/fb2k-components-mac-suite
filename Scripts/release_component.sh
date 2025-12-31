@@ -27,6 +27,7 @@ typeset -A COMPONENT_MAP=(
     ["jl_simplaylist"]="foo_jl_simplaylist_mac"
     ["plorg"]="foo_jl_plorg_mac"
     ["jl_plorg"]="foo_jl_plorg_mac"
+    ["waveform-seekbar"]="foo_jl_wave_seekbar_mac"
     ["waveform"]="foo_jl_wave_seekbar_mac"
     ["wave_seekbar"]="foo_jl_wave_seekbar_mac"
     ["jl_wave_seekbar"]="foo_jl_wave_seekbar_mac"
@@ -47,6 +48,7 @@ typeset -A VERSION_MAP=(
     ["jl_simplaylist"]="SIMPLAYLIST_VERSION"
     ["plorg"]="PLORG_VERSION"
     ["jl_plorg"]="PLORG_VERSION"
+    ["waveform-seekbar"]="WAVEFORM_VERSION"
     ["waveform"]="WAVEFORM_VERSION"
     ["wave_seekbar"]="WAVEFORM_VERSION"
     ["jl_wave_seekbar"]="WAVEFORM_VERSION"
@@ -67,6 +69,7 @@ typeset -A DISPLAY_NAME_MAP=(
     ["jl_simplaylist"]="SimPlaylist"
     ["plorg"]="Playlist Organizer"
     ["jl_plorg"]="Playlist Organizer"
+    ["waveform-seekbar"]="Waveform Seekbar"
     ["waveform"]="Waveform Seekbar"
     ["wave_seekbar"]="Waveform Seekbar"
     ["jl_wave_seekbar"]="Waveform Seekbar"
@@ -89,7 +92,7 @@ show_help() {
     echo "Components:"
     echo "  simplaylist   - SimPlaylist (flat playlist view)"
     echo "  plorg         - Playlist Organizer"
-    echo "  waveform      - Waveform Seekbar"
+    echo "  waveform-seekbar - Waveform Seekbar"
     echo "  scrobble      - Last.fm Scrobbler"
     echo "  albumart      - Album Art (extended album art display)"
     echo "  queue_manager - Queue Manager (visual playback queue)"
@@ -201,9 +204,9 @@ if [ "$COMPONENT" = "plorg" ] || [ "$COMPONENT" = "jl_plorg" ]; then
     TAG_NAME="plorg-v${VERSION}"
 fi
 
-if [ "$COMPONENT" = "waveform" ] || [ "$COMPONENT" = "wave_seekbar" ] || [ "$COMPONENT" = "jl_wave_seekbar" ]; then
+if [ "$COMPONENT" = "waveform-seekbar" ] || [ "$COMPONENT" = "waveform" ] || [ "$COMPONENT" = "wave_seekbar" ] || [ "$COMPONENT" = "jl_wave_seekbar" ]; then
     COMPONENT_FILE="foo_jl_wave_seekbar.fb2k-component"
-    TAG_NAME="waveform-v${VERSION}"
+    TAG_NAME="waveform-seekbar-v${VERSION}"
 fi
 
 if [ "$COMPONENT" = "scrobble" ] || [ "$COMPONENT" = "jl_scrobble" ]; then
