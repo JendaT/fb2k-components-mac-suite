@@ -1,36 +1,33 @@
 #!/bin/bash
-# Install script for foo_jl_plorg_mac
+#
+# install.sh - Install foo_jl_plorg to foobar2000
+#
+# Usage:
+#   ./Scripts/install.sh [OPTIONS]
+#
+# Options:
+#   --config CONFIG  Use specified build configuration (Debug/Release, default: Release)
+#   --help           Show this help message
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Component configuration
 PROJECT_NAME="foo_jl_plorg"
-CONFIGURATION="${1:-Release}"
 
-# foobar2000 v2 component path (correct location)
-FB2K_USER_COMPONENTS="$HOME/Library/foobar2000-v2/user-components"
+# Load shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/../../../shared/scripts/lib.sh"
 
-COMPONENT="$PROJECT_DIR/build/$CONFIGURATION/$PROJECT_NAME.component"
+show_help() {
+    head -12 "$0" | tail -8
+    exit 0
+}
 
-if [ ! -d "$COMPONENT" ]; then
-    echo "Component not found. Building first..."
-    "$SCRIPT_DIR/build.sh" "$CONFIGURATION"
+# Parse arguments
+if ! parse_install_args "$@"; then
+    show_help
 fi
 
-# Create the component directory structure: user-components/foo_plorg/foo_plorg.component
-INSTALL_DIR="$FB2K_USER_COMPONENTS/$PROJECT_NAME"
-
-echo "Installing $PROJECT_NAME.component to $INSTALL_DIR..."
-
-# Remove old version
-rm -rf "$INSTALL_DIR"
-
-# Create directory and copy
-mkdir -p "$INSTALL_DIR"
-cp -R "$COMPONENT" "$INSTALL_DIR/"
-
-echo ""
-echo "Installation complete!"
-echo "Installed to: $INSTALL_DIR/$PROJECT_NAME.component"
-echo "Restart foobar2000 to load the component."
+# Run install
+do_install

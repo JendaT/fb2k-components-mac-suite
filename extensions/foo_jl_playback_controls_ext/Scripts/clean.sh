@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# clean.sh - Clean foo_jl_wave_seekbar build artifacts
+# clean.sh - Clean foo_jl_playback_controls build artifacts
 #
 # Usage:
 #   ./Scripts/clean.sh
@@ -8,7 +8,7 @@
 set -e
 
 # Component configuration
-PROJECT_NAME="foo_jl_wave_seekbar"
+PROJECT_NAME="foo_jl_playback_controls"
 
 # Load shared library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

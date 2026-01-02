@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# build.sh - Build foo_jl_cloud_streamer component
+# build.sh - Build foo_jl_album_art component
 #
 # Usage:
 #   ./Scripts/build.sh [OPTIONS]
@@ -16,7 +16,7 @@
 set -e
 
 # Component configuration
-PROJECT_NAME="foo_jl_cloud_streamer"
+PROJECT_NAME="foo_jl_album_art"
 
 # Load shared library
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

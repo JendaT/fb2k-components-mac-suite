@@ -1,14 +1,19 @@
 #!/bin/bash
 #
-# clean.sh - Clean build artifacts
+# clean.sh - Clean foo_jl_album_art build artifacts
 #
+# Usage:
+#   ./Scripts/clean.sh
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$PROJECT_DIR"
+# Component configuration
+PROJECT_NAME="foo_jl_album_art"
 
-echo "Cleaning build directory..."
-rm -rf build/
+# Load shared library
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/../../../shared/scripts/lib.sh"
 
-echo "Clean complete."
+# Run clean
+do_clean
