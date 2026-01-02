@@ -2,6 +2,7 @@
 
 # SDK folders (download separately from foobar2000.org)
 SDK-*/
+SDK-*
 
 # Reference sources for analysis (Windows code, etc.)
 reference_sources/
