@@ -149,6 +149,109 @@ struct SubgroupDetector {
 // Output goes to /tmp/simplaylist_subgroup_debug.txt
 static bool g_subgroupDebugEnabled = false;
 
+// =============================================================================
+// ASYNC FILE IMPORT (copied from Plorg's working implementation)
+// =============================================================================
+
+class SimPlaylistImportNotify : public process_locations_notify {
+public:
+    t_size m_playlistIndex;
+    t_size m_insertAt;
+    pfc::string_list_impl m_paths;  // Keeps paths alive during async operation
+
+    SimPlaylistImportNotify(t_size playlistIndex, t_size insertAt)
+        : m_playlistIndex(playlistIndex), m_insertAt(insertAt) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() > 0) {
+            auto pm = playlist_manager::get();
+            if (m_playlistIndex < pm->get_playlist_count()) {
+                // Sort items by path for proper track ordering
+                // (process_locations_async doesn't preserve order for folder drops)
+                metadb_handle_list sortedItems(items);
+                sortedItems.sort_by_path();
+
+                pm->playlist_undo_backup(m_playlistIndex);
+                // Clear existing selection before inserting new items
+                pm->playlist_set_selection(m_playlistIndex, pfc::bit_array_true(), pfc::bit_array_false());
+                // Insert and select only the new items
+                pm->playlist_insert_items(m_playlistIndex, m_insertAt, sortedItems, pfc::bit_array_val(true));
+                // Set focus to first inserted item
+                pm->playlist_set_focus_item(m_playlistIndex, m_insertAt);
+            }
+        }
+    }
+
+    void on_aborted() override {}
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_no_filter |
+            playlist_incoming_item_filter_v2::op_flag_delay_ui |
+            playlist_incoming_item_filter_v2::op_flag_background,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
+
+static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NSArray<NSURL*>* urls) {
+    if (urls.count == 0) return;
+
+    auto pm = playlist_manager::get();
+    if (playlistIndex >= pm->get_playlist_count()) return;
+
+    // Sort URLs by filename (last path component) for proper track ordering
+    // Files are typically named with track numbers (e.g., "01 - Song.mp3")
+    NSArray<NSURL*>* sortedURLs = [urls sortedArrayUsingComparator:^NSComparisonResult(NSURL* a, NSURL* b) {
+        return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];
+    }];
+
+    auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
+
+    for (NSURL* url in sortedURLs) {
+        // Accept file URLs or URLs with file path (media library may use different scheme)
+        NSString* path = url.path;
+        if (path && path.length > 0) {
+            notify->m_paths.add_item([path UTF8String]);
+        }
+    }
+
+    notify->startImport();
+}
+
+// Import files using foobar2000 native paths (supports file://, mac-volume://, etc.)
+static void importFb2kPathsToPlaylistAsync(t_size playlistIndex, t_size insertAt, NSArray<NSString*>* fb2kPaths) {
+    if (fb2kPaths.count == 0) return;
+
+    auto pm = playlist_manager::get();
+    if (playlistIndex >= pm->get_playlist_count()) return;
+
+    // Sort paths by filename for proper track ordering
+    NSArray<NSString*>* sortedPaths = [fb2kPaths sortedArrayUsingComparator:^NSComparisonResult(NSString* a, NSString* b) {
+        return [a.lastPathComponent localizedStandardCompare:b.lastPathComponent];
+    }];
+
+    auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
+
+    for (NSString* path in sortedPaths) {
+        if (path && path.length > 0) {
+            // Pass foobar2000 native paths directly (file://, mac-volume://, etc.)
+            notify->m_paths.add_item([path UTF8String]);
+        }
+    }
+
+    notify->startImport();
+}
+
 // Forward declare callback manager
 @class SimPlaylistController;
 void SimPlaylistCallbackManager_registerController(SimPlaylistController* controller);
@@ -386,7 +489,6 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
 - (void)updateSubgroupCountPerGroup {
     NSArray<NSNumber *> *groupStarts = _playlistView.groupStarts;
     NSArray<NSNumber *> *subgroupStarts = _playlistView.subgroupStarts;
-    NSInteger itemCount = _playlistView.itemCount;
 
     NSMutableArray<NSNumber *> *counts = [NSMutableArray arrayWithCapacity:groupStarts.count];
     for (NSUInteger g = 0; g < groupStarts.count; g++) {
@@ -422,7 +524,6 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     NSArray<NSNumber *> *subgroupStarts = _playlistView.subgroupStarts;
     NSArray<NSString *> *subgroupHeaders = _playlistView.subgroupHeaders;
     NSArray<NSNumber *> *subgroupCountPerGroup = _playlistView.subgroupCountPerGroup;
-    NSInteger itemCount = _playlistView.itemCount;
 
     if (subgroupStarts.count == 0 || groupStarts.count == 0) return;
 
@@ -470,9 +571,9 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     BOOL isSwitchingPlaylist = (activePlaylist != SIZE_MAX &&
                                  (isFirstLoad || (NSInteger)activePlaylist != _currentPlaylistIndex));
 
-    // Save scroll anchor (first visible playlist index) BEFORE switching to a different one
-    // Only save if the current playlist was initialized (groups loaded, scroll position set)
-    if (!isFirstLoad && isSwitchingPlaylist && _scrollView && _scrollAnchorIndices && _currentPlaylistInitialized) {
+    // Save scroll anchor for BOTH playlist switches AND same-playlist refreshes
+    // This prevents visual jumping when items are added/removed
+    if (!isFirstLoad && _scrollView && _scrollAnchorIndices && _currentPlaylistInitialized) {
         NSInteger anchorIndex = [self firstVisiblePlaylistIndex];
         if (anchorIndex >= 0) {
             _scrollAnchorIndices[@(_currentPlaylistIndex)] = @(anchorIndex);
@@ -483,6 +584,7 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     _currentPlaylistInitialized = NO;
 
     // Clear cached data on any playlist change
+    // TODO: For incremental updates (add/remove), could invalidate only affected entries
     [_playlistView clearFormattedValuesCache];
 
     if (activePlaylist == SIZE_MAX) {
@@ -491,11 +593,13 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
         _playlistView.groupHeaders = @[];
         _playlistView.groupArtKeys = @[];
         _currentPlaylistIndex = -1;
+        _playlistView.sourcePlaylistIndex = -1;  // For drag validation
         [_playlistView reloadData];
         return;
     }
 
     _currentPlaylistIndex = activePlaylist;
+    _playlistView.sourcePlaylistIndex = activePlaylist;  // For drag validation
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
     if (itemCount == 0) {
@@ -601,6 +705,10 @@ void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* cont
     NSNumber *savedAnchorIndex = _scrollAnchorIndices[@(_scrollRestorePlaylistIndex)];
     if (savedAnchorIndex) {
         NSInteger playlistIndex = [savedAnchorIndex integerValue];
+        // Clamp to valid range (items may have been deleted after the anchor)
+        if (playlistIndex >= _playlistView.itemCount) {
+            playlistIndex = MAX(0, _playlistView.itemCount - 1);
+        }
         // Convert playlist index to row (works correctly regardless of grouping state)
         NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
         if (row >= 0) {
@@ -1137,7 +1245,11 @@ static NSInteger _groupDetectionGeneration = 0;
 }
 
 - (void)handleItemsRemoved {
+    // Disable implicit animations during rebuild to prevent visual flicker
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     [self rebuildFromPlaylist];
+    [CATransaction commit];
 }
 
 - (void)handleItemsReordered {
@@ -1455,8 +1567,52 @@ static NSInteger _groupDetectionGeneration = 0;
         }
     }];
 
+    // Calculate new focus position BEFORE removal
+    // Focus should move to the next item after the last selected, or previous if at end
+    NSInteger lastSelectedIndex = (NSInteger)[view.selectedIndices lastIndex];
+    NSInteger firstSelectedIndex = (NSInteger)[view.selectedIndices firstIndex];
+    t_size selectionCount = [view.selectedIndices count];
+    t_size newItemCount = itemCount - selectionCount;
+
+    t_size newFocusIndex = SIZE_MAX;
+    if (newItemCount > 0) {
+        // Try to focus the item that will be at the position after the last selected item
+        // After removal, items shift down, so next item after lastSelected becomes lastSelected - (items removed before it)
+        t_size itemsRemovedBeforeLast = 0;
+        for (t_size i = 0; i < (t_size)lastSelectedIndex; i++) {
+            if (mask.get(i)) itemsRemovedBeforeLast++;
+        }
+        // The item after lastSelectedIndex (if it exists) will be at position: lastSelectedIndex - itemsRemovedBeforeLast
+        // But we need to check if there IS an item after lastSelectedIndex
+        if ((t_size)(lastSelectedIndex + 1) < itemCount) {
+            // There's an item after - it will move to this position
+            newFocusIndex = (t_size)lastSelectedIndex - itemsRemovedBeforeLast;
+        } else {
+            // No item after - focus the item before first selected (which is firstSelectedIndex - 1)
+            // After removal, that item's position is: (firstSelectedIndex - 1) - (items removed before it) = firstSelectedIndex - 1
+            // Since nothing is removed before firstSelectedIndex, the position stays the same
+            if (firstSelectedIndex > 0) {
+                newFocusIndex = (t_size)(firstSelectedIndex - 1);
+            } else {
+                // Everything was at the start, focus first remaining item
+                newFocusIndex = 0;
+            }
+        }
+        // Clamp to valid range
+        if (newFocusIndex >= newItemCount) {
+            newFocusIndex = newItemCount - 1;
+        }
+    }
+
     // Remove items
     pm->playlist_remove_items(activePlaylist, mask);
+
+    // Set focus to calculated position (also selects it)
+    if (newFocusIndex != SIZE_MAX && newItemCount > 0) {
+        pm->playlist_set_focus_item(activePlaylist, newFocusIndex);
+        // Select only the focused item
+        pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), pfc::bit_array_one(newFocusIndex));
+    }
 }
 
 #pragma mark - Album Art
@@ -1821,7 +1977,7 @@ static BOOL isRemotePath(const char *path) {
 
     // Convert destination row to playlist index
     NSInteger totalRows = [view rowCount];
-    NSInteger destPlaylistIndex = 0;
+    NSInteger destPlaylistIndex = itemCount;  // Default to end of playlist
     if (destinationRow >= totalRows) {
         destPlaylistIndex = itemCount;
     } else if (destinationRow >= 0) {
@@ -1830,13 +1986,16 @@ static BOOL isRemotePath(const char *path) {
             destPlaylistIndex = destIdx;
         } else {
             // Row is header/subgroup/padding - find next valid track
+            BOOL foundTrack = NO;
             for (NSInteger r = destinationRow; r < totalRows; r++) {
                 NSInteger idx = [view playlistIndexForRow:r];
                 if (idx >= 0) {
                     destPlaylistIndex = idx;
+                    foundTrack = YES;
                     break;
                 }
             }
+            // If no track found after, destPlaylistIndex remains itemCount (end)
         }
     }
 
@@ -1858,14 +2017,22 @@ static BOOL isRemotePath(const char *path) {
         }
     }
 
-    // Build the order array
+    // Build the order array using a cleaner algorithm
+    // 1. Collect non-moved items in original order
+    // 2. Insert moved items at the adjusted destination
+    std::vector<t_size> nonMovedItems;
+    for (t_size i = 0; i < itemCount; i++) {
+        if (sourceSet.find(i) == sourceSet.end()) {
+            nonMovedItems.push_back(i);
+        }
+    }
+
+    // Build final order: non-moved items with moved items inserted at adjustedDest
     t_size writePos = 0;
 
-    // Items before destination (excluding moved items)
-    for (t_size i = 0; i < itemCount && writePos < adjustedDest; i++) {
-        if (sourceSet.find(i) == sourceSet.end()) {
-            order[writePos++] = i;
-        }
+    // Items before destination
+    for (t_size i = 0; i < adjustedDest && i < nonMovedItems.size(); i++) {
+        order[writePos++] = nonMovedItems[i];
     }
 
     // Insert moved items at destination
@@ -1873,26 +2040,28 @@ static BOOL isRemotePath(const char *path) {
         order[writePos++] = [num unsignedLongValue];
     }
 
-    // Items after destination (excluding moved items)
-    for (t_size i = 0; i < itemCount; i++) {
-        if (sourceSet.find(i) == sourceSet.end()) {
-            // Check if already added
-            bool alreadyAdded = false;
-            for (t_size j = 0; j < adjustedDest; j++) {
-                if (order[j] == i) {
-                    alreadyAdded = true;
-                    break;
-                }
-            }
-            if (!alreadyAdded) {
-                order[writePos++] = i;
-            }
-        }
+    // Items after destination
+    for (t_size i = adjustedDest; i < nonMovedItems.size(); i++) {
+        order[writePos++] = nonMovedItems[i];
     }
 
     // Create undo point and reorder
     pm->playlist_undo_backup(activePlaylist);
     pm->playlist_reorder_items(activePlaylist, order.data(), itemCount);
+
+    // Set focus and selection to the moved items at their new position
+    // The moved items are now at positions [adjustedDest, adjustedDest + sourcePlaylistIndices.count)
+    if (sourcePlaylistIndices.count > 0) {
+        t_size newFocusPos = adjustedDest;
+        pm->playlist_set_focus_item(activePlaylist, newFocusPos);
+
+        // Select all moved items
+        bit_array_bittable selMask(itemCount);
+        for (t_size i = 0; i < sourcePlaylistIndices.count; i++) {
+            selMask.set(adjustedDest + i, true);
+        }
+        pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+    }
 }
 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row {
@@ -1929,49 +2098,106 @@ static BOOL isRemotePath(const char *path) {
         }
     }
 
-    // Build path list from URLs
-    pfc::list_t<const char*> paths;
-    std::vector<std::string> pathStrings;  // Keep strings alive
+    // Use async import to avoid crash from synchronous process_location
+    importFilesToPlaylistAsync(activePlaylist, insertAt, urls);
+}
 
-    for (NSURL *url in urls) {
-        if (url.isFileURL) {
-            NSString *path = url.path;
-            pathStrings.push_back([path UTF8String]);
-        }
-    }
+- (NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices {
+    if (_currentPlaylistIndex < 0) return nil;
 
-    for (const auto& s : pathStrings) {
-        paths.add_item(s.c_str());
-    }
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = (t_size)_currentPlaylistIndex;
+    t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
-    if (paths.get_count() == 0) return;
+    NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:indices.count];
 
-    // Use playlist_incoming_item_filter to process and add files
-    @try {
-        auto filter = playlist_incoming_item_filter::get();
-        metadb_handle_list handles;
-
-        // Process each path
-        for (t_size i = 0; i < paths.get_count(); i++) {
-            metadb_handle_list temp;
-            if (filter->process_location(paths[i], temp, true, nullptr, nullptr, nullptr)) {
-                handles.add_items(temp);
+    [indices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx < itemCount) {
+            metadb_handle_ptr handle;
+            if (pm->playlist_get_item_handle(handle, activePlaylist, idx)) {
+                const char* path = handle->get_path();
+                if (path) {
+                    [paths addObject:[NSString stringWithUTF8String:path]];
+                }
             }
         }
+    }];
 
-        if (handles.get_count() > 0) {
-            // Sort items
-            filter->filter_items(handles, handles);
+    return paths;
+}
 
-            // Create undo point
-            pm->playlist_undo_backup(activePlaylist);
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row {
+    if (_currentPlaylistIndex < 0) return;
+    if (paths.count == 0) return;
 
-            // Insert items
-            pm->playlist_insert_items(activePlaylist, insertAt, handles, pfc::bit_array_val(true));
+    auto pm = playlist_manager::get();
+    t_size destPlaylist = (t_size)_currentPlaylistIndex;
+
+    // Check if destination playlist is locked for add
+    if (pm->playlist_lock_is_present(destPlaylist)) {
+        t_uint32 lockMask = pm->playlist_lock_get_filter_mask(destPlaylist);
+        if (lockMask & playlist_lock::filter_add) {
+            FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: destination is locked";
+            return;
         }
-    } @catch (NSException *exception) {
-        // Ignore errors
     }
+
+    // Check if source playlist is locked for remove
+    t_size srcPlaylist = (t_size)sourcePlaylist;
+    if (srcPlaylist < pm->get_playlist_count() && pm->playlist_lock_is_present(srcPlaylist)) {
+        t_uint32 lockMask = pm->playlist_lock_get_filter_mask(srcPlaylist);
+        if (lockMask & playlist_lock::filter_remove) {
+            FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: source is locked for removal";
+            return;
+        }
+    }
+
+    // Convert row index to playlist index for insertion point
+    t_size insertAt = SIZE_MAX;  // Default: append at end
+    NSInteger totalRows = [view rowCount];
+    if (row >= 0 && row < totalRows) {
+        NSInteger playlistIdx = [view playlistIndexForRow:row];
+        if (playlistIdx >= 0) {
+            insertAt = (t_size)playlistIdx;
+        } else {
+            // Row is header/subgroup/padding - find next valid track
+            for (NSInteger r = row; r < totalRows; r++) {
+                NSInteger idx = [view playlistIndexForRow:r];
+                if (idx >= 0) {
+                    insertAt = (t_size)idx;
+                    break;
+                }
+            }
+        }
+    }
+
+    FB2K_console_formatter() << "[SimPlaylist] Cross-playlist MOVE: src=" << srcPlaylist
+                             << ", dest=" << destPlaylist
+                             << ", items=" << sourceIndices.count
+                             << ", insertAt=" << (insertAt == SIZE_MAX ? -1 : (int)insertAt);
+
+    // First, remove items from source playlist (do this before inserting)
+    if (srcPlaylist < pm->get_playlist_count() && sourceIndices.count > 0) {
+        pm->playlist_undo_backup(srcPlaylist);
+
+        // Build bit_array for removal
+        t_size srcItemCount = pm->playlist_get_item_count(srcPlaylist);
+        pfc::bit_array_bittable removeMask(srcItemCount);
+
+        // Iterate without block (bit_array can't be captured in ObjC blocks)
+        NSUInteger idx = [sourceIndices firstIndex];
+        while (idx != NSNotFound) {
+            if (idx < srcItemCount) {
+                removeMask.set(idx, true);
+            }
+            idx = [sourceIndices indexGreaterThanIndex:idx];
+        }
+
+        pm->playlist_remove_items(srcPlaylist, removeMask);
+    }
+
+    // Then insert into destination playlist using foobar2000 native paths
+    importFb2kPathsToPlaylistAsync(destPlaylist, insertAt, paths);
 }
 
 @end

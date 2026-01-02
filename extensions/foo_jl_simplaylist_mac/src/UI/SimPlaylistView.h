@@ -69,6 +69,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, strong) NSMutableIndexSet *selectedIndices;
 @property (nonatomic, assign) NSInteger focusIndex;
 @property (nonatomic, assign) NSInteger playingIndex;  // -1 if not playing
+@property (nonatomic, assign) NSInteger sourcePlaylistIndex;  // For drag validation
 
 // Appearance settings
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
@@ -147,8 +148,14 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Drag & drop - reorder within playlist
 - (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRows toRow:(NSInteger)destinationRow;
 
+// Drag & drop - move items from different playlist (cross-playlist drop)
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row;
+
 // Drag & drop - import files from Finder
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row;
+
+// Get file paths for playlist indices (for drag data capture)
+- (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices;
 
 // Lazy column value formatting - called when drawing track rows with nil columnValues
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view columnValuesForPlaylistIndex:(NSInteger)playlistIndex;

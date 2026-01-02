@@ -2,6 +2,24 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.1.4] - 2026-01-02
+
+### Fixed
+- **Cross-playlist drag support**: Drag data now captures file paths at drag start - if active playlist changes mid-drag (e.g., spring-loaded folder preview), items are correctly moved to the new playlist (inserted and removed from source)
+- **Cross-playlist drag with cloud files**: Now correctly handles non-local paths (mac-volume://, mixcloud://, etc.) by passing foobar2000 native paths directly
+- **Multi-item drag not working**: Clicking on an already-selected item in a multi-selection no longer reduces selection to single item - all selected items are now dragged together
+- **Folder drop file ordering**: Files from dropped folders are now sorted by path before inserting, ensuring correct track order
+- **Focus not set on dropped items**: Focus ring now moves to first inserted item after external file drop
+- **Delete focus behavior**: Cursor now moves to next item after delete (or previous if at end)
+- **Focus ring appearing during drag**: No longer shows focus outline on random items while dragging
+- **Focus ring appearing after drag**: Suppressed for 100ms after drag operation ends
+- **Drop indicator jumping erratically**: Uses pure distance-based positioning at album boundaries
+- **Items misplaced after drag to padding area**: Dragging to end-of-album padding now correctly places items at end instead of beginning
+- **UI blink when deleting items**: Disabled Core Animation during playlist rebuild
+
+### Technical
+- Drag pasteboard now includes dictionary with sourcePlaylist, indices, and paths (Plorg updated for compatibility)
+
 ## [1.1.3] - 2025-12-30
 
 ### Fixed
