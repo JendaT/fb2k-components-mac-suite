@@ -56,3 +56,5 @@ sdk_config.sh
 # Worktree-specific files (component instructions)
 BACKLOG.md
 CLAUDE.md
+# Local development symlinks
+extensions/*/src/Integration/JLConstraintDebugger.*

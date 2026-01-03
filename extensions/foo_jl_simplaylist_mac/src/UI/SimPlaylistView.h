@@ -145,11 +145,13 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Called when group column width changes (Ctrl+scroll resize)
 - (void)playlistView:(SimPlaylistView *)view didChangeGroupColumnWidth:(CGFloat)newWidth;
 
-// Drag & drop - reorder within playlist
-- (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRows toRow:(NSInteger)destinationRow;
+// Drag & drop - reorder/duplicate within playlist
+// operation: NSDragOperationMove reorders, NSDragOperationCopy duplicates
+- (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRows toRow:(NSInteger)destinationRow operation:(NSDragOperation)operation;
 
-// Drag & drop - move items from different playlist (cross-playlist drop)
-- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row;
+// Drag & drop - move/copy items from different playlist (cross-playlist drop)
+// operation: NSDragOperationMove removes from source, NSDragOperationCopy leaves source unchanged
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row operation:(NSDragOperation)operation;
 
 // Drag & drop - import files from Finder
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row;
