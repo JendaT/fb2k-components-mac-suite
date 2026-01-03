@@ -67,6 +67,37 @@ Log errors to console with component prefix:
 FB2K_console_formatter() << "[MyExt] Error: " << message;
 ```
 
+#### View Sizing (CRITICAL)
+
+**Every UI element view MUST prevent container limiting.** If your view returns actual dimensions from `intrinsicContentSize` or has high content priorities, it will prevent users from resizing foobar2000 columns.
+
+```objc
+// In your view's initializer - REQUIRED for all UI element views
+- (void)setupView {
+    // Prevent container limiting - set BOTH priorities to minimum for BOTH orientations
+    [self setContentHuggingPriority:1
+                     forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentHuggingPriority:1
+                     forOrientation:NSLayoutConstraintOrientationVertical];
+    [self setContentCompressionResistancePriority:1
+                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentCompressionResistancePriority:1
+                                   forOrientation:NSLayoutConstraintOrientationVertical];
+}
+
+// REQUIRED - return no intrinsic size
+- (NSSize)intrinsicContentSize {
+    return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+}
+```
+
+**What NOT to do:**
+- ❌ Return actual content dimensions from `intrinsicContentSize`
+- ❌ Omit priority settings (defaults are too high)
+- ❌ Use `NSLayoutPriorityDefaultHigh` (750) or `NSLayoutPriorityRequired` (1000)
+
+See `knowledge_base/10_VIEW_SIZING_AND_CONTAINER_CONSTRAINTS.md` for complete documentation.
+
 #### Preferences UI
 
 Use shared utilities from `shared/PreferencesCommon.h`:
