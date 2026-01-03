@@ -2283,7 +2283,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 - (NSDragOperation)draggingSession:(NSDraggingSession *)session
     sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
     if (context == NSDraggingContextWithinApplication) {
-        return NSDragOperationMove;
+        // Support both move and copy - destination decides based on modifier keys
+        return NSDragOperationMove | NSDragOperationCopy;
     }
     return NSDragOperationCopy;
 }
@@ -2312,7 +2313,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
                              << ([pb.types containsObject:NSPasteboardTypeFileURL] ? "FileURL" : "");
 
     if ([pb.types containsObject:SimPlaylistPasteboardType]) {
-        return NSDragOperationMove;
+        // Option key = copy, otherwise move
+        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+        return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
     } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
     }
@@ -2384,7 +2387,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 
     NSPasteboard *pb = [sender draggingPasteboard];
     if ([pb.types containsObject:SimPlaylistPasteboardType]) {
-        return NSDragOperationMove;
+        // Option key = copy, otherwise move
+        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+        return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
     } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
     }
@@ -2427,19 +2432,23 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
                                          << ", indices=" << (rowNumbers ? rowNumbers.count : 0);
 
                 if (samePlaylist) {
-                    // Same playlist - use index-based reorder
+                    // Same playlist - reorder or duplicate based on modifier key
                     if (rowNumbers && rowNumbers.count > 0) {
                         NSMutableIndexSet *sourceRows = [NSMutableIndexSet indexSet];
                         for (NSNumber *num in rowNumbers) {
                             [sourceRows addIndex:[num unsignedIntegerValue]];
                         }
 
-                        if ([_delegate respondsToSelector:@selector(playlistView:didReorderRows:toRow:)]) {
-                            [_delegate playlistView:self didReorderRows:sourceRows toRow:_dropTargetRow];
+                        // Option key = copy (duplicate), otherwise move (reorder)
+                        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+                        NSDragOperation operation = optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+
+                        if ([_delegate respondsToSelector:@selector(playlistView:didReorderRows:toRow:operation:)]) {
+                            [_delegate playlistView:self didReorderRows:sourceRows toRow:_dropTargetRow operation:operation];
                         }
                     }
                 } else {
-                    // Different playlist - use paths to move items
+                    // Different playlist - use paths to move/copy items
                     if (paths && paths.count > 0 && rowNumbers && rowNumbers.count > 0) {
                         // Build source indices from row numbers
                         NSMutableIndexSet *sourceIndices = [NSMutableIndexSet indexSet];
@@ -2447,11 +2456,19 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
                             [sourceIndices addIndex:[num unsignedIntegerValue]];
                         }
 
-                        if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedPaths:fromPlaylist:sourceIndices:atRow:)]) {
+                        // Get operation from modifier keys (same check as draggingUpdated)
+                        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+                        NSDragOperation operation = optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+                        FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: optionKey=" << (optionKeyHeld ? "YES" : "NO")
+                                                 << ", operation=" << (int)operation
+                                                 << " (Move=" << (int)NSDragOperationMove << ", Copy=" << (int)NSDragOperationCopy << ")";
+
+                        if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedPaths:fromPlaylist:sourceIndices:atRow:operation:)]) {
                             [_delegate playlistView:self didReceiveDroppedPaths:paths
                                        fromPlaylist:[sourcePlaylist integerValue]
                                       sourceIndices:sourceIndices
-                                              atRow:_dropTargetRow];
+                                              atRow:_dropTargetRow
+                                          operation:operation];
                         }
                     }
                 }

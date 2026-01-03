@@ -23,6 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [1.1.5] - 2026-01-03
+
+#### Added
+- Option-key modifier for drag operations: hold Option to copy instead of move
+  - Same playlist: Option+drag duplicates items
+  - Cross playlist: Option+drag copies items (leaves source unchanged)
+  - Default behavior (no modifier) moves items
+
+### [1.1.4] - 2026-01-02
+
+#### Added
+- Cross-playlist drag support with true move behavior
+- Support for cloud file paths (mac-volume://, mixcloud://, etc.)
+
+#### Fixed
+- Multi-item drag now works correctly (selection preserved during drag)
+
 ### [1.0.0] - 2025-12-26
 
 #### Added

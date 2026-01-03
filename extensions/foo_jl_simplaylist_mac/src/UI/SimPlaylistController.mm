@@ -1942,17 +1942,26 @@ static BOOL isRemotePath(const char *path) {
 
 #pragma mark - Drag & Drop
 
-- (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRowIndices toRow:(NSInteger)destinationRow {
+- (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRowIndices toRow:(NSInteger)destinationRow operation:(NSDragOperation)operation {
     if (_currentPlaylistIndex < 0) return;
 
     auto pm = playlist_manager::get();
     t_size activePlaylist = (t_size)_currentPlaylistIndex;
+    BOOL isDuplicate = (operation == NSDragOperationCopy);
 
     // Check if playlist is locked
     if (pm->playlist_lock_is_present(activePlaylist)) {
         t_uint32 lockMask = pm->playlist_lock_get_filter_mask(activePlaylist);
-        if (lockMask & playlist_lock::filter_reorder) {
-            return;
+        if (isDuplicate) {
+            // For duplicate, check add permission
+            if (lockMask & playlist_lock::filter_add) {
+                return;
+            }
+        } else {
+            // For reorder, check reorder permission
+            if (lockMask & playlist_lock::filter_reorder) {
+                return;
+            }
         }
     }
 
@@ -1986,12 +1995,10 @@ static BOOL isRemotePath(const char *path) {
             destPlaylistIndex = destIdx;
         } else {
             // Row is header/subgroup/padding - find next valid track
-            BOOL foundTrack = NO;
             for (NSInteger r = destinationRow; r < totalRows; r++) {
                 NSInteger idx = [view playlistIndexForRow:r];
                 if (idx >= 0) {
                     destPlaylistIndex = idx;
-                    foundTrack = YES;
                     break;
                 }
             }
@@ -1999,68 +2006,92 @@ static BOOL isRemotePath(const char *path) {
         }
     }
 
-    // Build reorder array
-    // Create new order array where items are moved to destination position
-    std::vector<t_size> order(itemCount);
-
-    // Create a set of source indices for quick lookup
-    std::set<t_size> sourceSet;
-    for (NSNumber *num in sourcePlaylistIndices) {
-        sourceSet.insert([num unsignedLongValue]);
-    }
-
-    // Calculate where items actually go after removal
-    t_size adjustedDest = destPlaylistIndex;
-    for (NSNumber *num in sourcePlaylistIndices) {
-        if ([num unsignedLongValue] < (t_size)destPlaylistIndex) {
-            adjustedDest--;
-        }
-    }
-
-    // Build the order array using a cleaner algorithm
-    // 1. Collect non-moved items in original order
-    // 2. Insert moved items at the adjusted destination
-    std::vector<t_size> nonMovedItems;
-    for (t_size i = 0; i < itemCount; i++) {
-        if (sourceSet.find(i) == sourceSet.end()) {
-            nonMovedItems.push_back(i);
-        }
-    }
-
-    // Build final order: non-moved items with moved items inserted at adjustedDest
-    t_size writePos = 0;
-
-    // Items before destination
-    for (t_size i = 0; i < adjustedDest && i < nonMovedItems.size(); i++) {
-        order[writePos++] = nonMovedItems[i];
-    }
-
-    // Insert moved items at destination
-    for (NSNumber *num in sourcePlaylistIndices) {
-        order[writePos++] = [num unsignedLongValue];
-    }
-
-    // Items after destination
-    for (t_size i = adjustedDest; i < nonMovedItems.size(); i++) {
-        order[writePos++] = nonMovedItems[i];
-    }
-
-    // Create undo point and reorder
     pm->playlist_undo_backup(activePlaylist);
-    pm->playlist_reorder_items(activePlaylist, order.data(), itemCount);
 
-    // Set focus and selection to the moved items at their new position
-    // The moved items are now at positions [adjustedDest, adjustedDest + sourcePlaylistIndices.count)
-    if (sourcePlaylistIndices.count > 0) {
-        t_size newFocusPos = adjustedDest;
-        pm->playlist_set_focus_item(activePlaylist, newFocusPos);
-
-        // Select all moved items
-        bit_array_bittable selMask(itemCount);
-        for (t_size i = 0; i < sourcePlaylistIndices.count; i++) {
-            selMask.set(adjustedDest + i, true);
+    if (isDuplicate) {
+        // COPY: Duplicate items at destination (insert copies, keep originals)
+        metadb_handle_list items;
+        for (NSNumber *num in sourcePlaylistIndices) {
+            metadb_handle_ptr item;
+            if (pm->playlist_get_item_handle(item, activePlaylist, [num unsignedLongValue])) {
+                items.add_item(item);
+            }
         }
-        pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+
+        if (items.get_count() > 0) {
+            t_size insertPos = (destPlaylistIndex < itemCount) ? destPlaylistIndex : itemCount;
+            pm->playlist_insert_items(activePlaylist, insertPos, items, pfc::bit_array_false());
+
+            // Select the duplicated items
+            t_size newItemCount = pm->playlist_get_item_count(activePlaylist);
+            bit_array_bittable selMask(newItemCount);
+            for (t_size i = 0; i < items.get_count(); i++) {
+                selMask.set(insertPos + i, true);
+            }
+            pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+            pm->playlist_set_focus_item(activePlaylist, insertPos);
+        }
+    } else {
+        // MOVE: Reorder items (original behavior)
+        // Build reorder array
+        std::vector<t_size> order(itemCount);
+
+        // Create a set of source indices for quick lookup
+        std::set<t_size> sourceSet;
+        for (NSNumber *num in sourcePlaylistIndices) {
+            sourceSet.insert([num unsignedLongValue]);
+        }
+
+        // Calculate where items actually go after removal
+        t_size adjustedDest = destPlaylistIndex;
+        for (NSNumber *num in sourcePlaylistIndices) {
+            if ([num unsignedLongValue] < (t_size)destPlaylistIndex) {
+                adjustedDest--;
+            }
+        }
+
+        // Build the order array
+        // 1. Collect non-moved items in original order
+        // 2. Insert moved items at the adjusted destination
+        std::vector<t_size> nonMovedItems;
+        for (t_size i = 0; i < itemCount; i++) {
+            if (sourceSet.find(i) == sourceSet.end()) {
+                nonMovedItems.push_back(i);
+            }
+        }
+
+        // Build final order: non-moved items with moved items inserted at adjustedDest
+        t_size writePos = 0;
+
+        // Items before destination
+        for (t_size i = 0; i < adjustedDest && i < nonMovedItems.size(); i++) {
+            order[writePos++] = nonMovedItems[i];
+        }
+
+        // Insert moved items at destination
+        for (NSNumber *num in sourcePlaylistIndices) {
+            order[writePos++] = [num unsignedLongValue];
+        }
+
+        // Items after destination
+        for (t_size i = adjustedDest; i < nonMovedItems.size(); i++) {
+            order[writePos++] = nonMovedItems[i];
+        }
+
+        pm->playlist_reorder_items(activePlaylist, order.data(), itemCount);
+
+        // Set focus and selection to the moved items at their new position
+        if (sourcePlaylistIndices.count > 0) {
+            t_size newFocusPos = adjustedDest;
+            pm->playlist_set_focus_item(activePlaylist, newFocusPos);
+
+            // Select all moved items
+            bit_array_bittable selMask(itemCount);
+            for (t_size i = 0; i < sourcePlaylistIndices.count; i++) {
+                selMask.set(adjustedDest + i, true);
+            }
+            pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+        }
     }
 }
 
@@ -2126,12 +2157,13 @@ static BOOL isRemotePath(const char *path) {
     return paths;
 }
 
-- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row {
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row operation:(NSDragOperation)operation {
     if (_currentPlaylistIndex < 0) return;
     if (paths.count == 0) return;
 
     auto pm = playlist_manager::get();
     t_size destPlaylist = (t_size)_currentPlaylistIndex;
+    BOOL isMove = (operation == NSDragOperationMove);
 
     // Check if destination playlist is locked for add
     if (pm->playlist_lock_is_present(destPlaylist)) {
@@ -2142,13 +2174,13 @@ static BOOL isRemotePath(const char *path) {
         }
     }
 
-    // Check if source playlist is locked for remove
+    // Check if source playlist is locked for remove (only for move operations)
     t_size srcPlaylist = (t_size)sourcePlaylist;
-    if (srcPlaylist < pm->get_playlist_count() && pm->playlist_lock_is_present(srcPlaylist)) {
+    if (isMove && srcPlaylist < pm->get_playlist_count() && pm->playlist_lock_is_present(srcPlaylist)) {
         t_uint32 lockMask = pm->playlist_lock_get_filter_mask(srcPlaylist);
         if (lockMask & playlist_lock::filter_remove) {
-            FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: source is locked for removal";
-            return;
+            FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: source is locked for removal, falling back to copy";
+            isMove = NO;  // Fall back to copy
         }
     }
 
@@ -2171,13 +2203,16 @@ static BOOL isRemotePath(const char *path) {
         }
     }
 
-    FB2K_console_formatter() << "[SimPlaylist] Cross-playlist MOVE: src=" << srcPlaylist
+    FB2K_console_formatter() << "[SimPlaylist] Cross-playlist " << (isMove ? "MOVE" : "COPY")
+                             << ": src=" << srcPlaylist
                              << ", dest=" << destPlaylist
                              << ", items=" << sourceIndices.count
-                             << ", insertAt=" << (insertAt == SIZE_MAX ? -1 : (int)insertAt);
+                             << ", insertAt=" << (insertAt == SIZE_MAX ? -1 : (int)insertAt)
+                             << ", operation=" << (int)operation
+                             << ", srcValid=" << (srcPlaylist < pm->get_playlist_count() ? "YES" : "NO");
 
-    // First, remove items from source playlist (do this before inserting)
-    if (srcPlaylist < pm->get_playlist_count() && sourceIndices.count > 0) {
+    // For MOVE: remove items from source playlist (do this before inserting)
+    if (isMove && srcPlaylist < pm->get_playlist_count() && sourceIndices.count > 0) {
         pm->playlist_undo_backup(srcPlaylist);
 
         // Build bit_array for removal
@@ -2196,7 +2231,7 @@ static BOOL isRemotePath(const char *path) {
         pm->playlist_remove_items(srcPlaylist, removeMask);
     }
 
-    // Then insert into destination playlist using foobar2000 native paths
+    // Insert into destination playlist using foobar2000 native paths
     importFb2kPathsToPlaylistAsync(destPlaylist, insertAt, paths);
 }
 
