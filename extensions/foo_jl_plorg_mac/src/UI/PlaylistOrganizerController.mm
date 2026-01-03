@@ -4,6 +4,7 @@
 //
 
 #import "PlaylistOrganizerController.h"
+#import "PlorgOutlineView.h"
 #import "PathMappingWindowController.h"
 #import "StrawberryImportPreviewController.h"
 #import "../Core/TreeModel.h"
@@ -17,6 +18,13 @@
 #include "../fb2k_sdk.h"
 
 static const char *kTreeNodeKey = "treeNode";
+
+// Pasteboard type constants
+static NSPasteboardType const PlorgNodePasteboardType = @"com.foobar2000.plorg.node";
+static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+
+// Hover delay for drag-expand (matches Finder behavior)
+static const NSTimeInterval kHoverExpandDelay = 1.0;
 
 #pragma mark - Tree Lines Row View
 
@@ -212,7 +220,23 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 @property (nonatomic, assign) BOOL transparentBackground;  // Glass effect background
 @end
 
-@implementation PlaylistOrganizerController
+@implementation PlaylistOrganizerController {
+    // Drag hover state for auto-expand
+    __weak TreeNode *_dragHoveredNode;
+    NSTimer *_hoverTimer;
+    BOOL _hasPendingExpansionSave;
+
+    // Track source playlist for external drops (captured at drag start)
+    size_t _dragSourcePlaylistIndex;
+    BOOL _hasDragSource;
+
+    // Cache pasteboard row indices at drag entry (before we change active playlist)
+    // SimPlaylist may use lazy data providers that would return wrong data after playlist switch
+    NSArray<NSNumber *> *_cachedDragRowIndices;
+
+    // Save selection before drag to restore after drag ends
+    NSIndexSet *_preDragSelection;
+}
 
 #pragma mark - Lifecycle
 
@@ -239,8 +263,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     self.scrollView.borderType = NSNoBorder;
     self.scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 
-    // Create outline view
-    self.outlineView = [[NSOutlineView alloc] initWithFrame:self.scrollView.bounds];
+    // Create outline view (PlorgOutlineView subclass for drag lifecycle callbacks)
+    self.outlineView = [[PlorgOutlineView alloc] initWithFrame:self.scrollView.bounds];
     self.outlineView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.outlineView.dataSource = self;
     self.outlineView.delegate = self;
@@ -251,9 +275,11 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     self.outlineView.rowHeight = 15.0;  // Compact row height
     self.outlineView.intercellSpacing = NSMakeSize(0, 0);  // Remove gaps between cells
 
-    // Enable drag & drop
+    // Enable drag & drop (internal reordering + external track drops)
     [self.outlineView registerForDraggedTypes:@[
-        @"com.foobar2000.plorg.node",  // Internal drag
+        PlorgNodePasteboardType,       // Internal drag
+        SimPlaylistPasteboardType,     // SimPlaylist tracks
+        NSPasteboardTypeFileURL        // Finder files (hover-expand only until Phase 4)
     ]];
     self.outlineView.draggingDestinationFeedbackStyle = NSTableViewDraggingDestinationFeedbackStyleSourceList;
 
@@ -405,7 +431,14 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)dealloc {
+    [self cancelHoverTimer];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewWillDisappear {
+    [super viewWillDisappear];
+    [self cancelHoverTimer];
+    [self flushPendingExpansionSave];
 }
 
 #pragma mark - Context Menu
@@ -852,6 +885,12 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
 #pragma mark - NSOutlineViewDelegate
 
+- (BOOL)selectionShouldChangeInOutlineView:(NSOutlineView *)outlineView {
+    // Prevent selection changes during external drag operations
+    // This avoids spurious selection on hovered items
+    return !_hasDragSource;
+}
+
 - (NSTableRowView *)outlineView:(NSOutlineView *)outlineView rowViewForItem:(id)item {
     if (self.showTreeLines) {
         PlorgTreeLinesRowView *rowView = [[PlorgTreeLinesRowView alloc] init];
@@ -1028,6 +1067,16 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)outlineViewSelectionDidChange:(NSNotification *)notification {
+    // If selection changed during a drag operation, revert to pre-drag selection
+    if (_hasDragSource && _preDragSelection) {
+        // Use dispatch_async to avoid recursion since we're in a selection change notification
+        NSIndexSet *savedSelection = _preDragSelection;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.outlineView selectRowIndexes:savedSelection byExtendingSelection:NO];
+        });
+        return;  // Don't process selection during drag
+    }
+
     NSInteger row = self.outlineView.selectedRow;
     if (row < 0) return;
 
@@ -1054,7 +1103,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 #pragma mark - Drag & Drop
 
 - (BOOL)outlineView:(NSOutlineView *)outlineView writeItems:(NSArray *)items toPasteboard:(NSPasteboard *)pasteboard {
-    [pasteboard declareTypes:@[@"com.foobar2000.plorg.node"] owner:self];
+    [pasteboard declareTypes:@[PlorgNodePasteboardType] owner:self];
 
     // Store the dragged items (we'll retrieve them in acceptDrop)
     NSMutableArray *paths = [NSMutableArray array];
@@ -1063,29 +1112,269 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     }
 
     NSData *data = [NSKeyedArchiver archivedDataWithRootObject:paths requiringSecureCoding:NO error:nil];
-    [pasteboard setData:data forType:@"com.foobar2000.plorg.node"];
+    [pasteboard setData:data forType:PlorgNodePasteboardType];
 
     return YES;
 }
 
+#pragma mark - Drag Hover Timer
+
+- (void)startHoverTimerForNode:(TreeNode *)node {
+    [self cancelHoverTimer];
+    if (!node) return;
+
+    _dragHoveredNode = node;
+    __weak typeof(self) weakSelf = self;
+    __weak TreeNode *weakNode = node;
+
+    // Create timer WITHOUT scheduling (scheduledTimer uses wrong runloop mode)
+    _hoverTimer = [NSTimer timerWithTimeInterval:kHoverExpandDelay
+                                         repeats:NO
+                                           block:^(NSTimer *timer) {
+        [weakSelf handleHoverTimeoutForNode:weakNode];
+    }];
+
+    // Schedule in common modes - includes both default and event tracking
+    [[NSRunLoop currentRunLoop] addTimer:_hoverTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)cancelHoverTimer {
+    [_hoverTimer invalidate];
+    _hoverTimer = nil;
+    _dragHoveredNode = nil;
+}
+
+- (void)handleHoverTimeoutForNode:(TreeNode *)node {
+    if (!node || node != _dragHoveredNode) return;
+
+    _hoverTimer = nil;  // Clear reference to fired timer
+
+    if (node.nodeType == TreeNodeTypeFolder) {
+        // Expand closed folder
+        if (![self.outlineView isItemExpanded:node]) {
+            [self.outlineView expandItem:node];
+            node.isExpanded = YES;
+            _hasPendingExpansionSave = YES;  // Defer save until drag ends
+        }
+    } else if (node.nodeType == TreeNodeTypePlaylist) {
+        // Activate playlist in foobar2000
+        [self activatePlaylistNamed:node.name];
+    }
+
+    _dragHoveredNode = nil;  // Prevent re-trigger on same node
+}
+
+- (void)flushPendingExpansionSave {
+    if (_hasPendingExpansionSave) {
+        [self.treeModel saveToConfig];
+        _hasPendingExpansionSave = NO;
+    }
+}
+
+- (void)activatePlaylistNamed:(NSString *)name {
+    if (!name) return;
+
+    @try {
+        auto pm = playlist_manager::get();
+        size_t index = pm->find_playlist([name UTF8String], pfc_infinite);
+        if (index != pfc_infinite) {
+            pm->set_active_playlist(index);
+        }
+    } @catch (...) {
+        FB2K_console_formatter() << "[Plorg] Failed to activate playlist: " << [name UTF8String];
+    }
+}
+
 - (NSDragOperation)outlineView:(NSOutlineView *)outlineView validateDrop:(id<NSDraggingInfo>)info proposedItem:(id)item proposedChildIndex:(NSInteger)index {
-    // Only allow drops on folders or at root
-    if (item && ![(TreeNode *)item isFolder]) {
+    NSPasteboard *pb = info.draggingPasteboard;
+    TreeNode *targetNode = (TreeNode *)item;
+
+    // Handle external SimPlaylist drops (checked first - highest priority)
+    if ([pb.types containsObject:SimPlaylistPasteboardType]) {
+        // Fallback: set drag flag if draggingEntered wasn't called
+        if (!_hasDragSource) {
+            _hasDragSource = YES;
+        }
+
+        // Capture source playlist AND row indices on first SimPlaylist validateDrop
+        // MUST do this before we potentially change active playlist via hover-activate
+        // SimPlaylist uses lazy pasteboard providers that read current selection
+        if (_dragSourcePlaylistIndex == pfc_infinite) {
+            auto pm = playlist_manager::get();
+            _dragSourcePlaylistIndex = pm->get_active_playlist();
+
+            // Immediately read and cache the row indices from pasteboard
+            // SimPlaylist v1.1.4+ sends NSDictionary with sourcePlaylist, indices, paths
+            // Older versions sent just NSArray of indices
+            NSData *data = [pb dataForType:SimPlaylistPasteboardType];
+            if (data) {
+                NSError *error = nil;
+                // Try new dictionary format first
+                NSSet *dictClasses = [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSNumber class], [NSString class], nil];
+                id unarchivedObj = [NSKeyedUnarchiver unarchivedObjectOfClasses:dictClasses
+                                                                       fromData:data
+                                                                          error:&error];
+                if (!error && [unarchivedObj isKindOfClass:[NSDictionary class]]) {
+                    // New format: dictionary with indices key
+                    NSDictionary *dragData = (NSDictionary *)unarchivedObj;
+                    _cachedDragRowIndices = dragData[@"indices"];
+                    // Can also get sourcePlaylist and paths if needed:
+                    // NSNumber *sourcePlaylist = dragData[@"sourcePlaylist"];
+                    // NSArray *paths = dragData[@"paths"];
+                } else if (!error && [unarchivedObj isKindOfClass:[NSArray class]]) {
+                    // Old format: plain array of indices
+                    _cachedDragRowIndices = (NSArray *)unarchivedObj;
+                } else {
+                    _cachedDragRowIndices = nil;
+                }
+            }
+        }
+
+        // Update hover timer when target changes
+        if (targetNode != _dragHoveredNode) {
+            [self startHoverTimerForNode:targetNode];
+        }
+
+        // Accept drops on playlists (tracks append to end regardless of drop position)
+        if (targetNode && targetNode.nodeType == TreeNodeTypePlaylist) {
+            // Option key: Copy (leave source unchanged)
+            // No modifier: Move (source should remove tracks after drop)
+            BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+            return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+        }
+        // Folders: hover-expand only, no drop accepted
         return NSDragOperationNone;
     }
 
-    return NSDragOperationMove;
+    // Handle file drops - HOVER WORKS, DROP DISABLED UNTIL PHASE 4
+    if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
+        // Fallback: set drag flag if draggingEntered wasn't called
+        if (!_hasDragSource) {
+            _hasDragSource = YES;
+        }
+
+        if (targetNode != _dragHoveredNode) {
+            [self startHoverTimerForNode:targetNode];
+        }
+        // Phase 4: Enable drop by returning NSDragOperationCopy for playlists
+        return NSDragOperationNone;  // Don't show valid drop cursor until implemented
+    }
+
+    // Handle internal plorg node drops (existing behavior)
+    if ([pb.types containsObject:PlorgNodePasteboardType]) {
+        [self cancelHoverTimer];  // No hover for internal drags
+
+        // Only allow drops on folders or at root
+        if (item && ![(TreeNode *)item isFolder]) {
+            return NSDragOperationNone;
+        }
+        return NSDragOperationMove;
+    }
+
+    return NSDragOperationNone;
 }
 
 - (BOOL)outlineView:(NSOutlineView *)outlineView acceptDrop:(id<NSDraggingInfo>)info item:(id)item childIndex:(NSInteger)index {
+    [self cancelHoverTimer];
+    // Note: flushPendingExpansionSave handled by draggingEnded: (called after every drag)
+
+    NSPasteboard *pb = info.draggingPasteboard;
+    TreeNode *targetNode = (TreeNode *)item;
+
+    if ([pb.types containsObject:SimPlaylistPasteboardType]) {
+        return [self handleSimPlaylistDrop:info targetNode:targetNode];
+    }
+
+    if ([pb.types containsObject:PlorgNodePasteboardType]) {
+        return [self handleInternalDrop:info targetNode:targetNode index:index];
+    }
+
+    return NO;
+}
+
+- (BOOL)handleSimPlaylistDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode {
+    if (!targetNode || targetNode.nodeType != TreeNodeTypePlaylist) {
+        return NO;
+    }
+
+    // Use cached row indices (captured at drag entry, before any playlist switching)
+    // This is critical because SimPlaylist uses lazy pasteboard providers
+    NSArray<NSNumber*> *rowIndices = _cachedDragRowIndices;
+    if (!rowIndices || rowIndices.count == 0) {
+        return NO;
+    }
+
+    @try {
+        auto pm = playlist_manager::get();
+
+        // Use captured source playlist (from drag entry), not current active playlist
+        // (active may have changed during hover-to-activate)
+        if (!_hasDragSource || _dragSourcePlaylistIndex == pfc_infinite) {
+            return NO;
+        }
+        size_t sourcePlaylistIndex = _dragSourcePlaylistIndex;
+        size_t targetPlaylistIndex = pm->find_playlist([targetNode.name UTF8String], pfc_infinite);
+
+        if (targetPlaylistIndex == pfc_infinite) {
+            return NO;
+        }
+
+        // Build bit_array for selected rows WITH BOUNDS CHECKING
+        size_t sourceItemCount = pm->playlist_get_item_count(sourcePlaylistIndex);
+        if (sourceItemCount == 0) {
+            return NO;
+        }
+
+        pfc::bit_array_bittable selection(sourceItemCount);
+        size_t validCount = 0;
+        for (NSNumber *index in rowIndices) {
+            size_t idx = index.unsignedIntegerValue;
+            if (idx < sourceItemCount) {
+                selection.set(idx, true);
+                validCount++;
+            }
+            // Silently ignore out-of-bounds indices (stale from playlist modification)
+        }
+
+        if (validCount == 0) {
+            return NO;
+        }
+
+        // Get tracks from source playlist
+        metadb_handle_list tracks;
+        pm->playlist_get_items(sourcePlaylistIndex, tracks, selection);
+
+        if (tracks.get_count() == 0) {
+            return NO;
+        }
+
+        // Add tracks to target playlist, selecting newly added items
+        size_t insertPosition = pm->playlist_get_item_count(targetPlaylistIndex);
+        pm->playlist_insert_items(targetPlaylistIndex, insertPosition, tracks, pfc::bit_array_true());
+
+        // Refresh the target node's row to update the displayed count
+        NSInteger row = [self.outlineView rowForItem:targetNode];
+        if (row >= 0) {
+            [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                       columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
+        }
+
+        return YES;
+    } @catch (...) {
+        FB2K_console_formatter() << "[Plorg] Failed to handle SimPlaylist drop";
+        return NO;
+    }
+}
+
+- (BOOL)handleInternalDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode index:(NSInteger)index {
     NSPasteboard *pasteboard = info.draggingPasteboard;
-    NSData *data = [pasteboard dataForType:@"com.foobar2000.plorg.node"];
+    NSData *data = [pasteboard dataForType:PlorgNodePasteboardType];
     if (!data) return NO;
 
     NSArray *paths = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSArray class] fromData:data error:nil];
     if (!paths || paths.count == 0) return NO;
 
-    TreeNode *targetFolder = (TreeNode *)item;  // nil means root
+    TreeNode *targetFolder = targetNode;  // nil means root
     NSInteger targetIndex = (index == NSOutlineViewDropOnItemIndex) ? 0 : index;
 
     // Find and move each dragged node
@@ -1113,6 +1402,42 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     [self.outlineView reloadData];
     return YES;
+}
+
+#pragma mark - PlorgOutlineViewDelegate
+
+- (void)outlineView:(NSOutlineView *)outlineView draggingEntered:(id<NSDraggingInfo>)sender {
+    // Set flag to block selection changes via selectionShouldChangeInOutlineView:
+    _hasDragSource = YES;
+}
+
+- (void)outlineView:(NSOutlineView *)outlineView draggingExited:(id<NSDraggingInfo>)sender {
+    [self cancelHoverTimer];
+    // Don't clear _hasDragSource here - drag may re-enter
+    // Cleanup happens in draggingEnded which is called when drag completes
+}
+
+- (void)performDragCleanup {
+    [self cancelHoverTimer];
+    [self flushPendingExpansionSave];
+
+    // Clear drag source tracking - allows selection changes to proceed normally again
+    _hasDragSource = NO;
+    _dragSourcePlaylistIndex = pfc_infinite;
+    _cachedDragRowIndices = nil;
+    _preDragSelection = nil;
+
+    // Force complete rebuild to clear any lingering visual state
+    // Preserve current selection across reload
+    NSIndexSet *currentSelection = [self.outlineView.selectedRowIndexes copy];
+    [self.outlineView reloadData];
+    if (currentSelection.count > 0) {
+        [self.outlineView selectRowIndexes:currentSelection byExtendingSelection:NO];
+    }
+}
+
+- (void)outlineView:(NSOutlineView *)outlineView draggingEnded:(id<NSDraggingInfo>)sender {
+    [self performDragCleanup];
 }
 
 - (TreeNode *)findNodeByPath:(NSString *)path {

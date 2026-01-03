@@ -1,7 +1,7 @@
 # Drag and Drop Implementation Guide
 
-**Revision:** 1.0
-**Last Updated:** 2025-01-02
+**Revision:** 1.1
+**Last Updated:** 2026-01-03
 
 This document covers drag and drop implementation patterns for foobar2000 macOS components, including internal reordering, cross-component dragging, and integration with the foobar2000 SDK.
 
@@ -22,6 +22,7 @@ This document covers drag and drop implementation patterns for foobar2000 macOS 
 11. [Visual Feedback](#11-visual-feedback)
 12. [Common Pitfalls](#12-common-pitfalls)
 13. [Implementation Examples](#13-implementation-examples)
+14. [NSOutlineView Drag Lifecycle (Critical Discoveries)](#14-nsoutlineview-drag-lifecycle-critical-discoveries)
 
 ---
 
@@ -973,6 +974,174 @@ Key patterns:
 - Edit mode gating
 - Horizontal position-based drop targeting
 - Immediate visual feedback
+
+---
+
+## 14. NSOutlineView Drag Lifecycle (Critical Discoveries)
+
+These patterns were discovered while implementing drag-hover-expand in Playlist Organizer.
+
+### 14.1 Do NOT Call Super on Drag Methods
+
+**Critical:** NSOutlineView uses the dataSource pattern for drag/drop, NOT the NSDraggingDestination protocol. Calling super on these methods causes system hangs:
+
+```objc
+// WRONG - causes system gesture hangs!
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    [super draggingEntered:sender];  // DON'T DO THIS
+    return NSDragOperationCopy;
+}
+
+// CORRECT - forward to delegate without calling super
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    id<MyOutlineViewDelegate> delegate = (id)self.delegate;
+    if ([delegate respondsToSelector:@selector(outlineView:draggingEntered:)]) {
+        [delegate outlineView:self draggingEntered:sender];
+    }
+    return NSDragOperationNone;  // Actual validation in validateDrop:
+}
+```
+
+### 14.2 Drag Event Order
+
+For external drags entering an NSOutlineView:
+
+1. `draggingEntered:` - Called when cursor enters view (BEFORE validateDrop)
+2. `validateDrop:proposedItem:proposedChildIndex:` - Called repeatedly as cursor moves
+3. `draggingExited:` - Called when cursor leaves view
+4. `draggingEnded:` - Called when drag operation completes (drop or cancel)
+
+**Important:** `draggingEnded:` IS called on your view even when the drop happens elsewhere.
+
+### 14.3 Timers During Drag Operations
+
+NSTimer scheduled with `scheduledTimerWithTimeInterval:` uses default run loop mode. During drag, the run loop is in event tracking mode, so timers won't fire.
+
+```objc
+// WRONG - timer won't fire during drag
+_hoverTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+                                               target:self
+                                             selector:@selector(timerFired:)
+                                             userInfo:nil
+                                              repeats:NO];
+
+// CORRECT - use common modes to fire during drag
+_hoverTimer = [NSTimer timerWithTimeInterval:1.0
+                                      target:self
+                                    selector:@selector(timerFired:)
+                                    userInfo:nil
+                                     repeats:NO];
+[[NSRunLoop currentRunLoop] addTimer:_hoverTimer forMode:NSRunLoopCommonModes];
+```
+
+### 14.4 Blocking Selection During Drag
+
+To prevent selection changes while dragging over an outline view:
+
+```objc
+@implementation MyController {
+    BOOL _hasDragSource;
+}
+
+- (BOOL)selectionShouldChangeInOutlineView:(NSOutlineView *)outlineView {
+    return !_hasDragSource;  // Block selection during drag
+}
+
+- (void)outlineView:(NSOutlineView *)outlineView draggingEntered:(id<NSDraggingInfo>)sender {
+    _hasDragSource = YES;
+}
+
+- (void)outlineView:(NSOutlineView *)outlineView draggingEnded:(id<NSDraggingInfo>)sender {
+    _hasDragSource = NO;
+    [self.outlineView reloadData];  // Clear lingering visual state
+}
+```
+
+### 14.5 Modifier Keys for Copy vs Move
+
+Check modifier keys in `validateDrop:` to change operation type:
+
+```objc
+- (NSDragOperation)outlineView:(NSOutlineView *)outlineView
+                  validateDrop:(id<NSDraggingInfo>)info
+                  proposedItem:(id)item
+            proposedChildIndex:(NSInteger)index {
+
+    if (targetNode && targetNode.nodeType == TreeNodeTypePlaylist) {
+        // Option key: Copy, Default: Move
+        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
+        return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+    }
+    return NSDragOperationNone;
+}
+```
+
+The cursor icon changes automatically based on the returned operation.
+
+### 14.6 Drop Target Highlighting vs Selection
+
+NSOutlineView draws a special highlight for the proposed drop target (the row under cursor). This is NOT selection - it's internal visual feedback.
+
+- **Selection:** Blue background, controlled by `selectRowIndexes:`
+- **Drop target highlight:** Automatic during drag based on `validateDrop:` return value
+
+The drop target highlight should clear automatically when drag ends. If it persists:
+
+```objc
+- (void)performDragCleanup {
+    // Preserve selection across reload
+    NSIndexSet *selection = [self.outlineView.selectedRowIndexes copy];
+    [self.outlineView reloadData];  // Clears lingering drop target state
+    if (selection.count > 0) {
+        [self.outlineView selectRowIndexes:selection byExtendingSelection:NO];
+    }
+}
+```
+
+### 14.7 Custom NSOutlineView Subclass for Drag Callbacks
+
+To receive `draggingEntered:`, `draggingExited:`, and `draggingEnded:` callbacks, subclass NSOutlineView:
+
+```objc
+// PlorgOutlineView.h
+@protocol PlorgOutlineViewDelegate <NSOutlineViewDelegate>
+@optional
+- (void)outlineView:(NSOutlineView *)outlineView draggingEntered:(id<NSDraggingInfo>)sender;
+- (void)outlineView:(NSOutlineView *)outlineView draggingExited:(id<NSDraggingInfo>)sender;
+- (void)outlineView:(NSOutlineView *)outlineView draggingEnded:(id<NSDraggingInfo>)sender;
+@end
+
+@interface PlorgOutlineView : NSOutlineView
+@end
+
+// PlorgOutlineView.mm
+@implementation PlorgOutlineView
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    // Do NOT call super - causes hangs
+    id<PlorgOutlineViewDelegate> delegate = (id)self.delegate;
+    if ([delegate respondsToSelector:@selector(outlineView:draggingEntered:)]) {
+        [delegate outlineView:self draggingEntered:sender];
+    }
+    return NSDragOperationNone;
+}
+
+- (void)draggingExited:(id<NSDraggingInfo>)sender {
+    id<PlorgOutlineViewDelegate> delegate = (id)self.delegate;
+    if ([delegate respondsToSelector:@selector(outlineView:draggingExited:)]) {
+        [delegate outlineView:self draggingExited:sender];
+    }
+}
+
+- (void)draggingEnded:(id<NSDraggingInfo>)sender {
+    id<PlorgOutlineViewDelegate> delegate = (id)self.delegate;
+    if ([delegate respondsToSelector:@selector(outlineView:draggingEnded:)]) {
+        [delegate outlineView:self draggingEnded:sender];
+    }
+}
+
+@end
+```
 
 ---
 

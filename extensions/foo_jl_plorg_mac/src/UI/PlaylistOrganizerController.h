@@ -8,13 +8,14 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import "PlorgOutlineView.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class TreeNode;
 @class TreeModel;
 
-@interface PlaylistOrganizerController : NSViewController <NSOutlineViewDataSource, NSOutlineViewDelegate>
+@interface PlaylistOrganizerController : NSViewController <NSOutlineViewDataSource, PlorgOutlineViewDelegate>
 
 @property (nonatomic, strong, readonly) NSOutlineView *outlineView;
 @property (nonatomic, strong, readonly) NSScrollView *scrollView;

@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
+### [1.3.0] - 2026-01-03
+
+#### Added
+- Drag-hover-expand: hover over folders to auto-expand, hover over playlists to activate them
+- Accept track drops from SimPlaylist onto playlists (appends to end)
+- Playlist item count updates immediately after drop
+- Option key modifier: hold Option during drag for Copy operation (default is Move)
+
 ### [1.0.0] - 2025-12-26
 
 #### Added
