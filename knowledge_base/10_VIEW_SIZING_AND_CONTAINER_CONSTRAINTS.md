@@ -14,8 +14,9 @@ This document explains how NSView sizing affects foobar2000 layout containers, a
 3. [The Three Mechanisms](#3-the-three-mechanisms)
 4. [Correct Implementation Pattern](#4-correct-implementation-pattern)
 5. [Intentional Locking (Waveform Pattern)](#5-intentional-locking-waveform-pattern)
-6. [Diagnostic Checklist](#6-diagnostic-checklist)
-7. [Component Audit Results](#7-component-audit-results)
+6. [Runtime Debugging](#6-runtime-debugging)
+7. [Diagnostic Checklist](#7-diagnostic-checklist)
+8. [Component Audit Results](#8-component-audit-results)
 
 ---
 
@@ -238,7 +239,61 @@ If you **intentionally** want to allow users to lock dimensions (like Waveform S
 
 ---
 
-## 6. Diagnostic Checklist
+## 6. Runtime Debugging
+
+### Using JLConstraintDebugger
+
+A runtime debugging helper is available in `shared/JLConstraintDebugger.h`:
+
+```objc
+#import "JLConstraintDebugger.h"
+
+// In your component's on_init():
+[JLConstraintDebugger enable];
+
+// Enable verbose logging of intrinsicContentSize calls
+[JLConstraintDebugger setVerboseLogging:YES];
+
+// Dump the view hierarchy (logs to Console.app)
+[JLConstraintDebugger dumpAllWindows];
+
+// Find and highlight suspect views (red border)
+NSView *myView = ...;
+[JLConstraintDebugger highlightSuspectViews:myView];
+
+// Get detailed info for a specific view
+[JLConstraintDebugger logSizingInfo:someView];
+```
+
+**Output in Console.app** (filter by "JLConstraint"):
+```
+[JLConstraint] SimPlaylistView frame:800x600 intrinsic:1200x5000 hug:250/250 comp:750/750 [INTRINSIC] [HIGH-COMP]
+[JLConstraint]   NSScrollView frame:800x600 intrinsic:-1x-1 hug:250/250 comp:750/750 [HIGH-COMP]
+```
+
+**Issue Markers:**
+- `[INTRINSIC]` - View returns actual dimensions from `intrinsicContentSize`
+- `[HIGH-HUG]` - High hugging priority (>= 750)
+- `[HIGH-COMP]` - High compression resistance (>= 750) - **main cause of snap-back**
+
+### Quick Debug Without Code Changes
+
+Add this to **any** view controller temporarily:
+
+```objc
+- (void)viewDidAppear {
+    [super viewDidAppear];
+
+    // Dump this view's hierarchy
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [JLConstraintDebugger dumpView:self.view indent:0];
+    });
+}
+```
+
+---
+
+## 7. Diagnostic Checklist
 
 ### Finding the Offending Component
 
@@ -286,7 +341,7 @@ For each view class:
 
 ---
 
-## 7. Component Audit Results
+## 8. Component Audit Results
 
 | Component | intrinsicContentSize | Hugging Priority | Compression Priority | Status |
 |-----------|---------------------|------------------|---------------------|--------|
