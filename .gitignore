@@ -52,3 +52,7 @@ sdk_config.sh
 
 # Settings backups (for clean install testing)
 .settings_backups/
+
+# Worktree-specific files (component instructions)
+BACKLOG.md
+CLAUDE.md
