@@ -107,6 +107,13 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawOnSetNeedsDisplay;
     self.layer.drawsAsynchronously = YES;
 
+    // CRITICAL: Set low priorities to allow flexible container resizing.
+    // Without this, the view resists shrinking when user expands adjacent columns.
+    [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+
     // Register for drag & drop
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
@@ -206,7 +213,7 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 
 - (void)reloadData {
     // Update frame size to match content for proper scrolling
-    NSSize contentSize = [self intrinsicContentSize];
+    NSSize contentSize = [self calculatedContentSize];
 
     // Ensure minimum size matches scroll view's visible area
     // This is CRITICAL for empty playlists to receive drag events
@@ -604,6 +611,14 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 }
 
 - (NSSize)intrinsicContentSize {
+    // CRITICAL: Return no intrinsic size to allow flexible resizing.
+    // Returning actual dimensions causes container limiting - the view
+    // resists shrinking when user tries to expand adjacent columns.
+    return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+}
+
+// Internal method for calculating actual content size (for frame/scrolling)
+- (NSSize)calculatedContentSize {
     CGFloat totalHeight = [self totalContentHeightCached];
     CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth;
     return NSMakeSize(totalWidth, totalHeight);

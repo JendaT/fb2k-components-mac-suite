@@ -1,7 +1,7 @@
 # View Sizing and Container Constraints
 
-**Revision:** 1.0
-**Last Updated:** 2025-01-03
+**Revision:** 1.1
+**Last Updated:** 2026-01-03
 
 This document explains how NSView sizing affects foobar2000 layout containers, and how to prevent components from accidentally limiting their parent container's resizability.
 
@@ -22,11 +22,35 @@ This document explains how NSView sizing affects foobar2000 layout containers, a
 
 ## 1. The Problem
 
-**Symptom:** When a user tries to resize a foobar2000 column containing a component, the column "pushes back" or snaps to a specific size instead of resizing freely.
+There are TWO symptom patterns, both caused by improper view sizing configuration:
 
-**Cause:** The component's view is asserting a size preference that the Auto Layout system respects, preventing the container from shrinking (or expanding) past that size.
+### 1.1 Can't Shrink (blocked by compression resistance)
 
-**Impact:** Users cannot freely arrange their layout. The component "fights" with the user's resize attempts.
+**Symptom:** User tries to shrink a column but it snaps back to a minimum width.
+
+**Cause:** A view in that column has:
+- `intrinsicContentSize` returning actual dimensions (not NoIntrinsicMetric)
+- High `contentCompressionResistancePriority` (750 is default high)
+
+**Diagnosis:** Look for `[HIGH-COMP]` + actual intrinsic dimensions in the column you're shrinking.
+
+### 1.2 Can't Expand (blocked by adjacent view's compression resistance)
+
+**Symptom:** User tries to make a column WIDER but it snaps back SMALLER.
+
+**Cause:** The ADJACENT column (the one that would need to shrink) has a view with:
+- `intrinsicContentSize` returning actual dimensions
+- High `contentCompressionResistancePriority` (750)
+
+When you expand column A, column B must shrink. If column B contains a view that resists compression, the divider snaps back.
+
+**Diagnosis:** Look for `[HIGH-COMP]` + actual intrinsic dimensions in the ADJACENT column.
+
+**THIS IS THE WORST UX BUG** - the user is dragging the correct divider but a completely different component is blocking them.
+
+### Impact
+
+Users cannot freely arrange their layout. The component "fights" with the user's resize attempts. This creates frustration and a perception of broken software.
 
 ---
 
@@ -348,28 +372,38 @@ For each view class:
 | Album Art | ✅ NoIntrinsicMetric | ✅ 1 (both) | ✅ 1 (both) | OK |
 | Scrobble Widget | ✅ NoIntrinsicMetric | ✅ 1 (both) | ✅ 1 (both) | OK |
 | Biography Content | ✅ (-1, -1) | ⚠️ Low (H only) | ⚠️ Low (H only) | CHECK V |
-| SimPlaylist | ❌ Returns content size | ❌ Not set | ❌ Not set | **FIX** |
+| SimPlaylist | ✅ NoIntrinsicMetric | ✅ 1 (both) | ✅ 1 (both) | **FIXED** (2025-01-03) |
 | Waveform Seekbar | N/A (no override) | N/A | N/A | OK (uses constraints) |
 | Plorg | N/A | N/A | N/A | CHECK |
 | Queue Manager | N/A | N/A | N/A | CHECK |
 
-### SimPlaylist Issue
+### SimPlaylist Fix (Applied 2025-01-03)
 
+**Problem:** SimPlaylist was returning actual content dimensions from `intrinsicContentSize` with default high compression resistance. This caused the "can't expand adjacent column" bug - users couldn't widen the right column because SimPlaylist in the middle resisted shrinking.
+
+**Fix applied to `SimPlaylistView.mm`:**
+
+1. Changed `intrinsicContentSize` to return `NSViewNoIntrinsicMetric`:
 ```objc
-// CURRENT (PROBLEMATIC):
-- (NSSize)intrinsicContentSize {
-    CGFloat totalHeight = [self totalContentHeightCached];
-    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth;
-    return NSMakeSize(totalWidth, totalHeight);  // Returns actual content size!
-}
-
-// SHOULD BE:
 - (NSSize)intrinsicContentSize {
     return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
 }
+
+// Added separate method for internal frame calculation:
+- (NSSize)calculatedContentSize {
+    CGFloat totalHeight = [self totalContentHeightCached];
+    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth;
+    return NSMakeSize(totalWidth, totalHeight);
+}
 ```
 
-Additionally, SimPlaylist needs priority settings in its initializer.
+2. Added low priority settings in `commonInit`:
+```objc
+[self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+[self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+[self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+[self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+```
 
 ---
 
