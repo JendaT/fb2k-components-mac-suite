@@ -173,10 +173,15 @@ JL_COMPONENT_ABOUT(
 When releasing a new version:
 
 1. **Update `shared/version.h`** - Change BOTH the string and int versions
-2. **Update CHANGELOG.md** in the extension's directory
-3. **Rebuild the component** - The version propagates automatically via `common_about.h`
-4. **Commit and push**
-5. **Run release script**: `./Scripts/release_component.sh <name> --draft`
+2. **Update extension's CHANGELOG.md** - This is `extensions/<component>/CHANGELOG.md`, NOT the root CHANGELOG.md
+   - The release script extracts "What's New" from this file
+   - Without an entry for the version, the release will have no changelog
+3. **Optionally update root CHANGELOG.md** - For monorepo-wide tracking
+4. **Rebuild the component** - The version propagates automatically via `common_about.h`
+5. **Commit and push**
+6. **Run release script**: `./Scripts/release_component.sh <name> --draft`
+
+**IMPORTANT:** The release script reads `extensions/<component>/CHANGELOG.md` to generate GitHub release notes. If this file is missing the version entry, the release will only have installation instructions with no "What's New" section.
 
 ### What NOT to Do
 

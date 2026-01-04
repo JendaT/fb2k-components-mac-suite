@@ -2,6 +2,23 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.1.6] - 2026-01-03
+
+### Fixed
+- **Context menu crash on foobar2000 2.26+**: Removed dead code that incorrectly bridged C++ pointer as ObjC object, causing crash when Cocoa called retain on it
+
+### Technical
+- Bug only affected fb2k 2.26+ users (contextmenu_manager_v2 API)
+- See docs/DEBUG_REPORT_2026-01-03_context_menu_crash.md for full analysis
+
+## [1.1.5] - 2026-01-03
+
+### Added
+- **Option-key modifier for drag operations**: Hold Option to copy instead of move
+  - Same playlist: Option+drag duplicates items
+  - Cross playlist: Option+drag copies items (leaves source unchanged)
+  - Default behavior (no modifier) moves items
+
 ## [1.1.4] - 2026-01-02
 
 ### Fixed
