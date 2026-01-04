@@ -43,6 +43,11 @@ enum class JLCloudError : uint32_t {
     ProfileURL = 41,        // URL is a profile, not a track
     PlaylistURL = 42,       // URL is a playlist, not a track
     InvalidURL = 43,        // URL is malformed
+
+    // Search errors (100-109)
+    SearchNoResults = 100,  // Search returned no results
+    SearchCancelled = 101,  // Search was cancelled
+    SearchTimeout = 102,    // Search timed out
 };
 
 // Convert error code to string for logging
@@ -68,6 +73,9 @@ inline const char* errorToString(JLCloudError error) {
         case JLCloudError::ProfileURL: return "Profile URL not supported";
         case JLCloudError::PlaylistURL: return "Playlist URL not supported";
         case JLCloudError::InvalidURL: return "Invalid URL";
+        case JLCloudError::SearchNoResults: return "No results found";
+        case JLCloudError::SearchCancelled: return "Search cancelled";
+        case JLCloudError::SearchTimeout: return "Search timed out";
         default: return "Unknown error";
     }
 }

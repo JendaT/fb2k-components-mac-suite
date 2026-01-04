@@ -367,17 +367,12 @@ bool CloudInputEntry::is_our_content_type(const char* p_type) {
 }
 
 bool CloudInputEntry::is_our_path(const char* p_full_path, const char* p_extension) {
-    // ALWAYS log to stderr to see if this is called at all
-    fprintf(stderr, "[Cloud Streamer] is_our_path called with: %s\n", p_full_path ? p_full_path : "(null)");
-
     if (!p_full_path || !*p_full_path) return false;
 
     std::string path(p_full_path);
 
     // Accept internal schemes (mixcloud://, soundcloud://)
     if (URLUtils::isInternalScheme(path)) {
-        fprintf(stderr, "[Cloud Streamer] is_our_path: YES (internal scheme)\n");
-        console::info(("[Cloud Streamer] is_our_path: YES (internal scheme) - " + path).c_str());
         return true;
     }
 
@@ -386,14 +381,8 @@ bool CloudInputEntry::is_our_path(const char* p_full_path, const char* p_extensi
         ParsedCloudURL parsed = URLUtils::parseURL(path);
         // Only accept track URLs, not profiles or playlists
         if (parsed.type == JLCloudURLType::Track || parsed.type == JLCloudURLType::DJSet) {
-            fprintf(stderr, "[Cloud Streamer] is_our_path: YES (web URL track)\n");
-            console::info(("[Cloud Streamer] is_our_path: YES (web URL, type=" +
-                std::to_string(static_cast<int>(parsed.type)) + ") - " + path).c_str());
             return true;
         }
-        fprintf(stderr, "[Cloud Streamer] is_our_path: NO (web URL but wrong type=%d)\n", static_cast<int>(parsed.type));
-        console::info(("[Cloud Streamer] is_our_path: NO (web URL but type=" +
-            std::to_string(static_cast<int>(parsed.type)) + ") - " + path).c_str());
     }
 
     return false;
