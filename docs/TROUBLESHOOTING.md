@@ -257,6 +257,8 @@ When something breaks, newest component is usually the culprit. `fb2k-debug` sor
 
 | Date | Issue | Cause | Resolution |
 |------|-------|-------|------------|
+| 2026-01-03 | Right-click crash | SimPlaylist C++ pointer bridged as ObjC object in context menu | Removed `representedObject` assignment in v1.1.6 |
 | 2025-12-31 | App won't start | SimPlaylist crash in `drawSparseTrackRow:` + duplicate biography component | Disabled SimPlaylist, removed duplicate |
 
 See `docs/DEBUG_REPORT_2025-12-31.md` for full analysis.
+See `docs/DEBUG_REPORT_2026-01-03_context_menu_crash.md` for context menu crash analysis.
