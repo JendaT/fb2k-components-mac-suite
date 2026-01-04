@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [1.1.6] - 2026-01-03
+
+#### Fixed
+- Context menu crash when right-clicking on items (removed incorrect C++ to ObjC pointer bridge)
+
 ### [1.1.5] - 2026-01-03
 
 #### Added

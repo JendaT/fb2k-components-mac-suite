@@ -1436,7 +1436,6 @@ static NSInteger _groupDetectionGeneration = 0;
                                                            keyEquivalent:@""];
                 menuItem.target = self;
                 menuItem.tag = child->commandID();
-                menuItem.representedObject = (__bridge id)cmm.get_ptr();  // Store reference
 
                 menu_flags_t flags = child->flags();
                 menuItem.enabled = !(flags & menu_flags::disabled);
