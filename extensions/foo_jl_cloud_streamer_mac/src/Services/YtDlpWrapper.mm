@@ -590,4 +590,177 @@ JLCloudError YtDlpWrapper::parseErrorOutput(const std::string& errorOutput) {
     return JLCloudError::YtDlpFailed;
 }
 
+YtDlpSearchResult YtDlpWrapper::search(
+    const std::string& query,
+    int maxResults,
+    std::atomic<bool>* abortFlag,
+    int timeoutSeconds
+) {
+    YtDlpSearchResult result;
+
+    if (query.empty()) {
+        result.error = JLCloudError::SearchNoResults;
+        result.errorMessage = "Empty search query";
+        return result;
+    }
+
+    // Clamp maxResults to 1-50 range
+    maxResults = std::max(1, std::min(50, maxResults));
+
+    // Build search query: scsearch<N>:<query>
+    std::string searchQuery = "scsearch" + std::to_string(maxResults) + ":" + query;
+
+    std::vector<std::string> args;
+    args.push_back("--flat-playlist");  // Don't extract full info for each entry
+    args.push_back("-J");               // JSON output
+    args.push_back("--no-warnings");
+    args.push_back(searchQuery);
+
+    YtDlpResult execResult = execute(args, YtDlpOperation::Search, abortFlag, timeoutSeconds);
+
+    if (!execResult.success) {
+        result.error = execResult.error;
+        result.errorMessage = execResult.errorMessage;
+
+        // Map specific errors for search context
+        if (result.error == JLCloudError::Cancelled) {
+            result.error = JLCloudError::SearchCancelled;
+        } else if (result.error == JLCloudError::Timeout) {
+            result.error = JLCloudError::SearchTimeout;
+        }
+        return result;
+    }
+
+    // Parse JSON output
+    result.entries = parseSearchJSON(execResult.streamURL);
+
+    if (result.entries.empty()) {
+        result.error = JLCloudError::SearchNoResults;
+        result.errorMessage = "No results found";
+        return result;
+    }
+
+    result.success = true;
+    logDebug("Search returned " + std::to_string(result.entries.size()) + " results");
+    return result;
+}
+
+std::vector<YtDlpTrackInfo> YtDlpWrapper::parseSearchJSON(const std::string& json) {
+    std::vector<YtDlpTrackInfo> entries;
+
+    @autoreleasepool {
+        NSData* jsonData = [[NSString stringWithUTF8String:json.c_str()] dataUsingEncoding:NSUTF8StringEncoding];
+        if (!jsonData) {
+            logDebug("Failed to convert search JSON to NSData");
+            return entries;
+        }
+
+        NSError* error = nil;
+        NSDictionary* dict = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&error];
+        if (!dict || ![dict isKindOfClass:[NSDictionary class]]) {
+            logDebug("Failed to parse search JSON");
+            return entries;
+        }
+
+        NSArray* entriesArray = dict[@"entries"];
+        if (![entriesArray isKindOfClass:[NSArray class]]) {
+            logDebug("No entries array in search result");
+            return entries;
+        }
+
+        for (NSDictionary* entryDict in entriesArray) {
+            if (![entryDict isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+
+            YtDlpTrackInfo info;
+
+            // Title
+            if (NSString* title = entryDict[@"title"]) {
+                if ([title isKindOfClass:[NSString class]]) {
+                    info.title = [title UTF8String] ?: "";
+                }
+            }
+
+            // Uploader (artist)
+            if (NSString* uploader = entryDict[@"uploader"]) {
+                if ([uploader isKindOfClass:[NSString class]]) {
+                    info.uploader = [uploader UTF8String] ?: "";
+                }
+            }
+
+            // Web URL - prefer webpage_url (actual web page) over url (API endpoint)
+            if (NSString* webpageUrl = entryDict[@"webpage_url"]) {
+                if ([webpageUrl isKindOfClass:[NSString class]]) {
+                    info.webpageUrl = [webpageUrl UTF8String] ?: "";
+                }
+            }
+            // Fallback to url if webpage_url empty
+            if (info.webpageUrl.empty()) {
+                if (NSString* url = entryDict[@"url"]) {
+                    if ([url isKindOfClass:[NSString class]]) {
+                        info.webpageUrl = [url UTF8String] ?: "";
+                    }
+                }
+            }
+
+            // Track ID
+            if (NSString* trackId = entryDict[@"id"]) {
+                if ([trackId isKindOfClass:[NSString class]]) {
+                    info.trackId = [trackId UTF8String] ?: "";
+                }
+            }
+
+            // Duration
+            if (NSNumber* duration = entryDict[@"duration"]) {
+                if ([duration isKindOfClass:[NSNumber class]]) {
+                    info.duration = [duration doubleValue];
+                }
+            }
+
+            // Thumbnail - prefer "large" (100x100) or "t67x67" for table view
+            NSArray* thumbnails = entryDict[@"thumbnails"];
+            if ([thumbnails isKindOfClass:[NSArray class]]) {
+                // Look for preferred sizes in order
+                NSArray* preferredSizes = @[@"large", @"t67x67", @"small", @"badge"];
+                for (NSString* preferredId in preferredSizes) {
+                    for (NSDictionary* thumb in thumbnails) {
+                        if ([thumb isKindOfClass:[NSDictionary class]]) {
+                            NSString* thumbId = thumb[@"id"];
+                            if ([thumbId isKindOfClass:[NSString class]] &&
+                                [thumbId isEqualToString:preferredId]) {
+                                NSString* thumbUrl = thumb[@"url"];
+                                if ([thumbUrl isKindOfClass:[NSString class]]) {
+                                    info.thumbnailUrl = [thumbUrl UTF8String] ?: "";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (!info.thumbnailUrl.empty()) break;
+                }
+                // Fallback to first thumbnail with a URL
+                if (info.thumbnailUrl.empty()) {
+                    for (NSDictionary* thumb in thumbnails) {
+                        if ([thumb isKindOfClass:[NSDictionary class]]) {
+                            NSString* thumbUrl = thumb[@"url"];
+                            if ([thumbUrl isKindOfClass:[NSString class]] && thumbUrl.length > 0) {
+                                info.thumbnailUrl = [thumbUrl UTF8String] ?: "";
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Only add entries with at least a title and URL
+            if (!info.title.empty() && !info.webpageUrl.empty()) {
+                entries.push_back(info);
+            }
+        }
+    }
+
+    return entries;
+}
+
 } // namespace cloud_streamer

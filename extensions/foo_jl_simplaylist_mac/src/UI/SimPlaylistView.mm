@@ -117,7 +117,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     // Register for drag & drop
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
-        NSPasteboardTypeFileURL
+        NSPasteboardTypeFileURL,
+        NSPasteboardTypeURL  // Web URLs (e.g., from Cloud Browser)
     ]];
 
     // Register for settings changes
@@ -2323,16 +2324,14 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
     NSPasteboard *pb = [sender draggingPasteboard];
 
-    FB2K_console_formatter() << "[SimPlaylist] draggingEntered, types: "
-                             << ([pb.types containsObject:SimPlaylistPasteboardType] ? "SimPlaylist " : "")
-                             << ([pb.types containsObject:NSPasteboardTypeFileURL] ? "FileURL" : "");
-
     if ([pb.types containsObject:SimPlaylistPasteboardType]) {
         // Option key = copy, otherwise move
         BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
         return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
     } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
+    } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
+        return NSDragOperationCopy;  // Web URLs (e.g., from Cloud Browser)
     }
     return NSDragOperationNone;
 }
@@ -2407,6 +2406,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
     } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
+    } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
+        return NSDragOperationCopy;  // Web URLs (e.g., from Cloud Browser)
     }
     return NSDragOperationNone;
 }
@@ -2513,6 +2514,19 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
                 if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
                     [_delegate playlistView:self didReceiveDroppedURLs:fileURLs atRow:_dropTargetRow];
                 }
+            }
+        }
+        _dropTargetRow = -1;
+        [self setNeedsDisplay:YES];
+        return YES;
+    }
+
+    // Web URL drop (e.g., from Cloud Browser)
+    if ([pb.types containsObject:NSPasteboardTypeURL]) {
+        NSArray *urls = [pb readObjectsForClasses:@[[NSURL class]] options:nil];
+        if (urls.count > 0) {
+            if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
             }
         }
         _dropTargetRow = -1;

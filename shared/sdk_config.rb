@@ -79,7 +79,9 @@ module Fb2kVersions
     "album_art" => "ALBUMART_VERSION",
     "biography" => "BIOGRAPHY_VERSION",
     "queue_manager" => "QUEUE_MANAGER_VERSION",
-    "queue" => "QUEUE_MANAGER_VERSION"
+    "queue" => "QUEUE_MANAGER_VERSION",
+    "cloud_streamer" => "CLOUD_STREAMER_VERSION",
+    "cloud" => "CLOUD_STREAMER_VERSION"
   }
 
   # Parse version.h and extract versions

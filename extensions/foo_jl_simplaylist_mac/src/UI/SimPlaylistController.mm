@@ -218,10 +218,18 @@ static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NS
     auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
 
     for (NSURL* url in sortedURLs) {
-        // Accept file URLs or URLs with file path (media library may use different scheme)
-        NSString* path = url.path;
-        if (path && path.length > 0) {
-            notify->m_paths.add_item([path UTF8String]);
+        NSString* pathOrURL = nil;
+
+        if (url.isFileURL) {
+            // For file URLs, use the file system path
+            pathOrURL = url.path;
+        } else {
+            // For web URLs (https://, soundcloud://, etc.), use the full URL string
+            pathOrURL = url.absoluteString;
+        }
+
+        if (pathOrURL && pathOrURL.length > 0) {
+            notify->m_paths.add_item([pathOrURL UTF8String]);
         }
     }
 

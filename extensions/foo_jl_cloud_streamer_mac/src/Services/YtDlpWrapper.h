@@ -30,11 +30,30 @@ struct YtDlpResult {
     std::optional<TrackInfo> trackInfo;
 };
 
+// Track info from search results
+struct YtDlpTrackInfo {
+    std::string title;
+    std::string uploader;
+    std::string webpageUrl;
+    std::string trackId;
+    std::string thumbnailUrl;  // Artwork URL (typically "large" size - 100x100)
+    double duration = 0.0;
+};
+
+// Result of search operation
+struct YtDlpSearchResult {
+    std::vector<YtDlpTrackInfo> entries;
+    bool success = false;
+    JLCloudError error = JLCloudError::None;
+    std::string errorMessage;
+};
+
 // yt-dlp operation types
 enum class YtDlpOperation {
     ExtractStreamURL,   // Get playable stream URL (-g)
     ExtractMetadata,    // Get JSON metadata (-j)
-    ValidateBinary      // Verify binary is valid (--version)
+    ValidateBinary,     // Verify binary is valid (--version)
+    Search              // Search for tracks (--flat-playlist -J)
 };
 
 // Default timeout values in seconds
@@ -69,6 +88,16 @@ public:
         int timeoutSeconds = kMetadataTimeoutSeconds
     );
 
+    // Search for tracks on SoundCloud
+    // query: search term
+    // maxResults: maximum number of results (1-50)
+    YtDlpSearchResult search(
+        const std::string& query,
+        int maxResults = 50,
+        std::atomic<bool>* abortFlag = nullptr,
+        int timeoutSeconds = kDefaultTimeoutSeconds
+    );
+
     // Get the currently configured yt-dlp path
     std::string getYtDlpPath() const;
 
@@ -96,6 +125,9 @@ private:
 
     // Parse JSON output from yt-dlp
     std::optional<TrackInfo> parseMetadataJSON(const std::string& json, const std::string& originalURL);
+
+    // Parse search JSON output from yt-dlp
+    std::vector<YtDlpTrackInfo> parseSearchJSON(const std::string& json);
 
     // Map yt-dlp error output to error code
     JLCloudError parseErrorOutput(const std::string& errorOutput);
