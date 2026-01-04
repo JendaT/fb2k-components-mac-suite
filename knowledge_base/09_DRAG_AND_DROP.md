@@ -1,7 +1,7 @@
 # Drag and Drop Implementation Guide
 
-**Revision:** 1.1
-**Last Updated:** 2026-01-03
+**Revision:** 1.2
+**Last Updated:** 2026-01-04
 
 This document covers drag and drop implementation patterns for foobar2000 macOS components, including internal reordering, cross-component dragging, and integration with the foobar2000 SDK.
 
@@ -113,16 +113,34 @@ On Windows, there's IDataObject/OLE integration, but for macOS:
 - No helper functions for macOS drag/drop
 - Each component must define its own pasteboard format
 
-### 3.2 Implications
+### 3.2 Confirmed: Default Components Don't Support Cross-Drag
+
+**Tested 2026-01-04:** The default foobar2000 macOS components (playlist-picker and playlist) do NOT support drag and drop between each other. This confirms:
+
+1. **No standard pasteboard type exists** - even Apple (fb2k developer) didn't implement one
+2. **No infrastructure to integrate with** - there's nothing to discover or support
+3. **This is a platform limitation, not a component bug**
+
+| Drag From | Drag To | Works? |
+|-----------|---------|--------|
+| Default Playlist | Default Playlist-Picker | **No** |
+| SimPlaylist | Default Playlist-Picker | **No** (nothing to integrate with) |
+| SimPlaylist | SimPlaylist | Yes (same component) |
+| SimPlaylist | Playlist Organizer | Yes (Plorg explicitly added support) |
+| Finder | Any component | Yes (`NSPasteboardTypeFileURL`) |
+
+**Bottom line:** Cross-component drag/drop on macOS foobar2000 only works when both components explicitly coordinate. The default UI provides no standard protocol.
+
+### 3.3 Implications
 
 | Scenario | Solution |
 |----------|----------|
 | Internal reordering | Define your own pasteboard type |
-| Drag from playlists | Unknown if Default UI exposes a type - investigate at runtime |
+| Drag to default UI | **Not possible** - no protocol exists |
 | Drag to queue | Accept file URLs as fallback |
-| Cross-component | Coordinate pasteboard types between components |
+| Cross-component | Coordinate pasteboard types between components (explicit support required) |
 
-### 3.3 Runtime Investigation
+### 3.4 Runtime Investigation
 
 To discover what the Default UI puts on the pasteboard:
 
@@ -146,7 +164,7 @@ To discover what the Default UI puts on the pasteboard:
 }
 ```
 
-### 3.4 Transferring Track Handles
+### 3.5 Transferring Track Handles
 
 Since there's no standard type, you have options:
 
