@@ -17,6 +17,7 @@ This document explains how NSView sizing affects foobar2000 layout containers, a
 6. [Runtime Debugging](#6-runtime-debugging)
 7. [Diagnostic Checklist](#7-diagnostic-checklist)
 8. [Component Audit Results](#8-component-audit-results)
+9. [Known foobar2000 Layout Quirks](#9-known-foobar2000-layout-quirks)
 
 ---
 
@@ -404,6 +405,38 @@ For each view class:
 [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
 [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 ```
+
+---
+
+## 9. Known foobar2000 Layout Quirks
+
+These are issues in foobar2000's Default UI that we cannot fix from component code.
+
+### 9.1 Default Playback Controls Block Resize When No Track Loaded
+
+**Discovered:** 2026-01-04
+
+**Symptom:** With Default UI playback controls visible in a column, users cannot expand that column. The divider snaps back to a fixed width.
+
+**Root Cause:** The Default UI playback buttons (`FB2KButtonEx`, `NSButton`) have state-dependent constraint behavior:
+
+| Playback State | Button Behavior |
+|----------------|-----------------|
+| No track loaded | `intrinsic:256x256, comp:750` - actively enforced |
+| Track loaded/paused | Constraints relaxed - resize works |
+
+**Verification:**
+1. Disable ALL custom components via `fb2k-debug`
+2. Restart foobar2000 with Default playback controls visible
+3. Try to resize column → **BLOCKED**
+4. Load any track (even paused)
+5. Try to resize column → **WORKS**
+
+**Conclusion:** This is 100% foobar2000 Default UI behavior, not our components.
+
+**Workaround:** Load any track before adjusting layout.
+
+**Status:** UNFIXABLE from component code - requires foobar2000 core changes.
 
 ---
 
