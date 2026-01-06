@@ -24,10 +24,12 @@ static const CGFloat kRowHeight = 44.0;
 // Debounce timer interval
 static const NSTimeInterval kSearchDebounceInterval = 0.5;
 
-// User defaults key for last search
+// User defaults keys
 static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
+static NSString* const kSelectedServiceKey = @"CloudBrowserSelectedService";
 
 @interface CloudBrowserController ()
+@property (nonatomic, strong) NSSegmentedControl* serviceSelector;
 @property (nonatomic, strong) NSTextField* searchField;
 @property (nonatomic, strong) NSButton* searchButton;
 @property (nonatomic, strong) NSScrollView* scrollView;
@@ -48,6 +50,9 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
         _results = [NSMutableArray array];
         _state = CloudBrowserStateEmpty;
         _transparentBackground = NO;
+        // Restore selected service from defaults
+        NSInteger savedService = [[NSUserDefaults standardUserDefaults] integerForKey:kSelectedServiceKey];
+        _selectedService = (CloudServiceType)savedService;
     }
     return self;
 }
@@ -69,10 +74,12 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
     rootView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.view = rootView;
 
+    [self setupServiceSelector];
     [self setupSearchBar];
     [self setupTableView];
     [self setupStatusBar];
     [self updateStatusBar];
+    [self updateSearchPlaceholder];
 
     // Restore last search
     NSString* lastSearch = [[NSUserDefaults standardUserDefaults] stringForKey:kLastSearchKey];
@@ -82,8 +89,30 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
     }
 }
 
+- (void)setupServiceSelector {
+    CGFloat padding = 8;
+
+    // Service selector (segmented control)
+    _serviceSelector = [[NSSegmentedControl alloc] initWithFrame:NSZeroRect];
+    _serviceSelector.translatesAutoresizingMaskIntoConstraints = NO;
+    _serviceSelector.segmentCount = 2;
+    [_serviceSelector setLabel:@"SoundCloud" forSegment:0];
+    [_serviceSelector setLabel:@"Mixcloud" forSegment:1];
+    _serviceSelector.segmentStyle = NSSegmentStyleTexturedRounded;
+    _serviceSelector.selectedSegment = (NSInteger)_selectedService;
+    _serviceSelector.target = self;
+    _serviceSelector.action = @selector(serviceChanged:);
+    [self.view addSubview:_serviceSelector];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_serviceSelector.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:padding],
+        [_serviceSelector.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-padding],
+        [_serviceSelector.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:padding],
+        [_serviceSelector.heightAnchor constraintEqualToConstant:24],
+    ]];
+}
+
 - (void)setupSearchBar {
-    // Container view for search bar
     CGFloat searchBarHeight = 32;
     CGFloat padding = 8;
 
@@ -116,7 +145,7 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
 
     [NSLayoutConstraint activateConstraints:@[
         [_searchField.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:padding],
-        [_searchField.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:padding],
+        [_searchField.topAnchor constraintEqualToAnchor:_serviceSelector.bottomAnchor constant:padding],
         [_searchField.heightAnchor constraintEqualToConstant:searchBarHeight - padding],
 
         [_searchButton.leadingAnchor constraintEqualToAnchor:_searchField.trailingAnchor constant:padding],
@@ -132,6 +161,7 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
 }
 
 - (void)setupTableView {
+    CGFloat serviceSelectorHeight = 28;  // Service selector + spacing
     CGFloat searchBarHeight = 32;
     CGFloat statusBarHeight = 24;
     CGFloat padding = 8;
@@ -199,7 +229,7 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
     [NSLayoutConstraint activateConstraints:@[
         [_scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [_scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:searchBarHeight + padding],
+        [_scrollView.topAnchor constraintEqualToAnchor:self.view.topAnchor constant:serviceSelectorHeight + searchBarHeight + padding],
         [_scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:-statusBarHeight],
     ]];
 }
@@ -267,6 +297,34 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
     }
 }
 
+- (void)updateSearchPlaceholder {
+    if (_selectedService == CloudServiceTypeMixcloud) {
+        _searchField.placeholderString = @"Search Mixcloud...";
+    } else {
+        _searchField.placeholderString = @"Search SoundCloud...";
+    }
+}
+
+- (void)serviceChanged:(id)sender {
+    _selectedService = (CloudServiceType)_serviceSelector.selectedSegment;
+
+    // Save selection
+    [[NSUserDefaults standardUserDefaults] setInteger:_selectedService forKey:kSelectedServiceKey];
+
+    // Update placeholder
+    [self updateSearchPlaceholder];
+
+    // Clear current results and re-search if there's a query
+    [_results removeAllObjects];
+    [_tableView reloadData];
+    self.state = CloudBrowserStateEmpty;
+
+    NSString* query = [_searchField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (query.length > 0) {
+        [self performSearch:query];
+    }
+}
+
 #pragma mark - Search
 
 - (void)performSearch:(NSString*)query {
@@ -291,6 +349,7 @@ static NSString* const kLastSearchKey = @"CloudBrowserLastSearch";
 
     __weak typeof(self) weakSelf = self;
     [[CloudSearchService shared] searchTracks:query
+                                      service:_selectedService
                                   bypassCache:NO
                                    completion:^(NSArray<CloudTrack*>* tracks, NSError* error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;

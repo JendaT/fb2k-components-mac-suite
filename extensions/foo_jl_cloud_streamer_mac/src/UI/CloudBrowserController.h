@@ -2,10 +2,11 @@
 //  CloudBrowserController.h
 //  foo_jl_cloud_streamer_mac
 //
-//  UI controller for Cloud Browser panel
+//  UI controller for Cloud Browser panel - supports SoundCloud and Mixcloud
 //
 
 #import <Cocoa/Cocoa.h>
+#import "../Services/CloudSearchService.h"
 
 @class CloudTrack;
 
@@ -27,6 +28,9 @@ typedef NS_ENUM(NSInteger, CloudBrowserState) {
 
 // Current search results
 @property (nonatomic, readonly) NSArray<CloudTrack*>* searchResults;
+
+// Selected cloud service for search (SoundCloud or Mixcloud)
+@property (nonatomic) CloudServiceType selectedService;
 
 // Transparent background mode (for visual effect views)
 @property (nonatomic) BOOL transparentBackground;
