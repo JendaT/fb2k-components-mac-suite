@@ -73,7 +73,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _subgroupCountPerGroup = @[];
     _subgroupRowSet = [NSSet set];
     _subgroupRowToIndex = @{};
-    _formattedValuesCache = [NSMutableDictionary dictionary];
+    _formattedValuesCache = [[NSCache alloc] init];
+    _formattedValuesCache.countLimit = 1000;  // Cache ~1000 visible row values, auto-evicts oldest
 
     // Legacy properties (keep for compatibility)
     _nodes = @[];
@@ -976,11 +977,12 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     if (playlistIndex < 0) return;
 
     // Get cached column values or request from delegate
-    NSArray<NSString *> *columnValues = _formattedValuesCache[@(playlistIndex)];
+    NSNumber *indexKey = @(playlistIndex);
+    NSArray<NSString *> *columnValues = [_formattedValuesCache objectForKey:indexKey];
     if (!columnValues && [_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
         columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
         if (columnValues) {
-            _formattedValuesCache[@(playlistIndex)] = columnValues;
+            [_formattedValuesCache setObject:columnValues forKey:indexKey];
         }
     }
 
@@ -2312,9 +2314,12 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     // Suppress focus ring briefly to avoid flash on wrong item during rebuild
     _suppressFocusRing = YES;
     [self setNeedsDisplay:YES];
+    __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self->_suppressFocusRing = NO;
-        [self setNeedsDisplay:YES];
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_suppressFocusRing = NO;
+        [strongSelf setNeedsDisplay:YES];
     });
 }
 

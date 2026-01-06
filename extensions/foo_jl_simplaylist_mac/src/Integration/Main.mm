@@ -12,7 +12,7 @@
 #import "../UI/SimPlaylistView.h"
 #import "../UI/SimPlaylistController.h"
 #import "PlaylistCallbacks.h"
-#import "JLConstraintDebugger.h"
+#import "../../../../shared/JLConstraintDebugger.h"
 
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(

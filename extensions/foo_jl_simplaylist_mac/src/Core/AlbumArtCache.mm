@@ -5,10 +5,15 @@
 
 #import "AlbumArtCache.h"
 
+// Maximum entries in key tracking sets (prevents unbounded memory growth)
+static const NSUInteger kMaxKeySetSize = 10000;
+
 @interface AlbumArtCache ()
 @property (nonatomic, strong) NSCache<NSString *, NSImage *> *imageCache;
 @property (nonatomic, strong) NSMutableSet<NSString *> *noImageKeys;  // Keys where we tried and found no art
-@property (nonatomic, strong) NSMutableSet<NSString *> *hasImageKeys;  // Keys that have album art (never evicted)
+@property (nonatomic, strong) NSMutableSet<NSString *> *hasImageKeys;  // Keys that have album art
+@property (nonatomic, strong) NSMutableArray<NSString *> *noImageKeyOrder;   // LRU order for eviction
+@property (nonatomic, strong) NSMutableArray<NSString *> *hasImageKeyOrder;  // LRU order for eviction
 @property (nonatomic, strong) NSOperationQueue *loadQueue;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingLoads;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *pendingCompletions;
@@ -34,8 +39,10 @@ static NSImage *_placeholderImage = nil;
         _imageCache = [[NSCache alloc] init];
         _imageCache.countLimit = 500;  // Max 500 images (increased to reduce eviction during scroll)
 
-        _noImageKeys = [NSMutableSet set];  // Track keys with no album art
-        _hasImageKeys = [NSMutableSet set];  // Track keys that have album art (survives cache eviction)
+        _noImageKeys = [NSMutableSet set];     // Track keys with no album art
+        _hasImageKeys = [NSMutableSet set];    // Track keys that have album art
+        _noImageKeyOrder = [NSMutableArray array];   // LRU eviction order
+        _hasImageKeyOrder = [NSMutableArray array];  // LRU eviction order
 
         _loadQueue = [[NSOperationQueue alloc] init];
         _loadQueue.maxConcurrentOperationCount = 4;
@@ -241,10 +248,32 @@ static NSImage *_placeholderImage = nil;
 
             if (image) {
                 [self->_imageCache setObject:image forKey:keyCopy];
-                [self->_hasImageKeys addObject:keyCopy];  // Remember this key has art (survives eviction)
+                // Bounded LRU insertion - evict oldest if at capacity
+                if (![self->_hasImageKeys containsObject:keyCopy]) {
+                    if (self->_hasImageKeys.count >= kMaxKeySetSize) {
+                        NSString *oldest = self->_hasImageKeyOrder.firstObject;
+                        if (oldest) {
+                            [self->_hasImageKeys removeObject:oldest];
+                            [self->_hasImageKeyOrder removeObjectAtIndex:0];
+                        }
+                    }
+                    [self->_hasImageKeys addObject:keyCopy];
+                    [self->_hasImageKeyOrder addObject:keyCopy];
+                }
             } else {
                 // Mark this key as having no image to prevent repeated load attempts
-                [self->_noImageKeys addObject:keyCopy];
+                // Bounded LRU insertion - evict oldest if at capacity
+                if (![self->_noImageKeys containsObject:keyCopy]) {
+                    if (self->_noImageKeys.count >= kMaxKeySetSize) {
+                        NSString *oldest = self->_noImageKeyOrder.firstObject;
+                        if (oldest) {
+                            [self->_noImageKeys removeObject:oldest];
+                            [self->_noImageKeyOrder removeObjectAtIndex:0];
+                        }
+                    }
+                    [self->_noImageKeys addObject:keyCopy];
+                    [self->_noImageKeyOrder addObject:keyCopy];
+                }
             }
             [self->_pendingLock unlock];
 
@@ -284,8 +313,10 @@ static NSImage *_placeholderImage = nil;
     [_loadQueue cancelAllOperations];
     [_pendingLoads removeAllObjects];
     [_pendingCompletions removeAllObjects];
-    [_noImageKeys removeAllObjects];  // Also clear "no image" markers
-    [_hasImageKeys removeAllObjects];  // Clear "has image" markers too
+    [_noImageKeys removeAllObjects];       // Also clear "no image" markers
+    [_noImageKeyOrder removeAllObjects];   // Clear LRU order
+    [_hasImageKeys removeAllObjects];      // Clear "has image" markers too
+    [_hasImageKeyOrder removeAllObjects];  // Clear LRU order
     [_pendingLock unlock];
 }
 

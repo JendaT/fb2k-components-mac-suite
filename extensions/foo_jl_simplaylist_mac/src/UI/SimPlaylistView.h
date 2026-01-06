@@ -46,8 +46,8 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, strong) NSSet<NSNumber *> *subgroupRowSet;  // Pre-computed set of subgroup row numbers for O(1) lookup
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *subgroupRowToIndex;  // Map row -> subgroup index
 
-// Formatted column values cache (lazily populated during draw)
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSArray<NSString *> *> *formattedValuesCache;
+// Formatted column values cache (lazily populated during draw, auto-evicts under memory pressure)
+@property (nonatomic, strong) NSCache<NSNumber *, NSArray<NSString *> *> *formattedValuesCache;
 
 // Legacy properties (for compatibility)
 @property (nonatomic, strong) NSArray<GroupNode *> *nodes;  // Deprecated
