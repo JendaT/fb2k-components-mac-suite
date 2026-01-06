@@ -509,7 +509,7 @@ FB2K_SERVICE_FACTORY(biography_ui_element);
 | MBID lookups | SQLite | Permanent |
 | API responses | Memory | Session |
 
-**Cache Location:** `~/Library/Application Support/foobar2000-v2/biography_cache/`
+**Cache Location:** `~/Library/foobar2000-v2/biography_cache/`
 
 ### Rate Limiting
 

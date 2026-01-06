@@ -324,7 +324,7 @@ bool tryResolveAndReopen(abort_callback& abort) {
 
 ### MetadataCache (Persistent, Thread-Safe)
 - **Purpose**: Cache track metadata to avoid repeated yt-dlp calls
-- **Storage**: JSON file in `~/Library/Application Support/foobar2000-v2/`
+- **Storage**: JSON file in `~/Library/foobar2000-v2/`
 - **Freshness**: Optional max-age parameter, background refresh for stale entries
 - **Format**:
 ```json

@@ -464,7 +464,7 @@ Headers:
 ### Cache Structure
 
 ```
-~/Library/Application Support/foobar2000-v2/biography_cache/
+~/Library/foobar2000-v2/biography_cache/
 ├── biography.db              # SQLite database
 └── images/
     └── {hash}/

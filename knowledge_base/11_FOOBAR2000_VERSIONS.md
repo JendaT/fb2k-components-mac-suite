@@ -107,6 +107,36 @@ When crash reports come from 2.26 users:
 
 ---
 
+## Data Directory Paths
+
+### foobar2000 v2 (Current)
+
+| Purpose | Path |
+|---------|------|
+| User data root | `~/Library/foobar2000-v2/` |
+| User components | `~/Library/foobar2000-v2/user-components/` |
+| Configuration | `~/Library/foobar2000-v2/config.sqlite` |
+| Metadata database | `~/Library/foobar2000-v2/metadb.sqlite` |
+| Playlists | `~/Library/foobar2000-v2/playlists-v2.0/` |
+| Library databases | `~/Library/foobar2000-v2/library-v2.0/` |
+
+**Component installation structure:**
+```
+~/Library/foobar2000-v2/user-components/<component_name>/<component_name>.component/
+```
+
+### Legacy v1 Path (DO NOT USE)
+
+```
+~/Library/Application Support/foobar2000/
+```
+
+**Warning:** The v1 path is NOT used by foobar2000 v2. Components placed there will NOT be loaded.
+
+**Common mistake:** The hybrid path `~/Library/Application Support/foobar2000-v2/` is WRONG. foobar2000 v2 uses `~/Library/foobar2000-v2/` (without "Application Support").
+
+---
+
 ## SDK Location
 
 The SDK is stored at:
