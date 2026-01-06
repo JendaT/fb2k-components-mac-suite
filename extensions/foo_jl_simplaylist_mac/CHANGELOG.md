@@ -2,6 +2,23 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.1.7] - 2026-01-06
+
+### Fixed
+- **Threading crash**: Selection sync now dispatches SDK calls on main queue (was causing autolayout crashes when default playlist view was also active)
+- **Vertical text centering**: Track text now properly centered within row height
+
+### Added
+- **Row Size setting**: New preference to adjust row height and font size
+  - Compact: 12pt font, 19px row
+  - Normal: 13pt font, 22px row (default)
+  - Large: 14pt font, 26px row
+- **'#' column in column menu**: Track number column can now be toggled on/off via right-click header menu
+
+### Changed
+- Removed duplicate "Track no" column (use "#" instead)
+- Existing "Track no" columns automatically filtered out on load
+
 ## [1.1.6] - 2026-01-03
 
 ### Fixed

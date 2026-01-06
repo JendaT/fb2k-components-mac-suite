@@ -30,6 +30,7 @@
 @property (nonatomic, strong) NSButton *showFirstSubgroupCheckbox;
 @property (nonatomic, strong) NSButton *hideSingleSubgroupCheckbox;
 @property (nonatomic, strong) NSButton *dimParenthesesCheckbox;
+@property (nonatomic, strong) NSPopUpButton *displaySizePopup;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
 @end
@@ -120,7 +121,7 @@
     CGFloat displayBoxY = y;
     CGFloat displayContentY = 22;
 
-    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 190)];
+    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 220)];
     displayBox.title = @"Display Settings";
     displayBox.titlePosition = NSAtTop;
     [container addSubview:displayBox];
@@ -174,8 +175,22 @@
                                                   action:@selector(dimParenthesesChanged:)];
     _dimParenthesesCheckbox.frame = NSMakeRect(boxMargin + labelWidth, displayContentY, 280, 20);
     [displayContent addSubview:_dimParenthesesCheckbox];
+    displayContentY += rowHeight + 4;
 
-    y = displayBoxY + 200;
+    // Display Size
+    NSTextField *displaySizeLabel = [NSTextField labelWithString:@"Row Size:"];
+    displaySizeLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
+    [displayContent addSubview:displaySizeLabel];
+
+    _displaySizePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, displayContentY, 150, 26) pullsDown:NO];
+    [_displaySizePopup addItemWithTitle:@"Compact"];
+    [_displaySizePopup addItemWithTitle:@"Normal"];
+    [_displaySizePopup addItemWithTitle:@"Large"];
+    _displaySizePopup.target = self;
+    _displaySizePopup.action = @selector(displaySizeChanged:);
+    [displayContent addSubview:_displaySizePopup];
+
+    y = displayBoxY + 230;
 
     // Help text
     NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 60)];
@@ -245,6 +260,12 @@
         simplaylist_config::kDimParentheses,
         simplaylist_config::kDefaultDimParentheses);
     _dimParenthesesCheckbox.state = dimParentheses ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Load display size (0=compact, 1=normal, 2=large)
+    int64_t displaySize = simplaylist_config::getConfigInt(
+        simplaylist_config::kDisplaySize,
+        simplaylist_config::kDefaultDisplaySize);
+    [_displaySizePopup selectItemAtIndex:displaySize];
 }
 
 - (void)updateFieldsForPreset:(GroupPreset *)preset {
@@ -361,6 +382,15 @@
 
     // Only needs redraw, not full rebuild
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+                                                        object:nil];
+}
+
+- (void)displaySizeChanged:(id)sender {
+    NSInteger size = _displaySizePopup.indexOfSelectedItem;
+    simplaylist_config::setConfigInt(simplaylist_config::kDisplaySize, size);
+
+    // Needs full rebuild because row height changes
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
                                                         object:nil];
 }
 

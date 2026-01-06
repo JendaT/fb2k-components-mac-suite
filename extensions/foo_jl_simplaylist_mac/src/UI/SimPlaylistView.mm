@@ -102,6 +102,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _dimParentheses = simplaylist_config::getConfigBool(
         simplaylist_config::kDimParentheses,
         simplaylist_config::kDefaultDimParentheses);
+    _displaySize = simplaylist_config::getConfigInt(
+        simplaylist_config::kDisplaySize,
+        simplaylist_config::kDefaultDisplaySize);
 
     // PERFORMANCE: Enable layer-backed async drawing
     self.wantsLayer = YES;
@@ -161,7 +164,15 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
 
 - (void)reloadSettings {
     using namespace simplaylist_config;
-    _rowHeight = getConfigInt(kRowHeight, kDefaultRowHeight);
+    _displaySize = getConfigInt(kDisplaySize, kDefaultDisplaySize);
+
+    // Row height based on display size: compact=19, normal=22, large=26
+    switch (_displaySize) {
+        case 0: _rowHeight = 19; break;  // Compact
+        case 2: _rowHeight = 26; break;  // Large
+        default: _rowHeight = 22; break; // Normal
+    }
+
     _headerHeight = getConfigInt(kHeaderHeight, kDefaultHeaderHeight);
     _subgroupHeight = getConfigInt(kSubgroupHeight, kDefaultSubgroupHeight);
     _groupColumnWidth = getConfigInt(kGroupColumnWidth, kDefaultGroupColumnWidth);
@@ -995,12 +1006,20 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     NSColor *textColor = selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor];
     NSColor *dimmedColor = selected ? [[NSColor selectedMenuItemTextColor] colorWithAlphaComponent:0.5]
                                     : [NSColor secondaryLabelColor];
-    NSFont *font = [NSFont systemFontOfSize:12];
+    // Font size based on display size: compact=12, normal=13, large=14
+    CGFloat fontSize = (_displaySize == 0) ? 12 : (_displaySize == 2) ? 14 : 13;
+    NSFont *font = [NSFont systemFontOfSize:fontSize];
+
+    // Calculate vertical centering with equal top/bottom padding
+    CGFloat textHeight = font.ascender - font.descender;
+    CGFloat verticalPadding = floor((rect.size.height - textHeight) / 2.0);
 
     for (NSUInteger colIndex = 0; colIndex < _columns.count; colIndex++) {
         ColumnDefinition *col = _columns[colIndex];
-        NSRect colRect = NSMakeRect(x + 4, rect.origin.y + 2,
-                                    col.width - 8, rect.size.height - 4);
+
+        // Center text vertically within row
+        NSRect colRect = NSMakeRect(x + 4, rect.origin.y + verticalPadding,
+                                    col.width - 8, textHeight);
 
         NSString *value = (colIndex < columnValues.count) ? columnValues[colIndex] : @"";
 
@@ -1605,8 +1624,6 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
                  inRect:(NSRect)rect
                  column:(ColumnDefinition *)column
                selected:(BOOL)selected {
-    NSRect textRect = NSInsetRect(rect, 4, 2);
-
     NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
     style.lineBreakMode = NSLineBreakByTruncatingTail;
 
@@ -1622,12 +1639,23 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             break;
     }
 
-    // Use 13pt system font to match standard list appearance
+    // Use system font to match sparse track row drawing
+    NSFont *font = [NSFont systemFontOfSize:13];
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:13],
+        NSFontAttributeName: font,
         NSForegroundColorAttributeName: selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor],
         NSParagraphStyleAttributeName: style
     };
+
+    // Calculate proper vertical centering
+    CGFloat lineHeight = font.ascender - font.descender;
+    CGFloat verticalPadding = (rect.size.height - lineHeight) / 2.0;
+
+    // Horizontal padding of 4px, vertical centered
+    NSRect textRect = NSMakeRect(rect.origin.x + 4,
+                                  rect.origin.y + verticalPadding,
+                                  rect.size.width - 8,
+                                  lineHeight);
 
     [value drawInRect:textRect withAttributes:attrs];
 }

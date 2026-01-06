@@ -1295,8 +1295,7 @@ static NSInteger _groupDetectionGeneration = 0;
 
 - (void)playlistView:(SimPlaylistView *)view selectionDidChange:(NSIndexSet *)selectedPlaylistIndices {
     // Sync selection back to playlist_manager
-    // Run SDK call on background thread to keep UI responsive
-    // Note: foobar2000's main_thread_callback will dispatch back to main thread internally
+    // SDK calls must be on main thread - callbacks trigger UI updates in fb2k core
 
     // Increment generation to skip the async callback
     _selectionGeneration++;
@@ -1309,8 +1308,8 @@ static NSInteger _groupDetectionGeneration = 0;
 
     if (activePlaylist == SIZE_MAX || itemCount == 0) return;
 
-    // Run SDK call on background queue - it will dispatch to main internally if needed
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+    // Async to coalesce rapid selection changes, but must be main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
         // Build new state bit array directly from NSIndexSet - O(selection count)
         __block bit_array_bittable newState(itemCount);
 
@@ -1321,7 +1320,6 @@ static NSInteger _groupDetectionGeneration = 0;
             }
         }];
 
-        // SDK call - may need to be on main thread, but let's try background first
         pm->playlist_set_selection(activePlaylist, bit_array_true(), newState);
     });
 }
@@ -1819,7 +1817,7 @@ static BOOL isRemotePath(const char *path) {
     // Also track names we've already added to avoid duplicates with SDK columns
     NSMutableSet<NSString *> *addedNames = [NSMutableSet set];
 
-    // Standard columns (first 19 items - includes BPM, Key, Sample Rate)
+    // Standard columns (first 19 items - includes #, BPM, Key, Sample Rate)
     NSInteger standardColumnCount = 19;
     for (NSInteger i = 0; i < MIN(standardColumnCount, (NSInteger)templates.count); i++) {
         ColumnDefinition *colTemplate = templates[i];

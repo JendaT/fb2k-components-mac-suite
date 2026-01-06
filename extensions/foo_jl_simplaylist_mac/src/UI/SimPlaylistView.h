@@ -75,6 +75,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
 @property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
 @property (nonatomic, assign) BOOL dimParentheses;  // Dim text inside () and []
+@property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 
 // Reload data and redraw
 - (void)reloadData;

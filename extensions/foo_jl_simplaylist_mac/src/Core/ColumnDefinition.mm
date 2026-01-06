@@ -136,6 +136,10 @@
     // Organized in same order as default playlist UI
     return @[
         // Standard columns (first group)
+        [ColumnDefinition columnWithName:@"#"
+                                 pattern:@"%tracknumber%"
+                                   width:32
+                               alignment:ColumnAlignmentRight],
         [ColumnDefinition columnWithName:@"Item index"
                                  pattern:@"%list_index%"
                                    width:50
@@ -155,10 +159,6 @@
                                    width:200
                                alignment:ColumnAlignmentLeft
                               autoResize:YES],
-        [ColumnDefinition columnWithName:@"Track no"
-                                 pattern:@"%tracknumber%"
-                                   width:40
-                               alignment:ColumnAlignmentRight],
         [ColumnDefinition columnWithName:@"Title"
                                  pattern:@"%title%"
                                    width:250
@@ -323,6 +323,11 @@
         NSNumber *clickableNum = colDict[@"clickable"];
 
         if (!name || !pattern) continue;
+
+        // Migration: "Track no" removed - use "#" instead (v1.1.7+)
+        if ([name isEqualToString:@"Track no"]) {
+            continue;  // Skip - duplicate of "#"
+        }
 
         ColumnDefinition *col = [[ColumnDefinition alloc] init];
         col.name = name;
