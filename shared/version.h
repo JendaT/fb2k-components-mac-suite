@@ -44,3 +44,7 @@
 // Effects DSP
 #define EFFECTS_DSP_VERSION "1.0.0"
 #define EFFECTS_DSP_VERSION_INT 100
+
+// Tidal Integration
+#define TIDAL_VERSION "0.1.0"
+#define TIDAL_VERSION_INT 010
