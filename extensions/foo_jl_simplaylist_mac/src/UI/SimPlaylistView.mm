@@ -15,6 +15,7 @@
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+NSPasteboardType const TidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
 
 // Format total seconds as M:SS or H:MM:SS for display in group headers
 static NSString *formatGroupDuration(double seconds) {
@@ -177,9 +178,8 @@ static NSString *formatGroupDuration(double seconds) {
     // Register for drag & drop
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
-        NSPasteboardTypeFileURL,
-        NSPasteboardTypeURL,    // Web URLs (e.g., from Cloud Browser)
-        NSPasteboardTypeString  // Plain text URLs as fallback
+        TidalBrowserPasteboardType,
+        NSPasteboardTypeFileURL
     ]];
 
     // Register for settings changes
@@ -2646,6 +2646,9 @@ static NSString *formatGroupDuration(double seconds) {
         // Option key = copy, otherwise move
         BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
         return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+    } else if ([pb.types containsObject:TidalBrowserPasteboardType]) {
+        // Tidal browser drops are always copy
+        return NSDragOperationCopy;
     } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
     } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
@@ -2732,9 +2735,10 @@ static NSString *formatGroupDuration(double seconds) {
         // Option key = copy, otherwise move
         BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
         return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
-    }
-
-    if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
+    } else if ([pb.types containsObject:TidalBrowserPasteboardType]) {
+        // Tidal browser drops are always copy
+        return NSDragOperationCopy;
+    } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
     } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
         // Web URLs (e.g., from Cloud Browser)
@@ -2833,6 +2837,39 @@ static NSString *formatGroupDuration(double seconds) {
                               sourceIndices:sourceIndices
                                       atRow:_dropTargetRow
                                   operation:operation];
+                }
+            }
+        }
+        _dropTargetRow = -1;
+        [self setNeedsDisplay:YES];
+        return YES;
+    }
+
+    // Tidal browser drop
+    if ([pb.types containsObject:TidalBrowserPasteboardType]) {
+        NSData *data = [pb dataForType:TidalBrowserPasteboardType];
+        if (data) {
+            NSDictionary *dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:
+                                      [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], nil]
+                                                                         fromData:data
+                                                                            error:nil];
+            if (dragData) {
+                NSArray<NSString *> *urlStrings = dragData[@"urls"];
+                if (urlStrings.count > 0) {
+                    FB2K_console_formatter() << "[SimPlaylist] Tidal browser drop: " << urlStrings.count << " tracks";
+
+                    // Convert URL strings to NSURL objects
+                    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+                    for (NSString *urlStr in urlStrings) {
+                        NSURL *url = [NSURL URLWithString:urlStr];
+                        if (url) {
+                            [urls addObject:url];
+                        }
+                    }
+
+                    if (urls.count > 0 && [_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                        [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
+                    }
                 }
             }
         }
