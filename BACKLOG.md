@@ -14,6 +14,9 @@
 ## Completed
 | Task | Completed | Notes |
 |------|-----------|-------|
+| Column display fix + reorder | 2026-02-11 | Artist-first columns, cell reuse fix, correct columns per search type |
+| Debounce auto-search | 2026-02-11 | 400ms debounce on keystroke, no Enter required |
+| Persist search state | 2026-02-11 | Remembers last query and search type across restarts |
 | Queue Manager integration | 2026-02-11 | Drag-to-queue, "Queue" context menu, cross-component drop |
 | Search type switching fix | 2026-02-11 | Columns now reconfigure when switching Tracks/Albums/Artists |
 | Quality badge column | 2026-02-11 | Shows audio quality per track in search results |
