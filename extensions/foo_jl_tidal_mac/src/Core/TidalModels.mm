@@ -6,6 +6,7 @@
 //
 
 #import "TidalModels.h"
+#import "TidalConfig.h"
 
 @implementation JLTidalTrack
 
@@ -85,12 +86,23 @@
         _manifestMimeType = dict[@"manifestMimeType"];
         _manifest = dict[@"manifest"];
 
+        tidal::logDebug([[NSString stringWithFormat:@"Playback info: quality=%@, codec=%@, manifestType=%@",
+                          audioQuality ?: @"(nil)", _codec ?: @"(nil)", _manifestMimeType ?: @"(nil)"] UTF8String]);
+
         // Check for DRM and extract stream URL
         _drmProtected = NO;
         if (_manifest) {
-            // Decode base64 manifest if needed
+            // Both JSON (application/vnd.tidal.bts) and standard JSON manifests are
+            // base64-encoded JSON with a "urls" array. DASH manifests are XML-based.
+            BOOL isJSONManifest = !_manifestMimeType
+                || [_manifestMimeType isEqualToString:@"application/vnd.tidal.bts"]
+                || [_manifestMimeType containsString:@"json"];
+
             NSData *manifestData = [[NSData alloc] initWithBase64EncodedString:_manifest options:0];
-            if (manifestData) {
+            if (!manifestData) {
+                tidal::logError([[NSString stringWithFormat:@"Failed to base64-decode manifest (type=%@)",
+                                  _manifestMimeType ?: @"(nil)"] UTF8String]);
+            } else if (isJSONManifest) {
                 NSError *error;
                 NSDictionary *manifestDict = [NSJSONSerialization JSONObjectWithData:manifestData
                                                                              options:0
@@ -104,8 +116,12 @@
                     // encryptionType "NONE" means no DRM
                     if (keyId.length > 0) {
                         _drmProtected = YES;
+                        tidal::logDebug([[NSString stringWithFormat:@"Manifest has DRM: keyId=%@", keyId] UTF8String]);
                     } else if (encryptionType && ![encryptionType isEqualToString:@"NONE"]) {
                         _drmProtected = YES;
+                        tidal::logDebug([[NSString stringWithFormat:@"Manifest has DRM: encryptionType=%@", encryptionType] UTF8String]);
+                    } else {
+                        tidal::logDebug("Manifest: no DRM");
                     }
 
                     // Extract stream URL
@@ -116,13 +132,25 @@
                             _streamURL = [NSURL URLWithString:urlStr];
                         }
                     }
-                } else {
-                    // If not JSON, check for DASH manifest with ContentProtection
-                    NSString *manifestStr = [[NSString alloc] initWithData:manifestData encoding:NSUTF8StringEncoding];
-                    if (manifestStr && [manifestStr containsString:@"<ContentProtection"]) {
-                        _drmProtected = YES;
+
+                    if (!_streamURL) {
+                        tidal::logError([[NSString stringWithFormat:@"No URLs in %@ manifest", _manifestMimeType] UTF8String]);
                     }
+                } else {
+                    tidal::logError([[NSString stringWithFormat:@"Failed to parse %@ manifest as JSON: %@",
+                                      _manifestMimeType, error.localizedDescription] UTF8String]);
                 }
+            } else if ([_manifestMimeType containsString:@"dash"] || [_manifestMimeType containsString:@"xml"]) {
+                // DASH manifest - check for ContentProtection
+                NSString *manifestStr = [[NSString alloc] initWithData:manifestData encoding:NSUTF8StringEncoding];
+                if (manifestStr && [manifestStr containsString:@"<ContentProtection"]) {
+                    _drmProtected = YES;
+                    tidal::logDebug("DASH manifest has DRM (ContentProtection)");
+                } else {
+                    tidal::logDebug("DASH manifest: no DRM");
+                }
+            } else {
+                tidal::logError([[NSString stringWithFormat:@"Unknown manifest type: %@", _manifestMimeType] UTF8String]);
             }
         }
 
@@ -131,6 +159,7 @@
             NSString *urlStr = dict[@"url"];
             if (urlStr) {
                 _streamURL = [NSURL URLWithString:urlStr];
+                tidal::logDebug("Using direct URL from response (no manifest)");
             }
         }
     }

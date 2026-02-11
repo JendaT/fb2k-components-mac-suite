@@ -80,22 +80,34 @@
 - (void)resolveWithFallbackForTrackID:(NSString *)trackID
                      startingQuality:(JLTidalQuality)quality
                           completion:(JLTidalStreamResolverCompletion)completion {
+    tidal::logInfo([[NSString stringWithFormat:@"Trying quality %@ for track %@",
+                     JLTidalQualityToString(quality), trackID] UTF8String]);
+
     [[JLTidalAPI shared] getPlaybackInfoForTrackID:trackID
                                            quality:quality
                                         completion:^(NSDictionary *json, NSError *error) {
         if (error) {
-            // Try fallback to next lower quality
-            JLTidalQuality nextQuality = [self nextLowerQuality:quality];
-            if (nextQuality != quality) {
-                tidal::logDebug([[NSString stringWithFormat:@"Quality %@ failed, trying %@",
-                                  JLTidalQualityToString(quality),
-                                  JLTidalQualityToString(nextQuality)] UTF8String]);
-                [self resolveWithFallbackForTrackID:trackID
-                                   startingQuality:nextQuality
-                                        completion:completion];
-            } else {
-                completion(nil, error);
+            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: API error %ld - %@",
+                             JLTidalQualityToString(quality),
+                             (long)error.code,
+                             error.localizedDescription] UTF8String]);
+
+            // Only fall back for subscription/quality errors (403).
+            // Auth errors (401), network errors, rate limiting, and server errors
+            // should not trigger fallback -- they'll fail at every quality level.
+            BOOL shouldFallback = (error.code == JLTidalErrorSubscriptionRequired);
+
+            if (shouldFallback) {
+                JLTidalQuality nextQuality = [self nextLowerQuality:quality];
+                if (nextQuality != quality) {
+                    [self resolveWithFallbackForTrackID:trackID
+                                       startingQuality:nextQuality
+                                            completion:completion];
+                    return;
+                }
             }
+
+            completion(nil, error);
             return;
         }
 
@@ -104,17 +116,18 @@
                                                                     requestedQuality:quality];
 
         if (!info.streamURL) {
+            tidal::logError([[NSString stringWithFormat:@"Quality %@: no stream URL in response",
+                              JLTidalQualityToString(quality)] UTF8String]);
             completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response"));
             return;
         }
 
         // Check for DRM - try fallback to lower quality
         if (info.isDRMProtected) {
+            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: DRM protected, falling back",
+                             JLTidalQualityToString(quality)] UTF8String]);
             JLTidalQuality nextQuality = [self nextLowerQuality:quality];
             if (nextQuality != quality) {
-                tidal::logDebug([[NSString stringWithFormat:@"Quality %@ is DRM protected, trying %@",
-                                  JLTidalQualityToString(quality),
-                                  JLTidalQualityToString(nextQuality)] UTF8String]);
                 [self resolveWithFallbackForTrackID:trackID
                                    startingQuality:nextQuality
                                         completion:completion];
@@ -130,8 +143,8 @@
         // Cache and return
         tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
 
-        tidal::logDebug([[NSString stringWithFormat:@"Resolved track %@ at %@",
-                          trackID, info.qualityDescription] UTF8String]);
+        tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@ at %@: %@",
+                         trackID, JLTidalQualityToString(quality), info.qualityDescription] UTF8String]);
 
         completion(info, nil);
     }];

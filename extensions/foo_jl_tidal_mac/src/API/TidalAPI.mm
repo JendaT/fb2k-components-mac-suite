@@ -293,9 +293,7 @@
 - (void)getPlaybackInfoForTrackID:(NSString *)trackID
                           quality:(JLTidalQuality)quality
                        completion:(JLTidalDataCompletion)completion {
-    NSString *qualityStr = (__bridge NSString *)CFBridgingRetain(JLTidalQualityToString(quality));
-    CFRelease((__bridge CFTypeRef)(qualityStr));
-    qualityStr = JLTidalQualityToString(quality);
+    NSString *qualityStr = JLTidalQualityToString(quality);
 
     NSString *urlStr = [NSString stringWithFormat:@"%@%@?audioquality=%@&playbackmode=STREAM&assetpresentation=FULL",
                         kTidalAPIBaseURL,
