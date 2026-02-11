@@ -20,6 +20,7 @@ static NSString * const kColumnTitle = @"title";
 static NSString * const kColumnArtist = @"artist";
 static NSString * const kColumnDuration = @"duration";
 static NSString * const kColumnTrackNum = @"tracknum";
+static NSString * const kColumnTrackQuality = @"trackquality";
 
 // Column identifiers - albums
 static NSString * const kColumnAlbumTitle = @"albumtitle";
@@ -217,11 +218,17 @@ public:
     [self.navigationBar setHidden:YES];
     [container addSubview:self.navigationBar];
 
-    self.backButton = [NSButton buttonWithTitle:@"Back" target:self action:@selector(backButtonClicked:)];
+    if (@available(macOS 11.0, *)) {
+        NSImage *chevron = [NSImage imageWithSystemSymbolName:@"chevron.left"
+                                    accessibilityDescription:@"Back"];
+        self.backButton = [NSButton buttonWithImage:chevron target:self action:@selector(backButtonClicked:)];
+    } else {
+        self.backButton = [NSButton buttonWithTitle:@"<" target:self action:@selector(backButtonClicked:)];
+    }
     self.backButton.translatesAutoresizingMaskIntoConstraints = NO;
     self.backButton.bezelStyle = NSBezelStyleRecessed;
     self.backButton.controlSize = NSControlSizeSmall;
-    self.backButton.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    self.backButton.bordered = NO;
     [self.navigationBar addSubview:self.backButton];
 
     self.breadcrumbLabel = [NSTextField labelWithString:@""];
@@ -420,6 +427,14 @@ public:
     artistColumn.width = 150;
     artistColumn.minWidth = 80;
     [self.tableView addTableColumn:artistColumn];
+
+    // Quality column
+    NSTableColumn *qualityColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnTrackQuality];
+    qualityColumn.title = @"Quality";
+    qualityColumn.width = 60;
+    qualityColumn.minWidth = 50;
+    qualityColumn.maxWidth = 80;
+    [self.tableView addTableColumn:qualityColumn];
 
     // Duration column
     NSTableColumn *durationColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnDuration];
@@ -1002,26 +1017,55 @@ static const NSInteger kPageSize = 50;
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
-    self.statusLabel.stringValue = @"Loading artist albums...";
+    self.statusLabel.stringValue = @"Loading artist...";
 
     [[JLTidalAPI shared] getArtistAlbumsForArtistID:artist.artistID
                                               limit:50
                                          completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self finishLoading];
-
-            if (error) {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed to load artist: %@", error.localizedDescription];
+            if (error || albums.count == 0) {
+                // Fallback to top tracks if no albums (common for collaboration artists)
+                tidal::logDebug([[NSString stringWithFormat:@"No albums for artist %@, trying top tracks",
+                                  artist.artistID] UTF8String]);
+                [self loadArtistTopTracks:artist];
                 return;
             }
 
+            [self finishLoading];
             [self.albumResults removeAllObjects];
-            if (albums) [self.albumResults addObjectsFromArray:albums];
+            [self.albumResults addObjectsFromArray:albums];
             [self.tableView reloadData];
 
             self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@",
                                             (unsigned long)self.albumResults.count,
                                             self.albumResults.count == 1 ? @"" : @"s"];
+        });
+    }];
+}
+
+- (void)loadArtistTopTracks:(JLTidalArtist *)artist {
+    // Switch to top tracks mode
+    self.browseMode = JLTidalBrowseModeArtistTopTracks;
+    [self setupColumnsForCurrentMode];
+
+    [[JLTidalAPI shared] getArtistTopTracksForArtistID:artist.artistID
+                                                  limit:50
+                                             completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self finishLoading];
+
+            if (error) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
+                return;
+            }
+
+            [self.trackResults removeAllObjects];
+            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            [self.tableView reloadData];
+
+            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu top track%@",
+                                            (unsigned long)self.trackResults.count,
+                                            self.trackResults.count == 1 ? @"" : @"s"];
         });
     }];
 }
@@ -1195,6 +1239,10 @@ static const NSInteger kPageSize = 50;
     if ([identifier isEqualToString:kColumnArtist]) {
         return [self textCell:identifier text:track.artist ?: @""
                          font:fb2k_ui::rowFont() color:fb2k_ui::secondaryTextColor()];
+    }
+
+    if ([identifier isEqualToString:kColumnTrackQuality]) {
+        return [self qualityBadgeCell:identifier quality:track.audioQuality];
     }
 
     if ([identifier isEqualToString:kColumnDuration]) {

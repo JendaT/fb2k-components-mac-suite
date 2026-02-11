@@ -20,6 +20,12 @@
         _discNumber = [dict[@"volumeNumber"] integerValue];
         _isExplicit = [dict[@"explicit"] boolValue];
 
+        // Audio quality (returned by search API per track)
+        id audioQuality = dict[@"audioQuality"];
+        if ([audioQuality isKindOfClass:[NSString class]]) {
+            _audioQuality = audioQuality;
+        }
+
         // Artist - may be nested object
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {
@@ -61,6 +67,18 @@
                 fmt.dateFormat = @"yyyy-MM-dd";
                 fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
                 _releaseDate = [fmt dateFromString:dateStr];
+            }
+        }
+
+        // Fallback: track-level releaseDate if album didn't provide one
+        if (!_releaseDate) {
+            NSString *trackDateStr = dict[@"releaseDate"];
+            if (!trackDateStr) trackDateStr = dict[@"streamStartDate"];
+            if ([trackDateStr isKindOfClass:[NSString class]] && trackDateStr.length >= 10) {
+                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+                fmt.dateFormat = @"yyyy-MM-dd";
+                fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+                _releaseDate = [fmt dateFromString:[trackDateStr substringToIndex:10]];
             }
         }
 
