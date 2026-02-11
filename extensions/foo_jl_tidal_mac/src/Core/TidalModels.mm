@@ -54,6 +54,64 @@
 
 @end
 
+@implementation JLTidalAlbum
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _albumID = [dict[@"id"] description];
+        _title = dict[@"title"] ?: @"Unknown Album";
+        _numberOfTracks = [dict[@"numberOfTracks"] integerValue];
+        _duration = [dict[@"duration"] integerValue];
+        _audioQuality = dict[@"audioQuality"];
+
+        // Artist - may be nested object
+        id artist = dict[@"artist"];
+        if ([artist isKindOfClass:[NSDictionary class]]) {
+            _artist = artist[@"name"];
+        } else if ([artist isKindOfClass:[NSString class]]) {
+            _artist = artist;
+        }
+
+        // Cover art
+        id cover = dict[@"cover"];
+        if ([cover isKindOfClass:[NSString class]] && [cover length] > 0) {
+            _coverID = cover;
+        }
+
+        // Release date (ISO 8601 date string, e.g. "2024-01-15")
+        NSString *dateStr = dict[@"releaseDate"];
+        if ([dateStr isKindOfClass:[NSString class]] && dateStr.length >= 10) {
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd";
+            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            _releaseDate = [fmt dateFromString:dateStr];
+        }
+    }
+    return self;
+}
+
+@end
+
+@implementation JLTidalArtist
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _artistID = [dict[@"id"] description];
+        _name = dict[@"name"] ?: @"Unknown Artist";
+
+        // Picture ID - used to build CDN URLs
+        id picture = dict[@"picture"];
+        if ([picture isKindOfClass:[NSString class]] && [picture length] > 0) {
+            _pictureID = picture;
+        }
+    }
+    return self;
+}
+
+@end
+
 @implementation JLTidalPlaybackInfo
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict
