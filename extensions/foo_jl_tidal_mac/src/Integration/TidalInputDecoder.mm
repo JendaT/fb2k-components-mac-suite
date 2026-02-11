@@ -229,6 +229,21 @@ void TidalInputDecoder::get_info(t_uint32 p_subsong, file_info& p_info, abort_ca
         if (m_trackInfo.discNumber > 0) {
             p_info.meta_set("DISCNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.discNumber] UTF8String]);
         }
+        if (m_trackInfo.totalTracks > 0) {
+            p_info.meta_set("TOTALTRACKS", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.totalTracks] UTF8String]);
+        }
+        if (m_trackInfo.isrc) {
+            p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
+        }
+        if (m_trackInfo.releaseDate) {
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd";
+            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            p_info.meta_set("DATE", [[fmt stringFromDate:m_trackInfo.releaseDate] UTF8String]);
+        }
+        if (m_trackInfo.copyright) {
+            p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);
+        }
     }
 
     // Add quality info
@@ -403,6 +418,21 @@ void TidalInfoReader::get_info(t_uint32 p_subsong, file_info& p_info, abort_call
         }
         if (m_trackInfo.discNumber > 0) {
             p_info.meta_set("DISCNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.discNumber] UTF8String]);
+        }
+        if (m_trackInfo.totalTracks > 0) {
+            p_info.meta_set("TOTALTRACKS", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.totalTracks] UTF8String]);
+        }
+        if (m_trackInfo.isrc) {
+            p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
+        }
+        if (m_trackInfo.releaseDate) {
+            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+            fmt.dateFormat = @"yyyy-MM-dd";
+            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            p_info.meta_set("DATE", [[fmt stringFromDate:m_trackInfo.releaseDate] UTF8String]);
+        }
+        if (m_trackInfo.copyright) {
+            p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);
         }
     } else {
         // Fallback if metadata fetch failed - show track ID so user knows what it is

@@ -331,6 +331,7 @@ public:
     NSMenu *contextMenu = [[NSMenu alloc] initWithTitle:@"Tidal Browser"];
     [contextMenu addItemWithTitle:@"Play" action:@selector(contextMenuPlay:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Add to Playlist" action:@selector(contextMenuAddToPlaylist:) keyEquivalent:@""];
+    [contextMenu addItemWithTitle:@"Import as New Playlist" action:@selector(contextMenuImportAsPlaylist:) keyEquivalent:@""];
     [contextMenu addItem:[NSMenuItem separatorItem]];
     [contextMenu addItemWithTitle:@"Add to Favorites" action:@selector(contextMenuAddFavorite:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Remove from Favorites" action:@selector(contextMenuRemoveFavorite:) keyEquivalent:@""];
@@ -1563,15 +1564,99 @@ public:
     }
 }
 
+- (void)contextMenuImportAsPlaylist:(id)sender {
+    if ([self isShowingPlaylists]) {
+        NSInteger row = self.tableView.selectedRow;
+        if (row < 0 || row >= (NSInteger)self.playlistResults.count) return;
+        JLTidalPlaylist *playlist = self.playlistResults[(NSUInteger)row];
+        [self importPlaylistAsNewFb2kPlaylist:playlist];
+
+    } else if ([self isShowingAlbums]) {
+        NSInteger row = self.tableView.selectedRow;
+        if (row < 0 || row >= (NSInteger)self.albumResults.count) return;
+        JLTidalAlbum *album = self.albumResults[(NSUInteger)row];
+        [self importAlbumAsNewFb2kPlaylist:album];
+    }
+}
+
+- (void)importPlaylistAsNewFb2kPlaylist:(JLTidalPlaylist *)playlist {
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Importing \"%@\"...", playlist.title];
+
+    [[JLTidalAPI shared] getPlaylistTracksForPlaylistID:playlist.playlistUUID
+                                                  limit:500
+                                                 offset:0
+                                             completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || tracks.count == 0) {
+                self.statusLabel.stringValue = error ?
+                    [NSString stringWithFormat:@"Failed: %@", error.localizedDescription] :
+                    @"Playlist is empty";
+                return;
+            }
+
+            [self createFb2kPlaylistWithName:playlist.title tracks:tracks];
+        });
+    }];
+}
+
+- (void)importAlbumAsNewFb2kPlaylist:(JLTidalAlbum *)album {
+    NSString *playlistName = [NSString stringWithFormat:@"%@ - %@", album.artist ?: @"Unknown", album.title];
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Importing \"%@\"...", album.title];
+
+    [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
+                                       completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || tracks.count == 0) {
+                self.statusLabel.stringValue = error ?
+                    [NSString stringWithFormat:@"Failed: %@", error.localizedDescription] :
+                    @"Album has no tracks";
+                return;
+            }
+
+            [self createFb2kPlaylistWithName:playlistName tracks:tracks];
+        });
+    }];
+}
+
+- (void)createFb2kPlaylistWithName:(NSString *)name tracks:(NSArray<JLTidalTrack *> *)tracks {
+    auto pm = playlist_manager::get();
+
+    // Create new playlist with the given name
+    pfc::string8 playlistName([name UTF8String]);
+    t_size newPlaylist = pm->create_playlist(playlistName, playlistName.length(), SIZE_MAX);
+    pm->set_active_playlist(newPlaylist);
+
+    // Import tracks
+    auto notify = new service_impl_t<TidalPlayNotify>(newPlaylist, 0, false);
+    for (JLTidalTrack *track in tracks) {
+        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        notify->m_paths.add_item([url UTF8String]);
+    }
+    notify->startImport();
+
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Created playlist \"%@\" with %lu tracks",
+                                    name, (unsigned long)tracks.count];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    NSUInteger selectedCount = self.tableView.selectedRowIndexes.count;
+    if (selectedCount == 0) return NO;
+
     if (menuItem.action == @selector(contextMenuCopyURL:)) {
-        return [self isShowingTracks] && self.tableView.selectedRowIndexes.count > 0;
+        return [self isShowingTracks];
     }
     if (menuItem.action == @selector(contextMenuAddFavorite:) ||
         menuItem.action == @selector(contextMenuRemoveFavorite:)) {
-        return [self isShowingTracks] && self.tableView.selectedRowIndexes.count > 0;
+        return [self isShowingTracks];
     }
-    return self.tableView.selectedRowIndexes.count > 0;
+    if (menuItem.action == @selector(contextMenuImportAsPlaylist:)) {
+        return [self isShowingPlaylists] || [self isShowingAlbums];
+    }
+    if (menuItem.action == @selector(contextMenuPlay:) ||
+        menuItem.action == @selector(contextMenuAddToPlaylist:)) {
+        return [self isShowingTracks] || [self isShowingAlbums];
+    }
+    return YES;
 }
 
 #pragma mark - Helpers

@@ -47,6 +47,33 @@
             if ([albumArtist isKindOfClass:[NSDictionary class]]) {
                 _albumArtist = albumArtist[@"name"];
             }
+
+            // Total tracks from album
+            id numTracks = album[@"numberOfTracks"];
+            if (numTracks) {
+                _totalTracks = [numTracks integerValue];
+            }
+
+            // Release date from album
+            NSString *dateStr = album[@"releaseDate"];
+            if ([dateStr isKindOfClass:[NSString class]] && dateStr.length >= 10) {
+                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+                fmt.dateFormat = @"yyyy-MM-dd";
+                fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+                _releaseDate = [fmt dateFromString:dateStr];
+            }
+        }
+
+        // ISRC (International Standard Recording Code)
+        id isrc = dict[@"isrc"];
+        if ([isrc isKindOfClass:[NSString class]] && [isrc length] > 0) {
+            _isrc = isrc;
+        }
+
+        // Copyright
+        id copyright = dict[@"copyright"];
+        if ([copyright isKindOfClass:[NSString class]] && [copyright length] > 0) {
+            _copyright = copyright;
         }
     }
     return self;
