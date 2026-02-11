@@ -18,6 +18,7 @@
 @property (nonatomic, strong) NSTextField *usernameLabel;
 @property (nonatomic, strong) NSTextField *authStatusLabel;
 @property (nonatomic, strong) NSButton *authButton;
+@property (nonatomic, strong, readwrite) NSButton *reconnectButton;
 @property (nonatomic, strong) NSProgressIndicator *authSpinner;
 @property (nonatomic, strong) NSTextField *userCodeLabel;
 
@@ -146,11 +147,23 @@
     self.userCodeLabel.hidden = YES;
     addIndentedRow(self.userCodeLabel, 36);
 
-    // Auth button
+    // Auth buttons row (Reconnect + Disconnect side by side when expired)
+    NSStackView *authButtonRow = [[NSStackView alloc] init];
+    authButtonRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    authButtonRow.spacing = 8;
+
+    self.reconnectButton = [NSButton buttonWithTitle:@"Reconnect"
+                                              target:self
+                                              action:@selector(reconnectButtonClicked:)];
+    self.reconnectButton.hidden = YES;
+    [authButtonRow addArrangedSubview:self.reconnectButton];
+
     self.authButton = [NSButton buttonWithTitle:@"Connect to Tidal"
                                          target:self
                                          action:@selector(authButtonClicked:)];
-    addIndentedRow(self.authButton, 32 + sectionGap);
+    [authButtonRow addArrangedSubview:self.authButton];
+
+    addIndentedRow(authButtonRow, 32 + sectionGap);
 
     // ===== Audio Quality Section =====
     NSTextField *qualityLabel = [NSTextField labelWithString:@"Audio Quality"];
@@ -236,6 +249,7 @@
             [self.authButton setTitle:@"Connect to Tidal"];
             self.authButton.enabled = YES;
             self.userCodeLabel.hidden = YES;
+            self.reconnectButton.hidden = YES;
             [self.authSpinner setHidden:YES];
             [self.authSpinner stopAnimation:nil];
             break;
@@ -245,6 +259,7 @@
             self.authStatusLabel.stringValue = @"";
             self.authButton.enabled = NO;
             self.userCodeLabel.hidden = YES;
+            self.reconnectButton.hidden = YES;
             [self.authSpinner setHidden:NO];
             [self.authSpinner startAnimation:nil];
             break;
@@ -255,6 +270,7 @@
             self.authStatusLabel.stringValue = @"";
             self.userCodeLabel.stringValue = userCode ?: @"";
             self.userCodeLabel.hidden = NO;
+            self.reconnectButton.hidden = YES;
             [self.authButton setTitle:@"Cancel"];
             self.authButton.enabled = YES;
             [self.authSpinner setHidden:NO];
@@ -267,6 +283,7 @@
             self.authStatusLabel.stringValue = @"";
             self.authButton.enabled = NO;
             self.userCodeLabel.hidden = YES;
+            self.reconnectButton.hidden = YES;
             [self.authSpinner setHidden:NO];
             [self.authSpinner startAnimation:nil];
             break;
@@ -290,8 +307,11 @@
             if (session.isExpired) {
                 [status appendString:@" - Token expired"];
                 self.authStatusLabel.textColor = [NSColor systemOrangeColor];
+                self.reconnectButton.hidden = NO;
+                self.reconnectButton.enabled = YES;
             } else {
                 self.authStatusLabel.textColor = [NSColor secondaryLabelColor];
+                self.reconnectButton.hidden = YES;
             }
             self.authStatusLabel.stringValue = status;
 
@@ -312,6 +332,7 @@
             [self.authButton setTitle:@"Connect to Tidal"];
             self.authButton.enabled = YES;
             self.userCodeLabel.hidden = YES;
+            self.reconnectButton.hidden = YES;
             [self.authSpinner setHidden:YES];
             [self.authSpinner stopAnimation:nil];
             break;
@@ -324,6 +345,7 @@
             [self.authButton setTitle:@"Try Again"];
             self.authButton.enabled = YES;
             self.userCodeLabel.hidden = YES;
+            self.reconnectButton.hidden = YES;
             [self.authSpinner setHidden:YES];
             [self.authSpinner stopAnimation:nil];
             break;
@@ -358,6 +380,34 @@
             }
         }];
     }
+}
+
+- (void)reconnectButtonClicked:(id)sender {
+    // Show reconnecting state
+    self.reconnectButton.enabled = NO;
+    self.authStatusLabel.stringValue = @"Reconnecting...";
+    self.authStatusLabel.textColor = [NSColor secondaryLabelColor];
+    [self.authSpinner setHidden:NO];
+    [self.authSpinner startAnimation:nil];
+
+    // Try refreshing the token first
+    [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (success) {
+                // Token refreshed - updateAuthUI will be called via notification
+                tidal::logInfo("Reconnect: token refreshed successfully");
+            } else {
+                // Refresh failed - start full OAuth flow
+                tidal::logInfo("Reconnect: refresh failed, starting full OAuth flow");
+                [[JLTidalAuthService shared] startAuthenticationWithCompletion:^(BOOL authSuccess, NSError *error) {
+                    if (!authSuccess && error) {
+                        tidal::logError([[NSString stringWithFormat:@"Reconnect auth failed: %@",
+                                         error.localizedDescription] UTF8String]);
+                    }
+                }];
+            }
+        });
+    }];
 }
 
 - (void)qualityChanged:(id)sender {

@@ -11,4 +11,7 @@
 
 @interface JLTidalPreferencesController : NSViewController
 
+/// Reconnect button shown when token is expired
+@property (nonatomic, strong, readonly) NSButton *reconnectButton;
+
 @end
