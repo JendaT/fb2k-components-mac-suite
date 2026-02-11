@@ -104,6 +104,11 @@ public:
 @property (nonatomic, assign) BOOL isSearching;
 @property (nonatomic, copy, nullable) NSString *lastSearchQuery;
 
+// Pagination
+@property (nonatomic, assign) NSInteger currentOffset;
+@property (nonatomic, assign) BOOL hasMoreResults;
+@property (nonatomic, assign) BOOL isLoadingMore;
+
 // Result arrays (only one is active at a time based on browseMode)
 @property (nonatomic, strong) NSMutableArray<JLTidalTrack *> *trackResults;
 @property (nonatomic, strong) NSMutableArray<JLTidalAlbum *> *albumResults;
@@ -129,6 +134,9 @@ public:
         _artistResults = [NSMutableArray array];
         _playlistResults = [NSMutableArray array];
         _isSearching = NO;
+        _isLoadingMore = NO;
+        _hasMoreResults = NO;
+        _currentOffset = 0;
         _panelMode = JLTidalPanelModeSearch;
         _searchType = JLTidalSearchTypeTracks;
         _librarySection = JLTidalLibrarySectionFavTracks;
@@ -325,6 +333,27 @@ public:
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self updateStatusLabel];
+
+    // Observe scroll for pagination
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(scrollViewDidScroll:)
+                                                 name:NSViewBoundsDidChangeNotification
+                                               object:self.scrollView.contentView];
+    self.scrollView.contentView.postsBoundsChangedNotifications = YES;
+}
+
+- (void)scrollViewDidScroll:(NSNotification *)notification {
+    if (!self.hasMoreResults || self.isLoadingMore || self.isSearching) return;
+
+    NSClipView *clipView = self.scrollView.contentView;
+    CGFloat contentHeight = self.tableView.frame.size.height;
+    CGFloat scrollOffset = clipView.bounds.origin.y;
+    CGFloat visibleHeight = clipView.bounds.size.height;
+
+    // Load more when within 100pt of the bottom
+    if (scrollOffset + visibleHeight >= contentHeight - 100) {
+        [self loadMoreResults];
+    }
 }
 
 - (void)setupContextMenu {
@@ -567,6 +596,8 @@ public:
     }
 
     self.browseMode = JLTidalBrowseModeLibraryList;
+    self.currentOffset = 0;
+    self.hasMoreResults = NO;
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
@@ -575,7 +606,8 @@ public:
         case JLTidalLibrarySectionFavTracks:
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading favorites...";
-            [[JLTidalAPI shared] getFavoriteTracksWithLimit:100 offset:0
+            [self.trackResults removeAllObjects];
+            [[JLTidalAPI shared] getFavoriteTracksWithLimit:kPageSize offset:0
                                                 completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self finishLoading];
@@ -583,12 +615,14 @@ public:
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
                         return;
                     }
-                    [self.trackResults removeAllObjects];
                     if (tracks) [self.trackResults addObjectsFromArray:tracks];
+                    self.currentOffset = (NSInteger)tracks.count;
+                    self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@",
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
                                                     (unsigned long)self.trackResults.count,
-                                                    self.trackResults.count == 1 ? @"" : @"s"];
+                                                    self.trackResults.count == 1 ? @"" : @"s",
+                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
                 });
             }];
             break;
@@ -596,7 +630,8 @@ public:
         case JLTidalLibrarySectionFavAlbums:
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading favorite albums...";
-            [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:100 offset:0
+            [self.albumResults removeAllObjects];
+            [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:kPageSize offset:0
                                                 completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self finishLoading];
@@ -604,12 +639,14 @@ public:
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
                         return;
                     }
-                    [self.albumResults removeAllObjects];
                     if (albums) [self.albumResults addObjectsFromArray:albums];
+                    self.currentOffset = (NSInteger)albums.count;
+                    self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@",
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
                                                     (unsigned long)self.albumResults.count,
-                                                    self.albumResults.count == 1 ? @"" : @"s"];
+                                                    self.albumResults.count == 1 ? @"" : @"s",
+                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
                 });
             }];
             break;
@@ -617,6 +654,7 @@ public:
         case JLTidalLibrarySectionPlaylists:
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading playlists...";
+            [self.playlistResults removeAllObjects];
             [[JLTidalAPI shared] getUserPlaylistsWithCompletion:^(NSArray<JLTidalPlaylist *> *playlists, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self finishLoading];
@@ -624,8 +662,8 @@ public:
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
                         return;
                     }
-                    [self.playlistResults removeAllObjects];
                     if (playlists) [self.playlistResults addObjectsFromArray:playlists];
+                    self.hasMoreResults = NO;  // Playlists API returns all at once
                     [self.tableView reloadData];
                     self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu playlist%@",
                                                     (unsigned long)self.playlistResults.count,
@@ -697,6 +735,8 @@ public:
 
 #pragma mark - Search
 
+static const NSInteger kPageSize = 50;
+
 - (void)searchWithQuery:(NSString *)query {
     if (query.length == 0) {
         [self clearResults];
@@ -709,6 +749,8 @@ public:
     }
 
     self.lastSearchQuery = query;
+    self.currentOffset = 0;
+    self.hasMoreResults = NO;
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
@@ -718,99 +760,181 @@ public:
 
     switch (self.searchType) {
         case JLTidalSearchTypeTracks:
-            [self searchTracksWithQuery:query];
+            [self.trackResults removeAllObjects];
+            [self searchTracksWithQuery:query offset:0];
             break;
         case JLTidalSearchTypeAlbums:
-            [self searchAlbumsWithQuery:query];
+            [self.albumResults removeAllObjects];
+            [self searchAlbumsWithQuery:query offset:0];
             break;
         case JLTidalSearchTypeArtists:
-            [self searchArtistsWithQuery:query];
+            [self.artistResults removeAllObjects];
+            [self searchArtistsWithQuery:query offset:0];
             break;
     }
 }
 
-- (void)searchTracksWithQuery:(NSString *)query {
+- (void)searchTracksWithQuery:(NSString *)query offset:(NSInteger)offset {
     [[JLTidalAPI shared] searchTracksWithQuery:query
-                                         limit:50
-                                        offset:0
+                                         limit:kPageSize
+                                        offset:offset
                                     completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishLoading];
+            self.isLoadingMore = NO;
 
             if (error) {
                 [self showError:error.localizedDescription forQuery:query];
                 return;
             }
 
-            [self.trackResults removeAllObjects];
             if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            self.currentOffset = offset + (NSInteger)tracks.count;
+            self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
             [self.tableView reloadData];
 
             if (self.trackResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No tracks for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@ found",
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@%@",
                                                 (unsigned long)self.trackResults.count,
-                                                self.trackResults.count == 1 ? @"" : @"s"];
+                                                self.trackResults.count == 1 ? @"" : @"s",
+                                                self.hasMoreResults ? @" (scroll for more)" : @""];
             }
         });
     }];
 }
 
-- (void)searchAlbumsWithQuery:(NSString *)query {
+- (void)searchAlbumsWithQuery:(NSString *)query offset:(NSInteger)offset {
     [[JLTidalAPI shared] searchAlbumsWithQuery:query
-                                         limit:50
-                                        offset:0
+                                         limit:kPageSize
+                                        offset:offset
                                     completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishLoading];
+            self.isLoadingMore = NO;
 
             if (error) {
                 [self showError:error.localizedDescription forQuery:query];
                 return;
             }
 
-            [self.albumResults removeAllObjects];
             if (albums) [self.albumResults addObjectsFromArray:albums];
+            self.currentOffset = offset + (NSInteger)albums.count;
+            self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
             [self.tableView reloadData];
 
             if (self.albumResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No albums for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@ found",
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@%@",
                                                 (unsigned long)self.albumResults.count,
-                                                self.albumResults.count == 1 ? @"" : @"s"];
+                                                self.albumResults.count == 1 ? @"" : @"s",
+                                                self.hasMoreResults ? @" (scroll for more)" : @""];
             }
         });
     }];
 }
 
-- (void)searchArtistsWithQuery:(NSString *)query {
+- (void)searchArtistsWithQuery:(NSString *)query offset:(NSInteger)offset {
     [[JLTidalAPI shared] searchArtistsWithQuery:query
-                                          limit:50
-                                         offset:0
+                                          limit:kPageSize
+                                         offset:offset
                                      completion:^(NSArray<JLTidalArtist *> *artists, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self finishLoading];
+            self.isLoadingMore = NO;
 
             if (error) {
                 [self showError:error.localizedDescription forQuery:query];
                 return;
             }
 
-            [self.artistResults removeAllObjects];
             if (artists) [self.artistResults addObjectsFromArray:artists];
+            self.currentOffset = offset + (NSInteger)artists.count;
+            self.hasMoreResults = (NSInteger)artists.count >= kPageSize;
             [self.tableView reloadData];
 
             if (self.artistResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No artists for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu artist%@ found",
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu artist%@%@",
                                                 (unsigned long)self.artistResults.count,
-                                                self.artistResults.count == 1 ? @"" : @"s"];
+                                                self.artistResults.count == 1 ? @"" : @"s",
+                                                self.hasMoreResults ? @" (scroll for more)" : @""];
             }
         });
     }];
+}
+
+- (void)loadMoreResults {
+    if (!self.hasMoreResults || self.isLoadingMore) return;
+
+    self.isLoadingMore = YES;
+    self.statusLabel.stringValue = @"Loading more...";
+
+    if (self.browseMode == JLTidalBrowseModeSearchResults && self.lastSearchQuery.length > 0) {
+        switch (self.searchType) {
+            case JLTidalSearchTypeTracks:
+                [self searchTracksWithQuery:self.lastSearchQuery offset:self.currentOffset];
+                break;
+            case JLTidalSearchTypeAlbums:
+                [self searchAlbumsWithQuery:self.lastSearchQuery offset:self.currentOffset];
+                break;
+            case JLTidalSearchTypeArtists:
+                [self searchArtistsWithQuery:self.lastSearchQuery offset:self.currentOffset];
+                break;
+        }
+    } else if (self.browseMode == JLTidalBrowseModeLibraryList) {
+        [self loadMoreLibraryResults];
+    } else {
+        self.isLoadingMore = NO;
+    }
+}
+
+- (void)loadMoreLibraryResults {
+    switch (self.librarySection) {
+        case JLTidalLibrarySectionFavTracks:
+            [[JLTidalAPI shared] getFavoriteTracksWithLimit:kPageSize offset:self.currentOffset
+                                                completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.isLoadingMore = NO;
+                    if (error || !tracks) return;
+                    [self.trackResults addObjectsFromArray:tracks];
+                    self.currentOffset += (NSInteger)tracks.count;
+                    self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
+                    [self.tableView reloadData];
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
+                                                    (unsigned long)self.trackResults.count,
+                                                    self.trackResults.count == 1 ? @"" : @"s",
+                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                });
+            }];
+            break;
+
+        case JLTidalLibrarySectionFavAlbums:
+            [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:kPageSize offset:self.currentOffset
+                                                completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.isLoadingMore = NO;
+                    if (error || !albums) return;
+                    [self.albumResults addObjectsFromArray:albums];
+                    self.currentOffset += (NSInteger)albums.count;
+                    self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
+                    [self.tableView reloadData];
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
+                                                    (unsigned long)self.albumResults.count,
+                                                    self.albumResults.count == 1 ? @"" : @"s",
+                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                });
+            }];
+            break;
+
+        case JLTidalLibrarySectionPlaylists:
+            self.isLoadingMore = NO;
+            self.hasMoreResults = NO;
+            break;
+    }
 }
 
 - (void)finishLoading {
@@ -829,6 +953,9 @@ public:
     [self.albumResults removeAllObjects];
     [self.artistResults removeAllObjects];
     [self.playlistResults removeAllObjects];
+    self.currentOffset = 0;
+    self.hasMoreResults = NO;
+    self.isLoadingMore = NO;
     [self exitDrillDown];
     [self.tableView reloadData];
     [self updateStatusLabel];
