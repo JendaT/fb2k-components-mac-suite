@@ -14,6 +14,12 @@
 ## Completed
 | Task | Completed | Notes |
 |------|-----------|-------|
+| Queue Manager integration | 2026-02-11 | Drag-to-queue, "Queue" context menu, cross-component drop |
+| Search type switching fix | 2026-02-11 | Columns now reconfigure when switching Tracks/Albums/Artists |
+| Quality badge column | 2026-02-11 | Shows audio quality per track in search results |
+| Back button compact chevron | 2026-02-11 | SF Symbol chevron.left instead of wide "Back" text |
+| Artist drill-down fallback | 2026-02-11 | Falls back to top tracks when artist has 0 albums |
+| Album art + DATE metadata fix | 2026-02-11 | Increased timeout 2s->8s, track-level releaseDate fallback |
 | Phase 1: MVP (OAuth, playback, preferences) | 2026-02-11 | Full tidal:// protocol handler |
 | Phase 2: Browser Panel | 2026-02-11 | Search, drag-drop, double-click, context menu |
 | Phase 3: Album/Artist Search | 2026-02-11 | Album/artist models, search type selector, drill-down nav |
@@ -30,6 +36,7 @@
 | Initial worktree setup | 2026-01-25 | CLAUDE.md, BACKLOG.md created |
 
 ## Ideas (Unscoped)
+- Tidal Auto-Playlist: Preferences option for a dedicated managed playlist; auto-ingests played/queued Tidal tracks instead of using active playlist
 - Offline mode / download caching
 - Lyrics display integration
 - Radio / mix support
