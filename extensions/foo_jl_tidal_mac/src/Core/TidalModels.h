@@ -53,6 +53,33 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// Album metadata model
+@interface JLTidalAlbum : NSObject
+
+@property (nonatomic, copy, readonly) NSString *albumID;
+@property (nonatomic, copy, readonly) NSString *title;
+@property (nonatomic, copy, readonly, nullable) NSString *artist;
+@property (nonatomic, copy, readonly, nullable) NSString *coverID;
+@property (nonatomic, readonly) NSInteger numberOfTracks;
+@property (nonatomic, readonly) NSInteger duration;  // total seconds
+@property (nonatomic, copy, readonly, nullable) NSString *audioQuality;
+@property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+
+@end
+
+/// Artist metadata model
+@interface JLTidalArtist : NSObject
+
+@property (nonatomic, copy, readonly) NSString *artistID;
+@property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, copy, readonly, nullable) NSString *pictureID;
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+
+@end
+
 /// Cached stream entry
 @interface JLTidalStreamCacheEntry : NSObject
 

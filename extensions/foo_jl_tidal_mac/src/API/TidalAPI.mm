@@ -360,6 +360,192 @@
     }];
 }
 
+- (void)searchAlbumsWithQuery:(NSString *)query
+                        limit:(NSInteger)limit
+                       offset:(NSInteger)offset
+                   completion:(JLTidalAlbumsCompletion)completion {
+    if (!query.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *encodedQuery = [query stringByAddingPercentEncodingWithAllowedCharacters:
+                              [NSCharacterSet URLQueryAllowedCharacterSet]];
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search?query=%@&types=ALBUMS&limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, encodedQuery, (long)limit, (long)offset];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
+        NSArray *items = json[@"albums"][@"items"];
+
+        for (NSDictionary *albumDict in items) {
+            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
+            if (album) {
+                [albums addObject:album];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Album search returned %lu results",
+                          (unsigned long)albums.count] UTF8String]);
+        completion([albums copy], nil);
+    }];
+}
+
+- (void)searchArtistsWithQuery:(NSString *)query
+                         limit:(NSInteger)limit
+                        offset:(NSInteger)offset
+                    completion:(JLTidalArtistsCompletion)completion {
+    if (!query.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *encodedQuery = [query stringByAddingPercentEncodingWithAllowedCharacters:
+                              [NSCharacterSet URLQueryAllowedCharacterSet]];
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search?query=%@&types=ARTISTS&limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, encodedQuery, (long)limit, (long)offset];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalArtist *> *artists = [NSMutableArray array];
+        NSArray *items = json[@"artists"][@"items"];
+
+        for (NSDictionary *artistDict in items) {
+            JLTidalArtist *artist = [[JLTidalArtist alloc] initWithDictionary:artistDict];
+            if (artist) {
+                [artists addObject:artist];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Artist search returned %lu results",
+                          (unsigned long)artists.count] UTF8String]);
+        completion([artists copy], nil);
+    }];
+}
+
+#pragma mark - Album API
+
+- (void)getAlbumTracksForAlbumID:(NSString *)albumID
+                      completion:(JLTidalTracksCompletion)completion {
+    if (!albumID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/albums/%@/tracks?limit=100",
+                        kTidalAPIBaseURL, albumID];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *trackDict in items) {
+            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
+            if (track) {
+                [tracks addObject:track];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Album %@ has %lu tracks",
+                          albumID, (unsigned long)tracks.count] UTF8String]);
+        completion([tracks copy], nil);
+    }];
+}
+
+#pragma mark - Artist API
+
+- (void)getArtistTopTracksForArtistID:(NSString *)artistID
+                                limit:(NSInteger)limit
+                           completion:(JLTidalTracksCompletion)completion {
+    if (!artistID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/artists/%@/toptracks?limit=%ld",
+                        kTidalAPIBaseURL, artistID, (long)limit];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *trackDict in items) {
+            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
+            if (track) {
+                [tracks addObject:track];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu top tracks",
+                          artistID, (unsigned long)tracks.count] UTF8String]);
+        completion([tracks copy], nil);
+    }];
+}
+
+- (void)getArtistAlbumsForArtistID:(NSString *)artistID
+                             limit:(NSInteger)limit
+                        completion:(JLTidalAlbumsCompletion)completion {
+    if (!artistID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/artists/%@/albums?limit=%ld",
+                        kTidalAPIBaseURL, artistID, (long)limit];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *albumDict in items) {
+            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
+            if (album) {
+                [albums addObject:album];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu albums",
+                          artistID, (unsigned long)albums.count] UTF8String]);
+        completion([albums copy], nil);
+    }];
+}
+
 #pragma mark - Generic Request
 
 - (void)requestWithURL:(NSURL *)url

@@ -31,12 +31,16 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @class JLTidalTrack;
+@class JLTidalAlbum;
+@class JLTidalArtist;
 
 /// Completion handlers
 typedef void (^JLTidalDeviceCodeCompletion)(JLTidalDeviceCode * _Nullable deviceCode, NSError * _Nullable error);
 typedef void (^JLTidalSessionCompletion)(JLTidalSession * _Nullable session, NSError * _Nullable error);
 typedef void (^JLTidalDataCompletion)(NSDictionary * _Nullable json, NSError * _Nullable error);
 typedef void (^JLTidalTracksCompletion)(NSArray<JLTidalTrack *> * _Nullable tracks, NSError * _Nullable error);
+typedef void (^JLTidalAlbumsCompletion)(NSArray<JLTidalAlbum *> * _Nullable albums, NSError * _Nullable error);
+typedef void (^JLTidalArtistsCompletion)(NSArray<JLTidalArtist *> * _Nullable artists, NSError * _Nullable error);
 
 @interface JLTidalAPI : NSObject
 
@@ -78,6 +82,36 @@ typedef void (^JLTidalTracksCompletion)(NSArray<JLTidalTrack *> * _Nullable trac
                         limit:(NSInteger)limit
                        offset:(NSInteger)offset
                    completion:(JLTidalTracksCompletion)completion;
+
+/// Search for albums
+- (void)searchAlbumsWithQuery:(NSString *)query
+                        limit:(NSInteger)limit
+                       offset:(NSInteger)offset
+                   completion:(JLTidalAlbumsCompletion)completion;
+
+/// Search for artists
+- (void)searchArtistsWithQuery:(NSString *)query
+                         limit:(NSInteger)limit
+                        offset:(NSInteger)offset
+                    completion:(JLTidalArtistsCompletion)completion;
+
+#pragma mark - Album API
+
+/// Get tracks for an album (ordered by track number)
+- (void)getAlbumTracksForAlbumID:(NSString *)albumID
+                      completion:(JLTidalTracksCompletion)completion;
+
+#pragma mark - Artist API
+
+/// Get top tracks for an artist
+- (void)getArtistTopTracksForArtistID:(NSString *)artistID
+                                limit:(NSInteger)limit
+                           completion:(JLTidalTracksCompletion)completion;
+
+/// Get albums for an artist
+- (void)getArtistAlbumsForArtistID:(NSString *)artistID
+                             limit:(NSInteger)limit
+                        completion:(JLTidalAlbumsCompletion)completion;
 
 #pragma mark - Generic Request
 
