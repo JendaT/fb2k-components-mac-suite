@@ -113,6 +113,7 @@ public:
 @property (nonatomic, assign) JLTidalBrowseMode browseMode;
 @property (nonatomic, assign) BOOL isSearching;
 @property (nonatomic, copy, nullable) NSString *lastSearchQuery;
+@property (nonatomic, strong, nullable) NSTimer *searchDebounceTimer;
 
 // Pagination
 @property (nonatomic, assign) NSInteger currentOffset;
@@ -148,9 +149,13 @@ public:
         _hasMoreResults = NO;
         _currentOffset = 0;
         _panelMode = JLTidalPanelModeSearch;
-        _searchType = JLTidalSearchTypeTracks;
         _librarySection = JLTidalLibrarySectionFavTracks;
         _browseMode = JLTidalBrowseModeSearchResults;
+
+        // Restore saved search state
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        _searchType = (JLTidalSearchType)[defaults integerForKey:@"JLTidalSearchType"];
+        _lastSearchQuery = [defaults stringForKey:@"JLTidalLastSearch"];
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(authStateChanged:)
@@ -161,6 +166,7 @@ public:
 }
 
 - (void)dealloc {
+    [_searchDebounceTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -186,8 +192,8 @@ public:
     self.searchField.translatesAutoresizingMaskIntoConstraints = NO;
     self.searchField.placeholderString = @"Search Tidal...";
     self.searchField.delegate = self;
-    self.searchField.sendsSearchStringImmediately = NO;
-    self.searchField.sendsWholeSearchString = YES;
+    self.searchField.sendsSearchStringImmediately = YES;
+    self.searchField.sendsWholeSearchString = NO;
     [container addSubview:self.searchField];
 
     // Search type segmented control
@@ -348,7 +354,19 @@ public:
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    [self updateStatusLabel];
+
+    // Restore saved search state
+    if (self.searchType >= 0 && self.searchType <= 2) {
+        self.searchTypeControl.selectedSegment = self.searchType;
+    }
+    [self setupColumnsForCurrentMode];
+
+    if (self.lastSearchQuery.length > 0) {
+        self.searchField.stringValue = self.lastSearchQuery;
+        [self searchWithQuery:self.lastSearchQuery];
+    } else {
+        [self updateStatusLabel];
+    }
 
     // Observe scroll for pagination
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -424,19 +442,19 @@ public:
         [self.tableView addTableColumn:trackNumColumn];
     }
 
+    // Artist column (first data column)
+    NSTableColumn *artistColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnArtist];
+    artistColumn.title = @"Artist";
+    artistColumn.width = 150;
+    artistColumn.minWidth = 80;
+    [self.tableView addTableColumn:artistColumn];
+
     // Title column
     NSTableColumn *titleColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnTitle];
     titleColumn.title = @"Title";
     titleColumn.width = 200;
     titleColumn.minWidth = 100;
     [self.tableView addTableColumn:titleColumn];
-
-    // Artist column
-    NSTableColumn *artistColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnArtist];
-    artistColumn.title = @"Artist";
-    artistColumn.width = 150;
-    artistColumn.minWidth = 80;
-    [self.tableView addTableColumn:artistColumn];
 
     // Quality column
     NSTableColumn *qualityColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnTrackQuality];
@@ -464,19 +482,19 @@ public:
     artColumn.maxWidth = 40;
     [self.tableView addTableColumn:artColumn];
 
+    // Album artist (first data column)
+    NSTableColumn *artistColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumArtist];
+    artistColumn.title = @"Artist";
+    artistColumn.width = 150;
+    artistColumn.minWidth = 80;
+    [self.tableView addTableColumn:artistColumn];
+
     // Album title
     NSTableColumn *titleColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumTitle];
     titleColumn.title = @"Album";
     titleColumn.width = 200;
     titleColumn.minWidth = 100;
     [self.tableView addTableColumn:titleColumn];
-
-    // Album artist
-    NSTableColumn *artistColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumArtist];
-    artistColumn.title = @"Artist";
-    artistColumn.width = 150;
-    artistColumn.minWidth = 80;
-    [self.tableView addTableColumn:artistColumn];
 
     // Number of tracks
     NSTableColumn *tracksColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumTracks];
@@ -782,6 +800,15 @@ static const NSInteger kPageSize = 50;
     self.currentOffset = 0;
     self.hasMoreResults = NO;
     self.isSearching = YES;
+
+    // Persist search state
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:query forKey:@"JLTidalLastSearch"];
+    [defaults setInteger:self.searchType forKey:@"JLTidalSearchType"];
+
+    // Ensure columns match the current search type
+    [self setupColumnsForCurrentMode];
+
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
     self.statusLabel.stringValue = [NSString stringWithFormat:@"Searching for \"%@\"...", query];
@@ -1172,17 +1199,60 @@ static const NSInteger kPageSize = 50;
 
 #pragma mark - NSSearchFieldDelegate
 
-- (void)controlTextDidEndEditing:(NSNotification *)notification {
+- (void)controlTextDidChange:(NSNotification *)notification {
     NSSearchField *field = notification.object;
-    if (field == self.searchField) {
-        NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:
-                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (field != self.searchField) return;
 
-        // Exit drill-down when user types a new search
-        if ([self isDrillDown]) {
-            [self exitDrillDown];
-        }
+    // Cancel previous debounce timer
+    [self.searchDebounceTimer invalidate];
+    self.searchDebounceTimer = nil;
 
+    NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (query.length == 0) {
+        [self clearResults];
+        return;
+    }
+
+    // Debounce: wait 400ms after last keystroke before searching
+    self.searchDebounceTimer = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                               target:self
+                                                             selector:@selector(debounceSearchFired:)
+                                                             userInfo:nil
+                                                              repeats:NO];
+}
+
+- (void)debounceSearchFired:(NSTimer *)timer {
+    NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (query.length == 0) return;
+
+    // Exit drill-down when user types a new search
+    if ([self isDrillDown]) {
+        [self exitDrillDown];
+    }
+
+    [self searchWithQuery:query];
+}
+
+- (void)controlTextDidEndEditing:(NSNotification *)notification {
+    // Also search on Enter (immediate, no debounce)
+    NSSearchField *field = notification.object;
+    if (field != self.searchField) return;
+
+    [self.searchDebounceTimer invalidate];
+    self.searchDebounceTimer = nil;
+
+    NSString *query = [self.searchField.stringValue stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if ([self isDrillDown]) {
+        [self exitDrillDown];
+    }
+
+    if (query.length > 0) {
         [self searchWithQuery:query];
     }
 }
@@ -1407,13 +1477,17 @@ static const NSInteger kPageSize = 50;
 - (NSTableCellView *)textCell:(NSString *)identifier text:(NSString *)text
                          font:(NSFont *)font color:(NSColor *)color {
     NSTableCellView *cell = [self.tableView makeViewWithIdentifier:identifier owner:self];
-    if (!cell) {
+    if (!cell || !cell.textField) {
         cell = [[NSTableCellView alloc] init];
         cell.identifier = identifier;
 
         NSTextField *textField = [NSTextField labelWithString:@""];
         textField.translatesAutoresizingMaskIntoConstraints = NO;
         textField.lineBreakMode = NSLineBreakByTruncatingTail;
+        textField.drawsBackground = NO;
+        textField.bordered = NO;
+        textField.editable = NO;
+        textField.selectable = NO;
         [cell addSubview:textField];
         cell.textField = textField;
 
@@ -1424,7 +1498,7 @@ static const NSInteger kPageSize = 50;
         ]];
     }
 
-    cell.textField.stringValue = text;
+    cell.textField.stringValue = text ?: @"";
     cell.textField.font = font;
     cell.textField.textColor = color;
     return cell;
