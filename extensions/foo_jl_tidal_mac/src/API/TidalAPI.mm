@@ -546,6 +546,211 @@
     }];
 }
 
+#pragma mark - Favorites API
+
+- (void)getFavoriteTracksWithLimit:(NSInteger)limit
+                            offset:(NSInteger)offset
+                        completion:(JLTidalTracksCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/favorites/tracks?limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, userId, (long)limit, (long)offset];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *item in items) {
+            // Favorites API wraps track in an "item" key
+            NSDictionary *trackDict = item[@"item"];
+            if (!trackDict) trackDict = item;
+
+            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
+            if (track) {
+                [tracks addObject:track];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Got %lu favorite tracks",
+                          (unsigned long)tracks.count] UTF8String]);
+        completion([tracks copy], nil);
+    }];
+}
+
+- (void)getFavoriteAlbumsWithLimit:(NSInteger)limit
+                            offset:(NSInteger)offset
+                        completion:(JLTidalAlbumsCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/favorites/albums?limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, userId, (long)limit, (long)offset];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *item in items) {
+            NSDictionary *albumDict = item[@"item"];
+            if (!albumDict) albumDict = item;
+
+            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
+            if (album) {
+                [albums addObject:album];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Got %lu favorite albums",
+                          (unsigned long)albums.count] UTF8String]);
+        completion([albums copy], nil);
+    }];
+}
+
+- (void)addTrackToFavorites:(NSString *)trackID
+                 completion:(JLTidalBoolCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(NO, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/favorites/tracks",
+                        kTidalAPIBaseURL, userId];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"POST" body:@{@"trackIds": trackID}
+              completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            // 200 or 201 both indicate success; some errors may still be "already favorited"
+            completion(NO, error);
+        } else {
+            tidal::logDebug([[NSString stringWithFormat:@"Added track %@ to favorites", trackID] UTF8String]);
+            completion(YES, nil);
+        }
+    }];
+}
+
+- (void)removeTrackFromFavorites:(NSString *)trackID
+                      completion:(JLTidalBoolCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(NO, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/favorites/tracks/%@",
+                        kTidalAPIBaseURL, userId, trackID];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"DELETE" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(NO, error);
+        } else {
+            tidal::logDebug([[NSString stringWithFormat:@"Removed track %@ from favorites", trackID] UTF8String]);
+            completion(YES, nil);
+        }
+    }];
+}
+
+#pragma mark - Playlists API
+
+- (void)getUserPlaylistsWithCompletion:(JLTidalPlaylistsCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/playlists?limit=50",
+                        kTidalAPIBaseURL, userId];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalPlaylist *> *playlists = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *playlistDict in items) {
+            JLTidalPlaylist *playlist = [[JLTidalPlaylist alloc] initWithDictionary:playlistDict];
+            if (playlist) {
+                [playlists addObject:playlist];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlists",
+                          (unsigned long)playlists.count] UTF8String]);
+        completion([playlists copy], nil);
+    }];
+}
+
+- (void)getPlaylistTracksForPlaylistID:(NSString *)playlistUUID
+                                 limit:(NSInteger)limit
+                                offset:(NSInteger)offset
+                            completion:(JLTidalTracksCompletion)completion {
+    if (!playlistUUID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/playlists/%@/tracks?limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, playlistUUID, (long)limit, (long)offset];
+
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *item in items) {
+            // Playlist tracks API wraps track in an "item" key
+            NSDictionary *trackDict = item[@"item"];
+            if (!trackDict) trackDict = item;
+
+            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
+            if (track) {
+                [tracks addObject:track];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Playlist %@ has %lu tracks",
+                          playlistUUID, (unsigned long)tracks.count] UTF8String]);
+        completion([tracks copy], nil);
+    }];
+}
+
 #pragma mark - Generic Request
 
 - (void)requestWithURL:(NSURL *)url
@@ -650,9 +855,18 @@
             return;
         }
 
-        if (httpResponse.statusCode != 200) {
+        // Accept 200 (OK), 201 (Created), 204 (No Content)
+        if (httpResponse.statusCode != 200 && httpResponse.statusCode != 201 && httpResponse.statusCode != 204) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse,
                 [NSString stringWithFormat:@"Unexpected status: HTTP %ld", (long)httpResponse.statusCode]));
+            return;
+        }
+
+        [[JLTidalRateLimiter shared] recordSuccess];
+
+        // 204 No Content or empty body - return empty dict
+        if (httpResponse.statusCode == 204 || !data || data.length == 0) {
+            completion(@{}, nil);
             return;
         }
 
@@ -663,7 +877,6 @@
             return;
         }
 
-        [[JLTidalRateLimiter shared] recordSuccess];
         completion(json, nil);
     }];
 

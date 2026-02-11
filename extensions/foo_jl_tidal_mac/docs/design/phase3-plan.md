@@ -1,7 +1,8 @@
 # Tidal Integration: Phase 3+ Plan
 
 **Created**: 2026-02-11
-**Status**: Planning
+**Updated**: 2026-02-11
+**Status**: Phase 3 Complete, Phase 4+ Planning
 **Depends on**: Phase 1 (MVP) and Phase 2 (Browser) - both complete
 
 ## Current State (Phase 1-2)
@@ -28,15 +29,16 @@
 - `requestWithURL:method:body:completion:` - Generic authenticated request
 
 ### Known Issues (In Progress)
-- Album art not displayed for Tidal tracks in playlist
-- Quality fallback may cascade to LOW unnecessarily
+- Album art not displayed for Tidal tracks in playlist (extractor added, needs testing)
+- Quality fallback may cascade to LOW unnecessarily (logging added, needs testing)
 
 ---
 
-## Phase 3: Extended Search & Album Browsing
+## Phase 3: Extended Search & Album Browsing -- COMPLETE
 
 **Priority**: High
 **Complexity**: Medium
+**Status**: Implemented 2026-02-11
 
 ### 3.1 Album Search
 

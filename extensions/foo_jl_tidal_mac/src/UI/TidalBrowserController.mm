@@ -30,6 +30,10 @@ static NSString * const kColumnAlbumQuality = @"albumquality";
 // Column identifiers - artists
 static NSString * const kColumnArtistName = @"artistname";
 
+// Column identifiers - playlists
+static NSString * const kColumnPlaylistTitle = @"playlisttitle";
+static NSString * const kColumnPlaylistTracks = @"playlisttracks";
+
 // Pasteboard type for drag operations
 NSString * const JLTidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
 
@@ -80,8 +84,10 @@ public:
 
 @interface JLTidalBrowserController ()
 // UI elements
+@property (nonatomic, strong) NSSegmentedControl *panelModeControl;
 @property (nonatomic, strong) NSSearchField *searchField;
 @property (nonatomic, strong) NSSegmentedControl *searchTypeControl;
+@property (nonatomic, strong) NSSegmentedControl *librarySectionControl;
 @property (nonatomic, strong) NSButton *backButton;
 @property (nonatomic, strong) NSTextField *breadcrumbLabel;
 @property (nonatomic, strong) NSScrollView *scrollView;
@@ -91,7 +97,9 @@ public:
 @property (nonatomic, strong) NSView *navigationBar;
 
 // State
+@property (nonatomic, assign) JLTidalPanelMode panelMode;
 @property (nonatomic, assign) JLTidalSearchType searchType;
+@property (nonatomic, assign) JLTidalLibrarySection librarySection;
 @property (nonatomic, assign) JLTidalBrowseMode browseMode;
 @property (nonatomic, assign) BOOL isSearching;
 @property (nonatomic, copy, nullable) NSString *lastSearchQuery;
@@ -100,11 +108,13 @@ public:
 @property (nonatomic, strong) NSMutableArray<JLTidalTrack *> *trackResults;
 @property (nonatomic, strong) NSMutableArray<JLTidalAlbum *> *albumResults;
 @property (nonatomic, strong) NSMutableArray<JLTidalArtist *> *artistResults;
+@property (nonatomic, strong) NSMutableArray<JLTidalPlaylist *> *playlistResults;
 
 // Drill-down context
 @property (nonatomic, copy, nullable) NSString *drillDownTitle;
 @property (nonatomic, strong, nullable) JLTidalAlbum *currentAlbum;
 @property (nonatomic, strong, nullable) JLTidalArtist *currentArtist;
+@property (nonatomic, strong, nullable) JLTidalPlaylist *currentPlaylist;
 @end
 
 @implementation JLTidalBrowserController
@@ -117,8 +127,11 @@ public:
         _trackResults = [NSMutableArray array];
         _albumResults = [NSMutableArray array];
         _artistResults = [NSMutableArray array];
+        _playlistResults = [NSMutableArray array];
         _isSearching = NO;
+        _panelMode = JLTidalPanelModeSearch;
         _searchType = JLTidalSearchTypeTracks;
+        _librarySection = JLTidalLibrarySectionFavTracks;
         _browseMode = JLTidalBrowseModeSearchResults;
 
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -139,6 +152,17 @@ public:
     NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     container.wantsLayer = YES;
 
+    // Panel mode control (Search / Library)
+    self.panelModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"Search", @"Library"]
+                                                              trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                    target:self
+                                                                    action:@selector(panelModeChanged:)];
+    self.panelModeControl.translatesAutoresizingMaskIntoConstraints = NO;
+    self.panelModeControl.selectedSegment = 0;
+    self.panelModeControl.controlSize = NSControlSizeSmall;
+    self.panelModeControl.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    [container addSubview:self.panelModeControl];
+
     // Search field
     self.searchField = [[NSSearchField alloc] init];
     self.searchField.translatesAutoresizingMaskIntoConstraints = NO;
@@ -158,6 +182,18 @@ public:
     self.searchTypeControl.controlSize = NSControlSizeSmall;
     self.searchTypeControl.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
     [container addSubview:self.searchTypeControl];
+
+    // Library section control (Fav Tracks / Fav Albums / Playlists)
+    self.librarySectionControl = [NSSegmentedControl segmentedControlWithLabels:@[@"Favorites", @"Albums", @"Playlists"]
+                                                                  trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                        target:self
+                                                                        action:@selector(librarySectionChanged:)];
+    self.librarySectionControl.translatesAutoresizingMaskIntoConstraints = NO;
+    self.librarySectionControl.selectedSegment = 0;
+    self.librarySectionControl.controlSize = NSControlSizeSmall;
+    self.librarySectionControl.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    [self.librarySectionControl setHidden:YES];
+    [container addSubview:self.librarySectionControl];
 
     // Loading spinner
     self.loadingSpinner = [[NSProgressIndicator alloc] init];
@@ -237,22 +273,32 @@ public:
 
     // Layout constraints
     [NSLayoutConstraint activateConstraints:@[
-        // Search field
-        [self.searchField.topAnchor constraintEqualToAnchor:container.topAnchor constant:8],
-        [self.searchField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
-        [self.searchField.trailingAnchor constraintEqualToAnchor:self.loadingSpinner.leadingAnchor constant:-8],
-        [self.searchField.heightAnchor constraintEqualToConstant:24],
+        // Panel mode control (top row)
+        [self.panelModeControl.topAnchor constraintEqualToAnchor:container.topAnchor constant:8],
+        [self.panelModeControl.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
+        [self.panelModeControl.heightAnchor constraintEqualToConstant:20],
 
-        // Loading spinner
-        [self.loadingSpinner.centerYAnchor constraintEqualToAnchor:self.searchField.centerYAnchor],
+        // Loading spinner (aligned to panel mode)
+        [self.loadingSpinner.centerYAnchor constraintEqualToAnchor:self.panelModeControl.centerYAnchor],
         [self.loadingSpinner.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
         [self.loadingSpinner.widthAnchor constraintEqualToConstant:16],
         [self.loadingSpinner.heightAnchor constraintEqualToConstant:16],
 
-        // Search type control
+        // Search field (second row - search mode)
+        [self.searchField.topAnchor constraintEqualToAnchor:self.panelModeControl.bottomAnchor constant:6],
+        [self.searchField.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
+        [self.searchField.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+        [self.searchField.heightAnchor constraintEqualToConstant:24],
+
+        // Search type control (third row - search mode)
         [self.searchTypeControl.topAnchor constraintEqualToAnchor:self.searchField.bottomAnchor constant:6],
         [self.searchTypeControl.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
         [self.searchTypeControl.heightAnchor constraintEqualToConstant:20],
+
+        // Library section control (second row - library mode, shares position with search field)
+        [self.librarySectionControl.topAnchor constraintEqualToAnchor:self.panelModeControl.bottomAnchor constant:6],
+        [self.librarySectionControl.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
+        [self.librarySectionControl.heightAnchor constraintEqualToConstant:20],
 
         // Navigation bar
         [self.navigationBar.topAnchor constraintEqualToAnchor:self.searchTypeControl.bottomAnchor constant:4],
@@ -286,6 +332,9 @@ public:
     [contextMenu addItemWithTitle:@"Play" action:@selector(contextMenuPlay:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Add to Playlist" action:@selector(contextMenuAddToPlaylist:) keyEquivalent:@""];
     [contextMenu addItem:[NSMenuItem separatorItem]];
+    [contextMenu addItemWithTitle:@"Add to Favorites" action:@selector(contextMenuAddFavorite:) keyEquivalent:@""];
+    [contextMenu addItemWithTitle:@"Remove from Favorites" action:@selector(contextMenuRemoveFavorite:) keyEquivalent:@""];
+    [contextMenu addItem:[NSMenuItem separatorItem]];
     [contextMenu addItemWithTitle:@"Copy URL" action:@selector(contextMenuCopyURL:) keyEquivalent:@""];
     self.tableView.menu = contextMenu;
 }
@@ -304,6 +353,8 @@ public:
         [self setupAlbumColumns];
     } else if ([self isShowingArtists]) {
         [self setupArtistColumns];
+    } else if ([self isShowingPlaylists]) {
+        [self setupPlaylistColumns];
     }
 }
 
@@ -406,11 +457,41 @@ public:
     [self.tableView addTableColumn:nameColumn];
 }
 
+- (void)setupPlaylistColumns {
+    // Art column
+    NSTableColumn *artColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnArt];
+    artColumn.title = @"";
+    artColumn.width = 40;
+    artColumn.minWidth = 40;
+    artColumn.maxWidth = 40;
+    [self.tableView addTableColumn:artColumn];
+
+    // Playlist title
+    NSTableColumn *titleColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnPlaylistTitle];
+    titleColumn.title = @"Playlist";
+    titleColumn.width = 250;
+    titleColumn.minWidth = 100;
+    [self.tableView addTableColumn:titleColumn];
+
+    // Track count
+    NSTableColumn *tracksColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnPlaylistTracks];
+    tracksColumn.title = @"Tracks";
+    tracksColumn.width = 50;
+    tracksColumn.minWidth = 40;
+    tracksColumn.maxWidth = 60;
+    [self.tableView addTableColumn:tracksColumn];
+}
+
 #pragma mark - Mode Helpers
 
 - (BOOL)isShowingTracks {
     if (self.browseMode == JLTidalBrowseModeAlbumTracks ||
-        self.browseMode == JLTidalBrowseModeArtistTopTracks) {
+        self.browseMode == JLTidalBrowseModeArtistTopTracks ||
+        self.browseMode == JLTidalBrowseModePlaylistTracks) {
+        return YES;
+    }
+    if (self.browseMode == JLTidalBrowseModeLibraryList &&
+        self.librarySection == JLTidalLibrarySectionFavTracks) {
         return YES;
     }
     return self.browseMode == JLTidalBrowseModeSearchResults &&
@@ -419,6 +500,10 @@ public:
 
 - (BOOL)isShowingAlbums {
     if (self.browseMode == JLTidalBrowseModeArtistAlbums) return YES;
+    if (self.browseMode == JLTidalBrowseModeLibraryList &&
+        self.librarySection == JLTidalLibrarySectionFavAlbums) {
+        return YES;
+    }
     return self.browseMode == JLTidalBrowseModeSearchResults &&
            self.searchType == JLTidalSearchTypeAlbums;
 }
@@ -428,8 +513,126 @@ public:
            self.searchType == JLTidalSearchTypeArtists;
 }
 
+- (BOOL)isShowingPlaylists {
+    return self.browseMode == JLTidalBrowseModeLibraryList &&
+           self.librarySection == JLTidalLibrarySectionPlaylists;
+}
+
 - (BOOL)isDrillDown {
-    return self.browseMode != JLTidalBrowseModeSearchResults;
+    return self.browseMode != JLTidalBrowseModeSearchResults &&
+           self.browseMode != JLTidalBrowseModeLibraryList;
+}
+
+#pragma mark - Panel Mode Switching
+
+- (void)panelModeChanged:(id)sender {
+    JLTidalPanelMode newMode = (JLTidalPanelMode)self.panelModeControl.selectedSegment;
+    if (newMode == self.panelMode) return;
+
+    self.panelMode = newMode;
+    [self exitDrillDown];
+
+    if (newMode == JLTidalPanelModeSearch) {
+        [self.searchField setHidden:NO];
+        [self.searchTypeControl setHidden:NO];
+        [self.librarySectionControl setHidden:YES];
+        self.browseMode = JLTidalBrowseModeSearchResults;
+        [self setupColumnsForCurrentMode];
+        [self.tableView reloadData];
+        [self updateStatusForCurrentResults];
+    } else {
+        [self.searchField setHidden:YES];
+        [self.searchTypeControl setHidden:YES];
+        [self.librarySectionControl setHidden:NO];
+        [self loadLibrarySection];
+    }
+}
+
+#pragma mark - Library Section Switching
+
+- (void)librarySectionChanged:(id)sender {
+    JLTidalLibrarySection newSection = (JLTidalLibrarySection)self.librarySectionControl.selectedSegment;
+    if (newSection == self.librarySection && self.browseMode == JLTidalBrowseModeLibraryList) return;
+
+    self.librarySection = newSection;
+    [self exitDrillDown];
+    [self loadLibrarySection];
+}
+
+- (void)loadLibrarySection {
+    if (![[JLTidalAuthService shared] isAuthenticated]) {
+        self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
+        return;
+    }
+
+    self.browseMode = JLTidalBrowseModeLibraryList;
+    self.isSearching = YES;
+    [self.loadingSpinner setHidden:NO];
+    [self.loadingSpinner startAnimation:nil];
+
+    switch (self.librarySection) {
+        case JLTidalLibrarySectionFavTracks:
+            [self setupColumnsForCurrentMode];
+            self.statusLabel.stringValue = @"Loading favorites...";
+            [[JLTidalAPI shared] getFavoriteTracksWithLimit:100 offset:0
+                                                completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self finishLoading];
+                    if (error) {
+                        self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
+                        return;
+                    }
+                    [self.trackResults removeAllObjects];
+                    if (tracks) [self.trackResults addObjectsFromArray:tracks];
+                    [self.tableView reloadData];
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@",
+                                                    (unsigned long)self.trackResults.count,
+                                                    self.trackResults.count == 1 ? @"" : @"s"];
+                });
+            }];
+            break;
+
+        case JLTidalLibrarySectionFavAlbums:
+            [self setupColumnsForCurrentMode];
+            self.statusLabel.stringValue = @"Loading favorite albums...";
+            [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:100 offset:0
+                                                completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self finishLoading];
+                    if (error) {
+                        self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
+                        return;
+                    }
+                    [self.albumResults removeAllObjects];
+                    if (albums) [self.albumResults addObjectsFromArray:albums];
+                    [self.tableView reloadData];
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@",
+                                                    (unsigned long)self.albumResults.count,
+                                                    self.albumResults.count == 1 ? @"" : @"s"];
+                });
+            }];
+            break;
+
+        case JLTidalLibrarySectionPlaylists:
+            [self setupColumnsForCurrentMode];
+            self.statusLabel.stringValue = @"Loading playlists...";
+            [[JLTidalAPI shared] getUserPlaylistsWithCompletion:^(NSArray<JLTidalPlaylist *> *playlists, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self finishLoading];
+                    if (error) {
+                        self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
+                        return;
+                    }
+                    [self.playlistResults removeAllObjects];
+                    if (playlists) [self.playlistResults addObjectsFromArray:playlists];
+                    [self.tableView reloadData];
+                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu playlist%@",
+                                                    (unsigned long)self.playlistResults.count,
+                                                    self.playlistResults.count == 1 ? @"" : @"s"];
+                });
+            }];
+            break;
+    }
 }
 
 #pragma mark - Search Type Switching
@@ -462,12 +665,18 @@ public:
 }
 
 - (void)exitDrillDown {
-    if (self.browseMode == JLTidalBrowseModeSearchResults) return;
+    if (self.browseMode == JLTidalBrowseModeSearchResults ||
+        self.browseMode == JLTidalBrowseModeLibraryList) return;
 
-    self.browseMode = JLTidalBrowseModeSearchResults;
+    if (self.panelMode == JLTidalPanelModeLibrary) {
+        self.browseMode = JLTidalBrowseModeLibraryList;
+    } else {
+        self.browseMode = JLTidalBrowseModeSearchResults;
+    }
     self.drillDownTitle = nil;
     self.currentAlbum = nil;
     self.currentArtist = nil;
+    self.currentPlaylist = nil;
     [self.navigationBar setHidden:YES];
     [self setupColumnsForCurrentMode];
     [self.tableView reloadData];
@@ -618,6 +827,7 @@ public:
     [self.trackResults removeAllObjects];
     [self.albumResults removeAllObjects];
     [self.artistResults removeAllObjects];
+    [self.playlistResults removeAllObjects];
     [self exitDrillDown];
     [self.tableView reloadData];
     [self updateStatusLabel];
@@ -684,6 +894,39 @@ public:
             self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@",
                                             (unsigned long)self.albumResults.count,
                                             self.albumResults.count == 1 ? @"" : @"s"];
+        });
+    }];
+}
+
+- (void)drillIntoPlaylist:(JLTidalPlaylist *)playlist {
+    self.currentPlaylist = playlist;
+    [self enterDrillDown:JLTidalBrowseModePlaylistTracks
+                   title:playlist.title];
+
+    self.isSearching = YES;
+    [self.loadingSpinner setHidden:NO];
+    [self.loadingSpinner startAnimation:nil];
+    self.statusLabel.stringValue = @"Loading playlist tracks...";
+
+    [[JLTidalAPI shared] getPlaylistTracksForPlaylistID:playlist.playlistUUID
+                                                  limit:100
+                                                 offset:0
+                                             completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self finishLoading];
+
+            if (error) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed to load playlist: %@", error.localizedDescription];
+                return;
+            }
+
+            [self.trackResults removeAllObjects];
+            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            [self.tableView reloadData];
+
+            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@",
+                                            (unsigned long)self.trackResults.count,
+                                            self.trackResults.count == 1 ? @"" : @"s"];
         });
     }];
 }
@@ -766,6 +1009,8 @@ public:
         return (NSInteger)self.albumResults.count;
     } else if ([self isShowingArtists]) {
         return (NSInteger)self.artistResults.count;
+    } else if ([self isShowingPlaylists]) {
+        return (NSInteger)self.playlistResults.count;
     }
     return 0;
 }
@@ -789,6 +1034,8 @@ public:
         return [self albumCellForColumn:tableColumn row:row];
     } else if ([self isShowingArtists]) {
         return [self artistCellForColumn:tableColumn row:row];
+    } else if ([self isShowingPlaylists]) {
+        return [self playlistCellForColumn:tableColumn row:row];
     }
     return nil;
 }
@@ -880,6 +1127,32 @@ public:
     if ([identifier isEqualToString:kColumnArtistName]) {
         return [self textCell:identifier text:artist.name ?: @""
                          font:fb2k_ui::rowFont() color:fb2k_ui::textColor()];
+    }
+
+    return nil;
+}
+
+#pragma mark - Playlist Cell Rendering
+
+- (NSView *)playlistCellForColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.playlistResults.count) return nil;
+
+    JLTidalPlaylist *playlist = self.playlistResults[(NSUInteger)row];
+    NSString *identifier = tableColumn.identifier;
+
+    if ([identifier isEqualToString:kColumnArt]) {
+        return [self artCellForCoverID:playlist.coverID identifier:identifier];
+    }
+
+    if ([identifier isEqualToString:kColumnPlaylistTitle]) {
+        return [self textCell:identifier text:playlist.title ?: @""
+                         font:fb2k_ui::rowFont() color:fb2k_ui::textColor()];
+    }
+
+    if ([identifier isEqualToString:kColumnPlaylistTracks]) {
+        return [self textCell:identifier
+                         text:[NSString stringWithFormat:@"%ld", (long)playlist.numberOfTracks]
+                         font:fb2k_ui::monospacedDigitFont() color:fb2k_ui::secondaryTextColor()];
     }
 
     return nil;
@@ -1061,6 +1334,12 @@ public:
         JLTidalArtist *artist = self.artistResults[(NSUInteger)row];
         tidal::logDebug([[NSString stringWithFormat:@"Double-clicked artist: %@", artist.artistID] UTF8String]);
         [self drillIntoArtist:artist];
+
+    } else if ([self isShowingPlaylists]) {
+        if (row >= (NSInteger)self.playlistResults.count) return;
+        JLTidalPlaylist *playlist = self.playlistResults[(NSUInteger)row];
+        tidal::logDebug([[NSString stringWithFormat:@"Double-clicked playlist: %@", playlist.playlistUUID] UTF8String]);
+        [self drillIntoPlaylist:playlist];
     }
 }
 
@@ -1241,9 +1520,55 @@ public:
     }
 }
 
+- (void)contextMenuAddFavorite:(id)sender {
+    NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
+    if (tracks.count == 0) return;
+
+    for (JLTidalTrack *track in tracks) {
+        [[JLTidalAPI shared] addTrackToFavorites:track.trackID completion:^(BOOL success, NSError *error) {
+            if (error) {
+                tidal::logError([[NSString stringWithFormat:@"Failed to add favorite: %@", error.localizedDescription] UTF8String]);
+            }
+        }];
+    }
+
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Added %lu track%@ to favorites",
+                                    (unsigned long)tracks.count,
+                                    tracks.count == 1 ? @"" : @"s"];
+}
+
+- (void)contextMenuRemoveFavorite:(id)sender {
+    NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
+    if (tracks.count == 0) return;
+
+    for (JLTidalTrack *track in tracks) {
+        [[JLTidalAPI shared] removeTrackFromFavorites:track.trackID completion:^(BOOL success, NSError *error) {
+            if (error) {
+                tidal::logError([[NSString stringWithFormat:@"Failed to remove favorite: %@", error.localizedDescription] UTF8String]);
+            }
+        }];
+    }
+
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Removed %lu track%@ from favorites",
+                                    (unsigned long)tracks.count,
+                                    tracks.count == 1 ? @"" : @"s"];
+
+    // If in favorites view, reload
+    if (self.panelMode == JLTidalPanelModeLibrary &&
+        self.librarySection == JLTidalLibrarySectionFavTracks) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self loadLibrarySection];
+        });
+    }
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
     if (menuItem.action == @selector(contextMenuCopyURL:)) {
-        // Only for tracks
+        return [self isShowingTracks] && self.tableView.selectedRowIndexes.count > 0;
+    }
+    if (menuItem.action == @selector(contextMenuAddFavorite:) ||
+        menuItem.action == @selector(contextMenuRemoveFavorite:)) {
         return [self isShowingTracks] && self.tableView.selectedRowIndexes.count > 0;
     }
     return self.tableView.selectedRowIndexes.count > 0;

@@ -33,6 +33,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class JLTidalTrack;
 @class JLTidalAlbum;
 @class JLTidalArtist;
+@class JLTidalPlaylist;
 
 /// Completion handlers
 typedef void (^JLTidalDeviceCodeCompletion)(JLTidalDeviceCode * _Nullable deviceCode, NSError * _Nullable error);
@@ -41,6 +42,8 @@ typedef void (^JLTidalDataCompletion)(NSDictionary * _Nullable json, NSError * _
 typedef void (^JLTidalTracksCompletion)(NSArray<JLTidalTrack *> * _Nullable tracks, NSError * _Nullable error);
 typedef void (^JLTidalAlbumsCompletion)(NSArray<JLTidalAlbum *> * _Nullable albums, NSError * _Nullable error);
 typedef void (^JLTidalArtistsCompletion)(NSArray<JLTidalArtist *> * _Nullable artists, NSError * _Nullable error);
+typedef void (^JLTidalPlaylistsCompletion)(NSArray<JLTidalPlaylist *> * _Nullable playlists, NSError * _Nullable error);
+typedef void (^JLTidalBoolCompletion)(BOOL success, NSError * _Nullable error);
 
 @interface JLTidalAPI : NSObject
 
@@ -112,6 +115,37 @@ typedef void (^JLTidalArtistsCompletion)(NSArray<JLTidalArtist *> * _Nullable ar
 - (void)getArtistAlbumsForArtistID:(NSString *)artistID
                              limit:(NSInteger)limit
                         completion:(JLTidalAlbumsCompletion)completion;
+
+#pragma mark - Favorites API
+
+/// Get user's favorite tracks
+- (void)getFavoriteTracksWithLimit:(NSInteger)limit
+                            offset:(NSInteger)offset
+                        completion:(JLTidalTracksCompletion)completion;
+
+/// Get user's favorite albums
+- (void)getFavoriteAlbumsWithLimit:(NSInteger)limit
+                            offset:(NSInteger)offset
+                        completion:(JLTidalAlbumsCompletion)completion;
+
+/// Add a track to favorites
+- (void)addTrackToFavorites:(NSString *)trackID
+                 completion:(JLTidalBoolCompletion)completion;
+
+/// Remove a track from favorites
+- (void)removeTrackFromFavorites:(NSString *)trackID
+                      completion:(JLTidalBoolCompletion)completion;
+
+#pragma mark - Playlists API
+
+/// Get user's playlists
+- (void)getUserPlaylistsWithCompletion:(JLTidalPlaylistsCompletion)completion;
+
+/// Get tracks for a playlist
+- (void)getPlaylistTracksForPlaylistID:(NSString *)playlistUUID
+                                 limit:(NSInteger)limit
+                                offset:(NSInteger)offset
+                            completion:(JLTidalTracksCompletion)completion;
 
 #pragma mark - Generic Request
 
