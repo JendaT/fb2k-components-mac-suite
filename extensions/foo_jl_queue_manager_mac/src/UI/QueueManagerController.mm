@@ -25,6 +25,51 @@ static NSPasteboardType const QueueItemPasteboardType = @"com.foobar2000.queue-m
 // External pasteboard types we accept
 static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
 
+// Notify class for async track URL import (adds to playlist + queues)
+class QueueDropNotify : public process_locations_notify {
+public:
+    t_size m_playlistIndex;
+    t_size m_insertAt;
+    pfc::string_list_impl m_paths;
+
+    QueueDropNotify(t_size playlistIndex, t_size insertAt)
+        : m_playlistIndex(playlistIndex), m_insertAt(insertAt) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() > 0) {
+            auto pm = playlist_manager::get();
+            if (m_playlistIndex < pm->get_playlist_count()) {
+                pm->playlist_undo_backup(m_playlistIndex);
+                pm->playlist_insert_items(m_playlistIndex, m_insertAt, items, pfc::bit_array_val(true));
+
+                // Queue each inserted item
+                for (t_size i = 0; i < items.get_count(); i++) {
+                    pm->queue_add_item_playlist(m_playlistIndex, m_insertAt + i);
+                }
+            }
+        }
+    }
+
+    void on_aborted() override {}
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_no_filter |
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
+
 @implementation QueueManagerController
 
 #pragma mark - Lifecycle
@@ -191,7 +236,8 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     [_tableView registerForDraggedTypes:@[
         QueueItemPasteboardType,      // Internal reorder
         SimPlaylistPasteboardType,    // From SimPlaylist component
-        NSPasteboardTypeFileURL       // From Finder
+        NSPasteboardTypeFileURL,      // From Finder
+        NSPasteboardTypeString        // Track URLs from Tidal browser etc.
     ]];
 
     // Enable dragging
@@ -307,6 +353,14 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
         return NSDragOperationCopy;
     }
 
+    // Track URLs as plain text (e.g., tidal:// from Tidal browser)
+    if ([pb.types containsObject:NSPasteboardTypeString]) {
+        NSString *text = [pb stringForType:NSPasteboardTypeString];
+        if (text && [text containsString:@"tidal://track/"]) {
+            return NSDragOperationCopy;
+        }
+    }
+
     return NSDragOperationNone;
 }
 
@@ -331,6 +385,11 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     // Handle file URL drop from Finder
     if ([pasteboard.types containsObject:NSPasteboardTypeFileURL]) {
         return [self handleFileURLDropFromPasteboard:pasteboard];
+    }
+
+    // Handle track URL drop (e.g., tidal:// from Tidal browser)
+    if ([pasteboard.types containsObject:NSPasteboardTypeString]) {
+        return [self handleTrackURLDropFromPasteboard:pasteboard];
     }
 
     return NO;
@@ -433,6 +492,44 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     console::info("[Queue Manager] File drop not yet implemented - use 'Add to Playback Queue' from context menu");
 
     return NO;
+}
+
+// Handle track URL drop (e.g., tidal:// URLs from Tidal browser)
+- (BOOL)handleTrackURLDropFromPasteboard:(NSPasteboard*)pasteboard {
+    NSString* text = [pasteboard stringForType:NSPasteboardTypeString];
+    if (!text || text.length == 0) return NO;
+
+    // Parse newline-separated URLs, filter for tidal:// tracks
+    NSArray<NSString*>* lines = [text componentsSeparatedByString:@"\n"];
+    NSMutableArray<NSString*>* trackURLs = [NSMutableArray array];
+    for (NSString* line in lines) {
+        NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trimmed hasPrefix:@"tidal://track/"]) {
+            [trackURLs addObject:trimmed];
+        }
+    }
+
+    if (trackURLs.count == 0) return NO;
+
+    // Add to active playlist and queue
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = pm->get_active_playlist();
+
+    if (activePlaylist == SIZE_MAX) {
+        activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        pm->set_active_playlist(activePlaylist);
+    }
+
+    t_size insertAt = pm->playlist_get_item_count(activePlaylist);
+    auto notify = new service_impl_t<QueueDropNotify>(activePlaylist, insertAt);
+
+    for (NSString* url in trackURLs) {
+        notify->m_paths.add_item([url UTF8String]);
+    }
+    notify->startImport();
+
+    console::printf("[Queue Manager] Queuing %lu track(s) from Tidal", (unsigned long)trackURLs.count);
+    return YES;
 }
 
 #pragma mark - NSTableViewDelegate
