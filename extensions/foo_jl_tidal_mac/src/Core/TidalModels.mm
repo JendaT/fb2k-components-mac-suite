@@ -112,6 +112,47 @@
 
 @end
 
+@implementation JLTidalPlaylist
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        _playlistUUID = dict[@"uuid"] ?: [dict[@"id"] description];
+        _title = dict[@"title"] ?: @"Untitled Playlist";
+        _playlistDescription = dict[@"description"];
+        _numberOfTracks = [dict[@"numberOfTracks"] integerValue];
+        _duration = [dict[@"duration"] integerValue];
+
+        // Playlist image (may be a squareImage or image array)
+        id squareImage = dict[@"squareImage"];
+        if ([squareImage isKindOfClass:[NSString class]] && [squareImage length] > 0) {
+            _coverID = squareImage;
+        } else {
+            id image = dict[@"image"];
+            if ([image isKindOfClass:[NSString class]] && [image length] > 0) {
+                _coverID = image;
+            }
+        }
+
+        // Last updated date
+        NSString *lastUpdated = dict[@"lastUpdated"];
+        if ([lastUpdated isKindOfClass:[NSString class]] && lastUpdated.length >= 10) {
+            NSISO8601DateFormatter *fmt = [[NSISO8601DateFormatter alloc] init];
+            _lastUpdated = [fmt dateFromString:lastUpdated];
+            if (!_lastUpdated) {
+                // Fallback for date-only format
+                NSDateFormatter *dateFmt = [[NSDateFormatter alloc] init];
+                dateFmt.dateFormat = @"yyyy-MM-dd";
+                dateFmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+                _lastUpdated = [dateFmt dateFromString:lastUpdated];
+            }
+        }
+    }
+    return self;
+}
+
+@end
+
 @implementation JLTidalPlaybackInfo
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict

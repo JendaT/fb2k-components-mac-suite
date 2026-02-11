@@ -80,6 +80,21 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// Playlist metadata model
+@interface JLTidalPlaylist : NSObject
+
+@property (nonatomic, copy, readonly) NSString *playlistUUID;
+@property (nonatomic, copy, readonly) NSString *title;
+@property (nonatomic, copy, readonly, nullable) NSString *playlistDescription;
+@property (nonatomic, readonly) NSInteger numberOfTracks;
+@property (nonatomic, readonly) NSInteger duration;  // total seconds
+@property (nonatomic, copy, readonly, nullable) NSString *coverID;
+@property (nonatomic, copy, readonly, nullable) NSDate *lastUpdated;
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+
+@end
+
 /// Cached stream entry
 @interface JLTidalStreamCacheEntry : NSObject
 
