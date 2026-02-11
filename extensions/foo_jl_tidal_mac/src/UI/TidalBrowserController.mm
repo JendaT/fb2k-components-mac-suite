@@ -45,9 +45,11 @@ public:
     t_size m_insertAt;
     pfc::string_list_impl m_paths;  // Keeps paths alive during async operation
     bool m_shouldPlay;
+    bool m_shouldQueue;
 
-    TidalPlayNotify(t_size playlistIndex, t_size insertAt, bool shouldPlay = true)
-        : m_playlistIndex(playlistIndex), m_insertAt(insertAt), m_shouldPlay(shouldPlay) {}
+    TidalPlayNotify(t_size playlistIndex, t_size insertAt, bool shouldPlay = true, bool shouldQueue = false)
+        : m_playlistIndex(playlistIndex), m_insertAt(insertAt),
+          m_shouldPlay(shouldPlay), m_shouldQueue(shouldQueue) {}
 
     void on_completion(metadb_handle_list_cref items) override {
         if (items.get_count() > 0) {
@@ -58,6 +60,13 @@ public:
 
                 if (m_shouldPlay) {
                     pm->playlist_execute_default_action(m_playlistIndex, m_insertAt);
+                }
+
+                if (m_shouldQueue) {
+                    // Queue each inserted item
+                    for (t_size i = 0; i < items.get_count(); i++) {
+                        pm->queue_add_item_playlist(m_playlistIndex, m_insertAt + i);
+                    }
                 }
             }
         }
@@ -367,6 +376,7 @@ public:
     NSMenu *contextMenu = [[NSMenu alloc] initWithTitle:@"Tidal Browser"];
     [contextMenu addItemWithTitle:@"Play" action:@selector(contextMenuPlay:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Add to Playlist" action:@selector(contextMenuAddToPlaylist:) keyEquivalent:@""];
+    [contextMenu addItemWithTitle:@"Queue" action:@selector(contextMenuQueue:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Import as New Playlist" action:@selector(contextMenuImportAsPlaylist:) keyEquivalent:@""];
     [contextMenu addItem:[NSMenuItem separatorItem]];
     [contextMenu addItemWithTitle:@"Add to Favorites" action:@selector(contextMenuAddFavorite:) keyEquivalent:@""];
@@ -701,6 +711,11 @@ public:
 
     // Exit drill-down if active
     [self exitDrillDown];
+
+    // Always reconfigure columns for the new search type
+    // (exitDrillDown skips this when already in SearchResults mode)
+    [self setupColumnsForCurrentMode];
+    [self.tableView reloadData];
 
     // Re-run search with new type if there's a query
     if (self.lastSearchQuery.length > 0) {
@@ -1471,6 +1486,9 @@ static const NSInteger kPageSize = 50;
 
     NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragData requiringSecureCoding:NO error:nil];
 
+    // Also provide plain text with tidal:// URLs for cross-component drops
+    NSString *urlString = [urls componentsJoinedByString:@"\n"];
+
     [session enumerateDraggingItemsWithOptions:0
                                        forView:tableView
                                        classes:@[[NSPasteboardItem class]]
@@ -1479,6 +1497,7 @@ static const NSInteger kPageSize = 50;
         if (idx == 0) {
             NSPasteboardItem *pbItem = (NSPasteboardItem *)draggingItem.item;
             [pbItem setData:data forType:JLTidalBrowserPasteboardType];
+            [pbItem setString:urlString forType:NSPasteboardTypeString];
         }
         *stop = YES;
     }];
@@ -1604,6 +1623,58 @@ static const NSInteger kPageSize = 50;
             [self addAlbumToPlaylist:self.albumResults[(NSUInteger)row]];
         }
     }
+}
+
+- (void)contextMenuQueue:(id)sender {
+    if ([self isShowingTracks]) {
+        NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
+        if (tracks.count == 0) return;
+        [self addTracksToPlaylistAndQueue:tracks];
+
+    } else if ([self isShowingAlbums]) {
+        NSInteger row = self.tableView.selectedRow;
+        if (row >= 0 && row < (NSInteger)self.albumResults.count) {
+            [self addAlbumToPlaylistAndQueue:self.albumResults[(NSUInteger)row]];
+        }
+    }
+}
+
+- (void)addTracksToPlaylistAndQueue:(NSArray<JLTidalTrack *> *)tracks {
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = pm->get_active_playlist();
+
+    if (activePlaylist == SIZE_MAX) {
+        activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        pm->set_active_playlist(activePlaylist);
+    }
+
+    t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
+
+    auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false, true);
+    for (JLTidalTrack *track in tracks) {
+        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        notify->m_paths.add_item([url UTF8String]);
+    }
+    notify->startImport();
+
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Queueing %lu track%@...",
+                                    (unsigned long)tracks.count,
+                                    tracks.count == 1 ? @"" : @"s"];
+}
+
+- (void)addAlbumToPlaylistAndQueue:(JLTidalAlbum *)album {
+    self.statusLabel.stringValue = @"Loading album tracks for queue...";
+
+    [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
+                                       completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error || tracks.count == 0) {
+                self.statusLabel.stringValue = @"Failed to load album tracks";
+                return;
+            }
+            [self addTracksToPlaylistAndQueue:tracks];
+        });
+    }];
 }
 
 - (void)addAlbumToPlaylistAndPlay:(JLTidalAlbum *)album {
@@ -1828,7 +1899,8 @@ static const NSInteger kPageSize = 50;
         return [self isShowingPlaylists] || [self isShowingAlbums];
     }
     if (menuItem.action == @selector(contextMenuPlay:) ||
-        menuItem.action == @selector(contextMenuAddToPlaylist:)) {
+        menuItem.action == @selector(contextMenuAddToPlaylist:) ||
+        menuItem.action == @selector(contextMenuQueue:)) {
         return [self isShowingTracks] || [self isShowingAlbums];
     }
     return YES;
