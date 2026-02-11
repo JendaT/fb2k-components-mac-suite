@@ -12,6 +12,7 @@
 #import "../API/TidalAPI.h"
 #import "../Services/TidalAuthService.h"
 #include "../fb2k_sdk.h"
+#import "../../../../shared/UIStyles.h"
 
 // Column identifiers
 static NSString * const kColumnArt = @"art";
@@ -134,11 +135,13 @@ public:
     self.tableView.rowHeight = 44;
     self.tableView.intercellSpacing = NSMakeSize(4, 2);
     self.tableView.allowsMultipleSelection = YES;
-    self.tableView.usesAlternatingRowBackgroundColors = YES;
+    self.tableView.usesAlternatingRowBackgroundColors = NO;
+    self.tableView.backgroundColor = fb2k_ui::backgroundColor();
     self.tableView.doubleAction = @selector(doubleClickRow:);
     self.tableView.target = self;
 
-    // Register for dragging
+    // Register for dragging (both local and non-local)
+    [self.tableView setDraggingSourceOperationMask:NSDragOperationCopy forLocal:YES];
     [self.tableView setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
     [self.tableView registerForDraggedTypes:@[JLTidalBrowserPasteboardType]];
 
@@ -165,8 +168,8 @@ public:
     // Status label
     self.statusLabel = [NSTextField labelWithString:@""];
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.font = [NSFont systemFontOfSize:11];
-    self.statusLabel.textColor = [NSColor secondaryLabelColor];
+    self.statusLabel.font = fb2k_ui::statusBarFont();
+    self.statusLabel.textColor = fb2k_ui::secondaryTextColor();
     [container addSubview:self.statusLabel];
 
     // Layout constraints
@@ -341,6 +344,16 @@ public:
 
 #pragma mark - NSTableViewDelegate
 
+- (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
+    NSTableRowView *rowView = [[NSTableRowView alloc] init];
+    if (row % 2 == 1) {
+        rowView.backgroundColor = fb2k_ui::alternateRowColor();
+    } else {
+        rowView.backgroundColor = fb2k_ui::backgroundColor();
+    }
+    return rowView;
+}
+
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
     if (row < 0 || row >= (NSInteger)self.searchResults.count) {
         return nil;
@@ -430,15 +443,16 @@ public:
         }
     } else if ([identifier isEqualToString:kColumnTitle]) {
         cell.textField.stringValue = track.title ?: @"";
-        cell.textField.font = [NSFont systemFontOfSize:13];
+        cell.textField.font = fb2k_ui::rowFont();
+        cell.textField.textColor = fb2k_ui::textColor();
     } else if ([identifier isEqualToString:kColumnArtist]) {
         cell.textField.stringValue = track.artist ?: @"";
-        cell.textField.font = [NSFont systemFontOfSize:13];
-        cell.textField.textColor = [NSColor secondaryLabelColor];
+        cell.textField.font = fb2k_ui::rowFont();
+        cell.textField.textColor = fb2k_ui::secondaryTextColor();
     } else if ([identifier isEqualToString:kColumnDuration]) {
         cell.textField.stringValue = [self formatDuration:track.duration];
-        cell.textField.font = [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular];
-        cell.textField.textColor = [NSColor secondaryLabelColor];
+        cell.textField.font = fb2k_ui::monospacedDigitFont();
+        cell.textField.textColor = fb2k_ui::secondaryTextColor();
     }
 
     return cell;
@@ -446,7 +460,21 @@ public:
 
 #pragma mark - Drag & Drop
 
-- (BOOL)tableView:(NSTableView *)tableView writeRowsWithIndexes:(NSIndexSet *)rowIndexes toPasteboard:(NSPasteboard *)pboard {
+// Modern drag API - called per row
+- (nullable id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.searchResults.count) {
+        return nil;
+    }
+    // Return a pasteboard item placeholder - actual data is written in draggingSession:willBeginAtPoint:
+    NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+    [item setString:@"placeholder" forType:JLTidalBrowserPasteboardType];
+    return item;
+}
+
+// Called when drag session begins - write all selected rows as a single drag payload
+- (void)tableView:(NSTableView *)tableView draggingSession:(NSDraggingSession *)session
+    willBeginAtPoint:(NSPoint)screenPoint forRowIndexes:(NSIndexSet *)rowIndexes {
+
     NSMutableArray *urls = [NSMutableArray array];
 
     [rowIndexes enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
@@ -457,9 +485,7 @@ public:
         }
     }];
 
-    if (urls.count == 0) {
-        return NO;
-    }
+    if (urls.count == 0) return;
 
     NSDictionary *dragData = @{
         @"type": @"tidal",
@@ -467,12 +493,21 @@ public:
     };
 
     NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragData requiringSecureCoding:NO error:nil];
-    [pboard declareTypes:@[JLTidalBrowserPasteboardType] owner:self];
-    [pboard setData:data forType:JLTidalBrowserPasteboardType];
+
+    // Write to the first pasteboard item in the session
+    [session enumerateDraggingItemsWithOptions:0
+                                       forView:tableView
+                                       classes:@[[NSPasteboardItem class]]
+                                 searchOptions:@{}
+                                    usingBlock:^(NSDraggingItem *draggingItem, NSInteger idx, BOOL *stop) {
+        if (idx == 0) {
+            NSPasteboardItem *pbItem = (NSPasteboardItem *)draggingItem.item;
+            [pbItem setData:data forType:JLTidalBrowserPasteboardType];
+        }
+        *stop = YES;  // Only write to first item
+    }];
 
     tidal::logDebug([[NSString stringWithFormat:@"Started drag with %lu tracks", (unsigned long)urls.count] UTF8String]);
-
-    return YES;
 }
 
 #pragma mark - Double Click
