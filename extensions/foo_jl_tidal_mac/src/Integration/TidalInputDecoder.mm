@@ -109,8 +109,8 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         dispatch_semaphore_signal(metaSemaphore);
     }];
 
-    // Wait briefly for metadata (non-critical)
-    dispatch_semaphore_wait(metaSemaphore, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+    // Wait for metadata (needed for title, album art, etc.)
+    dispatch_semaphore_wait(metaSemaphore, dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC));
     m_trackInfo = trackResult;
 
     // Open underlying decoder for the stream URL

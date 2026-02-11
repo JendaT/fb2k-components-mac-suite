@@ -26,6 +26,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSURL *albumArtURL;
 @property (nonatomic, copy, readonly, nullable) NSString *coverID;
 @property (nonatomic, readonly) BOOL isExplicit;
+@property (nonatomic, copy, readonly, nullable) NSString *audioQuality;
 @property (nonatomic, copy, readonly, nullable) NSString *isrc;
 @property (nonatomic, copy, readonly, nullable) NSString *copyright;
 @property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;
