@@ -8,7 +8,6 @@
 | Task | Priority | Added | Notes |
 |------|----------|-------|-------|
 | Phase 5.3: Background sync | Medium | 2026-02-11 | Auto-sync Tidal playlist changes to local copies |
-| Search pagination | Medium | 2026-02-11 | Load more on scroll for all search types |
 | Verify quality fallback (96kbps issue) | High | 2026-02-11 | Logging added, needs testing after restart |
 | Verify album art extractor | High | 2026-02-11 | Service created, needs testing after restart |
 
@@ -22,6 +21,7 @@
 | Phase 5.1: Playlist browsing | 2026-02-11 | User playlists API, playlist drill-down, playlist columns |
 | Phase 5.2: Import playlists/albums | 2026-02-11 | "Import as New Playlist" context menu, creates fb2k playlists |
 | Phase 6: Enhanced metadata | 2026-02-11 | ISRC, DATE, TOTALTRACKS, COPYRIGHT in track metadata |
+| Search pagination | 2026-02-11 | Infinite scroll for search and library sections |
 | Album art extractor service | 2026-02-11 | TidalAlbumArtExtractor for tidal:// URLs (untested) |
 | Quality fallback logging | 2026-02-11 | Diagnostic logging for DRM cascade |
 | Reconnect button | 2026-02-11 | Preferences shows Reconnect when token expired |
