@@ -35,7 +35,9 @@ void StreamCache::shutdown() {
         [m_cache removeAllObjects];
     });
 
-    logDebug("StreamCache shutdown complete");
+    // Don't call logDebug here - this may run from the static destructor
+    // after fb2k's service infrastructure (configStore) is already torn down.
+    // logDebug calls configStore::get() which would uBugCheck.
 }
 
 JLTidalPlaybackInfo* StreamCache::get(const std::string& trackID) {

@@ -10,7 +10,9 @@
 #include "../../../../shared/version.h"
 #include "../Core/TidalConfig.h"
 #include "../Core/KeychainHelper.h"
+#include "../Core/StreamCache.h"
 #include "../Services/TidalAuthService.h"
+#include "../Services/TidalStreamResolver.h"
 #import "../UI/TidalPreferencesController.h"
 #import "../UI/TidalBrowserController.h"
 
@@ -56,6 +58,11 @@ public:
     void on_quit() override {
         using namespace tidal;
         logInfo("Component unloading");
+
+        // Shut down services while fb2k infrastructure is still alive.
+        // If deferred to static destructors, configStore will already be
+        // torn down and any logDebug/configStore access will uBugCheck.
+        [[JLTidalStreamResolver shared] shutdown];
     }
 };
 

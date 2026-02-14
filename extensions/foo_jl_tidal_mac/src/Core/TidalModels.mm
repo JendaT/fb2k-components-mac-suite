@@ -26,12 +26,23 @@
             _audioQuality = audioQuality;
         }
 
-        // Artist - may be nested object
+        // Artist - may be nested object or null
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {
             _artist = artist[@"name"];
         } else if ([artist isKindOfClass:[NSString class]]) {
             _artist = artist;
+        }
+
+        // Fallback to artists array (plural) if singular artist is missing
+        if (!_artist.length) {
+            NSArray *artists = dict[@"artists"];
+            if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
+                NSDictionary *firstArtist = artists[0];
+                if ([firstArtist isKindOfClass:[NSDictionary class]]) {
+                    _artist = firstArtist[@"name"];
+                }
+            }
         }
 
         // Album - may be nested object
@@ -110,12 +121,23 @@
         _duration = [dict[@"duration"] integerValue];
         _audioQuality = dict[@"audioQuality"];
 
-        // Artist - may be nested object
+        // Artist - may be nested object or null
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {
             _artist = artist[@"name"];
         } else if ([artist isKindOfClass:[NSString class]]) {
             _artist = artist;
+        }
+
+        // Fallback to artists array (plural) if singular artist is missing
+        if (!_artist.length) {
+            NSArray *artists = dict[@"artists"];
+            if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
+                NSDictionary *firstArtist = artists[0];
+                if ([firstArtist isKindOfClass:[NSDictionary class]]) {
+                    _artist = firstArtist[@"name"];
+                }
+            }
         }
 
         // Cover art
@@ -285,13 +307,36 @@
                                       _manifestMimeType, error.localizedDescription] UTF8String]);
                 }
             } else if ([_manifestMimeType containsString:@"dash"] || [_manifestMimeType containsString:@"xml"]) {
-                // DASH manifest - check for ContentProtection
+                // DASH manifest (MPD XML) - check for DRM and extract stream URL
                 NSString *manifestStr = [[NSString alloc] initWithData:manifestData encoding:NSUTF8StringEncoding];
                 if (manifestStr && [manifestStr containsString:@"<ContentProtection"]) {
                     _drmProtected = YES;
                     tidal::logDebug("DASH manifest has DRM (ContentProtection)");
                 } else {
                     tidal::logDebug("DASH manifest: no DRM");
+                }
+
+                // Extract BaseURL from DASH manifest
+                if (manifestStr) {
+                    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:
+                        @"<BaseURL>\\s*(https?://[^<]+?)\\s*</BaseURL>"
+                        options:0 error:nil];
+                    NSTextCheckingResult *match = [regex firstMatchInString:manifestStr
+                        options:0 range:NSMakeRange(0, manifestStr.length)];
+                    if (match && match.numberOfRanges > 1) {
+                        NSString *urlStr = [manifestStr substringWithRange:[match rangeAtIndex:1]];
+                        _streamURL = [NSURL URLWithString:urlStr];
+                        tidal::logDebug([[NSString stringWithFormat:@"DASH BaseURL: %@", urlStr] UTF8String]);
+                    }
+
+                    // Note: SegmentTemplate media attributes contain $Number$ placeholders
+                    // (e.g. .../mediatracks/.../$Number$.mp4) which are segment templates,
+                    // not direct playable URLs. We intentionally skip those and let the
+                    // quality cascade fall back to lower qualities with JSON manifests.
+
+                    if (!_streamURL) {
+                        tidal::logDebug("DASH manifest: no direct URL (segment-based streaming not supported, will fall back)");
+                    }
                 }
             } else {
                 tidal::logError([[NSString stringWithFormat:@"Unknown manifest type: %@", _manifestMimeType] UTF8String]);

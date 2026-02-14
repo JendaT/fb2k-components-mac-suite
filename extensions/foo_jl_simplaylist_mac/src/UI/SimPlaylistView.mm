@@ -1879,6 +1879,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 // draggingEntered/draggingUpdated/performDragOperation.
 static BOOL isSupportedURLString(NSString *str) {
     return [str hasPrefix:@"http://"] || [str hasPrefix:@"https://"] ||
+           [str hasPrefix:@"tidal://"] ||
            [str hasPrefix:@"soundcloud://"] || [str hasPrefix:@"mixcloud://"];
 }
 
@@ -2131,6 +2132,43 @@ static NSDictionary *validatedDragData(id unarchived) {
         return YES;
     }
 
+    // Tidal browser drop
+    if ([pb.types containsObject:TidalBrowserPasteboardType]) {
+        BOOL handled = NO;
+        NSData *data = [pb dataForType:TidalBrowserPasteboardType];
+        if (data) {
+            NSDictionary *dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:
+                                      [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], nil]
+                                                                         fromData:data
+                                                                            error:nil];
+            if (dragData) {
+                NSArray<NSString *> *urlStrings = dragData[@"urls"];
+                if (urlStrings.count > 0) {
+                    FB2K_console_formatter() << "[SimPlaylist] Tidal browser drop: " << urlStrings.count << " tracks";
+
+                    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+                    for (NSString *urlStr in urlStrings) {
+                        NSURL *url = [NSURL URLWithString:urlStr];
+                        if (url) {
+                            [urls addObject:url];
+                        }
+                    }
+
+                    if (urls.count > 0 && [_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                        [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
+                        handled = YES;
+                    }
+                }
+            }
+        }
+        if (handled) {
+            _dropTargetRow = -1;
+            [self setNeedsDisplay:YES];
+            return YES;
+        }
+        // Fall through to other handlers if Tidal data couldn't be read
+    }
+
     // File drop from Finder or media library
     if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         NSArray *urls = [pb readObjectsForClasses:@[[NSURL class]]
@@ -2161,18 +2199,30 @@ static NSDictionary *validatedDragData(id unarchived) {
         return YES;
     }
 
-    // Plain text URL drop (fallback for Cloud Browser)
+    // Plain text URL drop
     if ([pb.types containsObject:NSPasteboardTypeString]) {
         NSString *str = [pb stringForType:NSPasteboardTypeString];
         if (isSupportedURLString(str)) {
-            NSURL *url = [NSURL URLWithString:str];
-            if (url) {
-                // Log scheme only — full URLs may carry signed query parameters
-                FB2K_console_formatter() << "[SimPlaylist] received string URL drop, scheme: "
-                                         << (url.scheme.UTF8String ?: "unknown");
-                if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
-                    [_delegate playlistView:self didReceiveDroppedURLs:@[url] atRow:_dropTargetRow];
+            // Handle multi-line URL strings (e.g., multiple tidal:// tracks)
+            NSArray<NSString *> *lines = [str componentsSeparatedByString:@"\n"];
+            NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+            for (NSString *line in lines) {
+                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (trimmed.length > 0) {
+                    NSURL *url = [NSURL URLWithString:trimmed];
+                    if (url) {
+                        // Log scheme only — full URLs may carry signed query parameters
+                        if (urls.count == 0) {
+                            FB2K_console_formatter() << "[SimPlaylist] received string URL drop, scheme: "
+                                                     << (url.scheme.UTF8String ?: "unknown");
+                        }
+                        [urls addObject:url];
+                    }
                 }
+            }
+
+            if (urls.count > 0 && [_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
             }
         }
         _dropTargetRow = -1;

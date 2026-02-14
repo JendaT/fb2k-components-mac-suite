@@ -99,6 +99,7 @@ do_build() {
 
     # Build with xcodebuild
     # SYMROOT forces output to local build/ instead of DerivedData
+    # Capture exit code through the pipe using PIPESTATUS
     print_status "Building with xcodebuild..."
 
     local build_log="$BUILD_DIR/build.log"
