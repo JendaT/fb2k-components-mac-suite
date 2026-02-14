@@ -95,6 +95,10 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     }
 
     m_playbackInfo = resultInfo;
+    if (!resultInfo.streamURL) {
+        logError("Stream resolution returned nil URL");
+        pfc::throw_exception_with_message<exception_io_data>("No stream URL available");
+    }
     m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
 
     logDebug(("Got stream URL, quality: " + std::string([resultInfo.qualityDescription UTF8String])).c_str());
@@ -114,13 +118,60 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     m_trackInfo = trackResult;
 
     // Open underlying decoder for the stream URL
+    logDebug(("Stream URL: " + m_streamURL).c_str());
+    logDebug(("Codec: " + std::string(resultInfo.codec ? [resultInfo.codec UTF8String] : "(nil)")).c_str());
+
+    // First, open the stream file using fb2k's filesystem layer (handles HTTP/HTTPS)
+    service_ptr_t<file> streamFile;
+    try {
+        filesystem::g_open(streamFile, m_streamURL.c_str(), filesystem::open_mode_read, p_abort);
+        logDebug("Opened stream file via filesystem");
+    } catch (const std::exception& e) {
+        logError(("Failed to open stream file: " + std::string(e.what())).c_str());
+    }
+
+    // Try to find decoder by path (extension-based matching)
     input_entry::ptr entry;
-    if (!input_entry::g_find_service_by_path(entry, m_streamURL.c_str())) {
-        logError("No decoder found for stream URL");
+    bool foundDecoder = input_entry::g_find_service_by_path(entry, m_streamURL.c_str());
+
+    if (!foundDecoder) {
+        logDebug("No decoder found by path, trying content type fallback");
+
+        // Map Tidal codec to MIME type for content-type based lookup
+        NSString *codec = resultInfo.codec;
+        const char* mimeType = nullptr;
+        if ([codec isEqualToString:@"FLAC"]) {
+            mimeType = "audio/flac";
+        } else if ([codec isEqualToString:@"AAC"] || [codec isEqualToString:@"MP4A"]) {
+            mimeType = "audio/mp4";
+        } else if ([codec isEqualToString:@"MQA"]) {
+            mimeType = "audio/flac";  // MQA is encoded in FLAC container
+        } else if ([codec isEqualToString:@"EAC3"]) {
+            mimeType = "audio/eac3";
+        }
+
+        if (mimeType) {
+            logDebug(("Trying content type: " + std::string(mimeType)).c_str());
+            foundDecoder = input_entry::g_find_service_by_content_type(entry, mimeType);
+        }
+
+        if (!foundDecoder) {
+            // Last resort: try common extensions
+            logDebug("Content type lookup failed, trying known extensions");
+            foundDecoder = input_entry::g_find_service_by_path(entry, "dummy.flac");
+            if (!foundDecoder) {
+                foundDecoder = input_entry::g_find_service_by_path(entry, "dummy.m4a");
+            }
+        }
+    }
+
+    if (!foundDecoder) {
+        logError("No decoder found for stream URL by any method");
         pfc::throw_exception_with_message<exception_io_data>("No decoder found for stream URL");
     }
 
-    entry->open_for_decoding(m_decoder, nullptr, m_streamURL.c_str(), p_abort);
+    logDebug("Found decoder, opening for decoding...");
+    entry->open_for_decoding(m_decoder, streamFile, m_streamURL.c_str(), p_abort);
 
     if (!m_decoder.is_valid()) {
         logError("Failed to open stream decoder");
@@ -166,13 +217,21 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
         m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
 
         // Open new decoder
+        service_ptr_t<file> streamFile;
+        try {
+            filesystem::g_open(streamFile, m_streamURL.c_str(), filesystem::open_mode_read, p_abort);
+        } catch (...) {}
+
         input_entry::ptr entry;
         if (!input_entry::g_find_service_by_path(entry, m_streamURL.c_str())) {
-            return false;
+            // Fallback: try FLAC (most common Tidal format)
+            if (!input_entry::g_find_service_by_content_type(entry, "audio/flac")) {
+                return false;
+            }
         }
 
         service_ptr_t<input_decoder> newDecoder;
-        entry->open_for_decoding(newDecoder, nullptr, m_streamURL.c_str(), p_abort);
+        entry->open_for_decoding(newDecoder, streamFile, m_streamURL.c_str(), p_abort);
 
         if (!newDecoder.is_valid()) {
             return false;

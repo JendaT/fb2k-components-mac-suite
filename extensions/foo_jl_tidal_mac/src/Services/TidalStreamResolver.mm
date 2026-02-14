@@ -116,9 +116,17 @@
                                                                     requestedQuality:quality];
 
         if (!info.streamURL) {
-            tidal::logError([[NSString stringWithFormat:@"Quality %@: no stream URL in response",
+            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: no stream URL in response, falling back",
                               JLTidalQualityToString(quality)] UTF8String]);
-            completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response"));
+            // Try lower quality (DASH manifests at high quality may not have extractable URLs)
+            JLTidalQuality nextQuality = [self nextLowerQuality:quality];
+            if (nextQuality != quality) {
+                [self resolveWithFallbackForTrackID:trackID
+                                   startingQuality:nextQuality
+                                        completion:completion];
+                return;
+            }
+            completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response at any quality"));
             return;
         }
 

@@ -16,9 +16,10 @@
 
 namespace tidal {
 
-// {A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+// Must match TidalInputEntry GUID for SDK album art routing
+// {B2C3D4E5-F6A7-8B9C-0D1E-2F3A4B5C6D7E}
 static const GUID g_tidalAlbumArtExtractorGUID =
-    { 0xa1b2c3d4, 0xe5f6, 0x7890, { 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90 } };
+    { 0xb2c3d4e5, 0xf6a7, 0x8b9c, { 0x0d, 0x1e, 0x2f, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e } };
 
 class TidalAlbumArtExtractorInstance : public album_art_extractor_instance {
 public:
@@ -146,15 +147,22 @@ class TidalAlbumArtExtractor : public album_art_extractor_v2 {
 public:
     bool is_our_path(const char* p_path, const char* p_extension) override {
         if (!p_path || !*p_path) return false;
-        return isTidalURL(p_path);
+        bool result = isTidalURL(p_path);
+        if (result) {
+            logDebug(std::string("AlbumArtExtractor::is_our_path: YES for ") + p_path);
+        }
+        return result;
     }
 
     album_art_extractor_instance_ptr open(file_ptr p_filehint, const char* p_path, abort_callback& p_abort) override {
+        logDebug(std::string("AlbumArtExtractor::open: ") + (p_path ? p_path : "(null)"));
         auto parsed = parseURL(std::string(p_path));
         if (!parsed.has_value() || parsed->type != TidalContentType::Track) {
+            logDebug("AlbumArtExtractor::open: not a track URL, skipping");
             throw exception_album_art_not_found();
         }
 
+        logDebug("AlbumArtExtractor::open: creating instance for track " + parsed->id);
         return new service_impl_t<TidalAlbumArtExtractorInstance>(parsed->id, p_abort);
     }
 
@@ -163,6 +171,9 @@ public:
     }
 };
 
-static service_factory_single_t<TidalAlbumArtExtractor> g_tidalAlbumArtExtractorFactory;
+// Use FB2K_SERVICE_FACTORY (matches cloud streamer pattern)
+namespace {
+    FB2K_SERVICE_FACTORY(TidalAlbumArtExtractor);
+}
 
 } // namespace tidal

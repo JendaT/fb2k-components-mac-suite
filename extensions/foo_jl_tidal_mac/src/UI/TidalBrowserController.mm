@@ -646,7 +646,7 @@ public:
     [self.loadingSpinner startAnimation:nil];
 
     switch (self.librarySection) {
-        case JLTidalLibrarySectionFavTracks:
+        case JLTidalLibrarySectionFavTracks: {
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading favorites...";
             [self.trackResults removeAllObjects];
@@ -669,8 +669,9 @@ public:
                 });
             }];
             break;
+        }
 
-        case JLTidalLibrarySectionFavAlbums:
+        case JLTidalLibrarySectionFavAlbums: {
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading favorite albums...";
             [self.albumResults removeAllObjects];
@@ -693,8 +694,9 @@ public:
                 });
             }];
             break;
+        }
 
-        case JLTidalLibrarySectionPlaylists:
+        case JLTidalLibrarySectionPlaylists: {
             [self setupColumnsForCurrentMode];
             self.statusLabel.stringValue = @"Loading playlists...";
             [self.playlistResults removeAllObjects];
@@ -714,6 +716,7 @@ public:
                 });
             }];
             break;
+        }
     }
 }
 
@@ -805,9 +808,6 @@ static const NSInteger kPageSize = 50;
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     [defaults setObject:query forKey:@"JLTidalLastSearch"];
     [defaults setInteger:self.searchType forKey:@"JLTidalSearchType"];
-
-    // Ensure columns match the current search type
-    [self setupColumnsForCurrentMode];
 
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
@@ -951,7 +951,7 @@ static const NSInteger kPageSize = 50;
 
 - (void)loadMoreLibraryResults {
     switch (self.librarySection) {
-        case JLTidalLibrarySectionFavTracks:
+        case JLTidalLibrarySectionFavTracks: {
             [[JLTidalAPI shared] getFavoriteTracksWithLimit:kPageSize offset:self.currentOffset
                                                 completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -968,8 +968,9 @@ static const NSInteger kPageSize = 50;
                 });
             }];
             break;
+        }
 
-        case JLTidalLibrarySectionFavAlbums:
+        case JLTidalLibrarySectionFavAlbums: {
             [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:kPageSize offset:self.currentOffset
                                                 completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -986,11 +987,13 @@ static const NSInteger kPageSize = 50;
                 });
             }];
             break;
+        }
 
-        case JLTidalLibrarySectionPlaylists:
+        case JLTidalLibrarySectionPlaylists: {
             self.isLoadingMore = NO;
             self.hasMoreResults = NO;
             break;
+        }
     }
 }
 
@@ -1455,11 +1458,15 @@ static const NSInteger kPageSize = 50;
                                                           size:80
                                                     completion:^(NSImage *image) {
                 if (image) {
+                    tidal::logDebug([[NSString stringWithFormat:@"Art loaded for coverID: %@", coverID] UTF8String]);
                     [self.tableView reloadData];
+                } else {
+                    tidal::logDebug([[NSString stringWithFormat:@"Art load FAILED for coverID: %@", coverID] UTF8String]);
                 }
             }];
         }
     } else {
+        tidal::logDebug("artCell: coverID is empty/nil");
         [self setPlaceholderImage:cell.imageView];
     }
 
@@ -1531,52 +1538,37 @@ static const NSInteger kPageSize = 50;
     if (![self isShowingTracks]) return nil;
     if (row < 0 || row >= (NSInteger)self.trackResults.count) return nil;
 
-    NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
-    [item setString:@"placeholder" forType:JLTidalBrowserPasteboardType];
-    return item;
-}
-
-- (void)tableView:(NSTableView *)tableView draggingSession:(NSDraggingSession *)session
-    willBeginAtPoint:(NSPoint)screenPoint forRowIndexes:(NSIndexSet *)rowIndexes {
-
-    if (![self isShowingTracks]) return;
+    // Determine which rows are being dragged
+    NSIndexSet *draggedRows;
+    if ([self.tableView.selectedRowIndexes containsIndex:(NSUInteger)row]) {
+        draggedRows = self.tableView.selectedRowIndexes;
+    } else {
+        draggedRows = [NSIndexSet indexSetWithIndex:(NSUInteger)row];
+    }
 
     NSMutableArray *urls = [NSMutableArray array];
-
-    [rowIndexes enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+    [draggedRows enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         if (idx < self.trackResults.count) {
             JLTidalTrack *track = self.trackResults[idx];
-            NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
-            [urls addObject:url];
+            [urls addObject:[NSString stringWithFormat:@"tidal://track/%@", track.trackID]];
         }
     }];
 
-    if (urls.count == 0) return;
+    if (urls.count == 0) return nil;
 
-    NSDictionary *dragData = @{
-        @"type": @"tidal",
-        @"urls": urls
-    };
+    // Archive the full drag data directly on each item
+    NSDictionary *dragDict = @{@"type": @"tidal", @"urls": urls};
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragDict requiringSecureCoding:NO error:nil];
 
-    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragData requiringSecureCoding:NO error:nil];
+    NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+    if (data) {
+        [item setData:data forType:JLTidalBrowserPasteboardType];
+    }
+    [item setString:[urls componentsJoinedByString:@"\n"] forType:NSPasteboardTypeString];
 
-    // Also provide plain text with tidal:// URLs for cross-component drops
-    NSString *urlString = [urls componentsJoinedByString:@"\n"];
-
-    [session enumerateDraggingItemsWithOptions:0
-                                       forView:tableView
-                                       classes:@[[NSPasteboardItem class]]
-                                 searchOptions:@{}
-                                    usingBlock:^(NSDraggingItem *draggingItem, NSInteger idx, BOOL *stop) {
-        if (idx == 0) {
-            NSPasteboardItem *pbItem = (NSPasteboardItem *)draggingItem.item;
-            [pbItem setData:data forType:JLTidalBrowserPasteboardType];
-            [pbItem setString:urlString forType:NSPasteboardTypeString];
-        }
-        *stop = YES;
-    }];
-
-    tidal::logDebug([[NSString stringWithFormat:@"Started drag with %lu tracks", (unsigned long)urls.count] UTF8String]);
+    tidal::logDebug([[NSString stringWithFormat:@"Drag item for row %ld with %lu tracks",
+                      (long)row, (unsigned long)urls.count] UTF8String]);
+    return item;
 }
 
 #pragma mark - Double Click

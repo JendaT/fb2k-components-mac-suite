@@ -99,11 +99,15 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
     // Start loading
     NSURL *url = [[self class] coverURLForCoverID:coverID size:size];
 
+    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: loading %@", url.absoluteString] UTF8String]);
+
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithURL:url
                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSImage *image = nil;
 
-        if (data && !error) {
+        if (error) {
+            tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: download error: %@", error.localizedDescription] UTF8String]);
+        } else if (data) {
             NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
             if (httpResponse.statusCode == 200) {
                 image = [[NSImage alloc] initWithData:data];
@@ -111,7 +115,15 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
                     // Estimate size for cache cost
                     NSUInteger cost = data.length;
                     [self.imageCache setObject:image forKey:cacheKey cost:cost];
+                    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: cached %@ (%lu bytes)",
+                                     coverID, (unsigned long)data.length] UTF8String]);
+                } else {
+                    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: failed to create NSImage from %lu bytes",
+                                     (unsigned long)data.length] UTF8String]);
                 }
+            } else {
+                tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: HTTP %ld for %@",
+                                 (long)httpResponse.statusCode, coverID] UTF8String]);
             }
         }
 
