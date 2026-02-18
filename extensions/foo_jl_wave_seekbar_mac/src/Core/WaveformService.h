@@ -18,6 +18,10 @@
 // Callback for waveform availability
 using WaveformReadyCallback = std::function<void(const metadb_handle_ptr&, const WaveformData&)>;
 
+// Listener ID for tracking registered listeners
+using ListenerId = uint64_t;
+static constexpr ListenerId InvalidListenerId = 0;
+
 // Waveform service singleton
 class WaveformService {
 public:
@@ -45,8 +49,10 @@ public:
     std::optional<WaveformData> getCachedWaveform(const metadb_handle_ptr& track);
 
     // Register for waveform ready notifications
+    // Returns a ListenerId that can be used to remove this specific listener
     using WaveformListener = std::function<void(const metadb_handle_ptr&, const WaveformData*)>;
-    void addListener(WaveformListener listener);
+    ListenerId addListener(WaveformListener listener);
+    void removeListener(ListenerId id);
     void removeAllListeners();
 
     // Cache management
@@ -60,8 +66,14 @@ private:
     WaveformScanner& m_scanner;
     WaveformCache& m_cache;
 
-    std::vector<WaveformListener> m_listeners;
+    // Listener storage with IDs for safe removal
+    struct ListenerEntry {
+        ListenerId id;
+        WaveformListener callback;
+    };
+    std::vector<ListenerEntry> m_listeners;
     std::mutex m_listenerMutex;
+    ListenerId m_nextListenerId = 1;
 
     metadb_handle_ptr m_pendingTrack;
     std::mutex m_pendingMutex;

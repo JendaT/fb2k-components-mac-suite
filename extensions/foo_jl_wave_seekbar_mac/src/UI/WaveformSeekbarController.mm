@@ -270,19 +270,26 @@
 }
 
 - (void)updatePosition:(NSTimer *)timer {
-    if (_isPaused) return;
+    @autoreleasepool {
+        if (_isPaused) return;
+        if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
 
-    try {
-        auto pc = playback_control::get();
-        if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
-            double position = pc->playback_get_position();
-            if (self.waveformView.trackDuration > 0) {
-                self.waveformView.playbackPosition = position / self.waveformView.trackDuration;
-                [self.waveformView refreshDisplay];
+        try {
+            auto pc = playback_control::get();
+            if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
+                double position = pc->playback_get_position();
+                if (self.waveformView.trackDuration > 0) {
+                    double newPos = position / self.waveformView.trackDuration;
+                    // Only redraw if position changed meaningfully (> 0.1%)
+                    if (fabs(newPos - self.waveformView.playbackPosition) > 0.001) {
+                        self.waveformView.playbackPosition = newPos;
+                        [self.waveformView refreshDisplay];
+                    }
+                }
             }
+        } catch (...) {
+            // Ignore errors during timer update
         }
-    } catch (...) {
-        // Ignore errors during timer update
     }
 }
 
