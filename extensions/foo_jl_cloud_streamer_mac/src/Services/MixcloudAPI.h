@@ -35,6 +35,22 @@ struct MixcloudTrackInfo {
     }
 };
 
+// Tracklist section (individual track in a mix)
+struct MixcloudSection {
+    double startSeconds;
+    std::string songName;
+    std::string artistName;
+};
+
+// Tracklist result
+struct MixcloudTracklistResult {
+    bool success;
+    std::string errorMessage;
+    std::string cloudcastName;     // Name of the mix
+    std::string uploaderName;      // Display name of uploader
+    std::vector<MixcloudSection> sections;
+};
+
 // Search result
 struct MixcloudSearchResult {
     bool success;
@@ -54,6 +70,16 @@ public:
     MixcloudSearchResult search(
         const std::string& query,
         int maxResults = 50,
+        std::atomic<bool>* abortFlag = nullptr
+    );
+
+    // Fetch tracklist (sections) for a cloudcast
+    // username: Mixcloud username
+    // slug: cloudcast slug
+    // abortFlag: optional atomic flag for cancellation
+    MixcloudTracklistResult fetchTracklist(
+        const std::string& username,
+        const std::string& slug,
         std::atomic<bool>* abortFlag = nullptr
     );
 

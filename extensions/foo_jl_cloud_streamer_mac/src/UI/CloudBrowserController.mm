@@ -632,24 +632,32 @@ public:
 #pragma mark - Drag Support
 
 - (id<NSPasteboardWriting>)tableView:(NSTableView*)tableView pasteboardWriterForRow:(NSInteger)row {
+    FB2K_console_formatter() << "[CloudBrowser] pasteboardWriterForRow:" << row;
+
     if (row < 0 || row >= (NSInteger)_results.count) {
+        FB2K_console_formatter() << "[CloudBrowser] row out of bounds";
         return nil;
     }
 
     CloudTrack* track = _results[row];
 
-    // Use web URL for drag-drop since foobar2000's Default UI processes it
-    // through playlist_incoming_item_filter which routes to our input decoder.
-    NSString* urlString = track.webURL.length > 0 ? track.webURL : track.internalURL;
+    // Use internal URL (soundcloud://, mixcloud://) for drag-drop so foobar2000
+    // routes it to our input decoder. Fall back to web URL if internal not set.
+    NSString* urlString = track.internalURL.length > 0 ? track.internalURL : track.webURL;
+    FB2K_console_formatter() << "[CloudBrowser] urlString: " << [urlString UTF8String];
+
     if (urlString.length == 0) {
+        FB2K_console_formatter() << "[CloudBrowser] empty URL";
         return nil;
     }
 
     // Create pasteboard item with multiple types for compatibility
+    // This is the exact pattern from the working MVP
     NSPasteboardItem* item = [[NSPasteboardItem alloc] init];
     [item setString:urlString forType:NSPasteboardTypeURL];
     [item setString:urlString forType:NSPasteboardTypeString];
 
+    FB2K_console_formatter() << "[CloudBrowser] returning pasteboard item with URL: " << [urlString UTF8String];
     return item;
 }
 

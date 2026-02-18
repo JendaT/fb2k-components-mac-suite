@@ -42,6 +42,7 @@ uuid_core_group = generate_uuid
 uuid_services_group = generate_uuid
 uuid_ui_group = generate_uuid
 uuid_integration_group = generate_uuid
+uuid_shared_components_group = generate_uuid
 uuid_resources_group = generate_uuid
 
 # Framework references
@@ -77,6 +78,10 @@ services_files = Dir.glob("src/Services/*.{cpp,h,mm}").map { |f| File.basename(f
 ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
 
+# Collect shared component files (reusable UI components)
+# These are accessible via src/shared -> ../../shared symlink
+shared_component_files = Dir.glob("src/shared/*.{cpp,h,mm}").map { |f| File.basename(f) }
+
 # Collect resource files (XIB, etc.)
 resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
 
@@ -84,7 +89,7 @@ resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
 file_uuids = {}
 file_ref_uuids = {}
 
-[core_files, services_files, ui_files, integration_files].flatten.each do |file|
+[core_files, services_files, ui_files, integration_files, shared_component_files].flatten.each do |file|
   file_uuids[file] = generate_uuid
   file_ref_uuids[file] = generate_uuid
 end
@@ -103,6 +108,7 @@ puts "  Core files: #{core_files.join(', ')}"
 puts "  Services files: #{services_files.join(', ')}"
 puts "  UI files: #{ui_files.join(', ')}"
 puts "  Integration files: #{integration_files.join(', ')}"
+puts "  Shared components: #{shared_component_files.join(', ')}"
 puts "  Resource files: #{resource_files.join(', ')}"
 
 # Create the .xcodeproj bundle
@@ -122,7 +128,7 @@ pbxproj_content = <<~PBXPROJ
 PBXPROJ
 
 # Add build file entries for source files
-[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files], ['shared', shared_component_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')  # Don't compile headers
     pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Sources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
@@ -170,6 +176,21 @@ PBXPROJ
 
     pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = #{file}; sourceTree = \"<group>\"; };\n"
   end
+end
+
+# Add file references for shared component files
+shared_component_files.each do |file|
+  file_type = if file.end_with?('.h')
+    'sourcecode.c.h'
+  elsif file.end_with?('.mm')
+    'sourcecode.cpp.objcpp'
+  elsif file.end_with?('.cpp')
+    'sourcecode.cpp.cpp'
+  else
+    'text'
+  end
+
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = #{file}; sourceTree = \"<group>\"; };\n"
 end
 
 # Add XIB file references
@@ -240,6 +261,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_services_group} /* Services */,
 				#{uuid_ui_group} /* UI */,
 				#{uuid_integration_group} /* Integration */,
+				#{uuid_shared_components_group} /* shared */,
 			);
 			path = src;
 			sourceTree = "<group>";
@@ -298,6 +320,20 @@ end
 pbxproj_content += <<~PBXPROJ
 			);
 			path = Integration;
+			sourceTree = "<group>";
+		};
+		#{uuid_shared_components_group} /* shared */ = {
+			isa = PBXGroup;
+			children = (
+PBXPROJ
+
+shared_component_files.each do |file|
+  pbxproj_content += "\t\t\t\t#{file_ref_uuids[file]} /* #{file} */,\n"
+end
+
+pbxproj_content += <<~PBXPROJ
+			);
+			path = shared;
 			sourceTree = "<group>";
 		};
 		#{uuid_resources_group} /* Resources */ = {
@@ -419,7 +455,7 @@ pbxproj_content += <<~PBXPROJ
 PBXPROJ
 
 # Add all source files (not headers) to sources build phase
-[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files], ['shared', shared_component_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')
     pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"

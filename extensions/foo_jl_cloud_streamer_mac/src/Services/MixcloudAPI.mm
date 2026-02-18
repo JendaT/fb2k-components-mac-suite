@@ -237,4 +237,165 @@ MixcloudSearchResult MixcloudAPI::search(
     return result;
 }
 
+MixcloudTracklistResult MixcloudAPI::fetchTracklist(
+    const std::string& username,
+    const std::string& slug,
+    std::atomic<bool>* abortFlag
+) {
+    MixcloudTracklistResult result;
+    result.success = false;
+
+    if (username.empty() || slug.empty()) {
+        result.errorMessage = "Empty username or slug";
+        return result;
+    }
+
+    // Check abort before starting
+    if (abortFlag && abortFlag->load()) {
+        result.errorMessage = "Fetch cancelled";
+        return result;
+    }
+
+    // Build GraphQL query for tracklist
+    // The query uses cloudcastLookup and inline fragments for TrackSection
+    NSString* queryTemplate = @"{\"query\":\"{cloudcastLookup(lookup:{username:\\\"%@\\\",slug:\\\"%@\\\"}){name owner{displayName} sections{... on TrackSection{startSeconds songName artistName}}}}\"}";
+    NSString* query = [NSString stringWithFormat:queryTemplate,
+        [NSString stringWithUTF8String:username.c_str()],
+        [NSString stringWithUTF8String:slug.c_str()]];
+
+    NSURL* url = [NSURL URLWithString:@(kGraphQLEndpoint)];
+    if (!url) {
+        result.errorMessage = "Failed to build request URL";
+        return result;
+    }
+
+    // Create POST request with JSON body
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@(kUserAgent) forHTTPHeaderField:@"User-Agent"];
+    [request setValue:@"https://www.mixcloud.com" forHTTPHeaderField:@"Origin"];
+    [request setValue:@"https://www.mixcloud.com/" forHTTPHeaderField:@"Referer"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setHTTPBody:[query dataUsingEncoding:NSUTF8StringEncoding]];
+    [request setTimeoutInterval:30.0];
+
+    // Synchronous request using semaphore
+    __block NSData* responseData = nil;
+    __block NSError* requestError = nil;
+    __block NSInteger statusCode = 0;
+
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+
+    NSURLSessionDataTask* task = [[NSURLSession sharedSession]
+        dataTaskWithRequest:request
+        completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+            responseData = data;
+            requestError = error;
+            if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+                statusCode = [(NSHTTPURLResponse*)response statusCode];
+            }
+            dispatch_semaphore_signal(semaphore);
+        }];
+
+    [task resume];
+
+    // Wait with periodic abort checks
+    while (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+        if (abortFlag && abortFlag->load()) {
+            [task cancel];
+            result.errorMessage = "Fetch cancelled";
+            return result;
+        }
+    }
+
+    // Check for errors
+    if (requestError) {
+        if (requestError.code == NSURLErrorCancelled) {
+            result.errorMessage = "Fetch cancelled";
+        } else {
+            result.errorMessage = [[requestError localizedDescription] UTF8String] ?: "Request failed";
+        }
+        return result;
+    }
+
+    if (statusCode != 200) {
+        result.errorMessage = "HTTP error: " + std::to_string(statusCode);
+        return result;
+    }
+
+    // Parse response
+    if (!responseData) {
+        result.errorMessage = "Empty response";
+        return result;
+    }
+
+    NSError* jsonError = nil;
+    NSDictionary* json = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&jsonError];
+
+    if (jsonError || ![json isKindOfClass:[NSDictionary class]]) {
+        result.errorMessage = "Failed to parse JSON response";
+        return result;
+    }
+
+    // Check for GraphQL errors
+    if (json[@"errors"]) {
+        result.errorMessage = "GraphQL error";
+        return result;
+    }
+
+    // Navigate: data -> cloudcastLookup
+    NSDictionary* cloudcast = json[@"data"][@"cloudcastLookup"];
+    if (![cloudcast isKindOfClass:[NSDictionary class]]) {
+        result.errorMessage = "Cloudcast not found";
+        return result;
+    }
+
+    // Extract cloudcast name
+    NSString* name = cloudcast[@"name"];
+    if ([name isKindOfClass:[NSString class]]) {
+        result.cloudcastName = [name UTF8String] ?: "";
+    }
+
+    // Extract owner display name
+    NSDictionary* owner = cloudcast[@"owner"];
+    if ([owner isKindOfClass:[NSDictionary class]]) {
+        NSString* displayName = owner[@"displayName"];
+        if ([displayName isKindOfClass:[NSString class]]) {
+            result.uploaderName = [displayName UTF8String] ?: "";
+        }
+    }
+
+    // Parse sections (tracklist)
+    NSArray* sections = cloudcast[@"sections"];
+    if ([sections isKindOfClass:[NSArray class]]) {
+        for (NSDictionary* sectionDict in sections) {
+            if (![sectionDict isKindOfClass:[NSDictionary class]]) continue;
+
+            // Only process TrackSection entries (they have songName)
+            NSString* songName = sectionDict[@"songName"];
+            if (![songName isKindOfClass:[NSString class]] || songName.length == 0) {
+                continue;
+            }
+
+            MixcloudSection section;
+            section.songName = [songName UTF8String] ?: "";
+
+            NSNumber* startSeconds = sectionDict[@"startSeconds"];
+            if ([startSeconds isKindOfClass:[NSNumber class]]) {
+                section.startSeconds = [startSeconds doubleValue];
+            }
+
+            NSString* artistName = sectionDict[@"artistName"];
+            if ([artistName isKindOfClass:[NSString class]]) {
+                section.artistName = [artistName UTF8String] ?: "";
+            }
+
+            result.sections.push_back(std::move(section));
+        }
+    }
+
+    result.success = true;
+    return result;
+}
+
 } // namespace cloud_streamer
