@@ -751,27 +751,271 @@
     }];
 }
 
+- (void)createPlaylistWithTitle:(NSString *)title
+                    description:(NSString *)description
+                     completion:(JLTidalPlaylistCompletion)completion {
+    NSString *userId = self.session.userId;
+    if (!userId.length) {
+        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"No user ID available"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/playlists",
+                        kTidalAPIBaseURL, userId];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    NSMutableDictionary *body = [NSMutableDictionary dictionary];
+    body[@"title"] = title ?: @"Untitled";
+    if (description.length > 0) {
+        body[@"description"] = description;
+    }
+
+    [self requestWithURL:url method:@"POST" body:body completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        JLTidalPlaylist *playlist = [[JLTidalPlaylist alloc] initWithDictionary:json];
+        tidal::logDebug([[NSString stringWithFormat:@"Created playlist: %@ (%@)",
+                          playlist.title, playlist.playlistUUID] UTF8String]);
+        completion(playlist, nil);
+    }];
+}
+
+- (void)addTrackIDs:(NSArray<NSString *> *)trackIDs
+       toPlaylistID:(NSString *)playlistUUID
+               etag:(NSString *)etag
+         completion:(JLTidalBoolCompletion)completion {
+    if (!playlistUUID.length || trackIDs.count == 0) {
+        completion(NO, JLTidalError(JLTidalErrorInvalidURL, @"Missing playlist UUID or track IDs"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/playlists/%@/items",
+                        kTidalAPIBaseURL, playlistUUID];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    NSDictionary *body = @{
+        @"trackIds": [trackIDs componentsJoinedByString:@","],
+        @"onArtifactNotFound": @"SKIP",
+        @"onDupes": @"SKIP"
+    };
+
+    NSDictionary *headers = etag.length > 0 ? @{@"If-None-Match": etag} : nil;
+
+    [self requestWithURL:url method:@"POST" body:body headers:headers completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(NO, error);
+        } else {
+            tidal::logDebug([[NSString stringWithFormat:@"Added %lu tracks to playlist %@",
+                              (unsigned long)trackIDs.count, playlistUUID] UTF8String]);
+            completion(YES, nil);
+        }
+    }];
+}
+
+- (void)removeTrackAtIndices:(NSIndexSet *)indices
+              fromPlaylistID:(NSString *)playlistUUID
+                        etag:(NSString *)etag
+                  completion:(JLTidalBoolCompletion)completion {
+    if (!playlistUUID.length || indices.count == 0) {
+        completion(NO, JLTidalError(JLTidalErrorInvalidURL, @"Missing playlist UUID or indices"));
+        return;
+    }
+
+    // Build comma-separated index string
+    NSMutableArray<NSString *> *indexStrings = [NSMutableArray array];
+    [indices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        [indexStrings addObject:[NSString stringWithFormat:@"%lu", (unsigned long)idx]];
+    }];
+    NSString *indicesStr = [indexStrings componentsJoinedByString:@","];
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/playlists/%@/items/%@",
+                        kTidalAPIBaseURL, playlistUUID, indicesStr];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    NSDictionary *headers = etag.length > 0 ? @{@"If-None-Match": etag} : nil;
+
+    [self requestWithURL:url method:@"DELETE" body:nil headers:headers completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(NO, error);
+        } else {
+            tidal::logDebug([[NSString stringWithFormat:@"Removed %lu tracks from playlist %@",
+                              (unsigned long)indices.count, playlistUUID] UTF8String]);
+            completion(YES, nil);
+        }
+    }];
+}
+
+- (void)deletePlaylistWithID:(NSString *)playlistUUID
+                  completion:(JLTidalBoolCompletion)completion {
+    if (!playlistUUID.length) {
+        completion(NO, JLTidalError(JLTidalErrorInvalidURL, @"Missing playlist UUID"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/playlists/%@",
+                        kTidalAPIBaseURL, playlistUUID];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"DELETE" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(NO, error);
+        } else {
+            tidal::logDebug([[NSString stringWithFormat:@"Deleted playlist %@", playlistUUID] UTF8String]);
+            completion(YES, nil);
+        }
+    }];
+}
+
+- (void)getPlaylistETagForID:(NSString *)playlistUUID
+                  completion:(JLTidalETagCompletion)completion {
+    if (!playlistUUID.length) {
+        completion(nil, JLTidalError(JLTidalErrorInvalidURL, @"Missing playlist UUID"));
+        return;
+    }
+
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/playlists/%@",
+                        kTidalAPIBaseURL, playlistUUID];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    // We need the raw response headers, so do a manual request
+    if (!self.session.isValid) {
+        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
+        return;
+    }
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"GET";
+    [request setValue:[NSString stringWithFormat:@"Bearer %@", self.session.accessToken]
+   forHTTPHeaderField:@"Authorization"];
+
+    NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
+                                                   completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            completion(nil, JLTidalError(JLTidalErrorNetworkFailure, error.localizedDescription));
+            return;
+        }
+
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode != 200) {
+            completion(nil, JLTidalError(JLTidalErrorInvalidResponse,
+                [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode]));
+            return;
+        }
+
+        NSString *etag = httpResponse.allHeaderFields[@"ETag"]
+                      ?: httpResponse.allHeaderFields[@"etag"];
+        if (!etag.length) {
+            completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"No ETag in response"));
+            return;
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"ETag for playlist %@: %@",
+                          playlistUUID, etag] UTF8String]);
+        completion(etag, nil);
+    }];
+    [task resume];
+}
+
+- (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion {
+    NSString *urlStr = [NSString stringWithFormat:@"%@/my-collection/playlists/folders",
+                        kTidalAPIv2BaseURL];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalPlaylistFolder *> *folders = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *item in items) {
+            NSString *type = item[@"type"];
+            if ([type isEqualToString:@"FOLDER"]) {
+                JLTidalPlaylistFolder *folder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
+                if (folder) {
+                    [folders addObject:folder];
+                }
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlist folders",
+                          (unsigned long)folders.count] UTF8String]);
+        completion([folders copy], nil);
+    }];
+}
+
+- (void)getTrackByISRC:(NSString *)isrc
+            completion:(JLTidalTracksCompletion)completion {
+    if (!isrc.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    // Use search API with ISRC as query (v1 approach)
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search/tracks?query=%@&limit=5",
+                        kTidalAPIBaseURL,
+                        [isrc stringByAddingPercentEncodingWithAllowedCharacters:
+                         [NSCharacterSet URLQueryAllowedCharacterSet]]];
+    NSURL *url = [NSURL URLWithString:urlStr];
+
+    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+
+        NSMutableArray<JLTidalTrack *> *matches = [NSMutableArray array];
+        NSArray *items = json[@"items"];
+
+        for (NSDictionary *trackDict in items) {
+            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
+            // Match ISRC exactly
+            if (track && [track.isrc isEqualToString:isrc]) {
+                [matches addObject:track];
+            }
+        }
+
+        tidal::logDebug([[NSString stringWithFormat:@"ISRC lookup %@: %lu matches",
+                          isrc, (unsigned long)matches.count] UTF8String]);
+        completion([matches copy], nil);
+    }];
+}
+
 #pragma mark - Generic Request
 
 - (void)requestWithURL:(NSURL *)url
                 method:(NSString *)method
                   body:(NSDictionary *)body
             completion:(JLTidalDataCompletion)completion {
+    [self requestWithURL:url method:method body:body headers:nil completion:completion];
+}
+
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(NSDictionary *)body
+               headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
+            completion:(JLTidalDataCompletion)completion {
     // Check rate limiting
     NSTimeInterval delay = [[JLTidalRateLimiter shared] currentDelay];
     if (delay > 0) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [self performRequestWithURL:url method:method body:body completion:completion];
+            [self performRequestWithURL:url method:method body:body headers:extraHeaders completion:completion];
         });
     } else {
-        [self performRequestWithURL:url method:method body:body completion:completion];
+        [self performRequestWithURL:url method:method body:body headers:extraHeaders completion:completion];
     }
 }
 
 - (void)performRequestWithURL:(NSURL *)url
                        method:(NSString *)method
                          body:(NSDictionary *)body
+                      headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
                    completion:(JLTidalDataCompletion)completion {
     if (!self.session.isValid) {
         completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
@@ -786,6 +1030,11 @@
     [request setValue:[NSString stringWithFormat:@"Bearer %@", self.session.accessToken]
    forHTTPHeaderField:@"Authorization"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+    // Apply extra headers (e.g., If-None-Match for ETag)
+    for (NSString *key in extraHeaders) {
+        [request setValue:extraHeaders[key] forHTTPHeaderField:key];
+    }
 
     if (self.session.countryCode) {
         // Add country code as query parameter if not already present

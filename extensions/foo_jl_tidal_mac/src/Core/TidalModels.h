@@ -95,6 +95,20 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSInteger duration;  // total seconds
 @property (nonatomic, copy, readonly, nullable) NSString *coverID;
 @property (nonatomic, copy, readonly, nullable) NSDate *lastUpdated;
+@property (nonatomic, copy, nullable) NSString *etag;
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict;
+
+@end
+
+/// Playlist folder model (from v2 API)
+@interface JLTidalPlaylistFolder : NSObject
+
+@property (nonatomic, copy, readonly) NSString *folderID;
+@property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, copy, readonly, nullable) NSString *parentFolderID;
+@property (nonatomic, strong, readonly) NSMutableArray<JLTidalPlaylistFolder *> *subfolders;
+@property (nonatomic, strong, readonly) NSMutableArray<NSString *> *playlistUUIDs;
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict;
 

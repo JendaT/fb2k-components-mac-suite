@@ -220,6 +220,51 @@
 
 @end
 
+@implementation JLTidalPlaylistFolder
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    self = [super init];
+    if (self) {
+        // v2 API uses "trn" like "trn:folder:uuid" or just "id"
+        NSString *trn = dict[@"trn"];
+        if ([trn isKindOfClass:[NSString class]] && trn.length > 0) {
+            // Extract UUID from TRN format "trn:folder:{uuid}"
+            NSArray *parts = [trn componentsSeparatedByString:@":"];
+            _folderID = parts.lastObject ?: trn;
+        } else {
+            _folderID = [dict[@"id"] description] ?: @"";
+        }
+
+        _name = dict[@"name"] ?: @"Untitled Folder";
+        _parentFolderID = dict[@"parentFolderId"];
+        _subfolders = [NSMutableArray array];
+        _playlistUUIDs = [NSMutableArray array];
+
+        // Parse nested items if present
+        NSArray *items = dict[@"items"];
+        if ([items isKindOfClass:[NSArray class]]) {
+            for (NSDictionary *item in items) {
+                NSString *type = item[@"type"];
+                if ([type isEqualToString:@"FOLDER"]) {
+                    JLTidalPlaylistFolder *subfolder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
+                    if (subfolder) {
+                        [_subfolders addObject:subfolder];
+                    }
+                } else if ([type isEqualToString:@"PLAYLIST"]) {
+                    NSDictionary *data = item[@"data"];
+                    NSString *uuid = data[@"uuid"] ?: [data[@"id"] description];
+                    if (uuid.length > 0) {
+                        [_playlistUUIDs addObject:uuid];
+                    }
+                }
+            }
+        }
+    }
+    return self;
+}
+
+@end
+
 @implementation JLTidalPlaybackInfo
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict

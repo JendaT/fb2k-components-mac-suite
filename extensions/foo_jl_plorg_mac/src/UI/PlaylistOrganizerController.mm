@@ -318,10 +318,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    // Load tree from config
-    [self.treeModel loadFromConfig];
-
-    // Get initial active playlist
+    // Tree is already loaded by on_init (PlaylistCallbacks.mm).
+    // Just refresh the active playlist state.
     [self refreshActivePlaylist];
 
     // Sync any missing playlists from foobar2000 (delayed to not block startup)
@@ -1004,7 +1002,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     }
 
     // Set text with bold for active playlist
-    cellView.textField.stringValue = node.name;
+    cellView.textField.stringValue = node.displayName;
     if (isActivePlaylist) {
         cellView.textField.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     } else {

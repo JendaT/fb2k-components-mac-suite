@@ -140,6 +140,9 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
 #pragma mark - Playlist Sync
 
+/// Delimiter for folder hierarchy in playlist names (matches Playlist Organizer convention)
+static NSString * const kPathDelimiter = @" \u00BB ";
+
 - (void)handlePlaylistCreated:(NSString *)name {
     // Check if sync is enabled
     if (!plorg_config::getConfigBool(plorg_config::kSyncPlaylists, true)) {
@@ -151,9 +154,77 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         return;  // Already tracked
     }
 
-    // Add new playlist at root level
-    TreeNode *newPlaylist = [TreeNode playlistWithName:name];
-    [self addRootNode:newPlaylist];
+    // Parse delimiter-separated names into folder hierarchy
+    NSArray<NSString *> *parts = [name componentsSeparatedByString:kPathDelimiter];
+    if (parts.count > 1) {
+        [self addPlaylistWithHierarchy:parts fullName:name];
+    } else {
+        TreeNode *newPlaylist = [TreeNode playlistWithName:name];
+        [self addRootNode:newPlaylist];
+    }
+}
+
+/// Create folder hierarchy from delimiter-separated components and add playlist as leaf.
+/// parts: e.g. ["TIDAL", "Favorite Albums", "Album Name"]
+/// fullName: the original full playlist name (used as node name for the leaf)
+///
+/// If the target folder already contains a playlist whose short name matches the last
+/// component, the existing entry's name is updated to the full delimited name instead
+/// of adding a duplicate.
+- (void)addPlaylistWithHierarchy:(NSArray<NSString *> *)parts fullName:(NSString *)fullName {
+    NSMutableArray<TreeNode *> *currentLevel = self.mutableRootNodes;
+    TreeNode *currentParent = nil;
+
+    // Walk through folder components (all except last)
+    for (NSUInteger i = 0; i < parts.count - 1; i++) {
+        NSString *folderName = parts[i];
+        TreeNode *existingFolder = nil;
+
+        for (TreeNode *node in currentLevel) {
+            if (node.isFolder && [node.name isEqualToString:folderName]) {
+                existingFolder = node;
+                break;
+            }
+        }
+
+        if (!existingFolder) {
+            existingFolder = [TreeNode folderWithName:folderName];
+            existingFolder.isExpanded = YES;
+            if (currentParent) {
+                [currentParent addChild:existingFolder];
+            } else {
+                [self.mutableRootNodes addObject:existingFolder];
+            }
+        }
+
+        currentParent = existingFolder;
+        currentLevel = existingFolder.children;
+    }
+
+    // Check if the target folder already has a playlist with the same short name
+    // (last component). If so, update its name instead of adding a duplicate.
+    NSString *lastComponent = parts.lastObject;
+    if (currentParent) {
+        for (TreeNode *node in currentParent.children) {
+            if (!node.isFolder && [node.name isEqualToString:lastComponent]) {
+                node.name = fullName;
+                [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
+                [self saveToConfig];
+                return;
+            }
+        }
+    }
+
+    // Add playlist as leaf under the deepest folder
+    TreeNode *playlist = [TreeNode playlistWithName:fullName];
+    if (currentParent) {
+        [currentParent addChild:playlist];
+    } else {
+        [self.mutableRootNodes addObject:playlist];
+    }
+
+    [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
+    [self saveToConfig];
 }
 
 - (void)handlePlaylistRenamed:(NSString *)oldName to:(NSString *)newName {
@@ -197,9 +268,14 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
             if (playlistName && playlistName.length > 0) {
                 // Check if already in tree
                 if (![self findPlaylistWithName:playlistName]) {
-                    TreeNode *playlist = [TreeNode playlistWithName:playlistName];
-                    playlist.parent = nil;
-                    [self.mutableRootNodes addObject:playlist];
+                    NSArray<NSString *> *parts = [playlistName componentsSeparatedByString:kPathDelimiter];
+                    if (parts.count > 1) {
+                        [self addPlaylistWithHierarchy:parts fullName:playlistName];
+                    } else {
+                        TreeNode *playlist = [TreeNode playlistWithName:playlistName];
+                        playlist.parent = nil;
+                        [self.mutableRootNodes addObject:playlist];
+                    }
                     addedCount++;
                 }
             }
@@ -213,6 +289,62 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
     } @catch (NSException *exception) {
         NSLog(@"[Plorg] Exception syncing playlists: %@", exception);
     }
+}
+
+#pragma mark - Deduplication
+
+/// Remove duplicate playlist entries from the tree.
+/// When a folder contains both a short-name entry ("foo") and a delimiter-separated entry
+/// ("parent >> folder >> foo") whose last component matches the short name,
+/// the short-name entry is removed (the delimited version matches the foobar playlist).
+- (void)deduplicateTree {
+    NSInteger removed = [self deduplicateNodes:self.mutableRootNodes];
+    if (removed > 0) {
+        FB2K_console_formatter() << "[Plorg] Removed " << (int)removed << " duplicate entries";
+        [self saveToConfig];
+    }
+}
+
+- (NSInteger)deduplicateNodes:(NSMutableArray<TreeNode *> *)nodes {
+    NSInteger removed = 0;
+
+    // Recurse into folders first
+    for (TreeNode *node in nodes) {
+        if (node.isFolder && node.children.count > 0) {
+            removed += [self deduplicateNodes:node.children];
+        }
+    }
+
+    // Build set of last-components from delimiter-separated entries
+    NSMutableDictionary<NSString *, TreeNode *> *delimitedLastComponents = [NSMutableDictionary dictionary];
+    for (TreeNode *node in nodes) {
+        if (node.isFolder) continue;
+        if (![node.name containsString:kPathDelimiter]) continue;
+        NSArray *parts = [node.name componentsSeparatedByString:kPathDelimiter];
+        NSString *lastComponent = parts.lastObject;
+        if (lastComponent.length > 0) {
+            delimitedLastComponents[lastComponent] = node;
+        }
+    }
+
+    // Find short-name entries that are duplicated by delimiter-separated entries
+    NSMutableArray<TreeNode *> *toRemove = [NSMutableArray array];
+    for (TreeNode *node in nodes) {
+        if (node.isFolder) continue;
+        if ([node.name containsString:kPathDelimiter]) continue;
+        // Short-name entry - check if a delimiter-separated version exists
+        if (delimitedLastComponents[node.name]) {
+            [toRemove addObject:node];
+        }
+    }
+
+    for (TreeNode *node in toRemove) {
+        node.parent = nil;
+        [nodes removeObject:node];
+        removed++;
+    }
+
+    return removed;
 }
 
 #pragma mark - YAML Serialization
@@ -523,6 +655,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         NSString *config = plorg_config::loadTreeFromFile();
         if (config.length > 0 && [self parseYaml:config]) {
             FB2K_console_formatter() << "[Plorg] Loaded tree from " << [plorg_config::getConfigFilePath() UTF8String];
+            [self deduplicateTree];
             [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
             return;
         }
@@ -630,9 +763,14 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
             pm->playlist_get_name(i, name);
             NSString *playlistName = [NSString stringWithUTF8String:name.c_str()];
             if (playlistName && playlistName.length > 0) {
-                TreeNode *playlist = [TreeNode playlistWithName:playlistName];
-                playlist.parent = nil;
-                [self.mutableRootNodes addObject:playlist];
+                NSArray<NSString *> *parts = [playlistName componentsSeparatedByString:kPathDelimiter];
+                if (parts.count > 1) {
+                    [self addPlaylistWithHierarchy:parts fullName:playlistName];
+                } else {
+                    TreeNode *playlist = [TreeNode playlistWithName:playlistName];
+                    playlist.parent = nil;
+                    [self.mutableRootNodes addObject:playlist];
+                }
             }
         }
         FB2K_console_formatter() << "[Plorg] Imported " << count << " existing playlists";

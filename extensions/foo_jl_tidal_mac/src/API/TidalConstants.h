@@ -20,6 +20,7 @@ static NSString * const kTidalTokenEndpoint = @"/v1/oauth2/token";
 
 // Main API endpoints
 static NSString * const kTidalAPIBaseURL = @"https://api.tidal.com";
+static NSString * const kTidalAPIv2BaseURL = @"https://listen.tidal.com/v2";
 static NSString * const kTidalPlaybackInfoEndpoint = @"/v1/tracks/%@/playbackinfopostpaywall";
 static NSString * const kTidalTrackMetadataEndpoint = @"/v1/tracks/%@";
 
