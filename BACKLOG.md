@@ -7,9 +7,7 @@
 ## Pending
 | Task | Priority | Added | Notes |
 |------|----------|-------|-------|
-| Phase 5.3: Background sync | Medium | 2026-02-11 | Auto-sync Tidal playlist changes to local copies |
 | Verify quality fallback (96kbps issue) | High | 2026-02-11 | Logging added, needs testing after restart |
-| Verify album art extractor | High | 2026-02-11 | Service created, needs testing after restart |
 
 ## Completed
 | Task | Completed | Notes |
@@ -36,6 +34,8 @@
 | Reconnect button | 2026-02-11 | Preferences shows Reconnect when token expired |
 | Shared UIStyles integration | 2026-02-11 | Browser uses fb2k_ui:: styles |
 | Drag-drop modern API | 2026-02-11 | pasteboardWriterForRow: replacing deprecated API |
+| Album art extractor GUID fix | 2026-02-13 | GUID must match input entry for SDK routing |
+| Phase 5.3: Playlist sync | 2026-02-13 | Bidirectional pull/push, playlist lock, ISRC matching, folder hierarchy |
 | Initial worktree setup | 2026-01-25 | CLAUDE.md, BACKLOG.md created |
 
 ## Ideas (Unscoped)

@@ -9,6 +9,7 @@
 #import "TidalAlbumArtCache.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
+#import "../Core/TidalPlaylistSync.h"
 #import "../API/TidalAPI.h"
 #import "../Services/TidalAuthService.h"
 #include "../fb2k_sdk.h"
@@ -105,6 +106,8 @@ public:
 @property (nonatomic, strong) NSTextField *statusLabel;
 @property (nonatomic, strong) NSProgressIndicator *loadingSpinner;
 @property (nonatomic, strong) NSView *navigationBar;
+@property (nonatomic, strong) NSButton *syncPullButton;
+@property (nonatomic, strong) NSButton *syncPushButton;
 
 // State
 @property (nonatomic, assign) JLTidalPanelMode panelMode;
@@ -219,6 +222,25 @@ public:
     [self.librarySectionControl setHidden:YES];
     [container addSubview:self.librarySectionControl];
 
+    // Sync buttons (Library mode only)
+    self.syncPullButton = [NSButton buttonWithTitle:@"Pull" target:self action:@selector(syncPullClicked:)];
+    self.syncPullButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.syncPullButton.bezelStyle = NSBezelStyleRecessed;
+    self.syncPullButton.controlSize = NSControlSizeSmall;
+    self.syncPullButton.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    self.syncPullButton.toolTip = @"Pull playlists from TIDAL to foobar2000";
+    [self.syncPullButton setHidden:YES];
+    [container addSubview:self.syncPullButton];
+
+    self.syncPushButton = [NSButton buttonWithTitle:@"Push" target:self action:@selector(syncPushClicked:)];
+    self.syncPushButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.syncPushButton.bezelStyle = NSBezelStyleRecessed;
+    self.syncPushButton.controlSize = NSControlSizeSmall;
+    self.syncPushButton.font = [NSFont systemFontOfSize:[NSFont smallSystemFontSize]];
+    self.syncPushButton.toolTip = @"Push playlists from foobar2000 to TIDAL";
+    [self.syncPushButton setHidden:YES];
+    [container addSubview:self.syncPushButton];
+
     // Loading spinner
     self.loadingSpinner = [[NSProgressIndicator alloc] init];
     self.loadingSpinner.translatesAutoresizingMaskIntoConstraints = NO;
@@ -329,6 +351,12 @@ public:
         [self.librarySectionControl.topAnchor constraintEqualToAnchor:self.panelModeControl.bottomAnchor constant:6],
         [self.librarySectionControl.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:8],
         [self.librarySectionControl.heightAnchor constraintEqualToConstant:20],
+
+        // Sync buttons (trailing side of library section row)
+        [self.syncPushButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8],
+        [self.syncPushButton.centerYAnchor constraintEqualToAnchor:self.librarySectionControl.centerYAnchor],
+        [self.syncPullButton.trailingAnchor constraintEqualToAnchor:self.syncPushButton.leadingAnchor constant:-4],
+        [self.syncPullButton.centerYAnchor constraintEqualToAnchor:self.librarySectionControl.centerYAnchor],
 
         // Navigation bar
         [self.navigationBar.topAnchor constraintEqualToAnchor:self.searchTypeControl.bottomAnchor constant:4],
@@ -609,6 +637,8 @@ public:
         [self.searchField setHidden:NO];
         [self.searchTypeControl setHidden:NO];
         [self.librarySectionControl setHidden:YES];
+        [self.syncPullButton setHidden:YES];
+        [self.syncPushButton setHidden:YES];
         self.browseMode = JLTidalBrowseModeSearchResults;
         [self setupColumnsForCurrentMode];
         [self.tableView reloadData];
@@ -617,6 +647,8 @@ public:
         [self.searchField setHidden:YES];
         [self.searchTypeControl setHidden:YES];
         [self.librarySectionControl setHidden:NO];
+        [self.syncPullButton setHidden:NO];
+        [self.syncPushButton setHidden:NO];
         [self loadLibrarySection];
     }
 }
@@ -1970,6 +2002,145 @@ static const NSInteger kPageSize = 50;
         return [self isShowingTracks] || [self isShowingAlbums];
     }
     return YES;
+}
+
+#pragma mark - Playlist Sync
+
+- (void)syncPullClicked:(id)sender {
+    if (![[JLTidalAuthService shared] isAuthenticated]) {
+        self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
+        return;
+    }
+
+    self.syncPullButton.enabled = NO;
+    self.syncPushButton.enabled = NO;
+    self.statusLabel.stringValue = @"Checking TIDAL playlists...";
+    [self.loadingSpinner setHidden:NO];
+    [self.loadingSpinner startAnimation:nil];
+
+    [[JLTidalPlaylistSync shared] previewPullFromTidalWithCompletion:^(JLTidalSyncReport *report, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.loadingSpinner setHidden:YES];
+            [self.loadingSpinner stopAnimation:nil];
+            self.syncPullButton.enabled = YES;
+            self.syncPushButton.enabled = YES;
+
+            if (error) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync failed: %@", error.localizedDescription];
+                return;
+            }
+
+            if (report.totalCreated == 0 && report.totalUpdated == 0 && report.totalDeleted == 0) {
+                self.statusLabel.stringValue = @"Everything is up to date";
+                return;
+            }
+
+            [self showSyncConfirmDialog:report direction:@"Pull from TIDAL" applyBlock:^{
+                self.statusLabel.stringValue = @"Syncing playlists...";
+                [self.loadingSpinner setHidden:NO];
+                [self.loadingSpinner startAnimation:nil];
+
+                [[JLTidalPlaylistSync shared] applyPullWithReport:report completion:^(BOOL success, NSError *applyError) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self.loadingSpinner setHidden:YES];
+                        [self.loadingSpinner stopAnimation:nil];
+                        if (success) {
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Pull complete: %@", [report summary]];
+                        } else {
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync error: %@",
+                                                            applyError.localizedDescription];
+                        }
+                    });
+                }];
+            }];
+        });
+    }];
+}
+
+- (void)syncPushClicked:(id)sender {
+    if (![[JLTidalAuthService shared] isAuthenticated]) {
+        self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
+        return;
+    }
+
+    self.syncPullButton.enabled = NO;
+    self.syncPushButton.enabled = NO;
+    self.statusLabel.stringValue = @"Checking local playlists...";
+    [self.loadingSpinner setHidden:NO];
+    [self.loadingSpinner startAnimation:nil];
+
+    [[JLTidalPlaylistSync shared] previewPushToTidalWithCompletion:^(JLTidalSyncReport *report, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.loadingSpinner setHidden:YES];
+            [self.loadingSpinner stopAnimation:nil];
+            self.syncPullButton.enabled = YES;
+            self.syncPushButton.enabled = YES;
+
+            if (error) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync failed: %@", error.localizedDescription];
+                return;
+            }
+
+            if (report.totalCreated == 0 && report.totalUpdated == 0) {
+                self.statusLabel.stringValue = @"Nothing to push";
+                return;
+            }
+
+            [self showSyncConfirmDialog:report direction:@"Push to TIDAL" applyBlock:^{
+                self.statusLabel.stringValue = @"Pushing to TIDAL...";
+                [self.loadingSpinner setHidden:NO];
+                [self.loadingSpinner startAnimation:nil];
+
+                [[JLTidalPlaylistSync shared] applyPushWithReport:report completion:^(BOOL success, NSError *applyError) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self.loadingSpinner setHidden:YES];
+                        [self.loadingSpinner stopAnimation:nil];
+                        if (success) {
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Push complete: %@", [report summary]];
+                        } else {
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Push error: %@",
+                                                            applyError.localizedDescription];
+                        }
+                    });
+                }];
+            }];
+        });
+    }];
+}
+
+- (void)showSyncConfirmDialog:(JLTidalSyncReport *)report
+                    direction:(NSString *)direction
+                   applyBlock:(void (^)(void))applyBlock {
+    NSMutableString *details = [NSMutableString string];
+    for (JLTidalSyncChange *change in report.changes) {
+        if (change.changeType == JLTidalSyncChangeTypeUnchanged) continue;
+
+        NSString *action;
+        switch (change.changeType) {
+            case JLTidalSyncChangeTypeCreate: action = @"Create"; break;
+            case JLTidalSyncChangeTypeUpdate: action = @"Update"; break;
+            case JLTidalSyncChangeTypeDelete: action = @"Remove"; break;
+            default: continue;
+        }
+        [details appendFormat:@"%@: %@", action, change.playlistName];
+        if (change.tracksAdded > 0) [details appendFormat:@" (+%ld)", (long)change.tracksAdded];
+        if (change.tracksRemoved > 0) [details appendFormat:@" (-%ld)", (long)change.tracksRemoved];
+        [details appendString:@"\n"];
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = direction;
+    alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@", [report summary], details];
+    [alert addButtonWithTitle:@"Apply"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.alertStyle = NSAlertStyleInformational;
+
+    NSModalResponse response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn) {
+        applyBlock();
+    } else {
+        self.statusLabel.stringValue = @"Sync cancelled";
+    }
 }
 
 #pragma mark - Helpers

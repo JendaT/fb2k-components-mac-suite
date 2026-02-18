@@ -34,6 +34,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class JLTidalAlbum;
 @class JLTidalArtist;
 @class JLTidalPlaylist;
+@class JLTidalPlaylistFolder;
 
 /// Completion handlers
 typedef void (^JLTidalDeviceCodeCompletion)(JLTidalDeviceCode * _Nullable deviceCode, NSError * _Nullable error);
@@ -43,7 +44,10 @@ typedef void (^JLTidalTracksCompletion)(NSArray<JLTidalTrack *> * _Nullable trac
 typedef void (^JLTidalAlbumsCompletion)(NSArray<JLTidalAlbum *> * _Nullable albums, NSError * _Nullable error);
 typedef void (^JLTidalArtistsCompletion)(NSArray<JLTidalArtist *> * _Nullable artists, NSError * _Nullable error);
 typedef void (^JLTidalPlaylistsCompletion)(NSArray<JLTidalPlaylist *> * _Nullable playlists, NSError * _Nullable error);
+typedef void (^JLTidalPlaylistCompletion)(JLTidalPlaylist * _Nullable playlist, NSError * _Nullable error);
+typedef void (^JLTidalFoldersCompletion)(NSArray<JLTidalPlaylistFolder *> * _Nullable folders, NSError * _Nullable error);
 typedef void (^JLTidalBoolCompletion)(BOOL success, NSError * _Nullable error);
+typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Nullable error);
 
 @interface JLTidalAPI : NSObject
 
@@ -147,12 +151,51 @@ typedef void (^JLTidalBoolCompletion)(BOOL success, NSError * _Nullable error);
                                 offset:(NSInteger)offset
                             completion:(JLTidalTracksCompletion)completion;
 
+/// Create a new playlist
+- (void)createPlaylistWithTitle:(NSString *)title
+                    description:(nullable NSString *)description
+                     completion:(JLTidalPlaylistCompletion)completion;
+
+/// Add tracks to a playlist (requires ETag for concurrency)
+- (void)addTrackIDs:(NSArray<NSString *> *)trackIDs
+       toPlaylistID:(NSString *)playlistUUID
+               etag:(NSString *)etag
+         completion:(JLTidalBoolCompletion)completion;
+
+/// Remove tracks from a playlist by index (requires ETag for concurrency)
+- (void)removeTrackAtIndices:(NSIndexSet *)indices
+              fromPlaylistID:(NSString *)playlistUUID
+                        etag:(NSString *)etag
+                  completion:(JLTidalBoolCompletion)completion;
+
+/// Delete a playlist
+- (void)deletePlaylistWithID:(NSString *)playlistUUID
+                  completion:(JLTidalBoolCompletion)completion;
+
+/// Get the ETag for a playlist (needed before mutations)
+- (void)getPlaylistETagForID:(NSString *)playlistUUID
+                  completion:(JLTidalETagCompletion)completion;
+
+/// Get playlist folders (v2 API)
+- (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion;
+
+/// Search for a track by ISRC
+- (void)getTrackByISRC:(NSString *)isrc
+            completion:(JLTidalTracksCompletion)completion;
+
 #pragma mark - Generic Request
 
 /// Make authenticated API request
 - (void)requestWithURL:(NSURL *)url
                 method:(NSString *)method
                   body:(nullable NSDictionary *)body
+            completion:(JLTidalDataCompletion)completion;
+
+/// Make authenticated API request with extra headers
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(nullable NSDictionary *)body
+               headers:(nullable NSDictionary<NSString *, NSString *> *)extraHeaders
             completion:(JLTidalDataCompletion)completion;
 
 @end

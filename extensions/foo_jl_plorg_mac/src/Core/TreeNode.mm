@@ -36,6 +36,18 @@
     return self.children ? (NSInteger)self.children.count : 0;
 }
 
+static NSString * const kNodePathDelimiter = @" \u00BB ";
+
+- (NSString *)displayName {
+    if (self.isFolder) return self.name;
+    // If inside a parent folder and name contains delimiter, show only the last component
+    if (self.parent && [self.name containsString:kNodePathDelimiter]) {
+        NSArray<NSString *> *parts = [self.name componentsSeparatedByString:kNodePathDelimiter];
+        return parts.lastObject;
+    }
+    return self.name;
+}
+
 #pragma mark - Child Management
 
 - (void)addChild:(TreeNode *)child {
@@ -145,7 +157,7 @@
     NSString *result = format;
 
     // Replace variables
-    result = [result stringByReplacingOccurrencesOfString:@"%node_name%" withString:self.name ?: @""];
+    result = [result stringByReplacingOccurrencesOfString:@"%node_name%" withString:self.displayName ?: @""];
     result = [result stringByReplacingOccurrencesOfString:@"%is_folder%" withString:self.isFolder ? @"1" : @""];
 
     // Count: child count for folders, item count for playlists
