@@ -8,6 +8,7 @@
 #include "WaveformService.h"
 #include "WaveformConfig.h"
 #include "ConfigHelper.h"
+#include <algorithm>
 #include <dispatch/dispatch.h>
 
 // Singleton instance
@@ -134,9 +135,22 @@ std::optional<WaveformData> WaveformService::getCachedWaveform(const metadb_hand
     return m_cache.getWaveform(track);
 }
 
-void WaveformService::addListener(WaveformListener listener) {
+ListenerId WaveformService::addListener(WaveformListener listener) {
     std::lock_guard<std::mutex> lock(m_listenerMutex);
-    m_listeners.push_back(std::move(listener));
+    ListenerId id = m_nextListenerId++;
+    m_listeners.push_back({id, std::move(listener)});
+    return id;
+}
+
+void WaveformService::removeListener(ListenerId id) {
+    if (id == InvalidListenerId) return;
+
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    m_listeners.erase(
+        std::remove_if(m_listeners.begin(), m_listeners.end(),
+            [id](const ListenerEntry& entry) { return entry.id == id; }),
+        m_listeners.end()
+    );
 }
 
 void WaveformService::removeAllListeners() {
@@ -147,9 +161,9 @@ void WaveformService::removeAllListeners() {
 void WaveformService::notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform) {
     std::lock_guard<std::mutex> lock(m_listenerMutex);
 
-    for (const auto& listener : m_listeners) {
-        if (listener) {
-            listener(track, waveform);
+    for (const auto& entry : m_listeners) {
+        if (entry.callback) {
+            entry.callback(track, waveform);
         }
     }
 }
