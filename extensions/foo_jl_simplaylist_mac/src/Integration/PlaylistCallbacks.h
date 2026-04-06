@@ -34,6 +34,9 @@ public:
     void onPlaybackNewTrack(metadb_handle_ptr track);
     void onPlaybackStopped();
 
+    // Queue event dispatch
+    void onQueueChanged();
+
     // Lifecycle - call from initquit
     void initCallbacks();
     void shutdownCallbacks();

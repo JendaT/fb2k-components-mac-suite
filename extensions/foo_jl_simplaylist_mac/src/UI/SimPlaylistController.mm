@@ -342,6 +342,8 @@ struct ReloadOperation {
 @property (nonatomic, assign) BOOL isSettingSelection;  // Flag to skip callback when we're setting selection
 @property (nonatomic, assign) NSUInteger selectionGeneration;  // Incremented when we set selection
 @property (nonatomic, assign) NSUInteger lastSyncedGeneration;  // Last generation we synced
+@property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *queuePositionMap;  // item_index → 1-based queue position
+@property (nonatomic, assign) BOOL hasQueueColumn;  // True if any visible column uses __queue_position__
 @end
 
 @implementation SimPlaylistController
@@ -1792,6 +1794,40 @@ static const NSUInteger kMaxCacheableGroups = 500;
     _playlistView.playingIndex = -1;
 }
 
+#pragma mark - Queue Event Handlers
+
+- (void)handleQueueChanged {
+    _queuePositionMap = nil;
+    if (_hasQueueColumn) {
+        [_playlistView clearFormattedValuesCache];
+        [_playlistView setNeedsDisplay:YES];
+    }
+}
+
+- (NSDictionary<NSNumber *, NSNumber *> *)buildQueuePositionMap {
+    if (_currentPlaylistIndex < 0) return @{};
+    auto pm = playlist_manager::get();
+    t_size queueCount = pm->queue_get_count();
+    if (queueCount == 0) return @{};
+
+    pfc::list_t<t_playback_queue_item> queueItems;
+    pm->queue_get_contents(queueItems);
+
+    NSMutableDictionary<NSNumber *, NSNumber *> *map = [NSMutableDictionary dictionaryWithCapacity:queueCount];
+    t_size currentPlaylist = (t_size)_currentPlaylistIndex;
+    for (t_size i = 0; i < queueItems.get_count(); i++) {
+        const auto& item = queueItems[i];
+        if (item.m_playlist == currentPlaylist) {
+            // 1-based position; if same item queued multiple times, show first position
+            NSNumber *key = @(item.m_item);
+            if (!map[key]) {
+                map[key] = @(i + 1);
+            }
+        }
+    }
+    return map;
+}
+
 #pragma mark - SimPlaylistViewDelegate
 
 - (void)playlistView:(SimPlaylistView *)view selectionDidChange:(NSIndexSet *)selectedPlaylistIndices {
@@ -1835,7 +1871,31 @@ static const NSUInteger kMaxCacheableGroups = 500;
     NSInteger playlistIndex = [view playlistIndexForRow:row];
     if (playlistIndex < 0) return;  // Header row or invalid
 
-    pm->playlist_execute_default_action(activePlaylist, playlistIndex);
+    bool preserveQueue = simplaylist_config::getConfigBool(
+        simplaylist_config::kDoubleClickPreservesQueue,
+        simplaylist_config::kDefaultDoubleClickPreservesQueue);
+
+    if (preserveQueue && pm->queue_get_count() > 0) {
+        // Save queue, play track (flushes queue), restore queue next run loop
+        pfc::list_t<t_playback_queue_item> savedQueue;
+        pm->queue_get_contents(savedQueue);
+
+        pm->playlist_execute_default_action(activePlaylist, playlistIndex);
+
+        // Restore after default action's async flush completes
+        dispatch_async(dispatch_get_main_queue(), ^{
+            auto pm2 = playlist_manager::get();
+            for (t_size i = 0; i < savedQueue.get_count(); i++) {
+                const auto& item = savedQueue[i];
+                if (item.m_playlist != pfc_infinite)
+                    pm2->queue_add_item_playlist(item.m_playlist, item.m_item);
+                else
+                    pm2->queue_add_item(item.m_handle);
+            }
+        });
+    } else {
+        pm->playlist_execute_default_action(activePlaylist, playlistIndex);
+    }
 }
 
 - (void)playlistView:(SimPlaylistView *)view requestContextMenuForRows:(NSIndexSet *)playlistIndices atPoint:(NSPoint)point {
@@ -2285,10 +2345,13 @@ static BOOL isRemotePath(const char *path) {
     [_playlistView setNeedsDisplay:YES];
 }
 
-- (void)playlistView:(SimPlaylistView *)view didRequestQueueTrack:(NSInteger)playlistIndex {
-    if (_currentPlaylistIndex < 0 || playlistIndex < 0) return;
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueTracks:(NSIndexSet *)playlistIndices {
+    if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
     auto pm = playlist_manager::get();
-    pm->queue_add_item_playlist((t_size)_currentPlaylistIndex, (t_size)playlistIndex);
+    t_size playlist = (t_size)_currentPlaylistIndex;
+    [playlistIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        pm->queue_add_item_playlist(playlist, (t_size)idx);
+    }];
 }
 
 - (void)playlistView:(SimPlaylistView *)view didChangeGroupColumnWidth:(CGFloat)newWidth {
@@ -2300,14 +2363,25 @@ static BOOL isRemotePath(const char *path) {
     [_headerBar setNeedsDisplay:YES];
 }
 
+static NSString *const kQueuePositionSentinel = @"__queue_position__";
+
 - (void)recompileColumnScripts {
     _compiledColumnScripts.clear();
     _compiledColumnScripts.reserve(_columns.count);
+    _hasQueueColumn = NO;
     for (ColumnDefinition *col in _columns) {
-        _compiledColumnScripts.push_back(
-            simplaylist::TitleFormatHelper::compile([col.pattern UTF8String])
-        );
+        if ([col.pattern isEqualToString:kQueuePositionSentinel]) {
+            _hasQueueColumn = YES;
+            // Push a dummy script — queue values are resolved via SDK, not title format
+            _compiledColumnScripts.push_back(nullptr);
+        } else {
+            _compiledColumnScripts.push_back(
+                simplaylist::TitleFormatHelper::compile([col.pattern UTF8String])
+            );
+        }
     }
+    // Rebuild queue map if we now have (or lost) a queue column
+    _queuePositionMap = nil;
 }
 
 - (NSArray<NSString *> *)playlistView:(SimPlaylistView *)view columnValuesForPlaylistIndex:(NSInteger)playlistIndex {
@@ -2322,12 +2396,35 @@ static BOOL isRemotePath(const char *path) {
         return nil;
     }
 
+    // Lazily build queue position map if we have a queue column
+    if (_hasQueueColumn && !_queuePositionMap) {
+        _queuePositionMap = [self buildQueuePositionMap];
+    }
+
+    int64_t queueStyle = simplaylist_config::getConfigInt(
+        simplaylist_config::kQueueDisplayStyle,
+        simplaylist_config::kDefaultQueueDisplayStyle);
+
     // Format column values using pre-compiled scripts
     NSMutableArray<NSString *> *columnValues = [NSMutableArray arrayWithCapacity:_compiledColumnScripts.size()];
     for (size_t i = 0; i < _compiledColumnScripts.size(); i++) {
-        std::string value = simplaylist::TitleFormatHelper::formatWithPlaylistContext(
-            activePlaylist, playlistIndex, _compiledColumnScripts[i]);
-        [columnValues addObject:[NSString stringWithUTF8String:value.c_str()]];
+        if (!_compiledColumnScripts[i].is_valid()) {
+            // Queue position sentinel — resolve from queue map
+            NSNumber *queuePos = _queuePositionMap[@(playlistIndex)];
+            if (queuePos) {
+                if (queueStyle == 0) {
+                    [columnValues addObject:[NSString stringWithFormat:@"[%@]", queuePos]];
+                } else {
+                    [columnValues addObject:[NSString stringWithFormat:@"%@", queuePos]];
+                }
+            } else {
+                [columnValues addObject:@""];
+            }
+        } else {
+            std::string value = simplaylist::TitleFormatHelper::formatWithPlaylistContext(
+                activePlaylist, playlistIndex, _compiledColumnScripts[i]);
+            [columnValues addObject:[NSString stringWithUTF8String:value.c_str()]];
+        }
     }
 
     return columnValues;

@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [1.4.4] - 2026-04-06
+
+#### Added
+- Queue # column showing queue position per track (brackets or accent color style)
+- Double-click preserves playback queue (enabled by default)
+- Behavior preferences section
+
+#### Fixed
+- Q key now queues all selected tracks, not just the focused one
+
 ### [1.4.3] - 2026-03-24
 
 #### Fixed

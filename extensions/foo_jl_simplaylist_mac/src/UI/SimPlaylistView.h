@@ -76,6 +76,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
 @property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
 @property (nonatomic, assign) BOOL dimParentheses;  // Dim text inside () and []
+@property (nonatomic, assign) NSInteger queueDisplayStyle;  // 0 = brackets [1], 1 = accent color
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect
 @property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = normal, 1 = larger
@@ -143,8 +144,8 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Called when user presses delete key
 - (void)playlistViewDidRequestRemoveSelection:(SimPlaylistView *)view;
 
-// Called when user presses Q to queue a track under the cursor
-- (void)playlistView:(SimPlaylistView *)view didRequestQueueTrack:(NSInteger)playlistIndex;
+// Called when user presses Q to queue selected tracks
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueTracks:(NSIndexSet *)playlistIndices;
 
 // Called to request album art for a group (returns cached image or nil, triggers async load)
 - (nullable NSImage *)playlistView:(SimPlaylistView *)view albumArtForGroupAtPlaylistIndex:(NSInteger)playlistIndex;

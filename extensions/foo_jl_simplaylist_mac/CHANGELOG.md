@@ -2,6 +2,16 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.4.4] - 2026-04-06
+
+### Added
+- **Queue # column**: Built-in column showing queue position for each track. Two display styles configurable in preferences: brackets `[1]` or system accent color.
+- **Double-click preserves queue**: Playing a track via double-click no longer flushes the playback queue. Enabled by default; toggle in new Behavior preferences section.
+- **Behavior preferences section**: New section with queue preservation toggle and queue display style popup.
+
+### Fixed
+- **Q key queues all selected tracks**: Previously only queued the focused track; now queues the entire selection.
+
 ## [1.4.3] - 2026-03-24
 
 ### Fixed

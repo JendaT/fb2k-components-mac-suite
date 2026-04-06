@@ -37,6 +37,8 @@
 @property (nonatomic, strong) NSButton *glassBackgroundCheckbox;
 @property (nonatomic, strong) NSButton *debugRenderingCheckbox;
 @property (nonatomic, strong) NSButton *dragToFinderMoveCheckbox;
+@property (nonatomic, strong) NSButton *preserveQueueCheckbox;
+@property (nonatomic, strong) NSPopUpButton *queueDisplayStylePopup;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
 @end
@@ -45,7 +47,7 @@
 
 - (void)loadView {
     // Use flipped view so y=0 is at top
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 610)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 730)];
     self.view = container;
 
     CGFloat y = 20;  // Start from top
@@ -271,6 +273,40 @@
 
     y = displayBoxY + 430;
 
+    // ==================== BEHAVIOR SETTINGS ====================
+    CGFloat behaviorBoxY = y;
+    CGFloat behaviorContentY = 22;
+
+    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 100)];
+    behaviorBox.title = @"Behavior";
+    behaviorBox.titlePosition = NSAtTop;
+    [container addSubview:behaviorBox];
+
+    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 70)];
+    behaviorBox.contentView = behaviorContent;
+
+    // Double-click preserves queue
+    _preserveQueueCheckbox = [NSButton checkboxWithTitle:@"Double-click preserves playback queue"
+                                                  target:self
+                                                  action:@selector(preserveQueueChanged:)];
+    _preserveQueueCheckbox.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 20);
+    [behaviorContent addSubview:_preserveQueueCheckbox];
+    behaviorContentY += rowHeight + 4;
+
+    // Queue column display style
+    NSTextField *queueStyleLabel = [NSTextField labelWithString:@"Queue Column:"];
+    queueStyleLabel.frame = NSMakeRect(boxMargin, behaviorContentY + 3, labelWidth, 20);
+    [behaviorContent addSubview:queueStyleLabel];
+
+    _queueDisplayStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, behaviorContentY, 150, 26) pullsDown:NO];
+    [_queueDisplayStylePopup addItemWithTitle:@"Brackets [1]"];
+    [_queueDisplayStylePopup addItemWithTitle:@"Accent color"];
+    _queueDisplayStylePopup.target = self;
+    _queueDisplayStylePopup.action = @selector(queueDisplayStyleChanged:);
+    [behaviorContent addSubview:_queueDisplayStylePopup];
+
+    y = behaviorBoxY + 120;
+
     // Help text
     NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 60)];
     helpText.stringValue = @"Title Format Patterns:\n"
@@ -381,6 +417,17 @@
         simplaylist_config::kDragToFinderMove,
         simplaylist_config::kDefaultDragToFinderMove);
     _dragToFinderMoveCheckbox.state = dragToFinderMove ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Load behavior settings
+    bool preserveQueue = simplaylist_config::getConfigBool(
+        simplaylist_config::kDoubleClickPreservesQueue,
+        simplaylist_config::kDefaultDoubleClickPreservesQueue);
+    _preserveQueueCheckbox.state = preserveQueue ? NSControlStateValueOn : NSControlStateValueOff;
+
+    int64_t queueStyle = simplaylist_config::getConfigInt(
+        simplaylist_config::kQueueDisplayStyle,
+        simplaylist_config::kDefaultQueueDisplayStyle);
+    [_queueDisplayStylePopup selectItemAtIndex:queueStyle];
 }
 
 - (void)updateFieldsForPreset:(GroupPreset *)preset {
@@ -557,6 +604,17 @@
 - (void)dragToFinderMoveChanged:(id)sender {
     bool enabled = (_dragToFinderMoveCheckbox.state == NSControlStateValueOn);
     simplaylist_config::setConfigBool(simplaylist_config::kDragToFinderMove, enabled);
+}
+
+- (void)preserveQueueChanged:(id)sender {
+    bool enabled = (_preserveQueueCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kDoubleClickPreservesQueue, enabled);
+}
+
+- (void)queueDisplayStyleChanged:(id)sender {
+    int64_t style = [_queueDisplayStylePopup indexOfSelectedItem];
+    simplaylist_config::setConfigInt(simplaylist_config::kQueueDisplayStyle, style);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded" object:nil];
 }
 
 @end

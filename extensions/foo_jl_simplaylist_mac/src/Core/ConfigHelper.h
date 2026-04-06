@@ -68,6 +68,12 @@ static const char* const kDebugRendering = "debug_rendering";
 // Drag to Finder: move files by default (instead of copy)
 static const char* const kDragToFinderMove = "drag_to_finder_move";
 
+// Queue column display style: 0 = brackets [1], 1 = accent color
+static const char* const kQueueDisplayStyle = "queue_display_style";
+
+// Double-click preserves playback queue instead of flushing it
+static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_queue";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultHeaderHeight = 28;
@@ -88,6 +94,8 @@ static const bool kDefaultGlassBackground = false;   // Opaque background by def
 static const int64_t kDefaultGroupHeaderSpacing = 1; // 0=compact, 1=normal, 2=larger
 static const bool kDefaultDebugRendering = false;     // Hide debug diagnostics by default
 static const bool kDefaultDragToFinderMove = false;   // Copy files by default when dragging to Finder
+static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
+static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
 
 // Helper functions
 inline std::string getFullKey(const char* key) {

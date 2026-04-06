@@ -35,6 +35,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handlePlaybackNewTrack:(metadb_handle_ptr)track;
 - (void)handlePlaybackStopped;
 
+// Queue event handlers
+- (void)handleQueueChanged;
+
 // Rebuild the view from current playlist
 - (void)rebuildFromPlaylist;
 

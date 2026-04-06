@@ -127,6 +127,15 @@ void SimPlaylistCallbackManager::onPlaybackStopped() {
     });
 }
 
+void SimPlaylistCallbackManager::onQueueChanged() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        for (SimPlaylistController *c in g_controllers) {
+            [c handleQueueChanged];
+        }
+    });
+}
+
 // Convenience functions
 void SimPlaylistCallbackManager_registerController(SimPlaylistController* controller) {
     SimPlaylistCallbackManager::instance().registerController(controller);
@@ -233,3 +242,13 @@ public:
 };
 
 FB2K_SERVICE_FACTORY(simplaylist_playback_callback);
+
+// Playback queue callback - notifies when queue contents change
+class simplaylist_queue_callback : public playback_queue_callback {
+public:
+    void on_changed(t_change_origin origin) override {
+        SimPlaylistCallbackManager::instance().onQueueChanged();
+    }
+};
+
+FB2K_SERVICE_FACTORY(simplaylist_queue_callback);

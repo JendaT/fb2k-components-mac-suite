@@ -129,6 +129,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _dimParentheses = simplaylist_config::getConfigBool(
         simplaylist_config::kDimParentheses,
         simplaylist_config::kDefaultDimParentheses);
+    _queueDisplayStyle = simplaylist_config::getConfigInt(
+        simplaylist_config::kQueueDisplayStyle,
+        simplaylist_config::kDefaultQueueDisplayStyle);
     _displaySize = simplaylist_config::getConfigInt(
         simplaylist_config::kDisplaySize,
         simplaylist_config::kDefaultDisplaySize);
@@ -214,6 +217,7 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _showNowPlayingShading = getConfigBool(kNowPlayingShading, kDefaultNowPlayingShading);
     _headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
     _dimParentheses = getConfigBool(kDimParentheses, kDefaultDimParentheses);
+    _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
 
@@ -1176,19 +1180,25 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             default: style.alignment = NSTextAlignmentLeft; break;
         }
 
-        if (_dimParentheses) {
+        // Queue column with accent style: use system accent color for non-empty values
+        BOOL isQueueAccent = (_queueDisplayStyle == 1 &&
+                              [col.pattern isEqualToString:@"__queue_position__"] &&
+                              value.length > 0);
+        NSColor *cellColor = isQueueAccent ? [NSColor controlAccentColor] : textColor;
+
+        if (_dimParentheses && !isQueueAccent) {
             // Draw with dimmed parentheses
             NSAttributedString *attrStr = [self attributedString:value
                                                             font:font
-                                                       textColor:textColor
+                                                       textColor:cellColor
                                                       dimmedColor:dimmedColor
                                                   paragraphStyle:style];
             [attrStr drawInRect:colRect];
         } else {
-            // Draw normally
+            // Draw normally (or queue accent)
             NSDictionary *attrs = @{
                 NSFontAttributeName: font,
-                NSForegroundColorAttributeName: textColor,
+                NSForegroundColorAttributeName: cellColor,
                 NSParagraphStyleAttributeName: style
             };
             [value drawInRect:colRect withAttributes:attrs];
@@ -2509,13 +2519,10 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
             if (hasCmd && (key == 'a' || key == 'A')) {
                 [self selectAll];
             } else if (!hasCmd && (key == 'q' || key == 'Q')) {
-                // Q: queue hovered track
-                if (_hoveredRow >= 0) {
-                    NSInteger playlistIndex = [self playlistIndexForRow:_hoveredRow];
-                    if (playlistIndex >= 0 &&
-                        [_delegate respondsToSelector:@selector(playlistView:didRequestQueueTrack:)]) {
-                        [_delegate playlistView:self didRequestQueueTrack:playlistIndex];
-                    }
+                // Q: queue all selected tracks
+                if (_selectedIndices.count > 0 &&
+                    [_delegate respondsToSelector:@selector(playlistView:didRequestQueueTracks:)]) {
+                    [_delegate playlistView:self didRequestQueueTracks:[_selectedIndices copy]];
                 }
             } else {
                 [super keyDown:event];
