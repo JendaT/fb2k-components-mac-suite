@@ -588,17 +588,21 @@ struct ReloadOperation {
 
     if (autoResizeCols.count == 0) return;
 
-    // Distribute remaining space
+    // Distribute remaining space proportionally to preserve user-adjusted column ratios
     CGFloat remainingWidth = availableWidth - fixedWidth;
-    if (remainingWidth < 0) return;
+    if (remainingWidth <= 0) return;
 
-    CGFloat widthPerCol = remainingWidth / autoResizeCols.count;
-    widthPerCol = MAX(widthPerCol, 50);  // Minimum 50px
+    CGFloat totalAutoWidth = 0;
+    for (ColumnDefinition *col in autoResizeCols) {
+        totalAutoWidth += col.width;
+    }
 
     BOOL changed = NO;
     for (ColumnDefinition *col in autoResizeCols) {
-        if (fabs(col.width - widthPerCol) > 1.0) {
-            col.width = widthPerCol;
+        CGFloat proportion = (totalAutoWidth > 0) ? col.width / totalAutoWidth : 1.0 / (CGFloat)autoResizeCols.count;
+        CGFloat newWidth = remainingWidth * proportion;
+        if (fabs(col.width - newWidth) > 1.0) {
+            col.width = newWidth;
             changed = YES;
         }
     }
@@ -2435,9 +2439,10 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didResizeColumn:(NSInteger)columnIndex toWidth:(CGFloat)newWidth {
     if (columnIndex < 0 || columnIndex >= (NSInteger)_columns.count) return;
 
-    // Update column definition
+    // Update column definition; disable auto-resize so this width is preserved on view resize
     ColumnDefinition *col = _columns[columnIndex];
     col.width = newWidth;
+    col.autoResize = NO;
 
     // Update playlist view
     [_playlistView reloadData];
