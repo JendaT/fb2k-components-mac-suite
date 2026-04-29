@@ -2,6 +2,15 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.4.5] - 2026-04-29
+
+### Added
+- **Album duration in group header**: Optional checkbox in Display Settings appends total album duration to each group header (e.g. "Album Name  •  45:23").
+
+### Fixed
+- **Group refresh on track discovery**: Groups now rebuild as track metadata is resolved during import (e.g. tracks going from `?` to real album/artist values).
+- **Column widths reset on layout resize**: Manually resized columns are no longer overwritten when adjacent UI panels (e.g. album art) are resized. Auto-resize now distributes remaining space proportionally instead of equally. (thanks @Scannou, #19)
+
 ## [1.4.4] - 2026-04-06
 
 ### Added

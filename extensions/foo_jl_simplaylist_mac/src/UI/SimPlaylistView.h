@@ -35,6 +35,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, copy) NSArray<NSNumber *> *groupStarts;  // Playlist indices where groups start
 @property (nonatomic, copy) NSArray<NSString *> *groupHeaders;  // Header text per group
 @property (nonatomic, copy) NSArray<NSString *> *groupArtKeys;  // Album art cache key per group
+@property (nonatomic, copy) NSArray<NSNumber *> *groupDurations;  // Total seconds per group, or nil if disabled
 @property (nonatomic, copy) NSArray<NSNumber *> *groupPaddingRows;  // Extra padding rows per group for min height
 @property (nonatomic, assign) NSInteger totalPaddingRowsCached;  // Pre-computed sum of all padding rows
 @property (nonatomic, copy) NSArray<NSNumber *> *cumulativePaddingCache;  // Pre-computed cumulative padding before each group
@@ -76,6 +77,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
 @property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
 @property (nonatomic, assign) BOOL dimParentheses;  // Dim text inside () and []
+@property (nonatomic, assign) BOOL showGroupDuration;  // Show total duration in group headers
 @property (nonatomic, assign) NSInteger queueDisplayStyle;  // 0 = brackets [1], 1 = accent color
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect

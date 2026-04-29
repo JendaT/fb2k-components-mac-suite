@@ -30,6 +30,7 @@
 @property (nonatomic, strong) NSButton *showFirstSubgroupCheckbox;
 @property (nonatomic, strong) NSButton *hideSingleSubgroupCheckbox;
 @property (nonatomic, strong) NSButton *dimParenthesesCheckbox;
+@property (nonatomic, strong) NSButton *showGroupDurationCheckbox;
 @property (nonatomic, strong) NSPopUpButton *displaySizePopup;
 @property (nonatomic, strong) NSPopUpButton *headerSizePopup;
 @property (nonatomic, strong) NSPopUpButton *headerAccentPopup;
@@ -47,7 +48,7 @@
 
 - (void)loadView {
     // Use flipped view so y=0 is at top
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 730)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 755)];
     self.view = container;
 
     CGFloat y = 20;  // Start from top
@@ -129,12 +130,12 @@
     CGFloat displayBoxY = y;
     CGFloat displayContentY = 22;
 
-    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 400)];
+    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 425)];
     displayBox.title = @"Display Settings";
     displayBox.titlePosition = NSAtTop;
     [container addSubview:displayBox];
 
-    NSView *displayContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 370)];
+    NSView *displayContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 395)];
     displayBox.contentView = displayContent;
 
     // Header Display Style
@@ -183,6 +184,14 @@
                                                   action:@selector(dimParenthesesChanged:)];
     _dimParenthesesCheckbox.frame = NSMakeRect(boxMargin + labelWidth, displayContentY, 280, 20);
     [displayContent addSubview:_dimParenthesesCheckbox];
+    displayContentY += rowHeight;
+
+    // Show album duration in group header
+    _showGroupDurationCheckbox = [NSButton checkboxWithTitle:@"Show album duration in group header"
+                                                     target:self
+                                                     action:@selector(showGroupDurationChanged:)];
+    _showGroupDurationCheckbox.frame = NSMakeRect(boxMargin + labelWidth, displayContentY, 300, 20);
+    [displayContent addSubview:_showGroupDurationCheckbox];
     displayContentY += rowHeight + 4;
 
     // Display Size
@@ -271,7 +280,7 @@
     dragWarning.lineBreakMode = NSLineBreakByWordWrapping;
     [displayContent addSubview:dragWarning];
 
-    y = displayBoxY + 430;
+    y = displayBoxY + 455;
 
     // ==================== BEHAVIOR SETTINGS ====================
     CGFloat behaviorBoxY = y;
@@ -375,6 +384,12 @@
         simplaylist_config::kDimParentheses,
         simplaylist_config::kDefaultDimParentheses);
     _dimParenthesesCheckbox.state = dimParentheses ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Load show group duration
+    bool showGroupDuration = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowGroupDuration,
+        simplaylist_config::kDefaultShowGroupDuration);
+    _showGroupDurationCheckbox.state = showGroupDuration ? NSControlStateValueOn : NSControlStateValueOff;
 
     // Load display size (0=compact, 1=normal, 2=large)
     int64_t displaySize = simplaylist_config::getConfigInt(
@@ -543,6 +558,15 @@
     simplaylist_config::setConfigBool(simplaylist_config::kDimParentheses, enabled);
 
     // Only needs redraw, not full rebuild
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+                                                        object:nil];
+}
+
+- (void)showGroupDurationChanged:(id)sender {
+    bool enabled = (_showGroupDurationCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kShowGroupDuration, enabled);
+
+    // Controller's redraw handler will re-read the flag and recompute durations
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
                                                         object:nil];
 }

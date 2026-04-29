@@ -16,6 +16,19 @@
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
 
+// Format total seconds as M:SS or H:MM:SS for display in group headers
+static NSString *formatGroupDuration(double seconds) {
+    int total = (int)(seconds + 0.5);
+    if (total < 0) total = 0;
+    int s = total % 60;
+    int m = (total / 60) % 60;
+    int h = total / 3600;
+    if (h > 0) {
+        return [NSString stringWithFormat:@"%d:%02d:%02d", h, m, s];
+    }
+    return [NSString stringWithFormat:@"%d:%02d", m, s];
+}
+
 // Wraps NSURL pasteboard writing and adds SimPlaylistPasteboardType.
 // NSURL's native writing is required for Finder to accept drops.
 // The custom type is needed for cross-playlist drops (Plorg, other SimPlaylist panels).
@@ -129,6 +142,9 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _dimParentheses = simplaylist_config::getConfigBool(
         simplaylist_config::kDimParentheses,
         simplaylist_config::kDefaultDimParentheses);
+    _showGroupDuration = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowGroupDuration,
+        simplaylist_config::kDefaultShowGroupDuration);
     _queueDisplayStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
         simplaylist_config::kDefaultQueueDisplayStyle);
@@ -217,6 +233,7 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     _showNowPlayingShading = getConfigBool(kNowPlayingShading, kDefaultNowPlayingShading);
     _headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
     _dimParentheses = getConfigBool(kDimParentheses, kDefaultDimParentheses);
+    _showGroupDuration = getConfigBool(kShowGroupDuration, kDefaultShowGroupDuration);
     _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
@@ -961,8 +978,10 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         NSForegroundColorAttributeName: [NSColor labelColor]
     };
 
-    // Calculate text size
-    NSSize textSize = [headerText sizeWithAttributes:attrs];
+    // Build attributed string: title + optional duration
+    NSAttributedString *displayString = [self headerAttributedStringForGroup:groupIndex
+                                                                  titleAttrs:attrs];
+    NSSize textSize = displayString.size;
 
     CGFloat textX;
     CGFloat textY;
@@ -995,8 +1014,8 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
         lineY = rect.origin.y + rect.size.height / 2;
     }
 
-    // Draw header text
-    [headerText drawAtPoint:NSMakePoint(textX, textY) withAttributes:attrs];
+    // Draw header text (title + optional duration)
+    [displayString drawAtPoint:NSMakePoint(textX, textY)];
 
     // Draw horizontal line after text (not for style 2 - inline mode)
     if (_headerDisplayStyle != 2 && lineStartX < lineEndX) {
@@ -1030,13 +1049,43 @@ NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.
     style.alignment = NSTextAlignmentCenter;
     style.lineBreakMode = NSLineBreakByWordWrapping;  // Wrap to multiple lines
 
-    NSDictionary *attrsWithStyle = @{
+    NSDictionary *titleAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
         NSParagraphStyleAttributeName: style
     };
 
-    [headerText drawInRect:textRect withAttributes:attrsWithStyle];
+    NSAttributedString *displayString = [self headerAttributedStringForGroup:groupIndex
+                                                                  titleAttrs:titleAttrs];
+    [displayString drawInRect:textRect];
+}
+
+// Returns attributed string for a group header: bold title + optional " • duration" appended in dimmer style
+- (NSAttributedString *)headerAttributedStringForGroup:(NSInteger)groupIndex
+                                            titleAttrs:(NSDictionary *)titleAttrs {
+    NSString *title = _groupHeaders[groupIndex];
+    NSMutableAttributedString *result =
+        [[NSMutableAttributedString alloc] initWithString:title attributes:titleAttrs];
+
+    if (!_showGroupDuration) return result;
+    if (groupIndex >= (NSInteger)_groupDurations.count) return result;
+    double seconds = [_groupDurations[groupIndex] doubleValue];
+    if (seconds <= 0) return result;
+
+    NSString *durStr = [NSString stringWithFormat:@"  •  %@", formatGroupDuration(seconds)];
+    NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
+    NSDictionary *durAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
+        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+    };
+    if (titleAttrs[NSParagraphStyleAttributeName]) {
+        NSMutableDictionary *m = [durAttrs mutableCopy];
+        m[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
+        durAttrs = m;
+    }
+    [result appendAttributedString:[[NSAttributedString alloc] initWithString:durStr
+                                                                   attributes:durAttrs]];
+    return result;
 }
 
 // Draw subgroup header row - indented, smaller text with line

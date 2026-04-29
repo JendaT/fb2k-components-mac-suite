@@ -344,6 +344,8 @@ struct ReloadOperation {
 @property (nonatomic, assign) NSUInteger lastSyncedGeneration;  // Last generation we synced
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *queuePositionMap;  // item_index → 1-based queue position
 @property (nonatomic, assign) BOOL hasQueueColumn;  // True if any visible column uses __queue_position__
+
+- (void)recomputeGroupDurations;
 @end
 
 @implementation SimPlaylistController
@@ -567,6 +569,11 @@ struct ReloadOperation {
 
 - (void)handleRedrawNeeded:(NSNotification *)notification {
     // Lightweight redraw for settings that don't affect grouping (e.g., dim parentheses, now playing shading)
+    // Re-read group duration setting in case it just toggled, then refresh the durations array.
+    _playlistView.showGroupDuration = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowGroupDuration,
+        simplaylist_config::kDefaultShowGroupDuration);
+    [self recomputeGroupDurations];
     [_playlistView clearFormattedValuesCache];
     [_playlistView setNeedsDisplay:YES];
 }
@@ -699,6 +706,43 @@ struct ReloadOperation {
     }
 }
 
+- (void)recomputeGroupDurations {
+    if (!_playlistView.showGroupDuration) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+    if (_currentPlaylistIndex < 0) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+    NSArray<NSNumber *> *starts = _playlistView.groupStarts;
+    if (starts.count == 0) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+
+    auto pm = playlist_manager::get();
+    metadb_handle_list handles;
+    pm->playlist_get_all_items((t_size)_currentPlaylistIndex, handles);
+    t_size itemCount = handles.get_count();
+
+    NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:starts.count];
+    for (NSUInteger g = 0; g < starts.count; g++) {
+        t_size gs = (t_size)[starts[g] integerValue];
+        t_size ge = (g + 1 < starts.count)
+            ? (t_size)[starts[g + 1] integerValue]
+            : itemCount;
+        if (ge > itemCount) ge = itemCount;
+        double total = 0;
+        for (t_size i = gs; i < ge; i++) {
+            double len = handles[i]->get_length();
+            if (len > 0) total += len;
+        }
+        [durations addObject:@(total)];
+    }
+    _playlistView.groupDurations = durations;
+}
+
 - (void)rebuildFromPlaylist {
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
@@ -792,6 +836,7 @@ struct ReloadOperation {
         if (cacheHit) {
             // Cache loaded valid data - view is immediately usable
             _currentPlaylistInitialized = YES;
+            [self recomputeGroupDurations];
             // Validate in background (won't clear current display)
             _scrollRestorePlaylistIndex = activePlaylist;
             [self detectGroupsForPlaylistBackground:activePlaylist itemCount:itemCount preset:activePreset];
@@ -1068,6 +1113,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // Restore scroll position immediately (we have enough groups)
     [self performScrollRestore];
 
+    [self recomputeGroupDurations];
     [_playlistView setNeedsDisplay:YES];
 
     // Continue detecting remaining groups in background
@@ -1214,6 +1260,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 // Persist group cache after full detection
                 [strongSelf saveGroupCacheForPlaylist:playlist synchronous:NO];
 
+                [strongSelf recomputeGroupDurations];
                 [strongSelf.playlistView reloadData];
             });
         });
@@ -1222,6 +1269,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         _currentPlaylistInitialized = YES;
         // Persist group cache
         [self saveGroupCacheForPlaylist:playlist synchronous:NO];
+        [self recomputeGroupDurations];
     }
 }
 
@@ -1382,6 +1430,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 [strongSelf scheduleDeferredScrollRestore];
             }
 
+            [strongSelf recomputeGroupDurations];
             [strongSelf.playlistView reloadData];
         });
     });
@@ -1678,6 +1727,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
                 CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
                 [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, newHeight)];
+                [strongSelf recomputeGroupDurations];
                 [strongSelf.playlistView reloadData];
             }
 
@@ -1780,12 +1830,10 @@ static const NSUInteger kMaxCacheableGroups = 500;
 }
 
 - (void)handleItemsModified {
-    // Metadata changed - clear display cache and redraw
-    // No structural rebuild needed (items weren't added/removed/reordered)
-    // This avoids scroll position disruption during auto-advance playback
-    [_playlistView clearFormattedValuesCache];
-    [self updatePlayingIndicator];
-    [_playlistView setNeedsDisplay:YES];
+    // Metadata changed - rebuild groups since discovery can change grouping
+    // (e.g. tracks going from unknown to resolved album/artist)
+    // rebuildFromPlaylist preserves scroll position via anchor mechanism
+    [self rebuildFromPlaylist];
 }
 
 #pragma mark - Playback Event Handlers
