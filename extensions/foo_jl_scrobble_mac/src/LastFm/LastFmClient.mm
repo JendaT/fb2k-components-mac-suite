@@ -71,8 +71,9 @@
 #pragma mark - URL Building
 
 - (NSString*)urlEncode:(NSString*)string {
-    return [string stringByAddingPercentEncodingWithAllowedCharacters:
-            [NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSMutableCharacterSet *allowed = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+    [allowed removeCharactersInString:@"&=+#"];
+    return [string stringByAddingPercentEncodingWithAllowedCharacters:allowed];
 }
 
 - (NSString*)buildPostBody:(NSDictionary<NSString*, NSString*>*)params {
