@@ -220,37 +220,35 @@ static NSImage *_placeholderImage = nil;
             FB2K_console_formatter() << "[SimPlaylist] Album art file load error: " << exception.reason.UTF8String;
         }
 
-        // Second try: use SDK (may not work well on background thread)
+        // Second try: use album_art_extractor_manager which extracts art directly
+        // from the file without fallback resolution (unlike album_art_manager_v2
+        // which can return art from unrelated tracks via its stub/fallback system).
         if (!image) {
             @try {
-                auto art_mgr = album_art_manager_v2::tryGet();
-                if (art_mgr.is_valid() && handleCopy.is_valid()) {
-                    try {
-                        metadb_handle_list items;
-                        items.add_item(handleCopy);
-
-                        pfc::list_t<GUID> ids;
-                        ids.add_item(album_art_ids::cover_front);
-
-                        album_art_extractor_instance_v2::ptr extractor = art_mgr->open(items, ids, fb2k::noAbort);
-
-                        if (extractor.is_valid()) {
-                            album_art_data::ptr data;
-                            if (extractor->query(album_art_ids::cover_front, data, fb2k::noAbort)) {
-                                if (data.is_valid() && data->size() > 0) {
-                                    NSData *imageData = [NSData dataWithBytes:data->data()
-                                                                       length:data->size()];
-                                    if (imageData) {
-                                        image = [[NSImage alloc] initWithData:imageData];
-                                        if (image && (image.size.width > 512 || image.size.height > 512)) {
-                                            image = [self resizeImage:image toMaxSize:512];
+                if (handleCopy.is_valid()) {
+                    const char *path = handleCopy->get_path();
+                    if (path) {
+                        try {
+                            album_art_extractor_instance_ptr extractor =
+                                album_art_extractor::g_open(nullptr, path, fb2k::noAbort);
+                            if (extractor.is_valid()) {
+                                album_art_data::ptr data;
+                                if (extractor->query(album_art_ids::cover_front, data, fb2k::noAbort)) {
+                                    if (data.is_valid() && data->size() > 0) {
+                                        NSData *imageData = [NSData dataWithBytes:data->data()
+                                                                           length:data->size()];
+                                        if (imageData) {
+                                            image = [[NSImage alloc] initWithData:imageData];
+                                            if (image && (image.size.width > 512 || image.size.height > 512)) {
+                                                image = [self resizeImage:image toMaxSize:512];
+                                            }
                                         }
                                     }
                                 }
                             }
+                        } catch (...) {
+                            // No embedded art or unsupported format — not an error
                         }
-                    } catch (...) {
-                        // SDK album art extraction failed (no embedded art or format error)
                     }
                 }
             } @catch (NSException *exception) {
