@@ -326,6 +326,8 @@ struct ReloadOperation {
     std::vector<ReloadOperation> _reloadOperations;
     // Pre-compiled title format scripts for columns (rebuilt when columns change)
     std::vector<titleformat_object::ptr> _compiledColumnScripts;
+    // Selection holder — drives Selection Properties (sections=metadata) panel
+    ui_selection_holder::ptr _selectionHolder;
 }
 @property (nonatomic, strong) SimPlaylistView *playlistView;
 @property (nonatomic, strong) SimPlaylistHeaderBar *headerBar;
@@ -350,6 +352,7 @@ struct ReloadOperation {
 
 - (void)recomputeGroupDurations;
 - (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles;
+- (void)refreshSelectionTracking;
 @end
 
 @implementation SimPlaylistController
@@ -471,6 +474,9 @@ struct ReloadOperation {
 
     // Initial data load
     [self rebuildFromPlaylist];
+
+    // Start selection tracking so Selection Properties (sections=metadata) reflects this view
+    [self refreshSelectionTracking];
 
     // Auto-resize columns to fit view
     [self autoResizeColumns];
@@ -1846,6 +1852,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
 - (void)handlePlaylistSwitched {
     [self rebuildFromPlaylist];
+    [self refreshSelectionTracking];
 }
 
 - (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles {
@@ -1925,10 +1932,28 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
 - (void)handlePlaybackNewTrack:(metadb_handle_ptr)track {
     [self updatePlayingIndicator];
+    [self refreshSelectionTracking];
 }
 
 - (void)handlePlaybackStopped {
     _playlistView.playingIndex = -1;
+}
+
+- (void)refreshSelectionTracking {
+    // Acquire holder lazily (once), then restart tracking each time.
+    // set_playlist_selection_tracking() auto-follows the active playlist's selection,
+    // keeping Selection Properties (sections=metadata) in sync after playlist switches.
+    // Tracking can end if another component calls a set method on its own holder, so we
+    // re-call here on every playlist switch and new-track event to reclaim it.
+    if (!_selectionHolder.is_valid()) {
+        auto mgr = ui_selection_manager::tryGet();
+        if (mgr.is_valid()) {
+            _selectionHolder = mgr->acquire();
+        }
+    }
+    if (_selectionHolder.is_valid()) {
+        _selectionHolder->set_playlist_selection_tracking();
+    }
 }
 
 #pragma mark - Queue Event Handlers
