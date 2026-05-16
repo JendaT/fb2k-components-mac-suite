@@ -1256,6 +1256,13 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     titleformat_object::ptr headerScript =
         simplaylist::TitleFormatHelper::compileWithFallback([preset.headerPattern UTF8String], nullptr);
 
+    // Compile grouping key pattern (boundary detection, optional)
+    titleformat_object::ptr groupingScript;
+    BOOL hasGroupingPattern = (preset.groupingPattern.length > 0);
+    if (hasGroupingPattern) {
+        groupingScript = simplaylist::TitleFormatHelper::compileWithFallback([preset.groupingPattern UTF8String], nullptr);
+    }
+
     // Compile subgroup pattern (if any)
     NSString *subgroupPattern = [preset subgroupPattern];
     titleformat_object::ptr subgroupScript;
@@ -1281,8 +1288,9 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // Use shared SubgroupDetector to ensure consistent logic across all code paths
     SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
-    std::string currentHeader;
+    std::string currentGroupKey;
     pfc::string8 formattedHeader;
+    pfc::string8 formattedGroupingKey;
     pfc::string8 formattedSubgroup;
 
     simplaylist::GroupBuildCallbacks buildCb;
@@ -1290,6 +1298,12 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         handles[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
         return formattedHeader.c_str();
     };
+    if (hasGroupingPattern) {
+        buildCb.formatGroupKey = [&](size_t i) {
+            handles[i]->format_title(nullptr, formattedGroupingKey, groupingScript, nullptr);
+            return formattedGroupingKey.c_str();
+        };
+    }
     if (hasSubgroups) {
         buildCb.formatSubgroup = [&](size_t i) {
             handles[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
@@ -1300,7 +1314,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 
     simplaylist::buildGroups(0, MIN((size_t)detectUpTo, (size_t)handles.get_count()),
                              hasSubgroups, /* forceFirstNewGroup */ true,
-                             currentHeader, subgroupDetector, buildCb,
+                             currentGroupKey, subgroupDetector, buildCb,
                              groupStarts, groupHeaders, groupArtKeys,
                              subgroupStarts, subgroupHeaders);
 
@@ -1328,7 +1342,11 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     if (detectUpTo < itemCount) {
         auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
         NSString *headerPattern = preset.headerPattern;
-        NSString *lastHeader = (groupHeaders.count > 0) ? [groupHeaders lastObject] : @"";
+        NSString *groupingPattern = preset.groupingPattern;
+        // Seed the seam comparison with the sync scan's final boundary key
+        // (equals the last header text unless a grouping pattern is active).
+        // Kept as std::string for the same invalid-UTF-8 reason as lastSubgroup.
+        std::string lastGroupKey(currentGroupKey);
         // IMPORTANT: Use the actual subgroup state from detector, not subgroupHeaders.lastObject
         // because if showFirstSubgroup=OFF, the first subgroup wasn't added to the list.
         // Kept as std::string: the NSString round-trip yielded nil for invalid
@@ -1346,12 +1364,18 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             NSMutableArray<NSNumber *> *moreSubgroupStarts = [NSMutableArray array];
             NSMutableArray<NSString *> *moreSubgroupHeaders = [NSMutableArray array];
 
-            std::string bgCurrentHeader([lastHeader UTF8String]);
+            std::string bgCurrentGroupKey(lastGroupKey);
             pfc::string8 bgFormattedHeader;
+            pfc::string8 bgFormattedGroupingKey;
             pfc::string8 bgFormattedSubgroup;
 
             titleformat_object::ptr bgHeaderScript =
                 simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
+
+            titleformat_object::ptr bgGroupingScript;
+            if (hasGroupingPattern) {
+                bgGroupingScript = simplaylist::TitleFormatHelper::compileWithFallback([groupingPattern UTF8String], nullptr);
+            }
 
             titleformat_object::ptr bgSubgroupScript;
             if (hasSubgroups) {
@@ -1374,6 +1398,12 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 (*handlesPtr)[i]->format_title(nullptr, bgFormattedHeader, bgHeaderScript, nullptr);
                 return bgFormattedHeader.c_str();
             };
+            if (hasGroupingPattern) {
+                buildCb.formatGroupKey = [&](size_t i) {
+                    (*handlesPtr)[i]->format_title(nullptr, bgFormattedGroupingKey, bgGroupingScript, nullptr);
+                    return bgFormattedGroupingKey.c_str();
+                };
+            }
             if (hasSubgroups) {
                 buildCb.formatSubgroup = [&](size_t i) {
                     (*handlesPtr)[i]->format_title(nullptr, bgFormattedSubgroup, bgSubgroupScript, nullptr);
@@ -1385,7 +1415,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 
             if (!simplaylist::buildGroups(detectUpTo, handlesPtr->get_count(),
                                           hasSubgroups, /* forceFirstNewGroup */ false,
-                                          bgCurrentHeader, bgSubgroupDetector, buildCb,
+                                          bgCurrentGroupKey, bgSubgroupDetector, buildCb,
                                           moreGroupStarts, moreGroupHeaders, moreGroupArtKeys,
                                           moreSubgroupStarts, moreSubgroupHeaders)) {
                 return;
@@ -1474,6 +1504,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // Copy handles to a shared_ptr for thread safety
     auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
     NSString *headerPattern = preset.headerPattern;
+    NSString *groupingPattern = preset.groupingPattern;
     NSString *subgroupPattern = [preset subgroupPattern];  // Get first subgroup pattern
 
     // PROGRESSIVE: Detect groups in background without blocking UI
@@ -1484,6 +1515,15 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         // Compile header pattern
         titleformat_object::ptr headerScript =
             simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
+
+        // Compile grouping key pattern (boundary detection).
+        // When set, consecutive tracks with the same grouping key are kept in one group
+        // even if their header text differs (e.g., multi-artist albums).
+        titleformat_object::ptr groupingScript;
+        BOOL hasGroupingPattern = (groupingPattern && groupingPattern.length > 0);
+        if (hasGroupingPattern) {
+            groupingScript = simplaylist::TitleFormatHelper::compileWithFallback([groupingPattern UTF8String], nullptr);
+        }
 
         // Compile subgroup pattern (if any)
         titleformat_object::ptr subgroupScript;
@@ -1510,8 +1550,9 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
         // format_title with metadb_handle is thread-safe for reading
-        std::string currentHeader;
+        std::string currentGroupKey;
         pfc::string8 formattedHeader;
+        pfc::string8 formattedGroupingKey;
         pfc::string8 formattedSubgroup;
 
         simplaylist::GroupBuildCallbacks buildCb;
@@ -1519,6 +1560,12 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             (*handlesPtr)[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
             return formattedHeader.c_str();
         };
+        if (hasGroupingPattern) {
+            buildCb.formatGroupKey = [&](size_t i) {
+                (*handlesPtr)[i]->format_title(nullptr, formattedGroupingKey, groupingScript, nullptr);
+                return formattedGroupingKey.c_str();
+            };
+        }
         if (hasSubgroups) {
             buildCb.formatSubgroup = [&](size_t i) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
@@ -1530,7 +1577,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 
         if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
                                       hasSubgroups, /* forceFirstNewGroup */ true,
-                                      currentHeader, subgroupDetector, buildCb,
+                                      currentGroupKey, subgroupDetector, buildCb,
                                       groupStarts, groupHeaders, groupArtKeys,
                                       subgroupStarts, subgroupHeaders)) {
             return;
@@ -1883,6 +1930,7 @@ static BOOL validCachedStringArray(NSArray *arr) {
 
     auto handlesPtr = std::make_shared<metadb_handle_list>(std::move(handles));
     NSString *headerPattern = preset.headerPattern;
+    NSString *groupingPattern = preset.groupingPattern;
     NSString *subgroupPattern = [preset subgroupPattern];
 
     __weak typeof(self) weakSelf = self;
@@ -1892,6 +1940,12 @@ static BOOL validCachedStringArray(NSArray *arr) {
         // Compile patterns
         titleformat_object::ptr headerScript =
             simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
+
+        titleformat_object::ptr groupingScript;
+        BOOL hasGroupingPattern = (groupingPattern && groupingPattern.length > 0);
+        if (hasGroupingPattern) {
+            groupingScript = simplaylist::TitleFormatHelper::compileWithFallback([groupingPattern UTF8String], nullptr);
+        }
 
         titleformat_object::ptr subgroupScript;
         BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
@@ -1912,8 +1966,9 @@ static BOOL validCachedStringArray(NSArray *arr) {
             simplaylist_config::kDefaultShowFirstSubgroupHeader);
         SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
-        std::string currentHeader;
+        std::string currentGroupKey;
         pfc::string8 formattedHeader;
+        pfc::string8 formattedGroupingKey;
         pfc::string8 formattedSubgroup;
 
         simplaylist::GroupBuildCallbacks buildCb;
@@ -1921,6 +1976,12 @@ static BOOL validCachedStringArray(NSArray *arr) {
             (*handlesPtr)[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
             return formattedHeader.c_str();
         };
+        if (hasGroupingPattern) {
+            buildCb.formatGroupKey = [&](size_t i) {
+                (*handlesPtr)[i]->format_title(nullptr, formattedGroupingKey, groupingScript, nullptr);
+                return formattedGroupingKey.c_str();
+            };
+        }
         if (hasSubgroups) {
             buildCb.formatSubgroup = [&](size_t i) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
@@ -1932,7 +1993,7 @@ static BOOL validCachedStringArray(NSArray *arr) {
 
         if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
                                       hasSubgroups, /* forceFirstNewGroup */ true,
-                                      currentHeader, subgroupDetector, buildCb,
+                                      currentGroupKey, subgroupDetector, buildCb,
                                       groupStarts, groupHeaders, groupArtKeys,
                                       subgroupStarts, subgroupHeaders)) {
             return;
