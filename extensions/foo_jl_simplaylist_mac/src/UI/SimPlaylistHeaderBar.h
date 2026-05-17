@@ -22,8 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) CGFloat groupColumnWidth;
 
 // Style settings (set by controller based on config)
-@property (nonatomic, assign) fb2k_ui::SizeVariant headerSize;
-@property (nonatomic, assign) fb2k_ui::AccentMode accentMode;
+@property (nonatomic, assign) CGFloat headerHeight;
 @property (nonatomic, assign) BOOL glassBackground;
 
 // Sync horizontal scroll with main view

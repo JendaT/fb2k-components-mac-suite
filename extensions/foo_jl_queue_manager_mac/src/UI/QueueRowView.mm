@@ -40,10 +40,7 @@
     if (self.selectionHighlightStyle != NSTableViewSelectionHighlightStyleNone) {
         NSRect selectionRect = self.bounds;
         // Use glass-aware selection color for consistency
-        BOOL isGlass = [self isTransparentMode];
-        NSColor *selColor = isGlass
-            ? fb2k_ui::selectedBackgroundColorForGlass()
-            : fb2k_ui::selectedBackgroundColor();
+        NSColor *selColor = fb2k_ui::selectedBackgroundColor();
         [selColor setFill];
         NSRectFill(selectionRect);
     }

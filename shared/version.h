@@ -44,3 +44,15 @@
 // Effects DSP
 #define EFFECTS_DSP_VERSION "1.0.0"
 #define EFFECTS_DSP_VERSION_INT 100
+
+// LibVanced (Library Browser)
+#define LIBVANCED_VERSION "1.0.0"
+#define LIBVANCED_VERSION_INT 100
+
+// AlbumViewVanced
+#define ALBUMVIEWVANCED_VERSION "1.0.0"
+#define ALBUMVIEWVANCED_VERSION_INT 100
+
+// PlayVanced (Now Playing panel)
+#define PLAYVANCED_VERSION "1.0.0"
+#define PLAYVANCED_VERSION_INT 100

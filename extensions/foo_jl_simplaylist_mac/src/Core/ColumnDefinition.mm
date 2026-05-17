@@ -10,6 +10,40 @@
 
 @implementation ColumnDefinition
 
+static ColumnDefinition *CreateRatingColumn(void) {
+    ColumnDefinition *col = [ColumnDefinition columnWithName:@"Rating"
+                                                      pattern:@"%rating%"
+                                                        width:64
+                                                    alignment:ColumnAlignmentCenter];
+    col.clickable = YES;
+    return col;
+}
+
+static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition *> *columns) {
+    if (columns.count == 0) return columns;
+
+    for (ColumnDefinition *col in columns) {
+        if ([col.name caseInsensitiveCompare:@"Rating"] == NSOrderedSame ||
+            [col.pattern caseInsensitiveCompare:@"%rating%"] == NSOrderedSame ||
+            [col.pattern caseInsensitiveCompare:@"$meta(rating)"] == NSOrderedSame) {
+            col.clickable = YES;
+            if (col.width < 56) col.width = 64;
+            return columns;
+        }
+    }
+
+    NSMutableArray<ColumnDefinition *> *result = [columns mutableCopy];
+    NSUInteger insertIndex = result.count;
+    for (NSUInteger i = 0; i < result.count; i++) {
+        if ([result[i].name caseInsensitiveCompare:@"Duration"] == NSOrderedSame) {
+            insertIndex = i;
+            break;
+        }
+    }
+    [result insertObject:CreateRatingColumn() atIndex:insertIndex];
+    return result;
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -96,9 +130,9 @@
                     simplaylist_config::kColumns, cleanedJSON.UTF8String);
                 FB2K_console_formatter() << "[SimPlaylist] Removed "
                     << (columns.count - cleaned.count) << " orphaned custom column(s)";
-                return cleaned;
+                return EnsureRatingColumn(cleaned);
             }
-            return columns;
+            return EnsureRatingColumn(columns);
         }
     }
 
@@ -108,7 +142,7 @@
 
     NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
     if (columns.count > 0) {
-        return columns;
+        return EnsureRatingColumn(columns);
     }
 
     // Final fallback to hardcoded defaults
@@ -134,6 +168,8 @@
                                    width:150
                                alignment:ColumnAlignmentLeft
                               autoResize:YES],
+
+        CreateRatingColumn(),
 
         [ColumnDefinition columnWithName:@"Duration"
                                  pattern:@"%length%"
@@ -233,8 +269,9 @@
         [ColumnDefinition columnWithName:@"File size"
                                  pattern:@"%filesize%"
                                    width:60
-                               alignment:ColumnAlignmentRight],
-        // Note: Play Count, First Played, Last Played, Date Added, Rating
+                                alignment:ColumnAlignmentRight],
+        CreateRatingColumn(),
+        // Note: Play Count, First Played, Last Played, and Date Added
         // are provided by SDK playlistColumnProvider, not hardcoded here
     ];
 }

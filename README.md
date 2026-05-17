@@ -13,6 +13,9 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.1.0 | [📖](docs/waveform.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.1.0 | [📖](docs/queuemanager.md) |
+| [AlbumViewVanced](#albumviewvanced) | Album grid library browser with cover art | 1.0.0 | [📖](extensions/foo_jl_albumviewvanced_mac/README.md) |
+| [LibVanced](#libvanced) | Hierarchical tree library browser | 1.0.0 | [📖](extensions/foo_jl_libvanced_mac/README.md) |
+| [PlayVanced](#playvanced) | Now Playing bar with transport controls | 1.0.0 | [📖](extensions/foo_jl_playvanced_mac/README.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.3.0 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
@@ -111,6 +114,57 @@ Visual playback queue manager - functionality that exists in Windows foobar2000 
 - Live updates when queue changes
 - Double-click to play, Delete to remove
 - Context menu (Play, Remove, Clear, Show in Playlist)
+
+---
+
+### AlbumViewVanced
+
+Album grid browser for your local library, with expandable track lists and cover thumbnails.
+
+**Highlights:**
+- Album/track actions from keyboard and mouse
+- Search/filter with foobar2000 library query syntax
+- Drag & drop to SimPlaylist, Queue Manager, PlayVanced, or Finder
+- Right-click context menu for play/queue actions
+
+**Main shortcuts:**
+- **Enter** — play selected album/track
+- **Q** — queue selected album/track
+- **Space** — play/pause
+- **Esc** — collapse expanded album
+
+---
+
+### LibVanced
+
+Tree-based library browser (artist → album → track) with grouping, optional album art, and multi-select.
+
+**Highlights:**
+- Fast browsing in a hierarchical tree
+- Search/filter support
+- Drag & drop to playlists, queue panels, and Finder
+- Context menu with send/add/queue actions
+
+**Main shortcuts:**
+- **Enter** — send selection to current playlist
+- **Q** — add selection to playback queue
+- **Space** — play/pause
+- **Cmd+A** — select all visible rows
+
+---
+
+### PlayVanced
+
+Now Playing bar with transport controls, progress, volume, and album art.
+
+**Highlights:**
+- Previous / Play-Pause / Next / Stop controls
+- Shuffle toggle and repeat cycle controls
+- Progress seek and volume slider
+- Accepts drag & drop from library panels/Finder to queue tracks quickly
+
+**Main shortcut:**
+- **Space** — play/pause
 
 ---
 

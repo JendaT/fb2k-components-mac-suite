@@ -9,6 +9,7 @@ WORKTREE_BASE="$HOME/Projects/Foobar2000-worktrees"
 SDK_DIR="SDK-2025-03-07"
 
 COMPONENTS=(
+    albumviewvanced
     effects-dsp
     simplaylist
     plorg

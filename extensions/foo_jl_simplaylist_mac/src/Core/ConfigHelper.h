@@ -65,6 +65,10 @@ static const char* const kGroupHeaderSpacing = "group_header_spacing";
 // Debug rendering: show diagnostic text on rendering anomalies
 static const char* const kDebugRendering = "debug_rendering";
 
+// Last playing track persistence (restored on startup)
+static const char* const kLastPlayingPlaylist = "last_playing_playlist";
+static const char* const kLastPlayingPath = "last_playing_path";
+
 // Drag to Finder: move files by default (instead of copy)
 static const char* const kDragToFinderMove = "drag_to_finder_move";
 
@@ -182,7 +186,7 @@ inline const char* getDefaultGroupPresetsJSON() {
       "name": "Artist - album / cover",
       "sorting_pattern": "%path_sort%",
       "header": {
-        "pattern": "[%album artist% - ]['['%date%']' ][%album%]",
+        "pattern": "[%album artist% - ]['['$year(%date%)']' ][%album%]",
         "display": "text"
       },
       "group_column": {

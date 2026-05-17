@@ -46,7 +46,8 @@ Full keyboard support:
 - **Page Up/Down** - Scroll by page
 - **Home/End** - Jump to beginning/end
 - **Enter** - Play selected track
-- **Space** - Toggle play/pause
+- **Space** - Toggle play/pause (starts playback when stopped)
+- **Q** - Queue all selected tracks; if selection is empty, queue the hovered track
 
 ### Drag & Drop Reordering
 

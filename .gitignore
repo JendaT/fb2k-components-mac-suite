@@ -62,3 +62,6 @@ sdk_config.sh
 BACKLOG.md
 # Local development symlinks
 extensions/*/src/Integration/JLConstraintDebugger.*
+
+Agents.md
+.claude/context

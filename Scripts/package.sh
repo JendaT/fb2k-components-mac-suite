@@ -16,6 +16,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # Component name mapping (short name -> directory suffix and output name)
 # All components use jl_ prefix for namespace clarity
 typeset -A DIR_MAP=(
+    ["albumviewvanced"]="jl_albumviewvanced"
     ["effects_dsp"]="jl_effects_dsp"
     ["effects-dsp"]="jl_effects_dsp"
     ["simplaylist"]="jl_simplaylist"
@@ -51,6 +52,7 @@ if [ -z "$1" ]; then
     echo "  scrobble       - Last.fm Scrobbler"
     echo "  albumart       - Album Art"
     echo "  queue_manager  - Queue Manager"
+    echo "  albumviewvanced - AlbumViewVanced"
     echo "  biography      - Artist Biography"
     exit 1
 fi
@@ -60,7 +62,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography"
+    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, albumviewvanced"
     exit 1
 fi
 

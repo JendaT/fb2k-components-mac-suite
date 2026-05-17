@@ -93,6 +93,32 @@
 
 @implementation ScrobbleWidgetController
 
+- (void)pruneLoadedImagesToRecentTracks:(NSArray<RecentTrack *> *)tracks {
+    if (_loadedImages.count == 0) return;
+
+    NSMutableSet<NSURL *> *activeURLs = [NSMutableSet set];
+    for (RecentTrack *track in tracks) {
+        if (track.imageURL) {
+            [activeURLs addObject:track.imageURL];
+        }
+    }
+
+    if (activeURLs.count == 0) {
+        [_loadedImages removeAllObjects];
+        _widgetView.albumImages = nil;
+        return;
+    }
+
+    NSArray<NSURL *> *allKeys = [_loadedImages allKeys];
+    for (NSURL *url in allKeys) {
+        if (![activeURLs containsObject:url]) {
+            [_loadedImages removeObjectForKey:url];
+        }
+    }
+
+    _widgetView.albumImages = (_loadedImages.count > 0) ? [_loadedImages copy] : nil;
+}
+
 - (instancetype)init {
     return [self initWithParameters:nil];
 }
@@ -247,6 +273,10 @@
         [[LastFmClient shared] cancelStreakDiscovery:_streakDiscoveryToken];
         _streakDiscoveryToken = nil;
     }
+
+    // Release per-view image references while hidden; global NSCache remains warm.
+    [_loadedImages removeAllObjects];
+    _widgetView.albumImages = nil;
 }
 
 #pragma mark - Timer Management
@@ -410,6 +440,9 @@
             self.widgetView.recentTracks = tracks;
             self.widgetView.lastUpdated = [NSDate date];
             self.widgetView.state = (tracks.count > 0) ? ScrobbleWidgetStateReady : ScrobbleWidgetStateEmpty;
+
+            // Prevent unbounded growth when new tracks/albums keep arriving over long sessions.
+            [self pruneLoadedImagesToRecentTracks:tracks];
 
             [self loadRecentTrackImages:tracks];
             [self.widgetView refreshDisplay];

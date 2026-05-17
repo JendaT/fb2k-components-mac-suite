@@ -70,6 +70,7 @@ end
 module Fb2kVersions
   # Map component names to their version constant names
   VERSION_MAP = {
+    "albumviewvanced" => "ALBUMVIEWVANCED_VERSION",
     "effects_dsp" => "EFFECTS_DSP_VERSION",
     "simplaylist" => "SIMPLAYLIST_VERSION",
     "plorg" => "PLORG_VERSION",
@@ -80,7 +81,9 @@ module Fb2kVersions
     "album_art" => "ALBUMART_VERSION",
     "biography" => "BIOGRAPHY_VERSION",
     "queue_manager" => "QUEUE_MANAGER_VERSION",
-    "queue" => "QUEUE_MANAGER_VERSION"
+    "queue" => "QUEUE_MANAGER_VERSION",
+    "libvanced" => "LIBVANCED_VERSION",
+    "playvanced" => "PLAYVANCED_VERSION"
   }
 
   # Parse version.h and extract versions

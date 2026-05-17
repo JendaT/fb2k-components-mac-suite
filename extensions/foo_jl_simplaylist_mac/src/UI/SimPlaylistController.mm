@@ -315,6 +315,82 @@ struct ReloadOperation {
     bool completed;
 };
 
+static NSInteger countFilledStars(NSString *string) {
+    NSInteger count = 0;
+    for (NSUInteger i = 0; i < string.length; i++) {
+        if ([string characterAtIndex:i] == 0x2605) { // ★
+            count++;
+        }
+    }
+    return count;
+}
+
+static BOOL ratingCommandMatches(NSString *fullPath, NSString *commandName, NSInteger rating) {
+    NSString *path = fullPath.lowercaseString;
+    NSString *name = commandName.lowercaseString;
+    BOOL isRatingArea = ([path containsString:@"rating"] || [path containsString:@"playback statistics"]);
+    if (!isRatingArea) return NO;
+
+    if (rating == 0) {
+        return [name containsString:@"clear"] ||
+               [name containsString:@"unrated"] ||
+               [name containsString:@"not set"] ||
+               [name containsString:@"no rating"] ||
+               [name containsString:@"remove rating"];
+    }
+
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)rating];
+    if ([name isEqualToString:number]) return YES;
+    if ([name containsString:[NSString stringWithFormat:@"%@ star", number]]) return YES;
+    if ([name containsString:[NSString stringWithFormat:@"rating %@", number]]) return YES;
+    if (countFilledStars(commandName) == rating) return YES;
+
+    return NO;
+}
+
+static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSString *prefix) {
+    if (!item.is_valid()) return NO;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+
+    if (item->type() == menu_tree_item::itemCommand) {
+        if (ratingCommandMatches(path, name, rating) && !(item->flags() & menu_flags::disabled)) {
+            item->execute(nullptr);
+            return YES;
+        }
+        return NO;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            if (executeRatingCommand(item->childAt(i), rating, path)) {
+                return YES;
+            }
+        }
+    }
+
+    return NO;
+}
+
+static void logRatingMenuCandidates(menu_tree_item::ptr item, NSString *prefix) {
+    if (!item.is_valid()) return;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+    NSString *lowerPath = path.lowercaseString;
+
+    if ([lowerPath containsString:@"rating"] || [lowerPath containsString:@"playback statistics"]) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating menu candidate: " << path.UTF8String;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            logRatingMenuCandidates(item->childAt(i), path);
+        }
+    }
+}
+
 @interface SimPlaylistController () <SimPlaylistViewDelegate, SimPlaylistHeaderBarDelegate> {
     // Context menu manager - must be stored for execute_by_id to work
     contextmenu_manager_v2::ptr _contextMenuManager;
@@ -373,27 +449,21 @@ struct ReloadOperation {
     BOOL glassBackground = simplaylist_config::getConfigBool(
         simplaylist_config::kGlassBackground,
         simplaylist_config::kDefaultGlassBackground);
-    fb2k_ui::SizeVariant headerSize = static_cast<fb2k_ui::SizeVariant>(
-        simplaylist_config::getConfigInt(
-            simplaylist_config::kColumnHeaderSize,
-            simplaylist_config::kDefaultColumnHeaderSize));
-    fb2k_ui::AccentMode accentMode = static_cast<fb2k_ui::AccentMode>(
-        simplaylist_config::getConfigInt(
-            simplaylist_config::kHeaderAccentColor,
-            simplaylist_config::kDefaultHeaderAccentColor));
-
-    // Create container view - use glass helper for transparent mode
+    // Create container view - glass uses NSVisualEffectView for transparency
     NSView *container;
     if (glassBackground) {
-        container = fb2k_ui::createGlassContainer(NSMakeRect(0, 0, 400, 300));
+        NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
+        effectView.material = NSVisualEffectMaterialSidebar;
+        effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        effectView.state = NSVisualEffectStateFollowsWindowActiveState;
+        container = effectView;
     } else {
         container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     }
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.view = container;
 
-    // Header height from shared UIStyles
-    CGFloat headerHeight = fb2k_ui::headerHeight(headerSize);
+    CGFloat headerHeight = fb2k_ui::kDefaultHeaderHeight;
     CGFloat containerHeight = 300;
 
     // Create header bar at TOP (in non-flipped view, y increases upward)
@@ -404,8 +474,7 @@ struct ReloadOperation {
     _headerBar.groupColumnWidth = simplaylist_config::getConfigInt(
         simplaylist_config::kGroupColumnWidth,
         simplaylist_config::kDefaultGroupColumnWidth);
-    _headerBar.headerSize = headerSize;
-    _headerBar.accentMode = accentMode;
+    _headerBar.headerHeight = headerHeight;
     _headerBar.glassBackground = glassBackground;
     [container addSubview:_headerBar];
 
@@ -433,7 +502,11 @@ struct ReloadOperation {
 
     // Configure scroll view and set document view
     _scrollView.documentView = _playlistView;
-    fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
+    _scrollView.drawsBackground = !glassBackground;
+    _scrollView.contentView.drawsBackground = !glassBackground;
+    if (!glassBackground) {
+        _scrollView.backgroundColor = fb2k_ui::backgroundColor();
+    }
     [container addSubview:_scrollView];
 
     // Observe scroll changes to sync header
@@ -498,20 +571,10 @@ struct ReloadOperation {
         _activePresetIndex = 0;
     }
 
-    // Reload header size and accent mode from config
-    fb2k_ui::SizeVariant headerSize = static_cast<fb2k_ui::SizeVariant>(
-        simplaylist_config::getConfigInt(
-            simplaylist_config::kColumnHeaderSize,
-            simplaylist_config::kDefaultColumnHeaderSize));
-    fb2k_ui::AccentMode accentMode = static_cast<fb2k_ui::AccentMode>(
-        simplaylist_config::getConfigInt(
-            simplaylist_config::kHeaderAccentColor,
-            simplaylist_config::kDefaultHeaderAccentColor));
-    CGFloat headerHeight = fb2k_ui::headerHeight(headerSize);
+    CGFloat headerHeight = fb2k_ui::kDefaultHeaderHeight;
 
     // Update header bar properties and frames
-    _headerBar.headerSize = headerSize;
-    _headerBar.accentMode = accentMode;
+    _headerBar.headerHeight = headerHeight;
     CGFloat containerHeight = self.view.bounds.size.height;
     _headerBar.frame = NSMakeRect(0, containerHeight - headerHeight, self.view.bounds.size.width, headerHeight);
     _scrollView.frame = NSMakeRect(0, 0, self.view.bounds.size.width, containerHeight - headerHeight);
@@ -524,7 +587,11 @@ struct ReloadOperation {
     if (glassBackground != currentlyGlass) {
         NSView *newContainer;
         if (glassBackground) {
-            newContainer = fb2k_ui::createGlassContainer(self.view.frame);
+            NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:self.view.frame];
+            effectView.material = NSVisualEffectMaterialSidebar;
+            effectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+            effectView.state = NSVisualEffectStateFollowsWindowActiveState;
+            newContainer = effectView;
         } else {
             newContainer = [[NSView alloc] initWithFrame:self.view.frame];
         }
@@ -541,7 +608,11 @@ struct ReloadOperation {
     }
     _headerBar.glassBackground = glassBackground;
     _playlistView.glassBackground = glassBackground;
-    fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
+    _scrollView.drawsBackground = !glassBackground;
+    _scrollView.contentView.drawsBackground = !glassBackground;
+    if (!glassBackground) {
+        _scrollView.backgroundColor = fb2k_ui::backgroundColor();
+    }
 
     // Reload group column width
     CGFloat newWidth = simplaylist_config::getConfigInt(
@@ -579,7 +650,17 @@ struct ReloadOperation {
 }
 
 - (void)autoResizeColumns {
-    CGFloat availableWidth = _scrollView.bounds.size.width - _playlistView.groupColumnWidth;
+    // Base column sizing on the visible document area rather than the scroll view
+    // frame, which includes scroller chrome and can otherwise obscure trailing content.
+    CGFloat viewportWidth = _scrollView.contentView.bounds.size.width;
+    if (viewportWidth <= 0) {
+        viewportWidth = _scrollView.bounds.size.width;
+    }
+
+    // Reserve a small trailing gutter so right-aligned values remain visually separated
+    // from the viewport edge and vertical scroller.
+    static const CGFloat kTrailingColumnPadding = 16.0;
+    CGFloat availableWidth = viewportWidth - _playlistView.groupColumnWidth - kTrailingColumnPadding;
 
     // Calculate fixed width (non-auto-resize columns)
     CGFloat fixedWidth = 0;
@@ -1765,9 +1846,32 @@ static const NSUInteger kMaxCacheableGroups = 500;
     _playlistView.playingIndex = -1;
     if (pm->get_playing_item_location(&playingPlaylist, &playingItem)) {
         if (playingPlaylist == (t_size)_currentPlaylistIndex) {
-            // In both flat and sparse group mode, we can use playlist index directly
-            // The view will handle the row mapping
             _playlistView.playingIndex = (NSInteger)playingItem;
+        }
+        return;
+    }
+
+    // Nothing playing — try to restore from persisted last-playing track
+    std::string lastPath = simplaylist_config::getConfigString(
+        simplaylist_config::kLastPlayingPath, "");
+    if (lastPath.empty() || _currentPlaylistIndex < 0) return;
+
+    std::string lastPlaylist = simplaylist_config::getConfigString(
+        simplaylist_config::kLastPlayingPlaylist, "");
+    if (lastPlaylist.empty()) return;
+
+    pfc::string8 currentName;
+    if (!pm->playlist_get_name((t_size)_currentPlaylistIndex, currentName)) return;
+    if (lastPlaylist != currentName.c_str()) return;
+
+    t_size itemCount = pm->playlist_get_item_count((t_size)_currentPlaylistIndex);
+    for (t_size i = 0; i < itemCount; i++) {
+        metadb_handle_ptr handle;
+        if (pm->playlist_get_item_handle(handle, (t_size)_currentPlaylistIndex, i)
+            && handle.is_valid()
+            && strcmp(handle->get_path(), lastPath.c_str()) == 0) {
+            _playlistView.playingIndex = (NSInteger)i;
+            return;
         }
     }
 }
@@ -1824,9 +1928,36 @@ static const NSUInteger kMaxCacheableGroups = 500;
 - (void)handleEnsureVisible:(NSInteger)playlistIndex {
     if (playlistIndex < 0) return;
     NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
-    if (row >= 0) {
-        [_playlistView scrollRowToVisible:row];
+    if (row < 0) return;
+
+    NSRect trackRect = [_playlistView rectForRow:row];
+
+    if (_playlistView.groupStarts.count > 0) {
+        NSInteger groupIndex = [_playlistView groupIndexForRow:row];
+        if (groupIndex >= 0) {
+            NSInteger headerRow = [_playlistView rowForGroupHeader:groupIndex];
+            if (headerRow >= 0) {
+                CGFloat groupTop = [_playlistView yOffsetForRow:headerRow];
+                CGFloat groupHeight = [_playlistView pixelHeightForGroup:groupIndex];
+                NSRect albumRect = NSMakeRect(0, groupTop,
+                                              _playlistView.bounds.size.width, groupHeight);
+
+                NSRect visibleRect = _playlistView.visibleRect;
+                if (albumRect.size.height <= visibleRect.size.height) {
+                    [_playlistView scrollRectToVisible:albumRect];
+                    return;
+                }
+                // Album too tall — show header + track together
+                NSRect headerRect = [_playlistView rectForRow:headerRow];
+                NSRect combined = NSUnionRect(headerRect, trackRect);
+                if (combined.size.height <= visibleRect.size.height) {
+                    [_playlistView scrollRectToVisible:combined];
+                    return;
+                }
+            }
+        }
     }
+    [_playlistView scrollRectToVisible:trackRect];
 }
 
 - (void)handleItemsModified {
@@ -1840,6 +1971,22 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
 - (void)handlePlaybackNewTrack:(metadb_handle_ptr)track {
     [self updatePlayingIndicator];
+
+    if (track.is_valid()) {
+        try {
+            auto pm = playlist_manager::get();
+            t_size pp, pi;
+            if (pm->get_playing_item_location(&pp, &pi)) {
+                pfc::string8 name;
+                if (pm->playlist_get_name(pp, name)) {
+                    simplaylist_config::setConfigString(
+                        simplaylist_config::kLastPlayingPlaylist, name.c_str());
+                }
+                simplaylist_config::setConfigString(
+                    simplaylist_config::kLastPlayingPath, track->get_path());
+            }
+        } catch (...) {}
+    }
 }
 
 - (void)handlePlaybackStopped {
@@ -2406,6 +2553,32 @@ static BOOL isRemotePath(const char *path) {
     }];
 }
 
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueGroupFrom:(NSInteger)firstPlaylistIndex count:(NSInteger)count {
+    if (_currentPlaylistIndex < 0 || firstPlaylistIndex < 0 || count <= 0) return;
+    auto pm = playlist_manager::get();
+    auto pc = playback_control::get();
+    bool queueWasEmpty = (pm->queue_get_count() == 0);
+    for (NSInteger i = 0; i < count; i++) {
+        pm->queue_add_item_playlist((t_size)_currentPlaylistIndex, (t_size)(firstPlaylistIndex + i));
+    }
+    if (queueWasEmpty && !pc->is_playing()) {
+        pc->start(playback_control::track_command_play);
+    }
+}
+
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueIndices:(NSIndexSet *)playlistIndices {
+    if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
+    auto pm = playlist_manager::get();
+    auto pc = playback_control::get();
+    bool queueWasEmpty = (pm->queue_get_count() == 0);
+    [playlistIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        pm->queue_add_item_playlist((t_size)_currentPlaylistIndex, (t_size)idx);
+    }];
+    if (queueWasEmpty && !pc->is_playing()) {
+        pc->start(playback_control::track_command_play);
+    }
+}
+
 - (void)playlistView:(SimPlaylistView *)view didChangeGroupColumnWidth:(CGFloat)newWidth {
     // Persist the new width to config
     simplaylist_config::setConfigInt(simplaylist_config::kGroupColumnWidth, (int64_t)newWidth);
@@ -2480,6 +2653,49 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     }
 
     return columnValues;
+}
+
+- (void)playlistView:(SimPlaylistView *)view didRequestSetRating:(NSInteger)rating forPlaylistIndex:(NSInteger)playlistIndex {
+    (void)view;
+    if (_currentPlaylistIndex < 0 || playlistIndex < 0) return;
+
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = (t_size)_currentPlaylistIndex;
+    if ((t_size)playlistIndex >= pm->playlist_get_item_count(activePlaylist)) return;
+
+    metadb_handle_ptr handle;
+    if (!pm->playlist_get_item_handle(handle, activePlaylist, (t_size)playlistIndex)) return;
+
+    metadb_handle_list handles;
+    handles.add_item(handle);
+
+    auto cmm = contextmenu_manager_v2::tryGet();
+    if (!cmm.is_valid()) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating command unavailable: context menu v2 is not available";
+        return;
+    }
+
+    cmm->init_context_ex(handles, contextmenu_manager::flag_view_full, contextmenu_item::caller_active_playlist_selection);
+    menu_tree_item::ptr root = cmm->build_menu();
+    if (!root.is_valid()) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating command unavailable: context menu root is empty";
+        return;
+    }
+
+    if (executeRatingCommand(root, rating, @"")) {
+        [_playlistView clearFormattedValuesCache];
+        [_playlistView reloadData];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self->_playlistView clearFormattedValuesCache];
+            [self->_playlistView reloadData];
+        });
+        return;
+    }
+
+    FB2K_console_formatter()
+        << "[SimPlaylist] No native rating command matched requested rating " << (long)rating
+        << "; logging rating-related context menu candidates";
+    logRatingMenuCandidates(root, @"");
 }
 
 #pragma mark - SimPlaylistHeaderBarDelegate

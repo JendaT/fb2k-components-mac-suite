@@ -62,10 +62,12 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) BOOL suppressFocusRing;  // Suppress focus ring briefly after drag
 @property (nonatomic, assign) NSInteger dropTargetRow;  // Row where items would be dropped
 @property (nonatomic, assign) NSInteger pendingClickRow;  // Row to select on mouseUp if no drag (for multi-select drag)
+@property (nonatomic, assign) NSInteger hoveredRatingPlaylistIndex;
+@property (nonatomic, assign) NSInteger hoveredRatingColumnIndex;
+@property (nonatomic, assign) NSInteger hoveredRatingValue;
 // Performance: cached row y-offsets for O(1) lookup
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *rowYOffsets;
 @property (nonatomic, assign) CGFloat totalContentHeight;
-@property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
 @end
@@ -100,6 +102,9 @@ static NSString *formatGroupDuration(double seconds) {
     _isDragging = NO;
     _dropTargetRow = -1;
     _pendingClickRow = -1;
+    _hoveredRatingPlaylistIndex = -1;
+    _hoveredRatingColumnIndex = -1;
+    _hoveredRatingValue = 0;
 
     // SPARSE GROUP MODEL - efficient O(G) storage
     _itemCount = 0;
@@ -224,9 +229,12 @@ static NSString *formatGroupDuration(double seconds) {
     using namespace simplaylist_config;
     _displaySize = getConfigInt(kDisplaySize, kDefaultDisplaySize);
 
-    // Row height from shared UIStyles
-    fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
-    _rowHeight = fb2k_ui::rowHeight(size);
+    // Row height based on display size: 0=Compact, 1=Normal, 2=Large
+    switch (_displaySize) {
+        case 0:  _rowHeight = 19.0; break;  // Compact
+        case 2:  _rowHeight = 26.0; break;  // Large
+        default: _rowHeight = 22.0; break;  // Normal
+    }
 
     _subgroupHeight = getConfigInt(kSubgroupHeight, kDefaultSubgroupHeight);
     _groupColumnWidth = getConfigInt(kGroupColumnWidth, kDefaultGroupColumnWidth);
@@ -255,6 +263,11 @@ static NSString *formatGroupDuration(double seconds) {
     return YES;  // Top-left origin for easier layout
 }
 
+- (void)prepareContentInRect:(NSRect)rect {
+    [super prepareContentInRect:rect];
+    [self setNeedsDisplay:YES];
+}
+
 - (BOOL)acceptsFirstResponder {
     return YES;
 }
@@ -279,6 +292,7 @@ static NSString *formatGroupDuration(double seconds) {
     _trackingArea = [[NSTrackingArea alloc]
                      initWithRect:self.bounds
                           options:(NSTrackingMouseMoved |
+                                   NSTrackingMouseEnteredAndExited |
                                    NSTrackingActiveInKeyWindow |
                                    NSTrackingInVisibleRect)
                             owner:self
@@ -306,9 +320,6 @@ static NSString *formatGroupDuration(double seconds) {
         [self setFrameSize:contentSize];
         [self invalidateIntrinsicContentSize];
     }
-    // Force full visible rect redraw on next drawRect: to prevent stale
-    // copy-on-scroll pixels when group data has changed
-    _needsFullRedraw = YES;
     [self setNeedsDisplay:YES];
 }
 
@@ -721,6 +732,103 @@ static NSString *formatGroupDuration(double seconds) {
     return width;
 }
 
+- (BOOL)isRatingColumn:(ColumnDefinition *)column {
+    if (!column) return NO;
+    return column.clickable &&
+           ([column.pattern caseInsensitiveCompare:@"%rating%"] == NSOrderedSame ||
+            [column.pattern caseInsensitiveCompare:@"$meta(rating)"] == NSOrderedSame ||
+            [column.name caseInsensitiveCompare:@"Rating"] == NSOrderedSame);
+}
+
+- (NSInteger)ratingFromString:(NSString *)value {
+    NSInteger rating = value.integerValue;
+    if (rating < 0) rating = 0;
+    if (rating > 5) rating = 5;
+    return rating;
+}
+
+- (NSString *)starStringForRating:(NSInteger)rating {
+    NSMutableString *stars = [NSMutableString stringWithCapacity:5];
+    for (NSInteger i = 1; i <= 5; i++) {
+        [stars appendString:(i <= rating) ? @"★" : @"☆"];
+    }
+    return stars;
+}
+
+- (void)drawRatingValue:(NSString *)value
+                 inRect:(NSRect)rect
+                 column:(ColumnDefinition *)column
+          playlistIndex:(NSInteger)playlistIndex
+               selected:(BOOL)selected {
+    NSInteger rating = [self ratingFromString:value];
+    BOOL isHovering = (playlistIndex == _hoveredRatingPlaylistIndex &&
+                       _hoveredRatingColumnIndex >= 0 &&
+                       _hoveredRatingValue > 0);
+    NSInteger displayRating = isHovering ? _hoveredRatingValue : rating;
+
+    NSColor *filledColor = selected ? fb2k_ui::selectedTextColor() : [NSColor controlAccentColor];
+    NSColor *emptyColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.45]
+                                  : [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.55];
+    NSColor *previewColor = selected ? fb2k_ui::selectedTextColor() : [[NSColor controlAccentColor] colorWithAlphaComponent:0.75];
+
+    NSMutableAttributedString *stars = [[NSMutableAttributedString alloc] init];
+    NSFont *font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
+    for (NSInteger i = 1; i <= 5; i++) {
+        BOOL filled = i <= displayRating;
+        NSColor *color = filled ? (isHovering ? previewColor : filledColor) : emptyColor;
+        NSAttributedString *star = [[NSAttributedString alloc] initWithString:(filled ? @"★" : @"☆")
+                                                                   attributes:@{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: color
+        }];
+        [stars appendAttributedString:star];
+    }
+
+    NSSize size = stars.size;
+    CGFloat x = rect.origin.x + MAX(0, (rect.size.width - size.width) / 2.0);
+    CGFloat y = rect.origin.y + round((rect.size.height - size.height) / 2.0);
+    [stars drawAtPoint:NSMakePoint(x, y)];
+}
+
+- (NSInteger)ratingValueAtPoint:(NSPoint)point
+                   playlistIndex:(NSInteger *)playlistIndexOut
+                     columnIndex:(NSInteger *)columnIndexOut {
+    NSInteger row = [self rowAtPoint:point];
+    NSInteger playlistIndex = [self playlistIndexForRow:row];
+    if (playlistIndex < 0) return 0;
+
+    CGFloat x = _groupColumnWidth;
+    for (NSInteger colIndex = 0; colIndex < (NSInteger)_columns.count; colIndex++) {
+        ColumnDefinition *col = _columns[colIndex];
+        NSRect cellRect = NSMakeRect(x, 0, col.width, self.bounds.size.height);
+        if (NSPointInRect(point, cellRect) && [self isRatingColumn:col]) {
+            CGFloat localX = point.x - x;
+            NSInteger rating = (NSInteger)floor((localX / MAX(col.width, 1.0)) * 5.0) + 1;
+            rating = MAX(1, MIN(5, rating));
+            if (playlistIndexOut) *playlistIndexOut = playlistIndex;
+            if (columnIndexOut) *columnIndexOut = colIndex;
+            return rating;
+        }
+        x += col.width;
+    }
+
+    return 0;
+}
+
+- (NSInteger)currentRatingForPlaylistIndex:(NSInteger)playlistIndex columnIndex:(NSInteger)columnIndex {
+    if (playlistIndex < 0 || columnIndex < 0) return 0;
+    NSNumber *indexKey = @(playlistIndex);
+    NSArray<NSString *> *columnValues = [_formattedValuesCache objectForKey:indexKey];
+    if (!columnValues && [_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
+        columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
+        if (columnValues) {
+            [_formattedValuesCache setObject:columnValues forKey:indexKey];
+        }
+    }
+    if (columnIndex >= (NSInteger)columnValues.count) return 0;
+    return [self ratingFromString:columnValues[columnIndex]];
+}
+
 - (CGFloat)heightForNode:(GroupNode *)node {
     switch (node.type) {
         case GroupNodeTypeHeader:
@@ -818,13 +926,10 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
 
-    // After group data changes, NSScrollView's copy-on-scroll may have copied stale
-    // pixels from before the change. Expand dirtyRect to full visible rect to ensure
-    // all visible rows are redrawn with current data.
-    if (_needsFullRedraw) {
-        _needsFullRedraw = NO;
-        dirtyRect = [self visibleRect];
-    }
+    // Layer-backed views draw into a backing store that is only updated on
+    // setNeedsDisplay:. Always draw the full visible rect so scrolling into
+    // previously-undrawn regions never shows stale/blank content.
+    dirtyRect = [self visibleRect];
 
     // Background - skip for glass mode to let underlying effect show through
     if (!_glassBackground) {
@@ -854,6 +959,10 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger totalRows = [self rowCount];
     if (firstRow < 0) firstRow = 0;
     if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
+
+    // Add small buffer for smooth scrolling
+    firstRow = MAX(0, firstRow - 1);
+    lastRow = MIN(totalRows - 1, lastRow + 1);
 
     // STEP 1: Fill group column background FIRST (before any content)
     // This ensures header text drawn later won't be covered
@@ -902,7 +1011,7 @@ static NSString *formatGroupDuration(double seconds) {
     BOOL isPadding = [self isRowPaddingRow:row];
     NSInteger playlistIndex = (isHeader || isSubgroupHeader || isPadding) ? -1 : [self playlistIndexForRow:row];
 
-    // Unmapped row: draw debug diagnostic if enabled, otherwise skip silently
+    // Unmapped row: group data is transitional (partial detection in progress).
     if (!isHeader && !isSubgroupHeader && !isPadding && playlistIndex < 0) {
         if (_debugRendering) {
             NSInteger groupIndex = [self groupIndexForRow:row];
@@ -1199,9 +1308,14 @@ static NSString *formatGroupDuration(double seconds) {
     NSColor *textColor = selected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
     NSColor *dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
                                     : fb2k_ui::secondaryTextColor();
-    // Font size from shared UIStyles
-    fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
-    NSFont *font = fb2k_ui::rowFont(size);
+    // Font size based on display size: 0=Compact, 1=Normal, 2=Large
+    CGFloat fontSize;
+    switch (_displaySize) {
+        case 0:  fontSize = 12.0; break;  // Compact
+        case 2:  fontSize = 14.0; break;  // Large
+        default: fontSize = 13.0; break;  // Normal
+    }
+    NSFont *font = [NSFont systemFontOfSize:fontSize];
 
     // Calculate vertical centering with equal top/bottom padding
     CGFloat textHeight = font.ascender - font.descender;
@@ -1215,6 +1329,13 @@ static NSString *formatGroupDuration(double seconds) {
                                     col.width - 8, textHeight);
 
         NSString *value = (colIndex < columnValues.count) ? columnValues[colIndex] : @"";
+
+        if ([self isRatingColumn:col]) {
+            NSRect ratingRect = NSMakeRect(x, rect.origin.y, col.width, rect.size.height);
+            [self drawRatingValue:value inRect:ratingRect column:col playlistIndex:playlistIndex selected:selected];
+            x += col.width;
+            continue;
+        }
 
         // For first column, prepend play indicator if this is the playing track
         if (colIndex == 0 && playing) {
@@ -1486,6 +1607,13 @@ static NSString *formatGroupDuration(double seconds) {
 
         if (colWidth > 0) {
             NSString *value = (col < (NSInteger)columnValues.count) ? columnValues[col] : @"";
+
+            if ([self isRatingColumn:colDef]) {
+                NSRect ratingRect = NSMakeRect(x, rect.origin.y, colWidth, rect.size.height);
+                [self drawRatingValue:value inRect:ratingRect column:colDef playlistIndex:row selected:isSelected];
+                x += colWidth;
+                continue;
+            }
 
             // Text alignment and style
             NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -1812,7 +1940,11 @@ static NSString *formatGroupDuration(double seconds) {
             colRect.size.width -= indent;
         }
 
-        [self drawColumnValue:value inRect:colRect column:col selected:selected];
+        if ([self isRatingColumn:col]) {
+            [self drawRatingValue:value inRect:colRect column:col playlistIndex:node.playlistIndex selected:selected];
+        } else {
+            [self drawColumnValue:value inRect:colRect column:col selected:selected];
+        }
 
         x += col.width;
     }
@@ -2171,9 +2303,6 @@ static NSString *formatGroupDuration(double seconds) {
 #pragma mark - Mouse Events
 
 - (void)mouseDown:(NSEvent *)event {
-    FB2K_console_formatter() << "[SimPlaylist] mouseDown at window location: "
-                             << event.locationInWindow.x << "," << event.locationInWindow.y;
-
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger row = [self rowAtPoint:location];
 
@@ -2183,6 +2312,22 @@ static NSString *formatGroupDuration(double seconds) {
 
     if (row < 0) {
         [self deselectAll];
+        return;
+    }
+
+    NSInteger ratingPlaylistIndex = -1;
+    NSInteger ratingColumnIndex = -1;
+    NSInteger clickedRating = [self ratingValueAtPoint:location
+                                         playlistIndex:&ratingPlaylistIndex
+                                           columnIndex:&ratingColumnIndex];
+    if (clickedRating > 0 && ratingPlaylistIndex >= 0 &&
+        [_delegate respondsToSelector:@selector(playlistView:didRequestSetRating:forPlaylistIndex:)]) {
+        NSInteger currentRating = [self currentRatingForPlaylistIndex:ratingPlaylistIndex columnIndex:ratingColumnIndex];
+        NSInteger newRating = (currentRating == clickedRating) ? 0 : clickedRating;
+        [_delegate playlistView:self didRequestSetRating:newRating forPlaylistIndex:ratingPlaylistIndex];
+        [_formattedValuesCache removeObjectForKey:@(ratingPlaylistIndex)];
+        [self setNeedsDisplayInRect:[self rectForRow:row]];
+        _pendingClickRow = -1;
         return;
     }
 
@@ -2405,7 +2550,19 @@ static NSString *formatGroupDuration(double seconds) {
         NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
         NSInteger row = [self rowAtPoint:location];
         if (row >= 0 && [_delegate respondsToSelector:@selector(playlistView:didDoubleClickRow:)]) {
-            [_delegate playlistView:self didDoubleClickRow:row];
+            BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _groupStarts.count > 0);
+            if (isInGroupColumn) {
+                NSInteger groupIndex = [self groupIndexForRow:row];
+                if (groupIndex >= 0) {
+                    NSRange range = [self playlistIndexRangeForGroup:groupIndex];
+                    if (range.location != NSNotFound && range.length > 0) {
+                        row = [self rowForPlaylistIndex:range.location];
+                    }
+                }
+            }
+            if (row >= 0) {
+                [_delegate playlistView:self didDoubleClickRow:row];
+            }
         }
     }
 }
@@ -2432,10 +2589,45 @@ static NSString *formatGroupDuration(double seconds) {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger row = [self rowAtPoint:location];
 
+    NSInteger ratingPlaylistIndex = -1;
+    NSInteger ratingColumnIndex = -1;
+    NSInteger hoverRating = [self ratingValueAtPoint:location
+                                       playlistIndex:&ratingPlaylistIndex
+                                         columnIndex:&ratingColumnIndex];
+
+    BOOL ratingHoverChanged = (ratingPlaylistIndex != _hoveredRatingPlaylistIndex ||
+                               ratingColumnIndex != _hoveredRatingColumnIndex ||
+                               hoverRating != _hoveredRatingValue);
+    if (ratingHoverChanged) {
+        NSInteger oldPlaylistIndex = _hoveredRatingPlaylistIndex;
+        _hoveredRatingPlaylistIndex = (hoverRating > 0) ? ratingPlaylistIndex : -1;
+        _hoveredRatingColumnIndex = (hoverRating > 0) ? ratingColumnIndex : -1;
+        _hoveredRatingValue = hoverRating;
+
+        if (oldPlaylistIndex >= 0) {
+            NSInteger oldRow = [self rowForPlaylistIndex:oldPlaylistIndex];
+            [self setNeedsDisplayInRect:[self rectForRow:oldRow]];
+        }
+        if (ratingPlaylistIndex >= 0) {
+            [self setNeedsDisplayInRect:[self rectForRow:row]];
+        }
+    }
+
     if (row != _hoveredRow) {
         _hoveredRow = row;
         // Could add hover highlight here if desired
     }
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    if (_hoveredRatingPlaylistIndex >= 0) {
+        NSInteger row = [self rowForPlaylistIndex:_hoveredRatingPlaylistIndex];
+        _hoveredRatingPlaylistIndex = -1;
+        _hoveredRatingColumnIndex = -1;
+        _hoveredRatingValue = 0;
+        [self setNeedsDisplayInRect:[self rectForRow:row]];
+    }
+    _hoveredRow = -1;
 }
 
 - (void)scrollWheel:(NSEvent *)event {
@@ -2568,10 +2760,10 @@ static NSString *formatGroupDuration(double seconds) {
             if (hasCmd && (key == 'a' || key == 'A')) {
                 [self selectAll];
             } else if (!hasCmd && (key == 'q' || key == 'Q')) {
-                // Q: queue all selected tracks
+                // Q: queue all selected playlist indices and start playback if queue was empty
                 if (_selectedIndices.count > 0 &&
-                    [_delegate respondsToSelector:@selector(playlistView:didRequestQueueTracks:)]) {
-                    [_delegate playlistView:self didRequestQueueTracks:[_selectedIndices copy]];
+                    [_delegate respondsToSelector:@selector(playlistView:didRequestQueueIndices:)]) {
+                    [_delegate playlistView:self didRequestQueueIndices:[_selectedIndices copy]];
                 }
             } else {
                 [super keyDown:event];
@@ -2794,18 +2986,19 @@ static NSString *formatGroupDuration(double seconds) {
                 }
             }
         } else {
-            // Different playlist - use paths to move/copy items
-            if (paths && paths.count > 0 && rowNumbers && rowNumbers.count > 0) {
-                // Build source indices from row numbers
+            // Different playlist or library source - use paths to move/copy items
+            if (paths && paths.count > 0) {
                 NSMutableIndexSet *sourceIndices = [NSMutableIndexSet indexSet];
                 for (NSNumber *num in rowNumbers) {
                     [sourceIndices addIndex:[num unsignedIntegerValue]];
                 }
 
-                // Get operation from modifier keys (same check as draggingUpdated)
                 BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
-                NSDragOperation operation = optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
+                // Library drops (no source indices) are always copy operations
+                BOOL isLibraryDrop = (sourceIndices.count == 0);
+                NSDragOperation operation = (optionKeyHeld || isLibraryDrop) ? NSDragOperationCopy : NSDragOperationMove;
                 FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: optionKey=" << (optionKeyHeld ? "YES" : "NO")
+                                         << ", libraryDrop=" << (isLibraryDrop ? "YES" : "NO")
                                          << ", operation=" << (int)operation
                                          << " (Move=" << (int)NSDragOperationMove << ", Copy=" << (int)NSDragOperationCopy << ")";
 

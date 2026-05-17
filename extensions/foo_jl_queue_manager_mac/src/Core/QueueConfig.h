@@ -13,6 +13,9 @@ namespace queue_config {
 static const char* const kKeyVisibleColumns = "visible_columns";
 static const char* const kKeyColumnWidthsJson = "column_widths_json";
 static const char* const kKeyTransparentBackground = "transparent_background";
+static const char* const kKeySavedQueuePaths = "saved_queue_paths";
+static const char* const kKeySavedPlayingIndex = "saved_playing_index";
+static const char* const kKeySavedPlaybackPosition = "saved_playback_position";
 
 // Default values
 static const char* const kDefaultVisibleColumns = "queue_index,artist_title,duration";

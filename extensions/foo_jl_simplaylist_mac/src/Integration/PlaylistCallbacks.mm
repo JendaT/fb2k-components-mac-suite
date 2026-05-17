@@ -155,7 +155,8 @@ public:
         flag_on_items_selection_change |
         flag_on_item_focus_change |
         flag_on_items_modified |
-        flag_on_playlist_switch
+        flag_on_playlist_switch |
+        flag_on_item_ensure_visible
     ) {}
 
     void on_items_added(t_size base, metadb_handle_list_cref data, const bit_array& selection) override {

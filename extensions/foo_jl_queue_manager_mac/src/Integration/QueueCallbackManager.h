@@ -28,21 +28,34 @@ public:
     // Unregister a controller (call from dealloc)
     void unregisterController(QueueManagerController* controller);
 
-    // Called by playback_queue_callback service when queue changes
     void onQueueChanged(playback_queue_callback::t_change_origin origin);
+
+    void onPlaybackNewTrack(metadb_handle_ptr track);
+    void onPlaybackStop(play_control::t_stop_reason reason);
+    void onPlaybackPause(bool paused);
+    void onPlaybackTime(double time);
+
+    void saveQueueState();
+    void restoreQueueState();
+
+    metadb_handle_ptr getCurrentPlayingTrack() const;
+    double getCurrentPlaybackPosition() const;
+    bool isPaused() const;
 
 private:
     QueueCallbackManager();
     ~QueueCallbackManager() = default;
 
-    // Non-copyable
     QueueCallbackManager(const QueueCallbackManager&) = delete;
     QueueCallbackManager& operator=(const QueueCallbackManager&) = delete;
 
     std::mutex m_mutex;
+    mutable std::mutex m_playbackMutex;
+    metadb_handle_ptr m_playingTrack;
+    double m_playbackPosition = 0;
+    bool m_isPaused = false;
 
 #ifdef __OBJC__
-    // Weak object pointer array - automatically zeroes references on dealloc
     NSPointerArray* m_controllers;
 #else
     void* m_controllers;
