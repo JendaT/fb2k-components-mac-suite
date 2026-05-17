@@ -39,6 +39,8 @@ typeset -A DIR_MAP=(
     ["biography"]="jl_biography"
     ["bio"]="jl_biography"
     ["jl_biography"]="jl_biography"
+    ["tidal"]="jl_tidal"
+    ["jl_tidal"]="jl_tidal"
 )
 
 if [ -z "$1" ]; then
@@ -52,6 +54,7 @@ if [ -z "$1" ]; then
     echo "  albumart       - Album Art"
     echo "  queue_manager  - Queue Manager"
     echo "  biography      - Artist Biography"
+    echo "  tidal          - Tidal Integration"
     exit 1
 fi
 
@@ -60,7 +63,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography"
+    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, tidal"
     exit 1
 fi
 

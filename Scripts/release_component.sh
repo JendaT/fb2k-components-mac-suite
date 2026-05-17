@@ -42,6 +42,8 @@ typeset -A COMPONENT_MAP=(
     ["queuemanager"]="foo_jl_queue_manager_mac"
     ["queue"]="foo_jl_queue_manager_mac"
     ["jl_queue_manager"]="foo_jl_queue_manager_mac"
+    ["tidal"]="foo_jl_tidal_mac"
+    ["jl_tidal"]="foo_jl_tidal_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -65,6 +67,8 @@ typeset -A VERSION_MAP=(
     ["queuemanager"]="QUEUE_MANAGER_VERSION"
     ["queue"]="QUEUE_MANAGER_VERSION"
     ["jl_queue_manager"]="QUEUE_MANAGER_VERSION"
+    ["tidal"]="TIDAL_VERSION"
+    ["jl_tidal"]="TIDAL_VERSION"
 )
 
 # Display names for release titles
@@ -88,6 +92,8 @@ typeset -A DISPLAY_NAME_MAP=(
     ["queuemanager"]="Queue Manager"
     ["queue"]="Queue Manager"
     ["jl_queue_manager"]="Queue Manager"
+    ["tidal"]="Tidal Integration"
+    ["jl_tidal"]="Tidal Integration"
 )
 
 show_help() {
