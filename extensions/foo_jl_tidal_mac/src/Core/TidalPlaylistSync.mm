@@ -210,6 +210,7 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         dispatch_group_t tracksGroup = dispatch_group_create();
         NSMutableDictionary<NSString *, NSArray<JLTidalTrack *> *> *allTracks = [NSMutableDictionary dictionary];
         NSMutableDictionary<NSString *, JLTidalPlaylist *> *playlistMap = [NSMutableDictionary dictionary];
+        dispatch_queue_t writeQueue = dispatch_queue_create("com.foobar2000.tidal.sync.trackwrite", DISPATCH_QUEUE_SERIAL);
 
         for (JLTidalPlaylist *playlist in playlists) {
             playlistMap[playlist.playlistUUID] = playlist;
@@ -218,12 +219,14 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                                                           limit:200
                                                          offset:0
                                                      completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
-                allTracks[playlist.playlistUUID] = tracks ?: @[];
+                dispatch_sync(writeQueue, ^{
+                    allTracks[playlist.playlistUUID] = tracks ?: @[];
+                });
                 dispatch_group_leave(tracksGroup);
             }];
         }
 
-        dispatch_group_wait(tracksGroup, DISPATCH_TIME_FOREVER);
+        dispatch_group_notify(tracksGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
         // Cache for apply phase
         self.cachedPlaylistTracks = [allTracks copy];
@@ -370,6 +373,8 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         tidal::logInfo([[NSString stringWithFormat:@"PlaylistSync: preview complete - %@",
                          [report summary]] UTF8String]);
         completion(report, nil);
+
+        }); // end dispatch_group_notify(tracksGroup)
     });
 }
 
@@ -737,6 +742,7 @@ public:
 
     // Resolve ISRCs via API
     dispatch_group_t group = dispatch_group_create();
+    dispatch_queue_t isrcWriteQueue = dispatch_queue_create("com.foobar2000.tidal.sync.isrcwrite", DISPATCH_QUEUE_SERIAL);
 
     for (NSString *isrc in isrcsToResolve) {
         dispatch_group_enter(group);
@@ -744,7 +750,9 @@ public:
             if (tracks.count > 0) {
                 NSNumber *pos = isrcPositions[isrc];
                 if (pos) {
-                    resolvedIDs[pos.unsignedIntegerValue] = tracks.firstObject.trackID;
+                    dispatch_sync(isrcWriteQueue, ^{
+                        resolvedIDs[pos.unsignedIntegerValue] = tracks.firstObject.trackID;
+                    });
                     tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: ISRC %@ resolved to track %@",
                                       isrc, tracks.firstObject.trackID] UTF8String]);
                 }
@@ -892,9 +900,14 @@ public:
     combined[@"uuidToName"] = [self.uuidToNameMap copy];
     combined[@"nameToUUID"] = [self.nameToUUIDMap copy];
 
+    NSError *archiveError = nil;
     NSData *data = [NSKeyedArchiver archivedDataWithRootObject:combined
-                                         requiringSecureCoding:NO
-                                                        error:nil];
+                                         requiringSecureCoding:YES
+                                                        error:&archiveError];
+    if (archiveError) {
+        tidal::logError([[NSString stringWithFormat:@"PlaylistSync: failed to archive mappings: %@",
+                          archiveError.localizedDescription] UTF8String]);
+    }
     if (data) {
         NSString *path = [self mappingFilePath];
         [data writeToFile:path atomically:YES];
@@ -906,9 +919,17 @@ public:
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (!data) return;
 
-    NSDictionary *combined = [NSKeyedUnarchiver unarchivedObjectOfClasses:
-                              [NSSet setWithObjects:[NSDictionary class], [NSString class], nil]
-                                                                fromData:data error:nil];
+    NSError *unarchiveError = nil;
+    NSSet *allowedClasses = [NSSet setWithObjects:
+                             [NSDictionary class], [NSMutableDictionary class], [NSString class], nil];
+    NSDictionary *combined = [NSKeyedUnarchiver unarchivedObjectOfClasses:allowedClasses
+                                                                fromData:data
+                                                                   error:&unarchiveError];
+    if (unarchiveError) {
+        tidal::logError([[NSString stringWithFormat:@"PlaylistSync: failed to load mappings: %@",
+                          unarchiveError.localizedDescription] UTF8String]);
+        return;
+    }
     if (combined) {
         NSDictionary *u2n = combined[@"uuidToName"];
         NSDictionary *n2u = combined[@"nameToUUID"];

@@ -6,6 +6,7 @@
 //
 
 #import "TidalInputDecoder.h"
+#import "TidalMemoryFile.h"
 #import "../Core/URLUtils.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalErrors.h"
@@ -15,6 +16,86 @@
 #import <dispatch/dispatch.h>
 
 namespace tidal {
+
+// Synchronously GET a URL using a shared ephemeral session. Returns nil on failure or abort.
+static NSData *syncGET(NSString *url, abort_callback &p_abort) {
+    if (url.length == 0) return nil;
+    static NSURLSession *session = nil;
+    static dispatch_once_t tok;
+    dispatch_once(&tok, ^{
+        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        cfg.timeoutIntervalForRequest = 30;
+        cfg.timeoutIntervalForResource = 120;
+        cfg.HTTPMaximumConnectionsPerHost = 6;
+        session = [NSURLSession sessionWithConfiguration:cfg];
+    });
+
+    __block NSData *result = nil;
+    __block NSInteger statusCode = 0;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:url]
+                                        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        if ([resp isKindOfClass:[NSHTTPURLResponse class]]) {
+            statusCode = ((NSHTTPURLResponse *)resp).statusCode;
+        }
+        if (!err && statusCode >= 200 && statusCode < 300) {
+            result = data;
+        }
+        dispatch_semaphore_signal(sem);
+    }];
+    [task resume];
+    while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+        if (p_abort.is_aborting()) {
+            [task cancel];
+            return nil;
+        }
+    }
+    if (!result && statusCode != 0) {
+        logError([[NSString stringWithFormat:@"DASH GET %@ → HTTP %ld",
+                   [url lastPathComponent], (long)statusCode] UTF8String]);
+    }
+    return result;
+}
+
+// Download init segment + all media segments and concatenate into one fMP4 blob.
+static NSData *downloadDASHSegments(JLTidalPlaybackInfo *info, abort_callback &p_abort) {
+    NSMutableData *out = [NSMutableData data];
+
+    NSData *initData = syncGET(info.dashInitURL, p_abort);
+    if (!initData) {
+        logError("DASH init segment download failed");
+        return nil;
+    }
+    [out appendData:initData];
+
+    for (NSInteger i = 0; i < info.dashSegmentCount; i++) {
+        if (p_abort.is_aborting()) return nil;
+        NSInteger segNum = info.dashStartNumber + i;
+        NSString *segURL = [info.dashMediaTemplate
+                            stringByReplacingOccurrencesOfString:@"$Number$"
+                                                      withString:[NSString stringWithFormat:@"%ld", (long)segNum]];
+        NSData *segData = syncGET(segURL, p_abort);
+        if (!segData) {
+            logError([[NSString stringWithFormat:@"DASH segment %ld of %ld failed",
+                       (long)(i + 1), (long)info.dashSegmentCount] UTF8String]);
+            return nil;
+        }
+        [out appendData:segData];
+    }
+    return out;
+}
+
+// Shared date formatter for metadata (not thread-safe, but only used on decoder thread)
+static NSDateFormatter* sharedDateFormatter() {
+    static NSDateFormatter *fmt = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy-MM-dd";
+        fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    });
+    return fmt;
+}
 
 // GUIDs for this input
 // {B2C3D4E5-F6A7-8B9C-0D1E-2F3A4B5C6D7E}
@@ -30,7 +111,8 @@ TidalInputDecoder::TidalInputDecoder()
     , m_initialized(false)
     , m_flags(0)
     , m_subsong(0)
-    , m_403Retry(false) {
+    , m_403Retry(false)
+    , m_samplesDelivered(0) {
 }
 
 TidalInputDecoder::~TidalInputDecoder() {
@@ -95,11 +177,23 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     }
 
     m_playbackInfo = resultInfo;
-    if (!resultInfo.streamURL) {
-        logError("Stream resolution returned nil URL");
+
+    // Two delivery modes: direct URL (HIGH/LOW/legacy) or DASH segments (LOSSLESS/HiRes).
+    // DASH is gated on the experimental preference (default off).
+    BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
+                    && resultInfo.dashSegmentCount > 0
+                    && resultInfo.dashInitURL.length
+                    && resultInfo.dashMediaTemplate.length);
+    if (!resultInfo.streamURL && !hasDASH) {
+        logError("Stream resolution returned neither URL nor DASH segments");
         pfc::throw_exception_with_message<exception_io_data>("No stream URL available");
     }
-    m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
+    if (resultInfo.streamURL) {
+        m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
+    } else {
+        // For DASH the "logical URL" is the init segment's path — used for decoder lookup by extension.
+        m_streamURL = std::string([resultInfo.dashInitURL UTF8String]);
+    }
 
     logDebug(("Got stream URL, quality: " + std::string([resultInfo.qualityDescription UTF8String])).c_str());
 
@@ -113,21 +207,91 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         dispatch_semaphore_signal(metaSemaphore);
     }];
 
-    // Wait for metadata (needed for title, album art, etc.)
-    dispatch_semaphore_wait(metaSemaphore, dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC));
+    // Wait for metadata with abort checking (max 8 seconds)
+    {
+        int metaAttempts = 0;
+        while (dispatch_semaphore_wait(metaSemaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+            if (p_abort.is_aborting() || m_abortFlag) {
+                logDebug("Metadata fetch aborted");
+                break;
+            }
+            if (++metaAttempts > 80) {  // 8 second timeout
+                logDebug("Metadata fetch timed out");
+                break;
+            }
+        }
+    }
     m_trackInfo = trackResult;
 
     // Open underlying decoder for the stream URL
-    logDebug(("Stream URL: " + m_streamURL).c_str());
-    logDebug(("Codec: " + std::string(resultInfo.codec ? [resultInfo.codec UTF8String] : "(nil)")).c_str());
+    // Log a short identifier for the stream URL (host + path basename) — full URL has secrets.
+    NSString *urlStr = [resultInfo.streamURL absoluteString];
+    NSString *urlHost = resultInfo.streamURL.host ?: @"?";
+    NSString *urlPath = resultInfo.streamURL.path ?: @"";
+    NSString *urlBase = [urlPath lastPathComponent] ?: @"?";
+    logInfo([[NSString stringWithFormat:@"Stream open: track=%s codec=%@ quality=%@ host=%@ file=%@ urlLen=%lu",
+              m_trackID.c_str(),
+              resultInfo.codec ?: @"(nil)",
+              resultInfo.qualityDescription ?: @"(nil)",
+              urlHost, urlBase, (unsigned long)urlStr.length] UTF8String]);
 
-    // First, open the stream file using fb2k's filesystem layer (handles HTTP/HTTPS)
+    // Either open the direct HTTP stream, or download & concatenate DASH segments.
     service_ptr_t<file> streamFile;
-    try {
-        filesystem::g_open(streamFile, m_streamURL.c_str(), filesystem::open_mode_read, p_abort);
-        logDebug("Opened stream file via filesystem");
-    } catch (const std::exception& e) {
-        logError(("Failed to open stream file: " + std::string(e.what())).c_str());
+    if (hasDASH) {
+        // DASH path: assemble init + N media segments into one fMP4 file in memory.
+        NSData *assembled = downloadDASHSegments(resultInfo, p_abort);
+        if (p_abort.is_aborting() || m_abortFlag) {
+            // Cancellation — propagate as abort, NOT as a stream failure (or fb2k
+            // will think the track is broken and advance to the next, cascading skips).
+            throw exception_aborted();
+        }
+        if (!assembled || assembled.length == 0) {
+            pfc::throw_exception_with_message<exception_io_data>("DASH segment download failed");
+        }
+        logInfo([[NSString stringWithFormat:@"DASH assembled: %lu segments → %lu bytes (~%.1f MB)",
+                  (unsigned long)resultInfo.dashSegmentCount,
+                  (unsigned long)assembled.length,
+                  assembled.length / (1024.0 * 1024.0)] UTF8String]);
+        service_ptr_t<tidal::MemoryFile> memFile = fb2k::service_new<tidal::MemoryFile>();
+        memFile->initWithData(assembled, "audio/mp4");
+        streamFile = memFile;
+    } else {
+        try {
+            filesystem::g_open(streamFile, m_streamURL.c_str(), filesystem::open_mode_read, p_abort);
+        } catch (const exception_aborted &) {
+            // fb2k cancelled the open (user skipped, next-track preload superseded,
+            // shutdown, etc.). Re-throw as abort — DO NOT convert to exception_io_data,
+            // otherwise the playback engine treats it as "track failed" and advances,
+            // which causes a cascade of skip-fail-skip-fail across the playlist.
+            throw;
+        } catch (const std::exception& e) {
+            // Genuine failure (network, 4xx/5xx, parse) — but double-check abort state
+            // since some HTTP layers stringify abort instead of raising exception_aborted.
+            if (p_abort.is_aborting() || m_abortFlag) throw exception_aborted();
+            logError(("Failed to open stream file: " + std::string(e.what())).c_str());
+            pfc::throw_exception_with_message<exception_io_data>(
+                ("Failed to open stream: " + std::string(e.what())).c_str());
+        }
+
+        // Inspect the actual HTTP file size we got — premature EOF is a frequent
+        // cause of "stalling/skipping" with Tidal preview clips or truncated CDN responses.
+        try {
+            t_filesize streamSize = streamFile->get_size(p_abort);
+            if (streamSize == filesize_invalid) {
+                logInfo("Stream file: size unknown (no Content-Length)");
+            } else {
+                logInfo([[NSString stringWithFormat:@"Stream file size: %llu bytes (~%.1f kB)",
+                          (unsigned long long)streamSize, streamSize / 1024.0] UTF8String]);
+                // For LOSSLESS FLAC a 5-min track is ~50MB; for HIGH AAC ~12MB.
+                // Anything under ~500KB is almost certainly a preview clip.
+                if (streamSize > 0 && streamSize < 500 * 1024) {
+                    logError([[NSString stringWithFormat:@"Stream too small (%llu bytes) — likely a preview clip, account/track may be restricted",
+                              (unsigned long long)streamSize] UTF8String]);
+                }
+            }
+        } catch (const std::exception& e) {
+            logError(("get_size failed: " + std::string(e.what())).c_str());
+        }
     }
 
     // Try to find decoder by path (extension-based matching)
@@ -207,7 +371,14 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
             dispatch_semaphore_signal(semaphore);
         }];
 
-        dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
+        // Wait with abort checking (max 10 seconds)
+        {
+            int reopenAttempts = 0;
+            while (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+                if (p_abort.is_aborting() || m_abortFlag) return false;
+                if (++reopenAttempts > 100) return false;
+            }
+        }
 
         if (resultError || !resultInfo) {
             return false;
@@ -220,7 +391,10 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
         service_ptr_t<file> streamFile;
         try {
             filesystem::g_open(streamFile, m_streamURL.c_str(), filesystem::open_mode_read, p_abort);
-        } catch (...) {}
+        } catch (...) {
+            logError("tryReopen: failed to open new stream file");
+            return false;
+        }
 
         input_entry::ptr entry;
         if (!input_entry::g_find_service_by_path(entry, m_streamURL.c_str())) {
@@ -295,10 +469,7 @@ void TidalInputDecoder::get_info(t_uint32 p_subsong, file_info& p_info, abort_ca
             p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
         }
         if (m_trackInfo.releaseDate) {
-            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"yyyy-MM-dd";
-            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-            p_info.meta_set("DATE", [[fmt stringFromDate:m_trackInfo.releaseDate] UTF8String]);
+            p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:m_trackInfo.releaseDate] UTF8String]);
         }
         if (m_trackInfo.copyright) {
             p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);
@@ -338,15 +509,36 @@ bool TidalInputDecoder::run(audio_chunk& p_chunk, abort_callback& p_abort) {
     }
 
     try {
-        return m_decoder->run(p_chunk, p_abort);
-    } catch (const exception_io& e) {
-        // Check for 403 error (stream expired)
-        const char* msg = e.what();
-        if (msg && (strstr(msg, "403") || strstr(msg, "Forbidden"))) {
-            if (tryReopen(p_abort)) {
-                return m_decoder->run(p_chunk, p_abort);
+        bool more = m_decoder->run(p_chunk, p_abort);
+        if (more) {
+            m_samplesDelivered += p_chunk.get_sample_count();
+        } else {
+            // EOF — detect premature EOF (track API says it's long but stream ended early).
+            double declaredSec = m_trackInfo ? (double)m_trackInfo.duration : 0.0;
+            double playedSec = (p_chunk.get_sample_rate() > 0)
+                ? (double)m_samplesDelivered / (double)p_chunk.get_sample_rate() : 0.0;
+            if (declaredSec > 30.0 && playedSec < declaredSec - 5.0) {
+                logError([[NSString stringWithFormat:@"Premature EOF: played %.1fs of %.0fs declared — track was truncated (preview clip or stream cut off)",
+                          playedSec, declaredSec] UTF8String]);
             }
         }
+        return more;
+    } catch (const exception_io& e) {
+        const char* msg = e.what() ? e.what() : "(no message)";
+        logError([[NSString stringWithFormat:@"Decoder run() exception_io for track %s: %s",
+                  m_trackID.c_str(), msg] UTF8String]);
+        // Check for 403 error (stream expired) — try one re-resolve
+        if (strstr(msg, "403") || strstr(msg, "Forbidden")) {
+            if (tryReopen(p_abort)) {
+                logInfo("403 retry succeeded, resuming playback");
+                return m_decoder->run(p_chunk, p_abort);
+            }
+            logError("403 retry failed");
+        }
+        throw;
+    } catch (const std::exception& e) {
+        logError([[NSString stringWithFormat:@"Decoder run() std::exception for track %s: %s",
+                  m_trackID.c_str(), e.what()] UTF8String]);
         throw;
     }
 }
@@ -485,10 +677,7 @@ void TidalInfoReader::get_info(t_uint32 p_subsong, file_info& p_info, abort_call
             p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
         }
         if (m_trackInfo.releaseDate) {
-            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"yyyy-MM-dd";
-            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-            p_info.meta_set("DATE", [[fmt stringFromDate:m_trackInfo.releaseDate] UTF8String]);
+            p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:m_trackInfo.releaseDate] UTF8String]);
         }
         if (m_trackInfo.copyright) {
             p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);

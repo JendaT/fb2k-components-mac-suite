@@ -586,3 +586,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Customizable track info rows using titleformat expressions
 - Drag-to-reorder buttons in editing mode
 - Compact and normal display modes
+
+## Tidal Integration
+
+### [0.3.0] - 2026-05-17
+
+Fixes the long-standing "playback stops until restart" cascade and restores drag-drop to SimPlaylist + free column resizing. Adds token-state visibility, Year/Tracks columns in the album browser, and an experimental DASH toggle for true LOSSLESS.
+
+#### Added
+- Album browser: Year and Tracks columns
+- Preferences: token status line with expiry countdown and last-refresh outcome
+- Preferences: experimental DASH toggle for true LOSSLESS (off by default, untested)
+- Stream-open diagnostics and premature-EOF detection always logged
+
+#### Fixed
+- Playback cascade through the playlist on aborted preloads (decoder treated cancellations as track failures)
+- Tidal browser column can be resized freely in fb2k layouts
+- Drag-drop to SimPlaylist (URL emitted as NSPasteboardTypeURL)
+- Reconnect button no longer hangs on success path
+- Refresh-token rotation honoured; 401 auto-retry transparent
+
+#### Changed
+- Quality-fallback log is unambiguous about silent API downgrades
+- Refresh/token logs always visible regardless of debug-logging setting
+
+### [0.2.0] - 2026-02-13
+
+#### Added
+- Initial public release: browser, search, library, playlists, sync, ISRC matching, album art

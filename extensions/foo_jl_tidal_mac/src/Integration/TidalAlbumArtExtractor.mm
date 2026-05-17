@@ -82,11 +82,15 @@ private:
         logDebug(std::string("TidalAlbumArtExtractor: downloading from ") +
                  [[coverURL absoluteString] UTF8String]);
 
-        // Download image synchronously
-        NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        config.timeoutIntervalForRequest = 10;
-        config.timeoutIntervalForResource = 15;
-        NSURLSession* session = [NSURLSession sessionWithConfiguration:config];
+        // Download image using shared session
+        static NSURLSession* session = nil;
+        static dispatch_once_t sessionOnce;
+        dispatch_once(&sessionOnce, ^{
+            NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+            config.timeoutIntervalForRequest = 10;
+            config.timeoutIntervalForResource = 15;
+            session = [NSURLSession sessionWithConfiguration:config];
+        });
 
         __block NSData* imageData = nil;
         __block NSError* downloadError = nil;
@@ -98,9 +102,8 @@ private:
                 NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
                 if (httpResponse.statusCode == 200 && data.length > 0) {
                     imageData = data;
-                } else {
-                    downloadError = error;
                 }
+                // Non-200 status: imageData stays nil, handled below
             } else {
                 downloadError = error;
             }
@@ -122,8 +125,6 @@ private:
                 throw exception_album_art_not_found();
             }
         }
-
-        [session invalidateAndCancel];
 
         if (!imageData || imageData.length == 0) {
             logDebug("TidalAlbumArtExtractor: download failed or empty response");

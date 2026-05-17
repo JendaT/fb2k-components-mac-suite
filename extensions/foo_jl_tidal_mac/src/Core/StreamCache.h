@@ -11,6 +11,7 @@
 #import "TidalModels.h"
 #include <string>
 #include <optional>
+#include <atomic>
 
 namespace tidal {
 
@@ -54,7 +55,7 @@ private:
 
     dispatch_queue_t m_queue;
     NSMutableDictionary<NSString*, JLTidalStreamCacheEntry*>* m_cache;
-    bool m_shutdown;
+    std::atomic<bool> m_shutdown;
 };
 
 } // namespace tidal

@@ -51,8 +51,8 @@ private:
 
     std::string m_trackID;
     std::string m_streamURL;
-    JLTidalPlaybackInfo* m_playbackInfo;
-    JLTidalTrack* m_trackInfo;
+    __strong JLTidalPlaybackInfo* m_playbackInfo;
+    __strong JLTidalTrack* m_trackInfo;
     service_ptr_t<input_decoder> m_decoder;
     event_logger::ptr m_logger;
     std::atomic<bool> m_abortFlag;
@@ -60,6 +60,7 @@ private:
     unsigned m_flags;
     t_uint32 m_subsong;
     bool m_403Retry;
+    uint64_t m_samplesDelivered;
 };
 
 // Info reader that fetches metadata from Tidal API
@@ -78,7 +79,7 @@ public:
 
 private:
     std::string m_trackID;
-    JLTidalTrack* m_trackInfo;
+    __strong JLTidalTrack* m_trackInfo;
 };
 
 // Input entry for registering the decoder

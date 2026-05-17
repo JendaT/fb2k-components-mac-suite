@@ -52,6 +52,12 @@ typedef void (^JLTidalAuthCompletion)(BOOL success, NSError * _Nullable error);
 /// Whether user is currently authenticated
 @property (nonatomic, readonly, getter=isAuthenticated) BOOL authenticated;
 
+/// Last token refresh attempt timestamp (nil if never attempted this session)
+@property (nonatomic, copy, readonly, nullable) NSDate *lastRefreshAttempt;
+
+/// Last token refresh error (nil if last attempt succeeded or never attempted)
+@property (nonatomic, copy, readonly, nullable) NSString *lastRefreshError;
+
 #pragma mark - Authentication Flow
 
 /// Start OAuth Device Code authentication flow

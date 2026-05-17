@@ -21,9 +21,12 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 @property (nonatomic, copy, readwrite, nullable) NSString *userCode;
 @property (nonatomic, copy, readwrite, nullable) NSURL *verificationURL;
 @property (nonatomic, copy, readwrite, nullable) NSString *errorMessage;
+@property (nonatomic, copy, readwrite, nullable) NSDate *lastRefreshAttempt;
+@property (nonatomic, copy, readwrite, nullable) NSString *lastRefreshError;
 
 @property (nonatomic, strong, nullable) NSTimer *pollTimer;
 @property (nonatomic, strong, nullable) NSTimer *timeoutTimer;
+@property (nonatomic, strong, nullable) NSTimer *refreshTimer;
 @property (nonatomic, copy, nullable) NSString *pendingDeviceCode;
 @property (nonatomic, copy, nullable) JLTidalAuthCompletion pendingCompletion;
 @property (nonatomic, assign) BOOL isRefreshing;
@@ -107,12 +110,14 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
             [self refreshTokenIfNeededWithCompletion:^(BOOL success) {
                 if (success) {
                     self.state = JLTidalAuthStateAuthenticated;
+                    [self scheduleProactiveRefresh];
                 } else {
                     self.state = JLTidalAuthStateIdle;
                 }
             }];
         } else {
             self.state = JLTidalAuthStateAuthenticated;
+            [self scheduleProactiveRefresh];
             tidal::logInfo("Loaded stored session");
         }
     }
@@ -129,6 +134,48 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
 - (void)clearStoredSession {
     [JLTidalKeychainHelper deleteAllTokens];
+}
+
+- (void)scheduleProactiveRefresh {
+    [self cancelRefreshTimer];
+
+    if (!_session || !_session.refreshToken.length) return;
+
+    // Schedule refresh kTidalTokenRefreshBuffer seconds before expiry
+    NSTimeInterval delay = [_session.expiryDate timeIntervalSinceNow] - kTidalTokenRefreshBuffer;
+    if (delay < 60) delay = 60; // At least 60s from now
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        weakSelf.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:delay
+                                                               repeats:NO
+                                                                 block:^(NSTimer *timer) {
+            tidal::logDebug("Proactive token refresh triggered");
+            [weakSelf refreshTokenIfNeededWithCompletion:^(BOOL success) {
+                if (success) {
+                    tidal::logInfo("Proactive token refresh succeeded");
+                    // Schedule next refresh for the new token
+                    [weakSelf scheduleProactiveRefresh];
+                } else {
+                    tidal::logError("Proactive token refresh failed");
+                    // Retry in 5 minutes
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        weakSelf.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:300
+                                                                               repeats:NO
+                                                                                 block:^(NSTimer *retryTimer) {
+                            [weakSelf scheduleProactiveRefresh];
+                        }];
+                    });
+                }
+            }];
+        }];
+        tidal::logDebug([[NSString stringWithFormat:@"Token refresh scheduled in %.0f seconds", delay] UTF8String]);
+    });
+}
+
+- (void)cancelRefreshTimer {
+    [_refreshTimer invalidate];
+    _refreshTimer = nil;
 }
 
 #pragma mark - Authentication Flow
@@ -233,6 +280,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     self.userCode = nil;
     self.verificationURL = nil;
 
+    [self scheduleProactiveRefresh];
     tidal::logInfo("Authentication successful");
 
     JLTidalAuthCompletion completion = _pendingCompletion;
@@ -306,6 +354,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
 - (void)signOut {
     [self stopTimers];
+    [self cancelRefreshTimer];
     [self clearStoredSession];
 
     _session = nil;
@@ -324,6 +373,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
 - (void)refreshTokenIfNeededWithCompletion:(void(^)(BOOL success))completion {
     if (!_session.refreshToken) {
+        tidal::logInfo("refreshToken: no refresh token available");
         if (completion) completion(NO);
         return;
     }
@@ -333,32 +383,39 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
         return;
     }
 
-    if (_isRefreshing) {
-        // Already refreshing - wait and check again
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            if (completion) completion(self.session.isValid);
-        });
-        return;
+    @synchronized(self) {
+        if (_isRefreshing) {
+            tidal::logInfo("refreshToken: already refreshing, will wait 1s then return current session validity");
+            // Already refreshing - wait and check again
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                if (completion) completion(self.session.isValid);
+            });
+            return;
+        }
+        _isRefreshing = YES;
     }
-
-    _isRefreshing = YES;
-    tidal::logDebug("Refreshing token...");
+    tidal::logInfo("refreshToken: starting refresh");
 
     [[JLTidalAPI shared] refreshTokenWithCompletion:^(JLTidalSession *session, NSError *error) {
         self.isRefreshing = NO;
+        self.lastRefreshAttempt = [NSDate date];
 
         if (session) {
             self.session = session;
             [JLTidalAPI shared].session = session;
             [self storeSession:session];
-            tidal::logDebug("Token refreshed");
+            [self scheduleProactiveRefresh];
+            self.lastRefreshError = nil;
+            tidal::logInfo([[NSString stringWithFormat:@"refreshToken: success, new expiry in %.0fs",
+                             [session.expiryDate timeIntervalSinceNow]] UTF8String]);
             if (completion) completion(YES);
         } else {
-            tidal::logError([[NSString stringWithFormat:@"Token refresh failed: %@", error.localizedDescription] UTF8String]);
-            if (JLTidalErrorRequiresReauth(error)) {
-                [self signOut];
-            }
+            self.lastRefreshError = error.localizedDescription ?: @"unknown error";
+            tidal::logError([[NSString stringWithFormat:@"refreshToken: failed - %@", error.localizedDescription] UTF8String]);
+            // Don't signOut here - let the caller decide how to handle the failure.
+            // Signing out aggressively wipes the refresh token before reconnect
+            // fallback can start, and prevents manual retry.
             if (completion) completion(NO);
         }
     }];
@@ -367,7 +424,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 - (void)ensureValidTokenWithCompletion:(void(^)(NSError *error))completion {
     // Check if we have a session at all
     if (_state != JLTidalAuthStateAuthenticated || !_session) {
-        tidal::logDebug([[NSString stringWithFormat:@"ensureValidToken: no session (state=%ld, session=%@)",
+        tidal::logError([[NSString stringWithFormat:@"ensureValidToken: not authenticated (state=%ld, session=%@) — playback will fail",
                          (long)_state,
                          _session ? @"yes" : @"no"] UTF8String]);
         completion(JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
@@ -376,26 +433,24 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
     // If token is valid and doesn't need refresh, we're good
     if (_session.isValid && !_session.needsRefresh) {
-        tidal::logDebug("ensureValidToken: token is valid");
         completion(nil);
         return;
     }
 
     // Token is expired or expiring - try to refresh
     if (_session.refreshToken.length > 0) {
-        tidal::logDebug([[NSString stringWithFormat:@"ensureValidToken: token expired/expiring (valid=%d, needsRefresh=%d), attempting refresh",
+        tidal::logInfo([[NSString stringWithFormat:@"ensureValidToken: token expired/expiring (valid=%d, needsRefresh=%d), refreshing on-demand",
                          _session.isValid, _session.needsRefresh] UTF8String]);
         [self refreshTokenIfNeededWithCompletion:^(BOOL success) {
             if (success) {
-                tidal::logDebug("ensureValidToken: refresh succeeded");
                 completion(nil);
             } else {
-                tidal::logDebug("ensureValidToken: refresh failed");
+                tidal::logError("ensureValidToken: on-demand refresh failed — playback will fail until reconnect");
                 completion(JLTidalError(JLTidalErrorTokenRefreshFailed, @"Failed to refresh token"));
             }
         }];
     } else {
-        tidal::logDebug("ensureValidToken: token invalid and no refresh token");
+        tidal::logError("ensureValidToken: token invalid and no refresh token — reconnect required");
         completion(JLTidalError(JLTidalErrorNotAuthenticated, @"Token expired and no refresh token"));
     }
 }

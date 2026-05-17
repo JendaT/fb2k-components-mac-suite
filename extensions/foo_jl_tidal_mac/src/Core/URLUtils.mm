@@ -57,7 +57,7 @@ std::optional<TidalURL> parseURL(const std::string& url) {
         }
     }
     // Handle https://tidal.com or https://listen.tidal.com
-    else if ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) {
+    else if ([scheme isEqualToString:@"https"]) {
         if ([host hasSuffix:@"tidal.com"]) {
             // Path format: /browse/track/123456 or /track/123456
             NSArray<NSString*> *components = [path componentsSeparatedByString:@"/"];
@@ -122,15 +122,17 @@ std::string makeTrackURL(const std::string& trackID) {
 }
 
 bool isTidalURL(const char* path) {
-    if (!path) return false;
+    if (!path || !*path) return false;
+
+    // Fast path: check prefix without allocating ObjC objects
+    if (strncmp(path, "tidal://", 8) == 0) return true;
+
+    // Only allocate for https URLs that might be tidal.com
+    if (strncmp(path, "https://", 8) != 0) return false;
 
     NSString *urlStr = [NSString stringWithUTF8String:path];
     NSURL *nsurl = [NSURL URLWithString:urlStr];
-
-    // Check for tidal:// scheme
-    if ([[nsurl.scheme lowercaseString] isEqualToString:@"tidal"]) {
-        return true;
-    }
+    if (!nsurl) return false;
 
     // Check for user-facing tidal.com URLs (not CDN URLs like audio.tidal.com)
     NSString *host = [nsurl.host lowercaseString];

@@ -49,6 +49,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *codec;
 @property (nonatomic, readonly, getter=isDRMProtected) BOOL drmProtected;
 
+// DASH (segment-based streaming). Populated only when the API returns a DASH
+// manifest with a SegmentTemplate (typically LOSSLESS/HiRes). When populated,
+// streamURL will be nil — the decoder must concatenate dashInitURL + N media
+// segments to reconstruct a playable fMP4 file.
+@property (nonatomic, copy, readonly, nullable) NSString *dashInitURL;
+@property (nonatomic, copy, readonly, nullable) NSString *dashMediaTemplate;  // contains $Number$
+@property (nonatomic, readonly) NSInteger dashStartNumber;
+@property (nonatomic, readonly) NSInteger dashSegmentCount;
+
 - (instancetype)initWithDictionary:(NSDictionary *)dict
                            trackID:(NSString *)trackID
                    requestedQuality:(JLTidalQuality)requestedQuality;

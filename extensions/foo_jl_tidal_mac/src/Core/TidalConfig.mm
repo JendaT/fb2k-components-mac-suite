@@ -96,6 +96,7 @@ bool TidalConfig::isDebugLoggingEnabled() {
 
 void TidalConfig::setDebugLoggingEnabled(bool enabled) {
     setConfigBool(kDebugLogging, enabled);
+    refreshDebugLoggingCache();
 }
 
 bool TidalConfig::isCacheEnabled() {
@@ -104,6 +105,14 @@ bool TidalConfig::isCacheEnabled() {
 
 void TidalConfig::setCacheEnabled(bool enabled) {
     setConfigBool(kCacheStreamUrls, enabled);
+}
+
+bool TidalConfig::isDASHEnabled() {
+    return getConfigBool(kDASHEnabled, kDefaultDASHEnabled);
+}
+
+void TidalConfig::setDASHEnabled(bool enabled) {
+    setConfigBool(kDASHEnabled, enabled);
 }
 
 } // namespace tidal
