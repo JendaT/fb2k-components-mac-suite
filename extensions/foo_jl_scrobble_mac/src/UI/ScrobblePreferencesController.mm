@@ -8,12 +8,15 @@
 #import "ScrobblePreferencesController.h"
 #import "../Core/ScrobbleConfig.h"
 #import "../Core/ScrobbleNotifications.h"
+#import "../Core/ScrobbleTrack.h"
 #import "../LastFm/LastFmAuth.h"
 #import "../Services/ScrobbleService.h"
 #import "../Services/ScrobbleCache.h"
 #import "../../../../shared/PreferencesCommon.h"
 
-@interface ScrobblePreferencesController ()
+@class ScrobbleTrack;
+
+@interface ScrobblePreferencesController () <NSTableViewDataSource, NSTableViewDelegate>
 // Authentication UI
 @property (nonatomic, strong) NSImageView *profileImageView;
 @property (nonatomic, strong) NSTextField *authStatusLabel;
@@ -37,6 +40,13 @@
 // Status labels
 @property (nonatomic, strong) NSTextField *queueStatusLabel;
 @property (nonatomic, strong) NSTextField *sessionStatsLabel;
+
+// Cache table
+@property (nonatomic, strong) NSTableView *cacheTableView;
+@property (nonatomic, strong) NSScrollView *cacheScrollView;
+@property (nonatomic, strong) NSButton *deleteButton;
+@property (nonatomic, strong) NSArray<ScrobbleTrack*> *cachedTracks;
+@property (nonatomic, strong) NSDateFormatter *dateFormatter;
 @end
 
 @implementation ScrobblePreferencesController
@@ -299,6 +309,76 @@
     self.sessionStatsLabel.textColor = [NSColor secondaryLabelColor];
     addIndentedRow(self.sessionStatsLabel, rowHeight + sectionGap);
 
+    // ===== Scrobble Queue Section =====
+    NSTextField *queueLabel = [NSTextField labelWithString:@"Scrobble Queue"];
+    queueLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    queueLabel.textColor = [NSColor secondaryLabelColor];
+    addRow(queueLabel, rowHeight);
+
+    // Date formatter for the table
+    self.dateFormatter = [[NSDateFormatter alloc] init];
+    self.dateFormatter.dateStyle = NSDateFormatterShortStyle;
+    self.dateFormatter.timeStyle = NSDateFormatterShortStyle;
+
+    // Table view inside scroll view
+    self.cacheTableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    self.cacheTableView.dataSource = self;
+    self.cacheTableView.delegate = self;
+    self.cacheTableView.allowsMultipleSelection = YES;
+    self.cacheTableView.usesAlternatingRowBackgroundColors = YES;
+    self.cacheTableView.rowHeight = 18;
+    self.cacheTableView.headerView.frame = NSMakeRect(0, 0, 0, 20);
+    self.cacheTableView.style = NSTableViewStylePlain;
+    self.cacheTableView.font = [NSFont systemFontOfSize:11];
+
+    NSTableColumn *artistCol = [[NSTableColumn alloc] initWithIdentifier:@"artist"];
+    artistCol.title = @"Artist";
+    artistCol.width = 120;
+    artistCol.minWidth = 60;
+    [self.cacheTableView addTableColumn:artistCol];
+
+    NSTableColumn *titleCol = [[NSTableColumn alloc] initWithIdentifier:@"title"];
+    titleCol.title = @"Title";
+    titleCol.width = 120;
+    titleCol.minWidth = 60;
+    [self.cacheTableView addTableColumn:titleCol];
+
+    NSTableColumn *albumCol = [[NSTableColumn alloc] initWithIdentifier:@"album"];
+    albumCol.title = @"Album";
+    albumCol.width = 100;
+    albumCol.minWidth = 40;
+    [self.cacheTableView addTableColumn:albumCol];
+
+    NSTableColumn *dateCol = [[NSTableColumn alloc] initWithIdentifier:@"date"];
+    dateCol.title = @"Date";
+    dateCol.width = 110;
+    dateCol.minWidth = 80;
+    [self.cacheTableView addTableColumn:dateCol];
+
+    self.cacheScrollView = [[NSScrollView alloc] init];
+    self.cacheScrollView.documentView = self.cacheTableView;
+    self.cacheScrollView.hasVerticalScroller = YES;
+    self.cacheScrollView.autohidesScrollers = YES;
+    self.cacheScrollView.borderType = NSBezelBorder;
+
+    self.cacheScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:self.cacheScrollView];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.cacheScrollView.topAnchor constraintEqualToAnchor:container.topAnchor constant:currentY],
+        [self.cacheScrollView.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:leftMargin + 16],
+        [self.cacheScrollView.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-leftMargin],
+        [self.cacheScrollView.heightAnchor constraintEqualToConstant:140],
+    ]];
+    currentY += 148;
+
+    // Delete button row
+    self.deleteButton = [NSButton buttonWithTitle:@"Delete Selected"
+                                            target:self
+                                            action:@selector(deleteSelectedTracks:)];
+    self.deleteButton.font = [NSFont systemFontOfSize:11];
+    self.deleteButton.enabled = NO;
+    addIndentedRow(self.deleteButton, 28 + sectionGap);
+
     // ===== Footer =====
     NSTextField *footerLabel = [NSTextField labelWithString:@"Scrobbles tracks after 50% or 4 minutes of playback."];
     footerLabel.font = [NSFont systemFontOfSize:10];
@@ -313,6 +393,7 @@
     [self loadSettings];
     [self updateAuthUI];
     [self updateStatusLabels];
+    [self reloadCacheTable];
 }
 
 #pragma mark - Settings
@@ -602,6 +683,7 @@
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf updateStatusLabels];
+        [weakSelf reloadCacheTable];
     });
 }
 
@@ -610,6 +692,95 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf updateStatusLabels];
     });
+}
+
+#pragma mark - Cache Table
+
+- (void)reloadCacheTable {
+    self.cachedTracks = [[ScrobbleCache shared] pendingTracks];
+    [self.cacheTableView reloadData];
+    [self updateDeleteButton];
+}
+
+- (void)updateDeleteButton {
+    self.deleteButton.enabled = (self.cacheTableView.selectedRowIndexes.count > 0);
+}
+
+- (void)deleteSelectedTracks:(id)sender {
+    NSIndexSet *selected = self.cacheTableView.selectedRowIndexes;
+    if (selected.count == 0) return;
+
+    NSString *message;
+    if (selected.count == 1) {
+        ScrobbleTrack *track = self.cachedTracks[selected.firstIndex];
+        message = [NSString stringWithFormat:@"Delete \"%@\" from the scrobble queue?",
+                   track.displayDescription];
+    } else {
+        message = [NSString stringWithFormat:@"Delete %lu tracks from the scrobble queue?",
+                   (unsigned long)selected.count];
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = message;
+    alert.informativeText = @"These tracks will not be scrobbled to Last.fm.";
+    [alert addButtonWithTitle:@"Delete"];
+    [alert addButtonWithTitle:@"Cancel"];
+    alert.alertStyle = NSAlertStyleWarning;
+
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+    NSMutableSet<NSString*> *idsToRemove = [NSMutableSet set];
+    [selected enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx < self.cachedTracks.count) {
+            [idsToRemove addObject:self.cachedTracks[idx].submissionId];
+        }
+    }];
+
+    [[ScrobbleCache shared] removeTracksWithSubmissionIds:idsToRemove];
+}
+
+#pragma mark - NSTableViewDataSource
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    return (NSInteger)self.cachedTracks.count;
+}
+
+#pragma mark - NSTableViewDelegate
+
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.cachedTracks.count) return nil;
+
+    ScrobbleTrack *track = self.cachedTracks[row];
+    NSString *identifier = tableColumn.identifier;
+
+    NSTextField *cell = [tableView makeViewWithIdentifier:identifier owner:self];
+    if (!cell) {
+        cell = [NSTextField labelWithString:@""];
+        cell.identifier = identifier;
+        cell.font = [NSFont systemFontOfSize:11];
+        cell.lineBreakMode = NSLineBreakByTruncatingTail;
+    }
+
+    if ([identifier isEqualToString:@"artist"]) {
+        cell.stringValue = track.artist ?: @"";
+    } else if ([identifier isEqualToString:@"title"]) {
+        cell.stringValue = track.title ?: @"";
+    } else if ([identifier isEqualToString:@"album"]) {
+        cell.stringValue = track.album ?: @"";
+    } else if ([identifier isEqualToString:@"date"]) {
+        if (track.timestamp > 0) {
+            NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)track.timestamp];
+            cell.stringValue = [self.dateFormatter stringFromDate:date];
+        } else {
+            cell.stringValue = @"";
+        }
+    }
+
+    return cell;
+}
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    [self updateDeleteButton];
 }
 
 @end

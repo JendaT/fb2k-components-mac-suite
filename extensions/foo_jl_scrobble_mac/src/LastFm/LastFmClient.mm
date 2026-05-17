@@ -43,7 +43,8 @@
         config.timeoutIntervalForResource = LastFm::kRequestTimeout * 2;
         _urlSession = [NSURLSession sessionWithConfiguration:config];
         _activeDiscoveries = [NSMutableDictionary dictionary];
-        _artistImageCache = [NSMutableDictionary dictionary];
+        _artistImageCache = [[NSCache alloc] init];
+        _artistImageCache.countLimit = 200;
     }
     return self;
 }
@@ -71,8 +72,13 @@
 #pragma mark - URL Building
 
 - (NSString*)urlEncode:(NSString*)string {
-    NSMutableCharacterSet *allowed = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
-    [allowed removeCharactersInString:@"&=+#"];
+    static NSCharacterSet *allowed = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableCharacterSet *set = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+        [set removeCharactersInString:@"&=+#"];
+        allowed = [set copy];
+    });
     return [string stringByAddingPercentEncodingWithAllowedCharacters:allowed];
 }
 
@@ -364,7 +370,7 @@
 
     // Check cache first (using lowercase key for case-insensitive matching)
     NSString *cacheKey = [artistName lowercaseString];
-    id cached = _artistImageCache[cacheKey];
+    id cached = [_artistImageCache objectForKey:cacheKey];
     if (cached) {
         if ([cached isKindOfClass:[NSURL class]]) {
             completion((NSURL*)cached, nil);
@@ -383,7 +389,7 @@
     NSURL *url = [NSURL URLWithString:urlString];
 
     if (!url) {
-        _artistImageCache[cacheKey] = [NSNull null];
+        [_artistImageCache setObject:[NSNull null] forKey:cacheKey];
         completion(nil, nil);
         return;
     }
@@ -404,7 +410,7 @@
 
         NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
         if (!html) {
-            self->_artistImageCache[cacheKey] = [NSNull null];
+            [self->_artistImageCache setObject:[NSNull null] forKey:cacheKey];
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(nil, nil);
             });
@@ -415,23 +421,28 @@
         // Pattern: class="header-new-background-image"... style="background-image: url(https://...)"
         NSURL *imageURL = nil;
 
-        // Try multiple patterns since Last.fm HTML structure may vary
-        NSArray *patterns = @[
-            // Pattern 1: header-new-background-image with inline style
-            @"header-new-background-image[^>]*style=\"[^\"]*background-image:\\s*url\\(([^)]+)\\)",
-            // Pattern 2: og:image meta tag
-            @"<meta[^>]+property=\"og:image\"[^>]+content=\"([^\"]+)\"",
-            @"<meta[^>]+content=\"([^\"]+)\"[^>]+property=\"og:image\"",
-            // Pattern 3: Any lastfm image URL in avatar format (artist photos section)
-            @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/avatar[^\"]+)\"",
-            // Pattern 4: ar0 sized images (full artist images)
-            @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/ar0/[^\"]+)\""
-        ];
-
-        for (NSString *pattern in patterns) {
-            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
+        // Pre-compiled regex patterns (compiled once, reused)
+        static NSArray<NSRegularExpression*> *regexPatterns = nil;
+        static dispatch_once_t regexOnce;
+        dispatch_once(&regexOnce, ^{
+            NSArray *patternStrings = @[
+                @"header-new-background-image[^>]*style=\"[^\"]*background-image:\\s*url\\(([^)]+)\\)",
+                @"<meta[^>]+property=\"og:image\"[^>]+content=\"([^\"]+)\"",
+                @"<meta[^>]+content=\"([^\"]+)\"[^>]+property=\"og:image\"",
+                @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/avatar[^\"]+)\"",
+                @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/ar0/[^\"]+)\""
+            ];
+            NSMutableArray *compiled = [NSMutableArray arrayWithCapacity:patternStrings.count];
+            for (NSString *p in patternStrings) {
+                NSRegularExpression *r = [NSRegularExpression regularExpressionWithPattern:p
                                                                                    options:NSRegularExpressionCaseInsensitive
                                                                                      error:nil];
+                if (r) [compiled addObject:r];
+            }
+            regexPatterns = [compiled copy];
+        });
+
+        for (NSRegularExpression *regex in regexPatterns) {
             NSTextCheckingResult *match = [regex firstMatchInString:html options:0 range:NSMakeRange(0, html.length)];
             if (match && match.numberOfRanges > 1) {
                 NSString *urlStr = [html substringWithRange:[match rangeAtIndex:1]];
@@ -459,9 +470,9 @@
 
         // Cache the result (or NSNull if not found)
         if (imageURL) {
-            self->_artistImageCache[cacheKey] = imageURL;
+            [self->_artistImageCache setObject:imageURL forKey:cacheKey];
         } else {
-            self->_artistImageCache[cacheKey] = [NSNull null];
+            [self->_artistImageCache setObject:[NSNull null] forKey:cacheKey];
             NSLog(@"[LastFmClient] No artist image found for '%@'", artistName);
         }
 
@@ -569,8 +580,17 @@
 
         // Parse scrobble response
         NSDictionary* scrobbles = response[@"scrobbles"];
-        NSInteger accepted = [scrobbles[@"@attr"][@"accepted"] integerValue];
-        NSInteger ignored = [scrobbles[@"@attr"][@"ignored"] integerValue];
+        if (![scrobbles isKindOfClass:[NSDictionary class]]) {
+            completion(0, 0, nil);
+            return;
+        }
+        NSDictionary* attr = scrobbles[@"@attr"];
+        if (![attr isKindOfClass:[NSDictionary class]]) {
+            completion(0, 0, nil);
+            return;
+        }
+        NSInteger accepted = [attr[@"accepted"] integerValue];
+        NSInteger ignored = [attr[@"ignored"] integerValue];
 
         completion(accepted, ignored, nil);
     }];
@@ -725,7 +745,15 @@
 
         // Total count is in the @attr pagination info
         NSDictionary* recentTracks = response[@"recenttracks"];
+        if (![recentTracks isKindOfClass:[NSDictionary class]]) {
+            completion(0, nil);
+            return;
+        }
         NSDictionary* attr = recentTracks[@"@attr"];
+        if (![attr isKindOfClass:[NSDictionary class]]) {
+            completion(0, nil);
+            return;
+        }
         NSInteger total = [attr[@"total"] integerValue];
 
         completion(total, nil);
@@ -870,8 +898,12 @@
         }
 
         NSDictionary* recentTracks = response[@"recenttracks"];
+        if (![recentTracks isKindOfClass:[NSDictionary class]]) {
+            completion(@[], 0, nil);
+            return;
+        }
         NSDictionary* attr = recentTracks[@"@attr"];
-        NSInteger totalPages = [attr[@"totalPages"] integerValue];
+        NSInteger totalPages = [attr isKindOfClass:[NSDictionary class]] ? [attr[@"totalPages"] integerValue] : 0;
 
         // Parse tracks
         NSMutableArray* tracks = [NSMutableArray array];
@@ -1002,15 +1034,19 @@
     // Remove from active discoveries
     [_activeDiscoveries removeObjectForKey:state.token];
 
-    // Call completion with cancellation error
+    // Guard against double-fire: nil out the completion after first call
+    LastFmStreakCompletion completion = state.completionBlock;
+    state.completionBlock = nil;
+    state.progressBlock = nil;
+
+    if (!completion) return;
+
     NSError *cancelError = [NSError errorWithDomain:NSCocoaErrorDomain
                                                code:NSUserCancelledError
                                            userInfo:@{NSLocalizedDescriptionKey: @"Streak discovery cancelled"}];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (state.completionBlock) {
-            state.completionBlock(state.currentStreak, state.scrobbledToday, NO, [NSDate date], cancelError);
-        }
+        completion(state.currentStreak, state.scrobbledToday, NO, [NSDate date], cancelError);
     });
 }
 
@@ -1044,10 +1080,7 @@
     NSDate *today = [NSDate date];
     NSInteger daysBack = state.daysChecked;
     if (!state.scrobbledToday && state.daysChecked == 0) {
-        // If no scrobbles today, start from yesterday
         daysBack = 1;
-    } else {
-        daysBack = state.daysChecked;
     }
 
     NSDate *dayToCheck = [calendar dateByAddingUnit:NSCalendarUnitDay value:-daysBack toDate:today options:0];
@@ -1124,11 +1157,17 @@
 #pragma mark - Lifecycle
 
 - (void)cancelAllRequests {
+    // Cancel all active streak discoveries
+    for (NSUUID *token in [_activeDiscoveries allKeys]) {
+        [self cancelStreakDiscovery:token];
+    }
+
     [_urlSession invalidateAndCancel];
 
     // Recreate session
     NSURLSessionConfiguration* config = [NSURLSessionConfiguration defaultSessionConfiguration];
     config.timeoutIntervalForRequest = LastFm::kRequestTimeout;
+    config.timeoutIntervalForResource = LastFm::kRequestTimeout * 2;
     _urlSession = [NSURLSession sessionWithConfiguration:config];
 }
 

@@ -12,6 +12,8 @@
 #import <CommonCrypto/CommonDigest.h>
 
 NS_INLINE NSString* MD5Hash(NSString *input) {
+    if (!input) return nil;
+
     // Note: MD5 is required by Last.fm API specification.
     // Suppress deprecation warning - we have no choice here.
     #pragma clang diagnostic push

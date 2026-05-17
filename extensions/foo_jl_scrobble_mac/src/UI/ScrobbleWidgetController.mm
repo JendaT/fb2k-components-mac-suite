@@ -17,16 +17,20 @@
 #import "../LastFm/LastFmAuth.h"
 #import "../Services/ScrobbleService.h"
 
-// Image cache for album artwork
+// Image cache for album artwork with async downloading
 @interface ScrobbleWidgetImageCache : NSObject
 + (instancetype)shared;
 - (NSImage *)cachedImageForURL:(NSURL *)url;
 - (void)cacheImage:(NSImage *)image forURL:(NSURL *)url;
 - (void)clearCache;
+/// Download image asynchronously. Checks cache first.
+/// Completion called on main thread with image or nil.
+- (void)downloadImageAtURL:(NSURL *)url completion:(void(^)(NSImage * _Nullable image))completion;
 @end
 
 @implementation ScrobbleWidgetImageCache {
     NSCache<NSURL*, NSImage*> *_cache;
+    NSURLSession *_downloadSession;
 }
 
 + (instancetype)shared {
@@ -42,7 +46,12 @@
     self = [super init];
     if (self) {
         _cache = [[NSCache alloc] init];
-        _cache.countLimit = 100;  // Increased for multiple pages
+        _cache.countLimit = 100;
+
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        config.timeoutIntervalForRequest = 15.0;
+        config.HTTPMaximumConnectionsPerHost = 4;
+        _downloadSession = [NSURLSession sessionWithConfiguration:config];
     }
     return self;
 }
@@ -59,6 +68,35 @@
 
 - (void)clearCache {
     [_cache removeAllObjects];
+}
+
+- (void)downloadImageAtURL:(NSURL *)url completion:(void(^)(NSImage * _Nullable image))completion {
+    if (!url || !completion) return;
+
+    // Validate URL scheme
+    NSString *scheme = url.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+        return;
+    }
+
+    // Check cache first
+    NSImage *cached = [_cache objectForKey:url];
+    if (cached) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(cached); });
+        return;
+    }
+
+    [[_downloadSession dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSImage *image = nil;
+        if (data && !error) {
+            image = [[NSImage alloc] initWithData:data];
+            if (image) {
+                [self->_cache setObject:image forKey:url];
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(image); });
+    }] resume];
 }
 
 @end
@@ -181,15 +219,10 @@
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(scrobbleServiceDidUpdate:)
-                                                 name:ScrobbleServiceDidScrobbleNotification
-                                               object:nil];
-
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(scrobbleServiceDidUpdate:)
                                                  name:ScrobbleServiceStateDidChangeNotification
                                                object:nil];
 
-    // Streak and count updates on scrobble
+    // Scrobble event: streak update, count increment, queue status
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleScrobbleSubmitted:)
                                                  name:ScrobbleServiceDidScrobbleNotification
@@ -428,22 +461,13 @@
 
         NSURL *url = track.imageURL;
         __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            NSData *data = [NSData dataWithContentsOfURL:url];
-            if (data) {
-                NSImage *image = [[NSImage alloc] initWithData:data];
-                if (image) {
-                    [[ScrobbleWidgetImageCache shared] cacheImage:image forURL:url];
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        __strong typeof(weakSelf) strongSelf = weakSelf;
-                        if (!strongSelf) return;
-                        [strongSelf.loadedImages setObject:image forKey:url];
-                        strongSelf.widgetView.albumImages = [strongSelf.loadedImages copy];
-                        [strongSelf.widgetView refreshDisplay];
-                    });
-                }
-            }
-        });
+        [[ScrobbleWidgetImageCache shared] downloadImageAtURL:url completion:^(NSImage *image) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !image) return;
+            [strongSelf.loadedImages setObject:image forKey:url];
+            strongSelf.widgetView.albumImages = [strongSelf.loadedImages copy];
+            [strongSelf.widgetView refreshDisplay];
+        }];
     }
 
     if (_loadedImages.count > 0) {
@@ -681,27 +705,19 @@
 
         // Load asynchronously
         NSURL *url = album.imageURL;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            NSData *data = [NSData dataWithContentsOfURL:url];
-            if (data) {
-                NSImage *image = [[NSImage alloc] initWithData:data];
-                if (image) {
-                    [[ScrobbleWidgetImageCache shared] cacheImage:image forURL:url];
+        __weak typeof(self) weakSelf = self;
+        [[ScrobbleWidgetImageCache shared] downloadImageAtURL:url completion:^(NSImage *image) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !image) return;
+            [strongSelf.loadedImages setObject:image forKey:url];
+            strongSelf.widgetView.albumImages = [strongSelf.loadedImages copy];
+            [strongSelf.widgetView refreshDisplay];
 
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.loadedImages setObject:image forKey:url];
-                        self.widgetView.albumImages = [self.loadedImages copy];
-                        [self.widgetView refreshDisplay];
-
-                        // Update cache entry with loaded images
-                        ScrobbleWidgetCacheEntry *entry = [self cachedEntryForPeriod:period type:type];
-                        if (entry) {
-                            entry.albumImages = [self.loadedImages copy];
-                        }
-                    });
-                }
+            ScrobbleWidgetCacheEntry *entry = [strongSelf cachedEntryForPeriod:period type:type];
+            if (entry) {
+                entry.albumImages = [strongSelf.loadedImages copy];
             }
-        });
+        }];
     }
 
     // Update view with any cached images
@@ -734,27 +750,19 @@
         }
 
         // Load the image
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            NSData *data = [NSData dataWithContentsOfURL:imageURL];
-            if (data) {
-                NSImage *image = [[NSImage alloc] initWithData:data];
-                if (image) {
-                    [[ScrobbleWidgetImageCache shared] cacheImage:image forURL:imageURL];
+        __weak typeof(self) weakSelf2 = self;
+        [[ScrobbleWidgetImageCache shared] downloadImageAtURL:imageURL completion:^(NSImage *image) {
+            __strong typeof(weakSelf2) strongSelf = weakSelf2;
+            if (!strongSelf || !image) return;
+            [strongSelf.loadedImages setObject:image forKey:imageURL];
+            strongSelf.widgetView.albumImages = [strongSelf.loadedImages copy];
+            [strongSelf.widgetView refreshDisplay];
 
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.loadedImages setObject:image forKey:imageURL];
-                        self.widgetView.albumImages = [self.loadedImages copy];
-                        [self.widgetView refreshDisplay];
-
-                        // Update cache entry
-                        ScrobbleWidgetCacheEntry *entry = [self cachedEntryForPeriod:period type:type];
-                        if (entry) {
-                            entry.albumImages = [self.loadedImages copy];
-                        }
-                    });
-                }
+            ScrobbleWidgetCacheEntry *entry = [strongSelf cachedEntryForPeriod:period type:type];
+            if (entry) {
+                entry.albumImages = [strongSelf.loadedImages copy];
             }
-        });
+        }];
     }];
 }
 
@@ -783,27 +791,19 @@
         }
 
         // Load the image
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            NSData *data = [NSData dataWithContentsOfURL:imageURL];
-            if (data) {
-                NSImage *image = [[NSImage alloc] initWithData:data];
-                if (image) {
-                    [[ScrobbleWidgetImageCache shared] cacheImage:image forURL:imageURL];
+        __weak typeof(self) weakSelf2 = self;
+        [[ScrobbleWidgetImageCache shared] downloadImageAtURL:imageURL completion:^(NSImage *image) {
+            __strong typeof(weakSelf2) strongSelf = weakSelf2;
+            if (!strongSelf || !image) return;
+            [strongSelf.loadedImages setObject:image forKey:imageURL];
+            strongSelf.widgetView.albumImages = [strongSelf.loadedImages copy];
+            [strongSelf.widgetView refreshDisplay];
 
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.loadedImages setObject:image forKey:imageURL];
-                        self.widgetView.albumImages = [self.loadedImages copy];
-                        [self.widgetView refreshDisplay];
-
-                        // Update cache entry
-                        ScrobbleWidgetCacheEntry *entry = [self cachedEntryForPeriod:period type:type];
-                        if (entry) {
-                            entry.albumImages = [self.loadedImages copy];
-                        }
-                    });
-                }
+            ScrobbleWidgetCacheEntry *entry = [strongSelf cachedEntryForPeriod:period type:type];
+            if (entry) {
+                entry.albumImages = [strongSelf.loadedImages copy];
             }
-        });
+        }];
     }];
 }
 
@@ -903,7 +903,7 @@
     }
 
     TopAlbum *album = _widgetView.topAlbums[index];
-    if (album.lastfmURL) {
+    if (album.lastfmURL && [self isWebURL:album.lastfmURL]) {
         [[NSWorkspace sharedWorkspace] openURL:album.lastfmURL];
     } else if (album.artist.length > 0 && album.name.length > 0) {
         // Construct URL manually if not available
@@ -941,7 +941,7 @@
     if (index < 0 || index >= (NSInteger)_widgetView.recentTracks.count) return;
 
     RecentTrack *track = _widgetView.recentTracks[index];
-    if (track.lastfmURL) {
+    if (track.lastfmURL && [self isWebURL:track.lastfmURL]) {
         [[NSWorkspace sharedWorkspace] openURL:track.lastfmURL];
     }
 }
@@ -1170,7 +1170,7 @@
         }
 
         [self updateStreakDisplay];
-        [self.widgetView refreshDisplay];
+        [self updateQueueStatus];
 
         // Schedule debounced recent tracks refresh (only in tracks mode)
         if (self.currentViewMode == ScrobbleWidgetViewModeTracks && self.isVisible) {
@@ -1283,6 +1283,13 @@
             [self.widgetView refreshDisplay];
         }
     });
+}
+
+#pragma mark - Helpers
+
+- (BOOL)isWebURL:(NSURL *)url {
+    NSString *scheme = url.scheme.lowercaseString;
+    return [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"];
 }
 
 #pragma mark - Color Conversion

@@ -1369,9 +1369,13 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
     // Last updated timestamp (right-aligned)
     if (_lastUpdated) {
-        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-        formatter.timeStyle = NSDateFormatterShortStyle;
-        formatter.dateStyle = NSDateFormatterNoStyle;
+        static NSDateFormatter *formatter = nil;
+        static dispatch_once_t formatterOnce;
+        dispatch_once(&formatterOnce, ^{
+            formatter = [[NSDateFormatter alloc] init];
+            formatter.timeStyle = NSDateFormatterShortStyle;
+            formatter.dateStyle = NSDateFormatterNoStyle;
+        });
 
         NSString *timeText = [NSString stringWithFormat:@"Updated %@", [formatter stringFromDate:_lastUpdated]];
         NSSize timeSize = [timeText sizeWithAttributes:statusAttrs];
@@ -1793,6 +1797,9 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
 - (void)refreshDisplay {
     [self setNeedsDisplay:YES];
+    // Force immediate redraw - foobar2000's view hierarchy may not
+    // propagate setNeedsDisplay from embedded widget views.
+    [self displayIfNeeded];
 }
 
 #pragma mark - Scroll Reset

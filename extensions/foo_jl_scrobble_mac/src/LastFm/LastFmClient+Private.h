@@ -30,11 +30,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface LastFmClient ()
 
-/// Active streak discovery operations (keyed by NSUUID)
+/// Active streak discovery operations (keyed by NSUUID).
+/// Access must be synchronized (all access happens on main thread).
 @property (nonatomic, strong) NSMutableDictionary<NSUUID*, LastFmStreakDiscoveryState*> *activeDiscoveries;
 
 /// Cache for scraped artist image URLs (artist name lowercase -> NSURL or NSNull for not found)
-@property (nonatomic, strong) NSMutableDictionary<NSString*, id> *artistImageCache;
+/// Thread-safe; auto-evicts under memory pressure.
+@property (nonatomic, strong) NSCache<NSString*, id> *artistImageCache;
 
 /// Fetch a page of recent tracks
 /// @param username Last.fm username

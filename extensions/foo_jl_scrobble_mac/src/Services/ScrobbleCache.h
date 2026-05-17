@@ -42,6 +42,12 @@ extern NSNotificationName const ScrobbleCacheDidChangeNotification;
 /// Number of tracks currently being submitted
 @property (nonatomic, readonly) NSUInteger inFlightCount;
 
+/// Snapshot of pending tracks (for display in preferences)
+- (NSArray<ScrobbleTrack*>*)pendingTracks;
+
+/// Remove specific tracks from the pending queue by submissionId
+- (void)removeTracksWithSubmissionIds:(NSSet<NSString*>*)submissionIds;
+
 #pragma mark - Persistence
 
 /// Load cache from disk

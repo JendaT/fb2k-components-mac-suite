@@ -33,8 +33,8 @@ public:
             console::info("[Scrobble] on_playback_new_track called");
 
             try {
-                // Finalize previous track if needed
-                if (m_currentTrack && canScrobble()) {
+                // Finalize previous track if needed (guard against double-scrobble)
+                if (m_currentTrack && !m_scrobbled && canScrobble()) {
                     console::info("[Scrobble] Finalizing previous track");
                     finalizeTrackLocked();
                 }

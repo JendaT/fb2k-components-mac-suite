@@ -2,6 +2,22 @@
 
 All notable changes to foo_jl_scrobble (Last.fm Scrobbler) will be documented in this file.
 
+## [1.4.0] - 2026-05-17
+
+### Added
+- Scrobble Queue table in preferences with multi-select delete and confirmation
+
+### Fixed
+- Scrobbles lost for artists with `&`, `=`, `+`, `#` in name (e.g. Simon & Garfunkel) — contributed by [@Scannou](https://github.com/Scannou)
+- Album art not appearing in Recent Tracks until view switch
+- UI freeze during cache save (blocking disk I/O on main thread)
+- Nil pointer crashes in image loading paths
+- Double-scrobble on rapid track changes
+
+### Changed
+- Async album art downloads with NSCache (previously synchronous and unbounded)
+- Hardened auth flow, keychain storage, and notification observers
+
 ## [1.3.0] - 2026-02-13
 
 ### Added

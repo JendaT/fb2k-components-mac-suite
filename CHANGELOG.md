@@ -261,6 +261,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Last.fm Scrobbler
 
+### [1.4.0] - 2026-05-17
+
+#### Added
+- Scrobble Queue table in preferences with multi-select delete
+
+#### Fixed
+- Scrobbles lost for artists with `&`, `=`, `+`, `#` in name — by [@Scannou](https://github.com/Scannou)
+- Album art not appearing until view switch
+- UI freeze during cache save
+- Nil pointer crashes in image loading
+- Double-scrobble on rapid track changes
+
+#### Changed
+- Async album art downloads with NSCache
+- Hardened auth flow, keychain storage, and notification observers
+
 ### [1.3.0] - 2026-02-13
 
 #### Added
