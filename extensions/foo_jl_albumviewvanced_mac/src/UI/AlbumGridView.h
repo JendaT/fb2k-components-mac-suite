@@ -32,6 +32,7 @@ extern NSPasteboardType const AlbumViewVancedPasteboardType;
 - (void)reloadData;
 - (void)recalcFrameHeight;
 - (void)collapseExpandedAlbum;
+- (void)scrollToAlbumWithTrackPath:(NSString *)path;
 
 /// The currently selected album, if any.
 - (nullable AlbumItem *)selectedAlbum;

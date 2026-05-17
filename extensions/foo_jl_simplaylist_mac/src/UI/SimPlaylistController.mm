@@ -1704,9 +1704,32 @@ static const NSUInteger kMaxCacheableGroups = 500;
     _playlistView.playingIndex = -1;
     if (pm->get_playing_item_location(&playingPlaylist, &playingItem)) {
         if (playingPlaylist == (t_size)_currentPlaylistIndex) {
-            // In both flat and sparse group mode, we can use playlist index directly
-            // The view will handle the row mapping
             _playlistView.playingIndex = (NSInteger)playingItem;
+        }
+        return;
+    }
+
+    // Nothing playing — try to restore from persisted last-playing track
+    std::string lastPath = simplaylist_config::getConfigString(
+        simplaylist_config::kLastPlayingPath, "");
+    if (lastPath.empty() || _currentPlaylistIndex < 0) return;
+
+    std::string lastPlaylist = simplaylist_config::getConfigString(
+        simplaylist_config::kLastPlayingPlaylist, "");
+    if (lastPlaylist.empty()) return;
+
+    pfc::string8 currentName;
+    if (!pm->playlist_get_name((t_size)_currentPlaylistIndex, currentName)) return;
+    if (lastPlaylist != currentName.c_str()) return;
+
+    t_size itemCount = pm->playlist_get_item_count((t_size)_currentPlaylistIndex);
+    for (t_size i = 0; i < itemCount; i++) {
+        metadb_handle_ptr handle;
+        if (pm->playlist_get_item_handle(handle, (t_size)_currentPlaylistIndex, i)
+            && handle.is_valid()
+            && strcmp(handle->get_path(), lastPath.c_str()) == 0) {
+            _playlistView.playingIndex = (NSInteger)i;
+            return;
         }
     }
 }
@@ -1763,9 +1786,36 @@ static const NSUInteger kMaxCacheableGroups = 500;
 - (void)handleEnsureVisible:(NSInteger)playlistIndex {
     if (playlistIndex < 0) return;
     NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
-    if (row >= 0) {
-        [_playlistView scrollRowToVisible:row];
+    if (row < 0) return;
+
+    NSRect trackRect = [_playlistView rectForRow:row];
+
+    if (_playlistView.groupStarts.count > 0) {
+        NSInteger groupIndex = [_playlistView groupIndexForRow:row];
+        if (groupIndex >= 0) {
+            NSInteger headerRow = [_playlistView rowForGroupHeader:groupIndex];
+            if (headerRow >= 0) {
+                CGFloat groupTop = [_playlistView yOffsetForRow:headerRow];
+                CGFloat groupHeight = [_playlistView pixelHeightForGroup:groupIndex];
+                NSRect albumRect = NSMakeRect(0, groupTop,
+                                              _playlistView.bounds.size.width, groupHeight);
+
+                NSRect visibleRect = _playlistView.visibleRect;
+                if (albumRect.size.height <= visibleRect.size.height) {
+                    [_playlistView scrollRectToVisible:albumRect];
+                    return;
+                }
+                // Album too tall — show header + track together
+                NSRect headerRect = [_playlistView rectForRow:headerRow];
+                NSRect combined = NSUnionRect(headerRect, trackRect);
+                if (combined.size.height <= visibleRect.size.height) {
+                    [_playlistView scrollRectToVisible:combined];
+                    return;
+                }
+            }
+        }
     }
+    [_playlistView scrollRectToVisible:trackRect];
 }
 
 - (void)handleItemsModified {
@@ -1781,6 +1831,22 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
 - (void)handlePlaybackNewTrack:(metadb_handle_ptr)track {
     [self updatePlayingIndicator];
+
+    if (track.is_valid()) {
+        try {
+            auto pm = playlist_manager::get();
+            t_size pp, pi;
+            if (pm->get_playing_item_location(&pp, &pi)) {
+                pfc::string8 name;
+                if (pm->playlist_get_name(pp, name)) {
+                    simplaylist_config::setConfigString(
+                        simplaylist_config::kLastPlayingPlaylist, name.c_str());
+                }
+                simplaylist_config::setConfigString(
+                    simplaylist_config::kLastPlayingPath, track->get_path());
+            }
+        } catch (...) {}
+    }
 }
 
 - (void)handlePlaybackStopped {

@@ -765,6 +765,22 @@ typedef struct {
     [self scrollRectToVisible:NSMakeRect(0, y, w, ch)];
 }
 
+- (void)scrollToAlbumWithTrackPath:(NSString *)path {
+    if (!path || _albums.count == 0) return;
+    for (NSInteger i = 0; i < (NSInteger)_albums.count; i++) {
+        for (AlbumTrack *t in _albums[i].tracks) {
+            if ([t.path isEqualToString:path]) {
+                _selectedAlbumIndex = i;
+                _expandedAlbumIndex = NSNotFound;
+                _selectedTrackIndex = NSNotFound;
+                [self reloadData];
+                [self scrollToAlbumIndex:i];
+                return;
+            }
+        }
+    }
+}
+
 #pragma mark - Drag & Drop (source)
 
 - (void)startDragFromPoint:(NSPoint)point event:(NSEvent *)event {

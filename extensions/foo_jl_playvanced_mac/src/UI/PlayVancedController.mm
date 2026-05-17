@@ -99,18 +99,27 @@
     _barView.trackDuration = track->get_length();
 
     metadb_handle_ptr trackCopy = track;
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @autoreleasepool {
-            TrackInfo *info = [self extractInfoFromHandle:trackCopy];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+
+            TrackInfo *info = [strongSelf extractInfoFromHandle:trackCopy];
             dispatch_async(dispatch_get_main_queue(), ^{
-                self->_barView.trackInfo = info;
+                __strong typeof(weakSelf) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                innerSelf->_barView.trackInfo = info;
             });
         }
     });
 
+    __weak typeof(self) weakSelfArtwork = self;
     [[ArtworkFetcher sharedFetcher] fetchArtworkForPath:path completion:^(NSImage *image) {
-        if ([self->_currentPath isEqualToString:path]) {
-            self->_barView.artworkImage = image;
+        __strong typeof(weakSelfArtwork) strongSelf = weakSelfArtwork;
+        if (!strongSelf) return;
+        if ([strongSelf->_currentPath isEqualToString:path]) {
+            strongSelf->_barView.artworkImage = image;
         }
     }];
 }
@@ -150,18 +159,27 @@
     _barView.trackDuration = selected->get_length();
 
     metadb_handle_ptr trackCopy = selected;
+    __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         @autoreleasepool {
-            TrackInfo *info = [self extractInfoFromHandle:trackCopy];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+
+            TrackInfo *info = [strongSelf extractInfoFromHandle:trackCopy];
             dispatch_async(dispatch_get_main_queue(), ^{
-                self->_barView.trackInfo = info;
+                __strong typeof(weakSelf) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                innerSelf->_barView.trackInfo = info;
             });
         }
     });
 
+    __weak typeof(self) weakSelfArtwork = self;
     [[ArtworkFetcher sharedFetcher] fetchArtworkForPath:path completion:^(NSImage *image) {
-        if ([self->_currentPath isEqualToString:path]) {
-            self->_barView.artworkImage = image;
+        __strong typeof(weakSelfArtwork) strongSelf = weakSelfArtwork;
+        if (!strongSelf) return;
+        if ([strongSelf->_currentPath isEqualToString:path]) {
+            strongSelf->_barView.artworkImage = image;
         }
     }];
 }
@@ -258,6 +276,59 @@
         }
         pc->set_volume(dB);
     } catch (...) {}
+}
+
+- (void)nowPlayingViewDidTapTrackInfo {
+    try {
+        auto pm = playlist_manager::get();
+
+        t_size playlistIdx, itemIdx;
+        bool found = pm->get_playing_item_location(&playlistIdx, &itemIdx);
+
+        if (!found && _currentPath.length > 0) {
+            found = [self findTrackByPath:_currentPath playlist:&playlistIdx item:&itemIdx];
+        }
+        if (!found) return;
+
+        pm->set_active_playlist(playlistIdx);
+        pm->playlist_set_focus_item(playlistIdx, itemIdx);
+        pm->playlist_ensure_visible(playlistIdx, itemIdx);
+    } catch (...) {}
+
+    if (_currentPath.length > 0) {
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"fb2k.navigateToTrack"
+                          object:nil
+                        userInfo:@{@"path": _currentPath}];
+    }
+}
+
+- (BOOL)findTrackByPath:(NSString *)path playlist:(t_size *)outPlaylist item:(t_size *)outItem {
+    const char *targetPath = [path UTF8String];
+    auto pm = playlist_manager::get();
+    t_size active = pm->get_active_playlist();
+    t_size count = pm->get_playlist_count();
+
+    // Search active playlist first for faster hit
+    for (t_size pass = 0; pass < 2; pass++) {
+        t_size start = (pass == 0) ? active : 0;
+        t_size end   = (pass == 0) ? active + 1 : count;
+        for (t_size p = start; p < end; p++) {
+            if (pass == 1 && p == active) continue;
+            t_size items = pm->playlist_get_item_count(p);
+            for (t_size i = 0; i < items; i++) {
+                metadb_handle_ptr handle;
+                if (pm->playlist_get_item_handle(handle, p, i) && handle.is_valid()) {
+                    if (strcmp(handle->get_path(), targetPath) == 0) {
+                        *outPlaylist = p;
+                        *outItem = i;
+                        return YES;
+                    }
+                }
+            }
+        }
+    }
+    return NO;
 }
 
 - (void)nowPlayingViewDidReceiveDroppedPaths:(NSArray<NSString *> *)paths {

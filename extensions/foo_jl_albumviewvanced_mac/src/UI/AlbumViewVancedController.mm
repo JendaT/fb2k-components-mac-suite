@@ -98,7 +98,18 @@ static const CGFloat kPadding           = 8.0;
     [super viewDidAppear];
     if (!_initialLoadDone) {
         _initialLoadDone = YES;
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleNavigateToTrack:)
+                                                     name:@"fb2k.navigateToTrack"
+                                                   object:nil];
         [self scheduleLibraryRebuild];
+    }
+}
+
+- (void)handleNavigateToTrack:(NSNotification *)note {
+    NSString *path = note.userInfo[@"path"];
+    if (path.length > 0) {
+        [_gridView scrollToAlbumWithTrackPath:path];
     }
 }
 

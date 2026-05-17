@@ -32,6 +32,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 @property (nonatomic, strong) NSTextField *idleLabel;
 @property (nonatomic, assign) BOOL isSeeking;
 @property (nonatomic, assign) BOOL isDragTarget;
+@property (nonatomic, strong) NSTrackingArea *trackInfoTrackingArea;
+@property (nonatomic, assign) BOOL isTrackInfoHovering;
 @end
 
 @implementation NowPlayingView
@@ -53,6 +55,29 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 
 - (BOOL)isFlipped {
     return YES;
+}
+
+#pragma mark - Track Info Hit Area
+
+- (NSRect)trackInfoRect {
+    if (_titleLabel.isHidden) return NSZeroRect;
+    return NSUnionRect(_titleLabel.frame, _artistLabel.frame);
+}
+
+- (void)updateTrackInfoTrackingArea {
+    if (_trackInfoTrackingArea) {
+        [self removeTrackingArea:_trackInfoTrackingArea];
+    }
+    NSRect rect = [self trackInfoRect];
+    if (NSIsEmptyRect(rect)) return;
+
+    _trackInfoTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:rect
+        options:(NSTrackingMouseEnteredAndExited |
+                 NSTrackingActiveInActiveApp)
+        owner:self
+        userInfo:@{@"trackInfo": @YES}];
+    [self addTrackingArea:_trackInfoTrackingArea];
 }
 
 #pragma mark - Setup
@@ -292,6 +317,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     // Update time labels position to be below the slider for cleaner look
     _elapsedLabel.frame = NSMakeRect(sliderLeft, midY + 6, timeWidth + 10, 14);
     _remainingLabel.frame = NSMakeRect(sliderLeft + sliderWidth - timeWidth - 10, midY + 6, timeWidth + 10, 14);
+
+    [self updateTrackInfoTrackingArea];
 }
 
 #pragma mark - Drawing
@@ -527,6 +554,62 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     int minutes = totalSeconds / 60;
     int secs = totalSeconds % 60;
     return [NSString stringWithFormat:@"%d:%02d", minutes, secs];
+}
+
+#pragma mark - Track Info Hover & Click
+
+- (NSView *)hitTest:(NSPoint)point {
+    NSPoint local = [self convertPoint:point fromView:self.superview];
+    if (!_titleLabel.isHidden && NSPointInRect(local, [self trackInfoRect])) {
+        return self;
+    }
+    return [super hitTest:point];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    if ([event.trackingArea.userInfo[@"trackInfo"] boolValue]) {
+        _isTrackInfoHovering = YES;
+        _titleLabel.textColor = [NSColor controlAccentColor];
+        _artistLabel.textColor = [NSColor controlAccentColor];
+        [[NSCursor pointingHandCursor] push];
+    }
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    if ([event.trackingArea.userInfo[@"trackInfo"] boolValue]) {
+        _isTrackInfoHovering = NO;
+        _titleLabel.textColor = fb2k_ui::textColor();
+        _artistLabel.textColor = fb2k_ui::secondaryTextColor();
+        [NSCursor pop];
+    }
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+    if (NSPointInRect(location, [self trackInfoRect]) && !_titleLabel.isHidden) {
+        _isTrackInfoHovering = YES;
+        _titleLabel.alphaValue = 0.7;
+        _artistLabel.alphaValue = 0.7;
+        return;
+    }
+    [super mouseDown:event];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    if (_titleLabel.alphaValue < 1.0) {
+        _titleLabel.alphaValue = 1.0;
+        _artistLabel.alphaValue = 1.0;
+
+        NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+        if (NSPointInRect(location, [self trackInfoRect])) {
+            [self.delegate nowPlayingViewDidTapTrackInfo];
+        }
+        _isTrackInfoHovering = NO;
+        _titleLabel.textColor = fb2k_ui::textColor();
+        _artistLabel.textColor = fb2k_ui::secondaryTextColor();
+        return;
+    }
+    [super mouseUp:event];
 }
 
 #pragma mark - Keyboard

@@ -100,6 +100,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 - (NSInteger)rowAtPoint:(NSPoint)point;
 - (NSRect)rectForRow:(NSInteger)row;
 - (CGFloat)yOffsetForRow:(NSInteger)row;
+- (CGFloat)pixelHeightForGroup:(NSInteger)groupIndex;
 
 // Row mapping for sparse groups (O(log g) operations)
 - (NSInteger)rowCount;  // Total display rows = itemCount + groupCount
