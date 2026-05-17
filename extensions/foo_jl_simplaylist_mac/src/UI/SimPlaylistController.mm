@@ -574,7 +574,17 @@ struct ReloadOperation {
 }
 
 - (void)autoResizeColumns {
-    CGFloat availableWidth = _scrollView.bounds.size.width - _playlistView.groupColumnWidth;
+    // Base column sizing on the visible document area rather than the scroll view
+    // frame, which includes scroller chrome and can otherwise obscure trailing content.
+    CGFloat viewportWidth = _scrollView.contentView.bounds.size.width;
+    if (viewportWidth <= 0) {
+        viewportWidth = _scrollView.bounds.size.width;
+    }
+
+    // Reserve a small trailing gutter so right-aligned values remain visually separated
+    // from the viewport edge and vertical scroller.
+    static const CGFloat kTrailingColumnPadding = 16.0;
+    CGFloat availableWidth = viewportWidth - _playlistView.groupColumnWidth - kTrailingColumnPadding;
 
     // Calculate fixed width (non-auto-resize columns)
     CGFloat fixedWidth = 0;
