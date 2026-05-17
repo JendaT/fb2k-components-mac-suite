@@ -8,6 +8,7 @@
 #import "TidalPreferencesController.h"
 #import "../Services/TidalAuthService.h"
 #import "../Core/TidalConfig.h"
+#import "../Core/StreamCache.h"
 #import "../API/TidalConstants.h"
 #import "../API/TidalAPI.h"
 #import "../../../../shared/PreferencesCommon.h"
@@ -17,6 +18,7 @@
 @property (nonatomic, strong) NSImageView *profileImageView;
 @property (nonatomic, strong) NSTextField *usernameLabel;
 @property (nonatomic, strong) NSTextField *authStatusLabel;
+@property (nonatomic, strong) NSTextField *tokenStatusLabel;
 @property (nonatomic, strong) NSButton *authButton;
 @property (nonatomic, strong, readwrite) NSButton *reconnectButton;
 @property (nonatomic, strong) NSProgressIndicator *authSpinner;
@@ -25,9 +27,13 @@
 // Settings
 @property (nonatomic, strong) NSPopUpButton *qualityPopup;
 @property (nonatomic, strong) NSButton *debugCheckbox;
+@property (nonatomic, strong) NSButton *dashCheckbox;
 
 // Cached user info
 @property (nonatomic, strong) NSImage *cachedProfileImage;
+
+// Token countdown timer
+@property (nonatomic, strong) NSTimer *tokenStatusTimer;
 @end
 
 @implementation JLTidalPreferencesController
@@ -44,7 +50,26 @@
 }
 
 - (void)dealloc {
+    [_tokenStatusTimer invalidate];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    // Update token status every 15 seconds while view is visible
+    [self.tokenStatusTimer invalidate];
+    __weak typeof(self) weakSelf = self;
+    self.tokenStatusTimer = [NSTimer scheduledTimerWithTimeInterval:15.0
+                                                           repeats:YES
+                                                             block:^(NSTimer *t) {
+        [weakSelf updateAuthUI];
+    }];
+}
+
+- (void)viewWillDisappear {
+    [super viewWillDisappear];
+    [self.tokenStatusTimer invalidate];
+    self.tokenStatusTimer = nil;
 }
 
 - (void)loadView {
@@ -131,6 +156,15 @@
     self.authStatusLabel.textColor = [NSColor secondaryLabelColor];
     [infoStack addArrangedSubview:self.authStatusLabel];
 
+    self.tokenStatusLabel = [NSTextField labelWithString:@""];
+    self.tokenStatusLabel.font = [NSFont systemFontOfSize:10];
+    self.tokenStatusLabel.textColor = [NSColor tertiaryLabelColor];
+    self.tokenStatusLabel.hidden = YES;
+    self.tokenStatusLabel.maximumNumberOfLines = 0;
+    self.tokenStatusLabel.lineBreakMode = NSLineBreakByWordWrapping;
+    [self.tokenStatusLabel.cell setWraps:YES];
+    [infoStack addArrangedSubview:self.tokenStatusLabel];
+
     [profileRow addArrangedSubview:infoStack];
 
     self.authSpinner = [[NSProgressIndicator alloc] init];
@@ -200,6 +234,11 @@
                                               action:@selector(debugChanged:)];
     addIndentedRow(self.debugCheckbox, rowHeight);
 
+    self.dashCheckbox = [NSButton checkboxWithTitle:@"Experimental: download LOSSLESS via DASH (untested, may break playback)"
+                                             target:self
+                                             action:@selector(dashChanged:)];
+    addIndentedRow(self.dashCheckbox, rowHeight);
+
     self.view = container;
 }
 
@@ -224,6 +263,9 @@
 
     // Debug
     self.debugCheckbox.state = tidal::TidalConfig::isDebugLoggingEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // DASH experimental toggle
+    self.dashCheckbox.state = tidal::TidalConfig::isDASHEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)updateAuthUI {
@@ -241,6 +283,9 @@
             self.profileImageView.contentTintColor = [NSColor tertiaryLabelColor];
         }
     }
+
+    // Hide token detail label in non-authenticated states; will be re-shown if needed below
+    self.tokenStatusLabel.hidden = YES;
 
     switch (state) {
         case JLTidalAuthStateIdle:
@@ -305,7 +350,7 @@
                 [status appendFormat:@" [%@]", session.countryCode];
             }
             if (session.isExpired) {
-                [status appendString:@" - Token expired"];
+                [status appendString:@" — Token expired"];
                 self.authStatusLabel.textColor = [NSColor systemOrangeColor];
                 self.reconnectButton.hidden = NO;
                 self.reconnectButton.enabled = YES;
@@ -314,6 +359,17 @@
                 self.reconnectButton.hidden = YES;
             }
             self.authStatusLabel.stringValue = status;
+
+            // Token detail line: expiry countdown + warning state
+            self.tokenStatusLabel.hidden = NO;
+            self.tokenStatusLabel.stringValue = [self formatTokenStatus:session];
+            if (session.isExpired) {
+                self.tokenStatusLabel.textColor = [NSColor systemOrangeColor];
+            } else if (session.needsRefresh) {
+                self.tokenStatusLabel.textColor = [NSColor systemYellowColor];
+            } else {
+                self.tokenStatusLabel.textColor = [NSColor tertiaryLabelColor];
+            }
 
             [self.authButton setTitle:@"Disconnect"];
             self.authButton.enabled = YES;
@@ -350,6 +406,53 @@
             [self.authSpinner stopAnimation:nil];
             break;
         }
+    }
+}
+
+- (NSString *)formatTokenStatus:(JLTidalSession *)session {
+    if (!session) return @"";
+
+    NSTimeInterval secondsLeft = [session.expiryDate timeIntervalSinceNow];
+    NSString *base;
+    if (secondsLeft <= 0) {
+        NSTimeInterval ago = -secondsLeft;
+        base = [NSString stringWithFormat:@"Token expired %@ ago — playback will fail until reconnect",
+                [self formatDuration:ago]];
+    } else if (secondsLeft < 300) {
+        base = [NSString stringWithFormat:@"Token expires in %@ — refreshing soon",
+                [self formatDuration:secondsLeft]];
+    } else {
+        base = [NSString stringWithFormat:@"Token valid · expires in %@",
+                [self formatDuration:secondsLeft]];
+    }
+
+    JLTidalAuthService *svc = [JLTidalAuthService shared];
+    NSDate *lastAttempt = svc.lastRefreshAttempt;
+    if (lastAttempt) {
+        NSTimeInterval since = -[lastAttempt timeIntervalSinceNow];
+        NSString *whenStr = [self formatDuration:since];
+        if (svc.lastRefreshError) {
+            base = [base stringByAppendingFormat:@"\nLast refresh: failed %@ ago — %@",
+                    whenStr, svc.lastRefreshError];
+        } else {
+            base = [base stringByAppendingFormat:@"\nLast refresh: ok %@ ago", whenStr];
+        }
+    }
+    return base;
+}
+
+- (NSString *)formatDuration:(NSTimeInterval)seconds {
+    if (seconds < 0) seconds = 0;
+    long s = (long)seconds;
+    long h = s / 3600;
+    long m = (s % 3600) / 60;
+    long sec = s % 60;
+    if (h > 0) {
+        return [NSString stringWithFormat:@"%ldh %ldm", h, m];
+    } else if (m > 0) {
+        return [NSString stringWithFormat:@"%ldm %lds", m, sec];
+    } else {
+        return [NSString stringWithFormat:@"%lds", sec];
     }
 }
 
@@ -390,20 +493,35 @@
     [self.authSpinner setHidden:NO];
     [self.authSpinner startAnimation:nil];
 
+    tidal::logInfo("Reconnect: starting token refresh");
+
     // Try refreshing the token first
+    __weak typeof(self) weakSelf = self;
     [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
+
             if (success) {
-                // Token refreshed - updateAuthUI will be called via notification
                 tidal::logInfo("Reconnect: token refreshed successfully");
+                // State was already Authenticated, so setState: won't fire a notification.
+                // Must update UI explicitly.
+                [strongSelf updateAuthUI];
             } else {
-                // Refresh failed - start full OAuth flow
+                // Refresh failed - sign out cleanly, then start full OAuth flow
                 tidal::logInfo("Reconnect: refresh failed, starting full OAuth flow");
+                [[JLTidalAuthService shared] signOut];
                 [[JLTidalAuthService shared] startAuthenticationWithCompletion:^(BOOL authSuccess, NSError *error) {
-                    if (!authSuccess && error) {
-                        tidal::logError([[NSString stringWithFormat:@"Reconnect auth failed: %@",
-                                         error.localizedDescription] UTF8String]);
-                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        typeof(self) strongSelf2 = weakSelf;
+                        if (!strongSelf2) return;
+                        if (!authSuccess) {
+                            tidal::logError([[NSString stringWithFormat:@"Reconnect auth failed: %@",
+                                             error.localizedDescription ?: @"unknown"] UTF8String]);
+                            // Ensure UI recovers from "Reconnecting..." state
+                            [strongSelf2 updateAuthUI];
+                        }
+                    });
                 }];
             }
         });
@@ -427,6 +545,14 @@
 - (void)debugChanged:(id)sender {
     bool enabled = (self.debugCheckbox.state == NSControlStateValueOn);
     tidal::TidalConfig::setDebugLoggingEnabled(enabled);
+}
+
+- (void)dashChanged:(id)sender {
+    bool enabled = (self.dashCheckbox.state == NSControlStateValueOn);
+    tidal::TidalConfig::setDASHEnabled(enabled);
+    // Stream cache may hold pre-DASH entries — clear so the next play re-resolves
+    // and picks up DASH-vs-direct selection based on the new setting.
+    tidal::StreamCache::shared().clear();
 }
 
 @end

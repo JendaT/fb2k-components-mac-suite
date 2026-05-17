@@ -57,7 +57,7 @@ typedef NS_ENUM(NSInteger, JLTidalQuality) {
 };
 
 // String representations for API requests
-static NSString * JLTidalQualityToString(JLTidalQuality quality) {
+static inline NSString * JLTidalQualityToString(JLTidalQuality quality) {
     switch (quality) {
         case JLTidalQualityLow: return @"LOW";
         case JLTidalQualityHigh: return @"HIGH";

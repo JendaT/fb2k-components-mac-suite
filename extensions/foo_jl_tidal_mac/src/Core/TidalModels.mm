@@ -8,6 +8,72 @@
 #import "TidalModels.h"
 #import "TidalConfig.h"
 
+static NSDateFormatter *sharedDateOnlyFormatter(void) {
+    static NSDateFormatter *fmt = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        fmt = [[NSDateFormatter alloc] init];
+        fmt.dateFormat = @"yyyy-MM-dd";
+        fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    });
+    return fmt;
+}
+
+static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
+    static NSISO8601DateFormatter *fmt = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        fmt = [[NSISO8601DateFormatter alloc] init];
+    });
+    return fmt;
+}
+
+static NSRegularExpression *sharedDASHBaseURLRegex(void) {
+    static NSRegularExpression *regex = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        regex = [NSRegularExpression regularExpressionWithPattern:
+            @"<BaseURL>\\s*(https?://[^<]+?)\\s*</BaseURL>"
+            options:0 error:nil];
+    });
+    return regex;
+}
+
+// Extract a single attribute value (e.g. initialization="...") from an XML tag.
+static NSString *extractXMLAttr(NSString *tag, NSString *attr) {
+    NSString *pattern = [NSString stringWithFormat:@"\\b%@\\s*=\\s*\"([^\"]*)\"", attr];
+    NSError *err = nil;
+    NSRegularExpression *r = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&err];
+    if (!r) return nil;
+    NSTextCheckingResult *m = [r firstMatchInString:tag options:0 range:NSMakeRange(0, tag.length)];
+    if (m && m.numberOfRanges > 1) {
+        return [tag substringWithRange:[m rangeAtIndex:1]];
+    }
+    return nil;
+}
+
+// Parse ISO 8601 duration (PT4M55.5S, PT1H, PT300S).
+static double parseISO8601Duration(NSString *str) {
+    if (str.length == 0) return 0;
+    static NSRegularExpression *r = nil;
+    static dispatch_once_t tok;
+    dispatch_once(&tok, ^{
+        r = [NSRegularExpression regularExpressionWithPattern:
+              @"PT(?:(\\d+)H)?(?:(\\d+)M)?(?:([0-9.]+)S)?"
+              options:0 error:nil];
+    });
+    NSTextCheckingResult *m = [r firstMatchInString:str options:0 range:NSMakeRange(0, str.length)];
+    if (!m) return 0;
+    double total = 0;
+    NSRange h = [m rangeAtIndex:1];
+    NSRange mn = [m rangeAtIndex:2];
+    NSRange s = [m rangeAtIndex:3];
+    if (h.location != NSNotFound) total += [[str substringWithRange:h] doubleValue] * 3600.0;
+    if (mn.location != NSNotFound) total += [[str substringWithRange:mn] doubleValue] * 60.0;
+    if (s.location != NSNotFound) total += [[str substringWithRange:s] doubleValue];
+    return total;
+}
+
 @implementation JLTidalTrack
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
@@ -74,10 +140,7 @@
             // Release date from album
             NSString *dateStr = album[@"releaseDate"];
             if ([dateStr isKindOfClass:[NSString class]] && dateStr.length >= 10) {
-                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-                fmt.dateFormat = @"yyyy-MM-dd";
-                fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-                _releaseDate = [fmt dateFromString:dateStr];
+                _releaseDate = [sharedDateOnlyFormatter() dateFromString:dateStr];
             }
         }
 
@@ -86,10 +149,7 @@
             NSString *trackDateStr = dict[@"releaseDate"];
             if (!trackDateStr) trackDateStr = dict[@"streamStartDate"];
             if ([trackDateStr isKindOfClass:[NSString class]] && trackDateStr.length >= 10) {
-                NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-                fmt.dateFormat = @"yyyy-MM-dd";
-                fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-                _releaseDate = [fmt dateFromString:[trackDateStr substringToIndex:10]];
+                _releaseDate = [sharedDateOnlyFormatter() dateFromString:[trackDateStr substringToIndex:10]];
             }
         }
 
@@ -149,10 +209,7 @@
         // Release date (ISO 8601 date string, e.g. "2024-01-15")
         NSString *dateStr = dict[@"releaseDate"];
         if ([dateStr isKindOfClass:[NSString class]] && dateStr.length >= 10) {
-            NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-            fmt.dateFormat = @"yyyy-MM-dd";
-            fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-            _releaseDate = [fmt dateFromString:dateStr];
+            _releaseDate = [sharedDateOnlyFormatter() dateFromString:dateStr];
         }
     }
     return self;
@@ -204,14 +261,10 @@
         // Last updated date
         NSString *lastUpdated = dict[@"lastUpdated"];
         if ([lastUpdated isKindOfClass:[NSString class]] && lastUpdated.length >= 10) {
-            NSISO8601DateFormatter *fmt = [[NSISO8601DateFormatter alloc] init];
-            _lastUpdated = [fmt dateFromString:lastUpdated];
+            _lastUpdated = [sharedISO8601Formatter() dateFromString:lastUpdated];
             if (!_lastUpdated) {
                 // Fallback for date-only format
-                NSDateFormatter *dateFmt = [[NSDateFormatter alloc] init];
-                dateFmt.dateFormat = @"yyyy-MM-dd";
-                dateFmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
-                _lastUpdated = [dateFmt dateFromString:lastUpdated];
+                _lastUpdated = [sharedDateOnlyFormatter() dateFromString:lastUpdated];
             }
         }
     }
@@ -232,7 +285,8 @@
             NSArray *parts = [trn componentsSeparatedByString:@":"];
             _folderID = parts.lastObject ?: trn;
         } else {
-            _folderID = [dict[@"id"] description] ?: @"";
+            id dictID = dict[@"id"];
+            _folderID = dictID ? [dictID description] : [[NSUUID UUID] UUIDString];
         }
 
         _name = dict[@"name"] ?: @"Untitled Folder";
@@ -361,11 +415,9 @@
                     tidal::logDebug("DASH manifest: no DRM");
                 }
 
-                // Extract BaseURL from DASH manifest
                 if (manifestStr) {
-                    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:
-                        @"<BaseURL>\\s*(https?://[^<]+?)\\s*</BaseURL>"
-                        options:0 error:nil];
+                    // 1) Try BaseURL — direct playable URL (oldest Tidal format)
+                    NSRegularExpression *regex = sharedDASHBaseURLRegex();
                     NSTextCheckingResult *match = [regex firstMatchInString:manifestStr
                         options:0 range:NSMakeRange(0, manifestStr.length)];
                     if (match && match.numberOfRanges > 1) {
@@ -374,13 +426,57 @@
                         tidal::logDebug([[NSString stringWithFormat:@"DASH BaseURL: %@", urlStr] UTF8String]);
                     }
 
-                    // Note: SegmentTemplate media attributes contain $Number$ placeholders
-                    // (e.g. .../mediatracks/.../$Number$.mp4) which are segment templates,
-                    // not direct playable URLs. We intentionally skip those and let the
-                    // quality cascade fall back to lower qualities with JSON manifests.
+                    // 2) Try SegmentTemplate — segmented fMP4 (Tidal LOSSLESS / HiRes path).
+                    // Decoder will concatenate init + segments to reconstruct a playable file.
+                    if (!_streamURL && !_drmProtected) {
+                        NSRange tplRange = [manifestStr rangeOfString:@"<SegmentTemplate"];
+                        if (tplRange.location != NSNotFound) {
+                            NSRange endRange = [manifestStr rangeOfString:@"/>"
+                                                                   options:0
+                                                                     range:NSMakeRange(tplRange.location, manifestStr.length - tplRange.location)];
+                            if (endRange.location == NSNotFound) {
+                                endRange = [manifestStr rangeOfString:@">"
+                                                              options:0
+                                                                range:NSMakeRange(tplRange.location, manifestStr.length - tplRange.location)];
+                            }
+                            if (endRange.location != NSNotFound) {
+                                NSRange tagRange = NSMakeRange(tplRange.location,
+                                                               endRange.location + endRange.length - tplRange.location);
+                                NSString *tplTag = [manifestStr substringWithRange:tagRange];
+                                NSString *initURL = extractXMLAttr(tplTag, @"initialization");
+                                NSString *mediaTpl = extractXMLAttr(tplTag, @"media");
+                                NSString *startStr = extractXMLAttr(tplTag, @"startNumber");
+                                NSString *timescaleStr = extractXMLAttr(tplTag, @"timescale");
+                                NSString *segDurStr = extractXMLAttr(tplTag, @"duration");
 
-                    if (!_streamURL) {
-                        tidal::logDebug("DASH manifest: no direct URL (segment-based streaming not supported, will fall back)");
+                                double timescale = [timescaleStr doubleValue];
+                                if (timescale <= 0) timescale = 1;
+                                double segDurUnits = [segDurStr doubleValue];
+                                double segDurSec = (segDurUnits > 0) ? (segDurUnits / timescale) : 0;
+
+                                NSString *mpdDurStr = extractXMLAttr(manifestStr, @"mediaPresentationDuration");
+                                double totalSec = parseISO8601Duration(mpdDurStr);
+
+                                if (initURL.length && mediaTpl.length && segDurSec > 0 && totalSec > 0
+                                    && [mediaTpl containsString:@"$Number$"]) {
+                                    _dashInitURL = [initURL copy];
+                                    _dashMediaTemplate = [mediaTpl copy];
+                                    _dashStartNumber = startStr.length ? [startStr integerValue] : 1;
+                                    _dashSegmentCount = (NSInteger)ceil(totalSec / segDurSec);
+                                    tidal::logInfo([[NSString stringWithFormat:
+                                        @"DASH SegmentTemplate: %ld segments × %.2fs (total %.1fs)",
+                                        (long)_dashSegmentCount, segDurSec, totalSec] UTF8String]);
+                                } else {
+                                    tidal::logDebug([[NSString stringWithFormat:
+                                        @"DASH SegmentTemplate parse incomplete: init=%@ media=%@ segDur=%.2f totalSec=%.1f",
+                                        initURL ?: @"(nil)", mediaTpl ?: @"(nil)", segDurSec, totalSec] UTF8String]);
+                                }
+                            }
+                        }
+                    }
+
+                    if (!_streamURL && _dashSegmentCount == 0) {
+                        tidal::logDebug("DASH manifest: no playable URL or SegmentTemplate, will fall back");
                     }
                 }
             } else {

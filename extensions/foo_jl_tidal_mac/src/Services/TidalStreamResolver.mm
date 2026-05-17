@@ -12,6 +12,8 @@
 #import "../Core/TidalErrors.h"
 #import "../Core/StreamCache.h"
 
+static const NSUInteger kMaxMetadataCacheSize = 500;
+
 @interface JLTidalStreamResolver ()
 @property (nonatomic, strong) NSMutableDictionary<NSString*, JLTidalTrack*> *metadataCache;
 @property (nonatomic, strong) dispatch_queue_t metadataQueue;
@@ -80,14 +82,14 @@
 - (void)resolveWithFallbackForTrackID:(NSString *)trackID
                      startingQuality:(JLTidalQuality)quality
                           completion:(JLTidalStreamResolverCompletion)completion {
-    tidal::logInfo([[NSString stringWithFormat:@"Trying quality %@ for track %@",
-                     JLTidalQualityToString(quality), trackID] UTF8String]);
+    tidal::logDebug([[NSString stringWithFormat:@"Trying quality %@ for track %@",
+                      JLTidalQualityToString(quality), trackID] UTF8String]);
 
     [[JLTidalAPI shared] getPlaybackInfoForTrackID:trackID
                                            quality:quality
                                         completion:^(NSDictionary *json, NSError *error) {
         if (error) {
-            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: API error %ld - %@",
+            tidal::logDebug([[NSString stringWithFormat:@"Quality %@: API error %ld - %@",
                              JLTidalQualityToString(quality),
                              (long)error.code,
                              error.localizedDescription] UTF8String]);
@@ -115,10 +117,14 @@
                                                                             trackID:trackID
                                                                     requestedQuality:quality];
 
-        if (!info.streamURL) {
-            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: no stream URL in response, falling back",
-                              JLTidalQualityToString(quality)] UTF8String]);
-            // Try lower quality (DASH manifests at high quality may not have extractable URLs)
+        // Accept if we have either a direct URL OR a DASH SegmentTemplate (when enabled in prefs).
+        BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
+                        && info.dashSegmentCount > 0
+                        && info.dashInitURL.length
+                        && info.dashMediaTemplate.length);
+        if (!info.streamURL && !hasDASH) {
+            tidal::logInfo([[NSString stringWithFormat:@"Quality %@ unavailable for track %@ (no direct URL and no DASH SegmentTemplate); falling back",
+                              JLTidalQualityToString(quality), trackID] UTF8String]);
             JLTidalQuality nextQuality = [self nextLowerQuality:quality];
             if (nextQuality != quality) {
                 [self resolveWithFallbackForTrackID:trackID
@@ -132,8 +138,8 @@
 
         // Check for DRM - try fallback to lower quality
         if (info.isDRMProtected) {
-            tidal::logInfo([[NSString stringWithFormat:@"Quality %@: DRM protected, falling back",
-                             JLTidalQualityToString(quality)] UTF8String]);
+            tidal::logInfo([[NSString stringWithFormat:@"Quality %@ is DRM-protected for track %@; falling back",
+                             JLTidalQualityToString(quality), trackID] UTF8String]);
             JLTidalQuality nextQuality = [self nextLowerQuality:quality];
             if (nextQuality != quality) {
                 [self resolveWithFallbackForTrackID:trackID
@@ -151,8 +157,15 @@
         // Cache and return
         tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
 
-        tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@ at %@: %@",
-                         trackID, JLTidalQualityToString(quality), info.qualityDescription] UTF8String]);
+        NSString *requestedStr = JLTidalQualityToString(quality);
+        NSString *gotStr = info.qualityDescription;
+        if ([requestedStr isEqualToString:gotStr] || [gotStr containsString:requestedStr]) {
+            tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@ at %@",
+                             trackID, gotStr] UTF8String]);
+        } else {
+            tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@: requested %@, got %@ (silent downgrade by API)",
+                             trackID, requestedStr, gotStr] UTF8String]);
+        }
 
         completion(info, nil);
     }];
@@ -263,8 +276,16 @@
             tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: parsed track - title=%@, artist=%@",
                              track.title ?: @"(nil)", track.artist ?: @"(nil)"] UTF8String]);
 
-            // Cache it
+            // Cache it (with size limit)
             dispatch_async(self.metadataQueue, ^{
+                if (self.metadataCache.count >= kMaxMetadataCacheSize) {
+                    // Evict roughly half the cache when limit is reached
+                    NSArray *keys = [self.metadataCache allKeys];
+                    NSUInteger evictCount = keys.count / 2;
+                    for (NSUInteger i = 0; i < evictCount; i++) {
+                        [self.metadataCache removeObjectForKey:keys[i]];
+                    }
+                }
                 self.metadataCache[trackID] = track;
             });
 

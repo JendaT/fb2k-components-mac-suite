@@ -8,6 +8,7 @@
 
 #include "TidalPlaylistLock.h"
 #include "../Core/TidalConfig.h"
+#include <mutex>
 
 namespace tidal {
 
@@ -15,6 +16,7 @@ static const char* kLockName = "TIDAL Sync";
 
 // Track installed locks by playlist index so we can remove them
 static std::map<t_size, service_ptr_t<playlist_lock>> g_installedLocks;
+static std::mutex g_locksMutex;
 
 #pragma mark - playlist_lock implementation
 
@@ -49,7 +51,7 @@ bool TidalPlaylistLock::execute_default_action(t_size) {
 }
 
 void TidalPlaylistLock::on_playlist_index_change(t_size p_new_index) {
-    // Update our tracking map
+    std::lock_guard<std::mutex> guard(g_locksMutex);
     for (auto it = g_installedLocks.begin(); it != g_installedLocks.end(); ++it) {
         if (it->second.get_ptr() == this) {
             auto lock = it->second;
@@ -61,7 +63,7 @@ void TidalPlaylistLock::on_playlist_index_change(t_size p_new_index) {
 }
 
 void TidalPlaylistLock::on_playlist_remove() {
-    // Clean up our tracking map
+    std::lock_guard<std::mutex> guard(g_locksMutex);
     for (auto it = g_installedLocks.begin(); it != g_installedLocks.end(); ++it) {
         if (it->second.get_ptr() == this) {
             g_installedLocks.erase(it);
@@ -92,6 +94,7 @@ bool installSyncLock(t_size playlistIndex) {
 
     auto lock = fb2k::service_new<TidalPlaylistLock>();
     if (pm->playlist_lock_install(playlistIndex, lock)) {
+        std::lock_guard<std::mutex> guard(g_locksMutex);
         g_installedLocks[playlistIndex] = lock;
         logDebug("Installed TIDAL sync lock on playlist");
         return true;
@@ -100,6 +103,7 @@ bool installSyncLock(t_size playlistIndex) {
 }
 
 bool removeSyncLock(t_size playlistIndex) {
+    std::lock_guard<std::mutex> guard(g_locksMutex);
     auto it = g_installedLocks.find(playlistIndex);
     if (it == g_installedLocks.end()) {
         return false;
@@ -115,6 +119,7 @@ bool removeSyncLock(t_size playlistIndex) {
 }
 
 bool hasSyncLock(t_size playlistIndex) {
+    std::lock_guard<std::mutex> guard(g_locksMutex);
     return g_installedLocks.find(playlistIndex) != g_installedLocks.end();
 }
 

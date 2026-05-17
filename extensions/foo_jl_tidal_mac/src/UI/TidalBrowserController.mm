@@ -27,6 +27,7 @@ static NSString * const kColumnTrackQuality = @"trackquality";
 static NSString * const kColumnAlbumTitle = @"albumtitle";
 static NSString * const kColumnAlbumArtist = @"albumartist";
 static NSString * const kColumnAlbumTracks = @"albumtracks";
+static NSString * const kColumnAlbumYear = @"albumyear";
 static NSString * const kColumnAlbumQuality = @"albumquality";
 
 // Column identifiers - artists
@@ -38,6 +39,16 @@ static NSString * const kColumnPlaylistTracks = @"playlisttracks";
 
 // Pasteboard type for drag operations
 NSString * const JLTidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
+
+// Root container view that reports no intrinsic content size, so the host fb2k
+// column can be freely resized regardless of how wide our subviews would prefer to be.
+@interface JLTidalContainerView : NSView
+@end
+@implementation JLTidalContainerView
+- (NSSize)intrinsicContentSize {
+    return NSMakeSize(NSViewNoIntrinsicMetric, NSViewNoIntrinsicMetric);
+}
+@end
 
 // Notify class to keep paths alive during async import and handle playback
 class TidalPlayNotify : public process_locations_notify {
@@ -117,6 +128,7 @@ public:
 @property (nonatomic, assign) BOOL isSearching;
 @property (nonatomic, copy, nullable) NSString *lastSearchQuery;
 @property (nonatomic, strong, nullable) NSTimer *searchDebounceTimer;
+@property (nonatomic, assign) NSUInteger searchGeneration;
 
 // Pagination
 @property (nonatomic, assign) NSInteger currentOffset;
@@ -176,8 +188,17 @@ public:
 #pragma mark - View Lifecycle
 
 - (void)loadView {
-    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
+    // CRITICAL: A plain NSView reports an intrinsic content size derived from its
+    // subviews' constraints, which makes fb2k's splitter refuse to shrink the column
+    // past the panel's natural width. Subclass + override intrinsicContentSize +
+    // low hugging/compression priorities together let the column be sized freely.
+    // Same pattern as AlbumArtView / BiographyContentView. See docs/PANEL_COLUMN_RESIZING.md.
+    NSView *container = [[JLTidalContainerView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     container.wantsLayer = YES;
+    [container setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [container setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+    [container setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [container setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
 
     // Panel mode control (Search / Library)
     self.panelModeControl = [NSSegmentedControl segmentedControlWithLabels:@[@"Search", @"Library"]
@@ -322,6 +343,19 @@ public:
     self.statusLabel.font = fb2k_ui::statusBarFont();
     self.statusLabel.textColor = fb2k_ui::secondaryTextColor();
     [container addSubview:self.statusLabel];
+
+    // Lower compression resistance on every controlled subview so the toolbar
+    // controls don't pin the container's min width to the sum of their intrinsic
+    // content widths. They'll clip gracefully when the column is narrowed.
+    for (NSView *sv in @[self.panelModeControl, self.searchField, self.searchTypeControl,
+                          self.librarySectionControl, self.navigationBar, self.scrollView,
+                          self.statusLabel, self.syncPullButton, self.syncPushButton,
+                          self.backButton, self.breadcrumbLabel]) {
+        [sv setContentCompressionResistancePriority:1
+                                       forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [sv setContentHuggingPriority:1
+                       forOrientation:NSLayoutConstraintOrientationHorizontal];
+    }
 
     // Layout constraints
     [NSLayoutConstraint activateConstraints:@[
@@ -523,6 +557,14 @@ public:
     titleColumn.width = 200;
     titleColumn.minWidth = 100;
     [self.tableView addTableColumn:titleColumn];
+
+    // Year
+    NSTableColumn *yearColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumYear];
+    yearColumn.title = @"Year";
+    yearColumn.width = 50;
+    yearColumn.minWidth = 40;
+    yearColumn.maxWidth = 60;
+    [self.tableView addTableColumn:yearColumn];
 
     // Number of tracks
     NSTableColumn *tracksColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnAlbumTracks];
@@ -835,6 +877,7 @@ static const NSInteger kPageSize = 50;
     self.currentOffset = 0;
     self.hasMoreResults = NO;
     self.isSearching = YES;
+    self.searchGeneration++;
 
     // Persist search state
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
@@ -864,11 +907,13 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)searchTracksWithQuery:(NSString *)query offset:(NSInteger)offset {
+    NSUInteger generation = self.searchGeneration;
     [[JLTidalAPI shared] searchTracksWithQuery:query
                                          limit:kPageSize
                                         offset:offset
                                     completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return; // Stale result
             [self finishLoading];
             self.isLoadingMore = NO;
 
@@ -895,11 +940,13 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)searchAlbumsWithQuery:(NSString *)query offset:(NSInteger)offset {
+    NSUInteger generation = self.searchGeneration;
     [[JLTidalAPI shared] searchAlbumsWithQuery:query
                                          limit:kPageSize
                                         offset:offset
                                     completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return; // Stale result
             [self finishLoading];
             self.isLoadingMore = NO;
 
@@ -926,11 +973,13 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)searchArtistsWithQuery:(NSString *)query offset:(NSInteger)offset {
+    NSUInteger generation = self.searchGeneration;
     [[JLTidalAPI shared] searchArtistsWithQuery:query
                                           limit:kPageSize
                                          offset:offset
                                      completion:^(NSArray<JLTidalArtist *> *artists, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return; // Stale result
             [self finishLoading];
             self.isLoadingMore = NO;
 
@@ -1310,12 +1359,13 @@ static const NSInteger kPageSize = 50;
 #pragma mark - NSTableViewDelegate
 
 - (NSTableRowView *)tableView:(NSTableView *)tableView rowViewForRow:(NSInteger)row {
-    NSTableRowView *rowView = [[NSTableRowView alloc] init];
-    if (row % 2 == 1) {
-        rowView.backgroundColor = fb2k_ui::alternateRowColor();
-    } else {
-        rowView.backgroundColor = fb2k_ui::backgroundColor();
+    static NSString * const kRowViewID = @"TidalBrowserRowView";
+    NSTableRowView *rowView = [tableView makeViewWithIdentifier:kRowViewID owner:self];
+    if (!rowView) {
+        rowView = [[NSTableRowView alloc] init];
+        rowView.identifier = kRowViewID;
     }
+    rowView.backgroundColor = (row % 2 == 1) ? fb2k_ui::alternateRowColor() : fb2k_ui::backgroundColor();
     return rowView;
 }
 
@@ -1396,8 +1446,22 @@ static const NSInteger kPageSize = 50;
     }
 
     if ([identifier isEqualToString:kColumnAlbumTracks]) {
+        NSString *txt = album.numberOfTracks > 0
+            ? [NSString stringWithFormat:@"%ld", (long)album.numberOfTracks]
+            : @"";
         return [self textCell:identifier
-                         text:[NSString stringWithFormat:@"%ld", (long)album.numberOfTracks]
+                         text:txt
+                         font:fb2k_ui::monospacedDigitFont() color:fb2k_ui::secondaryTextColor()];
+    }
+
+    if ([identifier isEqualToString:kColumnAlbumYear]) {
+        NSString *yearStr = @"";
+        if (album.releaseDate) {
+            NSCalendar *cal = [NSCalendar currentCalendar];
+            NSInteger year = [cal component:NSCalendarUnitYear fromDate:album.releaseDate];
+            if (year > 0) yearStr = [NSString stringWithFormat:@"%ld", (long)year];
+        }
+        return [self textCell:identifier text:yearStr
                          font:fb2k_ui::monospacedDigitFont() color:fb2k_ui::secondaryTextColor()];
     }
 
@@ -1486,19 +1550,20 @@ static const NSInteger kPageSize = 50;
             cell.imageView.contentTintColor = nil;
         } else {
             [self setPlaceholderImage:cell.imageView];
+            // Use weak self to prevent retaining the controller while images load.
+            // Update the specific cell directly instead of reloading all visible rows
+            // to avoid an O(n^2) cascade of reloads and pending completion blocks.
+            __weak typeof(self) weakSelf = self;
+            __weak NSImageView *weakImageView = cell.imageView;
             [[JLTidalAlbumArtCache shared] loadImageForCoverID:coverID
                                                           size:80
                                                     completion:^(NSImage *image) {
-                if (image) {
-                    tidal::logDebug([[NSString stringWithFormat:@"Art loaded for coverID: %@", coverID] UTF8String]);
-                    [self.tableView reloadData];
-                } else {
-                    tidal::logDebug([[NSString stringWithFormat:@"Art load FAILED for coverID: %@", coverID] UTF8String]);
-                }
+                if (!image || !weakSelf || !weakImageView) return;
+                weakImageView.image = image;
+                weakImageView.contentTintColor = nil;
             }];
         }
     } else {
-        tidal::logDebug("artCell: coverID is empty/nil");
         [self setPlaceholderImage:cell.imageView];
     }
 
@@ -1566,9 +1631,17 @@ static const NSInteger kPageSize = 50;
 #pragma mark - Drag & Drop
 
 - (nullable id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
+    tidal::logInfo([[NSString stringWithFormat:@"Drag: pasteboardWriterForRow:%ld called (showingTracks=%d, trackCount=%lu)",
+                      (long)row, [self isShowingTracks], (unsigned long)self.trackResults.count] UTF8String]);
     // Only allow dragging tracks
-    if (![self isShowingTracks]) return nil;
-    if (row < 0 || row >= (NSInteger)self.trackResults.count) return nil;
+    if (![self isShowingTracks]) {
+        tidal::logInfo("Drag: rejected - not showing tracks");
+        return nil;
+    }
+    if (row < 0 || row >= (NSInteger)self.trackResults.count) {
+        tidal::logInfo("Drag: rejected - row out of bounds");
+        return nil;
+    }
 
     // Determine which rows are being dragged
     NSIndexSet *draggedRows;
@@ -1588,18 +1661,49 @@ static const NSInteger kPageSize = 50;
 
     if (urls.count == 0) return nil;
 
-    // Archive the full drag data directly on each item
-    NSDictionary *dragDict = @{@"type": @"tidal", @"urls": urls};
-    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragDict requiringSecureCoding:NO error:nil];
+    // The drop destination is whatever SimPlaylist build the user has installed.
+    // Upstream SimPlaylist (no Tidal awareness) handles drops via:
+    //   - NSPasteboardTypeURL: reads NSURL objects from each pasteboard item
+    //   - NSPasteboardTypeString: only if the string starts with http(s)/soundcloud:/mixcloud:
+    // We therefore put THIS row's tidal:// URL as NSPasteboardTypeURL on this item.
+    // NSTableView calls pasteboardWriterForRow: once per dragged row, so the destination
+    // ends up with N pasteboard items, one URL each — exactly what readObjectsForClasses:[NSURL]
+    // returns. No SimPlaylist changes required.
+    NSString *thisRowURL = nil;
+    if ((NSUInteger)row < self.trackResults.count) {
+        JLTidalTrack *track = self.trackResults[(NSUInteger)row];
+        thisRowURL = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+    }
 
     NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+
+    if (thisRowURL.length) {
+        // NSPasteboardTypeURL ("public.url") accepts a URL string — read back as NSURL.
+        [item setString:thisRowURL forType:NSPasteboardTypeURL];
+    }
+
+    // Back-compat: emit the legacy NSKeyedArchiver dict that the tidal-integration
+    // worktree's SimPlaylist build (and any consumer expecting it) parses.
+    NSDictionary *dragDict = @{@"type": @"tidal", @"urls": [urls copy]};
+    NSError *archiveError = nil;
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragDict
+                                         requiringSecureCoding:YES
+                                                         error:&archiveError];
     if (data) {
         [item setData:data forType:JLTidalBrowserPasteboardType];
+    } else {
+        tidal::logError([[NSString stringWithFormat:@"Drag archive failed: %@",
+                          archiveError.localizedDescription] UTF8String]);
     }
-    [item setString:[urls componentsJoinedByString:@"\n"] forType:NSPasteboardTypeString];
 
-    tidal::logDebug([[NSString stringWithFormat:@"Drag item for row %ld with %lu tracks",
-                      (long)row, (unsigned long)urls.count] UTF8String]);
+    // Plain text — Finder/text editors/anything else that wants a string.
+    NSString *urlString = [urls componentsJoinedByString:@"\n"];
+    [item setString:urlString forType:NSPasteboardTypeString];
+
+    tidal::logInfo([[NSString stringWithFormat:@"Drag: row %ld -> %@ (archive=%s, urlSet=%s)",
+                      (long)row, thisRowURL ?: @"?",
+                      data ? "ok" : "FAIL",
+                      thisRowURL.length ? "yes" : "no"] UTF8String]);
     return item;
 }
 
@@ -1636,16 +1740,19 @@ static const NSInteger kPageSize = 50;
     }
 }
 
-- (void)addTrackToPlaylistAndPlay:(NSString *)urlString {
+- (void)getActivePlaylistOrCreate:(t_size &)outPlaylist insertAt:(t_size &)outInsert {
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-
-    if (activePlaylist == SIZE_MAX) {
-        activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
-        pm->set_active_playlist(activePlaylist);
+    outPlaylist = pm->get_active_playlist();
+    if (outPlaylist == SIZE_MAX) {
+        outPlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        pm->set_active_playlist(outPlaylist);
     }
+    outInsert = pm->playlist_get_item_count(outPlaylist);
+}
 
-    t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
+- (void)addTrackToPlaylistAndPlay:(NSString *)urlString {
+    t_size activePlaylist, insertPosition;
+    [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
     auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, true);
     notify->m_paths.add_item([urlString UTF8String]);
@@ -1694,15 +1801,8 @@ static const NSInteger kPageSize = 50;
         NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
         if (tracks.count == 0) return;
 
-        auto pm = playlist_manager::get();
-        t_size activePlaylist = pm->get_active_playlist();
-
-        if (activePlaylist == SIZE_MAX) {
-            activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
-            pm->set_active_playlist(activePlaylist);
-        }
-
-        t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
+        t_size activePlaylist, insertPosition;
+        [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
         auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false);
         for (JLTidalTrack *track in tracks) {
@@ -1738,15 +1838,8 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)addTracksToPlaylistAndQueue:(NSArray<JLTidalTrack *> *)tracks {
-    auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-
-    if (activePlaylist == SIZE_MAX) {
-        activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
-        pm->set_active_playlist(activePlaylist);
-    }
-
-    t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
+    t_size activePlaylist, insertPosition;
+    [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
     auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false, true);
     for (JLTidalTrack *track in tracks) {
@@ -1786,15 +1879,9 @@ static const NSInteger kPageSize = 50;
                 return;
             }
 
-            auto pm = playlist_manager::get();
-            t_size activePlaylist = pm->get_active_playlist();
+            t_size activePlaylist, insertPosition;
+            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
-            if (activePlaylist == SIZE_MAX) {
-                activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
-                pm->set_active_playlist(activePlaylist);
-            }
-
-            t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
             auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, true);
 
             for (JLTidalTrack *track in tracks) {
@@ -1820,15 +1907,9 @@ static const NSInteger kPageSize = 50;
                 return;
             }
 
-            auto pm = playlist_manager::get();
-            t_size activePlaylist = pm->get_active_playlist();
+            t_size activePlaylist, insertPosition;
+            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
-            if (activePlaylist == SIZE_MAX) {
-                activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
-                pm->set_active_playlist(activePlaylist);
-            }
-
-            t_size insertPosition = pm->playlist_get_item_count(activePlaylist);
             auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false);
 
             for (JLTidalTrack *track in tracks) {

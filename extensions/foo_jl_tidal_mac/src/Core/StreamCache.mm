@@ -28,8 +28,7 @@ StreamCache::~StreamCache() {
 }
 
 void StreamCache::shutdown() {
-    if (m_shutdown) return;
-    m_shutdown = true;
+    if (m_shutdown.exchange(true)) return;
 
     dispatch_sync(m_queue, ^{
         [m_cache removeAllObjects];

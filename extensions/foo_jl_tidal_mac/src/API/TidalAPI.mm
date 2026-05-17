@@ -10,6 +10,7 @@
 #import "../Core/TidalErrors.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
+#import "../Services/TidalAuthService.h"
 
 @implementation JLTidalDeviceCode
 
@@ -122,7 +123,7 @@
                      expiresIn:expiresIn.doubleValue
                       interval:interval.doubleValue];
 
-        tidal::logDebug([[NSString stringWithFormat:@"Got device code, user code: %@", userCode] UTF8String]);
+        tidal::logDebug("Got device code response");
         completion(code, nil);
     }];
 
@@ -143,7 +144,8 @@
         kTidalClientID,
         [kTidalClientSecret stringByAddingPercentEncodingWithAllowedCharacters:
          [NSCharacterSet URLQueryAllowedCharacterSet]],
-        deviceCode,
+        [deviceCode stringByAddingPercentEncodingWithAllowedCharacters:
+         [NSCharacterSet URLQueryAllowedCharacterSet]],
         [kTidalOAuthScopes stringByAddingPercentEncodingWithAllowedCharacters:
          [NSCharacterSet URLQueryAllowedCharacterSet]]];
     request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
@@ -216,7 +218,8 @@
         kTidalClientID,
         [kTidalClientSecret stringByAddingPercentEncodingWithAllowedCharacters:
          [NSCharacterSet URLQueryAllowedCharacterSet]],
-        self.session.refreshToken,
+        [self.session.refreshToken stringByAddingPercentEncodingWithAllowedCharacters:
+         [NSCharacterSet URLQueryAllowedCharacterSet]],
         [kTidalOAuthScopes stringByAddingPercentEncodingWithAllowedCharacters:
          [NSCharacterSet URLQueryAllowedCharacterSet]]];
     request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
@@ -232,9 +235,20 @@
 
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
         if (httpResponse.statusCode != 200) {
-            // Refresh failed - token likely revoked
+            // Log response body for debugging refresh failures
+            NSString *errorDetail = @"";
+            if (data.length > 0) {
+                NSDictionary *errorJson = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if (errorJson) {
+                    errorDetail = [NSString stringWithFormat:@" (%@: %@)",
+                                   errorJson[@"error"] ?: @"unknown",
+                                   errorJson[@"error_description"] ?: errorJson[@"sub_status"] ?: @""];
+                }
+            }
+            tidal::logError([[NSString stringWithFormat:@"Token refresh HTTP %ld%@",
+                              (long)httpResponse.statusCode, errorDetail] UTF8String]);
             completion(nil, JLTidalError(JLTidalErrorTokenRefreshFailed,
-                [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode]));
+                [NSString stringWithFormat:@"HTTP %ld%@", (long)httpResponse.statusCode, errorDetail]));
             return;
         }
 
@@ -245,8 +259,9 @@
             return;
         }
 
-        // Parse refreshed token - keep existing refresh token if not provided
+        // Parse refreshed token
         NSString *accessToken = json[@"access_token"];
+        NSString *newRefreshToken = json[@"refresh_token"];
         NSNumber *expiresIn = json[@"expires_in"] ?: @(86400);
 
         if (!accessToken) {
@@ -254,11 +269,25 @@
             return;
         }
 
-        JLTidalSession *newSession = [self.session sessionByUpdatingAccessToken:accessToken
-                                                                       expiresIn:expiresIn.doubleValue];
+        // Handle refresh token rotation: Tidal issues a new refresh token
+        // with each refresh response, revoking the old one
+        JLTidalSession *newSession;
+        if (newRefreshToken.length > 0) {
+            tidal::logDebug("Refresh token rotated");
+            newSession = [[JLTidalSession alloc] initWithAccessToken:accessToken
+                                                        refreshToken:newRefreshToken
+                                                           expiresIn:expiresIn.doubleValue
+                                                              userId:self.session.userId
+                                                            username:self.session.username
+                                                         countryCode:self.session.countryCode];
+        } else {
+            newSession = [self.session sessionByUpdatingAccessToken:accessToken
+                                                          expiresIn:expiresIn.doubleValue];
+        }
         self.session = newSession;
         [[JLTidalRateLimiter shared] recordSuccess];
-        tidal::logDebug("Token refreshed successfully");
+        tidal::logDebug([[NSString stringWithFormat:@"Token refreshed, expires in %.0fs",
+                          expiresIn.doubleValue] UTF8String]);
         completion(newSession, nil);
     }];
 
@@ -271,6 +300,9 @@
     NSNumber *expiresIn = json[@"expires_in"] ?: @(86400);
 
     if (!accessToken || !refreshToken) {
+        if (error) {
+            *error = JLTidalError(JLTidalErrorInvalidResponse, @"Missing access_token or refresh_token in response");
+        }
         return nil;
     }
 
@@ -1017,7 +1049,29 @@
                          body:(NSDictionary *)body
                       headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
                    completion:(JLTidalDataCompletion)completion {
+    [self performRequestWithURL:url method:method body:body headers:extraHeaders isRetry:NO completion:completion];
+}
+
+- (void)performRequestWithURL:(NSURL *)url
+                       method:(NSString *)method
+                         body:(NSDictionary *)body
+                      headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
+                      isRetry:(BOOL)isRetry
+                   completion:(JLTidalDataCompletion)completion {
     if (!self.session.isValid) {
+        // Token expired - try refresh before giving up (unless already retrying)
+        if (!isRetry && self.session.refreshToken.length > 0) {
+            tidal::logDebug("Session expired, attempting token refresh before request");
+            [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+                if (success) {
+                    [self performRequestWithURL:url method:method body:body
+                                       headers:extraHeaders isRetry:YES completion:completion];
+                } else {
+                    completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
+                }
+            }];
+            return;
+        }
         completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
         return;
     }
@@ -1075,15 +1129,37 @@
 
         // Handle rate limiting
         if (httpResponse.statusCode == 429) {
-            NSTimeInterval retryAfter = [[JLTidalRateLimiter shared] recordRateLimitHit];
+            // Check for Retry-After header (RFC 6585)
+            NSString *retryAfterHeader = httpResponse.allHeaderFields[@"Retry-After"]
+                                      ?: httpResponse.allHeaderFields[@"retry-after"];
+            NSTimeInterval retryAfter;
+            if (retryAfterHeader.length > 0) {
+                retryAfter = [retryAfterHeader doubleValue];
+                if (retryAfter <= 0) retryAfter = 1.0;
+                [[JLTidalRateLimiter shared] recordRateLimitHit];
+            } else {
+                retryAfter = [[JLTidalRateLimiter shared] recordRateLimitHit];
+            }
             tidal::logDebug([[NSString stringWithFormat:@"Rate limited, retry after %.1fs", retryAfter] UTF8String]);
             completion(nil, JLTidalError(JLTidalErrorRateLimited,
                 [NSString stringWithFormat:@"Rate limited, retry after %.0f seconds", retryAfter]));
             return;
         }
 
-        // Handle auth errors
+        // Handle auth errors - attempt token refresh + retry on first 401
         if (httpResponse.statusCode == 401) {
+            if (!isRetry) {
+                tidal::logDebug("Got 401, attempting token refresh and retry");
+                [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+                    if (success) {
+                        [self performRequestWithURL:url method:method body:body
+                                           headers:extraHeaders isRetry:YES completion:completion];
+                    } else {
+                        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+                    }
+                }];
+                return;
+            }
             completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
             return;
         }

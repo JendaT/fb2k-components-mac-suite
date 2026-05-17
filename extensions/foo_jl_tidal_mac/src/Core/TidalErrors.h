@@ -12,7 +12,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 // Error domain for all Tidal-related errors
-static NSString * const JLTidalErrorDomain = @"com.foobar2000.tidal.error";
+extern NSString * const JLTidalErrorDomain;
 
 // Error codes for Tidal operations
 typedef NS_ENUM(NSInteger, JLTidalErrorCode) {

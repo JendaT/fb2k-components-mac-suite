@@ -33,15 +33,18 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
     self = [super init];
     if (self) {
         _imageCache = [[NSCache alloc] init];
-        _imageCache.totalCostLimit = 50 * 1024 * 1024; // 50MB default
+        _imageCache.totalCostLimit = 50 * 1024 * 1024; // 50MB based on decompressed size
+        _imageCache.countLimit = 500; // Hard cap on number of cached images
         _loadingKeys = [NSMutableSet set];
         _pendingCompletions = [NSMutableDictionary dictionary];
         _maxCacheSize = 50 * 1024 * 1024;
         _syncQueue = dispatch_queue_create("com.foobar2000.tidal.artcache", DISPATCH_QUEUE_SERIAL);
 
-        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        // Use ephemeral config to avoid double-caching in NSURLCache
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
         config.timeoutIntervalForRequest = 15;
         config.timeoutIntervalForResource = 30;
+        config.HTTPMaximumConnectionsPerHost = 4; // Limit concurrent downloads
         _urlSession = [NSURLSession sessionWithConfiguration:config];
     }
     return self;
@@ -68,21 +71,15 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 
     NSString *cacheKey = [self cacheKeyForCoverID:coverID size:size];
 
-    // Check cache first
-    NSImage *cached = [self.imageCache objectForKey:cacheKey];
-    if (cached) {
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completion(cached);
-            });
-        }
-        return;
-    }
-
-    // Check if already loading
+    // Atomically check cache and loading state under syncQueue to avoid TOCTOU
+    __block BOOL shouldStartLoad = NO;
+    __block NSImage *cached = nil;
     dispatch_sync(self.syncQueue, ^{
+        cached = [self.imageCache objectForKey:cacheKey];
+        if (cached) return;
+
         if ([self.loadingKeys containsObject:cacheKey]) {
-            // Add to pending completions
+            // Already loading - add to pending completions
             if (completion) {
                 NSMutableArray *pending = self.pendingCompletions[cacheKey];
                 if (!pending) {
@@ -94,56 +91,75 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
             return;
         }
         [self.loadingKeys addObject:cacheKey];
+        shouldStartLoad = YES;
     });
+
+    if (cached) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(cached);
+            });
+        }
+        return;
+    }
+
+    if (!shouldStartLoad) return;
 
     // Start loading
     NSURL *url = [[self class] coverURLForCoverID:coverID size:size];
+    if (!url) {
+        dispatch_sync(self.syncQueue, ^{
+            [self.loadingKeys removeObject:cacheKey];
+        });
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil);
+            });
+        }
+        return;
+    }
 
     tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: loading %@", url.absoluteString] UTF8String]);
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithURL:url
                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSImage *image = nil;
+        @autoreleasepool {
+            NSImage *image = nil;
 
-        if (error) {
-            tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: download error: %@", error.localizedDescription] UTF8String]);
-        } else if (data) {
-            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
-            if (httpResponse.statusCode == 200) {
-                image = [[NSImage alloc] initWithData:data];
-                if (image) {
-                    // Estimate size for cache cost
-                    NSUInteger cost = data.length;
-                    [self.imageCache setObject:image forKey:cacheKey cost:cost];
-                    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: cached %@ (%lu bytes)",
-                                     coverID, (unsigned long)data.length] UTF8String]);
-                } else {
-                    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: failed to create NSImage from %lu bytes",
-                                     (unsigned long)data.length] UTF8String]);
+            if (error) {
+                tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: download error: %@", error.localizedDescription] UTF8String]);
+            } else if (data) {
+                NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+                if (httpResponse.statusCode == 200) {
+                    image = [[NSImage alloc] initWithData:data];
+                    if (image) {
+                        // Use decompressed pixel size as cost (not compressed data size)
+                        NSSize pixelSize = image.size;
+                        NSUInteger cost = (NSUInteger)(pixelSize.width * pixelSize.height * 4);
+                        if (cost == 0) cost = data.length;
+                        [self.imageCache setObject:image forKey:cacheKey cost:cost];
+                    }
                 }
-            } else {
-                tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: HTTP %ld for %@",
-                                 (long)httpResponse.statusCode, coverID] UTF8String]);
             }
+
+            // Get pending completions
+            __block NSArray *completions = nil;
+            dispatch_sync(self.syncQueue, ^{
+                [self.loadingKeys removeObject:cacheKey];
+                completions = [self.pendingCompletions[cacheKey] copy];
+                [self.pendingCompletions removeObjectForKey:cacheKey];
+            });
+
+            // Call all completions on main thread
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) {
+                    completion(image);
+                }
+                for (void (^pending)(NSImage *) in completions) {
+                    pending(image);
+                }
+            });
         }
-
-        // Get pending completions
-        __block NSArray *completions = nil;
-        dispatch_sync(self.syncQueue, ^{
-            [self.loadingKeys removeObject:cacheKey];
-            completions = [self.pendingCompletions[cacheKey] copy];
-            [self.pendingCompletions removeObjectForKey:cacheKey];
-        });
-
-        // Call all completions on main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) {
-                completion(image);
-            }
-            for (void (^pending)(NSImage *) in completions) {
-                pending(image);
-            }
-        });
     }];
 
     [task resume];
@@ -175,7 +191,25 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 
 #pragma mark - URL Construction
 
++ (BOOL)isValidCoverID:(NSString *)coverID {
+    if (!coverID.length) return NO;
+    static NSCharacterSet *invalidChars = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
+        [allowed addCharactersInString:@"-"];
+        invalidChars = [allowed invertedSet];
+    });
+    return [coverID rangeOfCharacterFromSet:invalidChars].location == NSNotFound;
+}
+
 + (NSURL *)coverURLForCoverID:(NSString *)coverID size:(NSInteger)size {
+    // Validate cover ID contains only hex digits and hyphens
+    if (![self isValidCoverID:coverID]) {
+        tidal::logDebug([[NSString stringWithFormat:@"Invalid cover ID rejected: %@", coverID] UTF8String]);
+        return nil;
+    }
+
     // Tidal cover IDs use hyphens but URL path uses slashes
     // e.g., "abc123-def456-ghi789" -> "abc123/def456/ghi789"
     NSString *pathID = [coverID stringByReplacingOccurrencesOfString:@"-" withString:@"/"];

@@ -20,11 +20,17 @@ static const char* const kConfigPrefix = "tidal.";
 static const char* const kPreferredQuality = "preferred_quality";
 static const char* const kDebugLogging = "debug_logging";
 static const char* const kCacheStreamUrls = "cache_stream_urls";
+static const char* const kDASHEnabled = "dash_enabled";
 
 // Default values
 constexpr int kDefaultPreferredQuality = static_cast<int>(JLTidalQualityHiResLossless);
-constexpr bool kDefaultDebugLogging = true;  // TODO: set to false for release
+#ifdef DEBUG
+constexpr bool kDefaultDebugLogging = true;
+#else
+constexpr bool kDefaultDebugLogging = false;
+#endif
 constexpr bool kDefaultCacheStreamUrls = true;
+constexpr bool kDefaultDASHEnabled = false;
 
 class TidalConfig {
 public:
@@ -54,11 +60,33 @@ public:
     // Stream URL caching enabled
     static bool isCacheEnabled();
     static void setCacheEnabled(bool enabled);
+
+    // Experimental: enable DASH segment streaming for LOSSLESS/HiRes (default off).
+    // When enabled, the decoder downloads all DASH segments for a track upfront,
+    // assembles them into an in-memory fMP4 file, and hands it to fb2k's MP4
+    // decoder. Untested across Tidal account types — leave off if playback breaks.
+    static bool isDASHEnabled();
+    static void setDASHEnabled(bool enabled);
 };
+
+// Cached debug logging state (avoids configStore lookup on every call)
+// Call refreshDebugLoggingCache() after changing the setting.
+inline bool& debugLoggingCacheRef() {
+    static bool s_cached = kDefaultDebugLogging;
+    return s_cached;
+}
+
+inline bool isDebugLoggingCached() {
+    return debugLoggingCacheRef();
+}
+
+inline void refreshDebugLoggingCache() {
+    debugLoggingCacheRef() = TidalConfig::isDebugLoggingEnabled();
+}
 
 // Debug logging helper
 inline void logDebug(const char* message) {
-    if (TidalConfig::isDebugLoggingEnabled()) {
+    if (isDebugLoggingCached()) {
         std::string msg = "[Tidal] ";
         msg += message;
         console::info(msg.c_str());
