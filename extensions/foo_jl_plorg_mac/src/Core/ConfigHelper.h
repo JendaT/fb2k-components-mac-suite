@@ -25,9 +25,12 @@ static const char* const kSingleClickActivate = "single_click_activate";
 static const char* const kDoubleClickPlay = "double_click_play";
 static const char* const kAutoRevealPlaying = "auto_reveal_playing";
 static const char* const kShowIcons = "show_icons";
-static const char* const kSyncPlaylists = "sync_playlists";           // Auto-sync with foobar playlists
 static const char* const kShowTreeLines = "show_tree_lines";           // Show tree connection lines
 static const char* const kTransparentBackground = "transparent_background"; // Glass effect background
+static const char* const kPathEncodedNames = "path_encoded_names";     // Encode folder path in foobar2000 playlist names
+static const char* const kCheckCorruptedOnStartup = "check_corrupted_on_startup"; // Check for corrupted playlists on startup
+static const char* const kAutoVolumeSync = "auto_volume_sync";                   // Auto-repair volume UUIDs on startup (network drives)
+static const char* const kAutoRestartAfterVolumeSync = "auto_restart_after_volume_sync"; // Prompt for restart after a UUID repair (opt-in)
 
 // Default values
 static const char* const kDefaultNodeFormat = "%node_name%$if(%is_folder%,' ['%count%']',)";
@@ -35,9 +38,12 @@ static const bool kDefaultSingleClickActivate = false;
 static const bool kDefaultDoubleClickPlay = true;
 static const bool kDefaultAutoRevealPlaying = true;
 static const bool kDefaultShowIcons = true;
-static const bool kDefaultSyncPlaylists = true;
 static const bool kDefaultShowTreeLines = true;
 static const bool kDefaultTransparentBackground = true;
+static const bool kDefaultPathEncodedNames = false;
+static const bool kDefaultCheckCorruptedOnStartup = false;
+static const bool kDefaultAutoVolumeSync = true;
+static const bool kDefaultAutoRestartAfterVolumeSync = false;
 
 // Integer config
 inline int64_t getConfigInt(const char* key, int64_t defaultVal) {

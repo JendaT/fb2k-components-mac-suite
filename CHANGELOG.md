@@ -249,6 +249,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
+### [1.5.0] - Unreleased
+
+> Not yet end-to-end verified. Committed for tracking and ongoing test.
+
+#### Added
+- **Automatic Volume UUID Sync**: headless service that auto-repairs stale `mac-volume://` UUIDs in `.fplite` playlists caused by SMB / Tailscale remounts assigning fresh ephemeral UUIDs
+- Bookmark-based discovery via foobar's `config.sqlite` (handles SMB shares where macOS UUID APIs return null)
+- Startup hook (`initquit::on_init`) plus runtime `/Volumes` VNODE monitor for mid-session mount changes
+- Atomic `.fplite` rewrite with UTF-8 BOM preservation and timestamped backups (5 retained)
+- Opt-in auto-restart prompt with detached shell helper for clean relaunch
+- Background metadb cache migration: copies cached metadata rows from dead UUIDs into live ones across `metadb` and `metadb_index_*` tables; also scans for orphan caches on each startup
+- Documentation: `docs/research/volume-uuid-instability-deep-research.md`
+
+### [1.4.0] - 2026-02-14
+
+#### Added
+- FTH Theme Import: import playlist tree structure and tracks from old Windows foo_plorg theme files, with Windows-to-macOS path mapping
+- Corrupted Playlist Detection: file-based corruption checks plus crash-marker system for SDK-level crashers; safe filesystem-based removal; preference and "Check Now" button
+
+#### Fixed
+- Nil safety in path encoding prevents crash on nil tree node names
+- Import exception handling resets view state on failure
+- Playlist item count access skipped for known-bad playlists to prevent startup crashes
+
+### [1.3.2] - 2026-01-15
+
+#### Added
+- Network Volume UUID Remapping tool: manual repair window for orphaned playlist entries; scans for `mac-volume://` references, detects current UUID for mounted volumes, backs up before applying
+
 ### [1.3.0] - 2026-01-03
 
 #### Added

@@ -24,7 +24,9 @@ public:
                                                     encoding:NSUTF8StringEncoding];
             if (!name) return;
 
+            NSUInteger generation = [TreeModel shared].migrationGeneration;
             dispatch_async(dispatch_get_main_queue(), ^{
+                if ([TreeModel shared].migrationGeneration != generation) return;
                 [[TreeModel shared] handlePlaylistCreated:name];
             });
         } @catch (...) {
@@ -39,7 +41,9 @@ public:
                                                        encoding:NSUTF8StringEncoding];
             if (!newName) return;
 
+            NSUInteger generation = [TreeModel shared].migrationGeneration;
             dispatch_async(dispatch_get_main_queue(), ^{
+                if ([TreeModel shared].migrationGeneration != generation) return;
                 FB2K_console_formatter() << "[Plorg] Playlist renamed to: " << [newName UTF8String];
             });
         } @catch (...) {
@@ -65,13 +69,15 @@ public:
             auto pm = playlist_manager::get();
             pfc::string8 name;
             if (pm->playlist_get_name(p_new, name)) {
-                NSString *playlistName = [NSString stringWithUTF8String:name.c_str()];
+                NSString *foobarName = [NSString stringWithUTF8String:name.c_str()];
 
+                NSUInteger generation = [TreeModel shared].migrationGeneration;
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if ([TreeModel shared].migrationGeneration != generation) return;
                     [[NSNotificationCenter defaultCenter]
                         postNotificationName:@"PlorgActivePlaylistChanged"
                                       object:nil
-                                    userInfo:@{@"playlistName": playlistName}];
+                                    userInfo:@{@"foobarName": foobarName}];
                 });
             }
         } @catch (...) {
@@ -104,6 +110,7 @@ class plorg_init : public initquit {
 public:
     void on_init() override {
         [[TreeModel shared] loadFromConfig];
+        [[TreeModel shared] repairCorruptedFoobarNames];
         console::info("[Plorg] Playlist Organizer initialized");
     }
 

@@ -50,6 +50,21 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 - (nullable TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;
 - (nullable TreeNode *)findFolderAtPath:(NSString *)path;
 
+// Path-encoded foobar2000 names
+// Computes the foobar2000 playlist name for a node (path-encoded if setting is ON)
+- (NSString *)foobarNameForNode:(TreeNode *)node;
+// Finds a tree node by its foobar2000 encoded name
+- (nullable TreeNode *)findPlaylistForFoobarName:(NSString *)foobarName;
+// Migration between plain and encoded names
+- (void)migrateToPathEncodedNames;
+- (void)migrateFromPathEncodedNames;
+// One-time repair for corrupted foobar names (from verifyEncodedNames double-encoding)
+- (void)repairCorruptedFoobarNames;
+// Count leaf names that would collide when migrating OFF
+- (NSInteger)countPathEncodingCollisions;
+// Migration generation counter (increments on batch rename operations)
+@property (nonatomic, assign) NSUInteger migrationGeneration;
+
 // Playlist sync
 - (void)handlePlaylistCreated:(NSString *)name;
 - (void)handlePlaylistRenamed:(NSString *)oldName to:(NSString *)newName;

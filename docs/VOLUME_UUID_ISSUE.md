@@ -4,29 +4,28 @@
 
 foobar2000 macOS uses `mac-volume://UUID/path` URLs to reference files on mounted volumes. This works well for local volumes (USB, internal drives) where UUIDs are stable and stored on the filesystem itself.
 
-However, **network volumes (SMB/AFP/NFS) receive dynamically assigned UUIDs from macOS at mount time**. When a network share reconnects, the NAS reboots, or the share is remounted differently, macOS may assign a new UUID. This causes playlist entries and metadb records using the old UUID to become orphaned - foobar cannot resolve them to the current mount, resulting in "Operation timed out" errors when accessing those tracks.
+However, **network volumes (SMB/AFP/NFS) receive dynamically assigned UUIDs from macOS at mount time**. When a network share reconnects, the NAS reboots, or the share is remounted differently, macOS assigns a new UUID. This causes playlist entries and metadb records using the old UUID to become orphaned -- foobar cannot resolve them to the current mount, resulting in "Operation timed out" errors or empty/unanalyzed playlist items.
 
-In a real-world case, a single playlist had 1654 tracks pointing to `mac-volume://2C4962D1-.../music.hq/...` while the current mount used `mac-volume://CEF335FD-.../music.hq/...`. The metadb contained three different UUIDs for the same `/Volumes/music` share accumulated over time.
+## Severity (as of 2026-04-11)
 
-## Proposed Solution: UUID Remapping Tool
+The problem is worse than originally documented. A real-world setup with one SMB share (`music.hq`) accessible via both LAN and Tailscale has accumulated:
 
-A cleanup utility could:
+- **12 different volume UUIDs** for the same share
+- **67,348 duplicate metadb entries** (30% of the database)
+- **5.7 GB metadb** (should be ~4 GB; 1.7 GB freelist waste + 1.15 GB duplicate data)
+- All 24 playlists pointing to a stale UUID (broken on every launch)
 
-1. **Scan all playlists** for `mac-volume://` URLs
-2. **Group by mount point** - extract the first path component after UUID (e.g., `music.hq`)
-3. **Identify active vs orphaned UUIDs** - check which UUIDs resolve to currently mounted volumes
-4. **Present UI for remapping** - "Map orphaned `/music.hq/` (UUID: 2C4962D1..., 1654 tracks) to active `/music.hq/` (UUID: CEF335FD...)?"
-5. **Batch replace** across affected playlists and optionally metadb
+The manual UUID remapping tool cannot keep up -- every reboot, sleep/wake, or network change creates a new UUID.
 
-## Alternative: More Stable Network Volume Identification
+## Implemented Solutions
 
-Instead of relying solely on macOS-assigned UUIDs for network mounts, foobar could:
+### Manual UUID Remapping Tool (2026-01)
 
-- Store additional metadata (server hostname, share name, mount point) alongside the UUID
-- Use a hash of server+share as a secondary identifier
-- Detect when a "new" UUID points to the same network path as an orphaned one
+Implemented in `UUIDRemappingWindowController`. Scans `.fplite` files, identifies orphaned UUIDs, provides UI for remapping. Works but requires manual intervention and foobar restart. See [design doc](design/2026-01-13-volume-uuid-remapping.md).
 
-## Scope
+### Automatic UUID Sync (implemented, plorg 1.5.0)
+
+Automatic startup and runtime UUID synchronization. See [deep research](research/volume-uuid-instability-deep-research.md) for comprehensive analysis covering macOS internals, foobar SDK, industry solutions, and design patterns.
 
 This affects playlist management globally - any component storing `mac-volume://` URLs faces this issue. The Playlist Organizer (plorg) would be the appropriate place for such a cleanup tool since it already handles cross-playlist operations.
 
@@ -77,3 +76,4 @@ sed -i '' 's/OLD-UUID/CURRENT-UUID/g' playlist-XXX.fplite
 ```
 
 Requires foobar2000 restart to reload the modified playlists.
+Automatic startup and runtime UUID synchronization. See [deep research](research/volume-uuid-instability-deep-research.md) for comprehensive analysis covering macOS internals, foobar SDK, industry solutions, and design patterns.

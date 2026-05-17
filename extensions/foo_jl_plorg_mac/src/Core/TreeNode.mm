@@ -12,7 +12,7 @@
 + (instancetype)folderWithName:(NSString *)name {
     TreeNode *node = [[TreeNode alloc] init];
     node.nodeType = TreeNodeTypeFolder;
-    node.name = name;
+    node.name = name ?: @"";  // Ensure name is never nil
     node.children = [NSMutableArray array];
     node.isExpanded = NO;
     return node;
@@ -21,7 +21,7 @@
 + (instancetype)playlistWithName:(NSString *)name {
     TreeNode *node = [[TreeNode alloc] init];
     node.nodeType = TreeNodeTypePlaylist;
-    node.name = name;
+    node.name = name ?: @"";  // Ensure name is never nil
     node.children = nil;
     return node;
 }
