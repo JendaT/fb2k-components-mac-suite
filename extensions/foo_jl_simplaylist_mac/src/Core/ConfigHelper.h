@@ -72,6 +72,15 @@ static const char* const kLastPlayingPath = "last_playing_path";
 // Drag to Finder: move files by default (instead of copy)
 static const char* const kDragToFinderMove = "drag_to_finder_move";
 
+// Queue column display style: 0 = brackets [1], 1 = accent color
+static const char* const kQueueDisplayStyle = "queue_display_style";
+
+// Double-click preserves playback queue instead of flushing it
+static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_queue";
+
+// Show total album duration appended to group header text
+static const char* const kShowGroupDuration = "show_group_duration";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultHeaderHeight = 28;
@@ -92,6 +101,9 @@ static const bool kDefaultGlassBackground = false;   // Opaque background by def
 static const int64_t kDefaultGroupHeaderSpacing = 1; // 0=compact, 1=normal, 2=larger
 static const bool kDefaultDebugRendering = false;     // Hide debug diagnostics by default
 static const bool kDefaultDragToFinderMove = false;   // Copy files by default when dragging to Finder
+static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
+static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
+static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
 
 // Helper functions
 inline std::string getFullKey(const char* key) {

@@ -2,6 +2,25 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.4.5] - 2026-04-29
+
+### Added
+- **Album duration in group header**: Optional checkbox in Display Settings appends total album duration to each group header (e.g. "Album Name  •  45:23").
+
+### Fixed
+- **Group refresh on track discovery**: Groups now rebuild as track metadata is resolved during import (e.g. tracks going from `?` to real album/artist values).
+- **Column widths reset on layout resize**: Manually resized columns are no longer overwritten when adjacent UI panels (e.g. album art) are resized. Auto-resize now distributes remaining space proportionally instead of equally. (thanks @Scannou, #19)
+
+## [1.4.4] - 2026-04-06
+
+### Added
+- **Queue # column**: Built-in column showing queue position for each track. Two display styles configurable in preferences: brackets `[1]` or system accent color.
+- **Double-click preserves queue**: Playing a track via double-click no longer flushes the playback queue. Enabled by default; toggle in new Behavior preferences section.
+- **Behavior preferences section**: New section with queue preservation toggle and queue display style popup.
+
+### Fixed
+- **Q key queues all selected tracks**: Previously only queued the focused track; now queues the entire selection.
+
 ## [1.4.3] - 2026-03-24
 
 ### Fixed

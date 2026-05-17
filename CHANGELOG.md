@@ -23,6 +23,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [1.4.5] - 2026-04-29
+
+#### Added
+- Optional album duration appended to group headers (toggle in Display Settings)
+
+#### Fixed
+- Groups now refresh as track metadata is resolved during import
+- Column widths no longer reset when adjacent UI panels are resized; auto-resize distributes space proportionally (thanks @Scannou, #19)
+
+### [1.4.4] - 2026-04-06
+
+#### Added
+- Queue # column showing queue position per track (brackets or accent color style)
+- Double-click preserves playback queue (enabled by default)
+- Behavior preferences section
+
+#### Fixed
+- Q key now queues all selected tracks, not just the focused one
+
 ### [1.4.3] - 2026-03-24
 
 #### Fixed

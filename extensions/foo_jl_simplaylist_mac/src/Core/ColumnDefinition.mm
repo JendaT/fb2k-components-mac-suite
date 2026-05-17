@@ -208,6 +208,10 @@
                                  pattern:@"%INITIALKEY%"
                                    width:50
                                alignment:ColumnAlignmentLeft],
+        [ColumnDefinition columnWithName:@"Queue #"
+                                 pattern:@"__queue_position__"
+                                   width:40
+                               alignment:ColumnAlignmentCenter],
         [ColumnDefinition columnWithName:@"Playing"
                                  pattern:@"$if(%isplaying%,>,)"
                                    width:24
