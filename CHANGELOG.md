@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [1.4.6] - 2026-05-17
+
+#### Added
+- Cmd+Z / Cmd+Shift+Z undo/redo for playlist modifications
+- Finder open override (replace / append / send to named playlist)
+- Pattern Help side panel with live preview and typo warnings
+- Scrollable preferences page
+
+#### Fixed
+- Background metadata refresh: `?` rows now resolve immediately after foobar2000 reads tags
+- Default preset uses `$if2(%album artist%,%artist%)` fallback
+- Improved title-format help text with worked examples
+
 ### [1.4.5] - 2026-04-29
 
 #### Added

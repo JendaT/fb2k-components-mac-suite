@@ -2477,23 +2477,41 @@ static NSString *formatGroupDuration(double seconds) {
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     NSUInteger modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     NSString *chars = event.charactersIgnoringModifiers;
-    if (chars.length > 0 && modifiers == NSEventModifierFlagCommand) {
-        unichar key = [chars characterAtIndex:0];
-        if (key == 'f' || key == 'F') {
-            // Cmd+F: find and invoke the Search menu item in foobar2000's Edit menu
-            NSMenu *mainMenu = [NSApp mainMenu];
-            for (NSMenuItem *topItem in mainMenu.itemArray) {
-                NSMenu *submenu = topItem.submenu;
-                if (!submenu) continue;
-                for (NSMenuItem *item in submenu.itemArray) {
-                    if ([item.title localizedCaseInsensitiveContainsString:@"search"] && item.action) {
-                        [NSApp sendAction:item.action to:item.target from:item];
-                        return YES;
-                    }
+    if (chars.length == 0) return [super performKeyEquivalent:event];
+    unichar key = [chars characterAtIndex:0];
+
+    BOOL cmd = (modifiers & NSEventModifierFlagCommand) != 0;
+    BOOL shift = (modifiers & NSEventModifierFlagShift) != 0;
+    BOOL onlyCmd = (modifiers == NSEventModifierFlagCommand);
+    BOOL cmdShift = (modifiers == (NSEventModifierFlagCommand | NSEventModifierFlagShift));
+
+    if (cmd && (key == 'z' || key == 'Z')) {
+        // Cmd+Z: undo, Cmd+Shift+Z: redo
+        auto pm = playlist_manager::get();
+        if (cmdShift) {
+            pm->activeplaylist_redo_restore();
+        } else if (onlyCmd) {
+            pm->activeplaylist_undo_restore();
+        } else {
+            return [super performKeyEquivalent:event];
+        }
+        return YES;
+    }
+
+    if (onlyCmd && (key == 'f' || key == 'F')) {
+        // Cmd+F: find and invoke the Search menu item in foobar2000's Edit menu
+        NSMenu *mainMenu = [NSApp mainMenu];
+        for (NSMenuItem *topItem in mainMenu.itemArray) {
+            NSMenu *submenu = topItem.submenu;
+            if (!submenu) continue;
+            for (NSMenuItem *item in submenu.itemArray) {
+                if ([item.title localizedCaseInsensitiveContainsString:@"search"] && item.action) {
+                    [NSApp sendAction:item.action to:item.target from:item];
+                    return YES;
                 }
             }
-            return NO;
         }
+        return NO;
     }
     return [super performKeyEquivalent:event];
 }

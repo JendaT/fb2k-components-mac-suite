@@ -75,7 +75,7 @@
     // Final fallback: create basic preset
     GroupPreset *basic = [GroupPreset presetWithName:@"Album"];
     basic.sortingPattern = @"%path_sort%";
-    basic.headerPattern = @"[%album artist% - ]['['%date%']' ][%album%]";
+    basic.headerPattern = @"[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]";
     basic.groupColumnPattern = @"[%album%]";
     basic.groupColumnDisplayType = GroupDisplayTypeFront;
     basic.subgroups = @[

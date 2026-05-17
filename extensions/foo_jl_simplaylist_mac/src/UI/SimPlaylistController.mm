@@ -21,6 +21,7 @@
 #include <atomic>
 #include <numeric>
 #include <set>
+#include <unordered_set>
 #include <tuple>
 #include <vector>
 
@@ -344,8 +345,11 @@ struct ReloadOperation {
 @property (nonatomic, assign) NSUInteger lastSyncedGeneration;  // Last generation we synced
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *queuePositionMap;  // item_index → 1-based queue position
 @property (nonatomic, assign) BOOL hasQueueColumn;  // True if any visible column uses __queue_position__
+@property (nonatomic, assign) BOOL activePlaylistJustCleared;  // Finder-open detection: full clear of active playlist
+@property (nonatomic, assign) BOOL internalModification;  // True while we are mutating playlist programmatically
 
 - (void)recomputeGroupDurations;
+- (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles;
 @end
 
 @implementation SimPlaylistController
@@ -741,6 +745,72 @@ struct ReloadOperation {
         [durations addObject:@(total)];
     }
     _playlistView.groupDurations = durations;
+}
+
+// Apply user's "Finder open" override behavior when an external replacement of the
+// active playlist is detected (full clear immediately followed by mass add at base 0).
+//
+// Behavior modes:
+//   0 = default — do nothing, leave the replacement as-is.
+//   1 = append to current — undo the replacement (restoring previous content) and
+//       append the imported items to the end of the active playlist.
+//   2 = send to named playlist — undo the replacement and add the imported items
+//       to a configured target playlist (created on demand).
+- (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles {
+    int64_t behavior = simplaylist_config::getConfigInt(
+        simplaylist_config::kFinderOpenBehavior,
+        simplaylist_config::kDefaultFinderOpenBehavior);
+    if (behavior == 0 || !addedHandles || addedHandles->get_count() == 0) return;
+
+    auto pm = playlist_manager::get();
+    t_size active = pm->get_active_playlist();
+    if (active == SIZE_MAX) return;
+
+    metadb_handle_list captured = *addedHandles;
+    BOOL undoAvailable = pm->playlist_is_undo_available(active);
+
+    _internalModification = YES;
+
+    if (behavior == 1) {
+        // Append to current: requires undo to restore previous content
+        if (!undoAvailable) {
+            _internalModification = NO;
+            return;
+        }
+        pm->playlist_undo_restore(active);
+        // After undo, append captured items at the end
+        t_size endPos = pm->playlist_get_item_count(active);
+        pfc::bit_array_false selectNone;
+        pm->playlist_insert_items(active, endPos, captured, selectNone);
+    } else if (behavior == 2) {
+        // Send to named playlist
+        std::string targetName = simplaylist_config::getConfigString(
+            simplaylist_config::kFinderOpenTargetPlaylist,
+            simplaylist_config::kDefaultFinderOpenTargetPlaylist);
+        if (targetName.empty()) {
+            targetName = simplaylist_config::kDefaultFinderOpenTargetPlaylist;
+        }
+
+        // Restore active playlist's previous content if possible
+        if (undoAvailable) {
+            pm->playlist_undo_restore(active);
+        } else {
+            // No undo — clear the active playlist (user's previous content is lost).
+            pm->playlist_clear(active);
+        }
+
+        // Find or create target playlist
+        t_size target = pm->find_or_create_playlist(targetName.c_str(), pfc_infinite);
+        if (target == SIZE_MAX) {
+            _internalModification = NO;
+            return;
+        }
+        t_size endPos = pm->playlist_get_item_count(target);
+        pfc::bit_array_false selectNone;
+        pm->playlist_insert_items(target, endPos, captured, selectNone);
+    }
+
+    _internalModification = NO;
 }
 
 - (void)rebuildFromPlaylist {
@@ -1778,14 +1848,29 @@ static const NSUInteger kMaxCacheableGroups = 500;
     [self rebuildFromPlaylist];
 }
 
-- (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count {
-    // For Phase 1, just rebuild everything
-    // Later phases can do incremental updates
+- (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles {
+    // Detect Finder-open replacement pattern before doing the standard rebuild.
+    if (base == 0 && count > 0 && _activePlaylistJustCleared && !_internalModification) {
+        [self maybeApplyFinderOpenOverride:handles];
+    }
+    _activePlaylistJustCleared = NO;
     [self rebuildFromPlaylist];
 }
 
-- (void)handleItemsRemoved {
-    // Disable implicit animations during rebuild to prevent visual flicker
+- (void)handleItemsRemoved:(NSInteger)newCount {
+    // Track full clear of active playlist as part of Finder-open detection.
+    // The single-impl callback fires only for the active playlist, so newCount==0
+    // means the active playlist is now empty.
+    //
+    // The flag is reset on the next run loop iteration so an items_added enqueued
+    // by the same SDK operation still sees it; unrelated later events do not.
+    if (newCount == 0 && !_internalModification) {
+        _activePlaylistJustCleared = YES;
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.activePlaylistJustCleared = NO;
+        });
+    }
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     [self rebuildFromPlaylist];
@@ -1854,6 +1939,39 @@ static const NSUInteger kMaxCacheableGroups = 500;
         [_playlistView clearFormattedValuesCache];
         [_playlistView setNeedsDisplay:YES];
     }
+}
+
+#pragma mark - Metadb Event Handlers
+
+- (void)handleMetadbChanged:(std::shared_ptr<metadb_handle_list>)changed {
+    // Refresh when foobar2000 reads/updates tags for any track in the current
+    // playlist (e.g., on first playback of an unanalyzed file). Filter to only
+    // changes that affect our current playlist to avoid unnecessary rebuilds.
+    if (_currentPlaylistIndex < 0 || !changed || changed->get_count() == 0) return;
+
+    auto pm = playlist_manager::get();
+    metadb_handle_list playlistHandles;
+    pm->playlist_get_all_items((t_size)_currentPlaylistIndex, playlistHandles);
+    if (playlistHandles.get_count() == 0) return;
+
+    // Use a hash set of the changed handles for O(1) lookup
+    std::unordered_set<metadb_handle*> changedSet;
+    changedSet.reserve(changed->get_count());
+    for (t_size i = 0; i < changed->get_count(); i++) {
+        changedSet.insert((*changed)[i].get_ptr());
+    }
+    BOOL anyMatch = NO;
+    for (t_size i = 0; i < playlistHandles.get_count(); i++) {
+        if (changedSet.count(playlistHandles[i].get_ptr())) {
+            anyMatch = YES;
+            break;
+        }
+    }
+    if (!anyMatch) return;
+
+    // Metadata may have changed grouping (e.g., album/artist resolved from ?).
+    // rebuildFromPlaylist preserves scroll position via its anchor mechanism.
+    [self rebuildFromPlaylist];
 }
 
 - (NSDictionary<NSNumber *, NSNumber *> *)buildQueuePositionMap {

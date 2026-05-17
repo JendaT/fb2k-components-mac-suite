@@ -8,6 +8,7 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#include <memory>
 #include "../fb2k_sdk.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -21,8 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Playlist event handlers (called from PlaylistCallbacks)
 - (void)handlePlaylistSwitched;
-- (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count;
-- (void)handleItemsRemoved;
+- (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles;
+- (void)handleItemsRemoved:(NSInteger)newCount;
 - (void)handleItemsReordered;
 - (void)handleSelectionChanged;
 - (void)handleFocusChanged:(NSInteger)from to:(NSInteger)to;
@@ -37,6 +38,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Queue event handlers
 - (void)handleQueueChanged;
+
+// Metadb event handlers — fires when tags are read/updated in background
+- (void)handleMetadbChanged:(std::shared_ptr<metadb_handle_list>)changed;
 
 // Rebuild the view from current playlist
 - (void)rebuildFromPlaylist;

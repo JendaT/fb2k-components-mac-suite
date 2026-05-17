@@ -77,6 +77,11 @@ static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_que
 // Show total album duration appended to group header text
 static const char* const kShowGroupDuration = "show_group_duration";
 
+// Behavior when files arrive from outside foobar2000 (Finder open, etc.)
+// 0 = default (replace active playlist), 1 = append to current playlist, 2 = send to named playlist
+static const char* const kFinderOpenBehavior = "finder_open_behavior";
+static const char* const kFinderOpenTargetPlaylist = "finder_open_target_playlist";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultHeaderHeight = 28;
@@ -100,6 +105,8 @@ static const bool kDefaultDragToFinderMove = false;   // Copy files by default w
 static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
 static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
 static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
+static const int64_t kDefaultFinderOpenBehavior = 0;  // 0=replace (default fb2k), 1=append, 2=named
+static const char* const kDefaultFinderOpenTargetPlaylist = "Inbox";
 
 // Helper functions
 inline std::string getFullKey(const char* key) {
@@ -182,7 +189,7 @@ inline const char* getDefaultGroupPresetsJSON() {
       "name": "Artist - album / cover",
       "sorting_pattern": "%path_sort%",
       "header": {
-        "pattern": "[%album artist% - ]['['%date%']' ][%album%]",
+        "pattern": "[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]",
         "display": "text"
       },
       "group_column": {

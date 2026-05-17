@@ -22,8 +22,8 @@ public:
 
     // Playlist event dispatch
     void onPlaylistSwitched();
-    void onItemsAdded(t_size base, t_size count);
-    void onItemsRemoved();
+    void onItemsAdded(t_size base, t_size count, std::shared_ptr<metadb_handle_list> handles);
+    void onItemsRemoved(t_size newCount);
     void onItemsReordered();
     void onSelectionChanged();
     void onFocusChanged(t_size from, t_size to);
@@ -36,6 +36,9 @@ public:
 
     // Queue event dispatch
     void onQueueChanged();
+
+    // Metadb event dispatch — fires when tags are read/updated in background
+    void onMetadbChanged(std::shared_ptr<metadb_handle_list> changed);
 
     // Lifecycle - call from initquit
     void initCallbacks();

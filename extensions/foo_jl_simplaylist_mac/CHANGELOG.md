@@ -2,6 +2,22 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.4.6] - 2026-05-17
+
+### Added
+- **Cmd+Z / Cmd+Shift+Z**: Undo / redo the last playlist modification on the active playlist (useful for recovering after a Finder open replaces your playlist).
+- **Finder open override**: New preference to control what happens when files are opened from Finder. Options: replace active playlist (default), append to active playlist, or send to a named playlist (defaults to "Inbox").
+- **Pattern Help side panel**: Live preview and typo warnings for the Header / Subgroup title-format patterns. Preview resolves against the currently focused track in the active playlist. Catches common typos like `%albumartist%` (no space) → suggests `%album artist%`, `%year%` → `%date%`, etc.
+- **Default preset fallback**: `Artist - album / cover` preset now uses `$if2(%album artist%,%artist%)` so it works for tracks that only have an artist tag, not album artist.
+- **Scrollable preferences**: SimPlaylist preferences page now scrolls properly when the host window is shorter than the content.
+
+### Fixed
+- **Background metadata refresh**: When foobar2000 reads tags in the background (e.g., on first playback of a previously unanalyzed file), unresolved `?` rows now refresh immediately instead of requiring a playlist switch.
+- **Title-format help text**: Updated to include `%album artist%` (with space), `%discnumber%`, conditional `[...]` brackets, and `$if2()` fallback with worked examples.
+
+### Known issues
+- The "Send to named playlist" Finder-open mode is functional but the target playlist picker UI is currently disabled (the popup is unresponsive in the preferences). The default target name "Inbox" is used; advanced users can change it via `kFinderOpenTargetPlaylist` in the config. Re-enable tracked in BACKLOG.md.
+
 ## [1.4.5] - 2026-04-29
 
 ### Added

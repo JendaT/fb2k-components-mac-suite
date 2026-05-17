@@ -41,22 +41,24 @@ void SimPlaylistCallbackManager::onPlaylistSwitched() {
     });
 }
 
-void SimPlaylistCallbackManager::onItemsAdded(t_size base, t_size count) {
+void SimPlaylistCallbackManager::onItemsAdded(t_size base, t_size count, std::shared_ptr<metadb_handle_list> handles) {
     NSInteger b = base;
     NSInteger cnt = count;
+    auto handlesCopy = handles;  // captured by block
     dispatch_async(dispatch_get_main_queue(), ^{
         std::lock_guard<std::mutex> lock(g_controllersMutex);
         for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsAdded:b count:cnt];
+            [c handleItemsAdded:b count:cnt addedHandles:handlesCopy];
         }
     });
 }
 
-void SimPlaylistCallbackManager::onItemsRemoved() {
+void SimPlaylistCallbackManager::onItemsRemoved(t_size newCount) {
+    NSInteger nc = (NSInteger)newCount;
     dispatch_async(dispatch_get_main_queue(), ^{
         std::lock_guard<std::mutex> lock(g_controllersMutex);
         for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsRemoved];
+            [c handleItemsRemoved:nc];
         }
     });
 }
@@ -136,6 +138,16 @@ void SimPlaylistCallbackManager::onQueueChanged() {
     });
 }
 
+void SimPlaylistCallbackManager::onMetadbChanged(std::shared_ptr<metadb_handle_list> changed) {
+    auto changedCopy = changed;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        for (SimPlaylistController *c in g_controllers) {
+            [c handleMetadbChanged:changedCopy];
+        }
+    });
+}
+
 // Convenience functions
 void SimPlaylistCallbackManager_registerController(SimPlaylistController* controller) {
     SimPlaylistCallbackManager::instance().registerController(controller);
@@ -159,11 +171,12 @@ public:
     ) {}
 
     void on_items_added(t_size base, metadb_handle_list_cref data, const bit_array& selection) override {
-        SimPlaylistCallbackManager::instance().onItemsAdded(base, data.get_count());
+        auto copy = std::make_shared<metadb_handle_list>(data);
+        SimPlaylistCallbackManager::instance().onItemsAdded(base, data.get_count(), copy);
     }
 
     void on_items_removed(const bit_array& mask, t_size old_count, t_size new_count) override {
-        SimPlaylistCallbackManager::instance().onItemsRemoved();
+        SimPlaylistCallbackManager::instance().onItemsRemoved(new_count);
     }
 
     void on_items_reordered(const t_size* order, t_size count) override {
@@ -194,9 +207,25 @@ public:
 // Pointer - created in on_init, destroyed in on_quit
 static simplaylist_playlist_callback* g_playlist_callback = nullptr;
 
+// Metadb IO callback — fires whenever foobar2000 reads/updates tags for any
+// metadb_handle, including background reads on first playback of a previously
+// unanalyzed file. Uses metadb_io_callback_dynamic_impl_base which auto-
+// registers in its constructor and unregisters in the destructor.
+class simplaylist_metadb_callback : public metadb_io_callback_dynamic_impl_base {
+public:
+    void on_changed_sorted(metadb_handle_list_cref items, bool /*fromhook*/) override {
+        auto copy = std::make_shared<metadb_handle_list>(items);
+        SimPlaylistCallbackManager::instance().onMetadbChanged(copy);
+    }
+};
+static simplaylist_metadb_callback* g_metadb_callback = nullptr;
+
 void SimPlaylistCallbackManager::initCallbacks() {
     if (!g_playlist_callback) {
         g_playlist_callback = new simplaylist_playlist_callback();
+    }
+    if (!g_metadb_callback) {
+        g_metadb_callback = new simplaylist_metadb_callback();
     }
 }
 
@@ -213,6 +242,8 @@ void SimPlaylistCallbackManager::shutdownCallbacks() {
     onShutdown();
     delete g_playlist_callback;
     g_playlist_callback = nullptr;
+    delete g_metadb_callback;
+    g_metadb_callback = nullptr;
 }
 
 // Playback callback implementation
