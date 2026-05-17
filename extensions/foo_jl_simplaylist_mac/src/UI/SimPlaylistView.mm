@@ -62,6 +62,9 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) BOOL suppressFocusRing;  // Suppress focus ring briefly after drag
 @property (nonatomic, assign) NSInteger dropTargetRow;  // Row where items would be dropped
 @property (nonatomic, assign) NSInteger pendingClickRow;  // Row to select on mouseUp if no drag (for multi-select drag)
+@property (nonatomic, assign) NSInteger hoveredRatingPlaylistIndex;
+@property (nonatomic, assign) NSInteger hoveredRatingColumnIndex;
+@property (nonatomic, assign) NSInteger hoveredRatingValue;
 // Performance: cached row y-offsets for O(1) lookup
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *rowYOffsets;
 @property (nonatomic, assign) CGFloat totalContentHeight;
@@ -99,6 +102,9 @@ static NSString *formatGroupDuration(double seconds) {
     _isDragging = NO;
     _dropTargetRow = -1;
     _pendingClickRow = -1;
+    _hoveredRatingPlaylistIndex = -1;
+    _hoveredRatingColumnIndex = -1;
+    _hoveredRatingValue = 0;
 
     // SPARSE GROUP MODEL - efficient O(G) storage
     _itemCount = 0;
@@ -286,6 +292,7 @@ static NSString *formatGroupDuration(double seconds) {
     _trackingArea = [[NSTrackingArea alloc]
                      initWithRect:self.bounds
                           options:(NSTrackingMouseMoved |
+                                   NSTrackingMouseEnteredAndExited |
                                    NSTrackingActiveInKeyWindow |
                                    NSTrackingInVisibleRect)
                             owner:self
@@ -723,6 +730,103 @@ static NSString *formatGroupDuration(double seconds) {
         width += col.width;
     }
     return width;
+}
+
+- (BOOL)isRatingColumn:(ColumnDefinition *)column {
+    if (!column) return NO;
+    return column.clickable &&
+           ([column.pattern caseInsensitiveCompare:@"%rating%"] == NSOrderedSame ||
+            [column.pattern caseInsensitiveCompare:@"$meta(rating)"] == NSOrderedSame ||
+            [column.name caseInsensitiveCompare:@"Rating"] == NSOrderedSame);
+}
+
+- (NSInteger)ratingFromString:(NSString *)value {
+    NSInteger rating = value.integerValue;
+    if (rating < 0) rating = 0;
+    if (rating > 5) rating = 5;
+    return rating;
+}
+
+- (NSString *)starStringForRating:(NSInteger)rating {
+    NSMutableString *stars = [NSMutableString stringWithCapacity:5];
+    for (NSInteger i = 1; i <= 5; i++) {
+        [stars appendString:(i <= rating) ? @"★" : @"☆"];
+    }
+    return stars;
+}
+
+- (void)drawRatingValue:(NSString *)value
+                 inRect:(NSRect)rect
+                 column:(ColumnDefinition *)column
+          playlistIndex:(NSInteger)playlistIndex
+               selected:(BOOL)selected {
+    NSInteger rating = [self ratingFromString:value];
+    BOOL isHovering = (playlistIndex == _hoveredRatingPlaylistIndex &&
+                       _hoveredRatingColumnIndex >= 0 &&
+                       _hoveredRatingValue > 0);
+    NSInteger displayRating = isHovering ? _hoveredRatingValue : rating;
+
+    NSColor *filledColor = selected ? fb2k_ui::selectedTextColor() : [NSColor controlAccentColor];
+    NSColor *emptyColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.45]
+                                  : [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.55];
+    NSColor *previewColor = selected ? fb2k_ui::selectedTextColor() : [[NSColor controlAccentColor] colorWithAlphaComponent:0.75];
+
+    NSMutableAttributedString *stars = [[NSMutableAttributedString alloc] init];
+    NSFont *font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
+    for (NSInteger i = 1; i <= 5; i++) {
+        BOOL filled = i <= displayRating;
+        NSColor *color = filled ? (isHovering ? previewColor : filledColor) : emptyColor;
+        NSAttributedString *star = [[NSAttributedString alloc] initWithString:(filled ? @"★" : @"☆")
+                                                                   attributes:@{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: color
+        }];
+        [stars appendAttributedString:star];
+    }
+
+    NSSize size = stars.size;
+    CGFloat x = rect.origin.x + MAX(0, (rect.size.width - size.width) / 2.0);
+    CGFloat y = rect.origin.y + round((rect.size.height - size.height) / 2.0);
+    [stars drawAtPoint:NSMakePoint(x, y)];
+}
+
+- (NSInteger)ratingValueAtPoint:(NSPoint)point
+                   playlistIndex:(NSInteger *)playlistIndexOut
+                     columnIndex:(NSInteger *)columnIndexOut {
+    NSInteger row = [self rowAtPoint:point];
+    NSInteger playlistIndex = [self playlistIndexForRow:row];
+    if (playlistIndex < 0) return 0;
+
+    CGFloat x = _groupColumnWidth;
+    for (NSInteger colIndex = 0; colIndex < (NSInteger)_columns.count; colIndex++) {
+        ColumnDefinition *col = _columns[colIndex];
+        NSRect cellRect = NSMakeRect(x, 0, col.width, self.bounds.size.height);
+        if (NSPointInRect(point, cellRect) && [self isRatingColumn:col]) {
+            CGFloat localX = point.x - x;
+            NSInteger rating = (NSInteger)floor((localX / MAX(col.width, 1.0)) * 5.0) + 1;
+            rating = MAX(1, MIN(5, rating));
+            if (playlistIndexOut) *playlistIndexOut = playlistIndex;
+            if (columnIndexOut) *columnIndexOut = colIndex;
+            return rating;
+        }
+        x += col.width;
+    }
+
+    return 0;
+}
+
+- (NSInteger)currentRatingForPlaylistIndex:(NSInteger)playlistIndex columnIndex:(NSInteger)columnIndex {
+    if (playlistIndex < 0 || columnIndex < 0) return 0;
+    NSNumber *indexKey = @(playlistIndex);
+    NSArray<NSString *> *columnValues = [_formattedValuesCache objectForKey:indexKey];
+    if (!columnValues && [_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
+        columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
+        if (columnValues) {
+            [_formattedValuesCache setObject:columnValues forKey:indexKey];
+        }
+    }
+    if (columnIndex >= (NSInteger)columnValues.count) return 0;
+    return [self ratingFromString:columnValues[columnIndex]];
 }
 
 - (CGFloat)heightForNode:(GroupNode *)node {
@@ -1226,6 +1330,13 @@ static NSString *formatGroupDuration(double seconds) {
 
         NSString *value = (colIndex < columnValues.count) ? columnValues[colIndex] : @"";
 
+        if ([self isRatingColumn:col]) {
+            NSRect ratingRect = NSMakeRect(x, rect.origin.y, col.width, rect.size.height);
+            [self drawRatingValue:value inRect:ratingRect column:col playlistIndex:playlistIndex selected:selected];
+            x += col.width;
+            continue;
+        }
+
         // For first column, prepend play indicator if this is the playing track
         if (colIndex == 0 && playing) {
             value = [NSString stringWithFormat:@"\u25B6 %@", value];  // Play triangle
@@ -1496,6 +1607,13 @@ static NSString *formatGroupDuration(double seconds) {
 
         if (colWidth > 0) {
             NSString *value = (col < (NSInteger)columnValues.count) ? columnValues[col] : @"";
+
+            if ([self isRatingColumn:colDef]) {
+                NSRect ratingRect = NSMakeRect(x, rect.origin.y, colWidth, rect.size.height);
+                [self drawRatingValue:value inRect:ratingRect column:colDef playlistIndex:row selected:isSelected];
+                x += colWidth;
+                continue;
+            }
 
             // Text alignment and style
             NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
@@ -1822,7 +1940,11 @@ static NSString *formatGroupDuration(double seconds) {
             colRect.size.width -= indent;
         }
 
-        [self drawColumnValue:value inRect:colRect column:col selected:selected];
+        if ([self isRatingColumn:col]) {
+            [self drawRatingValue:value inRect:colRect column:col playlistIndex:node.playlistIndex selected:selected];
+        } else {
+            [self drawColumnValue:value inRect:colRect column:col selected:selected];
+        }
 
         x += col.width;
     }
@@ -2181,9 +2303,6 @@ static NSString *formatGroupDuration(double seconds) {
 #pragma mark - Mouse Events
 
 - (void)mouseDown:(NSEvent *)event {
-    FB2K_console_formatter() << "[SimPlaylist] mouseDown at window location: "
-                             << event.locationInWindow.x << "," << event.locationInWindow.y;
-
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger row = [self rowAtPoint:location];
 
@@ -2193,6 +2312,22 @@ static NSString *formatGroupDuration(double seconds) {
 
     if (row < 0) {
         [self deselectAll];
+        return;
+    }
+
+    NSInteger ratingPlaylistIndex = -1;
+    NSInteger ratingColumnIndex = -1;
+    NSInteger clickedRating = [self ratingValueAtPoint:location
+                                         playlistIndex:&ratingPlaylistIndex
+                                           columnIndex:&ratingColumnIndex];
+    if (clickedRating > 0 && ratingPlaylistIndex >= 0 &&
+        [_delegate respondsToSelector:@selector(playlistView:didRequestSetRating:forPlaylistIndex:)]) {
+        NSInteger currentRating = [self currentRatingForPlaylistIndex:ratingPlaylistIndex columnIndex:ratingColumnIndex];
+        NSInteger newRating = (currentRating == clickedRating) ? 0 : clickedRating;
+        [_delegate playlistView:self didRequestSetRating:newRating forPlaylistIndex:ratingPlaylistIndex];
+        [_formattedValuesCache removeObjectForKey:@(ratingPlaylistIndex)];
+        [self setNeedsDisplayInRect:[self rectForRow:row]];
+        _pendingClickRow = -1;
         return;
     }
 
@@ -2454,10 +2589,45 @@ static NSString *formatGroupDuration(double seconds) {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     NSInteger row = [self rowAtPoint:location];
 
+    NSInteger ratingPlaylistIndex = -1;
+    NSInteger ratingColumnIndex = -1;
+    NSInteger hoverRating = [self ratingValueAtPoint:location
+                                       playlistIndex:&ratingPlaylistIndex
+                                         columnIndex:&ratingColumnIndex];
+
+    BOOL ratingHoverChanged = (ratingPlaylistIndex != _hoveredRatingPlaylistIndex ||
+                               ratingColumnIndex != _hoveredRatingColumnIndex ||
+                               hoverRating != _hoveredRatingValue);
+    if (ratingHoverChanged) {
+        NSInteger oldPlaylistIndex = _hoveredRatingPlaylistIndex;
+        _hoveredRatingPlaylistIndex = (hoverRating > 0) ? ratingPlaylistIndex : -1;
+        _hoveredRatingColumnIndex = (hoverRating > 0) ? ratingColumnIndex : -1;
+        _hoveredRatingValue = hoverRating;
+
+        if (oldPlaylistIndex >= 0) {
+            NSInteger oldRow = [self rowForPlaylistIndex:oldPlaylistIndex];
+            [self setNeedsDisplayInRect:[self rectForRow:oldRow]];
+        }
+        if (ratingPlaylistIndex >= 0) {
+            [self setNeedsDisplayInRect:[self rectForRow:row]];
+        }
+    }
+
     if (row != _hoveredRow) {
         _hoveredRow = row;
         // Could add hover highlight here if desired
     }
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    if (_hoveredRatingPlaylistIndex >= 0) {
+        NSInteger row = [self rowForPlaylistIndex:_hoveredRatingPlaylistIndex];
+        _hoveredRatingPlaylistIndex = -1;
+        _hoveredRatingColumnIndex = -1;
+        _hoveredRatingValue = 0;
+        [self setNeedsDisplayInRect:[self rectForRow:row]];
+    }
+    _hoveredRow = -1;
 }
 
 - (void)scrollWheel:(NSEvent *)event {

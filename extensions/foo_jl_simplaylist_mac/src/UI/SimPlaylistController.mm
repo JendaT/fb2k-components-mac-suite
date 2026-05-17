@@ -315,6 +315,82 @@ struct ReloadOperation {
     bool completed;
 };
 
+static NSInteger countFilledStars(NSString *string) {
+    NSInteger count = 0;
+    for (NSUInteger i = 0; i < string.length; i++) {
+        if ([string characterAtIndex:i] == 0x2605) { // ★
+            count++;
+        }
+    }
+    return count;
+}
+
+static BOOL ratingCommandMatches(NSString *fullPath, NSString *commandName, NSInteger rating) {
+    NSString *path = fullPath.lowercaseString;
+    NSString *name = commandName.lowercaseString;
+    BOOL isRatingArea = ([path containsString:@"rating"] || [path containsString:@"playback statistics"]);
+    if (!isRatingArea) return NO;
+
+    if (rating == 0) {
+        return [name containsString:@"clear"] ||
+               [name containsString:@"unrated"] ||
+               [name containsString:@"not set"] ||
+               [name containsString:@"no rating"] ||
+               [name containsString:@"remove rating"];
+    }
+
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)rating];
+    if ([name isEqualToString:number]) return YES;
+    if ([name containsString:[NSString stringWithFormat:@"%@ star", number]]) return YES;
+    if ([name containsString:[NSString stringWithFormat:@"rating %@", number]]) return YES;
+    if (countFilledStars(commandName) == rating) return YES;
+
+    return NO;
+}
+
+static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSString *prefix) {
+    if (!item.is_valid()) return NO;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+
+    if (item->type() == menu_tree_item::itemCommand) {
+        if (ratingCommandMatches(path, name, rating) && !(item->flags() & menu_flags::disabled)) {
+            item->execute(nullptr);
+            return YES;
+        }
+        return NO;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            if (executeRatingCommand(item->childAt(i), rating, path)) {
+                return YES;
+            }
+        }
+    }
+
+    return NO;
+}
+
+static void logRatingMenuCandidates(menu_tree_item::ptr item, NSString *prefix) {
+    if (!item.is_valid()) return;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+    NSString *lowerPath = path.lowercaseString;
+
+    if ([lowerPath containsString:@"rating"] || [lowerPath containsString:@"playback statistics"]) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating menu candidate: " << path.UTF8String;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            logRatingMenuCandidates(item->childAt(i), path);
+        }
+    }
+}
+
 @interface SimPlaylistController () <SimPlaylistViewDelegate, SimPlaylistHeaderBarDelegate> {
     // Context menu manager - must be stored for execute_by_id to work
     contextmenu_manager_v2::ptr _contextMenuManager;
@@ -2577,6 +2653,49 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     }
 
     return columnValues;
+}
+
+- (void)playlistView:(SimPlaylistView *)view didRequestSetRating:(NSInteger)rating forPlaylistIndex:(NSInteger)playlistIndex {
+    (void)view;
+    if (_currentPlaylistIndex < 0 || playlistIndex < 0) return;
+
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = (t_size)_currentPlaylistIndex;
+    if ((t_size)playlistIndex >= pm->playlist_get_item_count(activePlaylist)) return;
+
+    metadb_handle_ptr handle;
+    if (!pm->playlist_get_item_handle(handle, activePlaylist, (t_size)playlistIndex)) return;
+
+    metadb_handle_list handles;
+    handles.add_item(handle);
+
+    auto cmm = contextmenu_manager_v2::tryGet();
+    if (!cmm.is_valid()) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating command unavailable: context menu v2 is not available";
+        return;
+    }
+
+    cmm->init_context_ex(handles, contextmenu_manager::flag_view_full, contextmenu_item::caller_active_playlist_selection);
+    menu_tree_item::ptr root = cmm->build_menu();
+    if (!root.is_valid()) {
+        FB2K_console_formatter() << "[SimPlaylist] Rating command unavailable: context menu root is empty";
+        return;
+    }
+
+    if (executeRatingCommand(root, rating, @"")) {
+        [_playlistView clearFormattedValuesCache];
+        [_playlistView reloadData];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self->_playlistView clearFormattedValuesCache];
+            [self->_playlistView reloadData];
+        });
+        return;
+    }
+
+    FB2K_console_formatter()
+        << "[SimPlaylist] No native rating command matched requested rating " << (long)rating
+        << "; logging rating-related context menu candidates";
+    logRatingMenuCandidates(root, @"");
 }
 
 #pragma mark - SimPlaylistHeaderBarDelegate

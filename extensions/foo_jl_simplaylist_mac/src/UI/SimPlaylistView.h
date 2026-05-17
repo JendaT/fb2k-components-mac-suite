@@ -179,6 +179,9 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Lazy column value formatting - called when drawing track rows with nil columnValues
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view columnValuesForPlaylistIndex:(NSInteger)playlistIndex;
 
+// Called when user clicks an inline rating cell. Rating 0 clears the value.
+- (void)playlistView:(SimPlaylistView *)view didRequestSetRating:(NSInteger)rating forPlaylistIndex:(NSInteger)playlistIndex;
+
 @end
 
 NS_ASSUME_NONNULL_END
