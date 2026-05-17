@@ -12,6 +12,7 @@ static const CGFloat kTextAreaHeight   = 48.0;
 static const CGFloat kTrackRowHeight   = 22.0;
 static const CGFloat kTrackListPadding = 8.0;
 static const CGFloat kCornerRadius     = 6.0;
+static const CGFloat kRatingWidth      = 70.0;
 
 #pragma mark - Layout helpers
 
@@ -169,6 +170,34 @@ static const CGFloat kTrackHeaderHeight = 28.0;
 
 #pragma mark - Drawing
 
+- (NSAttributedString *)starStringForRating:(NSInteger)rating enabled:(BOOL)enabled {
+    NSMutableAttributedString *stars = [[NSMutableAttributedString alloc] init];
+    NSFont *font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightRegular];
+    for (NSInteger i = 1; i <= 5; i++) {
+        BOOL filled = i <= rating;
+        NSColor *color;
+        if (!enabled) {
+            color = [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.25];
+        } else if (filled) {
+            color = [NSColor controlAccentColor];
+        } else {
+            color = [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.55];
+        }
+        [stars appendAttributedString:[[NSAttributedString alloc] initWithString:(filled ? @"★" : @"☆")
+                                                                      attributes:@{NSFontAttributeName: font,
+                                                                                   NSForegroundColorAttributeName: color}]];
+    }
+    return stars;
+}
+
+- (void)drawRating:(NSInteger)rating inRect:(NSRect)rect enabled:(BOOL)enabled {
+    NSAttributedString *stars = [self starStringForRating:rating enabled:enabled];
+    NSSize size = stars.size;
+    CGFloat x = rect.origin.x + MAX(0, (rect.size.width - size.width) / 2.0);
+    CGFloat y = rect.origin.y + round((rect.size.height - size.height) / 2.0);
+    [stars drawAtPoint:NSMakePoint(x, y)];
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
 
@@ -302,11 +331,14 @@ static const CGFloat kTrackHeaderHeight = 28.0;
                                attributes:albumAttrs];
 
             if (album.year.length > 0) {
-                NSRect yearRect = NSMakeRect(textX, textY + 28, textW, 13);
+                NSRect yearRect = NSMakeRect(textX, textY + 28, MAX(0, textW - kRatingWidth - 4), 13);
                 [album.year drawWithRect:yearRect
                                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
                               attributes:yearAttrs];
             }
+
+            NSRect ratingRect = NSMakeRect(textX + textW - kRatingWidth, textY + 27, kRatingWidth, 15);
+            [self drawRating:album.rating inRect:ratingRect enabled:YES];
         }
 
         y += ch;
@@ -394,9 +426,10 @@ static const CGFloat kTrackHeaderHeight = 28.0;
     CGFloat baseY = headerY + kTrackHeaderHeight;
     CGFloat numW = 30;
     CGFloat durW = 55;
+    CGFloat ratingW = kRatingWidth;
     CGFloat artistW = MIN(rect.size.width * 0.25, 180);
     CGFloat leftMargin = kTrackListPadding + numW;
-    CGFloat titleW = rect.size.width - leftMargin - artistW - durW - kTrackListPadding * 2;
+    CGFloat titleW = rect.size.width - leftMargin - artistW - ratingW - durW - kTrackListPadding * 2;
 
     for (NSUInteger i = 0; i < album.tracks.count; i++) {
         AlbumTrack *track = album.tracks[i];
@@ -421,8 +454,12 @@ static const CGFloat kTrackHeaderHeight = 28.0;
         // Artist
         CGFloat artistX = leftMargin + titleW + kTrackListPadding;
         [album.artistName drawWithRect:NSMakeRect(artistX, rowY + 3, artistW - kTrackListPadding, kTrackRowHeight - 4)
-                               options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
-                            attributes:artistAttrs];
+                                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                             attributes:artistAttrs];
+
+        // Rating
+        CGFloat ratingX = rect.size.width - durW - ratingW - kTrackListPadding;
+        [self drawRating:track.rating inRect:NSMakeRect(ratingX, rowY + 2, ratingW, kTrackRowHeight - 4) enabled:YES];
 
         // Duration
         CGFloat durX = rect.size.width - durW - kTrackListPadding;
@@ -438,6 +475,12 @@ typedef struct {
     NSInteger albumIndex;
     NSInteger trackIndex; // NSNotFound if not in track list
 } GridHitResult;
+
+typedef struct {
+    NSInteger albumIndex;
+    NSInteger trackIndex;
+    NSInteger rating;
+} RatingHitResult;
 
 - (GridHitResult)hitTestAtPoint:(NSPoint)point {
     GridHitResult result = { NSNotFound, NSNotFound };
@@ -495,6 +538,72 @@ typedef struct {
     return result;
 }
 
+- (NSInteger)ratingValueForPoint:(NSPoint)point inRect:(NSRect)rect {
+    if (NSIsEmptyRect(rect) || !NSPointInRect(point, rect)) return 0;
+    CGFloat localX = point.x - rect.origin.x;
+    NSInteger rating = (NSInteger)floor((localX / MAX(rect.size.width, 1.0)) * 5.0) + 1;
+    return MAX(1, MIN(5, rating));
+}
+
+- (RatingHitResult)ratingHitTestAtPoint:(NSPoint)point {
+    RatingHitResult result = { NSNotFound, NSNotFound, 0 };
+    CGFloat w = self.bounds.size.width;
+    if (w <= 0 || !_albums || _albums.count == 0) return result;
+
+    CGFloat contentW = contentWidthForView(w);
+    NSInteger cols = columnsForWidth(contentW, _thumbnailSize);
+    CGFloat cw = cellWidth(contentW, cols);
+    CGFloat thumbSize = cw;
+    CGFloat ch = cellTotalHeight(cw);
+    NSInteger albumCount = (NSInteger)_albums.count;
+
+    CGFloat y = 0;
+    for (NSInteger rowStart = 0; rowStart < albumCount; rowStart += cols) {
+        NSInteger rowEnd = MIN(rowStart + cols, albumCount);
+
+        for (NSInteger i = rowStart; i < rowEnd; i++) {
+            NSInteger col = i - rowStart;
+            CGFloat x = kContentInsetLeft + col * (cw + kCellPadding);
+            CGFloat textX = x + 2;
+            CGFloat textW = cw - 4;
+            CGFloat textY = y + thumbSize + 3;
+            NSRect ratingRect = NSMakeRect(textX + textW - kRatingWidth, textY + 27, kRatingWidth, 15);
+            NSInteger rating = [self ratingValueForPoint:point inRect:ratingRect];
+            if (rating > 0) {
+                result.albumIndex = i;
+                result.rating = rating;
+                return result;
+            }
+        }
+
+        y += ch;
+
+        if (_expandedAlbumIndex != NSNotFound &&
+            _expandedAlbumIndex >= rowStart && _expandedAlbumIndex < rowEnd) {
+            AlbumItem *expanded = _albums[_expandedAlbumIndex];
+            CGFloat trackListH = [self trackListHeightForAlbum:expanded width:w];
+            CGFloat headerY = y + kTrackListPadding;
+            CGFloat baseY = headerY + kTrackHeaderHeight;
+            CGFloat durW = 55;
+            CGFloat ratingX = w - durW - kRatingWidth - kTrackListPadding;
+
+            for (NSUInteger i = 0; i < expanded.tracks.count; i++) {
+                CGFloat rowY = baseY + i * kTrackRowHeight;
+                NSRect ratingRect = NSMakeRect(ratingX, rowY + 2, kRatingWidth, kTrackRowHeight - 4);
+                NSInteger rating = [self ratingValueForPoint:point inRect:ratingRect];
+                if (rating > 0) {
+                    result.albumIndex = _expandedAlbumIndex;
+                    result.trackIndex = (NSInteger)i;
+                    result.rating = rating;
+                    return result;
+                }
+            }
+            y += trackListH;
+        }
+    }
+    return result;
+}
+
 #pragma mark - Mouse events
 
 - (void)_cancelExpandTimer {
@@ -532,6 +641,28 @@ typedef struct {
     // Double-click: cancel any pending expand and let mouseUp handle playback
     if (event.clickCount == 2) {
         [self _cancelExpandTimer];
+        return;
+    }
+
+    RatingHitResult ratingHit = [self ratingHitTestAtPoint:point];
+    if (ratingHit.rating > 0 && ratingHit.albumIndex != NSNotFound && ratingHit.albumIndex < (NSInteger)_albums.count) {
+        [self _cancelExpandTimer];
+        _selectedAlbumIndex = ratingHit.albumIndex;
+        AlbumItem *album = _albums[ratingHit.albumIndex];
+        if (ratingHit.trackIndex != NSNotFound && ratingHit.trackIndex < (NSInteger)album.tracks.count) {
+            _selectedTrackIndex = ratingHit.trackIndex;
+            AlbumTrack *track = album.tracks[ratingHit.trackIndex];
+            NSInteger newRating = (track.rating == ratingHit.rating) ? 0 : ratingHit.rating;
+            track.rating = newRating;
+            [_delegate albumGridView:self wantsSetRating:newRating forTrack:track inAlbum:album];
+        } else {
+            _selectedTrackIndex = NSNotFound;
+            NSInteger newRating = (album.rating == ratingHit.rating) ? 0 : ratingHit.rating;
+            album.rating = newRating;
+            for (AlbumTrack *track in album.tracks) track.rating = newRating;
+            [_delegate albumGridView:self wantsSetRating:newRating forAlbum:album];
+        }
+        [self setNeedsDisplay:YES];
         return;
     }
 

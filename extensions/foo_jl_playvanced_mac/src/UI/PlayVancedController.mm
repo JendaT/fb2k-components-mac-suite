@@ -20,6 +20,56 @@
     titleformat_object::ptr _tfBitrate;
     titleformat_object::ptr _tfSampleRate;
     titleformat_object::ptr _tfDuration;
+    titleformat_object::ptr _tfRating;
+}
+
+static NSInteger countFilledStars(NSString *string) {
+    NSInteger count = 0;
+    for (NSUInteger i = 0; i < string.length; i++) {
+        if ([string characterAtIndex:i] == 0x2605) count++;
+    }
+    return count;
+}
+
+static BOOL ratingCommandMatches(NSString *fullPath, NSString *commandName, NSInteger rating) {
+    NSString *path = fullPath.lowercaseString;
+    NSString *name = commandName.lowercaseString;
+    BOOL isRatingArea = ([path containsString:@"rating"] || [path containsString:@"playback statistics"]);
+    if (!isRatingArea) return NO;
+
+    if (rating == 0) {
+        return [name containsString:@"clear"] || [name containsString:@"unrated"] ||
+               [name containsString:@"not set"] || [name containsString:@"no rating"] ||
+               [name containsString:@"remove rating"];
+    }
+
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)rating];
+    return [name isEqualToString:number] ||
+           [name containsString:[NSString stringWithFormat:@"%@ star", number]] ||
+           [name containsString:[NSString stringWithFormat:@"rating %@", number]] ||
+           countFilledStars(commandName) == rating;
+}
+
+static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSString *prefix) {
+    if (!item.is_valid()) return NO;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+
+    if (item->type() == menu_tree_item::itemCommand) {
+        if (ratingCommandMatches(path, name, rating) && !(item->flags() & menu_flags::disabled)) {
+            item->execute(nullptr);
+            return YES;
+        }
+        return NO;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            if (executeRatingCommand(item->childAt(i), rating, path)) return YES;
+        }
+    }
+    return NO;
 }
 
 - (void)loadView {
@@ -47,6 +97,7 @@
     compiler->compile_safe_ex(_tfBitrate, "%bitrate%", "");
     compiler->compile_safe_ex(_tfSampleRate, "%samplerate%", "");
     compiler->compile_safe_ex(_tfDuration, "%length%", "");
+    compiler->compile_safe_ex(_tfRating, "%rating%", "");
 }
 
 - (void)syncVolume {
@@ -303,6 +354,39 @@
     }
 }
 
+- (void)nowPlayingViewDidRequestSetRating:(NSInteger)rating {
+    if (!_currentTrack.is_valid()) return;
+
+    metadb_handle_list handles;
+    handles.add_item(_currentTrack);
+
+    auto cmm = contextmenu_manager_v2::tryGet();
+    if (!cmm.is_valid()) {
+        FB2K_console_formatter() << "[PlayVanced] Rating command unavailable: context menu v2 is not available";
+        return;
+    }
+
+    cmm->init_context_ex(handles, contextmenu_manager::flag_view_full, contextmenu_item::caller_active_playlist_selection);
+    menu_tree_item::ptr root = cmm->build_menu();
+    if (!root.is_valid()) {
+        FB2K_console_formatter() << "[PlayVanced] Rating command unavailable: context menu root is empty";
+        return;
+    }
+
+    if (executeRatingCommand(root, rating, @"")) {
+        metadb_handle_ptr trackCopy = _currentTrack;
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !trackCopy.is_valid()) return;
+            strongSelf->_barView.trackInfo = [strongSelf extractInfoFromHandle:trackCopy];
+        });
+        return;
+    }
+
+    FB2K_console_formatter() << "[PlayVanced] No native rating command matched requested rating " << (long)rating;
+}
+
 - (BOOL)findTrackByPath:(NSString *)path playlist:(t_size *)outPlaylist item:(t_size *)outItem {
     const char *targetPath = [path UTF8String];
     auto pm = playlist_manager::get();
@@ -377,6 +461,7 @@
     info.artist = [self formatHandle:handle with:_tfArtist];
     info.album  = [self formatHandle:handle with:_tfAlbum];
     info.codec  = [self formatHandle:handle with:_tfCodec];
+    info.rating = [self formatHandle:handle with:_tfRating];
 
     return info;
 }

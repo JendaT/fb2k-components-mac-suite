@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *sampleRate;
 @property (nonatomic, copy) NSString *channels;
 @property (nonatomic, copy) NSString *duration;
+@property (nonatomic, copy) NSString *rating;
 @property (nonatomic, copy) NSString *path;
 
 @end

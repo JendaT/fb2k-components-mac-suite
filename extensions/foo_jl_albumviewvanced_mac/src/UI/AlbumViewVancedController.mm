@@ -19,6 +19,55 @@ static const CGFloat kSearchScrollGap   = 4.0;
 static const CGFloat kStatusBottomMargin = 4.0;
 static const CGFloat kPadding           = 8.0;
 
+static NSInteger countFilledStars(NSString *string) {
+    NSInteger count = 0;
+    for (NSUInteger i = 0; i < string.length; i++) {
+        if ([string characterAtIndex:i] == 0x2605) count++;
+    }
+    return count;
+}
+
+static BOOL ratingCommandMatches(NSString *fullPath, NSString *commandName, NSInteger rating) {
+    NSString *path = fullPath.lowercaseString;
+    NSString *name = commandName.lowercaseString;
+    BOOL isRatingArea = ([path containsString:@"rating"] || [path containsString:@"playback statistics"]);
+    if (!isRatingArea) return NO;
+
+    if (rating == 0) {
+        return [name containsString:@"clear"] || [name containsString:@"unrated"] ||
+               [name containsString:@"not set"] || [name containsString:@"no rating"] ||
+               [name containsString:@"remove rating"];
+    }
+
+    NSString *number = [NSString stringWithFormat:@"%ld", (long)rating];
+    return [name isEqualToString:number] ||
+           [name containsString:[NSString stringWithFormat:@"%@ star", number]] ||
+           [name containsString:[NSString stringWithFormat:@"rating %@", number]] ||
+           countFilledStars(commandName) == rating;
+}
+
+static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSString *prefix) {
+    if (!item.is_valid()) return NO;
+
+    NSString *name = item->name() ? [NSString stringWithUTF8String:item->name()] : @"";
+    NSString *path = prefix.length > 0 ? [NSString stringWithFormat:@"%@/%@", prefix, name] : name;
+
+    if (item->type() == menu_tree_item::itemCommand) {
+        if (ratingCommandMatches(path, name, rating) && !(item->flags() & menu_flags::disabled)) {
+            item->execute(nullptr);
+            return YES;
+        }
+        return NO;
+    }
+
+    if (item->type() == menu_tree_item::itemSubmenu) {
+        for (size_t i = 0; i < item->childCount(); i++) {
+            if (executeRatingCommand(item->childAt(i), rating, path)) return YES;
+        }
+    }
+    return NO;
+}
+
 @interface AlbumViewVancedController () <NSSearchFieldDelegate, AlbumDataSourceDelegate, AlbumGridViewDelegate>
 @end
 
@@ -248,7 +297,59 @@ static const CGFloat kPadding           = 8.0;
     [self showContextMenuForPaths:@[track.path] atScreenPoint:screenPoint];
 }
 
+- (void)albumGridView:(id)gridView wantsSetRating:(NSInteger)rating forAlbum:(AlbumItem *)album {
+    [self setRating:rating forPaths:[album allTrackPaths]];
+}
+
+- (void)albumGridView:(id)gridView wantsSetRating:(NSInteger)rating forTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album {
+    if (track.path.length == 0) return;
+    [self setRating:rating forPaths:@[track.path]];
+}
+
 #pragma mark - Playback actions
+
+- (BOOL)handlesFromPaths:(NSArray<NSString *> *)paths into:(metadb_handle_list &)outHandles {
+    if (paths.count == 0) return NO;
+    auto db = metadb::get();
+    for (NSString *path in paths) {
+        if (path.length == 0) continue;
+        auto handle = db->handle_create([path UTF8String], 0);
+        if (handle.is_valid()) outHandles.add_item(handle);
+    }
+    return outHandles.get_count() > 0;
+}
+
+- (void)setRating:(NSInteger)rating forPaths:(NSArray<NSString *> *)paths {
+    metadb_handle_list handles;
+    @try {
+        if (![self handlesFromPaths:paths into:handles]) return;
+
+        auto cmm = contextmenu_manager_v2::tryGet();
+        if (!cmm.is_valid()) {
+            FB2K_console_formatter() << "[AlbumViewVanced] Rating command unavailable: context menu v2 is not available";
+            return;
+        }
+
+        cmm->init_context_ex(handles, contextmenu_manager::flag_view_full, contextmenu_item::caller_active_playlist_selection);
+        menu_tree_item::ptr root = cmm->build_menu();
+        if (!root.is_valid()) {
+            FB2K_console_formatter() << "[AlbumViewVanced] Rating command unavailable: context menu root is empty";
+            return;
+        }
+
+        if (executeRatingCommand(root, rating, @"")) {
+            [_gridView setNeedsDisplay:YES];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self scheduleLibraryRebuild];
+            });
+            return;
+        }
+
+        FB2K_console_formatter() << "[AlbumViewVanced] No native rating command matched requested rating " << (long)rating;
+    } @catch (NSException *exception) {
+        FB2K_console_formatter() << "[AlbumViewVanced] Rating command error: " << [[exception description] UTF8String];
+    }
+}
 
 /// Replace the stable Now Playing playlist and start playback from startIndex
 - (void)playPaths:(NSArray<NSString *> *)paths startIndex:(NSUInteger)startIndex {

@@ -18,6 +18,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)nowPlayingViewDidChangeVolume:(float)volume;
 - (void)nowPlayingViewDidReceiveDroppedPaths:(NSArray<NSString *> *)paths;
 - (void)nowPlayingViewDidTapTrackInfo;
+- (void)nowPlayingViewDidRequestSetRating:(NSInteger)rating;
 @end
 
 @interface NowPlayingView : NSView

@@ -11,6 +11,7 @@ static const CGFloat kSmallButtonSize = 22.0;
 static const CGFloat kButtonSpacing   = 2.0;
 static const CGFloat kProgressHeight  = 4.0;
 static const CGFloat kVolumeWidth     = 70.0;
+static const CGFloat kRatingWidth     = 78.0;
 
 static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.rows";
 
@@ -18,6 +19,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 @property (nonatomic, strong) NSImageView *artworkView;
 @property (nonatomic, strong) NSTextField *titleLabel;
 @property (nonatomic, strong) NSTextField *artistLabel;
+@property (nonatomic, strong) NSTextField *ratingLabel;
 @property (nonatomic, strong) NSButton *prevButton;
 @property (nonatomic, strong) NSButton *playPauseButton;
 @property (nonatomic, strong) NSButton *nextButton;
@@ -33,7 +35,9 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
 @property (nonatomic, assign) BOOL isSeeking;
 @property (nonatomic, assign) BOOL isDragTarget;
 @property (nonatomic, strong) NSTrackingArea *trackInfoTrackingArea;
+@property (nonatomic, strong) NSTrackingArea *ratingTrackingArea;
 @property (nonatomic, assign) BOOL isTrackInfoHovering;
+@property (nonatomic, assign) NSInteger hoveredRatingValue;
 @end
 
 @implementation NowPlayingView
@@ -48,6 +52,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _volume = 1.0;
         _playbackOrder = 0;
         _isSeeking = NO;
+        _hoveredRatingValue = 0;
         [self setupSubviews];
     }
     return self;
@@ -80,6 +85,28 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     [self addTrackingArea:_trackInfoTrackingArea];
 }
 
+- (NSRect)ratingRect {
+    if (_ratingLabel.isHidden) return NSZeroRect;
+    return _ratingLabel.frame;
+}
+
+- (void)updateRatingTrackingArea {
+    if (_ratingTrackingArea) {
+        [self removeTrackingArea:_ratingTrackingArea];
+    }
+    NSRect rect = [self ratingRect];
+    if (NSIsEmptyRect(rect)) return;
+
+    _ratingTrackingArea = [[NSTrackingArea alloc]
+        initWithRect:rect
+        options:(NSTrackingMouseEnteredAndExited |
+                 NSTrackingMouseMoved |
+                 NSTrackingActiveInActiveApp)
+        owner:self
+        userInfo:@{@"rating": @YES}];
+    [self addTrackingArea:_ratingTrackingArea];
+}
+
 #pragma mark - Setup
 
 - (void)setupSubviews {
@@ -103,6 +130,13 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _artistLabel.font = [NSFont systemFontOfSize:11.0 weight:NSFontWeightRegular];
     _artistLabel.textColor = fb2k_ui::secondaryTextColor();
     [self addSubview:_artistLabel];
+
+    _ratingLabel = [self makeLabel];
+    _ratingLabel.font = [NSFont systemFontOfSize:12.0 weight:NSFontWeightRegular];
+    _ratingLabel.alignment = NSTextAlignmentCenter;
+    _ratingLabel.lineBreakMode = NSLineBreakByClipping;
+    _ratingLabel.cell.truncatesLastVisibleLine = NO;
+    [self addSubview:_ratingLabel];
 
     // Transport buttons
     _prevButton = [self makeTransportButton:@"backward.fill" size:kSmallButtonSize action:@selector(prevPressed:)];
@@ -236,6 +270,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _artworkView.hidden = !hasTrack;
     _titleLabel.hidden = !hasTrack;
     _artistLabel.hidden = !hasTrack;
+    _ratingLabel.hidden = !hasTrack;
     _prevButton.hidden = !hasTrack;
     _playPauseButton.hidden = !hasTrack;
     _nextButton.hidden = !hasTrack;
@@ -297,11 +332,17 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _shuffleButton.frame = NSMakeRect(rightX, smallBtnY, kSmallButtonSize, kSmallButtonSize);
         rightX -= kPadding;
     }
-    CGFloat volumeX = rightX; // used below as the right boundary of the progress area
+    CGFloat controlsX = rightX;
+
+    // Rating sits after the track bar and before shuffle/repeat/mute/volume controls.
+    CGFloat ratingX = controlsX - kPadding - kRatingWidth;
+    BOOL showRating = (ratingX - x) >= 120.0;
+    _ratingLabel.hidden = !showRating;
+    _ratingLabel.frame = NSMakeRect(ratingX, midY - 8, kRatingWidth, 16);
 
     // Progress area fills the remaining space between transport and right controls
     CGFloat timeWidth = 38.0;
-    CGFloat progressRight = volumeX - kPadding;
+    CGFloat progressRight = (showRating ? ratingX : controlsX) - kPadding;
     CGFloat progressLeft = x;
 
     _elapsedLabel.frame = NSMakeRect(progressLeft, midY - 16, timeWidth, 14);
@@ -319,6 +360,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _remainingLabel.frame = NSMakeRect(sliderLeft + sliderWidth - timeWidth - 10, midY + 6, timeWidth + 10, 14);
 
     [self updateTrackInfoTrackingArea];
+    [self updateRatingTrackingArea];
 }
 
 #pragma mark - Drawing
@@ -454,9 +496,11 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     if (trackInfo) {
         _titleLabel.stringValue = trackInfo.title ?: @"";
         _artistLabel.stringValue = trackInfo.artist ?: @"";
+        [self updateRatingDisplayWithRating:[self ratingFromString:trackInfo.rating]];
     } else {
         _titleLabel.stringValue = @"";
         _artistLabel.stringValue = @"";
+        [self updateRatingDisplayWithRating:0];
     }
     [self setNeedsLayout:YES];
 }
@@ -539,6 +583,7 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     _artworkView.image = nil;
     _titleLabel.stringValue = @"";
     _artistLabel.stringValue = @"";
+    _ratingLabel.stringValue = @"";
     _progressSlider.doubleValue = 0;
     _elapsedLabel.stringValue = @"0:00";
     _remainingLabel.stringValue = @"0:00";
@@ -556,10 +601,45 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
     return [NSString stringWithFormat:@"%d:%02d", minutes, secs];
 }
 
+#pragma mark - Rating
+
+- (NSInteger)ratingFromString:(NSString *)value {
+    NSInteger rating = value.integerValue;
+    if (rating < 0) rating = 0;
+    if (rating > 5) rating = 5;
+    return rating;
+}
+
+- (void)updateRatingDisplayWithRating:(NSInteger)rating {
+    NSInteger displayRating = (_hoveredRatingValue > 0) ? _hoveredRatingValue : rating;
+    NSMutableAttributedString *stars = [[NSMutableAttributedString alloc] init];
+    NSFont *font = [NSFont systemFontOfSize:12 weight:NSFontWeightRegular];
+    for (NSInteger i = 1; i <= 5; i++) {
+        BOOL filled = i <= displayRating;
+        NSColor *color = filled ? [[NSColor controlAccentColor] colorWithAlphaComponent:(_hoveredRatingValue > 0 ? 0.75 : 1.0)]
+                                : [fb2k_ui::secondaryTextColor() colorWithAlphaComponent:0.55];
+        [stars appendAttributedString:[[NSAttributedString alloc] initWithString:(filled ? @"★" : @"☆")
+                                                                      attributes:@{NSFontAttributeName: font,
+                                                                                   NSForegroundColorAttributeName: color}]];
+    }
+    _ratingLabel.attributedStringValue = stars;
+}
+
+- (NSInteger)ratingValueAtPoint:(NSPoint)point {
+    NSRect rect = [self ratingRect];
+    if (NSIsEmptyRect(rect) || !NSPointInRect(point, rect)) return 0;
+    CGFloat localX = point.x - rect.origin.x;
+    NSInteger rating = (NSInteger)floor((localX / MAX(rect.size.width, 1.0)) * 5.0) + 1;
+    return MAX(1, MIN(5, rating));
+}
+
 #pragma mark - Track Info Hover & Click
 
 - (NSView *)hitTest:(NSPoint)point {
     NSPoint local = [self convertPoint:point fromView:self.superview];
+    if (!_ratingLabel.isHidden && NSPointInRect(local, [self ratingRect])) {
+        return self;
+    }
     if (!_titleLabel.isHidden && NSPointInRect(local, [self trackInfoRect])) {
         return self;
     }
@@ -572,6 +652,8 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _titleLabel.textColor = [NSColor controlAccentColor];
         _artistLabel.textColor = [NSColor controlAccentColor];
         [[NSCursor pointingHandCursor] push];
+    } else if ([event.trackingArea.userInfo[@"rating"] boolValue]) {
+        [[NSCursor pointingHandCursor] push];
     }
 }
 
@@ -581,11 +663,33 @@ static NSPasteboardType const kSimPlaylistPBType = @"com.foobar2000.simplaylist.
         _titleLabel.textColor = fb2k_ui::textColor();
         _artistLabel.textColor = fb2k_ui::secondaryTextColor();
         [NSCursor pop];
+    } else if ([event.trackingArea.userInfo[@"rating"] boolValue]) {
+        _hoveredRatingValue = 0;
+        [self updateRatingDisplayWithRating:[self ratingFromString:self.trackInfo.rating]];
+        [NSCursor pop];
+    }
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger hoverRating = [self ratingValueAtPoint:location];
+    if (hoverRating != _hoveredRatingValue) {
+        _hoveredRatingValue = hoverRating;
+        [self updateRatingDisplayWithRating:[self ratingFromString:self.trackInfo.rating]];
     }
 }
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger clickedRating = [self ratingValueAtPoint:location];
+    if (clickedRating > 0) {
+        NSInteger currentRating = [self ratingFromString:self.trackInfo.rating];
+        NSInteger newRating = (currentRating == clickedRating) ? 0 : clickedRating;
+        [self.delegate nowPlayingViewDidRequestSetRating:newRating];
+        self.trackInfo.rating = [NSString stringWithFormat:@"%ld", (long)newRating];
+        [self updateRatingDisplayWithRating:newRating];
+        return;
+    }
     if (NSPointInRect(location, [self trackInfoRect]) && !_titleLabel.isHidden) {
         _isTrackInfoHovering = YES;
         _titleLabel.alphaValue = 0.7;

@@ -18,6 +18,8 @@ extern NSPasteboardType const AlbumViewVancedPasteboardType;
 - (void)albumGridView:(id)gridView requestsContextMenuForTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album atPoint:(NSPoint)point;
 - (void)albumGridView:(id)gridView wantsQueueAlbum:(AlbumItem *)album;
 - (void)albumGridView:(id)gridView wantsQueueTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album;
+- (void)albumGridView:(id)gridView wantsSetRating:(NSInteger)rating forAlbum:(AlbumItem *)album;
+- (void)albumGridView:(id)gridView wantsSetRating:(NSInteger)rating forTrack:(AlbumTrack *)track inAlbum:(AlbumItem *)album;
 @end
 
 @interface AlbumGridView : NSView <NSDraggingSource>
