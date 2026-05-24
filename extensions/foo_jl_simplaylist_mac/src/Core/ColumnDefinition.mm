@@ -98,7 +98,28 @@
                     << (columns.count - cleaned.count) << " orphaned custom column(s)";
                 return cleaned;
             }
-            return columns;
+
+        // Migration: remove legacy ">" pattern from Playing columns now that the 
+        // native ▶ drawing in SimPlaylistView handles the indicator.
+        // TODO: This migration for Playing column can be removed in future. Let's keep it until end of 2026.
+        BOOL migrated = NO;
+        NSMutableArray<ColumnDefinition *> *migrating = [cleaned mutableCopy];
+        for (ColumnDefinition *col in migrating) {
+            if ([col.name isEqualToString:@"Playing"] &&
+                [col.pattern isEqualToString:@"$if(%isplaying%,>,)"]) {
+                col.pattern = @"";
+                migrated = YES;
+            }
+        }
+        if (migrated) {
+            NSString *migratedJSON = [self columnsToJSON:migrating];
+            simplaylist_config::setConfigString(
+                simplaylist_config::kColumns, migratedJSON.UTF8String);
+            FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
+            return migrating;
+        }
+
+        return columns;
         }
     }
 
@@ -114,7 +135,7 @@
     // Final fallback to hardcoded defaults
     return @[
         [ColumnDefinition columnWithName:@"Playing"
-                                 pattern:@"$if(%isplaying%,>,)"
+                                 pattern:@""
                                    width:24
                                alignment:ColumnAlignmentCenter],
 
@@ -213,7 +234,7 @@
                                    width:40
                                alignment:ColumnAlignmentCenter],
         [ColumnDefinition columnWithName:@"Playing"
-                                 pattern:@"$if(%isplaying%,>,)"
+                                 pattern:@""
                                    width:24
                                alignment:ColumnAlignmentCenter],
         [ColumnDefinition columnWithName:@"File name"

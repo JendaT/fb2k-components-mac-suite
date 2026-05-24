@@ -1931,11 +1931,15 @@ static const NSUInteger kMaxCacheableGroups = 500;
 #pragma mark - Playback Event Handlers
 
 - (void)handlePlaybackNewTrack:(metadb_handle_ptr)track {
+    // Clear cached column values so %isplaying%-based columns (e.g. ">" in the Playing
+    // column) are re-evaluated for the new track rather than showing stale results.
+    [_playlistView clearFormattedValuesCache];
     [self updatePlayingIndicator];
     [self refreshSelectionTracking];
 }
 
 - (void)handlePlaybackStopped {
+    [_playlistView clearFormattedValuesCache];
     _playlistView.playingIndex = -1;
 }
 
