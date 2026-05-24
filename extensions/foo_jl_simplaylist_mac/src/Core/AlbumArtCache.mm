@@ -52,6 +52,15 @@ static NSImage *_placeholderImage = nil;
         _pendingLoads = [NSMutableSet set];
         _pendingCompletions = [NSMutableDictionary dictionary];
         _pendingLock = [[NSLock alloc] init];
+
+        // When a volume mounts, purge any noImageKeys that live under it so that
+        // cover art that was missed because the drive wasn't ready (e.g. at startup)
+        // is retried on the next draw cycle.
+        [[[NSWorkspace sharedWorkspace] notificationCenter]
+            addObserver:self
+               selector:@selector(volumeDidMount:)
+                   name:NSWorkspaceDidMountNotification
+                 object:nil];
     }
     return self;
 }
@@ -186,7 +195,13 @@ static NSImage *_placeholderImage = nil;
                 const char *path = handleCopy->get_path();
                 if (path) {
                     NSString *filePath = [NSString stringWithUTF8String:path];
-                    // Remove file:// prefix if present
+                    // Normalise to a POSIX path that NSFileManager understands.
+                    // foobar2000 uses file:// for paths on the startup volume and
+                    // mac-volume://UUID/... for external volumes. The mac-volume://
+                    // UUID is fb2k-internal and does not match any macOS volume UUID
+                    // (NSURLVolumeUUIDStringKey, diskutil, IOKit etc.), so we cannot
+                    // resolve it here. mac-volume:// paths are handled by the
+                    // album_art_manager_v2 fallback below.
                     if ([filePath hasPrefix:@"file://"]) {
                         filePath = [filePath substringFromIndex:7];
                         filePath = [filePath stringByRemovingPercentEncoding];
@@ -261,34 +276,76 @@ static NSImage *_placeholderImage = nil;
             FB2K_console_formatter() << "[SimPlaylist] Album art file load error: " << exception.reason.UTF8String;
         }
 
-        // Second try: use album_art_extractor_manager which extracts art directly
-        // from the file without fallback resolution (unlike album_art_manager_v2
-        // which can return art from unrelated tracks via its stub/fallback system).
+        // Second try: use album_art_manager_v2 which handles all fb2k path schemes
+        // natively — including mac-volume://UUID for external volumes — and searches
+        // both embedded art and companion files (cover.jpg etc.).
+        //
+        // Bleed-through guard: album_art_manager_v2 can fall back to library-wide
+        // stubs that return art from unrelated tracks. We prevent this by checking
+        // that query_paths() reports a source in the same directory as the track.
+        // Embedded art (no external path) is always accepted.
         if (!image) {
             @try {
                 if (handleCopy.is_valid()) {
-                    const char *path = handleCopy->get_path();
-                    if (path) {
+                    const char *rawPath = handleCopy->get_path();
+                    if (rawPath) {
                         try {
-                            album_art_extractor_instance_ptr extractor =
-                                album_art_extractor::g_open(nullptr, path, fb2k::noAbort);
-                            if (extractor.is_valid()) {
-                                album_art_data::ptr data;
-                                if (extractor->query(album_art_ids::cover_front, data, fb2k::noAbort)) {
+                            auto mgr = album_art_manager_v2::get();
+                            metadb_handle_list handleList;
+                            handleList.add_item(handleCopy);
+                            pfc::list_t<GUID> artIds;
+                            artIds.add_item(album_art_ids::cover_front);
+
+                            album_art_extractor_instance_v2::ptr instance =
+                                mgr->open(handleList, artIds, fb2k::noAbort);
+
+                            // Bleed-through guard: if the manager found art via an
+                            // external file, confirm it lives in the track's directory.
+                            bool accepted = true;
+                            try {
+                                album_art_path_list::ptr paths =
+                                    instance->query_paths(album_art_ids::cover_front,
+                                                          fb2k::noAbort);
+                                if (paths.is_valid() && paths->get_count() > 0) {
+                                    // Find the directory prefix of the track's path.
+                                    const char *lastSlash = strrchr(rawPath, '/');
+                                    if (lastSlash) {
+                                        size_t dirLen = (size_t)(lastSlash - rawPath) + 1;
+                                        accepted = false;
+                                        for (t_size i = 0; i < paths->get_count(); i++) {
+                                            if (strncmp(paths->get_path(i), rawPath, dirLen) == 0) {
+                                                accepted = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Empty path list → embedded art → no bleed-through risk
+                            } catch (...) {
+                                accepted = true; // query_paths unavailable → be permissive
+                            }
+
+                            if (accepted) {
+                                try {
+                                    album_art_data::ptr data =
+                                        instance->query(album_art_ids::cover_front, fb2k::noAbort);
                                     if (data.is_valid() && data->size() > 0) {
                                         NSData *imageData = [NSData dataWithBytes:data->data()
                                                                            length:data->size()];
                                         if (imageData) {
                                             image = [[NSImage alloc] initWithData:imageData];
-                                            if (image && (image.size.width > 512 || image.size.height > 512)) {
+                                            if (image && (image.size.width > 512 ||
+                                                          image.size.height > 512)) {
                                                 image = [self resizeImage:image toMaxSize:512];
                                             }
                                         }
                                     }
+                                } catch (...) {
+                                    // No art or unsupported format — not an error
                                 }
                             }
                         } catch (...) {
-                            // No embedded art or unsupported format — not an error
+                            // Manager unavailable
                         }
                     }
                 }
@@ -371,6 +428,49 @@ static NSImage *_placeholderImage = nil;
     NSImage *resizedImage = [[NSImage alloc] initWithSize:newSize];
     [resizedImage addRepresentation:rep];
     return resizedImage;
+}
+
+// Called on the main thread by NSWorkspace when a volume finishes mounting.
+// Purges noImageKeys whose path starts with the mount path so that cover art
+// that failed to load at startup (drive not yet ready) is retried on the next
+// draw cycle instead of staying permanently blacklisted for the session.
+- (void)volumeDidMount:(NSNotification *)notification {
+    NSURL *mountURL = notification.userInfo[NSWorkspaceVolumeURLKey];
+    if (!mountURL) return;
+
+    NSString *mountPath = mountURL.path;
+    if (!mountPath.length) return;
+
+    // POSIX prefix for keys stored as "/Volumes/SSD_EVO2/..." or "file:///Volumes/SSD_EVO2/..."
+    NSString *posixPrefix = [mountPath hasSuffix:@"/"] ? mountPath : [mountPath stringByAppendingString:@"/"];
+
+    // foobar2000 macOS also uses "mac-volume://UUID/..." paths for external volumes.
+    // Fetch the UUID of the newly-mounted volume so we can match those keys too.
+    NSString *volumeUUID = nil;
+    [mountURL getResourceValue:&volumeUUID forKey:NSURLVolumeUUIDStringKey error:nil];
+    NSString *macVolumePrefix = volumeUUID
+        ? [NSString stringWithFormat:@"mac-volume://%@/", volumeUUID]
+        : nil;
+
+    [_pendingLock lock];
+
+    NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+    for (NSString *key in _noImageKeys) {
+        if ([key containsString:posixPrefix] ||
+                (macVolumePrefix && [key hasPrefix:macVolumePrefix])) {
+            [staleKeys addObject:key];
+        }
+    }
+
+    if (staleKeys.count > 0) {
+        [_noImageKeys minusSet:[NSSet setWithArray:staleKeys]];
+        [_noImageKeyOrder removeObjectsInArray:staleKeys];
+        FB2K_console_formatter() << "[SimPlaylist] Volume mounted at "
+            << mountPath.UTF8String << " — cleared " << (int)staleKeys.count
+            << " stale noImageKey(s); cover art will be retried.";
+    }
+
+    [_pendingLock unlock];
 }
 
 - (void)clearCache {
