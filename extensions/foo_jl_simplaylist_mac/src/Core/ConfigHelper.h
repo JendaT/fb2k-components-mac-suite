@@ -230,7 +230,7 @@ inline const char* getDefaultGroupPresetsJSON() {
 inline const char* getDefaultColumnsJSON() {
     return R"JSON({
   "columns": [
-    {"name": "Playing", "pattern": "$if(%isplaying%,>,)", "width": 24, "alignment": "center"},
+    {"name": "Playing", "pattern": "", "width": 24, "alignment": "center"},
     {"name": "#", "pattern": "%tracknumber%", "width": 32, "alignment": "right"},
     {"name": "Title", "pattern": "%title%", "width": 250, "alignment": "left", "auto_resize": true},
     {"name": "Artist", "pattern": "%artist%", "width": 150, "alignment": "left", "auto_resize": true},
