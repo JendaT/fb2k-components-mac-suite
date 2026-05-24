@@ -196,10 +196,51 @@ static NSImage *_placeholderImage = nil;
                     NSFileManager *fm = [NSFileManager defaultManager];
 
                     if (directory.length > 0 && [fm fileExistsAtPath:directory]) {
-                        // Common cover image filenames
-                        NSArray *coverNames = @[@"cover.jpg", @"cover.png", @"folder.jpg", @"folder.png",
-                                               @"front.jpg", @"front.png", @"album.jpg", @"album.png",
-                                               @"Cover.jpg", @"Cover.png", @"Folder.jpg", @"Folder.png"];
+                        // Build candidate names:
+                        // - metadata-driven files (%album%.* and %artist% - %album%.* patterns)
+                        // - conventional fallbacks
+                        // Using metadata-derived names is *safer* than a hardcoded list since a file named after the
+                        // album is far less likely to be a false match in a flat directory full of unrelated files.
+                        NSMutableArray<NSString *> *coverNames = [NSMutableArray array];
+
+                        // 1. Metadata-derived candidates
+                        pfc::string8 albumStr, artistStr;
+                        try {
+                            metadb_info_container::ptr infoContainer;
+                            if (handleCopy->get_info_ref(infoContainer) && infoContainer.is_valid()) {
+                                const file_info &fi = infoContainer->info();
+                                const char *album = fi.meta_get("ALBUM", 0);
+                                if (album) albumStr = album;
+                                const char *artist = fi.meta_get("ARTIST", 0);
+                                if (artist) artistStr = artist;
+                            }
+                        } catch (...) {}
+
+                        if (albumStr.length() > 0) {
+                            NSString *album = [NSString stringWithUTF8String:albumStr.get_ptr()];
+                            for (NSString *ext in @[@"jpg", @"png", @"jpeg"]) {
+                                // %album%.ext  e.g. "().jpg", "Revolver.jpg"
+                                [coverNames addObject:[album stringByAppendingPathExtension:ext]];
+                            }
+                            if (artistStr.length() > 0) {
+                                NSString *artist = [NSString stringWithUTF8String:artistStr.get_ptr()];
+                                for (NSString *ext in @[@"jpg", @"png", @"jpeg"]) {
+                                    // %artist% - %album%.ext  e.g. "Sigur Ros - ().jpg"
+                                    NSString *name = [NSString stringWithFormat:@"%@ - %@", artist, album];
+                                    [coverNames addObject:[name stringByAppendingPathExtension:ext]];
+                                }
+                            }
+                        }
+
+                        // 2. Conventional fallback names
+                        [coverNames addObjectsFromArray:@[
+                            @"cover.jpg",  @"cover.png",
+                            @"folder.jpg", @"folder.png",
+                            @"front.jpg",  @"front.png",
+                            @"album.jpg",  @"album.png",
+                            @"Cover.jpg",  @"Cover.png",
+                            @"Folder.jpg", @"Folder.png"
+                        ]];
 
                         for (NSString *name in coverNames) {
                             NSString *coverPath = [directory stringByAppendingPathComponent:name];
