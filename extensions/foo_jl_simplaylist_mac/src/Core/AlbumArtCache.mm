@@ -301,19 +301,30 @@ static NSImage *_placeholderImage = nil;
 
                             // Bleed-through guard: if the manager found art via an
                             // external file, confirm it lives in the track's directory.
+                            //
+                            // Strip "file://" before comparing: fb2k get_path() returns
+                            // "file:///Users/..." for local tracks but query_paths() may
+                            // return bare POSIX paths ("/Users/..."). mac-volume:// paths
+                            // are consistent between get_path() and query_paths() so they
+                            // need no adjustment.
                             bool accepted = true;
                             try {
                                 album_art_path_list::ptr paths =
                                     instance->query_paths(album_art_ids::cover_front,
                                                           fb2k::noAbort);
                                 if (paths.is_valid() && paths->get_count() > 0) {
-                                    // Find the directory prefix of the track's path.
-                                    const char *lastSlash = strrchr(rawPath, '/');
+                                    // Normalise track path: strip file:// scheme prefix.
+                                    const char *trackPath = rawPath;
+                                    if (strncmp(trackPath, "file://", 7) == 0) trackPath += 7;
+
+                                    const char *lastSlash = strrchr(trackPath, '/');
                                     if (lastSlash) {
-                                        size_t dirLen = (size_t)(lastSlash - rawPath) + 1;
+                                        size_t dirLen = (size_t)(lastSlash - trackPath) + 1;
                                         accepted = false;
                                         for (t_size i = 0; i < paths->get_count(); i++) {
-                                            if (strncmp(paths->get_path(i), rawPath, dirLen) == 0) {
+                                            const char *artPath = paths->get_path(i);
+                                            if (strncmp(artPath, "file://", 7) == 0) artPath += 7;
+                                            if (strncmp(artPath, trackPath, dirLen) == 0) {
                                                 accepted = true;
                                                 break;
                                             }
