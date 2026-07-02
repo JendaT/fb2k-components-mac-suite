@@ -2,6 +2,31 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Focus Playing Now**: New context menu item (at the bottom) that selects the
+  currently playing track and scrolls it to the center of the view, switching
+  to its playlist first when needed. Disabled while nothing is playing.
+
+### Fixed
+- **Per-playlist scroll position**: Positions are now restored pixel-exactly
+  when switching between playlists. Previously the restore used minimal
+  scrolling, which let the remembered track land at the bottom edge of the
+  view — every switch away and back drifted the position by roughly a full
+  screen. Also fixed: ungrouped playlists never saved their position at all, a
+  freshly restored-from-cache anchor could overwrite the newer in-session one,
+  and the mid-detection group merge could jump the view by the same
+  bottom-alignment error.
+
+### Technical
+- Scroll anchors are stored as (track index, pixel offset) pairs per playlist,
+  restored via absolute clip-view positioning instead of scrollRectToVisible.
+  The offset is persisted in the group cache (`scrollOffset`, backward
+  compatible). "Viewport reflects user position" is now tracked separately
+  from "group data complete", so anchors are saved for flat playlists and
+  survive same-playlist refreshes.
+
 ## [1.4.6] - 2026-05-17
 
 ### Added

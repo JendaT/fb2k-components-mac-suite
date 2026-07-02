@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### SimPlaylist
+- Added: "Focus Playing Now" context menu item — selects the playing track and
+  scrolls it to the center of the view, switching playlists when needed.
+- Fixed: per-playlist scroll positions now restore pixel-exactly when switching
+  between playlists (previously drifted by up to a full screen per round trip;
+  ungrouped playlists never saved their position at all).
+
 ### Added
 - Unified monorepo structure for all extensions
 - Shared branding and about page utilities

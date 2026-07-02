@@ -215,9 +215,21 @@ struct ReloadOperation {
 @property (nonatomic, assign) NSInteger currentPlaylistIndex;
 @property (nonatomic, assign) NSInteger playingPlaylistIndex;  // Track which playlist item is playing
 @property (nonatomic, assign) BOOL needsRedraw;  // Coalesced redraw flag
-@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *scrollAnchorIndices;  // First visible playlist index per playlist
+// Per-playlist scroll anchors: playlist index -> @{@"index": first visible
+// track's playlist index, @"offset": pixel delta between the viewport top and
+// that row's top (negative when a header/padding block is scrolled above it)}.
+// Pixel-exact so switching away and back lands on the identical position.
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *scrollAnchorIndices;
 @property (nonatomic, assign) NSInteger scrollRestorePlaylistIndex;  // Playlist index for pending scroll restore (-1 = none)
-@property (nonatomic, assign) BOOL currentPlaylistInitialized;  // True after groups loaded and scroll position set
+@property (nonatomic, assign) BOOL currentPlaylistInitialized;  // True after groups fully loaded (gates group-cache persistence)
+// True once the viewport reflects the user's position for the current playlist
+// (after restore ran, or when there was nothing to restore). Gates anchor
+// saving so a pre-restore viewport never overwrites a good anchor.
+@property (nonatomic, assign) BOOL scrollPositionEstablished;
+// "Focus playing now" across a playlist switch: center this track once the
+// target playlist has rebuilt (consumed by performScrollRestore).
+@property (nonatomic, assign) NSInteger pendingCenterIndex;
+@property (nonatomic, assign) NSInteger pendingCenterPlaylist;
 @property (nonatomic, assign) BOOL isSettingSelection;  // Flag to skip callback when we're setting selection
 @property (nonatomic, assign) NSUInteger selectionGeneration;  // Incremented when we set selection
 @property (nonatomic, assign) NSUInteger lastSyncedGeneration;  // Last generation we synced
@@ -247,6 +259,9 @@ struct ReloadOperation {
         _scrollAnchorIndices = [NSMutableDictionary dictionary];
         _scrollRestorePlaylistIndex = -1;
         _currentPlaylistInitialized = NO;
+        _scrollPositionEstablished = NO;
+        _pendingCenterIndex = -1;
+        _pendingCenterPlaylist = -1;
     }
     return self;
 }
@@ -370,7 +385,7 @@ struct ReloadOperation {
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     // Save current scroll position before rebuilding
-    NSInteger savedAnchorIndex = [self firstVisiblePlaylistIndex];
+    NSDictionary *savedAnchor = [self captureScrollAnchor];
 
     // Reload group presets from config
     std::string savedJSON = simplaylist_config::getConfigString(
@@ -443,8 +458,8 @@ struct ReloadOperation {
     _playlistView.albumArtSize = newArtSize;
 
     // Store scroll anchor for current playlist so it gets restored after rebuild
-    if (savedAnchorIndex >= 0 && _currentPlaylistIndex >= 0) {
-        _scrollAnchorIndices[@(_currentPlaylistIndex)] = @(savedAnchorIndex);
+    if (savedAnchor && _currentPlaylistIndex >= 0) {
+        _scrollAnchorIndices[@(_currentPlaylistIndex)] = savedAnchor;
         _scrollRestorePlaylistIndex = _currentPlaylistIndex;
     }
 
@@ -708,19 +723,29 @@ struct ReloadOperation {
     // This prevents visual jumping when items are added/removed
     // IMPORTANT: Skip saving if a drag is in progress - drag can trigger playlist switches
     // when hovering over another playlist, and we don't want to save the mid-drag position
-    if (!isFirstLoad && _scrollView && _scrollAnchorIndices && _currentPlaylistInitialized &&
-        !_playlistView.isDragging) {
-        NSInteger anchorIndex = [self firstVisiblePlaylistIndex];
-        if (anchorIndex >= 0) {
-            _scrollAnchorIndices[@(_currentPlaylistIndex)] = @(anchorIndex);
+    if (!isFirstLoad && !_playlistView.isDragging) {
+        // Only save when the viewport reflects the user's position (a restore
+        // has run, or there was nothing to restore) - never overwrite a good
+        // anchor with a pre-restore viewport.
+        if (_scrollPositionEstablished) {
+            NSDictionary *anchor = [self captureScrollAnchor];
+            if (anchor) {
+                _scrollAnchorIndices[@(_currentPlaylistIndex)] = anchor;
+            }
         }
-        // Persist group cache for the outgoing playlist (async)
+        // Persist group cache for the outgoing playlist (async) - gated
+        // internally on complete group data, independent of the anchor gate.
         if (isSwitchingPlaylist && _currentPlaylistIndex >= 0) {
             [self saveGroupCacheForPlaylist:(t_size)_currentPlaylistIndex synchronous:NO];
         }
     }
 
-    // Reset initialized flag for the new playlist
+    // Reset flags for the new playlist. The established flag survives
+    // same-playlist refreshes: the viewport is untouched, so it still reflects
+    // the user's position and anchors must keep being saved.
+    if (isSwitchingPlaylist) {
+        _scrollPositionEstablished = NO;
+    }
     _currentPlaylistInitialized = NO;
 
     // Invalidate any in-progress async group detection from the previous playlist.
@@ -838,16 +863,26 @@ struct ReloadOperation {
     [_playlistView reloadData];
 
     // Scroll restoration
+    BOOL wantsPendingCenter = (_pendingCenterIndex >= 0 &&
+                               _pendingCenterPlaylist == (NSInteger)activePlaylist);
     if (isSwitchingPlaylist) {
-        if (useGrouping && _scrollAnchorIndices[@(activePlaylist)] != nil) {
-            // Sync or cache-hit path set _scrollRestorePlaylistIndex above
-            // Groups are already loaded, so restore scroll immediately
+        if (useGrouping && (_scrollAnchorIndices[@(activePlaylist)] != nil || wantsPendingCenter)) {
+            // Sync or cache-hit path set _scrollRestorePlaylistIndex above;
+            // ensure it is set for the pending-center and async cases too.
+            _scrollRestorePlaylistIndex = activePlaylist;
             [self scheduleDeferredScrollRestore];
         } else if (!useGrouping) {
             _scrollRestorePlaylistIndex = activePlaylist;
             [self scheduleDeferredScrollRestore];
+        } else if (_currentPlaylistInitialized) {
+            // Grouped, data already complete (cache hit), but no saved anchor:
+            // nothing to restore - run the restore path anyway so the focus
+            // fallback applies and the position is marked established.
+            _scrollRestorePlaylistIndex = activePlaylist;
+            [self scheduleDeferredScrollRestore];
         }
-        // Async path: restore happens after detection completes (handled in detectGroupsForPlaylist:)
+        // Async detection path with no anchor: position is marked established
+        // when detection completes (detectGroupsForPlaylist:).
     }
     // When NOT switching (just refreshing same playlist), keep current scroll position
 }
@@ -877,53 +912,101 @@ struct ReloadOperation {
         return;
     }
 
-    NSNumber *savedAnchorIndex = _scrollAnchorIndices[@(_scrollRestorePlaylistIndex)];
-    if (savedAnchorIndex) {
-        NSInteger playlistIndex = [savedAnchorIndex integerValue];
+    // "Focus playing now" navigation takes priority over anchor restore.
+    if (_pendingCenterIndex >= 0) {
+        NSInteger centerIndex = _pendingCenterIndex;
+        BOOL forThisPlaylist = (_pendingCenterPlaylist == _currentPlaylistIndex);
+        _pendingCenterIndex = -1;
+        _pendingCenterPlaylist = -1;
+        if (forThisPlaylist) {
+            [self scrollPlaylistIndexToCenter:centerIndex];
+            _scrollRestorePlaylistIndex = -1;
+            _scrollPositionEstablished = YES;
+            return;
+        }
+        // Stale pending center (user switched elsewhere first): discard and
+        // fall through to the normal anchor restore.
+    }
+
+    NSDictionary *anchor = _scrollAnchorIndices[@(_scrollRestorePlaylistIndex)];
+    if (anchor) {
+        NSInteger playlistIndex = [anchor[@"index"] integerValue];
+        CGFloat offset = [anchor[@"offset"] doubleValue];
         // Clamp to valid range (items may have been deleted after the anchor)
         if (playlistIndex >= _playlistView.itemCount) {
             playlistIndex = MAX(0, _playlistView.itemCount - 1);
+            offset = 0;
         }
-        // Convert playlist index to row (works correctly regardless of grouping state)
-        NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
-        if (row >= 0) {
-            [_playlistView scrollRowToVisible:row];
-        }
+        [self scrollToPlaylistIndex:playlistIndex pixelOffset:offset];
     } else if (_playlistView.focusIndex >= 0) {
-        // No saved position - scroll to focus item (first time viewing this playlist)
-        NSInteger focusRow = [_playlistView rowForPlaylistIndex:_playlistView.focusIndex];
-        if (focusRow >= 0) {
-            [_playlistView scrollRowToVisible:focusRow];
-        }
+        // No saved position - center the focus item (first time viewing this playlist)
+        [self scrollPlaylistIndexToCenter:_playlistView.focusIndex];
     }
 
-    // Clear the restore marker (initialized flag is set when full detection completes)
+    // Clear the restore marker; the viewport now reflects the user's position,
+    // so it is safe to start saving anchors from it.
     _scrollRestorePlaylistIndex = -1;
+    _scrollPositionEstablished = YES;
 }
 
-// Get the playlist index of the first visible item (for scroll position saving)
-- (NSInteger)firstVisiblePlaylistIndex {
-    if (!_scrollView || !_playlistView) return -1;
-    if (_playlistView.itemCount == 0) return -1;
+// Capture the current viewport position as a pixel-exact anchor: the first
+// visible track's playlist index plus the pixel delta between the viewport top
+// and that row's top. Returns nil when there is nothing to anchor to.
+- (NSDictionary *)captureScrollAnchor {
+    if (!_scrollView || !_playlistView) return nil;
+    if (_playlistView.itemCount == 0) return nil;
 
     NSRect visibleRect = _scrollView.contentView.bounds;
-    if (visibleRect.size.height <= 0) return -1;
+    if (visibleRect.size.height <= 0) return nil;
 
     NSInteger firstRow = [_playlistView rowAtPoint:NSMakePoint(0, NSMinY(visibleRect))];
     if (firstRow < 0) firstRow = 0;
 
-    // Find the first row that corresponds to an actual playlist item (not header/padding)
     NSInteger totalRows = [_playlistView rowCount];
-    if (totalRows == 0) return -1;
+    if (totalRows == 0) return nil;
 
+    // Find the first row that corresponds to an actual playlist item. The
+    // offset is negative when header/padding rows sit between the viewport top
+    // and that track, so the restore reveals the same header block above it.
     for (NSInteger row = firstRow; row < totalRows && row < firstRow + 50; row++) {
         NSInteger playlistIndex = [_playlistView playlistIndexForRow:row];
         if (playlistIndex >= 0) {
-            return playlistIndex;
+            CGFloat offset = NSMinY(visibleRect) - [_playlistView yOffsetForRow:row];
+            return @{@"index": @(playlistIndex), @"offset": @(offset)};
         }
     }
 
-    return -1;
+    return nil;
+}
+
+#pragma mark - Scroll primitives
+
+// Scroll so the given track's row top sits `offset` pixels below the viewport
+// top (offset may be negative to reveal its group header above it).
+- (void)scrollToPlaylistIndex:(NSInteger)playlistIndex pixelOffset:(CGFloat)offset {
+    NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
+    if (row < 0) return;
+    [self scrollViewportToY:[_playlistView yOffsetForRow:row] + offset];
+}
+
+// Scroll so the given track's row is vertically centered in the viewport.
+- (void)scrollPlaylistIndexToCenter:(NSInteger)playlistIndex {
+    NSInteger row = [_playlistView rowForPlaylistIndex:playlistIndex];
+    if (row < 0) return;
+    NSRect rowRect = [_playlistView rectForRow:row];
+    CGFloat viewportHeight = _scrollView.contentView.bounds.size.height;
+    [self scrollViewportToY:NSMidY(rowRect) - viewportHeight / 2.0];
+}
+
+// Absolute, clamped vertical scroll. Unlike scrollRectToVisible (minimal
+// scrolling, which lets a restored anchor land at the bottom edge), this
+// positions the viewport top exactly.
+- (void)scrollViewportToY:(CGFloat)y {
+    NSClipView *clipView = _scrollView.contentView;
+    CGFloat maxY = MAX(0.0, _playlistView.frame.size.height - clipView.bounds.size.height);
+    CGFloat clampedY = MAX(0.0, MIN(y, maxY));
+    [clipView scrollToPoint:NSMakePoint(clipView.bounds.origin.x, clampedY)];
+    [_scrollView reflectScrolledClipView:clipView];
 }
 
 // Generation counter to cancel stale group detection
@@ -948,8 +1031,8 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 // FAST PARTIAL GROUP DETECTION: Only detect groups up to scroll anchor for instant restore
 - (void)detectGroupsForPlaylistSync:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
     // Get the anchor position we need to scroll to
-    NSNumber *anchorNum = _scrollAnchorIndices[@(playlist)];
-    NSInteger anchorIndex = anchorNum ? [anchorNum integerValue] : 0;
+    NSDictionary *anchor = _scrollAnchorIndices[@(playlist)];
+    NSInteger anchorIndex = anchor ? [anchor[@"index"] integerValue] : 0;
 
     // Only detect groups up to anchor + buffer (for visible area)
     // Cap at 5000 to prevent main thread blocking for deep scroll positions
@@ -1130,7 +1213,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 if (_groupDetectionGeneration != currentGeneration) return;
 
                 // Save scroll anchor BEFORE merging groups (new groups shift items)
-                NSInteger anchorPlaylistIndex = [strongSelf firstVisiblePlaylistIndex];
+                NSDictionary *mergeAnchor = [strongSelf captureScrollAnchor];
 
                 // Merge with existing groups
                 NSMutableArray *allStarts = [strongSelf.playlistView.groupStarts mutableCopy];
@@ -1179,12 +1262,10 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 CGFloat finalHeight = [strongSelf.playlistView totalContentHeightCached];
                 [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, finalHeight)];
 
-                // Restore scroll position (new groups shifted items down)
-                if (anchorPlaylistIndex >= 0) {
-                    NSInteger anchorRow = [strongSelf.playlistView rowForPlaylistIndex:anchorPlaylistIndex];
-                    if (anchorRow >= 0) {
-                        [strongSelf.playlistView scrollRowToVisible:anchorRow];
-                    }
+                // Restore scroll position pixel-exactly (new groups shifted items down)
+                if (mergeAnchor) {
+                    [strongSelf scrollToPlaylistIndex:[mergeAnchor[@"index"] integerValue]
+                                          pixelOffset:[mergeAnchor[@"offset"] doubleValue]];
                 }
 
                 // NOW it's safe to save scroll positions - full data available
@@ -1352,6 +1433,11 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             // Schedule scroll restore after frame size change settles
             if (strongSelf->_scrollRestorePlaylistIndex >= 0) {
                 [strongSelf scheduleDeferredScrollRestore];
+            } else {
+                // First visit, nothing to restore: the viewport (top, or
+                // wherever the user scrolled during detection) IS the
+                // position - start saving anchors from it.
+                strongSelf->_scrollPositionEstablished = YES;
             }
 
             [strongSelf recomputeGroupDurations];
@@ -1395,13 +1481,16 @@ static const NSUInteger kMaxCacheableGroups = 500;
     NSArray<NSString *> *subgroupHeaders = [_playlistView.subgroupHeaders copy];
     NSInteger itemCount = _playlistView.itemCount;
 
-    // Get current scroll anchor
+    // Get current scroll anchor (index + pixel offset)
     NSInteger scrollAnchor = -1;
-    NSNumber *anchorNum = _scrollAnchorIndices[@(playlist)];
-    if (anchorNum) {
-        scrollAnchor = [anchorNum integerValue];
-    } else {
-        scrollAnchor = [self firstVisiblePlaylistIndex];
+    double scrollOffset = 0;
+    NSDictionary *anchor = _scrollAnchorIndices[@(playlist)];
+    if (!anchor && playlist == (t_size)_currentPlaylistIndex && _scrollPositionEstablished) {
+        anchor = [self captureScrollAnchor];
+    }
+    if (anchor) {
+        scrollAnchor = [anchor[@"index"] integerValue];
+        scrollOffset = [anchor[@"offset"] doubleValue];
     }
 
     // Get current preset hash
@@ -1419,6 +1508,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
             cache[@"itemCount"] = @(itemCount);
             cache[@"presetHash"] = presetHash;
             cache[@"scrollAnchor"] = @(scrollAnchor);
+            cache[@"scrollOffset"] = @(scrollOffset);
             cache[@"groupStarts"] = groupStarts;
             cache[@"groupHeaders"] = groupHeaders;
             // groupArtKeys intentionally omitted — they contain full file paths
@@ -1489,6 +1579,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
     NSArray *subgroupStarts = cache[@"subgroupStarts"];
     NSArray *subgroupHeaders = cache[@"subgroupHeaders"];
     NSNumber *scrollAnchor = cache[@"scrollAnchor"];
+    NSNumber *scrollOffset = cache[@"scrollOffset"];  // may be nil in older caches
 
     if (!groupStarts || !groupHeaders) return NO;
     if (groupStarts.count != groupHeaders.count) return NO;
@@ -1530,9 +1621,12 @@ static const NSUInteger kMaxCacheableGroups = 500;
     [_playlistView rebuildPaddingCache];
     [_playlistView rebuildSubgroupRowCache];
 
-    // Restore scroll anchor
-    if (scrollAnchor && [scrollAnchor integerValue] >= 0) {
-        _scrollAnchorIndices[@(playlist)] = scrollAnchor;
+    // Seed the scroll anchor from the persisted cache ONLY when this session
+    // has none yet (cold start). The in-memory anchor is always fresher than
+    // the persisted one - the cache write is async and can lose an A-B-A race.
+    if (!_scrollAnchorIndices[@(playlist)] && scrollAnchor && [scrollAnchor integerValue] >= 0) {
+        _scrollAnchorIndices[@(playlist)] = @{@"index": scrollAnchor,
+                                              @"offset": scrollOffset ?: @0};
     }
 
     return YES;
@@ -2034,6 +2128,8 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
 
+        [self appendFocusPlayingNowItemToMenu:menu];
+
         // Show menu
         NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
         [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
@@ -2078,8 +2174,56 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
     [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
 
+    [self appendFocusPlayingNowItemToMenu:menu];
+
     NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
     [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
+}
+
+// Append the custom "Focus Playing Now" navigation item at the very bottom of
+// the context menu (both the v2 and v1 menu builders call this last).
+- (void)appendFocusPlayingNowItemToMenu:(NSMenu *)menu {
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *focusItem = [[NSMenuItem alloc] initWithTitle:@"Focus Playing Now"
+                                                       action:@selector(focusPlayingNowClicked:)
+                                                keyEquivalent:@""];
+    focusItem.target = self;
+
+    // Enabled only while a track with a known playlist location is playing
+    t_size playingPlaylist = SIZE_MAX, playingItem = SIZE_MAX;
+    focusItem.enabled = playlist_manager::get()->get_playing_item_location(&playingPlaylist, &playingItem);
+
+    [menu addItem:focusItem];
+}
+
+// Select + focus the currently playing track and scroll it to the vertical
+// center of the view, switching to its playlist first when necessary.
+- (void)focusPlayingNowClicked:(id)sender {
+    auto pm = playlist_manager::get();
+    t_size playingPlaylist = SIZE_MAX, playingItem = SIZE_MAX;
+    if (!pm->get_playing_item_location(&playingPlaylist, &playingItem)) return;
+    if (playingPlaylist == SIZE_MAX || playingItem == SIZE_MAX) return;
+
+    t_size count = pm->playlist_get_item_count(playingPlaylist);
+    if (playingItem >= count) return;
+
+    // Focus + select the playing track (valid on non-active playlists too);
+    // the playlist callbacks propagate this into the view.
+    pm->playlist_set_focus_item(playingPlaylist, playingItem);
+    bit_array_bittable selection(count);
+    selection.set(playingItem, true);
+    pm->playlist_set_selection(playingPlaylist, pfc::bit_array_true(), selection);
+
+    if ((NSInteger)playingPlaylist != _currentPlaylistIndex) {
+        // Center once the target playlist has rebuilt - consumed by
+        // performScrollRestore with priority over the saved anchor.
+        _pendingCenterIndex = (NSInteger)playingItem;
+        _pendingCenterPlaylist = (NSInteger)playingPlaylist;
+        pm->set_active_playlist(playingPlaylist);
+    } else {
+        [self scrollPlaylistIndexToCenter:(NSInteger)playingItem];
+    }
 }
 
 - (void)buildNSMenu:(NSMenu *)menu fromMenuItem:(menu_tree_item::ptr)item contextManager:(contextmenu_manager_v2::ptr)cmm {
