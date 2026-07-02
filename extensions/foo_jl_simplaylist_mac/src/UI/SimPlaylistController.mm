@@ -15,6 +15,7 @@
 #import "../Core/TitleFormatHelper.h"
 #import "../Core/ConfigHelper.h"
 #import "../Core/AlbumArtCache.h"
+#import "../Core/ReorderPlanner.h"
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
@@ -2928,52 +2929,19 @@ static const GUID guid_simplaylist_custom_columns =
             pm->playlist_set_focus_item(activePlaylist, insertPos);
         }
     } else {
-        // MOVE: Reorder items (original behavior)
-        // Build reorder array
-        std::vector<t_size> order(itemCount);
-
-        // Create a set of source indices for quick lookup
-        std::set<t_size> sourceSet;
+        // MOVE: permutation planned by Core/ReorderPlanner (pure, unit-tested)
+        std::vector<size_t> sources;
+        sources.reserve(sourcePlaylistIndices.count);
         for (NSNumber *num in sourcePlaylistIndices) {
-            sourceSet.insert([num unsignedLongValue]);
+            sources.push_back([num unsignedLongValue]);
         }
 
-        // Calculate where items actually go after removal
-        t_size adjustedDest = destPlaylistIndex;
-        for (NSNumber *num in sourcePlaylistIndices) {
-            if ([num unsignedLongValue] < (t_size)destPlaylistIndex) {
-                adjustedDest--;
-            }
-        }
+        std::vector<size_t> order =
+            simplaylist::planReorder(itemCount, sources, (size_t)destPlaylistIndex);
+        size_t adjustedDest =
+            simplaylist::adjustedReorderDestination(sources, (size_t)destPlaylistIndex);
 
-        // Build the order array
-        // 1. Collect non-moved items in original order
-        // 2. Insert moved items at the adjusted destination
-        std::vector<t_size> nonMovedItems;
-        for (t_size i = 0; i < itemCount; i++) {
-            if (sourceSet.find(i) == sourceSet.end()) {
-                nonMovedItems.push_back(i);
-            }
-        }
-
-        // Build final order: non-moved items with moved items inserted at adjustedDest
-        t_size writePos = 0;
-
-        // Items before destination
-        for (t_size i = 0; i < adjustedDest && i < nonMovedItems.size(); i++) {
-            order[writePos++] = nonMovedItems[i];
-        }
-
-        // Insert moved items at destination
-        for (NSNumber *num in sourcePlaylistIndices) {
-            order[writePos++] = [num unsignedLongValue];
-        }
-
-        // Items after destination
-        for (t_size i = adjustedDest; i < nonMovedItems.size(); i++) {
-            order[writePos++] = nonMovedItems[i];
-        }
-
+        static_assert(sizeof(t_size) == sizeof(size_t), "reorder array assumes t_size == size_t");
         pm->playlist_reorder_items(activePlaylist, order.data(), itemCount);
 
         // Set focus and selection to the moved items at their new position
