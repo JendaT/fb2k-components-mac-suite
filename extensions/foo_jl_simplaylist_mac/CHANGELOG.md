@@ -2,30 +2,47 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
-## [Unreleased]
+## [1.5.0] - 2026-07-02
 
 ### Added
 - **Focus Playing Now**: New context menu item (at the bottom) that selects the
   currently playing track and scrolls it to the center of the view, switching
   to its playlist first when needed. Disabled while nothing is playing.
+- **Cover art from external volumes**: Album art now loads for tracks on
+  external volumes, with smarter companion-file matching (by album/artist tags
+  before conventional filenames). (thanks @Scannou, #27)
 
 ### Fixed
-- **Per-playlist scroll position**: Positions are now restored pixel-exactly
-  when switching between playlists. Previously the restore used minimal
-  scrolling, which let the remembered track land at the bottom edge of the
-  view — every switch away and back drifted the position by roughly a full
-  screen. Also fixed: ungrouped playlists never saved their position at all, a
-  freshly restored-from-cache anchor could overwrite the newer in-session one,
-  and the mid-detection group merge could jump the view by the same
-  bottom-alignment error.
+- **Per-playlist scroll position — full overhaul**: Every playlist now returns
+  to exactly where you left it, pixel-for-pixel, when switching between
+  playlists and across restarts. Previously the restore used minimal
+  scrolling (the remembered track could land at the bottom edge, drifting the
+  view by up to a full screen per switch), ungrouped playlists never saved
+  their position at all, large playlists (over the group-cache limit) could be
+  restored against a stale cached layout that walked the position down the
+  playlist on every switch, and the final scroll before quitting was lost.
+  Positions are now stored as (track, pixel offset) anchors per playlist,
+  persisted independently of the group cache.
+- **Stable selections**: Selection changes from foobar2000 (including Focus
+  Playing Now and other components) could be silently ignored after clicking
+  an already-selected track, leaving stale highlights in the view. Selection
+  callbacks now always sync from foobar2000.
+- **Playing column symbol**: Cached ">" indicator is cleared when a new track
+  starts, so it no longer lingers on the previous track. (thanks @Scannou, #28)
+- **Metadata broadcast after playlist refresh/switch**: Tag updates arriving
+  right after a refresh or switch are reflected correctly. (thanks @Scannou, #25)
+- **Cover art bleed-through**: A file-specific extractor prevents one album's
+  embedded art from appearing on a neighboring group. (thanks @Scannou, #23)
 
-### Technical
-- Scroll anchors are stored as (track index, pixel offset) pairs per playlist,
-  restored via absolute clip-view positioning instead of scrollRectToVisible.
-  The offset is persisted in the group cache (`scrollOffset`, backward
-  compatible). "Viewport reflects user position" is now tracked separately
-  from "group data complete", so anchors are saved for flat playlists and
-  survive same-playlist refreshes.
+### Changed
+- **Codebase optimization and testability**: The core playlist logic (row
+  geometry, selection math, drag-reorder planning, group detection) was
+  extracted into pure, host-independent modules covered by a unit-test suite
+  (~108k checks) that now gates every build. No functional change intended;
+  verified by equivalence testing against the previous implementation.
+
+Thanks to @Scannou for the pull requests and the field reports that drove the
+scroll-position debugging in this release.
 
 ## [1.4.6] - 2026-05-17
 

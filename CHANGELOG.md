@@ -9,13 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### SimPlaylist
-- Added: "Focus Playing Now" context menu item — selects the playing track and
-  scrolls it to the center of the view, switching playlists when needed.
-- Fixed: per-playlist scroll positions now restore pixel-exactly when switching
-  between playlists (previously drifted by up to a full screen per round trip;
-  ungrouped playlists never saved their position at all).
-
 ### Added
 - Unified monorepo structure for all extensions
 - Shared branding and about page utilities
@@ -29,6 +22,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## SimPlaylist
+
+### [1.5.0] - 2026-07-02
+
+#### Added
+- "Focus Playing Now" context menu item — selects the playing track and scrolls
+  it to the center of the view, switching playlists when needed
+- Cover art for tracks on external volumes with smarter companion-file matching
+  (thanks @Scannou, #27)
+
+#### Fixed
+- Per-playlist scroll positions restore pixel-exactly across playlist switches
+  and restarts (previously drifted by up to a full screen per round trip;
+  ungrouped and very large playlists never saved their position at all)
+- Stale selections: external selection changes are no longer silently ignored
+  after clicking an already-selected track
+- Playing column ">" no longer lingers on the previous track (thanks @Scannou, #28)
+- Metadata broadcast after playlist refresh/switch (thanks @Scannou, #25)
+- Cover art bleed-through between neighboring albums (thanks @Scannou, #23)
+
+#### Changed
+- Core playlist logic extracted into pure, unit-tested modules (~108k checks
+  gating every build); codebase optimization and testability, no functional
+  change intended
 
 ### [1.4.6] - 2026-05-17
 
