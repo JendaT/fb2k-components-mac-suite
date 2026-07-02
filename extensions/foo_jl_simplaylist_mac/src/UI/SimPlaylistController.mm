@@ -16,6 +16,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
+#import "../Core/SubgroupDetector.h"
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
@@ -26,135 +27,8 @@
 #include <tuple>
 #include <vector>
 
-// =============================================================================
-// SUBGROUP DETECTION HELPER
-// =============================================================================
-// Encapsulates subgroup detection logic to ensure all code paths use IDENTICAL logic.
-// This eliminates bugs where one path is fixed but another isn't.
-
-struct SubgroupDetector {
-    pfc::string8 currentSubgroup;  // Tracks the current subgroup value
-    bool showFirstSubgroup;         // Config setting
-
-    // Debug logging support
-    FILE* debugFile;
-    bool debugEnabled;
-
-    SubgroupDetector(bool showFirst, bool enableDebug = false)
-        : currentSubgroup("")
-        , showFirstSubgroup(showFirst)
-        , debugFile(nullptr)
-        , debugEnabled(enableDebug)
-    {
-        if (debugEnabled) {
-            debugFile = fopen("/tmp/simplaylist_subgroup_debug.txt", "a");
-            if (debugFile) {
-                fprintf(debugFile, "\n=== New SubgroupDetector created (showFirst=%d) ===\n", showFirst);
-                fflush(debugFile);
-            }
-        }
-    }
-
-    ~SubgroupDetector() {
-        if (debugFile) {
-            fclose(debugFile);
-        }
-    }
-
-    // Non-copyable (FILE* ownership)
-    SubgroupDetector(const SubgroupDetector&) = delete;
-    SubgroupDetector& operator=(const SubgroupDetector&) = delete;
-
-    // Initialize from existing state (for continuation from partial detection)
-    void initFromState(const char* existingSubgroup) {
-        currentSubgroup = existingSubgroup;
-        if (debugEnabled && debugFile) {
-            fprintf(debugFile, "initFromState: '%s'\n", existingSubgroup);
-            fflush(debugFile);
-        }
-    }
-
-    // Call when entering a new group - clears subgroup tracking
-    void enterNewGroup() {
-        currentSubgroup = "";
-        if (debugEnabled && debugFile) {
-            fprintf(debugFile, "enterNewGroup: cleared currentSubgroup\n");
-            fflush(debugFile);
-        }
-    }
-
-    // Check if a subgroup header should be added for this track
-    // Returns: true if subgroup header should be added
-    // Updates: currentSubgroup tracking state
-    bool shouldAddSubgroup(const pfc::string8& formattedSubgroup, bool isNewGroup,
-                           NSMutableArray<NSNumber*>* subgroupStarts,
-                           NSMutableArray<NSString*>* subgroupHeaders,
-                           t_size playlistIndex, const char* debugTrackName = nullptr) {
-
-        // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
-        if (formattedSubgroup.get_length() == 0) {
-            if (debugEnabled && debugFile) {
-                fprintf(debugFile, "[%zu] '%s': empty subgroup, skipped\n",
-                        playlistIndex, debugTrackName ? debugTrackName : "");
-                fflush(debugFile);
-            }
-            return false;
-        }
-
-        bool isFirstSubgroupInGroup = (currentSubgroup.get_length() == 0);
-        bool isDifferentSubgroup = (strcmp(formattedSubgroup.c_str(), currentSubgroup.c_str()) != 0);
-
-        bool shouldAdd = false;
-        const char* reason = "";
-
-        if (isFirstSubgroupInGroup) {
-            // First non-empty subgroup in this group
-            // Only add if: (1) this is the start of a new group, AND (2) showFirstSubgroup is enabled
-            if (isNewGroup && showFirstSubgroup) {
-                shouldAdd = true;
-                reason = "first subgroup at group start (showFirst=ON)";
-            } else {
-                reason = isNewGroup ? "first subgroup but showFirst=OFF" : "first subgroup but NOT at group start";
-            }
-        } else if (isDifferentSubgroup) {
-            // Real disc change (e.g., Disc 1 -> Disc 2) - always show
-            shouldAdd = true;
-            reason = "disc change";
-        } else {
-            reason = "same subgroup";
-        }
-
-        if (debugEnabled && debugFile) {
-            fprintf(debugFile, "[%zu] '%s': subgroup='%s' (len=%zu), current='%s', isNew=%d, isFirst=%d, isDiff=%d -> %s: %s\n",
-                    playlistIndex,
-                    debugTrackName ? debugTrackName : "",
-                    formattedSubgroup.c_str(),
-                    formattedSubgroup.get_length(),
-                    currentSubgroup.c_str(),
-                    isNewGroup,
-                    isFirstSubgroupInGroup,
-                    isDifferentSubgroup,
-                    shouldAdd ? "ADD" : "SKIP",
-                    reason);
-            fflush(debugFile);
-        }
-
-        if (shouldAdd) {
-            [subgroupStarts addObject:@(playlistIndex)];
-            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
-        }
-
-        // Always update currentSubgroup when formatted value is non-empty
-        currentSubgroup = formattedSubgroup;
-
-        return shouldAdd;
-    }
-
-    // Get current subgroup value (for passing to continuation)
-    const char* getCurrentSubgroup() const {
-        return currentSubgroup.c_str();
-    }
-};
+// Subgroup detection state machine lives in Core/SubgroupDetector.h
+// (SDK-free, unit-tested) so all detection code paths share IDENTICAL logic.
 
 // Global debug flag - set to true to enable debug logging
 // Output goes to /tmp/simplaylist_subgroup_debug.txt
@@ -1147,7 +1021,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         // Check for subgroup change using shared detector
         if (hasSubgroups) {
             handles[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-            subgroupDetector.shouldAddSubgroup(formattedSubgroup, isNewGroup,
+            subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
                                                 subgroupStarts, subgroupHeaders, i);
         }
         } // @autoreleasepool
@@ -1260,7 +1134,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 // Check for subgroup change using shared detector
                 if (hasSubgroups) {
                     (*handlesPtr)[i]->format_title(nullptr, bgFormattedSubgroup, bgSubgroupScript, nullptr);
-                    bgSubgroupDetector.shouldAddSubgroup(bgFormattedSubgroup, isNewGroup,
+                    bgSubgroupDetector.shouldAddSubgroup(bgFormattedSubgroup.c_str(), isNewGroup,
                                                           moreSubgroupStarts, moreSubgroupHeaders, i);
                 }
             }}
@@ -1448,7 +1322,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             // Check for subgroup change using shared detector
             if (hasSubgroups) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-                subgroupDetector.shouldAddSubgroup(formattedSubgroup, isNewGroup,
+                subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
                                                     subgroupStarts, subgroupHeaders, i);
             }
         }}
@@ -1753,7 +1627,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
             if (hasSubgroups) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-                subgroupDetector.shouldAddSubgroup(formattedSubgroup, isNewGroup,
+                subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
                                                     subgroupStarts, subgroupHeaders, i);
             }
         }}

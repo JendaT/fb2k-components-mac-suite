@@ -35,7 +35,14 @@ clang++ -std=c++17 -O1 -Wall \
     "$PROJECT_DIR/src/Core/ReorderPlanner.cpp" \
     -o "$TEST_BUILD_DIR/reorder_tests"
 
+echo "==> Compiling unit tests (SubgroupDetector)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/SubgroupDetectorTests.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/subgroup_tests"
+
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/layout_tests"
 "$TEST_BUILD_DIR/selection_tests"
 "$TEST_BUILD_DIR/reorder_tests"
+"$TEST_BUILD_DIR/subgroup_tests"
