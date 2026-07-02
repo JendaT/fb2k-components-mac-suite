@@ -231,8 +231,6 @@ struct ReloadOperation {
 @property (nonatomic, assign) NSInteger pendingCenterIndex;
 @property (nonatomic, assign) NSInteger pendingCenterPlaylist;
 @property (nonatomic, assign) BOOL isSettingSelection;  // Flag to skip callback when we're setting selection
-@property (nonatomic, assign) NSUInteger selectionGeneration;  // Incremented when we set selection
-@property (nonatomic, assign) NSUInteger lastSyncedGeneration;  // Last generation we synced
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *queuePositionMap;  // item_index → 1-based queue position
 @property (nonatomic, assign) BOOL hasQueueColumn;  // True if any visible column uses __queue_position__
 @property (nonatomic, assign) BOOL activePlaylistJustCleared;  // Finder-open detection: full clear of active playlist
@@ -780,6 +778,16 @@ struct ReloadOperation {
     _currentPlaylistIndex = activePlaylist;
     _playlistView.sourcePlaylistIndex = activePlaylist;  // For drag validation
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
+
+    // Cold start / first visit this session: seed the anchor from its own
+    // persisted entry (independent of the group cache, so it exists for
+    // ungrouped and over-limit playlists too). In-memory always wins.
+    if (!_scrollAnchorIndices[@(activePlaylist)]) {
+        NSDictionary *persistedAnchor = [self loadPersistedScrollAnchorForPlaylist:activePlaylist];
+        if (persistedAnchor) {
+            _scrollAnchorIndices[@(activePlaylist)] = persistedAnchor;
+        }
+    }
 
     if (itemCount == 0) {
         _playlistView.itemCount = 0;
@@ -1461,11 +1469,40 @@ static NSString *presetHashForPreset(GroupPreset *preset) {
 // background detection which is fast enough.
 static const NSUInteger kMaxCacheableGroups = 500;
 
-- (void)saveGroupCacheForPlaylist:(t_size)playlist synchronous:(BOOL)synchronous {
-    if (!_currentPlaylistInitialized) return;
-    if (_playlistView.groupStarts.count == 0) return;
-    if (_playlistView.groupStarts.count > kMaxCacheableGroups) return;
+// Scroll anchors persist SEPARATELY from the group cache (tiny per-playlist
+// entries) so positions survive restarts for every playlist - including
+// ungrouped ones and those over kMaxCacheableGroups, whose group cache is
+// never written (and any stale entry is actively deleted).
+static std::string scrollAnchorKeyForName(const char *playlistName) {
+    return std::string("scroll_anchor.") + simplaylist_config::sanitizePlaylistName(playlistName);
+}
 
+- (void)persistScrollAnchor:(NSDictionary *)anchor forPlaylistName:(const char *)playlistName {
+    NSString *json = [NSString stringWithFormat:@"{\"index\":%ld,\"offset\":%.1f}",
+                      (long)[anchor[@"index"] integerValue],
+                      [anchor[@"offset"] doubleValue]];
+    simplaylist_config::setConfigString(scrollAnchorKeyForName(playlistName).c_str(), json.UTF8String);
+}
+
+- (NSDictionary *)loadPersistedScrollAnchorForPlaylist:(t_size)playlist {
+    auto pm = playlist_manager::get();
+    if (playlist >= pm->get_playlist_count()) return nil;
+    pfc::string8 nameStr;
+    pm->playlist_get_name(playlist, nameStr);
+    std::string json = simplaylist_config::getConfigString(
+        scrollAnchorKeyForName(nameStr.c_str()).c_str(), "");
+    if (json.empty()) return nil;
+
+    NSData *data = [[NSString stringWithUTF8String:json.c_str()] dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data) return nil;
+    NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![parsed isKindOfClass:[NSDictionary class]]) return nil;
+    NSNumber *index = parsed[@"index"];
+    if (!index || [index integerValue] < 0) return nil;
+    return @{@"index": index, @"offset": parsed[@"offset"] ?: @0};
+}
+
+- (void)saveGroupCacheForPlaylist:(t_size)playlist synchronous:(BOOL)synchronous {
     // Get playlist name
     auto pm = playlist_manager::get();
     if (playlist >= pm->get_playlist_count()) return;
@@ -1474,6 +1511,35 @@ static const NSUInteger kMaxCacheableGroups = 500;
     NSString *cacheKeyNS = [NSString stringWithUTF8String:
         simplaylist_config::groupCacheKey(nameStr.c_str()).c_str()];
 
+    // Persist the scroll anchor FIRST, independent of group-cache eligibility,
+    // so positions survive restarts for ungrouped and over-limit playlists too.
+    // For the playlist currently on screen the LIVE viewport wins over the
+    // stored anchor - the stored one dates from the last switch-away and would
+    // silently drop any scrolling done since (the "gap after restart" bug).
+    NSDictionary *anchor = nil;
+    if (playlist == (t_size)_currentPlaylistIndex && _scrollPositionEstablished) {
+        anchor = [self captureScrollAnchor];
+    }
+    if (!anchor) {
+        anchor = _scrollAnchorIndices[@(playlist)];
+    }
+    if (anchor) {
+        [self persistScrollAnchor:anchor forPlaylistName:nameStr.c_str()];
+    }
+
+    if (!_currentPlaylistInitialized) return;
+    if (_playlistView.groupStarts.count == 0) return;
+
+    if (_playlistView.groupStarts.count > kMaxCacheableGroups) {
+        // Not cacheable - and any EXISTING entry for this playlist is
+        // unrefreshable (this guard blocks every re-save), so a stale entry
+        // would be applied on every switch-in forever: the restore then runs
+        // against the wrong layout and the background validation used to
+        // corrupt the scroll anchor. Actively remove it.
+        simplaylist_config::setConfigString([cacheKeyNS UTF8String], "");
+        return;
+    }
+
     // Capture snapshot on main thread
     NSArray<NSNumber *> *groupStarts = [_playlistView.groupStarts copy];
     NSArray<NSString *> *groupHeaders = [_playlistView.groupHeaders copy];
@@ -1481,17 +1547,10 @@ static const NSUInteger kMaxCacheableGroups = 500;
     NSArray<NSString *> *subgroupHeaders = [_playlistView.subgroupHeaders copy];
     NSInteger itemCount = _playlistView.itemCount;
 
-    // Get current scroll anchor (index + pixel offset)
-    NSInteger scrollAnchor = -1;
-    double scrollOffset = 0;
-    NSDictionary *anchor = _scrollAnchorIndices[@(playlist)];
-    if (!anchor && playlist == (t_size)_currentPlaylistIndex && _scrollPositionEstablished) {
-        anchor = [self captureScrollAnchor];
-    }
-    if (anchor) {
-        scrollAnchor = [anchor[@"index"] integerValue];
-        scrollOffset = [anchor[@"offset"] doubleValue];
-    }
+    // Legacy cache fields, kept for older builds reading this entry. The
+    // authoritative anchor is the separate scroll_anchor.<name> entry above.
+    NSInteger scrollAnchor = anchor ? [anchor[@"index"] integerValue] : -1;
+    double scrollOffset = anchor ? [anchor[@"offset"] doubleValue] : 0;
 
     // Get current preset hash
     GroupPreset *activePreset = nil;
@@ -1707,15 +1766,23 @@ static const NSUInteger kMaxCacheableGroups = 500;
             if (!strongSelf) return;
             if (_groupDetectionGeneration != currentGeneration) return;
 
-            // Check if groups changed
+            // Check if groups changed. groupArtKeys are deliberately EXCLUDED:
+            // after a cache load the view holds placeholder art keys (paths are
+            // not persisted), so comparing them against freshly detected paths
+            // would flag "changed" on every cache hit and force a pointless
+            // reapply - which used to shift the viewport (no re-anchor) and
+            // corrupt the saved scroll anchor on the way out.
             BOOL groupsChanged = ![groupStarts isEqualToArray:strongSelf.playlistView.groupStarts] ||
-                                 ![groupHeaders isEqualToArray:strongSelf.playlistView.groupHeaders] ||
-                                 ![groupArtKeys isEqualToArray:strongSelf.playlistView.groupArtKeys];
+                                 ![groupHeaders isEqualToArray:strongSelf.playlistView.groupHeaders];
             BOOL subgroupsChanged = ![subgroupStarts isEqualToArray:strongSelf.playlistView.subgroupStarts] ||
                                     ![subgroupHeaders isEqualToArray:strongSelf.playlistView.subgroupHeaders];
 
             if (groupsChanged || subgroupsChanged) {
-                // Data changed - apply new groups
+                // Data changed (e.g. stale cache entry was applied on switch-in).
+                // Capture the viewport position against the OLD layout first so
+                // it can be re-established pixel-exactly in the new one.
+                NSDictionary *applyAnchor = [strongSelf captureScrollAnchor];
+
                 strongSelf.playlistView.groupStarts = groupStarts;
                 strongSelf.playlistView.groupHeaders = groupHeaders;
                 strongSelf.playlistView.groupArtKeys = groupArtKeys;
@@ -1745,6 +1812,13 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
                 CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
                 [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, newHeight)];
+
+                // Re-establish the viewport position in the corrected layout
+                if (applyAnchor) {
+                    [strongSelf scrollToPlaylistIndex:[applyAnchor[@"index"] integerValue]
+                                          pixelOffset:[applyAnchor[@"offset"] doubleValue]];
+                }
+
                 [strongSelf recomputeGroupDurations];
                 [strongSelf.playlistView reloadData];
             }
@@ -1831,15 +1905,13 @@ static const NSUInteger kMaxCacheableGroups = 500;
 }
 
 - (void)handleSelectionChanged {
-    // Skip if we recently set the selection ourselves (avoid expensive round-trip)
-    // Use generation counter because the callback is async
-    if (_selectionGeneration > _lastSyncedGeneration) {
-        _lastSyncedGeneration = _selectionGeneration;
-        [_playlistView setNeedsDisplay:YES];
-        return;
-    }
-
-    // External selection change - sync from SDK
+    // Always sync from the SDK. A previous generation-counter optimization
+    // skipped "our own" changes here, but it leaked: pushing a selection that
+    // matches pm's current state fires NO callback, leaving a generation
+    // pending that swallowed the NEXT external change (e.g. Focus Playing Now
+    // appearing to do nothing while stale albums stayed highlighted). The
+    // sync is a cheap batch mask read; self-initiated changes are visual
+    // no-ops because pm already holds exactly what the view shows.
     [self syncSelectionFromPlaylist];
     [_playlistView setNeedsDisplay:YES];
 }
@@ -1975,8 +2047,6 @@ static const NSUInteger kMaxCacheableGroups = 500;
     // Sync selection back to playlist_manager
     // SDK calls must be on main thread - callbacks trigger UI updates in fb2k core
 
-    // Increment generation to skip the async callback
-    _selectionGeneration++;
 
     // Copy indices and capture current playlist for the async block
     NSIndexSet *indicesCopy = [selectedPlaylistIndices copy];
@@ -2207,6 +2277,7 @@ static const NSUInteger kMaxCacheableGroups = 500;
 
     t_size count = pm->playlist_get_item_count(playingPlaylist);
     if (playingItem >= count) return;
+
 
     // Focus + select the playing track (valid on non-active playlists too);
     // the playlist callbacks propagate this into the view.
