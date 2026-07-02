@@ -11,10 +11,9 @@
 #include <algorithm>
 #include <dispatch/dispatch.h>
 
-// Singleton instance
-static WaveformService g_service;
-
+// Construct-on-first-use singleton to avoid static initialization order issues
 WaveformService& getWaveformService() {
+    static WaveformService g_service;
     return g_service;
 }
 
@@ -71,9 +70,20 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
         return;
     }
 
-    // Update pending track
+    // Update pending track (serialized with scan completion check)
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);
+
+        // Double-check cache under lock to prevent race with concurrent store
+        auto rechecked = m_cache.getWaveform(track);
+        if (rechecked) {
+            if (callback) {
+                callback(track, *rechecked);
+            }
+            notifyListeners(track, &(*rechecked));
+            return;
+        }
+
         m_pendingTrack = track;
     }
 
@@ -159,9 +169,14 @@ void WaveformService::removeAllListeners() {
 }
 
 void WaveformService::notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform) {
-    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    // Snapshot listeners under lock, then invoke outside the lock to prevent deadlocks
+    std::vector<ListenerEntry> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_listenerMutex);
+        snapshot = m_listeners;
+    }
 
-    for (const auto& entry : m_listeners) {
+    for (const auto& entry : snapshot) {
         if (entry.callback) {
             entry.callback(track, waveform);
         }
@@ -187,4 +202,9 @@ void WaveformService::pruneCache() {
 
 void WaveformService::clearCache() {
     m_cache.clearCache();
+}
+
+WaveformService::CacheStats WaveformService::getCacheStats() const {
+    auto raw = m_cache.getStats();
+    return {raw.entryCount, raw.totalSizeBytes, raw.oldestAccessDays};
 }

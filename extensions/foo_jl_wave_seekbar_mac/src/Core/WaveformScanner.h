@@ -49,6 +49,7 @@ private:
     // Atomic state
     std::atomic<bool> m_scanning{false};
     std::atomic<bool> m_cancelRequested{false};
+    std::atomic<uint64_t> m_generation{0};  // Increments per scan to detect stale results
 
     // Current abort callback for cancellation
     abort_callback_impl m_abort;

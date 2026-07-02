@@ -54,14 +54,7 @@ void PlaybackCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
         file_info_impl info;
         if (track->get_info_async(info)) {
             duration = info.get_length();
-            // Try to read BPM from metadata (check common field names)
-            const char* bpmStr = info.meta_get("BPM", 0);
-            if (!bpmStr) bpmStr = info.meta_get("bpm", 0);
-            if (!bpmStr) bpmStr = info.meta_get("TBPM", 0);
-            if (!bpmStr) bpmStr = info.meta_get("TEMPO", 0);
-            if (bpmStr) {
-                bpm = atof(bpmStr);
-            }
+            bpm = extractBpmFromInfo(info);
         }
     }
 
@@ -108,16 +101,9 @@ void PlaybackCallbackManager::onPlaybackSeek(double time) {
 }
 
 void PlaybackCallbackManager::onPlaybackTime(double time) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-
-        for (__weak WaveformSeekbarController* weak : g_controllers) {
-            WaveformSeekbarController* controller = weak;
-            if (controller) {
-                [controller handlePlaybackTime:time];
-            }
-        }
-    });
+    // Intentionally empty: 60fps timer in the controller handles position updates.
+    // Kept for API compatibility but flag_on_playback_time is not registered.
+    (void)time;
 }
 
 void PlaybackCallbackManager::onPlaybackPause(bool paused) {
@@ -140,7 +126,6 @@ public:
         return flag_on_playback_new_track |
                flag_on_playback_stop |
                flag_on_playback_seek |
-               flag_on_playback_time |
                flag_on_playback_pause;
     }
 

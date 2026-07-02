@@ -9,10 +9,9 @@
 #include <dispatch/dispatch.h>
 #include <cmath>
 
-// Singleton instance
-static WaveformScanner g_scanner;
-
+// Construct-on-first-use singleton to avoid static initialization order issues
 WaveformScanner& getWaveformScanner() {
+    static WaveformScanner g_scanner;
     return g_scanner;
 }
 
@@ -46,7 +45,8 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
     // Cancel any existing scan
     cancel();
 
-    // Reset state
+    // Reset state with new generation
+    uint64_t gen = ++m_generation;
     m_cancelRequested.store(false);
     m_abort.reset();
     m_scanning.store(true);
@@ -57,6 +57,9 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
 
     // Dispatch to background queue
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Check if this scan is still current
+        if (m_generation.load() != gen) return;
+
         std::optional<WaveformData> result;
         const char* error = nullptr;
 
@@ -86,8 +89,8 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
 
         m_scanning.store(false);
 
-        // Callback on main thread
-        if (callback && !m_cancelRequested.load()) {
+        // Callback on main thread only if this generation is still current
+        if (callback && m_generation.load() == gen && !m_cancelRequested.load()) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 callback(result, error);
             });
