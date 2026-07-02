@@ -111,19 +111,12 @@ static NSString *formatGroupDuration(double seconds) {
     _dropTargetRow = -1;
     _pendingClickRow = -1;
 
-    // SPARSE GROUP MODEL - efficient O(G) storage
-    _itemCount = 0;
-    _groupStarts = @[];
+    // SPARSE GROUP MODEL - lives on _layout (its init sets the empty defaults);
+    // the view's geometry properties are pure forwarders to it. Only the
+    // display-data arrays below stay as view ivars (the model has no use for
+    // them).
     _groupHeaders = @[];
     _groupArtKeys = @[];
-    _groupPaddingRows = @[];
-    _totalPaddingRowsCached = 0;
-    _cumulativePaddingCache = @[];
-    _subgroupStarts = @[];
-    _subgroupHeaders = @[];
-    _subgroupCountPerGroup = @[];
-    _subgroupRowSet = [NSIndexSet indexSet];
-    _subgroupRowToIndex = @{};
     _formattedValuesCache = [[NSCache alloc] init];
     _formattedValuesCache.countLimit = 1000;  // Cache ~1000 visible row values, auto-evicts oldest
 
@@ -138,15 +131,15 @@ static NSString *formatGroupDuration(double seconds) {
     _flatModeEnabled = NO;
     _flatModeTrackCount = 0;
 
-    // Default metrics
-    _rowHeight = simplaylist_config::kDefaultRowHeight;
+    // Default metrics (row/header metrics live on the layout model)
+    _layout.rowHeight = simplaylist_config::kDefaultRowHeight;
     _subgroupHeight = simplaylist_config::kDefaultSubgroupHeight;
     _groupColumnWidth = simplaylist_config::kDefaultGroupColumnWidth;
     _albumArtSize = simplaylist_config::kDefaultAlbumArtSize;
     _showNowPlayingShading = simplaylist_config::getConfigBool(
         simplaylist_config::kNowPlayingShading,
         simplaylist_config::kDefaultNowPlayingShading);
-    _headerDisplayStyle = simplaylist_config::getConfigInt(
+    _layout.headerDisplayStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
     _dimParentheses = simplaylist_config::getConfigBool(
@@ -167,9 +160,9 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Header height based on spacing: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
     switch (_groupHeaderSpacing) {
-        case 0:  _headerHeight = _rowHeight; break;
-        case 2:  _headerHeight = _rowHeight + 12; break;
-        default: _headerHeight = _rowHeight + 6; break;
+        case 0:  _layout.headerHeight = _layout.rowHeight; break;
+        case 2:  _layout.headerHeight = _layout.rowHeight + 12; break;
+        default: _layout.headerHeight = _layout.rowHeight + 6; break;
     }
 
     // PERFORMANCE: Enable layer-backed async drawing
@@ -203,99 +196,53 @@ static NSString *formatGroupDuration(double seconds) {
                                              selector:@selector(handleRedrawNeeded:)
                                                  name:@"SimPlaylistRedrawNeeded"
                                                object:nil];
-
-    // Push the row metrics computed above into the layout model. The geometry
-    // arrays already match the model's own init defaults; metrics are set by
-    // direct ivar assignment here (and in reloadSettings) so they need an
-    // explicit sync since they bypass the mirroring property setters.
-    [self syncLayoutMetrics];
 }
 
-// Mirror the pixel metrics (set by direct ivar assignment in commonInit /
-// reloadSettings) into the layout model. The geometry arrays are mirrored
-// individually by their property setters below.
-- (void)syncLayoutMetrics {
-    _layout.rowHeight = _rowHeight;
-    _layout.headerHeight = _headerHeight;
-    _layout.headerDisplayStyle = _headerDisplayStyle;
-}
+#pragma mark - Geometry properties (pure forwarders to the layout model)
 
-#pragma mark - Geometry property setters (mirror to layout model)
+// The sparse-group geometry and row metrics have exactly one owner: the
+// PlaylistLayoutModel. Both accessors of each property are implemented, so no
+// ivar is synthesized — there is no second copy to fall out of sync, and any
+// leftover direct ivar reference fails to compile.
 
-// The controller (and this view) write these geometry inputs directly via the
-// property setters. We override each to keep the PlaylistLayoutModel — which the
-// row-mapping forwarders query — in sync the instant any input changes, so the
-// model is always current regardless of the controller's set/rebuild ordering.
-// Drawing code still reads the same ivars, so it is unaffected.
+- (NSInteger)itemCount { return _layout.itemCount; }
+- (void)setItemCount:(NSInteger)itemCount { _layout.itemCount = itemCount; }
 
-- (void)setItemCount:(NSInteger)itemCount {
-    _itemCount = itemCount;
-    _layout.itemCount = itemCount;
-}
+- (NSArray<NSNumber *> *)groupStarts { return _layout.groupStarts; }
+- (void)setGroupStarts:(NSArray<NSNumber *> *)groupStarts { _layout.groupStarts = groupStarts; }
 
-- (void)setGroupStarts:(NSArray<NSNumber *> *)groupStarts {
-    _groupStarts = [groupStarts copy];
-    _layout.groupStarts = _groupStarts;
-}
+- (NSArray<NSNumber *> *)groupPaddingRows { return _layout.groupPaddingRows; }
+- (void)setGroupPaddingRows:(NSArray<NSNumber *> *)groupPaddingRows { _layout.groupPaddingRows = groupPaddingRows; }
 
-- (void)setGroupPaddingRows:(NSArray<NSNumber *> *)groupPaddingRows {
-    _groupPaddingRows = [groupPaddingRows copy];
-    _layout.groupPaddingRows = _groupPaddingRows;
-}
+- (NSInteger)totalPaddingRowsCached { return _layout.totalPaddingRowsCached; }
+- (void)setTotalPaddingRowsCached:(NSInteger)totalPaddingRowsCached { _layout.totalPaddingRowsCached = totalPaddingRowsCached; }
 
-- (void)setTotalPaddingRowsCached:(NSInteger)totalPaddingRowsCached {
-    _totalPaddingRowsCached = totalPaddingRowsCached;
-    _layout.totalPaddingRowsCached = totalPaddingRowsCached;
-}
+- (NSArray<NSNumber *> *)cumulativePaddingCache { return _layout.cumulativePaddingCache; }
+- (void)setCumulativePaddingCache:(NSArray<NSNumber *> *)cumulativePaddingCache { _layout.cumulativePaddingCache = cumulativePaddingCache; }
 
-- (void)setCumulativePaddingCache:(NSArray<NSNumber *> *)cumulativePaddingCache {
-    _cumulativePaddingCache = [cumulativePaddingCache copy];
-    _layout.cumulativePaddingCache = _cumulativePaddingCache;
-}
+- (NSArray<NSNumber *> *)subgroupStarts { return _layout.subgroupStarts; }
+- (void)setSubgroupStarts:(NSArray<NSNumber *> *)subgroupStarts { _layout.subgroupStarts = subgroupStarts; }
 
-- (void)setSubgroupStarts:(NSArray<NSNumber *> *)subgroupStarts {
-    _subgroupStarts = [subgroupStarts copy];
-    _layout.subgroupStarts = _subgroupStarts;
-}
+- (NSArray<NSString *> *)subgroupHeaders { return _layout.subgroupHeaders; }
+- (void)setSubgroupHeaders:(NSArray<NSString *> *)subgroupHeaders { _layout.subgroupHeaders = subgroupHeaders; }
 
-- (void)setSubgroupHeaders:(NSArray<NSString *> *)subgroupHeaders {
-    _subgroupHeaders = [subgroupHeaders copy];
-    _layout.subgroupHeaders = _subgroupHeaders;
-}
+- (NSArray<NSNumber *> *)subgroupCountPerGroup { return _layout.subgroupCountPerGroup; }
+- (void)setSubgroupCountPerGroup:(NSArray<NSNumber *> *)subgroupCountPerGroup { _layout.subgroupCountPerGroup = subgroupCountPerGroup; }
 
-- (void)setSubgroupCountPerGroup:(NSArray<NSNumber *> *)subgroupCountPerGroup {
-    _subgroupCountPerGroup = [subgroupCountPerGroup copy];
-    _layout.subgroupCountPerGroup = _subgroupCountPerGroup;
-}
+- (NSIndexSet *)subgroupRowSet { return _layout.subgroupRowSet; }
+- (void)setSubgroupRowSet:(NSIndexSet *)subgroupRowSet { _layout.subgroupRowSet = subgroupRowSet; }
 
-- (void)setSubgroupRowSet:(NSIndexSet *)subgroupRowSet {
-    _subgroupRowSet = [subgroupRowSet copy];
-    _layout.subgroupRowSet = _subgroupRowSet;
-}
+- (NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex { return _layout.subgroupRowToIndex; }
+- (void)setSubgroupRowToIndex:(NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex { _layout.subgroupRowToIndex = subgroupRowToIndex; }
 
-- (void)setSubgroupRowToIndex:(NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex {
-    _subgroupRowToIndex = [subgroupRowToIndex copy];
-    _layout.subgroupRowToIndex = _subgroupRowToIndex;
-}
+- (CGFloat)rowHeight { return _layout.rowHeight; }
+- (void)setRowHeight:(CGFloat)rowHeight { _layout.rowHeight = rowHeight; }
 
-// Metric setters mirror too. Today these are only assigned via direct ivar
-// writes in commonInit/reloadSettings (covered by syncLayoutMetrics), but the
-// properties are public — a future external write must not desync the model.
+- (CGFloat)headerHeight { return _layout.headerHeight; }
+- (void)setHeaderHeight:(CGFloat)headerHeight { _layout.headerHeight = headerHeight; }
 
-- (void)setRowHeight:(CGFloat)rowHeight {
-    _rowHeight = rowHeight;
-    _layout.rowHeight = rowHeight;
-}
-
-- (void)setHeaderHeight:(CGFloat)headerHeight {
-    _headerHeight = headerHeight;
-    _layout.headerHeight = headerHeight;
-}
-
-- (void)setHeaderDisplayStyle:(NSInteger)headerDisplayStyle {
-    _headerDisplayStyle = headerDisplayStyle;
-    _layout.headerDisplayStyle = headerDisplayStyle;
-}
+- (NSInteger)headerDisplayStyle { return _layout.headerDisplayStyle; }
+- (void)setHeaderDisplayStyle:(NSInteger)headerDisplayStyle { _layout.headerDisplayStyle = headerDisplayStyle; }
 
 // Build cached y-offsets for O(1) row lookup
 - (void)rebuildRowOffsetCache {
@@ -326,14 +273,14 @@ static NSString *formatGroupDuration(double seconds) {
     using namespace simplaylist_config;
     _displaySize = getConfigInt(kDisplaySize, kDefaultDisplaySize);
 
-    // Row height from shared UIStyles
+    // Row height from shared UIStyles (metrics live on the layout model)
     fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
-    _rowHeight = fb2k_ui::rowHeight(size);
+    _layout.rowHeight = fb2k_ui::rowHeight(size);
 
     _subgroupHeight = getConfigInt(kSubgroupHeight, kDefaultSubgroupHeight);
     _groupColumnWidth = getConfigInt(kGroupColumnWidth, kDefaultGroupColumnWidth);
     _showNowPlayingShading = getConfigBool(kNowPlayingShading, kDefaultNowPlayingShading);
-    _headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
+    _layout.headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
     _dimParentheses = getConfigBool(kDimParentheses, kDefaultDimParentheses);
     _showGroupDuration = getConfigBool(kShowGroupDuration, kDefaultShowGroupDuration);
     _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
@@ -342,13 +289,10 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
     switch (_groupHeaderSpacing) {
-        case 0:  _headerHeight = _rowHeight; break;      // Compact - same as track rows
-        case 2:  _headerHeight = _rowHeight + 12; break; // Larger - generous padding
-        default: _headerHeight = _rowHeight + 6; break;  // Normal - some extra padding
+        case 0:  _layout.headerHeight = _layout.rowHeight; break;      // Compact - same as track rows
+        case 2:  _layout.headerHeight = _layout.rowHeight + 12; break; // Larger - generous padding
+        default: _layout.headerHeight = _layout.rowHeight + 6; break;  // Normal - some extra padding
     }
-
-    // Mirror updated metrics into the layout model before any geometry query.
-    [self syncLayoutMetrics];
 
     // Update frame size to reflect new row heights (header height affects total content height)
     [self reloadData];
@@ -474,20 +418,14 @@ static NSString *formatGroupDuration(double seconds) {
     [_formattedValuesCache removeAllObjects];
 }
 
-// Rebuild subgroup row cache: delegate computation to the model, then mirror the
-// computed caches back into the view ivars that drawing code reads directly.
-// MUST run after rebuildPaddingCache (the model needs the padding cache built).
+// Cache rebuilds happen on the model (the single owner of the geometry).
+// rebuildSubgroupRowCache MUST run after rebuildPaddingCache.
 - (void)rebuildSubgroupRowCache {
     [_layout rebuildSubgroupRowCache];
-    _subgroupRowSet = _layout.subgroupRowSet;
-    _subgroupRowToIndex = _layout.subgroupRowToIndex;
 }
 
-// Rebuild padding cache: delegate to the model, then mirror back to view ivars.
 - (void)rebuildPaddingCache {
     [_layout rebuildPaddingCache];
-    _totalPaddingRowsCached = _layout.totalPaddingRowsCached;
-    _cumulativePaddingCache = _layout.cumulativePaddingCache;
 }
 
 - (NSRange)playlistIndexRangeForGroup:(NSInteger)groupIndex {
@@ -549,12 +487,12 @@ static NSString *formatGroupDuration(double seconds) {
 - (CGFloat)heightForNode:(GroupNode *)node {
     switch (node.type) {
         case GroupNodeTypeHeader:
-            return _headerHeight;
+            return _layout.headerHeight;
         case GroupNodeTypeSubgroup:
             return _subgroupHeight;
         case GroupNodeTypeTrack:
         default:
-            return _rowHeight;
+            return _layout.rowHeight;
     }
 }
 
@@ -634,7 +572,7 @@ static NSString *formatGroupDuration(double seconds) {
 
     // STEP 1: Fill group column background FIRST (before any content)
     // This ensures header text drawn later won't be covered
-    if (_groupColumnWidth > 0 && _groupStarts.count > 0) {
+    if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
         [self fillGroupColumnBackgroundInRect:dirtyRect];
     }
 
@@ -648,13 +586,13 @@ static NSString *formatGroupDuration(double seconds) {
     }
 
     // STEP 3: Draw album art on top (after all row content)
-    if (_groupColumnWidth > 0 && _groupStarts.count > 0) {
+    if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
         [self drawAlbumArtInRect:dirtyRect firstRow:firstRow lastRow:lastRow];
     }
 
     // Draw focus ring - only on valid track rows, not during drag operations
     if (!_isDragging && _dropTargetRow < 0 && !_suppressFocusRing &&
-        self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _itemCount) {
+        self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _layout.itemCount) {
         NSInteger focusRow = [self rowForPlaylistIndex:_selection.focusIndex];
         // Verify this row maps back to a valid track (not header/subgroup/padding)
         if (focusRow >= 0 && focusRow >= firstRow && focusRow <= lastRow) {
@@ -685,14 +623,14 @@ static NSString *formatGroupDuration(double seconds) {
             NSInteger groupIndex = [self groupIndexForRow:row];
             NSInteger headerRow = [self rowForGroupHeader:groupIndex];
             NSInteger rowInGroup = row - headerRow;
-            NSInteger gStart = (groupIndex >= 0 && groupIndex < (NSInteger)_groupStarts.count)
-                ? [_groupStarts[groupIndex] integerValue] : -1;
-            NSInteger gEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-                ? [_groupStarts[groupIndex + 1] integerValue] : _itemCount;
-            NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-                ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-            NSInteger paddingInGroup = (groupIndex < (NSInteger)_groupPaddingRows.count)
-                ? [_groupPaddingRows[groupIndex] integerValue] : 0;
+            NSInteger gStart = (groupIndex >= 0 && groupIndex < (NSInteger)_layout.groupStarts.count)
+                ? [_layout.groupStarts[groupIndex] integerValue] : -1;
+            NSInteger gEnd = (groupIndex + 1 < (NSInteger)_layout.groupStarts.count)
+                ? [_layout.groupStarts[groupIndex + 1] integerValue] : _layout.itemCount;
+            NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_layout.subgroupCountPerGroup.count)
+                ? [_layout.subgroupCountPerGroup[groupIndex] integerValue] : 0;
+            NSInteger paddingInGroup = (groupIndex < (NSInteger)_layout.groupPaddingRows.count)
+                ? [_layout.groupPaddingRows[groupIndex] integerValue] : 0;
             NSString *diag = [NSString stringWithFormat:@"BLANK r%ld g%ld rIG%ld gS%ld-%ld sg%ld pad%ld tot%ld",
                               (long)row, (long)groupIndex, (long)rowInGroup,
                               (long)gStart, (long)gEnd, (long)subgroupsInGroup,
@@ -767,7 +705,7 @@ static NSString *formatGroupDuration(double seconds) {
     CGFloat lineY;
     CGFloat padding = 6;
 
-    if (_headerDisplayStyle == 1) {
+    if (_layout.headerDisplayStyle == 1) {
         // Style 1 (Album art aligned): text aligned with album art left edge
         CGFloat artX = (_groupColumnWidth - _albumArtSize) / 2;
         if (artX < padding) artX = padding;
@@ -776,7 +714,7 @@ static NSString *formatGroupDuration(double seconds) {
         textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = textX + textSize.width + 12;
         lineY = rect.origin.y + rect.size.height / 2;
-    } else if (_headerDisplayStyle == 2) {
+    } else if (_layout.headerDisplayStyle == 2) {
         // Style 2 (Inline): text at top of row
         textX = _groupColumnWidth + 8;
         textY = rect.origin.y + 2;
@@ -795,7 +733,7 @@ static NSString *formatGroupDuration(double seconds) {
     [displayString drawAtPoint:NSMakePoint(textX, textY)];
 
     // Draw horizontal line after text (not for style 2 - inline mode)
-    if (_headerDisplayStyle != 2 && lineStartX < lineEndX) {
+    if (_layout.headerDisplayStyle != 2 && lineStartX < lineEndX) {
         [[NSColor separatorColor] setStroke];
         NSBezierPath *line = [NSBezierPath bezierPath];
         [line moveToPoint:NSMakePoint(lineStartX, lineY)];
@@ -1037,14 +975,14 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)fillGroupColumnBackgroundInRect:(NSRect)dirtyRect {
     // Skip background fill for glass mode - let the effect show through
     if (_glassBackground) return;
-    if (_groupStarts.count == 0) return;
+    if (_layout.groupStarts.count == 0) return;
 
     NSRect visibleRect = [self visibleRect];
 
     // Style 1: Leave header row area unfilled so header text at x=8 is visible
     // Styles 0, 2, 3: Fill entire column
 
-    if (_headerDisplayStyle == 1) {
+    if (_layout.headerDisplayStyle == 1) {
         // Style 1: Fill only the track areas (below each header row)
         NSInteger firstRow = [self rowAtPoint:NSMakePoint(0, NSMinY(visibleRect))];
         NSInteger lastRow = [self rowAtPoint:NSMakePoint(0, NSMaxY(visibleRect))];
@@ -1055,11 +993,11 @@ static NSString *formatGroupDuration(double seconds) {
         NSInteger firstGroupIndex = [self groupIndexForRow:firstRow];
         NSInteger lastGroupIndex = [self groupIndexForRow:lastRow];
 
-        for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_groupStarts.count; g++) {
+        for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_layout.groupStarts.count; g++) {
             NSInteger groupStartRow = [self rowForGroupHeader:g];
             CGFloat groupTop = [self yOffsetForRow:groupStartRow];
             CGFloat groupHeight = [self pixelHeightForGroup:g];
-            CGFloat headerOffset = _headerHeight;  // Style 1 has header rows
+            CGFloat headerOffset = _layout.headerHeight;  // Style 1 has header rows
 
             // Fill only below the header row
             NSRect groupColRect = NSMakeRect(0, groupTop + headerOffset, _groupColumnWidth, groupHeight - headerOffset);
@@ -1080,7 +1018,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 // Draw album art for visible groups (called AFTER drawing row content)
 - (void)drawAlbumArtInRect:(NSRect)dirtyRect firstRow:(NSInteger)firstRow lastRow:(NSInteger)lastRow {
-    if (_groupStarts.count == 0) return;
+    if (_layout.groupStarts.count == 0) return;
 
     // Find which groups are visible
     NSInteger firstGroupIndex = [self groupIndexForRow:firstRow];
@@ -1088,8 +1026,8 @@ static NSString *formatGroupDuration(double seconds) {
 
     CGFloat padding = 6;
 
-    for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_groupStarts.count; g++) {
-        NSInteger groupStart = [_groupStarts[g] integerValue];
+    for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_layout.groupStarts.count; g++) {
+        NSInteger groupStart = [_layout.groupStarts[g] integerValue];
 
         // Calculate group's row range
         NSInteger groupStartRow = [self rowForGroupHeader:g];
@@ -1099,7 +1037,7 @@ static NSString *formatGroupDuration(double seconds) {
         // Style 0, 1: Album art is below header row
         // Style 2: Album art starts at header row Y (next to header text in content area)
         // Style 3: No header row, album art at group top
-        CGFloat headerOffset = (_headerDisplayStyle == 0 || _headerDisplayStyle == 1) ? _headerHeight : 0;
+        CGFloat headerOffset = (_layout.headerDisplayStyle == 0 || _layout.headerDisplayStyle == 1) ? _layout.headerHeight : 0;
 
         // Calculate available height for album art (below header if present, minus padding)
         CGFloat availableHeight = groupHeight - headerOffset - padding * 2;
@@ -1132,7 +1070,7 @@ static NSString *formatGroupDuration(double seconds) {
         }
 
         // For style 3 (under album art), draw header text below album art in the group column
-        if (_headerDisplayStyle == 3) {
+        if (_layout.headerDisplayStyle == 3) {
             CGFloat artBottom = artY + artSize;
             [self drawInlineHeaderForGroup:g atGroupTop:groupTop artBottom:artBottom groupHeight:groupHeight];
         }
@@ -1180,8 +1118,8 @@ static NSString *formatGroupDuration(double seconds) {
     // In flat mode: all rows have same height, row index = playlist index
     // Calculate visible row range - O(1)
     NSRect visibleRect = [self visibleRect];
-    NSInteger firstRow = (NSInteger)floor(NSMinY(visibleRect) / _rowHeight);
-    NSInteger lastRow = (NSInteger)ceil(NSMaxY(visibleRect) / _rowHeight);
+    NSInteger firstRow = (NSInteger)floor(NSMinY(visibleRect) / _layout.rowHeight);
+    NSInteger lastRow = (NSInteger)ceil(NSMaxY(visibleRect) / _layout.rowHeight);
 
     if (firstRow < 0) firstRow = 0;
     if (lastRow >= _flatModeTrackCount) lastRow = _flatModeTrackCount - 1;
@@ -1199,8 +1137,8 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Draw only visible rows (~30-50 rows)
     for (NSInteger row = firstRow; row <= lastRow; row++) {
-        CGFloat y = row * _rowHeight;
-        NSRect rowRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _rowHeight);
+        CGFloat y = row * _layout.rowHeight;
+        NSRect rowRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _layout.rowHeight);
 
         if (NSIntersectsRect(rowRect, dirtyRect)) {
             [self drawFlatModeRow:row inRect:rowRect];
@@ -1209,8 +1147,8 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Draw focus ring
     if (self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _flatModeTrackCount) {
-        CGFloat y = _selection.focusIndex * _rowHeight;
-        NSRect focusRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _rowHeight);
+        CGFloat y = _selection.focusIndex * _layout.rowHeight;
+        NSRect focusRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _layout.rowHeight);
         if (NSIntersectsRect(focusRect, dirtyRect)) {
             [self drawFocusRingForRect:focusRect];
         }
@@ -1218,7 +1156,7 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Draw drop indicator if dragging
     if (_dropTargetRow >= 0) {
-        CGFloat y = _dropTargetRow * _rowHeight;
+        CGFloat y = _dropTargetRow * _layout.rowHeight;
         [[NSColor systemBlueColor] setFill];
         NSRectFill(NSMakeRect(_groupColumnWidth, y - 1, self.bounds.size.width - _groupColumnWidth, 3));
     }
@@ -1417,8 +1355,8 @@ static NSString *formatGroupDuration(double seconds) {
 
     for (GroupBoundary *group in _groupBoundaries) {
         // Calculate group's vertical extent
-        CGFloat groupTop = group.rowOffset * _rowHeight;
-        CGFloat groupHeight = [group rowCount] * _rowHeight;
+        CGFloat groupTop = group.rowOffset * _layout.rowHeight;
+        CGFloat groupHeight = [group rowCount] * _layout.rowHeight;
         CGFloat groupBottom = groupTop + groupHeight;
 
         // Skip if not visible
@@ -1822,7 +1760,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (void)selectAll {
     // Select all playlist items (not row indices)
-    if (_itemCount == 0) return;
+    if (_layout.itemCount == 0) return;
     [_selection selectAll];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
@@ -1856,7 +1794,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (void)setFocusIndex:(NSInteger)index {
     // Focus index is a playlist index
-    if (index < -1 || index >= _itemCount) return;
+    if (index < -1 || index >= _layout.itemCount) return;
     _selection.focusIndex = index;
     [self setNeedsDisplay:YES];
 }
@@ -1922,7 +1860,7 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Check if clicked on group header or group column (album art area)
     BOOL isGroupHeader = [self isRowGroupHeader:row];
-    BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _groupStarts.count > 0);
+    BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _layout.groupStarts.count > 0);
 
     if (isGroupHeader || isInGroupColumn) {
         // Select all items in the group (cmd toggles, shift extends from anchor)
@@ -2303,7 +2241,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (NSInteger)visibleRowCount {
     NSRect visible = [self visibleRect];
-    return (NSInteger)(visible.size.height / _rowHeight);
+    return (NSInteger)(visible.size.height / _layout.rowHeight);
 }
 
 #pragma mark - NSDraggingSource
@@ -2388,7 +2326,7 @@ static NSString *formatGroupDuration(double seconds) {
     // 1. It's before a track row (inserting before that track)
     // 2. It's after a track row that's followed by padding/header/end (album boundary)
     for (NSInteger pos = 0; pos <= totalRows; pos++) {
-        CGFloat posY = pos * _rowHeight;
+        CGFloat posY = pos * _layout.rowHeight;
         BOOL isValid = NO;
 
         if (pos < totalRows) {
