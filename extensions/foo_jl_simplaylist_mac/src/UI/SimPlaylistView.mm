@@ -12,6 +12,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/AlbumArtCache.h"
 #import "../Core/PlaylistLayoutModel.h"
+#import "../Core/PlaylistSelectionModel.h"
 #import "../../../../shared/UIStyles.h"
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
@@ -55,7 +56,6 @@ static NSString *formatGroupDuration(double seconds) {
 @end
 
 @interface SimPlaylistView ()
-@property (nonatomic, assign) NSInteger selectionAnchor;  // For shift-click selection
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, assign) NSInteger hoveredRow;
 @property (nonatomic, assign) NSPoint dragStartPoint;
@@ -73,6 +73,9 @@ static NSString *formatGroupDuration(double seconds) {
 // its geometry ivars into this model (see the custom setters below) and forwards
 // all mapping queries to it. Extracted for unit-testing without an NSView/host.
 @property (nonatomic, strong) PlaylistLayoutModel *layout;
+// Pure selection state machine — owns selectedIndices/focus/anchor and the
+// multi-select math. The view's _selectedIndices ivar aliases its set.
+@property (nonatomic, strong) PlaylistSelectionModel *selection;
 @end
 
 @implementation SimPlaylistView
@@ -97,11 +100,12 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (void)commonInit {
     _layout = [[PlaylistLayoutModel alloc] init];
+    _selection = [[PlaylistSelectionModel alloc] initWithLayout:_layout];
     _columns = [ColumnDefinition defaultColumns];
-    _selectedIndices = [NSMutableIndexSet indexSet];
-    _focusIndex = -1;
+    // Alias the selection model's stable set: drawing code, drag handlers and
+    // the controller all read/mutate this instance directly.
+    _selectedIndices = _selection.selectedIndices;
     _playingIndex = -1;
-    _selectionAnchor = -1;
     _hoveredRow = -1;
     _isDragging = NO;
     _dropTargetRow = -1;
@@ -650,12 +654,12 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Draw focus ring - only on valid track rows, not during drag operations
     if (!_isDragging && _dropTargetRow < 0 && !_suppressFocusRing &&
-        self.window.firstResponder == self && _focusIndex >= 0 && _focusIndex < _itemCount) {
-        NSInteger focusRow = [self rowForPlaylistIndex:_focusIndex];
+        self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _itemCount) {
+        NSInteger focusRow = [self rowForPlaylistIndex:_selection.focusIndex];
         // Verify this row maps back to a valid track (not header/subgroup/padding)
         if (focusRow >= 0 && focusRow >= firstRow && focusRow <= lastRow) {
             NSInteger verifyIndex = [self playlistIndexForRow:focusRow];
-            if (verifyIndex == _focusIndex) {
+            if (verifyIndex == _selection.focusIndex) {
                 NSRect focusRect = [self rectForRow:focusRow];
                 [self drawFocusRingForRect:focusRect];
             }
@@ -1204,8 +1208,8 @@ static NSString *formatGroupDuration(double seconds) {
     }
 
     // Draw focus ring
-    if (self.window.firstResponder == self && _focusIndex >= 0 && _focusIndex < _flatModeTrackCount) {
-        CGFloat y = _focusIndex * _rowHeight;
+    if (self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _flatModeTrackCount) {
+        CGFloat y = _selection.focusIndex * _rowHeight;
         NSRect focusRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _rowHeight);
         if (NSIntersectsRect(focusRect, dirtyRect)) {
             [self drawFocusRingForRect:focusRect];
@@ -1786,7 +1790,12 @@ static NSString *formatGroupDuration(double seconds) {
                                                               ofColor:[NSColor labelColor]];
 }
 
-#pragma mark - Selection Management
+#pragma mark - Selection Management (state math in PlaylistSelectionModel)
+
+// The selection/anchor/focus math lives in Core/PlaylistSelectionModel so it
+// can be unit-tested without an NSView/host. The view converts rows to
+// playlist indices, delegates the state change, then handles notification,
+// scrolling and redraw.
 
 - (void)selectRowAtIndex:(NSInteger)index {
     [self selectRowAtIndex:index extendSelection:NO];
@@ -1800,26 +1809,13 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger playlistIndex = [self playlistIndexForRow:index];
     if (playlistIndex < 0) return;  // Don't select headers
 
-    if (extend && _selectionAnchor >= 0) {
-        // Range selection from anchor to clicked item
-        NSInteger start = MIN(_selectionAnchor, playlistIndex);
-        NSInteger end = MAX(_selectionAnchor, playlistIndex);
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-    } else {
-        // Single selection
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndex:playlistIndex];
-        _selectionAnchor = playlistIndex;
-    }
-
-    _focusIndex = playlistIndex;
+    [_selection selectPlaylistIndex:playlistIndex extendFromAnchor:extend];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
 
 - (void)selectRowsInRange:(NSRange)range {
-    [_selectedIndices addIndexesInRange:range];
+    [_selection addIndexesInRange:range];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
@@ -1827,13 +1823,13 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)selectAll {
     // Select all playlist items (not row indices)
     if (_itemCount == 0) return;
-    [_selectedIndices addIndexesInRange:NSMakeRange(0, _itemCount)];
+    [_selection selectAll];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
 
 - (void)deselectAll {
-    [_selectedIndices removeAllIndexes];
+    [_selection deselectAll];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
@@ -1846,78 +1842,40 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger playlistIndex = [self playlistIndexForRow:index];
     if (playlistIndex < 0) return;  // Don't select headers
 
-    if ([_selectedIndices containsIndex:playlistIndex]) {
-        [_selectedIndices removeIndex:playlistIndex];
-    } else {
-        [_selectedIndices addIndex:playlistIndex];
-    }
-
+    [_selection togglePlaylistIndex:playlistIndex];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
+}
+
+// focusIndex lives in the selection model; both accessors are implemented so
+// no ivar is synthesized (any leftover direct _focusIndex reference is a
+// compile error rather than a silent desync).
+- (NSInteger)focusIndex {
+    return _selection.focusIndex;
 }
 
 - (void)setFocusIndex:(NSInteger)index {
     // Focus index is a playlist index
     if (index < -1 || index >= _itemCount) return;
-    _focusIndex = index;
+    _selection.focusIndex = index;
     [self setNeedsDisplay:YES];
 }
 
+// selectedIndices: the getter is synthesized and returns the ivar, which
+// aliases the selection model's stable NSMutableIndexSet (assigned in
+// commonInit). A property-setter write must not replace that shared instance,
+// so it funnels the contents instead.
+- (void)setSelectedIndices:(NSMutableIndexSet *)selectedIndices {
+    [_selectedIndices removeAllIndexes];
+    if (selectedIndices) {
+        [_selectedIndices addIndexes:selectedIndices];
+    }
+}
+
 - (void)moveFocusBy:(NSInteger)delta extendSelection:(BOOL)extend {
-    NSInteger totalRows = [self rowCount];
-    if (totalRows == 0) return;
+    NSInteger newRow = [_selection moveFocusBy:delta extendSelection:extend];
+    if (newRow < 0) return;  // No move (empty list or no valid track found)
 
-    // Convert current focus (playlist index) to row
-    NSInteger currentRow = (_focusIndex >= 0) ? [self rowForPlaylistIndex:_focusIndex] : 0;
-    if (currentRow < 0) currentRow = 0;
-
-    // Move by delta rows
-    NSInteger newRow = currentRow + delta;
-    newRow = MAX(0, MIN(totalRows - 1, newRow));
-
-    // Skip header/subgroup/padding rows when navigating
-    NSInteger playlistIndex = [self playlistIndexForRow:newRow];
-    NSInteger searchRow = newRow;
-    while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
-        searchRow += (delta > 0) ? 1 : -1;
-        if (searchRow < 0 || searchRow >= totalRows) break;
-        playlistIndex = [self playlistIndexForRow:searchRow];
-    }
-
-    // If we found a valid row, use it; otherwise try the opposite direction
-    if (playlistIndex >= 0) {
-        newRow = searchRow;
-    } else {
-        // Try opposite direction from original newRow
-        searchRow = newRow;
-        while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
-            searchRow += (delta > 0) ? -1 : 1;  // Opposite direction
-            if (searchRow < 0 || searchRow >= totalRows) break;
-            playlistIndex = [self playlistIndexForRow:searchRow];
-        }
-        if (playlistIndex >= 0) {
-            newRow = searchRow;
-        }
-    }
-
-    if (playlistIndex < 0) return;  // Couldn't find a valid track in either direction
-
-    if (extend) {
-        // Extend selection from anchor to new focus
-        if (_selectionAnchor < 0) {
-            _selectionAnchor = _focusIndex >= 0 ? _focusIndex : playlistIndex;
-        }
-        NSInteger start = MIN(_selectionAnchor, playlistIndex);
-        NSInteger end = MAX(_selectionAnchor, playlistIndex);
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-    } else {
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndex:playlistIndex];
-        _selectionAnchor = playlistIndex;
-    }
-
-    _focusIndex = playlistIndex;
     [self scrollRowToVisible:newRow];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
@@ -1967,40 +1925,12 @@ static NSString *formatGroupDuration(double seconds) {
     BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _groupStarts.count > 0);
 
     if (isGroupHeader || isInGroupColumn) {
-        // Select all items in the group
+        // Select all items in the group (cmd toggles, shift extends from anchor)
         NSInteger groupIndex = [self groupIndexForRow:row];
         if (groupIndex >= 0) {
             NSRange range = [self playlistIndexRangeForGroup:groupIndex];
             if (range.location != NSNotFound && range.length > 0) {
-                if (hasCmd) {
-                    // Cmd+click on group: toggle group selection
-                    BOOL allSelected = YES;
-                    for (NSUInteger i = range.location; i < range.location + range.length; i++) {
-                        if (![_selectedIndices containsIndex:i]) {
-                            allSelected = NO;
-                            break;
-                        }
-                    }
-                    if (allSelected) {
-                        [_selectedIndices removeIndexesInRange:range];
-                    } else {
-                        [_selectedIndices addIndexesInRange:range];
-                    }
-                } else if (hasShift && _selectionAnchor >= 0) {
-                    // Shift+click: extend selection to include entire group
-                    NSInteger groupStart = range.location;
-                    NSInteger groupEnd = range.location + range.length - 1;
-                    NSInteger start = MIN(_selectionAnchor, groupStart);
-                    NSInteger end = MAX(_selectionAnchor, groupEnd);
-                    [_selectedIndices removeAllIndexes];
-                    [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-                } else {
-                    // Regular click: select all items in group
-                    [_selectedIndices removeAllIndexes];
-                    [_selectedIndices addIndexesInRange:range];
-                    _selectionAnchor = range.location;
-                }
-                _focusIndex = range.location;
+                [_selection clickGroupRange:range commandKey:hasCmd shiftKey:hasShift];
                 [self notifySelectionChanged];
                 [self setNeedsDisplay:YES];
                 return;
@@ -2015,10 +1945,10 @@ static NSString *formatGroupDuration(double seconds) {
         // Cmd+click: toggle selection
         [self toggleSelectionAtIndex:row];
         if (playlistIndex >= 0) {
-            _focusIndex = playlistIndex;
+            _selection.focusIndex = playlistIndex;
         }
         _pendingClickRow = -1;
-    } else if (hasShift && _focusIndex >= 0) {
+    } else if (hasShift && _selection.focusIndex >= 0) {
         // Shift+click: extend selection
         [self selectRowAtIndex:row extendSelection:YES];
         _pendingClickRow = -1;
@@ -2320,11 +2250,11 @@ static NSString *formatGroupDuration(double seconds) {
             break;
 
         case NSHomeFunctionKey:
-            [self moveFocusBy:-(_focusIndex + 1) extendSelection:hasShift];
+            [self moveFocusBy:-(_selection.focusIndex + 1) extendSelection:hasShift];
             break;
 
         case NSEndFunctionKey:
-            [self moveFocusBy:([self rowCount] - _focusIndex) extendSelection:hasShift];
+            [self moveFocusBy:([self rowCount] - _selection.focusIndex) extendSelection:hasShift];
             break;
 
         case ' ':  // Space - toggle play/pause (consistent with foobar2000 convention)
@@ -2339,9 +2269,9 @@ static NSString *formatGroupDuration(double seconds) {
         }
 
         case '\r':  // Enter - execute default action on focused track
-            if (_focusIndex >= 0 &&
+            if (_selection.focusIndex >= 0 &&
                 [_delegate respondsToSelector:@selector(playlistView:didDoubleClickRow:)]) {
-                NSInteger row = [self rowForPlaylistIndex:_focusIndex];
+                NSInteger row = [self rowForPlaylistIndex:_selection.focusIndex];
                 if (row >= 0) {
                     [_delegate playlistView:self didDoubleClickRow:row];
                 }

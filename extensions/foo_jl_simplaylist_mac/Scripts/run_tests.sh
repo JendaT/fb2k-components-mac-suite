@@ -21,5 +21,14 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/layout_tests"
 
+echo "==> Compiling unit tests (PlaylistSelectionModel)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/PlaylistSelectionModelTests.mm" \
+    "$PROJECT_DIR/src/Core/PlaylistSelectionModel.mm" \
+    "$PROJECT_DIR/src/Core/PlaylistLayoutModel.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/selection_tests"
+
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/layout_tests"
+"$TEST_BUILD_DIR/selection_tests"
