@@ -198,20 +198,10 @@ static void verifyFixture(const Fixture &f, const char *name) {
                  (row.kind == RefRowTrack) ? row.playlistIndex : -1,
                  "playlistIndexForRow");
 
-        // KNOWN QUIRK (pre-existing, preserved verbatim by the extraction):
-        // in style 3 the FIRST padding row of a group is not classified as
-        // padding by isRowPaddingRow (off-by-one: `> contentRows` should be
-        // `>= contentRows` when there is no header row). It is still unmapped
-        // (playlistIndexForRow == -1, checked above), so rendering treats it
-        // as blank either way. We pin the CURRENT behavior here; fixing it is
-        // a separate behavioral change.
-        BOOL expectPadding = (row.kind == RefRowPadding);
-        if (f.style == 3 && row.kind == RefRowPadding) {
-            BOOL isFirstPaddingOfGroup =
-                (r > 0 && ref[(size_t)r - 1].kind != RefRowPadding);
-            if (isFirstPaddingOfGroup) expectPadding = NO;  // quirk pinned
-        }
-        CHECK_EQ([m isRowPaddingRow:r], expectPadding, "isRowPaddingRow");
+        // (A historical off-by-one misclassified the first padding row of each
+        // group in style 3; fixed in PlaylistLayoutModel, so the reference
+        // expectation now holds unconditionally.)
+        CHECK_EQ([m isRowPaddingRow:r], (row.kind == RefRowPadding), "isRowPaddingRow");
 
         if (row.kind == RefRowTrack) {
             CHECK_EQ([m rowForPlaylistIndex:row.playlistIndex], r, "rowForPlaylistIndex");

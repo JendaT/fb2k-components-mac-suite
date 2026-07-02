@@ -168,7 +168,13 @@
 
     NSInteger contentRows = trackCount + subgroupsInGroup;
 
-    return (rowWithinGroup > contentRows);
+    // Styles 0-2: rowWithinGroup 0 is the header row, content occupies
+    // 1..contentRows, so padding starts at contentRows + 1. Style 3 has no
+    // header row: content occupies 0..contentRows-1 and padding starts at
+    // contentRows. (The style-3 case was off by one historically, leaving the
+    // first padding row of each group classified as an unmapped blank row.)
+    NSInteger firstPaddingOffset = (_headerDisplayStyle == 3) ? contentRows : contentRows + 1;
+    return (rowWithinGroup >= firstPaddingOffset);
 }
 
 - (NSInteger)playlistIndexForRow:(NSInteger)row {
