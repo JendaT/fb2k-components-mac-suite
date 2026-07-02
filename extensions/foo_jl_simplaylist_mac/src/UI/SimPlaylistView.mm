@@ -11,6 +11,7 @@
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
 #import "../Core/AlbumArtCache.h"
+#import "../Core/PlaylistLayoutModel.h"
 #import "../../../../shared/UIStyles.h"
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
@@ -68,6 +69,10 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
+// Pure geometry/index model — owns the row-mapping arithmetic. The view mirrors
+// its geometry ivars into this model (see the custom setters below) and forwards
+// all mapping queries to it. Extracted for unit-testing without an NSView/host.
+@property (nonatomic, strong) PlaylistLayoutModel *layout;
 @end
 
 @implementation SimPlaylistView
@@ -91,6 +96,7 @@ static NSString *formatGroupDuration(double seconds) {
 }
 
 - (void)commonInit {
+    _layout = [[PlaylistLayoutModel alloc] init];
     _columns = [ColumnDefinition defaultColumns];
     _selectedIndices = [NSMutableIndexSet indexSet];
     _focusIndex = -1;
@@ -193,6 +199,98 @@ static NSString *formatGroupDuration(double seconds) {
                                              selector:@selector(handleRedrawNeeded:)
                                                  name:@"SimPlaylistRedrawNeeded"
                                                object:nil];
+
+    // Push the row metrics computed above into the layout model. The geometry
+    // arrays already match the model's own init defaults; metrics are set by
+    // direct ivar assignment here (and in reloadSettings) so they need an
+    // explicit sync since they bypass the mirroring property setters.
+    [self syncLayoutMetrics];
+}
+
+// Mirror the pixel metrics (set by direct ivar assignment in commonInit /
+// reloadSettings) into the layout model. The geometry arrays are mirrored
+// individually by their property setters below.
+- (void)syncLayoutMetrics {
+    _layout.rowHeight = _rowHeight;
+    _layout.headerHeight = _headerHeight;
+    _layout.headerDisplayStyle = _headerDisplayStyle;
+}
+
+#pragma mark - Geometry property setters (mirror to layout model)
+
+// The controller (and this view) write these geometry inputs directly via the
+// property setters. We override each to keep the PlaylistLayoutModel — which the
+// row-mapping forwarders query — in sync the instant any input changes, so the
+// model is always current regardless of the controller's set/rebuild ordering.
+// Drawing code still reads the same ivars, so it is unaffected.
+
+- (void)setItemCount:(NSInteger)itemCount {
+    _itemCount = itemCount;
+    _layout.itemCount = itemCount;
+}
+
+- (void)setGroupStarts:(NSArray<NSNumber *> *)groupStarts {
+    _groupStarts = [groupStarts copy];
+    _layout.groupStarts = _groupStarts;
+}
+
+- (void)setGroupPaddingRows:(NSArray<NSNumber *> *)groupPaddingRows {
+    _groupPaddingRows = [groupPaddingRows copy];
+    _layout.groupPaddingRows = _groupPaddingRows;
+}
+
+- (void)setTotalPaddingRowsCached:(NSInteger)totalPaddingRowsCached {
+    _totalPaddingRowsCached = totalPaddingRowsCached;
+    _layout.totalPaddingRowsCached = totalPaddingRowsCached;
+}
+
+- (void)setCumulativePaddingCache:(NSArray<NSNumber *> *)cumulativePaddingCache {
+    _cumulativePaddingCache = [cumulativePaddingCache copy];
+    _layout.cumulativePaddingCache = _cumulativePaddingCache;
+}
+
+- (void)setSubgroupStarts:(NSArray<NSNumber *> *)subgroupStarts {
+    _subgroupStarts = [subgroupStarts copy];
+    _layout.subgroupStarts = _subgroupStarts;
+}
+
+- (void)setSubgroupHeaders:(NSArray<NSString *> *)subgroupHeaders {
+    _subgroupHeaders = [subgroupHeaders copy];
+    _layout.subgroupHeaders = _subgroupHeaders;
+}
+
+- (void)setSubgroupCountPerGroup:(NSArray<NSNumber *> *)subgroupCountPerGroup {
+    _subgroupCountPerGroup = [subgroupCountPerGroup copy];
+    _layout.subgroupCountPerGroup = _subgroupCountPerGroup;
+}
+
+- (void)setSubgroupRowSet:(NSIndexSet *)subgroupRowSet {
+    _subgroupRowSet = [subgroupRowSet copy];
+    _layout.subgroupRowSet = _subgroupRowSet;
+}
+
+- (void)setSubgroupRowToIndex:(NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex {
+    _subgroupRowToIndex = [subgroupRowToIndex copy];
+    _layout.subgroupRowToIndex = _subgroupRowToIndex;
+}
+
+// Metric setters mirror too. Today these are only assigned via direct ivar
+// writes in commonInit/reloadSettings (covered by syncLayoutMetrics), but the
+// properties are public — a future external write must not desync the model.
+
+- (void)setRowHeight:(CGFloat)rowHeight {
+    _rowHeight = rowHeight;
+    _layout.rowHeight = rowHeight;
+}
+
+- (void)setHeaderHeight:(CGFloat)headerHeight {
+    _headerHeight = headerHeight;
+    _layout.headerHeight = headerHeight;
+}
+
+- (void)setHeaderDisplayStyle:(NSInteger)headerDisplayStyle {
+    _headerDisplayStyle = headerDisplayStyle;
+    _layout.headerDisplayStyle = headerDisplayStyle;
 }
 
 // Build cached y-offsets for O(1) row lookup
@@ -244,6 +342,9 @@ static NSString *formatGroupDuration(double seconds) {
         case 2:  _headerHeight = _rowHeight + 12; break; // Larger - generous padding
         default: _headerHeight = _rowHeight + 6; break;  // Normal - some extra padding
     }
+
+    // Mirror updated metrics into the layout model before any geometry query.
+    [self syncLayoutMetrics];
 
     // Update frame size to reflect new row heights (header height affects total content height)
     [self reloadData];
@@ -322,222 +423,46 @@ static NSString *formatGroupDuration(double seconds) {
 
 // Returns total row count: itemCount + groupCount + subgroupCount (each group/subgroup adds 1 header row)
 // Only style 3 (under album art) has no header rows - header text is below album art
+// NOTE: The sparse-group row/index arithmetic below lives in PlaylistLayoutModel
+// (Core/PlaylistLayoutModel.*) so it can be unit-tested without an NSView/host.
+// These methods forward to _layout, which mirrors the view's geometry ivars.
+
 - (NSInteger)rowCount {
-    // Total rows = items + group headers + subgroup headers + padding rows
-    // Uses cached totalPaddingRowsCached for O(1) instead of O(G) loop
-
-    // Only style 3 has no header rows (header is drawn below album art)
-    // Styles 0, 1, 2 all have header rows
-    NSInteger groupHeaderRows = (_headerDisplayStyle == 3) ? 0 : (NSInteger)_groupStarts.count;
-
-    return _itemCount + groupHeaderRows + (NSInteger)_subgroupStarts.count + _totalPaddingRowsCached;
+    return [_layout rowCount];
 }
 
-// Helper: cumulative padding rows up to (but not including) group g - O(1) using cache
 - (NSInteger)cumulativePaddingBeforeGroup:(NSInteger)groupIndex {
-    if (groupIndex <= 0 || _cumulativePaddingCache.count == 0) return 0;
-    if (groupIndex >= (NSInteger)_cumulativePaddingCache.count) {
-        return [_cumulativePaddingCache.lastObject integerValue];
-    }
-    return [_cumulativePaddingCache[groupIndex] integerValue];
+    return [_layout cumulativePaddingBeforeGroup:groupIndex];
 }
 
-// Helper: total rows in group g (header + subgroups + tracks + padding)
-// Only style 3 has no header row (header is drawn below album art)
 - (NSInteger)totalRowsInGroup:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return 0;
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    NSInteger trackCount = groupEnd - groupStart;
-    NSInteger padding = (groupIndex < (NSInteger)_groupPaddingRows.count)
-        ? [_groupPaddingRows[groupIndex] integerValue] : 0;
-    // Only style 3 has no header row
-    NSInteger headerRows = (_headerDisplayStyle == 3) ? 0 : 1;
-
-    // Use pre-computed subgroup count (O(1) instead of O(S))
-    NSInteger subgroupCount = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-
-    return headerRows + subgroupCount + trackCount + padding;
+    return [_layout totalRowsInGroup:groupIndex];
 }
 
-#pragma mark - Row Mapping (O(log g) using binary search)
+#pragma mark - Row Mapping (O(log g) using binary search) — forwards to PlaylistLayoutModel
 
-// Find which group a row belongs to using binary search
 - (NSInteger)groupIndexForRow:(NSInteger)row {
-    if (_groupStarts.count == 0 || row < 0) return -1;
-
-    // Binary search: find the largest group index g where rowForGroupHeader(g) <= row
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    NSInteger result = 0;
-
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        NSInteger headerRow = [self rowForGroupHeader:mid];
-        if (headerRow <= row) {
-            result = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return result;
+    return [_layout groupIndexForRow:row];
 }
 
-// Row number where group header appears (or first track row for style 3)
 - (NSInteger)rowForGroupHeader:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return -1;
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-
-    // Count all subgroups that appear before this group - O(log S) using binary search
-    NSInteger subgroupsBeforeGroup = [self subgroupCountBeforePlaylistIndex:groupStart];
-
-    // Only style 3 has no header rows
-    if (_headerDisplayStyle == 3) {
-        // Style 3: no header rows, return position of first track
-        return groupStart + subgroupsBeforeGroup + cumulativePadding;
-    } else {
-        // Styles 0, 1, 2: Header row = groupStart[g] + g (group headers) + subgroups before + cumulative padding
-        return groupStart + groupIndex + subgroupsBeforeGroup + cumulativePadding;
-    }
+    return [_layout rowForGroupHeader:groupIndex];
 }
 
-// Check if row is a group header
 - (BOOL)isRowGroupHeader:(NSInteger)row {
-    if (_groupStarts.count == 0) return NO;
-    // Only style 3 has no header rows (header is drawn below album art)
-    if (_headerDisplayStyle == 3) return NO;
-
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    return row == [self rowForGroupHeader:groupIndex];
+    return [_layout isRowGroupHeader:row];
 }
 
-// Check if row is a padding row (empty space for minimum group height)
 - (BOOL)isRowPaddingRow:(NSInteger)row {
-    if (_groupStarts.count == 0 || _groupPaddingRows.count == 0) return NO;
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    if (groupIndex < 0) return NO;
-
-    NSInteger headerRow = [self rowForGroupHeader:groupIndex];
-    NSInteger rowWithinGroup = row - headerRow;
-
-    // Get track count for this group
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    NSInteger trackCount = groupEnd - groupStart;
-
-    // Get subgroup count for this group (subgroup headers add to row count)
-    NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-
-    // Total content rows = tracks + subgroup headers (header row already excluded by rowWithinGroup)
-    NSInteger contentRows = trackCount + subgroupsInGroup;
-
-    // Row is padding if it's after all content (tracks + subgroups) in the group
-    return (rowWithinGroup > contentRows);
+    return [_layout isRowPaddingRow:row];
 }
 
-// Convert row to playlist index (-1 for header rows, subgroup rows, and padding rows)
 - (NSInteger)playlistIndexForRow:(NSInteger)row {
-    if (row < 0 || row >= [self rowCount]) return -1;
-    if (_groupStarts.count == 0) return row;  // No groups = flat mode
-
-    // Check if this is a subgroup header row
-    if ([self isRowSubgroupHeader:row]) {
-        return -1;
-    }
-
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    NSInteger groupStartRow = [self rowForGroupHeader:groupIndex];
-
-    // Styles 0, 1, 2 have header rows; only style 3 doesn't
-    if (_headerDisplayStyle != 3 && row == groupStartRow) {
-        return -1;  // This is a header row
-    }
-
-    // Count subgroups in this group before this row to get correct playlist index
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-
-    // Count subgroup rows between groupStartRow and this row - O(log n) with NSIndexSet
-    NSInteger subgroupsInGroup = 0;
-
-    // For style 3 (inline/no group header), groupStartRow itself might be a subgroup header
-    // In styles 0-2, groupStartRow is always a group header (album title), but in style 3
-    // there's no group header row, so groupStartRow is the first content row which could be
-    // a subgroup header. We need to count it when calculating track positions.
-    if (_headerDisplayStyle == 3 && [self isRowSubgroupHeader:groupStartRow]) {
-        subgroupsInGroup = 1;
-    }
-
-    if (row > groupStartRow + 1) {
-        NSRange range = NSMakeRange(groupStartRow + 1, row - groupStartRow - 1);
-        subgroupsInGroup += (NSInteger)[_subgroupRowSet countOfIndexesInRange:range];
-    }
-
-    // Calculate position within group accounting for subgroups
-    NSInteger rowWithinGroup = row - groupStartRow - subgroupsInGroup;
-
-    // Styles 0, 1, 2 have header rows; only style 3 doesn't
-    if (_headerDisplayStyle != 3) {
-        rowWithinGroup -= 1;
-    }
-
-    NSInteger trackCount = groupEnd - groupStart;
-
-    // If row is beyond tracks, it's a padding row
-    if (rowWithinGroup >= trackCount) {
-        return -1;  // Padding row
-    }
-
-    // Track row: playlist index = groupStart + rowWithinGroup
-    return groupStart + rowWithinGroup;
+    return [_layout playlistIndexForRow:row];
 }
 
-// Convert playlist index to row
 - (NSInteger)rowForPlaylistIndex:(NSInteger)playlistIndex {
-    if (playlistIndex < 0 || playlistIndex >= _itemCount) return -1;
-    if (_groupStarts.count == 0) return playlistIndex;  // No groups
-
-    // Find which group this playlist index belongs to - O(log G) using binary search
-    NSInteger groupIndex = 0;
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_groupStarts[mid] integerValue] <= playlistIndex) {
-            groupIndex = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    // Count subgroups before this playlist index - O(log S)
-    // subgroupCountBeforePlaylistIndex counts subgroups with start < playlistIndex
-    // But if a subgroup starts at exactly playlistIndex, its header row is BEFORE this track
-    NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:playlistIndex];
-    BOOL hasSubgroupHere = [self hasSubgroupAtPlaylistIndex:playlistIndex];
-    if (hasSubgroupHere) {
-        subgroupsBefore++;
-    }
-
-    // Only style 3 has no header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
-
-    // Row = playlist index + group headers (if not style 3) + subgroup headers + cumulative padding
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger result = playlistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
-
-    return result;
+    return [_layout rowForPlaylistIndex:playlistIndex];
 }
 
 // Clear formatted values cache (call when playlist changes)
@@ -545,148 +470,44 @@ static NSString *formatGroupDuration(double seconds) {
     [_formattedValuesCache removeAllObjects];
 }
 
-// Rebuild subgroup row cache for O(1) lookup (call when subgroups or layout changes)
+// Rebuild subgroup row cache: delegate computation to the model, then mirror the
+// computed caches back into the view ivars that drawing code reads directly.
+// MUST run after rebuildPaddingCache (the model needs the padding cache built).
 - (void)rebuildSubgroupRowCache {
-    if (_subgroupStarts.count == 0) {
-        _subgroupRowSet = [NSIndexSet indexSet];
-        _subgroupRowToIndex = @{};
-        return;
-    }
-
-    NSMutableIndexSet *rowSet = [NSMutableIndexSet indexSet];
-    NSMutableDictionary<NSNumber *, NSNumber *> *rowToIndex = [NSMutableDictionary dictionaryWithCapacity:_subgroupStarts.count];
-
-    for (NSUInteger i = 0; i < _subgroupStarts.count; i++) {
-        NSInteger subgroupPlaylistIndex = [_subgroupStarts[i] integerValue];
-        NSInteger subgroupRow = [self rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
-
-        if (subgroupRow >= 0) {
-            [rowSet addIndex:(NSUInteger)subgroupRow];
-            rowToIndex[@(subgroupRow)] = @(i);
-        }
-    }
-
-    _subgroupRowSet = [rowSet copy];
-    _subgroupRowToIndex = [rowToIndex copy];
+    [_layout rebuildSubgroupRowCache];
+    _subgroupRowSet = _layout.subgroupRowSet;
+    _subgroupRowToIndex = _layout.subgroupRowToIndex;
 }
 
-// Rebuild padding cache for O(1) lookup (call when groupPaddingRows changes)
+// Rebuild padding cache: delegate to the model, then mirror back to view ivars.
 - (void)rebuildPaddingCache {
-    if (_groupPaddingRows.count == 0) {
-        _totalPaddingRowsCached = 0;
-        _cumulativePaddingCache = @[];
-        return;
-    }
-
-    NSMutableArray<NSNumber *> *cumulative = [NSMutableArray arrayWithCapacity:_groupPaddingRows.count];
-    NSInteger runningTotal = 0;
-
-    for (NSNumber *padding in _groupPaddingRows) {
-        [cumulative addObject:@(runningTotal)];  // Cumulative BEFORE this group
-        runningTotal += [padding integerValue];
-    }
-
-    _totalPaddingRowsCached = runningTotal;
-    _cumulativePaddingCache = [cumulative copy];
+    [_layout rebuildPaddingCache];
+    _totalPaddingRowsCached = _layout.totalPaddingRowsCached;
+    _cumulativePaddingCache = _layout.cumulativePaddingCache;
 }
 
-// Get playlist index range for a group
 - (NSRange)playlistIndexRangeForGroup:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) {
-        return NSMakeRange(NSNotFound, 0);
-    }
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    return NSMakeRange(groupStart, groupEnd - groupStart);
+    return [_layout playlistIndexRangeForGroup:groupIndex];
 }
 
-// Count subgroups strictly before a given playlist index - O(log S) using binary search
 - (NSInteger)subgroupCountBeforePlaylistIndex:(NSInteger)playlistIndex {
-    if (_subgroupStarts.count == 0) return 0;
-
-    // Binary search for the first subgroup >= playlistIndex
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_subgroupStarts.count;
-
-    while (low < high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_subgroupStarts[mid] integerValue] < playlistIndex) {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-
-    return low;  // Number of subgroups with start < playlistIndex
+    return [_layout subgroupCountBeforePlaylistIndex:playlistIndex];
 }
 
-// Check if a subgroup starts at exactly this playlist index - O(log S)
 - (BOOL)hasSubgroupAtPlaylistIndex:(NSInteger)playlistIndex {
-    if (_subgroupStarts.count == 0) return NO;
-
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_subgroupStarts.count - 1;
-
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        NSInteger midVal = [_subgroupStarts[mid] integerValue];
-        if (midVal == playlistIndex) {
-            return YES;
-        } else if (midVal < playlistIndex) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return NO;
+    return [_layout hasSubgroupAtPlaylistIndex:playlistIndex];
 }
 
-// Check if a row is a subgroup header - O(1) using pre-computed cache
 - (BOOL)isRowSubgroupHeader:(NSInteger)row {
-    if (row < 0) return NO;
-    return [_subgroupRowSet containsIndex:(NSUInteger)row];
+    return [_layout isRowSubgroupHeader:row];
 }
 
-// Get subgroup header text for a row (returns nil if not a subgroup header) - O(1) using cache
 - (NSString *)subgroupHeaderForRow:(NSInteger)row {
-    NSNumber *indexNum = _subgroupRowToIndex[@(row)];
-    if (!indexNum) return nil;
-
-    NSUInteger i = [indexNum unsignedIntegerValue];
-    if (i < _subgroupHeaders.count) {
-        return _subgroupHeaders[i];
-    }
-    return nil;
+    return [_layout subgroupHeaderForRow:row];
 }
 
-// Calculate row for a subgroup that starts at given playlist index
 - (NSInteger)rowForSubgroupAtPlaylistIndex:(NSInteger)subgroupPlaylistIndex {
-    if (_groupStarts.count == 0) return subgroupPlaylistIndex;
-
-    // Find which group this subgroup belongs to - O(log G) using binary search
-    NSInteger groupIndex = 0;
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_groupStarts[mid] integerValue] <= subgroupPlaylistIndex) {
-            groupIndex = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    // Row = subgroupPlaylistIndex + (group headers if not inline) + (subgroups before this index) + padding
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:subgroupPlaylistIndex];
-
-    // Only style 3 has no group header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
-
-    return subgroupPlaylistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
+    return [_layout rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
 }
 
 // Find group boundary for a display row (unused in flat mode)
@@ -733,84 +554,36 @@ static NSString *formatGroupDuration(double seconds) {
     }
 }
 
-// All rows have constant height for O(1) calculations
+// Pixel geometry — forwards to PlaylistLayoutModel (pure, unit-testable).
 - (CGFloat)heightForRow:(NSInteger)row {
-    if ([self isRowGroupHeader:row]) {
-        return _headerHeight;
-    }
-    return _rowHeight;
+    return [_layout heightForRow:row];
 }
 
 - (CGFloat)yOffsetForRow:(NSInteger)row {
-    if (row < 0) return 0;
-    NSInteger totalRows = [self rowCount];
-    if (row >= totalRows) return [self totalContentHeightCached];
-
-    // Count header rows before this row to account for their extra height
-    NSInteger headerRowsBefore = 0;
-    if (_headerDisplayStyle != 3 && _groupStarts.count > 0) {
-        // Find how many group headers are at row indices < row
-        for (NSInteger g = 0; g < (NSInteger)_groupStarts.count; g++) {
-            NSInteger headerRow = [self rowForGroupHeader:g];
-            if (headerRow < row) {
-                headerRowsBefore++;
-            } else {
-                break;  // Groups are ordered, so no more headers before this row
-            }
-        }
-    }
-
-    // Base offset + extra height from header rows
-    CGFloat extraHeaderHeight = headerRowsBefore * (_headerHeight - _rowHeight);
-    return row * _rowHeight + extraHeaderHeight;
+    return [_layout yOffsetForRow:row];
 }
 
+// Kept in the view: needs self.bounds for the row width. Geometry comes from the model.
 - (NSRect)rectForRow:(NSInteger)row {
     NSInteger totalRows = [self rowCount];
     if (row < 0 || row >= totalRows) {
         return NSZeroRect;
     }
-    CGFloat y = [self yOffsetForRow:row];
-    CGFloat h = [self heightForRow:row];
+    CGFloat y = [_layout yOffsetForRow:row];
+    CGFloat h = [_layout heightForRow:row];
     return NSMakeRect(0, y, self.bounds.size.width, h);
 }
 
 - (NSInteger)rowAtPoint:(NSPoint)point {
-    if (point.y < 0) return -1;
-    CGFloat totalHeight = [self totalContentHeightCached];
-    if (point.y >= totalHeight) return -1;
-
-    // Binary search to find row at point (accounts for variable header heights)
-    NSInteger totalRows = [self rowCount];
-    NSInteger low = 0, high = totalRows - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        CGFloat midY = [self yOffsetForRow:mid];
-        CGFloat midH = [self heightForRow:mid];
-        if (point.y < midY) {
-            high = mid - 1;
-        } else if (point.y >= midY + midH) {
-            low = mid + 1;
-        } else {
-            return mid;
-        }
-    }
-    return -1;
+    return [_layout rowAtPoint:point];
 }
 
 - (CGFloat)totalContentHeightCached {
-    NSInteger totalRows = [self rowCount];
-    // Account for header rows being taller
-    NSInteger headerRowCount = (_headerDisplayStyle == 3) ? 0 : (NSInteger)_groupStarts.count;
-    CGFloat extraHeaderHeight = headerRowCount * (_headerHeight - _rowHeight);
-    return totalRows * _rowHeight + extraHeaderHeight;
+    return [_layout totalContentHeightCached];
 }
 
-// Total pixel height of a group (accounts for header row being taller)
 - (CGFloat)pixelHeightForGroup:(NSInteger)groupIndex {
-    NSInteger totalRows = [self totalRowsInGroup:groupIndex];
-    NSInteger headerRows = (_headerDisplayStyle == 3) ? 0 : 1;
-    return headerRows * _headerHeight + (totalRows - headerRows) * _rowHeight;
+    return [_layout pixelHeightForGroup:groupIndex];
 }
 
 #pragma mark - Drawing (Virtual Scrolling - SPARSE MODEL)
