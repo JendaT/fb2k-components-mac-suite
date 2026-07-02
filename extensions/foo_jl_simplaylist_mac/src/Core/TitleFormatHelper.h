@@ -23,6 +23,15 @@ public:
         return tf;
     }
 
+    // Compile with an explicit fallback (nullptr = no fallback: an invalid
+    // pattern yields an empty script). Single funnel for all compilation so
+    // no call site touches the SDK compiler directly.
+    static titleformat_object::ptr compileWithFallback(const char* pattern, const char* fallback) {
+        titleformat_object::ptr tf;
+        titleformat_compiler::get()->compile_safe_ex(tf, pattern, fallback);
+        return tf;
+    }
+
     // Compile with caching (patterns are often reused)
     static titleformat_object::ptr compileWithCache(const std::string& pattern) {
         std::lock_guard<std::mutex> lock(s_cacheMutex);

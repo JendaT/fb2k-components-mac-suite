@@ -964,23 +964,15 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     pm->playlist_get_all_items(playlist, handles);
 
     // Compile header pattern
-    titleformat_object::ptr headerScript;
-    static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-        headerScript,
-        [preset.headerPattern UTF8String],
-        nullptr
-    );
+    titleformat_object::ptr headerScript =
+        simplaylist::TitleFormatHelper::compileWithFallback([preset.headerPattern UTF8String], nullptr);
 
     // Compile subgroup pattern (if any)
     NSString *subgroupPattern = [preset subgroupPattern];
     titleformat_object::ptr subgroupScript;
     BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
     if (hasSubgroups) {
-        static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-            subgroupScript,
-            [subgroupPattern UTF8String],
-            nullptr
-        );
+        subgroupScript = simplaylist::TitleFormatHelper::compileWithFallback([subgroupPattern UTF8String], nullptr);
     }
 
     // Build group data synchronously - only up to detectUpTo
@@ -1091,20 +1083,12 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             pfc::string8 bgFormattedHeader;
             pfc::string8 bgFormattedSubgroup;
 
-            titleformat_object::ptr bgHeaderScript;
-            static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-                bgHeaderScript,
-                [headerPattern UTF8String],
-                nullptr
-            );
+            titleformat_object::ptr bgHeaderScript =
+                simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
 
             titleformat_object::ptr bgSubgroupScript;
             if (hasSubgroups) {
-                static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-                    bgSubgroupScript,
-                    [subgroupPattern UTF8String],
-                    nullptr
-                );
+                bgSubgroupScript = simplaylist::TitleFormatHelper::compileWithFallback([subgroupPattern UTF8String], nullptr);
             }
 
             // Read showFirstSubgroup setting for consistent behavior with initial detection
@@ -1264,22 +1248,14 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         if (_groupDetectionGeneration != currentGeneration) return;
 
         // Compile header pattern
-        titleformat_object::ptr headerScript;
-        static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-            headerScript,
-            [headerPattern UTF8String],
-            nullptr
-        );
+        titleformat_object::ptr headerScript =
+            simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
 
         // Compile subgroup pattern (if any)
         titleformat_object::ptr subgroupScript;
         BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
         if (hasSubgroups) {
-            static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-                subgroupScript,
-                [subgroupPattern UTF8String],
-                nullptr
-            );
+            subgroupScript = simplaylist::TitleFormatHelper::compileWithFallback([subgroupPattern UTF8String], nullptr);
         }
 
         // Build group data
@@ -1584,15 +1560,14 @@ static const NSUInteger kMaxCacheableGroups = 500;
         if (_groupDetectionGeneration != currentGeneration) return;
 
         // Compile patterns
-        titleformat_object::ptr headerScript;
-        static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-            headerScript, [headerPattern UTF8String], nullptr);
+        titleformat_object::ptr headerScript =
+            simplaylist::TitleFormatHelper::compileWithFallback([headerPattern UTF8String], nullptr);
 
         titleformat_object::ptr subgroupScript;
         BOOL hasSubgroups = (subgroupPattern && subgroupPattern.length > 0);
         if (hasSubgroups) {
-            static_api_ptr_t<titleformat_compiler>()->compile_safe_ex(
-                subgroupScript, [subgroupPattern UTF8String], nullptr);
+            subgroupScript = simplaylist::TitleFormatHelper::compileWithFallback(
+                [subgroupPattern UTF8String], nullptr);
         }
 
         // Detect groups
