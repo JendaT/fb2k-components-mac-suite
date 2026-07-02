@@ -66,9 +66,23 @@ private:
     // Update access time for entry
     void touchEntry(const std::string& key) const;
 
+    // Prepare all cached statements
+    bool prepareStatements();
+
+    // Finalize all cached statements
+    void finalizeStatements();
+
     sqlite3* m_db = nullptr;
     mutable std::mutex m_mutex;
     bool m_initialized = false;
+
+    // Prepared statements (mutable for const methods like getWaveform)
+    mutable sqlite3_stmt* m_stmtHas = nullptr;
+    mutable sqlite3_stmt* m_stmtGet = nullptr;
+    mutable sqlite3_stmt* m_stmtStore = nullptr;
+    mutable sqlite3_stmt* m_stmtRemove = nullptr;
+    mutable sqlite3_stmt* m_stmtTouch = nullptr;
+    mutable sqlite3_stmt* m_stmtPrune = nullptr;
 };
 
 // Singleton accessor

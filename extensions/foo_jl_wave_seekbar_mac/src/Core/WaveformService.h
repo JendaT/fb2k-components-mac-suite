@@ -59,6 +59,14 @@ public:
     void pruneCache();
     void clearCache();
 
+    // Cache statistics (forwarded from WaveformCache)
+    struct CacheStats {
+        size_t entryCount = 0;
+        size_t totalSizeBytes = 0;
+        double oldestAccessDays = 0;
+    };
+    CacheStats getCacheStats() const;
+
 private:
     // Notify all listeners
     void notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform);

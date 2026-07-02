@@ -26,7 +26,7 @@ void WaveformData::initialize(uint32_t channels, uint32_t rate, double dur) {
 bool WaveformData::isValid() const {
     if (channelCount == 0 || channelCount > 2) return false;
     if (sampleRate == 0) return false;
-    if (duration <= 0) return false;
+    if (duration <= 0 || !std::isfinite(duration)) return false;
 
     for (uint32_t ch = 0; ch < channelCount; ch++) {
         if (min[ch].size() != BUCKET_COUNT) return false;
@@ -162,6 +162,8 @@ bool WaveformData::deserialize(const uint8_t* data, size_t size) {
     duration = readLE<double>(data + offset);
     offset += 8;
 
+    if (duration <= 0 || !std::isfinite(duration)) return false;
+
     // Check remaining size
     size_t expectedDataSize = channelCount * 3 * BUCKET_COUNT * sizeof(float);
     if (size < offset + expectedDataSize) return false;
@@ -195,6 +197,9 @@ std::vector<uint8_t> WaveformData::compress() const {
 
     uLongf compressedSize = compressBound(static_cast<uLong>(raw.size()));
     std::vector<uint8_t> compressed(compressedSize + 4);
+
+    // Guard against overflow (theoretical: 2ch * 3 arrays * 2048 buckets * 4 bytes = ~49KB)
+    if (raw.size() > UINT32_MAX) return {};
 
     // Store original size in first 4 bytes (little-endian)
     uint32_t originalSize = static_cast<uint32_t>(raw.size());
