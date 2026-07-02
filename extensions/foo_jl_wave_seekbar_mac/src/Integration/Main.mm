@@ -22,6 +22,7 @@ JL_COMPONENT_ABOUT(
     "- Click-to-seek functionality\n"
     "- Stereo and mono display modes\n"
     "- Dark mode support\n"
+    "- Glass background (translucent blur)\n"
     "- Waveform caching\n"
     "- Lock width/height via context menu"
 );

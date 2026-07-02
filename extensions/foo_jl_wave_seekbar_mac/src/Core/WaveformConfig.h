@@ -69,6 +69,12 @@ static const GUID guid_cfg_bg_color_dark = {
     {0x90, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07}
 };
 
+// Preferences page GUID (shared by page registration and "open preferences" actions)
+static const GUID guid_preferences_page = {
+    0xABCD1234, 0x5678, 0x9ABC,
+    {0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}
+};
+
 // Display modes
 enum DisplayMode {
     DisplayModeStereo = 0,
@@ -101,6 +107,7 @@ constexpr int kDefaultCursorEffect = CursorEffectGradient;  // Default to gradie
 constexpr int kDefaultWaveformStyle = WaveformStyleSolid;   // Default to solid color
 constexpr int kDefaultGradientBands = 8;                    // Number of gradient bands for solid style (2-32)
 constexpr bool kDefaultBpmSync = false;                     // Sync cursor animations to track BPM
+constexpr bool kDefaultGlassBackground = false;             // Opaque background by default
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

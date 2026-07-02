@@ -15,6 +15,8 @@
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
     const WaveformData *_cachedWaveform;
+    CGColorSpaceRef _deviceRGBColorSpace;       // Cached for reuse across frames
+    NSDictionary *_placeholderAttributes;        // Cached placeholder text attributes
 }
 
 @end
@@ -40,6 +42,15 @@
 }
 
 - (void)commonInit {
+    // Cache color space for reuse across draw calls
+    _deviceRGBColorSpace = CGColorSpaceCreateDeviceRGB();
+
+    // Cache placeholder text attributes
+    _placeholderAttributes = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11],
+        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+    };
+
     // Default display settings from config
     [self reloadSettings];
 
@@ -70,6 +81,9 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    if (_deviceRGBColorSpace) {
+        CGColorSpaceRelease(_deviceRGBColorSpace);
+    }
 }
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
@@ -85,6 +99,7 @@
     _waveformStyle = static_cast<WaveformRenderStyle>(getConfigInt(kKeyWaveformStyle, kDefaultWaveformStyle));
     _gradientBands = static_cast<int>(getConfigInt(kKeyGradientBands, kDefaultGradientBands));
     _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
+    _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
 }
@@ -146,7 +161,8 @@
 #pragma mark - Drawing
 
 - (BOOL)isOpaque {
-    return YES;
+    if (self.glassBackground) return NO;
+    return self.backgroundColor.alphaComponent >= 1.0;
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -157,9 +173,13 @@
 
     CGRect bounds = self.bounds;
 
-    // Draw background
-    CGContextSetFillColorWithColor(context, self.backgroundColor.CGColor);
-    CGContextFillRect(context, bounds);
+    // Draw background - in glass mode skip an opaque color so the blur shows
+    // through, but let a translucent color act as a tint over the blur
+    CGFloat bgAlpha = self.backgroundColor.alphaComponent;
+    if (!self.glassBackground || (bgAlpha > 0.0 && bgAlpha < 1.0)) {
+        CGContextSetFillColorWithColor(context, self.backgroundColor.CGColor);
+        CGContextFillRect(context, bounds);
+    }
 
     // Draw waveform or placeholder
     if (self.waveformData && self.waveformData->isValid()) {
@@ -178,20 +198,16 @@
 }
 
 - (void)drawPlaceholderInContext:(CGContextRef)context bounds:(CGRect)bounds {
-    // Draw a placeholder message
+    // Draw a placeholder message using cached attributes
     NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
-    NSDictionary *attributes = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
-    NSSize textSize = [text sizeWithAttributes:attributes];
+    NSSize textSize = [text sizeWithAttributes:_placeholderAttributes];
 
     NSPoint point = NSMakePoint(
         (bounds.size.width - textSize.width) / 2,
         (bounds.size.height - textSize.height) / 2
     );
 
-    [text drawAtPoint:point withAttributes:attributes];
+    [text drawAtPoint:point withAttributes:_placeholderAttributes];
 }
 
 // Helper: Get color for heat map based on amplitude (0-1)
@@ -329,8 +345,8 @@
                     minVal = waveform->min[0][i];
                     maxVal = waveform->max[0][i];
                 } else {
-                    minVal = (waveform->min[0][i] + waveform->min[1][i]) * 0.5f;
-                    maxVal = (waveform->max[0][i] + waveform->max[1][i]) * 0.5f;
+                    minVal = std::min(waveform->min[0][i], waveform->min[1][i]);
+                    maxVal = std::max(waveform->max[0][i], waveform->max[1][i]);
                 }
                 CGFloat peakVal = std::max(std::abs(minVal), std::abs(maxVal));
 
@@ -529,7 +545,17 @@
     CGFloat playedWidth = bounds.size.width * self.playbackPosition;
     if (playedWidth <= 0) return;
 
-    NSColor *bgDeviceColor = [self.backgroundColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    // Over glass, dim with a neutral appearance-matched shade so the blur stays
+    // visible instead of painting the configured background color
+    NSColor *dimBase = self.backgroundColor;
+    if (self.glassBackground) {
+        NSAppearanceName appearanceName = [self.effectiveAppearance
+            bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+        BOOL isDark = [appearanceName isEqualToString:NSAppearanceNameDarkAqua];
+        dimBase = isDark ? [NSColor blackColor] : [NSColor whiteColor];
+    }
+
+    NSColor *bgDeviceColor = [dimBase colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
     if (!bgDeviceColor) return;
 
     CGFloat dimOpacity = self.playedDimming;
@@ -585,7 +611,7 @@
                         playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     CGFloat fadeWidth = MIN(bounds.size.width * 0.02, 10.0);
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
     if (!colorSpace) return;
 
     CGFloat components[8] = {
@@ -594,7 +620,6 @@
     };
 
     CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    CGColorSpaceRelease(colorSpace);
     if (!gradient) return;
 
     // Solid portion
@@ -630,12 +655,12 @@
     CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
     CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
     if (!colorSpace) return;
 
     // Glow uses waveform color
     NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) { CGColorSpaceRelease(colorSpace); return; }
+    if (!waveDeviceColor) return;
 
     CGFloat glowAlpha = 0.3 + pulse * 0.4;  // 0.3-0.7 alpha
     CGFloat components[8] = {
@@ -644,7 +669,6 @@
     };
 
     CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    CGColorSpaceRelease(colorSpace);
     if (!gradient) return;
 
     // Draw glow on both sides of cursor
@@ -735,7 +759,7 @@
     }
 
     // Draw gradient trail
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
     if (!colorSpace) return;
 
     CGFloat components[8] = {
@@ -744,7 +768,6 @@
     };
 
     CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    CGColorSpaceRelease(colorSpace);
     if (!gradient) return;
 
     CGFloat trailStart = MAX(0, playedWidth - trailLength);
@@ -849,17 +872,8 @@
 }
 
 - (void)performSeekToTime:(double)seekTime {
-    try {
-        auto pc = playback_control::get();
-        if (pc.is_valid()) {
-            pc->playback_seek(seekTime);
-        }
-    } catch (const std::exception& e) {
-        pfc::string_formatter msg;
-        msg << "[WaveSeek] Seek error: " << e.what();
-        console::error(msg.c_str());
-    } catch (...) {
-        console::error("[WaveSeek] Unknown seek error");
+    if ([self.delegate respondsToSelector:@selector(waveformSeekbarView:requestsSeekToTime:)]) {
+        [self.delegate waveformSeekbarView:self requestsSeekToTime:seekTime];
     }
 }
 

@@ -11,6 +11,7 @@
 #import "../Core/WaveformService.h"
 #import "../Core/WaveformData.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/WaveformConfig.h"
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -22,6 +23,8 @@
     NSLayoutConstraint *_heightConstraint;          // Current height constraint
     BOOL _widthLocked;                              // Track if width is locked
     BOOL _heightLocked;                             // Track if height is locked
+    ListenerId _waveformListenerId;                 // For safe listener removal
+    NSVisualEffectView *_glassEffectView;           // Blur background when glass mode is on
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
@@ -39,11 +42,44 @@
 }
 
 - (void)loadView {
+    // Container hosts an optional blur view behind the waveform (glass mode)
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    container.wantsLayer = YES;
+    container.layer.cornerRadius = 6.0;
+    container.layer.masksToBounds = YES;
+
     // Create the waveform view programmatically
-    WaveformSeekbarView *view = [[WaveformSeekbarView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    WaveformSeekbarView *view = [[WaveformSeekbarView alloc] initWithFrame:container.bounds];
+    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     view.delegate = self;  // Set delegate for context menu events
     self.waveformView = view;
-    self.view = view;
+
+    [container addSubview:view];
+    self.view = container;
+
+    [self updateGlassBackground];
+}
+
+- (void)updateGlassBackground {
+    using namespace waveform_config;
+    BOOL glass = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
+    if (glass == (_glassEffectView != nil)) return;
+
+    if (glass) {
+        _glassEffectView = [[NSVisualEffectView alloc] initWithFrame:self.view.bounds];
+        _glassEffectView.material = NSVisualEffectMaterialSidebar;
+        _glassEffectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        _glassEffectView.state = NSVisualEffectStateActive;
+        _glassEffectView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self.view addSubview:_glassEffectView positioned:NSWindowBelow relativeTo:self.waveformView];
+    } else {
+        [_glassEffectView removeFromSuperview];
+        _glassEffectView = nil;
+    }
+}
+
+- (void)handleSettingsChanged:(NSNotification *)notification {
+    [self updateGlassBackground];
 }
 
 - (void)viewDidLoad {
@@ -84,9 +120,15 @@
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
 
-    // Register for waveform ready notifications
+    // Observe settings changes for glass background toggle without restart
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleSettingsChanged:)
+                                                 name:@"WaveformSeekbarSettingsChanged"
+                                               object:nil];
+
+    // Register for waveform ready notifications (store ID for safe removal)
     __weak typeof(self) weakSelf = self;
-    getWaveformService().addListener([weakSelf](const metadb_handle_ptr& track, const WaveformData* waveform) {
+    _waveformListenerId = getWaveformService().addListener([weakSelf](const metadb_handle_ptr& track, const WaveformData* waveform) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
@@ -108,11 +150,10 @@
 
 - (void)dealloc {
     [self stopPositionTimer];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     PlaybackCallbackManager::instance().unregisterController(self);
-    // Remove our listener from the waveform service
-    // Note: This removes ALL listeners. Safe because typically only one controller exists.
-    // The weak reference pattern in addListener prevents crashes if multiple exist.
-    getWaveformService().removeAllListeners();
+    // Remove only our listener from the waveform service
+    getWaveformService().removeListener(_waveformListenerId);
 }
 
 #pragma mark - Playback State Sync
@@ -127,18 +168,10 @@
             if (pc->get_now_playing(track) && track.is_valid()) {
                 file_info_impl info;
                 double duration = 0;
+                double bpm = 0;
                 if (track->get_info_async(info)) {
                     duration = info.get_length();
-                }
-
-                // Get BPM from track info (check common field names)
-                double bpm = 0;
-                const char* bpmStr = info.meta_get("BPM", 0);
-                if (!bpmStr) bpmStr = info.meta_get("bpm", 0);
-                if (!bpmStr) bpmStr = info.meta_get("TBPM", 0);
-                if (!bpmStr) bpmStr = info.meta_get("TEMPO", 0);
-                if (bpmStr) {
-                    bpm = atof(bpmStr);
+                    bpm = extractBpmFromInfo(info);
                 }
                 [self handleNewTrack:track duration:duration bpm:bpm];
 
@@ -280,8 +313,27 @@
                 double position = pc->playback_get_position();
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
-                    // Only redraw if position changed meaningfully (> 0.1%)
-                    if (fabs(newPos - self.waveformView.playbackPosition) > 0.001) {
+
+                    // Redraw once the cursor moves at least a quarter pixel
+                    CGFloat viewWidth = self.waveformView.bounds.size.width;
+                    double threshold = (viewWidth > 1.0) ? (0.25 / viewWidth) : 0.001;
+
+                    // Animated cursor effects need continuous redraw to stay smooth
+                    BOOL animatedEffect = NO;
+                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
+                        switch (self.waveformView.cursorEffect) {
+                            case WaveformCursorEffectGlow:
+                            case WaveformCursorEffectScanline:
+                            case WaveformCursorEffectPulse:
+                            case WaveformCursorEffectShimmer:
+                                animatedEffect = YES;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (animatedEffect || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
                         [self.waveformView refreshDisplay];
                     }
@@ -294,6 +346,21 @@
 }
 
 #pragma mark - WaveformSeekbarViewDelegate
+
+- (void)waveformSeekbarView:(WaveformSeekbarView *)view requestsSeekToTime:(double)time {
+    try {
+        auto pc = playback_control::get();
+        if (pc.is_valid()) {
+            pc->playback_seek(time);
+        }
+    } catch (const std::exception& e) {
+        pfc::string_formatter msg;
+        msg << "[WaveSeek] Seek error: " << e.what();
+        console::error(msg.c_str());
+    } catch (...) {
+        console::error("[WaveSeek] Unknown seek error");
+    }
+}
 
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point {
     FB2K_console_formatter() << "[WaveSeek] Context menu requested";
@@ -318,7 +385,28 @@
     lockHeightItem.state = _heightLocked ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:lockHeightItem];
 
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Preferences menu item
+    NSMenuItem *preferencesItem = [[NSMenuItem alloc]
+        initWithTitle:@"Preferences..."
+        action:@selector(menuShowPreferences:)
+        keyEquivalent:@""];
+    preferencesItem.target = self;
+    [menu addItem:preferencesItem];
+
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+}
+
+- (void)menuShowPreferences:(NSMenuItem *)sender {
+    @try {
+        auto uiControl = ui_control::get();
+        if (uiControl.is_valid()) {
+            uiControl->show_preferences(waveform_config::guid_preferences_page);
+        }
+    } @catch (...) {
+        console::error("[WaveSeek] Failed to open preferences");
+    }
 }
 
 - (void)menuToggleLockWidth:(NSMenuItem *)sender {
