@@ -20,6 +20,7 @@
 #import <Foundation/Foundation.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 struct SubgroupDetector {
@@ -76,13 +77,15 @@ struct SubgroupDetector {
     // Check if a subgroup header should be added for this track
     // Returns: true if subgroup header should be added
     // Updates: currentSubgroup tracking state
-    bool shouldAddSubgroup(const std::string& formattedSubgroup, bool isNewGroup,
+    // Takes const char* so hot detection loops can pass reused buffers without
+    // constructing a std::string per track.
+    bool shouldAddSubgroup(const char* formattedSubgroup, bool isNewGroup,
                            NSMutableArray<NSNumber*>* subgroupStarts,
                            NSMutableArray<NSString*>* subgroupHeaders,
                            size_t playlistIndex, const char* debugTrackName = nullptr) {
 
         // Only consider non-empty subgroup values (ignore tracks with missing disc tags)
-        if (formattedSubgroup.empty()) {
+        if (!formattedSubgroup || formattedSubgroup[0] == '\0') {
             if (debugEnabled && debugFile) {
                 fprintf(debugFile, "[%zu] '%s': empty subgroup, skipped\n",
                         playlistIndex, debugTrackName ? debugTrackName : "");
@@ -92,7 +95,7 @@ struct SubgroupDetector {
         }
 
         bool isFirstSubgroupInGroup = currentSubgroup.empty();
-        bool isDifferentSubgroup = (formattedSubgroup != currentSubgroup);
+        bool isDifferentSubgroup = (currentSubgroup != formattedSubgroup);
 
         bool shouldAdd = false;
         const char* reason = "";
@@ -118,8 +121,8 @@ struct SubgroupDetector {
             fprintf(debugFile, "[%zu] '%s': subgroup='%s' (len=%zu), current='%s', isNew=%d, isFirst=%d, isDiff=%d -> %s: %s\n",
                     playlistIndex,
                     debugTrackName ? debugTrackName : "",
-                    formattedSubgroup.c_str(),
-                    formattedSubgroup.size(),
+                    formattedSubgroup,
+                    strlen(formattedSubgroup),
                     currentSubgroup.c_str(),
                     isNewGroup,
                     isFirstSubgroupInGroup,
@@ -131,7 +134,7 @@ struct SubgroupDetector {
 
         if (shouldAdd) {
             [subgroupStarts addObject:@(playlistIndex)];
-            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup.c_str()]];
+            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup]];
         }
 
         // Always update currentSubgroup when formatted value is non-empty

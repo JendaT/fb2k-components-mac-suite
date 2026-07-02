@@ -17,6 +17,7 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
 #import "../Core/SubgroupDetector.h"
+#import "../Core/GroupBuilder.h"
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
@@ -992,32 +993,28 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // Use shared SubgroupDetector to ensure consistent logic across all code paths
     SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
-    pfc::string8 currentHeader("");
+    std::string currentHeader;
     pfc::string8 formattedHeader;
     pfc::string8 formattedSubgroup;
 
-    for (t_size i = 0; i < detectUpTo && i < handles.get_count(); i++) {
-        @autoreleasepool {
+    simplaylist::GroupBuildCallbacks buildCb;
+    buildCb.formatHeader = [&](size_t i) {
         handles[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
-
-        BOOL isNewGroup = (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0);
-
-        if (isNewGroup) {
-            [groupStarts addObject:@(i)];
-            [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
-            [groupArtKeys addObject:[NSString stringWithUTF8String:handles[i]->get_path()]];
-            currentHeader = formattedHeader;
-            subgroupDetector.enterNewGroup();  // Clear subgroup state for new group
-        }
-
-        // Check for subgroup change using shared detector
-        if (hasSubgroups) {
+        return formattedHeader.c_str();
+    };
+    if (hasSubgroups) {
+        buildCb.formatSubgroup = [&](size_t i) {
             handles[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-            subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
-                                                subgroupStarts, subgroupHeaders, i);
-        }
-        } // @autoreleasepool
+            return formattedSubgroup.c_str();
+        };
     }
+    buildCb.artKey = [&](size_t i) { return handles[i]->get_path(); };
+
+    simplaylist::buildGroups(0, MIN((size_t)detectUpTo, (size_t)handles.get_count()),
+                             hasSubgroups, /* forceFirstNewGroup */ true,
+                             currentHeader, subgroupDetector, buildCb,
+                             groupStarts, groupHeaders, groupArtKeys,
+                             subgroupStarts, subgroupHeaders);
 
     // Set partial data immediately - enough for visible area
     _playlistView.itemCount = itemCount;
@@ -1079,7 +1076,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             NSMutableArray<NSNumber *> *moreSubgroupStarts = [NSMutableArray array];
             NSMutableArray<NSString *> *moreSubgroupHeaders = [NSMutableArray array];
 
-            pfc::string8 bgCurrentHeader([lastHeader UTF8String]);
+            std::string bgCurrentHeader([lastHeader UTF8String]);
             pfc::string8 bgFormattedHeader;
             pfc::string8 bgFormattedSubgroup;
 
@@ -1100,28 +1097,29 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             SubgroupDetector bgSubgroupDetector(bgShowFirstSubgroup, g_subgroupDebugEnabled);
             bgSubgroupDetector.initFromState([lastSubgroup UTF8String]);
 
-            for (t_size i = detectUpTo; i < handlesPtr->get_count(); i++) { @autoreleasepool {
-                if (_groupDetectionGeneration != currentGeneration) return;
-
+            // Continuation: no forced first group (the seam is only a group
+            // boundary if the header actually changes from the sync portion).
+            simplaylist::GroupBuildCallbacks buildCb;
+            buildCb.formatHeader = [&](size_t i) {
                 (*handlesPtr)[i]->format_title(nullptr, bgFormattedHeader, bgHeaderScript, nullptr);
-
-                BOOL isNewGroup = (strcmp(bgFormattedHeader.c_str(), bgCurrentHeader.c_str()) != 0);
-
-                if (isNewGroup) {
-                    [moreGroupStarts addObject:@(i)];
-                    [moreGroupHeaders addObject:[NSString stringWithUTF8String:bgFormattedHeader.c_str()]];
-                    [moreGroupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
-                    bgCurrentHeader = bgFormattedHeader;
-                    bgSubgroupDetector.enterNewGroup();  // Clear subgroup state for new group
-                }
-
-                // Check for subgroup change using shared detector
-                if (hasSubgroups) {
+                return bgFormattedHeader.c_str();
+            };
+            if (hasSubgroups) {
+                buildCb.formatSubgroup = [&](size_t i) {
                     (*handlesPtr)[i]->format_title(nullptr, bgFormattedSubgroup, bgSubgroupScript, nullptr);
-                    bgSubgroupDetector.shouldAddSubgroup(bgFormattedSubgroup.c_str(), isNewGroup,
-                                                          moreSubgroupStarts, moreSubgroupHeaders, i);
-                }
-            }}
+                    return bgFormattedSubgroup.c_str();
+                };
+            }
+            buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
+            buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+
+            if (!simplaylist::buildGroups(detectUpTo, handlesPtr->get_count(),
+                                          hasSubgroups, /* forceFirstNewGroup */ false,
+                                          bgCurrentHeader, bgSubgroupDetector, buildCb,
+                                          moreGroupStarts, moreGroupHeaders, moreGroupArtKeys,
+                                          moreSubgroupStarts, moreSubgroupHeaders)) {
+                return;
+            }
 
             if (_groupDetectionGeneration != currentGeneration) return;
 
@@ -1275,33 +1273,32 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         // Use shared SubgroupDetector to ensure consistent logic across all code paths
         SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
-        pfc::string8 currentHeader("");
+        // format_title with metadb_handle is thread-safe for reading
+        std::string currentHeader;
         pfc::string8 formattedHeader;
         pfc::string8 formattedSubgroup;
 
-        for (t_size i = 0; i < handlesPtr->get_count(); i++) { @autoreleasepool {
-            if (_groupDetectionGeneration != currentGeneration) return;
-
-            // format_title with metadb_handle is thread-safe for reading
+        simplaylist::GroupBuildCallbacks buildCb;
+        buildCb.formatHeader = [&](size_t i) {
             (*handlesPtr)[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
-
-            BOOL isNewGroup = (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0);
-
-            if (isNewGroup) {
-                [groupStarts addObject:@(i)];
-                [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
-                [groupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
-                currentHeader = formattedHeader;
-                subgroupDetector.enterNewGroup();  // Clear subgroup state for new group
-            }
-
-            // Check for subgroup change using shared detector
-            if (hasSubgroups) {
+            return formattedHeader.c_str();
+        };
+        if (hasSubgroups) {
+            buildCb.formatSubgroup = [&](size_t i) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-                subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
-                                                    subgroupStarts, subgroupHeaders, i);
-            }
-        }}
+                return formattedSubgroup.c_str();
+            };
+        }
+        buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
+        buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+
+        if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
+                                      hasSubgroups, /* forceFirstNewGroup */ true,
+                                      currentHeader, subgroupDetector, buildCb,
+                                      groupStarts, groupHeaders, groupArtKeys,
+                                      subgroupStarts, subgroupHeaders)) {
+            return;
+        }
 
         if (_groupDetectionGeneration != currentGeneration) return;
 
@@ -1582,30 +1579,31 @@ static const NSUInteger kMaxCacheableGroups = 500;
             simplaylist_config::kDefaultShowFirstSubgroupHeader);
         SubgroupDetector subgroupDetector(showFirstSubgroup, g_subgroupDebugEnabled);
 
-        pfc::string8 currentHeader("");
+        std::string currentHeader;
         pfc::string8 formattedHeader;
         pfc::string8 formattedSubgroup;
 
-        for (t_size i = 0; i < handlesPtr->get_count(); i++) { @autoreleasepool {
-            if (_groupDetectionGeneration != currentGeneration) return;
-
+        simplaylist::GroupBuildCallbacks buildCb;
+        buildCb.formatHeader = [&](size_t i) {
             (*handlesPtr)[i]->format_title(nullptr, formattedHeader, headerScript, nullptr);
-            BOOL isNewGroup = (i == 0 || strcmp(formattedHeader.c_str(), currentHeader.c_str()) != 0);
-
-            if (isNewGroup) {
-                [groupStarts addObject:@(i)];
-                [groupHeaders addObject:[NSString stringWithUTF8String:formattedHeader.c_str()]];
-                [groupArtKeys addObject:[NSString stringWithUTF8String:(*handlesPtr)[i]->get_path()]];
-                currentHeader = formattedHeader;
-                subgroupDetector.enterNewGroup();
-            }
-
-            if (hasSubgroups) {
+            return formattedHeader.c_str();
+        };
+        if (hasSubgroups) {
+            buildCb.formatSubgroup = [&](size_t i) {
                 (*handlesPtr)[i]->format_title(nullptr, formattedSubgroup, subgroupScript, nullptr);
-                subgroupDetector.shouldAddSubgroup(formattedSubgroup.c_str(), isNewGroup,
-                                                    subgroupStarts, subgroupHeaders, i);
-            }
-        }}
+                return formattedSubgroup.c_str();
+            };
+        }
+        buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
+        buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+
+        if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
+                                      hasSubgroups, /* forceFirstNewGroup */ true,
+                                      currentHeader, subgroupDetector, buildCb,
+                                      groupStarts, groupHeaders, groupArtKeys,
+                                      subgroupStarts, subgroupHeaders)) {
+            return;
+        }
 
         if (_groupDetectionGeneration != currentGeneration) return;
 
