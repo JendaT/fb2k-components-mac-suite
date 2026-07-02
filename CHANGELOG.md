@@ -255,6 +255,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Waveform Seekbar
 
+### [1.2.0] - 2026-07-02
+
+#### Added
+- Glass background option: translucent blur background, same effect as SimPlaylist; toggles live without restart
+- Background color wells support transparency; translucent background tints the glass blur
+- "Preferences..." context menu item opens the seekbar preferences page directly
+
+#### Fixed
+- Choppy playback cursor movement (redraw threshold now pixel-based, animated cursor effects redraw continuously)
+- Played-portion shading no longer paints the opaque background color over the glass blur
+- Stale waveform scans no longer overwrite the current track on rapid track changes
+- Cache store/lookup race and listener deadlock fixes
+
 ### [1.1.0] - 2025-12-29
 
 #### Added

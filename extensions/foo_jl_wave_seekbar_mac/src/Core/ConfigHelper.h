@@ -21,8 +21,6 @@ inline int64_t getConfigInt(const char* key, int64_t defaultVal) {
         pfc::string8 fullKey;
         fullKey << kConfigPrefix << key;
         int64_t val = store->getConfigInt(fullKey.c_str(), defaultVal);
-        // Debug: console::info prints only in Debug builds
-        FB2K_console_formatter() << "[WaveSeek] getConfigInt(" << fullKey.c_str() << ") = " << val;
         return val;
     } catch (std::exception& e) {
         FB2K_console_formatter() << "[WaveSeek] getConfigInt exception: " << e.what();
@@ -38,7 +36,6 @@ inline void setConfigInt(const char* key, int64_t value) {
         auto store = fb2k::configStore::get();
         pfc::string8 fullKey;
         fullKey << kConfigPrefix << key;
-        FB2K_console_formatter() << "[WaveSeek] setConfigInt(" << fullKey.c_str() << ", " << value << ")";
         store->setConfigInt(fullKey.c_str(), value);
     } catch (std::exception& e) {
         FB2K_console_formatter() << "[WaveSeek] setConfigInt exception: " << e.what();
@@ -63,6 +60,7 @@ static const char* const kKeyCursorEffect = "cursor_effect";    // 0-6 (CursorEf
 static const char* const kKeyWaveformStyle = "waveform_style";  // 0-2 (WaveformStyle enum)
 static const char* const kKeyGradientBands = "gradient_bands";  // 2-32 bands for solid style
 static const char* const kKeyBpmSync = "bpm_sync";              // Sync animations to BPM
+static const char* const kKeyGlassBackground = "glass_background";  // Translucent blur background
 static const char* const kKeyCacheSizeMB = "cache_size_mb";
 static const char* const kKeyCacheRetentionDays = "cache_retention_days";
 static const char* const kKeyWaveColorLight = "wave_color_light";

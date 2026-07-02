@@ -9,7 +9,7 @@
 #include "../fb2k_sdk.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
-#include "../Core/WaveformCache.h"
+#include "../Core/WaveformService.h"
 #import "../../../../shared/PreferencesCommon.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
@@ -25,6 +25,7 @@
     NSPopUpButton *_waveformStylePopup;
     NSPopUpButton *_gradientBandsPopup;
     NSButton *_shadePlayedCheckbox;
+    NSButton *_glassBackgroundCheckbox;
 
     // Light mode colors
     NSColorWell *_waveColorLightWell;
@@ -63,8 +64,12 @@
 }
 
 - (void)loadView {
-    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 420)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 450)];
     self.view = view;
+
+    // Allow transparent colors (alpha slider in the color panel)
+    [NSColor setIgnoresAlpha:NO];
+    [NSColorPanel sharedColorPanel].showsAlpha = YES;
 
     [self buildUI];
     [self loadSettings];
@@ -132,6 +137,16 @@
     [_shadePlayedCheckbox setTarget:self];
     [_shadePlayedCheckbox setAction:@selector(checkboxChanged:)];
     [self.view addSubview:_shadePlayedCheckbox];
+    y += 26;
+
+    // Glass background
+    _glassBackgroundCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 250, 20)];
+    _glassBackgroundCheckbox.buttonType = NSButtonTypeSwitch;
+    _glassBackgroundCheckbox.title = @"Glass background";
+    _glassBackgroundCheckbox.toolTip = @"Translucent blur background instead of a solid color";
+    [_glassBackgroundCheckbox setTarget:self];
+    [_glassBackgroundCheckbox setAction:@selector(checkboxChanged:)];
+    [self.view addSubview:_glassBackgroundCheckbox];
     y += 32;
 
     // Colors section - Light Mode
@@ -289,6 +304,7 @@
 
     // Checkboxes
     _shadePlayedCheckbox.state = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion) ? NSControlStateValueOn : NSControlStateValueOff;
+    _glassBackgroundCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
     // Light mode colors
     _waveColorLightWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight))];
@@ -334,7 +350,7 @@
 }
 
 - (void)updateCacheStatus {
-    WaveformCache::CacheStats stats = getWaveformCache().getStats();
+    auto stats = getWaveformService().getCacheStats();
 
     NSString *sizeStr;
     if (stats.totalSizeBytes < 1024 * 1024) {
@@ -381,6 +397,8 @@
     using namespace waveform_config;
     if (sender == _shadePlayedCheckbox) {
         setConfigBool(kKeyShadePlayedPortion, _shadePlayedCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _glassBackgroundCheckbox) {
+        setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }
@@ -436,7 +454,7 @@
     [alert addButtonWithTitle:@"Cancel"];
 
     if ([alert runModal] == NSAlertFirstButtonReturn) {
-        getWaveformCache().clearCache();
+        getWaveformService().clearCache();
         [self updateCacheStatus];
     }
 }
@@ -445,11 +463,6 @@
 
 // Preferences page registration
 namespace {
-    static const GUID guid_preferences_page = {
-        0xABCD1234, 0x5678, 0x9ABC,
-        {0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}
-    };
-
     class waveform_preferences_page : public preferences_page {
     public:
         service_ptr instantiate() override {
@@ -461,7 +474,7 @@ namespace {
         }
 
         GUID get_guid() override {
-            return guid_preferences_page;
+            return waveform_config::guid_preferences_page;
         }
 
         GUID get_parent_guid() override {

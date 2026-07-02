@@ -2,6 +2,27 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
+## [1.2.0] - 2026-07-02
+
+### Added
+- Glass background option (Preferences > Display): translucent blur background using the same behind-window effect as SimPlaylist; toggles live without restart
+- Background color wells now support transparency (alpha slider in the color panel); a translucent background acts as a tint over the glass blur
+- "Preferences..." context menu item that opens the Waveform Seekbar preferences page directly
+
+### Fixed
+- Playback cursor updated only ~2x per second on longer tracks; redraw threshold is now pixel-based for smooth movement
+- Animated cursor effects (Glow, Scanline, Pulse, Shimmer) now animate continuously instead of only on cursor movement
+- Played-portion shading painted the opaque background color over the glass blur; it now uses a neutral translucent dim in glass mode
+- Stale waveform scans no longer overwrite the current track's data on rapid track changes (generation counter)
+- Race between concurrent cache store and lookup resolved (double-check under lock)
+- Per-controller waveform listener removal; seekbar recovers cleanly when layout elements are recreated
+
+### Technical
+- SQLite cache uses prepared statements for all queries
+- Construct-on-first-use singletons avoid static initialization order issues
+- Listener callbacks invoked outside the lock to prevent deadlocks
+- Position updates driven solely by the 60fps timer; removed redundant playback-time dispatch and verbose config logging
+
 ## [1.1.0] - 2025-12-29
 
 ### Added
