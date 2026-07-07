@@ -26,7 +26,8 @@ JL_COMPONENT_ABOUT(
     "- Virtual scrolling for large playlists\n"
     "- Keyboard navigation\n"
     "- Now playing highlighting\n"
-    "- Drag & drop reordering"
+    "- Drag & drop reordering\n"
+    "- Keeps playback in its playlist while browsing the library"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_simplaylist.component");

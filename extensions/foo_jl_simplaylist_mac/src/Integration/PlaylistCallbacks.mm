@@ -7,6 +7,7 @@
 
 #import "PlaylistCallbacks.h"
 #import "../UI/SimPlaylistController.h"
+#import "../Core/ConfigHelper.h"
 #import <mutex>
 
 // Global controller storage - NSHashTable with weak memory properly supports ARC zeroing
@@ -220,12 +221,101 @@ public:
 };
 static simplaylist_metadb_callback* g_metadb_callback = nullptr;
 
+// Playing-playlist guard
+//
+// foobar2000 tracks the "active playlist" (shown in the UI) and the "playing
+// playlist" (where the next track comes from when the current one ends)
+// independently. On the Mac, browsing a library viewer (ReFacets) mirrors the
+// selection into a hidden playlist and redirects the playing playlist to it,
+// so finishing a track jumps playback to the browsed selection. There is no
+// SDK callback for playing-playlist changes, but the redirect is detectable:
+// get_playing_item_location() still reports the playlist the current track is
+// actually playing from. When it disagrees with get_playing_playlist(), point
+// continuation back. See docs/playing-playlist-guard.md.
+//
+// set_playing_playlist must not be called from inside a playlist callback
+// (callbacks may only read playlist state), so checks are deferred to the
+// main queue. A low-frequency timer backstops redirects that don't touch
+// playlist contents (e.g. re-clicking the same ReFacets selection).
+
+static bool g_playingGuardActive = false;
+static bool g_playingGuardCheckPending = false;
+static NSTimer* g_playingGuardTimer = nil;
+
+static void runPlayingPlaylistGuardCheck() {
+    if (!g_playingGuardActive) return;
+    auto pm = playlist_manager::get();
+    t_size itemPlaylist = SIZE_MAX, itemIndex = SIZE_MAX;
+    if (!pm->get_playing_item_location(&itemPlaylist, &itemIndex)) return;
+    t_size playingPlaylist = pm->get_playing_playlist();
+    if (playingPlaylist == itemPlaylist) return;
+    if (itemPlaylist >= pm->get_playlist_count()) return;
+    if (!simplaylist_config::getConfigBool(simplaylist_config::kKeepPlayingPlaylist,
+                                           simplaylist_config::kDefaultKeepPlayingPlaylist)) return;
+
+    pfc::string8 thief = "<none>";
+    if (playingPlaylist < pm->get_playlist_count()) {
+        pm->playlist_get_name(playingPlaylist, thief);
+    }
+    pm->set_playing_playlist(itemPlaylist);
+    pfc::string8 restored;
+    pm->playlist_get_name(itemPlaylist, restored);
+    FB2K_console_formatter() << "[SimPlaylist] Kept playback in \"" << restored
+                             << "\" (playing playlist was redirected to \"" << thief << "\")";
+}
+
+static void schedulePlayingPlaylistGuardCheck() {
+    if (g_playingGuardCheckPending) return;
+    g_playingGuardCheckPending = true;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_playingGuardCheckPending = false;
+        runPlayingPlaylistGuardCheck();
+    });
+}
+
+// Watches all playlists (unlike simplaylist_playlist_callback above, which is
+// active-playlist only) so the check fires when the hidden selection-mirror
+// playlist is rewritten during library browsing.
+class simplaylist_playing_playlist_guard : public playlist_callback_impl_base {
+public:
+    simplaylist_playing_playlist_guard() : playlist_callback_impl_base(
+        flag_on_items_added |
+        flag_on_items_removed |
+        flag_on_items_replaced
+    ) {}
+
+    void on_items_added(t_size p_playlist, t_size p_start, metadb_handle_list_cref p_data, const bit_array& p_selection) override {
+        schedulePlayingPlaylistGuardCheck();
+    }
+
+    void on_items_removed(t_size p_playlist, const bit_array& p_mask, t_size p_old_count, t_size p_new_count) override {
+        schedulePlayingPlaylistGuardCheck();
+    }
+
+    void on_items_replaced(t_size p_playlist, const bit_array& p_mask, const pfc::list_base_const_t<t_on_items_replaced_entry>& p_data) override {
+        schedulePlayingPlaylistGuardCheck();
+    }
+};
+
+static simplaylist_playing_playlist_guard* g_playing_playlist_guard = nullptr;
+
 void SimPlaylistCallbackManager::initCallbacks() {
     if (!g_playlist_callback) {
         g_playlist_callback = new simplaylist_playlist_callback();
     }
     if (!g_metadb_callback) {
         g_metadb_callback = new simplaylist_metadb_callback();
+    }
+    if (!g_playing_playlist_guard) {
+        g_playing_playlist_guard = new simplaylist_playing_playlist_guard();
+    }
+    g_playingGuardActive = true;
+    if (!g_playingGuardTimer) {
+        g_playingGuardTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
+                                                              repeats:YES
+                                                                block:^(NSTimer* timer) {
+            runPlayingPlaylistGuardCheck();
+        }];
     }
 }
 
@@ -240,6 +330,11 @@ void SimPlaylistCallbackManager::onShutdown() {
 
 void SimPlaylistCallbackManager::shutdownCallbacks() {
     onShutdown();
+    g_playingGuardActive = false;
+    [g_playingGuardTimer invalidate];
+    g_playingGuardTimer = nil;
+    delete g_playing_playlist_guard;
+    g_playing_playlist_guard = nullptr;
     delete g_playlist_callback;
     g_playlist_callback = nullptr;
     delete g_metadb_callback;

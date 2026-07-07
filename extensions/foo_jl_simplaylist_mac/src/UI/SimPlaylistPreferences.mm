@@ -44,6 +44,8 @@
 @property (nonatomic, strong) NSButton *debugRenderingCheckbox;
 @property (nonatomic, strong) NSButton *dragToFinderMoveCheckbox;
 @property (nonatomic, strong) NSButton *preserveQueueCheckbox;
+@property (nonatomic, strong) NSButton *keepPlayingPlaylistCheckbox;
+@property (nonatomic, strong) NSPopover *keepPlayingHelpPopover;
 @property (nonatomic, strong) NSPopUpButton *queueDisplayStylePopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenBehaviorPopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenTargetPopup;
@@ -58,7 +60,7 @@
 - (void)loadView {
     // Build the preferences inside a flipped container, then wrap it in a scroll view
     // so users can scroll if their preferences window is shorter than the content.
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 835)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 960)];
     container.autoresizingMask = 0;  // Fixed size so side-by-side layout stays intact
 
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 820, 600)];
@@ -380,12 +382,12 @@
     CGFloat behaviorBoxY = y;
     CGFloat behaviorContentY = 22;
 
-    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 180)];
+    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 230)];
     behaviorBox.title = @"Behavior";
     behaviorBox.titlePosition = NSAtTop;
     [container addSubview:behaviorBox];
 
-    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 150)];
+    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 200)];
     behaviorBox.contentView = behaviorContent;
 
     // Double-click preserves queue
@@ -395,6 +397,33 @@
     _preserveQueueCheckbox.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 20);
     [behaviorContent addSubview:_preserveQueueCheckbox];
     behaviorContentY += rowHeight + 4;
+
+    // Keep playback in its playlist while browsing the library
+    _keepPlayingPlaylistCheckbox = [NSButton checkboxWithTitle:@"Keep playback in its playlist"
+                                                        target:self
+                                                        action:@selector(keepPlayingPlaylistChanged:)];
+    [_keepPlayingPlaylistCheckbox sizeToFit];
+    NSRect keepPlayingFrame = _keepPlayingPlaylistCheckbox.frame;
+    keepPlayingFrame.origin = NSMakePoint(boxMargin + labelWidth, behaviorContentY);
+    _keepPlayingPlaylistCheckbox.frame = keepPlayingFrame;
+    [behaviorContent addSubview:_keepPlayingPlaylistCheckbox];
+
+    NSButton *keepPlayingHelpButton = [[NSButton alloc] initWithFrame:
+        NSMakeRect(NSMaxX(keepPlayingFrame) + 6, behaviorContentY - 1, 21, 21)];
+    keepPlayingHelpButton.bezelStyle = NSBezelStyleHelpButton;
+    keepPlayingHelpButton.title = @"";
+    keepPlayingHelpButton.target = self;
+    keepPlayingHelpButton.action = @selector(keepPlayingHelpClicked:);
+    [behaviorContent addSubview:keepPlayingHelpButton];
+    behaviorContentY += 18;
+
+    NSTextField *keepPlayingNote = [NSTextField labelWithString:@"Prevents library browsing (ReFacets) from changing which playlist continues playing when the current track ends"];
+    keepPlayingNote.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 28);
+    keepPlayingNote.font = [NSFont systemFontOfSize:10];
+    keepPlayingNote.textColor = [NSColor secondaryLabelColor];
+    keepPlayingNote.lineBreakMode = NSLineBreakByWordWrapping;
+    [behaviorContent addSubview:keepPlayingNote];
+    behaviorContentY += 32;
 
     // Queue column display style
     NSTextField *queueStyleLabel = [NSTextField labelWithString:@"Queue Column:"];
@@ -434,7 +463,7 @@
     // _finderOpenTargetPopupFrame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 220, 26);
     // _finderOpenTargetPopupParent = behaviorContent;
 
-    y = behaviorBoxY + 200;
+    y = behaviorBoxY + 250;
 
     // Help text — placed under the Pattern Help box on the right side
     CGFloat helpTextX = leftMargin + 460 + 20;
@@ -569,6 +598,11 @@
         simplaylist_config::kDoubleClickPreservesQueue,
         simplaylist_config::kDefaultDoubleClickPreservesQueue);
     _preserveQueueCheckbox.state = preserveQueue ? NSControlStateValueOn : NSControlStateValueOff;
+
+    bool keepPlayingPlaylist = simplaylist_config::getConfigBool(
+        simplaylist_config::kKeepPlayingPlaylist,
+        simplaylist_config::kDefaultKeepPlayingPlaylist);
+    _keepPlayingPlaylistCheckbox.state = keepPlayingPlaylist ? NSControlStateValueOn : NSControlStateValueOff;
 
     int64_t queueStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
@@ -903,6 +937,55 @@
 - (void)preserveQueueChanged:(id)sender {
     bool enabled = (_preserveQueueCheckbox.state == NSControlStateValueOn);
     simplaylist_config::setConfigBool(simplaylist_config::kDoubleClickPreservesQueue, enabled);
+}
+
+- (void)keepPlayingPlaylistChanged:(id)sender {
+    bool enabled = (_keepPlayingPlaylistCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kKeepPlayingPlaylist, enabled);
+}
+
+- (void)keepPlayingHelpClicked:(NSButton *)sender {
+    if (self.keepPlayingHelpPopover.isShown) {
+        [self.keepPlayingHelpPopover close];
+        return;
+    }
+
+    NSString *text =
+        @"foobar2000 tracks two playlists independently: the one displayed in the UI "
+        @"(active playlist) and the one playback continues in when the current track "
+        @"ends (playing playlist).\n\n"
+        @"On the Mac, browsing the media library with ReFacets silently redirects the "
+        @"playing playlist to a hidden playlist mirroring your selection. Your track "
+        @"keeps playing, but the moment it ends, playback jumps to the first browsed "
+        @"track and abandons your playlist. No native setting prevents this.\n\n"
+        @"With this option on, SimPlaylist detects the redirect and points playback "
+        @"continuation back at the playlist the current track is playing from, so "
+        @"browsing the library never changes what plays next.\n\n"
+        @"Double-clicking a track in ReFacets still starts playback from the selection "
+        @"as usual, and the playback queue always takes priority either way. Each "
+        @"restore is logged to the foobar2000 console.";
+
+    NSFont *font = [NSFont systemFontOfSize:12];
+    CGFloat textWidth = 340;
+    NSRect textRect = [text boundingRectWithSize:NSMakeSize(textWidth, CGFLOAT_MAX)
+                                         options:NSStringDrawingUsesLineFragmentOrigin
+                                      attributes:@{NSFontAttributeName: font}];
+    CGFloat textHeight = ceil(textRect.size.height) + 4;
+
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, textWidth + 28, textHeight + 28)];
+    NSTextField *label = [NSTextField wrappingLabelWithString:text];
+    label.font = font;
+    label.frame = NSMakeRect(14, 14, textWidth, textHeight);
+    [content addSubview:label];
+
+    NSViewController *vc = [[NSViewController alloc] init];
+    vc.view = content;
+
+    NSPopover *popover = [[NSPopover alloc] init];
+    popover.contentViewController = vc;
+    popover.behavior = NSPopoverBehaviorTransient;
+    self.keepPlayingHelpPopover = popover;
+    [popover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
 }
 
 - (void)queueDisplayStyleChanged:(id)sender {
