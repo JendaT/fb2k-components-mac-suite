@@ -594,8 +594,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Testability refactor following the simplaylist 1.5.0 pattern. No functional change intended.
 
 #### Added
-- Pure Core modules extracted from SDK/network code: `ManifestParser` (BTS/DASH parsing), `StreamResolutionPolicy` (quality fallback), `HTTPResponsePolicy` (status-to-error mapping), `TidalLog` (Foundation-only logging funnel)
-- Standalone unit-test suite (147 checks, 6 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+- Pure Core modules extracted from SDK/network code: `ManifestParser` (BTS/DASH parsing), `StreamResolutionPolicy` (quality fallback), `HTTPResponsePolicy` (status-to-error mapping), `ResponseParser` (JSON to models, replacing 11 inline loops in the API client), `TidalLog` (Foundation-only logging funnel)
+- Standalone unit-test suite (194 checks, 7 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
 - Debug-logging preference honored after restart (cache was only synced on toggle)

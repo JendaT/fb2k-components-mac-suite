@@ -4,13 +4,14 @@ All notable changes to TIDAL Integration will be documented in this file.
 
 ## [Unreleased]
 
-Testability refactor following the simplaylist 1.5.0 pattern: pure logic extracted into Foundation-only Core modules, covered by a standalone clang++ unit-test suite (147 checks across 6 binaries, run under ASan+UBSan) that now gates every build via `Scripts/run_tests.sh`. No functional change intended; parsing and policy code was extracted verbatim and pinned by tests.
+Testability refactor following the simplaylist 1.5.0 pattern: pure logic extracted into Foundation-only Core modules, covered by a standalone clang++ unit-test suite (194 checks across 7 binaries, run under ASan+UBSan) that now gates every build via `Scripts/run_tests.sh`. No functional change intended; parsing and policy code was extracted verbatim and pinned by tests.
 
 ### Added
 - `Core/ManifestParser` — BTS/JSON + DASH MPD parsing, SegmentTimeline segment-count math, DRM detection, codec normalization (pins the v0.3.1 DASH semantics).
 - `Core/StreamResolutionPolicy` — quality-fallback cascade and downgrade/fail decisions (403-only fallback, DASH acceptance gating, DRM handling).
 - `Core/HTTPResponsePolicy` — HTTP status to action/error mapping (429 Retry-After parsing, single 401 refresh-retry, 403/404/5xx).
 - `Core/TidalLog` — Foundation-only logging funnel with pluggable backend; fb2k console backend installed at component init.
+- `Core/ResponseParser` — JSON to model parsing for all API responses: token/refresh responses (including refresh-token rotation), item lists, the favorites/playlist `item` wrapper, FOLDER filtering, exact-ISRC matching. Replaces 11 inline parsing loops in `JLTidalAPI`, which is now a thin transport.
 - `Tests/` + `Scripts/run_tests.sh` — standalone test binaries (no XCTest, no Xcode) gating `build.sh`; suites for ManifestParser, both policies, URLUtils, TidalSession, StreamCache.
 
 ### Fixed
@@ -19,7 +20,7 @@ Testability refactor following the simplaylist 1.5.0 pattern: pure logic extract
 
 ### Technical
 - `TidalModels`, `URLUtils`, and `StreamCache` no longer depend on the fb2k SDK (logging via `TidalLog`); the config-gated raw-MPD console dump moved from `JLTidalPlaybackInfo` to the stream resolver via a new `rawDASHManifest` diagnostic property.
-- Remaining refactor candidates tracked in BACKLOG: per-endpoint JSON parsing in `JLTidalAPI`, playlist-sync algorithms (naming/folder-tree/diff/ISRC), browser view-model.
+- Remaining refactor candidates tracked in BACKLOG: playlist-sync algorithms (naming/folder-tree/diff/ISRC), browser view-model.
 
 ## [0.3.1] - 2026-06-17
 

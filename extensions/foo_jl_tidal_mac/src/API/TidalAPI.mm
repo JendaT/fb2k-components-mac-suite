@@ -11,6 +11,7 @@
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
 #import "../Core/HTTPResponsePolicy.h"
+#import "../Core/ResponseParser.h"
 #import "../Services/TidalAuthService.h"
 
 @implementation JLTidalDeviceCode
@@ -190,7 +191,7 @@
         }
 
         // Parse successful token response
-        JLTidalSession *session = [self parseTokenResponse:json error:nil];
+        JLTidalSession *session = [JLTidalResponseParser sessionFromTokenResponse:json];
         if (session) {
             [[JLTidalRateLimiter shared] recordSuccess];
             tidal::logInfo("Successfully obtained access token");
@@ -260,65 +261,21 @@
             return;
         }
 
-        // Parse refreshed token
-        NSString *accessToken = json[@"access_token"];
-        NSString *newRefreshToken = json[@"refresh_token"];
-        NSNumber *expiresIn = json[@"expires_in"] ?: @(86400);
-
-        if (!accessToken) {
+        // Parse refreshed token (handles refresh-token rotation)
+        JLTidalSession *newSession = [JLTidalResponseParser sessionFromRefreshResponse:json
+                                                                        currentSession:self.session];
+        if (!newSession) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Missing access token"));
             return;
-        }
-
-        // Handle refresh token rotation: Tidal issues a new refresh token
-        // with each refresh response, revoking the old one
-        JLTidalSession *newSession;
-        if (newRefreshToken.length > 0) {
-            tidal::logDebug("Refresh token rotated");
-            newSession = [[JLTidalSession alloc] initWithAccessToken:accessToken
-                                                        refreshToken:newRefreshToken
-                                                           expiresIn:expiresIn.doubleValue
-                                                              userId:self.session.userId
-                                                            username:self.session.username
-                                                         countryCode:self.session.countryCode];
-        } else {
-            newSession = [self.session sessionByUpdatingAccessToken:accessToken
-                                                          expiresIn:expiresIn.doubleValue];
         }
         self.session = newSession;
         [[JLTidalRateLimiter shared] recordSuccess];
         tidal::logDebug([[NSString stringWithFormat:@"Token refreshed, expires in %.0fs",
-                          expiresIn.doubleValue] UTF8String]);
+                          [newSession.expiryDate timeIntervalSinceNow]] UTF8String]);
         completion(newSession, nil);
     }];
 
     [task resume];
-}
-
-- (JLTidalSession *)parseTokenResponse:(NSDictionary *)json error:(NSError **)error {
-    NSString *accessToken = json[@"access_token"];
-    NSString *refreshToken = json[@"refresh_token"];
-    NSNumber *expiresIn = json[@"expires_in"] ?: @(86400);
-
-    if (!accessToken || !refreshToken) {
-        if (error) {
-            *error = JLTidalError(JLTidalErrorInvalidResponse, @"Missing access_token or refresh_token in response");
-        }
-        return nil;
-    }
-
-    // Extract user info if present
-    NSDictionary *user = json[@"user"];
-    NSString *userId = [user[@"userId"] description];
-    NSString *username = user[@"username"];
-    NSString *countryCode = user[@"countryCode"];
-
-    return [[JLTidalSession alloc] initWithAccessToken:accessToken
-                                          refreshToken:refreshToken
-                                             expiresIn:expiresIn.doubleValue
-                                                userId:userId
-                                              username:username
-                                           countryCode:countryCode];
 }
 
 #pragma mark - Track API
@@ -375,21 +332,10 @@
             return;
         }
 
-        // Parse tracks from response
-        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-
-        NSDictionary *tracksData = json[@"tracks"];
-        NSArray *items = tracksData[@"items"];
-
-        for (NSDictionary *trackDict in items) {
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            if (track) {
-                [tracks addObject:track];
-            }
-        }
-
+        NSArray<JLTidalTrack *> *tracks =
+            [JLTidalResponseParser tracksFromItems:json[@"tracks"][@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Search returned %lu tracks", (unsigned long)tracks.count] UTF8String]);
-        completion([tracks copy], nil);
+        completion(tracks, nil);
     }];
 }
 
@@ -416,19 +362,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
-        NSArray *items = json[@"albums"][@"items"];
-
-        for (NSDictionary *albumDict in items) {
-            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
-            if (album) {
-                [albums addObject:album];
-            }
-        }
-
+        NSArray<JLTidalAlbum *> *albums =
+            [JLTidalResponseParser albumsFromItems:json[@"albums"][@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Album search returned %lu results",
                           (unsigned long)albums.count] UTF8String]);
-        completion([albums copy], nil);
+        completion(albums, nil);
     }];
 }
 
@@ -455,19 +393,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalArtist *> *artists = [NSMutableArray array];
-        NSArray *items = json[@"artists"][@"items"];
-
-        for (NSDictionary *artistDict in items) {
-            JLTidalArtist *artist = [[JLTidalArtist alloc] initWithDictionary:artistDict];
-            if (artist) {
-                [artists addObject:artist];
-            }
-        }
-
+        NSArray<JLTidalArtist *> *artists =
+            [JLTidalResponseParser artistsFromItems:json[@"artists"][@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Artist search returned %lu results",
                           (unsigned long)artists.count] UTF8String]);
-        completion([artists copy], nil);
+        completion(artists, nil);
     }];
 }
 
@@ -491,19 +421,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *trackDict in items) {
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            if (track) {
-                [tracks addObject:track];
-            }
-        }
-
+        NSArray<JLTidalTrack *> *tracks =
+            [JLTidalResponseParser tracksFromItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Album %@ has %lu tracks",
                           albumID, (unsigned long)tracks.count] UTF8String]);
-        completion([tracks copy], nil);
+        completion(tracks, nil);
     }];
 }
 
@@ -528,19 +450,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *trackDict in items) {
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            if (track) {
-                [tracks addObject:track];
-            }
-        }
-
+        NSArray<JLTidalTrack *> *tracks =
+            [JLTidalResponseParser tracksFromItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu top tracks",
                           artistID, (unsigned long)tracks.count] UTF8String]);
-        completion([tracks copy], nil);
+        completion(tracks, nil);
     }];
 }
 
@@ -563,19 +477,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *albumDict in items) {
-            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
-            if (album) {
-                [albums addObject:album];
-            }
-        }
-
+        NSArray<JLTidalAlbum *> *albums =
+            [JLTidalResponseParser albumsFromItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu albums",
                           artistID, (unsigned long)albums.count] UTF8String]);
-        completion([albums copy], nil);
+        completion(albums, nil);
     }];
 }
 
@@ -601,23 +507,12 @@
             return;
         }
 
-        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *item in items) {
-            // Favorites API wraps track in an "item" key
-            NSDictionary *trackDict = item[@"item"];
-            if (!trackDict) trackDict = item;
-
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            if (track) {
-                [tracks addObject:track];
-            }
-        }
-
+        // Favorites API wraps each track in an "item" key
+        NSArray<JLTidalTrack *> *tracks =
+            [JLTidalResponseParser tracksFromWrappedItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Got %lu favorite tracks",
                           (unsigned long)tracks.count] UTF8String]);
-        completion([tracks copy], nil);
+        completion(tracks, nil);
     }];
 }
 
@@ -641,22 +536,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *item in items) {
-            NSDictionary *albumDict = item[@"item"];
-            if (!albumDict) albumDict = item;
-
-            JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
-            if (album) {
-                [albums addObject:album];
-            }
-        }
-
+        NSArray<JLTidalAlbum *> *albums =
+            [JLTidalResponseParser albumsFromWrappedItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Got %lu favorite albums",
                           (unsigned long)albums.count] UTF8String]);
-        completion([albums copy], nil);
+        completion(albums, nil);
     }];
 }
 
@@ -728,19 +612,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalPlaylist *> *playlists = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *playlistDict in items) {
-            JLTidalPlaylist *playlist = [[JLTidalPlaylist alloc] initWithDictionary:playlistDict];
-            if (playlist) {
-                [playlists addObject:playlist];
-            }
-        }
-
+        NSArray<JLTidalPlaylist *> *playlists =
+            [JLTidalResponseParser playlistsFromItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlists",
                           (unsigned long)playlists.count] UTF8String]);
-        completion([playlists copy], nil);
+        completion(playlists, nil);
     }];
 }
 
@@ -764,23 +640,12 @@
             return;
         }
 
-        NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *item in items) {
-            // Playlist tracks API wraps track in an "item" key
-            NSDictionary *trackDict = item[@"item"];
-            if (!trackDict) trackDict = item;
-
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            if (track) {
-                [tracks addObject:track];
-            }
-        }
-
+        // Playlist tracks API wraps each track in an "item" key
+        NSArray<JLTidalTrack *> *tracks =
+            [JLTidalResponseParser tracksFromWrappedItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Playlist %@ has %lu tracks",
                           playlistUUID, (unsigned long)tracks.count] UTF8String]);
-        completion([tracks copy], nil);
+        completion(tracks, nil);
     }];
 }
 
@@ -963,22 +828,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalPlaylistFolder *> *folders = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *item in items) {
-            NSString *type = item[@"type"];
-            if ([type isEqualToString:@"FOLDER"]) {
-                JLTidalPlaylistFolder *folder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
-                if (folder) {
-                    [folders addObject:folder];
-                }
-            }
-        }
-
+        NSArray<JLTidalPlaylistFolder *> *folders =
+            [JLTidalResponseParser foldersFromItems:json[@"items"]];
         tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlist folders",
                           (unsigned long)folders.count] UTF8String]);
-        completion([folders copy], nil);
+        completion(folders, nil);
     }];
 }
 
@@ -1002,20 +856,11 @@
             return;
         }
 
-        NSMutableArray<JLTidalTrack *> *matches = [NSMutableArray array];
-        NSArray *items = json[@"items"];
-
-        for (NSDictionary *trackDict in items) {
-            JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
-            // Match ISRC exactly
-            if (track && [track.isrc isEqualToString:isrc]) {
-                [matches addObject:track];
-            }
-        }
-
+        NSArray<JLTidalTrack *> *matches =
+            [JLTidalResponseParser tracksFromItems:json[@"items"] matchingISRC:isrc];
         tidal::logDebug([[NSString stringWithFormat:@"ISRC lookup %@: %lu matches",
                           isrc, (unsigned long)matches.count] UTF8String]);
-        completion([matches copy], nil);
+        completion(matches, nil);
     }];
 }
 
