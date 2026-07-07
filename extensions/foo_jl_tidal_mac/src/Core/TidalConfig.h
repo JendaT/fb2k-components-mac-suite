@@ -30,7 +30,7 @@ constexpr bool kDefaultDebugLogging = true;
 constexpr bool kDefaultDebugLogging = false;
 #endif
 constexpr bool kDefaultCacheStreamUrls = true;
-constexpr bool kDefaultDASHEnabled = false;
+constexpr bool kDefaultDASHEnabled = true;
 
 class TidalConfig {
 public:

@@ -51,11 +51,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 // DASH (segment-based streaming). Populated only when the API returns a DASH
 // manifest with a SegmentTemplate (typically LOSSLESS/HiRes). When populated,
-// streamURL will be nil — the decoder must concatenate dashInitURL + N media
-// segments to reconstruct a playable fMP4 file.
-@property (nonatomic, copy, readonly, nullable) NSString *dashInitURL;
+// streamURL will be nil — the decoder substitutes $Number$ = 0..(dashSegmentCount-1)
+// into dashMediaTemplate to assemble a playable fMP4. Tidal's URL scheme treats
+// media[$Number$=0] AS the initialization segment, so no separate init download
+// is needed (see python-tidal DashInfo.get_urls).
 @property (nonatomic, copy, readonly, nullable) NSString *dashMediaTemplate;  // contains $Number$
-@property (nonatomic, readonly) NSInteger dashStartNumber;
 @property (nonatomic, readonly) NSInteger dashSegmentCount;
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict

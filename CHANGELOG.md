@@ -589,6 +589,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Tidal Integration
 
+### [0.3.1] - 2026-06-17
+
+LOSSLESS FLAC playback now works for LOSSLESS subscribers by default. DASH segment parser rewritten against `python-tidal` semantics.
+
+#### Added
+- LOSSLESS FLAC by default for LOSSLESS subscribers (preference checkbox ticked by default; untick to fall back to 320kbps HIGH)
+- Raw MPD manifest XML logged when DASH is enabled, for easier diagnosis
+
+#### Fixed
+- Segment count derived from `<SegmentTimeline><S r="N"/>` elements (was: `mediaPresentationDuration / segmentDuration`, undercounted)
+- `media[$Number$=0]` treated as the init segment, no separate init download (was: separate init + media[1..N], producing malformed fMP4)
+- FLAC content type routed via `audio/x-flac` so fb2k picks the FLAC decoder (was: always `audio/mp4`)
+- DASH codec normalisation for `flac`, `mp4a.*`, `ec-3`, `ac-4`
+
 ### [0.3.0] - 2026-05-17
 
 Fixes the long-standing "playback stops until restart" cascade and restores drag-drop to SimPlaylist + free column resizing. Adds token-state visibility, Year/Tracks columns in the album browser, and an experimental DASH toggle for true LOSSLESS.

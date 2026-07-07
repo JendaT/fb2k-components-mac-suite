@@ -57,23 +57,18 @@ static NSData *syncGET(NSString *url, abort_callback &p_abort) {
     return result;
 }
 
-// Download init segment + all media segments and concatenate into one fMP4 blob.
+// Download all DASH segments and concatenate into one fMP4 blob.
+// Tidal's URL scheme treats media[$Number$=0] AS the initialization segment, so
+// we iterate from 0 to dashSegmentCount-1 with no separate init download.
+// Mirrors python-tidal DashInfo.get_urls (tidalapi/media.py:846-859).
 static NSData *downloadDASHSegments(JLTidalPlaybackInfo *info, abort_callback &p_abort) {
     NSMutableData *out = [NSMutableData data];
 
-    NSData *initData = syncGET(info.dashInitURL, p_abort);
-    if (!initData) {
-        logError("DASH init segment download failed");
-        return nil;
-    }
-    [out appendData:initData];
-
     for (NSInteger i = 0; i < info.dashSegmentCount; i++) {
         if (p_abort.is_aborting()) return nil;
-        NSInteger segNum = info.dashStartNumber + i;
         NSString *segURL = [info.dashMediaTemplate
                             stringByReplacingOccurrencesOfString:@"$Number$"
-                                                      withString:[NSString stringWithFormat:@"%ld", (long)segNum]];
+                                                      withString:[NSString stringWithFormat:@"%ld", (long)i]];
         NSData *segData = syncGET(segURL, p_abort);
         if (!segData) {
             logError([[NSString stringWithFormat:@"DASH segment %ld of %ld failed",
@@ -179,10 +174,8 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     m_playbackInfo = resultInfo;
 
     // Two delivery modes: direct URL (HIGH/LOW/legacy) or DASH segments (LOSSLESS/HiRes).
-    // DASH is gated on the experimental preference (default off).
     BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
                     && resultInfo.dashSegmentCount > 0
-                    && resultInfo.dashInitURL.length
                     && resultInfo.dashMediaTemplate.length);
     if (!resultInfo.streamURL && !hasDASH) {
         logError("Stream resolution returned neither URL nor DASH segments");
@@ -191,8 +184,12 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     if (resultInfo.streamURL) {
         m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
     } else {
-        // For DASH the "logical URL" is the init segment's path — used for decoder lookup by extension.
-        m_streamURL = std::string([resultInfo.dashInitURL UTF8String]);
+        // For DASH the "logical URL" is the first media segment — used for decoder
+        // lookup by extension. Substitute $Number$=0 into the template.
+        NSString *seg0 = [resultInfo.dashMediaTemplate
+                          stringByReplacingOccurrencesOfString:@"$Number$"
+                                                    withString:@"0"];
+        m_streamURL = std::string([seg0 UTF8String]);
     }
 
     logDebug(("Got stream URL, quality: " + std::string([resultInfo.qualityDescription UTF8String])).c_str());
@@ -252,8 +249,19 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
                   (unsigned long)resultInfo.dashSegmentCount,
                   (unsigned long)assembled.length,
                   assembled.length / (1024.0 * 1024.0)] UTF8String]);
+
+        // Pick the right MIME so fb2k routes to the FLAC decoder for LOSSLESS instead
+        // of a generic MP4 demuxer (mirrors python-tidal MimeType.from_audio_codec map,
+        // tidalapi/media.py:138-157).
+        const char *contentType = "audio/mp4";
+        if ([resultInfo.codec isEqualToString:@"FLAC"]) {
+            contentType = "audio/x-flac";
+        } else if ([resultInfo.codec isEqualToString:@"EAC3"]) {
+            contentType = "audio/eac3";
+        }
+
         service_ptr_t<tidal::MemoryFile> memFile = fb2k::service_new<tidal::MemoryFile>();
-        memFile->initWithData(assembled, "audio/mp4");
+        memFile->initWithData(assembled, contentType);
         streamFile = memFile;
     } else {
         try {

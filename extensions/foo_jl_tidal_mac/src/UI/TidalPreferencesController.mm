@@ -234,7 +234,7 @@
                                               action:@selector(debugChanged:)];
     addIndentedRow(self.debugCheckbox, rowHeight);
 
-    self.dashCheckbox = [NSButton checkboxWithTitle:@"Experimental: download LOSSLESS via DASH (untested, may break playback)"
+    self.dashCheckbox = [NSButton checkboxWithTitle:@"Download LOSSLESS via DASH segments"
                                              target:self
                                              action:@selector(dashChanged:)];
     addIndentedRow(self.dashCheckbox, rowHeight);

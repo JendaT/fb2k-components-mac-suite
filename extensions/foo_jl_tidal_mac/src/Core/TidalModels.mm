@@ -52,26 +52,40 @@ static NSString *extractXMLAttr(NSString *tag, NSString *attr) {
     return nil;
 }
 
-// Parse ISO 8601 duration (PT4M55.5S, PT1H, PT300S).
-static double parseISO8601Duration(NSString *str) {
-    if (str.length == 0) return 0;
-    static NSRegularExpression *r = nil;
+// Walk every <S t=... d=... r=.../> element in a SegmentTimeline block and
+// return the total segment count. Each S contributes (r ?: 1) segments; the
+// caller adds the implicit init/first segment base of 2 (mirrors python-tidal
+// DashInfo.get_urls, /tmp/tidalapi/tidalapi/media.py:836-844).
+static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
+    if (manifestStr.length == 0) return 0;
+    NSRange tlOpen = [manifestStr rangeOfString:@"<SegmentTimeline"];
+    if (tlOpen.location == NSNotFound) return 0;
+    NSRange tlClose = [manifestStr rangeOfString:@"</SegmentTimeline>"
+                                          options:0
+                                            range:NSMakeRange(tlOpen.location, manifestStr.length - tlOpen.location)];
+    if (tlClose.location == NSNotFound) return 0;
+    NSRange tlBody = NSMakeRange(NSMaxRange(tlOpen),
+                                 tlClose.location - NSMaxRange(tlOpen));
+    NSString *body = [manifestStr substringWithRange:tlBody];
+
+    static NSRegularExpression *sElementRegex = nil;
     static dispatch_once_t tok;
     dispatch_once(&tok, ^{
-        r = [NSRegularExpression regularExpressionWithPattern:
-              @"PT(?:(\\d+)H)?(?:(\\d+)M)?(?:([0-9.]+)S)?"
-              options:0 error:nil];
+        sElementRegex = [NSRegularExpression regularExpressionWithPattern:@"<S\\b[^/>]*/?>"
+                                                                  options:0
+                                                                    error:nil];
     });
-    NSTextCheckingResult *m = [r firstMatchInString:str options:0 range:NSMakeRange(0, str.length)];
-    if (!m) return 0;
-    double total = 0;
-    NSRange h = [m rangeAtIndex:1];
-    NSRange mn = [m rangeAtIndex:2];
-    NSRange s = [m rangeAtIndex:3];
-    if (h.location != NSNotFound) total += [[str substringWithRange:h] doubleValue] * 3600.0;
-    if (mn.location != NSNotFound) total += [[str substringWithRange:mn] doubleValue] * 60.0;
-    if (s.location != NSNotFound) total += [[str substringWithRange:s] doubleValue];
-    return total;
+    __block NSInteger count = 0;
+    [sElementRegex enumerateMatchesInString:body
+                                    options:0
+                                      range:NSMakeRange(0, body.length)
+                                 usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+        NSString *sTag = [body substringWithRange:m.range];
+        NSString *rStr = extractXMLAttr(sTag, @"r");
+        NSInteger r = rStr.length ? [rStr integerValue] : 0;
+        count += (r > 0) ? r : 1;
+    }];
+    return count;
 }
 
 @implementation JLTidalTrack
@@ -408,6 +422,17 @@ static double parseISO8601Duration(NSString *str) {
             } else if ([_manifestMimeType containsString:@"dash"] || [_manifestMimeType containsString:@"xml"]) {
                 // DASH manifest (MPD XML) - check for DRM and extract stream URL
                 NSString *manifestStr = [[NSString alloc] initWithData:manifestData encoding:NSUTF8StringEncoding];
+
+                // Always-on diagnostic when DASH is enabled — gives us ground truth
+                // XML on the first user report. Truncated to 4 KB to keep log readable.
+                if (manifestStr && tidal::TidalConfig::isDASHEnabled()) {
+                    NSString *dump = manifestStr.length > 4096
+                        ? [manifestStr substringToIndex:4096]
+                        : manifestStr;
+                    tidal::logInfo([[NSString stringWithFormat:@"DASH MPD raw (len=%lu):\n%@",
+                                      (unsigned long)manifestStr.length, dump] UTF8String]);
+                }
+
                 if (manifestStr && [manifestStr containsString:@"<ContentProtection"]) {
                     _drmProtected = YES;
                     tidal::logDebug("DASH manifest has DRM (ContentProtection)");
@@ -427,7 +452,9 @@ static double parseISO8601Duration(NSString *str) {
                     }
 
                     // 2) Try SegmentTemplate — segmented fMP4 (Tidal LOSSLESS / HiRes path).
-                    // Decoder will concatenate init + segments to reconstruct a playable file.
+                    // Mirrors python-tidal DashInfo (tidalapi/media.py:824-859):
+                    //   - Segment count = 1 + 1 (init + first media) + sum(r ?: 1) over SegmentTimeline.S
+                    //   - $Number$ iterates from 0; media[0] IS the init segment (no separate download)
                     if (!_streamURL && !_drmProtected) {
                         NSRange tplRange = [manifestStr rangeOfString:@"<SegmentTemplate"];
                         if (tplRange.location != NSNotFound) {
@@ -443,33 +470,49 @@ static double parseISO8601Duration(NSString *str) {
                                 NSRange tagRange = NSMakeRange(tplRange.location,
                                                                endRange.location + endRange.length - tplRange.location);
                                 NSString *tplTag = [manifestStr substringWithRange:tagRange];
-                                NSString *initURL = extractXMLAttr(tplTag, @"initialization");
                                 NSString *mediaTpl = extractXMLAttr(tplTag, @"media");
-                                NSString *startStr = extractXMLAttr(tplTag, @"startNumber");
-                                NSString *timescaleStr = extractXMLAttr(tplTag, @"timescale");
-                                NSString *segDurStr = extractXMLAttr(tplTag, @"duration");
 
-                                double timescale = [timescaleStr doubleValue];
-                                if (timescale <= 0) timescale = 1;
-                                double segDurUnits = [segDurStr doubleValue];
-                                double segDurSec = (segDurUnits > 0) ? (segDurUnits / timescale) : 0;
+                                // Segment count = base (2) + sum of SegmentTimeline S contributions.
+                                NSInteger segCount = 1 + 1 + countSegmentTimelineSElements(manifestStr);
 
-                                NSString *mpdDurStr = extractXMLAttr(manifestStr, @"mediaPresentationDuration");
-                                double totalSec = parseISO8601Duration(mpdDurStr);
-
-                                if (initURL.length && mediaTpl.length && segDurSec > 0 && totalSec > 0
-                                    && [mediaTpl containsString:@"$Number$"]) {
-                                    _dashInitURL = [initURL copy];
+                                if (mediaTpl.length && [mediaTpl containsString:@"$Number$"] && segCount > 2) {
                                     _dashMediaTemplate = [mediaTpl copy];
-                                    _dashStartNumber = startStr.length ? [startStr integerValue] : 1;
-                                    _dashSegmentCount = (NSInteger)ceil(totalSec / segDurSec);
+                                    _dashSegmentCount = segCount;
                                     tidal::logInfo([[NSString stringWithFormat:
-                                        @"DASH SegmentTemplate: %ld segments × %.2fs (total %.1fs)",
-                                        (long)_dashSegmentCount, segDurSec, totalSec] UTF8String]);
+                                        @"DASH SegmentTemplate: %ld segments (incl. init at $Number$=0)",
+                                        (long)_dashSegmentCount] UTF8String]);
                                 } else {
                                     tidal::logDebug([[NSString stringWithFormat:
-                                        @"DASH SegmentTemplate parse incomplete: init=%@ media=%@ segDur=%.2f totalSec=%.1f",
-                                        initURL ?: @"(nil)", mediaTpl ?: @"(nil)", segDurSec, totalSec] UTF8String]);
+                                        @"DASH SegmentTemplate parse incomplete: media=%@ count=%ld",
+                                        mediaTpl ?: @"(nil)", (long)segCount] UTF8String]);
+                                }
+                            }
+                        }
+
+                        // Normalise codec from <Representation codecs="..."> — Tidal reports
+                        // "flac", "mp4a.40.2", "mp4a.40.5" in DASH but FLAC/MP4A/MP4A as
+                        // simple names in BTS. We want one canonical form for downstream
+                        // MIME-type lookup. Mirrors python-tidal:644-655.
+                        NSRange repRange = [manifestStr rangeOfString:@"<Representation"];
+                        if (repRange.location != NSNotFound) {
+                            NSRange repEnd = [manifestStr rangeOfString:@">"
+                                                                options:0
+                                                                  range:NSMakeRange(repRange.location, manifestStr.length - repRange.location)];
+                            if (repEnd.location != NSNotFound) {
+                                NSString *repTag = [manifestStr substringWithRange:
+                                    NSMakeRange(repRange.location, repEnd.location + repEnd.length - repRange.location)];
+                                NSString *dashCodec = extractXMLAttr(repTag, @"codecs");
+                                if (dashCodec.length) {
+                                    NSString *lower = [dashCodec lowercaseString];
+                                    if ([lower containsString:@"flac"]) {
+                                        _codec = @"FLAC";
+                                    } else if ([lower hasPrefix:@"mp4a"]) {
+                                        _codec = @"MP4A";
+                                    } else if ([lower hasPrefix:@"ec-3"] || [lower hasPrefix:@"eac3"]) {
+                                        _codec = @"EAC3";
+                                    } else if ([lower hasPrefix:@"ac-4"] || [lower hasPrefix:@"ac4"]) {
+                                        _codec = @"AC4";
+                                    }
                                 }
                             }
                         }

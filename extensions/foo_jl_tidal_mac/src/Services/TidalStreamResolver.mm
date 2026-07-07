@@ -120,7 +120,6 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
         // Accept if we have either a direct URL OR a DASH SegmentTemplate (when enabled in prefs).
         BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
                         && info.dashSegmentCount > 0
-                        && info.dashInitURL.length
                         && info.dashMediaTemplate.length);
         if (!info.streamURL && !hasDASH) {
             tidal::logInfo([[NSString stringWithFormat:@"Quality %@ unavailable for track %@ (no direct URL and no DASH SegmentTemplate); falling back",
