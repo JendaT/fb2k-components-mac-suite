@@ -9,6 +9,8 @@
 
 #import <Foundation/Foundation.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 /// Status of a track in the scrobble queue
 typedef NS_ENUM(NSInteger, ScrobbleTrackStatus) {
     ScrobbleTrackStatusQueued,      // Waiting to be submitted
@@ -54,3 +56,5 @@ typedef NS_ENUM(NSInteger, ScrobbleTrackStatus) {
 - (NSString *)displayDescription;
 
 @end
+
+NS_ASSUME_NONNULL_END
