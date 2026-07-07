@@ -589,6 +589,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Tidal Integration
 
+### [Unreleased]
+
+Testability refactor following the simplaylist 1.5.0 pattern. No functional change intended.
+
+#### Added
+- Pure Core modules extracted from SDK/network code: `ManifestParser` (BTS/DASH parsing), `StreamResolutionPolicy` (quality fallback), `HTTPResponsePolicy` (status-to-error mapping), `TidalLog` (Foundation-only logging funnel)
+- Standalone unit-test suite (147 checks, 6 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+
+#### Fixed
+- Debug-logging preference honored after restart (cache was only synced on toggle)
+- Static-destructor logging can no longer touch torn-down fb2k services
+
 ### [0.3.1] - 2026-06-17
 
 LOSSLESS FLAC playback now works for LOSSLESS subscribers by default. DASH segment parser rewritten against `python-tidal` semantics.
