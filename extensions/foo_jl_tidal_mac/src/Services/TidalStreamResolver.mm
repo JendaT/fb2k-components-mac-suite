@@ -11,6 +11,20 @@
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalErrors.h"
 #import "../Core/StreamCache.h"
+#import "../Core/StreamResolutionPolicy.h"
+
+// Always-on diagnostic when DASH is enabled — gives us ground truth XML on
+// the first user report. Truncated to 4 KB to keep log readable.
+static void dumpRawManifestIfNeeded(JLTidalPlaybackInfo *info) {
+    NSString *rawMPD = info.rawDASHManifest;
+    if (rawMPD && tidal::TidalConfig::isDASHEnabled()) {
+        NSString *dump = rawMPD.length > 4096
+            ? [rawMPD substringToIndex:4096]
+            : rawMPD;
+        tidal::logInfo([[NSString stringWithFormat:@"DASH MPD raw (len=%lu):\n%@",
+                          (unsigned long)rawMPD.length, dump] UTF8String]);
+    }
+}
 
 static const NSUInteger kMaxMetadataCacheSize = 500;
 
@@ -94,19 +108,14 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
                              (long)error.code,
                              error.localizedDescription] UTF8String]);
 
-            // Only fall back for subscription/quality errors (403).
-            // Auth errors (401), network errors, rate limiting, and server errors
-            // should not trigger fallback -- they'll fail at every quality level.
-            BOOL shouldFallback = (error.code == JLTidalErrorSubscriptionRequired);
-
-            if (shouldFallback) {
-                JLTidalQuality nextQuality = [self nextLowerQuality:quality];
-                if (nextQuality != quality) {
-                    [self resolveWithFallbackForTrackID:trackID
-                                       startingQuality:nextQuality
-                                            completion:completion];
-                    return;
-                }
+            // Fallback policy lives in JLTidalStreamResolutionPolicy (pure, unit-tested).
+            JLTidalResolveDecision *decision =
+                [JLTidalStreamResolutionPolicy decisionForError:error atQuality:quality];
+            if (decision.action == JLTidalResolveActionRetryLower) {
+                [self resolveWithFallbackForTrackID:trackID
+                                   startingQuality:decision.nextQuality
+                                        completion:completion];
+                return;
             }
 
             completion(nil, error);
@@ -116,41 +125,33 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
         JLTidalPlaybackInfo *info = [[JLTidalPlaybackInfo alloc] initWithDictionary:json
                                                                             trackID:trackID
                                                                     requestedQuality:quality];
+        dumpRawManifestIfNeeded(info);
 
-        // Accept if we have either a direct URL OR a DASH SegmentTemplate (when enabled in prefs).
-        BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
-                        && info.dashSegmentCount > 0
-                        && info.dashMediaTemplate.length);
-        if (!info.streamURL && !hasDASH) {
-            tidal::logInfo([[NSString stringWithFormat:@"Quality %@ unavailable for track %@ (no direct URL and no DASH SegmentTemplate); falling back",
-                              JLTidalQualityToString(quality), trackID] UTF8String]);
-            JLTidalQuality nextQuality = [self nextLowerQuality:quality];
-            if (nextQuality != quality) {
-                [self resolveWithFallbackForTrackID:trackID
-                                   startingQuality:nextQuality
-                                        completion:completion];
-                return;
-            }
-            completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response at any quality"));
-            return;
-        }
+        JLTidalResolveDecision *decision =
+            [JLTidalStreamResolutionPolicy decisionForPlaybackWithDirectURL:(info.streamURL != nil)
+                                                           dashSegmentCount:info.dashSegmentCount
+                                                          dashMediaTemplate:info.dashMediaTemplate
+                                                                dashEnabled:tidal::TidalConfig::isDASHEnabled()
+                                                               drmProtected:info.isDRMProtected
+                                                                    quality:quality];
 
-        // Check for DRM - try fallback to lower quality
-        if (info.isDRMProtected) {
-            tidal::logInfo([[NSString stringWithFormat:@"Quality %@ is DRM-protected for track %@; falling back",
-                             JLTidalQualityToString(quality), trackID] UTF8String]);
-            JLTidalQuality nextQuality = [self nextLowerQuality:quality];
-            if (nextQuality != quality) {
-                [self resolveWithFallbackForTrackID:trackID
-                                   startingQuality:nextQuality
-                                        completion:completion];
-                return;
+        if (decision.action != JLTidalResolveActionAccept) {
+            if (decision.failureCode == JLTidalErrorDRMProtected) {
+                tidal::logInfo([[NSString stringWithFormat:@"Quality %@ is DRM-protected for track %@; falling back",
+                                 JLTidalQualityToString(quality), trackID] UTF8String]);
             } else {
-                // All qualities are DRM protected
-                completion(nil, JLTidalError(JLTidalErrorDRMProtected,
-                    @"Track is DRM protected at all quality levels"));
-                return;
+                tidal::logInfo([[NSString stringWithFormat:@"Quality %@ unavailable for track %@ (no direct URL and no DASH SegmentTemplate); falling back",
+                                  JLTidalQualityToString(quality), trackID] UTF8String]);
             }
+
+            if (decision.action == JLTidalResolveActionRetryLower) {
+                [self resolveWithFallbackForTrackID:trackID
+                                   startingQuality:decision.nextQuality
+                                        completion:completion];
+            } else {
+                completion(nil, JLTidalError(decision.failureCode, decision.failureMessage));
+            }
+            return;
         }
 
         // Cache and return
@@ -191,6 +192,7 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             JLTidalPlaybackInfo *info = [[JLTidalPlaybackInfo alloc] initWithDictionary:json
                                                                                 trackID:trackID
                                                                         requestedQuality:quality];
+            dumpRawManifestIfNeeded(info);
 
             if (!info.streamURL) {
                 completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response"));
@@ -207,22 +209,6 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             completion(info, nil);
         }];
     }];
-}
-
-- (JLTidalQuality)nextLowerQuality:(JLTidalQuality)quality {
-    // Quality cascade: HI_RES_LOSSLESS -> HI_RES -> LOSSLESS -> HIGH -> LOW
-    switch (quality) {
-        case JLTidalQualityHiResLossless:
-            return JLTidalQualityHiRes;
-        case JLTidalQualityHiRes:
-            return JLTidalQualityLossless;
-        case JLTidalQualityLossless:
-            return JLTidalQualityHigh;
-        case JLTidalQualityHigh:
-            return JLTidalQualityLow;
-        case JLTidalQualityLow:
-            return JLTidalQualityLow;  // No lower quality
-    }
 }
 
 - (void)invalidateCacheForTrackID:(NSString *)trackID {

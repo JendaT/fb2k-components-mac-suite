@@ -58,6 +58,10 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *dashMediaTemplate;  // contains $Number$
 @property (nonatomic, readonly) NSInteger dashSegmentCount;
 
+// Decoded MPD XML, populated only for DASH manifests. Diagnostics only —
+// the resolver dumps it to the console when DASH is enabled in prefs.
+@property (nonatomic, copy, readonly, nullable) NSString *rawDASHManifest;
+
 - (instancetype)initWithDictionary:(NSDictionary *)dict
                            trackID:(NSString *)trackID
                    requestedQuality:(JLTidalQuality)requestedQuality;

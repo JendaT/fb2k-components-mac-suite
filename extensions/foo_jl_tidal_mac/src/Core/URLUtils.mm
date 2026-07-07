@@ -7,7 +7,7 @@
 
 #import "URLUtils.h"
 #import "TidalErrors.h"
-#import "TidalConfig.h"
+#include "TidalLog.h"
 #import <Foundation/Foundation.h>
 
 namespace tidal {

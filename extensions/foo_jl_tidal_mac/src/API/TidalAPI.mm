@@ -10,6 +10,7 @@
 #import "../Core/TidalErrors.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
+#import "../Core/HTTPResponsePolicy.h"
 #import "../Services/TidalAuthService.h"
 
 @implementation JLTidalDeviceCode
@@ -1127,15 +1128,20 @@
 
         NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
 
-        // Handle rate limiting
-        if (httpResponse.statusCode == 429) {
-            // Check for Retry-After header (RFC 6585)
-            NSString *retryAfterHeader = httpResponse.allHeaderFields[@"Retry-After"]
-                                      ?: httpResponse.allHeaderFields[@"retry-after"];
+        // Status -> action mapping lives in JLTidalHTTPResponsePolicy (pure,
+        // unit-tested); this block applies the decision (limiter bookkeeping,
+        // token refresh, completion).
+        NSString *retryAfterHeader = httpResponse.allHeaderFields[@"Retry-After"]
+                                  ?: httpResponse.allHeaderFields[@"retry-after"];
+        JLTidalHTTPDecision *decision =
+            [JLTidalHTTPResponsePolicy decisionForStatusCode:httpResponse.statusCode
+                                            retryAfterHeader:retryAfterHeader
+                                                     isRetry:isRetry];
+
+        if (decision.action == JLTidalHTTPActionRateLimited) {
             NSTimeInterval retryAfter;
-            if (retryAfterHeader.length > 0) {
-                retryAfter = [retryAfterHeader doubleValue];
-                if (retryAfter <= 0) retryAfter = 1.0;
+            if (decision.retryAfterSeconds >= 0) {
+                retryAfter = decision.retryAfterSeconds;
                 [[JLTidalRateLimiter shared] recordRateLimitHit];
             } else {
                 retryAfter = [[JLTidalRateLimiter shared] recordRateLimitHit];
@@ -1146,44 +1152,21 @@
             return;
         }
 
-        // Handle auth errors - attempt token refresh + retry on first 401
-        if (httpResponse.statusCode == 401) {
-            if (!isRetry) {
-                tidal::logDebug("Got 401, attempting token refresh and retry");
-                [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
-                    if (success) {
-                        [self performRequestWithURL:url method:method body:body
-                                           headers:extraHeaders isRetry:YES completion:completion];
-                    } else {
-                        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
-                    }
-                }];
-                return;
-            }
-            completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+        if (decision.action == JLTidalHTTPActionRetryAuth) {
+            tidal::logDebug("Got 401, attempting token refresh and retry");
+            [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+                if (success) {
+                    [self performRequestWithURL:url method:method body:body
+                                       headers:extraHeaders isRetry:YES completion:completion];
+                } else {
+                    completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+                }
+            }];
             return;
         }
 
-        if (httpResponse.statusCode == 403) {
-            completion(nil, JLTidalError(JLTidalErrorSubscriptionRequired, @"Subscription required"));
-            return;
-        }
-
-        if (httpResponse.statusCode == 404) {
-            completion(nil, JLTidalError(JLTidalErrorTrackNotFound, @"Track not found"));
-            return;
-        }
-
-        if (httpResponse.statusCode >= 500) {
-            completion(nil, JLTidalError(JLTidalErrorServerError,
-                [NSString stringWithFormat:@"Server error: HTTP %ld", (long)httpResponse.statusCode]));
-            return;
-        }
-
-        // Accept 200 (OK), 201 (Created), 204 (No Content)
-        if (httpResponse.statusCode != 200 && httpResponse.statusCode != 201 && httpResponse.statusCode != 204) {
-            completion(nil, JLTidalError(JLTidalErrorInvalidResponse,
-                [NSString stringWithFormat:@"Unexpected status: HTTP %ld", (long)httpResponse.statusCode]));
+        if (decision.action == JLTidalHTTPActionFail) {
+            completion(nil, JLTidalError(decision.errorCode, decision.message));
             return;
         }
 

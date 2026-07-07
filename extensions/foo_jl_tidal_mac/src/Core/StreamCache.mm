@@ -6,7 +6,7 @@
 //
 
 #import "StreamCache.h"
-#import "TidalConfig.h"
+#include "TidalLog.h"
 #import "../API/TidalConstants.h"
 
 namespace tidal {

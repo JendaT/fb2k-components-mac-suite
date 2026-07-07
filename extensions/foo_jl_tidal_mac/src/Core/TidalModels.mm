@@ -6,8 +6,8 @@
 //
 
 #import "TidalModels.h"
-#import "TidalConfig.h"
 #import "ManifestParser.h"
+#include "TidalLog.h"
 
 static NSDateFormatter *sharedDateOnlyFormatter(void) {
     static NSDateFormatter *fmt = nil;
@@ -300,24 +300,12 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
                           audioQuality ?: @"(nil)", _codec ?: @"(nil)", _manifestMimeType ?: @"(nil)"] UTF8String]);
 
         // Check for DRM and extract stream URL / DASH template.
-        // Parsing lives in JLTidalManifestParser (pure, unit-tested); this
-        // class keeps only host concerns (config gate for the MPD dump).
+        // Parsing lives in JLTidalManifestParser (pure, unit-tested).
         _drmProtected = NO;
         if (_manifest) {
             JLTidalManifestResult *parsed = [JLTidalManifestParser parseManifest:_manifest
                                                                         mimeType:_manifestMimeType];
-
-            // Always-on diagnostic when DASH is enabled — gives us ground truth
-            // XML on the first user report. Truncated to 4 KB to keep log readable.
-            NSString *rawMPD = parsed.rawDASHManifest;
-            if (rawMPD && tidal::TidalConfig::isDASHEnabled()) {
-                NSString *dump = rawMPD.length > 4096
-                    ? [rawMPD substringToIndex:4096]
-                    : rawMPD;
-                tidal::logInfo([[NSString stringWithFormat:@"DASH MPD raw (len=%lu):\n%@",
-                                  (unsigned long)rawMPD.length, dump] UTF8String]);
-            }
-
+            _rawDASHManifest = parsed.rawDASHManifest;
             _drmProtected = parsed.drmProtected;
             _streamURL = parsed.streamURL;
             _dashMediaTemplate = parsed.dashMediaTemplate;
