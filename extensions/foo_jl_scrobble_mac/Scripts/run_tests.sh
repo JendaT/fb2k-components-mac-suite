@@ -33,6 +33,20 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/model_parsing_tests"
 
+echo "==> Compiling unit tests (Queue + Streak)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/QueueAndStreakTests.mm" \
+    "$PROJECT_DIR/src/Core/ScrobbleQueueModel.mm" \
+    "$PROJECT_DIR/src/Core/ScrobbleTrack.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/queue_streak_tests"
+
+echo "==> Compiling unit tests (Widget layout)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/WidgetLayoutTests.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/widget_layout_tests"
+
 echo "==> Compiling unit tests (Last.fm protocol)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/LastFmProtocolTests.mm" \
@@ -54,5 +68,7 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/scrobble_rules_tests"
 "$TEST_BUILD_DIR/playback_tracker_tests"
 "$TEST_BUILD_DIR/model_parsing_tests"
+"$TEST_BUILD_DIR/queue_streak_tests"
+"$TEST_BUILD_DIR/widget_layout_tests"
 "$TEST_BUILD_DIR/lastfm_protocol_tests"
 "$TEST_BUILD_DIR/rate_limiter_tests"

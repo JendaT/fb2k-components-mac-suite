@@ -10,16 +10,17 @@
 #import "../Core/RecentTrack.h"
 #import <QuartzCore/QuartzCore.h>
 
+#import "../Core/WidgetLayoutMath.h"
+
 static const CGFloat kArrowWidth = 32.0;
 static const CGFloat kArrowChevronSize = 16.0;
 static const CGFloat kTrackRowHeight = 44.0;
 static const CGFloat kTrackArtSize = 36.0;
-static const CGFloat kMinAlbumSize = 64.0;
-static const CGFloat kMaxAlbumSize = 150.0;
-static const CGFloat kAlbumSpacing = 6.0;
+// Layout constants owned by WidgetLayoutMath.h (single source of truth)
+static const CGFloat kAlbumSpacing = WidgetLayout::kAlbumSpacing;
 static const CGFloat kProfileHeight = 40.0;
 static const CGFloat kFooterHeight = 20.0;
-static const CGFloat kPadding = 8.0;
+static const CGFloat kPadding = WidgetLayout::kPadding;
 static const NSTimeInterval kArrowFadeDuration = 0.15;
 
 @interface ScrobbleWidgetView ()
@@ -286,27 +287,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 #pragma mark - Layout Calculation
 
 - (CGFloat)calculateAlbumSizeForWidth:(CGFloat)availableWidth {
-    // Calculate optimal album size to show 4-6 albums per row
-    // Target: fit 5 albums ideally, but allow 4-6 based on width
-
-    // Try different album counts per row and pick the one closest to target size
-    CGFloat targetSize = 130.0;  // Preferred album size
-    CGFloat bestSize = kMinAlbumSize;
-
-    for (NSInteger albumsPerRow = 3; albumsPerRow <= 8; albumsPerRow++) {
-        CGFloat totalSpacing = kAlbumSpacing * (albumsPerRow - 1);
-        CGFloat size = (availableWidth - totalSpacing) / albumsPerRow;
-
-        // Clamp to min/max
-        size = MAX(kMinAlbumSize, MIN(kMaxAlbumSize, size));
-
-        // Pick the size closest to target that's within bounds
-        if (fabs(size - targetSize) < fabs(bestSize - targetSize)) {
-            bestSize = size;
-        }
-    }
-
-    return bestSize;
+    return WidgetLayout::albumSizeForWidth(availableWidth);
 }
 
 #pragma mark - Mouse Events
@@ -515,8 +496,9 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         _contentScrollOffset -= delta * 20.0;  // Line-based scrolling
     }
 
-    // Clamp
-    _contentScrollOffset = MAX(0, MIN(_contentScrollOffset, maxOffset));
+    _contentScrollOffset = WidgetLayout::clampScrollOffset(_contentScrollOffset,
+                                                           _contentTotalHeight,
+                                                           _contentAreaRect.size.height);
 
     [self setNeedsDisplay:YES];
 }
@@ -1086,40 +1068,22 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         return y;
     }
 
-    // Normalized circle positions (centerX, centerY, radius) in 0..1 space
-    struct CircleLayout { float centerX; float centerY; float radius; };
-    static const CircleLayout circles[10] = {
-        {0.7576f, 0.2424f, 0.2147f},  // circle 1
-        {0.5791f, 0.7355f, 0.1801f},  // circle 2
-        {0.2750f, 0.6504f, 0.1316f},  // circle 3
-        {0.1524f, 0.4207f, 0.1247f},  // circle 4
-        {0.2803f, 0.2312f, 0.0997f},  // circle 5
-        {0.4602f, 0.1589f, 0.0900f},  // circle 6
-        {0.4695f, 0.3374f, 0.0845f},  // circle 7
-        {0.5686f, 0.4725f, 0.0790f},  // circle 8
-        {0.4117f, 0.4902f, 0.0748f},  // circle 9
-        {0.3324f, 0.3817f, 0.0554f},  // circle 10
-    };
-
     // Use a square area for the bubble layout (passed in, already computed for centering)
-    CGFloat areaSize = MIN(width, availableHeight);
-    if (areaSize < 100) areaSize = width;  // Fallback
+    CGFloat areaSize = WidgetLayout::bubbleAreaSize(width, availableHeight);
 
     CGFloat offsetX = kPadding + (width - areaSize) / 2;
     CGFloat offsetY = y;
 
-    NSInteger count = MIN((NSInteger)_topAlbums.count, 10);
+    NSInteger count = MIN((NSInteger)_topAlbums.count, WidgetLayout::kMaxBubbles);
 
     for (NSInteger i = 0; i < count; i++) {
         TopAlbum *album = _topAlbums[i];
-        const CircleLayout &layout = circles[i];
 
-        CGFloat cx = offsetX + layout.centerX * areaSize;
-        CGFloat cy = offsetY + layout.centerY * areaSize;
-        CGFloat r = layout.radius * areaSize;
-        CGFloat diameter = r * 2;
-
-        NSRect circleRect = NSMakeRect(cx - r, cy - r, diameter, diameter);
+        NSRect circleRect = WidgetLayout::bubbleRectForIndex(i, offsetX, offsetY, areaSize);
+        CGFloat r = circleRect.size.width / 2;
+        CGFloat cx = NSMidX(circleRect);
+        CGFloat cy = NSMidY(circleRect);
+        CGFloat diameter = circleRect.size.width;
 
         // Store rect for hit testing
         [_albumRects addObject:[NSValue valueWithRect:circleRect]];
@@ -1189,23 +1153,16 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     CGFloat albumSize = _calculatedAlbumSize;
     CGFloat spacing = kAlbumSpacing;
 
-    // Calculate how many albums fit per row
-    NSInteger albumsPerRow = (NSInteger)((width + spacing) / (albumSize + spacing));
-    if (albumsPerRow < 1) albumsPerRow = 1;
+    WidgetLayout::GridGeometry grid =
+        WidgetLayout::gridGeometryForWidth(width, albumSize, (NSInteger)_topAlbums.count);
+    _contentTotalHeight = grid.contentHeight;
 
-    // Calculate total grid height for scrolling
-    NSInteger totalRows = (_topAlbums.count + albumsPerRow - 1) / albumsPerRow;
-    _contentTotalHeight = totalRows * albumSize + (totalRows - 1) * spacing;
-
-    // Center the grid
-    CGFloat totalGridWidth = albumsPerRow * albumSize + (albumsPerRow - 1) * spacing;
-    CGFloat startX = kPadding + (width - totalGridWidth) / 2;
-
-    CGFloat x = startX;
-    NSInteger col = 0;
+    NSInteger index = 0;
 
     for (TopAlbum *album in _topAlbums) {
-        NSRect albumRect = NSMakeRect(x, y, albumSize, albumSize);
+        NSRect albumRect = WidgetLayout::gridRectForIndex(grid, albumSize, y, index);
+        CGFloat x = albumRect.origin.x;
+        CGFloat rowY = albumRect.origin.y;
 
         // Store rect for hit testing
         [_albumRects addObject:[NSValue valueWithRect:albumRect]];
@@ -1239,7 +1196,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
                     };
 
                     // Inset to avoid rank badge (top-left) and leave margins
-                    NSRect textRect = NSMakeRect(x + 4, y + 24, albumSize - 8, albumSize - 28);
+                    NSRect textRect = NSMakeRect(x + 4, rowY + 24, albumSize - 8, albumSize - 28);
                     [album.name drawInRect:textRect withAttributes:nameAttrs];
                 }
             }
@@ -1251,31 +1208,20 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
                 NSForegroundColorAttributeName: [NSColor whiteColor]
             };
             NSSize rankSize = [rank sizeWithAttributes:rankAttrs];
-            NSRect badgeRect = NSMakeRect(x + 2, y + 2, rankSize.width + 6, rankSize.height + 2);
+            NSRect badgeRect = NSMakeRect(x + 2, rowY + 2, rankSize.width + 6, rankSize.height + 2);
 
             [[NSColor colorWithWhite:0 alpha:0.6] setFill];
             NSBezierPath *badgePath = [NSBezierPath bezierPathWithRoundedRect:badgeRect xRadius:3 yRadius:3];
             [badgePath fill];
 
-            [rank drawAtPoint:NSMakePoint(x + 5, y + 3) withAttributes:rankAttrs];
+            [rank drawAtPoint:NSMakePoint(x + 5, rowY + 3) withAttributes:rankAttrs];
         }
 
-        col++;
-        if (col >= albumsPerRow) {
-            col = 0;
-            x = startX;
-            y += albumSize + spacing;
-        } else {
-            x += albumSize + spacing;
-        }
+        index++;
     }
 
-    // If we ended mid-row, move to next line
-    if (col > 0) {
-        y += albumSize + spacing;
-    }
-
-    return y;
+    // Bottom of the grid: every row (full or partial) advances one row height
+    return y + grid.totalRows * (albumSize + spacing);
 }
 
 - (void)drawImage:(NSImage *)image inRect:(NSRect)rect {
@@ -1283,21 +1229,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     if (imageSize.width <= 0 || imageSize.height <= 0) return;
 
     // Scale to fill (crop if needed)
-    CGFloat imageAspect = imageSize.width / imageSize.height;
-    CGFloat viewAspect = rect.size.width / rect.size.height;
-
-    NSRect sourceRect;
-    if (imageAspect > viewAspect) {
-        // Image is wider - crop sides
-        CGFloat newWidth = imageSize.height * viewAspect;
-        CGFloat x = (imageSize.width - newWidth) / 2;
-        sourceRect = NSMakeRect(x, 0, newWidth, imageSize.height);
-    } else {
-        // Image is taller - crop top/bottom
-        CGFloat newHeight = imageSize.width / viewAspect;
-        CGFloat y = (imageSize.height - newHeight) / 2;
-        sourceRect = NSMakeRect(0, y, imageSize.width, newHeight);
-    }
+    NSRect sourceRect = WidgetLayout::aspectFillSourceRect(imageSize, rect.size);
 
     [image drawInRect:rect
              fromRect:sourceRect
@@ -1319,50 +1251,19 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
     // If there's an error message in Ready state, show it instead of normal status
     if (_errorMessage.length > 0 && _state == ScrobbleWidgetStateReady) {
-        // Truncate long error messages
-        NSString *displayError = _errorMessage;
-        if (displayError.length > 60) {
-            displayError = [[displayError substringToIndex:57] stringByAppendingString:@"..."];
-        }
-
-        // Draw error with retry hint
-        NSString *errorText = [NSString stringWithFormat:@"%@ (click refresh)", displayError];
+        NSString *errorText = WidgetFooterErrorText(_errorMessage);
         NSRect errorRect = NSMakeRect(kPadding, y, width, 14);
         [errorText drawInRect:errorRect withAttributes:errorAttrs];
         return;
     }
 
-    // Build footer text per spec:
     // "15 day streak | 7 scrobbles today | 2 queued         Updated 14:32"
-    // "15 day streak (continue today) | 0 scrobbles today   Updated 14:32"
-    // "42+ day streak... | 5 scrobbles today                Updated 14:32"
-    // "7 scrobbles today                                    Updated 14:32"
-
-    NSMutableString *statusText = [NSMutableString string];
-
-    // Streak (shown first when >= 2 days)
-    if (_streakEnabled && _streakDays >= 2) {
-        if (_streakDiscoveryInProgress) {
-            [statusText appendFormat:@"%ld+ day streak...", (long)_streakDays];
-        } else if (_streakNeedsContinuation) {
-            [statusText appendFormat:@"%ld day streak (continue today)", (long)_streakDays];
-        } else {
-            [statusText appendFormat:@"%ld day streak", (long)_streakDays];
-        }
-        [statusText appendString:@" | "];
-    }
-
-    // Scrobbled today
-    if (_scrobbledToday >= 200) {
-        [statusText appendString:@"200+ scrobbles today"];
-    } else {
-        [statusText appendFormat:@"%ld scrobbles today", (long)_scrobbledToday];
-    }
-
-    // Queue status
-    if (_queueCount > 0) {
-        [statusText appendFormat:@" | %ld queued", (long)_queueCount];
-    }
+    NSString *statusText = WidgetFooterStatusText(_streakEnabled,
+                                                  _streakDays,
+                                                  _streakDiscoveryInProgress,
+                                                  _streakNeedsContinuation,
+                                                  _scrobbledToday,
+                                                  _queueCount);
 
     NSRect statusRect = NSMakeRect(kPadding, y, width, 14);
     [statusText drawInRect:statusRect withAttributes:statusAttrs];

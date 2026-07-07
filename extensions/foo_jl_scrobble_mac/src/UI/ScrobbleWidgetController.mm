@@ -16,6 +16,8 @@
 #import "../LastFm/LastFmClient.h"
 #import "../LastFm/LastFmAuth.h"
 #import "../Services/ScrobbleService.h"
+#import "../Core/StreakValidity.h"
+#import "ScrobbleColorUtils.h"
 
 // Image cache for album artwork with async downloading
 @interface ScrobbleWidgetImageCache : NSObject
@@ -644,13 +646,7 @@
 
 - (void)fetchScrobbledTodayCount:(NSString *)username forPeriod:(ScrobbleChartPeriod)period type:(ScrobbleChartType)type {
     // Get midnight today (local time)
-    NSCalendar *calendar = [NSCalendar currentCalendar];
-    NSDate *now = [NSDate date];
-    NSDateComponents *components = [calendar components:(NSCalendarUnitYear |
-                                                         NSCalendarUnitMonth |
-                                                         NSCalendarUnitDay)
-                                               fromDate:now];
-    NSDate *midnight = [calendar dateFromComponents:components];
+    NSDate *midnight = ScrobbleLocalMidnight([NSDate date], [NSCalendar currentCalendar]);
     NSTimeInterval fromTimestamp = [midnight timeIntervalSince1970];
 
     [[LastFmClient shared] fetchRecentTracksCount:username
@@ -1131,12 +1127,8 @@
                 completeCache.calculatedTimezone = [NSTimeZone localTimeZone];
 
                 // Calculate today midnight for day rollover detection
-                NSCalendar *calendar = [NSCalendar currentCalendar];
-                NSDateComponents *components = [calendar components:(NSCalendarUnitYear |
-                                                                     NSCalendarUnitMonth |
-                                                                     NSCalendarUnitDay)
-                                                           fromDate:[NSDate date]];
-                completeCache.todayMidnight = [calendar dateFromComponents:components];
+                completeCache.todayMidnight = ScrobbleLocalMidnight([NSDate date],
+                                                                    [NSCalendar currentCalendar]);
             }
 
             [strongSelf updateStreakDisplay];
@@ -1295,10 +1287,7 @@
 #pragma mark - Color Conversion
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
-    return [NSColor colorWithRed:((argb >> 16) & 0xFF) / 255.0
-                           green:((argb >> 8) & 0xFF) / 255.0
-                            blue:(argb & 0xFF) / 255.0
-                           alpha:((argb >> 24) & 0xFF) / 255.0];
+    return ScrobbleColorFromARGB(argb);
 }
 
 @end

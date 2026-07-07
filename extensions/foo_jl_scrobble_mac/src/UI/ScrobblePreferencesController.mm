@@ -12,6 +12,7 @@
 #import "../LastFm/LastFmAuth.h"
 #import "../Services/ScrobbleService.h"
 #import "../Services/ScrobbleCache.h"
+#import "ScrobbleColorUtils.h"
 #import "../../../../shared/PreferencesCommon.h"
 
 @class ScrobbleTrack;
@@ -543,26 +544,12 @@
 #pragma mark - Color Conversion
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
-    // If alpha is 0 (transparent/unset), use system background
-    if ((argb >> 24) == 0) {
-        return [NSColor windowBackgroundColor];
-    }
-    return [NSColor colorWithRed:((argb >> 16) & 0xFF) / 255.0
-                           green:((argb >> 8) & 0xFF) / 255.0
-                            blue:(argb & 0xFF) / 255.0
-                           alpha:((argb >> 24) & 0xFF) / 255.0];
+    // Alpha 0 (transparent/unset) falls back to the system background
+    return ScrobbleColorFromARGBOrWindowBackground(argb);
 }
 
 - (uint32_t)argbFromColor:(NSColor *)color {
-    NSColor *rgbColor = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    if (!rgbColor) return 0xFF000000;  // Opaque black fallback
-
-    uint32_t a = (uint32_t)(rgbColor.alphaComponent * 255) & 0xFF;
-    uint32_t r = (uint32_t)(rgbColor.redComponent * 255) & 0xFF;
-    uint32_t g = (uint32_t)(rgbColor.greenComponent * 255) & 0xFF;
-    uint32_t b = (uint32_t)(rgbColor.blueComponent * 255) & 0xFF;
-
-    return (a << 24) | (r << 16) | (g << 8) | b;
+    return ScrobbleARGBFromColor(color);
 }
 
 #pragma mark - Authentication
