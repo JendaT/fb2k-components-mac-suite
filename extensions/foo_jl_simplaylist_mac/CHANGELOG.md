@@ -2,6 +2,11 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.5.1] - 2026-07-07
+
+### Added
+- **Keep playback in its playlist**: New behavior option (default on) that stops library browsing from changing what plays next. foobar2000 for Mac redirects playback continuation to the browsed ReFacets selection, so finishing a track while browsing jumped playback to the first visible library track and abandoned your playlist. SimPlaylist now detects the redirect and points continuation back at the playlist the current track is playing from. Starting playback from ReFacets deliberately (double-click) still works as before.
+
 ## [1.5.0] - 2026-07-02
 
 ### Added

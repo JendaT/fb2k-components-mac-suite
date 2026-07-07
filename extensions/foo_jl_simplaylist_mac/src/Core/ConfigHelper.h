@@ -74,6 +74,12 @@ static const char* const kQueueDisplayStyle = "queue_display_style";
 // Double-click preserves playback queue instead of flushing it
 static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_queue";
 
+// Keep playback continuation in the playlist the playing track is in.
+// Library viewers (ReFacets) redirect the "playing playlist" to their hidden
+// selection-mirror playlist while browsing; when enabled, SimPlaylist detects
+// the redirect and points continuation back at the playing track's playlist.
+static const char* const kKeepPlayingPlaylist = "keep_playing_playlist";
+
 // Show total album duration appended to group header text
 static const char* const kShowGroupDuration = "show_group_duration";
 
@@ -104,6 +110,7 @@ static const bool kDefaultDebugRendering = false;     // Hide debug diagnostics 
 static const bool kDefaultDragToFinderMove = false;   // Copy files by default when dragging to Finder
 static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
 static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
+static const bool kDefaultKeepPlayingPlaylist = true;         // Default: guard playing playlist while browsing library
 static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
 static const int64_t kDefaultFinderOpenBehavior = 0;  // 0=replace (default fb2k), 1=append, 2=named
 static const char* const kDefaultFinderOpenTargetPlaylist = "Inbox";

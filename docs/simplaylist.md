@@ -56,6 +56,19 @@ Reorder tracks within the playlist using drag and drop.
 
 Right-click for the standard foobar2000 context menu with all playback and metadata options.
 
+### Keep Playback in Its Playlist
+
+Stops library browsing from changing what plays next. Enabled by default; toggle under **Preferences > Display > SimPlaylist > Behavior**.
+
+**The problem it solves:** foobar2000 tracks two playlists independently — the *active* playlist (the one displayed) and the *playing* playlist (the one playback continues in when the current track ends). On the Mac, browsing the media library with ReFacets silently redirects the playing playlist to a hidden playlist that mirrors your library selection. The track you're listening to keeps playing, but the moment it ends, playback jumps to the first browsed track and abandons your playlist. No native foobar2000 setting prevents this.
+
+**What SimPlaylist does:** there is no notification when the redirect happens, but it is detectable — foobar2000 still knows which playlist the current track is actually playing from. SimPlaylist watches for the mismatch and immediately points playback continuation back at that playlist. You can browse ReFacets freely while listening; what plays next never changes.
+
+Notes:
+- Deliberately starting playback from ReFacets (double-click) works as before — that is a real playback start, not a redirect, so the guard stays out of the way.
+- The playback queue is unaffected either way; queued tracks always play first.
+- Every restore is logged to the foobar2000 console (`View > Console`), so you can verify the guard is working.
+
 ## Configuration
 
 Access settings via **Preferences > Display > SimPlaylist**
@@ -70,6 +83,7 @@ Access settings via **Preferences > Display > SimPlaylist**
 | Album Art Size | Size of album artwork in pixels | 80 |
 | Header Display | Header style (Above/Aligned/Inline) | Above tracks |
 | Highlight Now Playing | Show yellow highlight on playing track | Off |
+| Keep playback in its playlist | Prevent library browsing (ReFacets) from changing what plays next | On |
 
 ## Layout Editor
 
