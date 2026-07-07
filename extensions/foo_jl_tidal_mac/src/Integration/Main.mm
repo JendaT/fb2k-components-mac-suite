@@ -45,6 +45,18 @@ public:
     void on_init() override {
         using namespace tidal;
 
+        // Route the Foundation-only logging funnel to the fb2k console and
+        // sync the debug-flag cache from the stored pref. Before this point
+        // logging is a no-op (TidalLog has no SDK dependency by design).
+        setLogBackend([](LogLevel level, const char* message) {
+            if (level == LogLevel::Error) {
+                console::error(message);
+            } else {
+                console::info(message);
+            }
+        });
+        refreshDebugLoggingCache();
+
         // Load stored session from Keychain
         [[JLTidalAuthService shared] loadStoredSession];
 
@@ -63,6 +75,10 @@ public:
         // If deferred to static destructors, configStore will already be
         // torn down and any logDebug/configStore access will uBugCheck.
         [[JLTidalStreamResolver shared] shutdown];
+
+        // Drop the console backend so logging from static destructors
+        // becomes a no-op instead of touching torn-down fb2k services.
+        setLogBackend(nullptr);
     }
 };
 

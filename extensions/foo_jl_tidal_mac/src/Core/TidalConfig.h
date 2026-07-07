@@ -9,6 +9,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../API/TidalConstants.h"
+#include "TidalLog.h"
 #include <string>
 
 namespace tidal {
@@ -69,45 +70,10 @@ public:
     static void setDASHEnabled(bool enabled);
 };
 
-// Cached debug logging state (avoids configStore lookup on every call)
-// Call refreshDebugLoggingCache() after changing the setting.
-inline bool& debugLoggingCacheRef() {
-    static bool s_cached = kDefaultDebugLogging;
-    return s_cached;
-}
-
-inline bool isDebugLoggingCached() {
-    return debugLoggingCacheRef();
-}
-
+// Sync the TidalLog debug-flag cache from the stored pref.
+// Call after changing the setting (and once at component init).
 inline void refreshDebugLoggingCache() {
     debugLoggingCacheRef() = TidalConfig::isDebugLoggingEnabled();
-}
-
-// Debug logging helper
-inline void logDebug(const char* message) {
-    if (isDebugLoggingCached()) {
-        std::string msg = "[Tidal] ";
-        msg += message;
-        console::info(msg.c_str());
-    }
-}
-
-inline void logDebug(const std::string& message) {
-    logDebug(message.c_str());
-}
-
-// Always log (not conditional on debug mode)
-inline void logInfo(const char* message) {
-    std::string msg = "[Tidal] ";
-    msg += message;
-    console::info(msg.c_str());
-}
-
-inline void logError(const char* message) {
-    std::string msg = "[Tidal] ";
-    msg += message;
-    console::error(msg.c_str());
 }
 
 } // namespace tidal
