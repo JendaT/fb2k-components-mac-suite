@@ -7,6 +7,7 @@
 
 #import "TidalBrowserController.h"
 #import "TidalAlbumArtCache.h"
+#import "../Core/BrowserLogic.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
 #import "../Core/TidalPlaylistSync.h"
@@ -439,15 +440,13 @@ public:
 }
 
 - (void)scrollViewDidScroll:(NSNotification *)notification {
-    if (!self.hasMoreResults || self.isLoadingMore || self.isSearching) return;
-
     NSClipView *clipView = self.scrollView.contentView;
-    CGFloat contentHeight = self.tableView.frame.size.height;
-    CGFloat scrollOffset = clipView.bounds.origin.y;
-    CGFloat visibleHeight = clipView.bounds.size.height;
-
-    // Load more when within 100pt of the bottom
-    if (scrollOffset + visibleHeight >= contentHeight - 100) {
+    if ([JLTidalBrowserLogic shouldTriggerLoadMoreWithHasMore:self.hasMoreResults
+                                                isLoadingMore:self.isLoadingMore
+                                                  isSearching:self.isSearching
+                                                 scrollOffset:clipView.bounds.origin.y
+                                                visibleHeight:clipView.bounds.size.height
+                                                contentHeight:self.tableView.frame.size.height]) {
         [self loadMoreResults];
     }
 }
@@ -627,43 +626,32 @@ public:
 
 #pragma mark - Mode Helpers
 
+// Active-list selection lives in JLTidalBrowserLogic (pure, unit-tested).
+
 - (BOOL)isShowingTracks {
-    if (self.browseMode == JLTidalBrowseModeAlbumTracks ||
-        self.browseMode == JLTidalBrowseModeArtistTopTracks ||
-        self.browseMode == JLTidalBrowseModePlaylistTracks) {
-        return YES;
-    }
-    if (self.browseMode == JLTidalBrowseModeLibraryList &&
-        self.librarySection == JLTidalLibrarySectionFavTracks) {
-        return YES;
-    }
-    return self.browseMode == JLTidalBrowseModeSearchResults &&
-           self.searchType == JLTidalSearchTypeTracks;
+    return [JLTidalBrowserLogic isShowingTracksInBrowseMode:self.browseMode
+                                                 searchType:self.searchType
+                                             librarySection:self.librarySection];
 }
 
 - (BOOL)isShowingAlbums {
-    if (self.browseMode == JLTidalBrowseModeArtistAlbums) return YES;
-    if (self.browseMode == JLTidalBrowseModeLibraryList &&
-        self.librarySection == JLTidalLibrarySectionFavAlbums) {
-        return YES;
-    }
-    return self.browseMode == JLTidalBrowseModeSearchResults &&
-           self.searchType == JLTidalSearchTypeAlbums;
+    return [JLTidalBrowserLogic isShowingAlbumsInBrowseMode:self.browseMode
+                                                 searchType:self.searchType
+                                             librarySection:self.librarySection];
 }
 
 - (BOOL)isShowingArtists {
-    return self.browseMode == JLTidalBrowseModeSearchResults &&
-           self.searchType == JLTidalSearchTypeArtists;
+    return [JLTidalBrowserLogic isShowingArtistsInBrowseMode:self.browseMode
+                                                  searchType:self.searchType];
 }
 
 - (BOOL)isShowingPlaylists {
-    return self.browseMode == JLTidalBrowseModeLibraryList &&
-           self.librarySection == JLTidalLibrarySectionPlaylists;
+    return [JLTidalBrowserLogic isShowingPlaylistsInBrowseMode:self.browseMode
+                                                librarySection:self.librarySection];
 }
 
 - (BOOL)isDrillDown {
-    return self.browseMode != JLTidalBrowseModeSearchResults &&
-           self.browseMode != JLTidalBrowseModeLibraryList;
+    return [JLTidalBrowserLogic isDrillDownMode:self.browseMode];
 }
 
 #pragma mark - Panel Mode Switching
@@ -699,7 +687,9 @@ public:
 
 - (void)librarySectionChanged:(id)sender {
     JLTidalLibrarySection newSection = (JLTidalLibrarySection)self.librarySectionControl.selectedSegment;
-    if (newSection == self.librarySection && self.browseMode == JLTidalBrowseModeLibraryList) return;
+    if ([JLTidalBrowserLogic librarySectionChangeIsNoOpFromSection:self.librarySection
+                                                         toSection:newSection
+                                                        browseMode:self.browseMode]) return;
 
     self.librarySection = newSection;
     [self exitDrillDown];
@@ -734,7 +724,8 @@ public:
                     }
                     if (tracks) [self.trackResults addObjectsFromArray:tracks];
                     self.currentOffset = (NSInteger)tracks.count;
-                    self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
+                    self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
+                                                                                     pageSize:kPageSize];
                     [self.tableView reloadData];
                     self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
                                                     (unsigned long)self.trackResults.count,
@@ -759,7 +750,8 @@ public:
                     }
                     if (albums) [self.albumResults addObjectsFromArray:albums];
                     self.currentOffset = (NSInteger)albums.count;
-                    self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
+                    self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)albums.count
+                                                                                     pageSize:kPageSize];
                     [self.tableView reloadData];
                     self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
                                                     (unsigned long)self.albumResults.count,
@@ -798,7 +790,9 @@ public:
 
 - (void)searchTypeChanged:(id)sender {
     JLTidalSearchType newType = (JLTidalSearchType)self.searchTypeControl.selectedSegment;
-    if (newType == self.searchType && self.browseMode == JLTidalBrowseModeSearchResults) {
+    if ([JLTidalBrowserLogic searchTypeChangeIsNoOpFromType:self.searchType
+                                                     toType:newType
+                                                 browseMode:self.browseMode]) {
         return;
     }
 
@@ -829,14 +823,9 @@ public:
 }
 
 - (void)exitDrillDown {
-    if (self.browseMode == JLTidalBrowseModeSearchResults ||
-        self.browseMode == JLTidalBrowseModeLibraryList) return;
+    if (![JLTidalBrowserLogic isDrillDownMode:self.browseMode]) return;
 
-    if (self.panelMode == JLTidalPanelModeLibrary) {
-        self.browseMode = JLTidalBrowseModeLibraryList;
-    } else {
-        self.browseMode = JLTidalBrowseModeSearchResults;
-    }
+    self.browseMode = [JLTidalBrowserLogic rootModeForPanelMode:self.panelMode];
     self.drillDownTitle = nil;
     self.currentAlbum = nil;
     self.currentArtist = nil;
@@ -848,10 +837,10 @@ public:
 }
 
 - (void)backButtonClicked:(id)sender {
-    // If in artist top tracks, go back to artist albums
-    // Otherwise go back to search results
-    if (self.browseMode == JLTidalBrowseModeArtistTopTracks && self.currentArtist) {
-        // Go back to artist albums view
+    // ArtistTopTracks goes back to artist albums; everything else
+    // collapses straight to the root (search results / library list)
+    if ([JLTidalBrowserLogic backReturnsToArtistAlbumsFromMode:self.browseMode
+                                                     hasArtist:(self.currentArtist != nil)]) {
         [self drillIntoArtist:self.currentArtist];
         return;
     }
@@ -923,8 +912,10 @@ static const NSInteger kPageSize = 50;
             }
 
             if (tracks) [self.trackResults addObjectsFromArray:tracks];
-            self.currentOffset = offset + (NSInteger)tracks.count;
-            self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
+            self.currentOffset = [JLTidalBrowserLogic offsetAfterSearchPageAtOffset:offset
+                                                                      returnedCount:(NSInteger)tracks.count];
+            self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
+                                                                             pageSize:kPageSize];
             [self.tableView reloadData];
 
             if (self.trackResults.count == 0) {
@@ -956,8 +947,10 @@ static const NSInteger kPageSize = 50;
             }
 
             if (albums) [self.albumResults addObjectsFromArray:albums];
-            self.currentOffset = offset + (NSInteger)albums.count;
-            self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
+            self.currentOffset = [JLTidalBrowserLogic offsetAfterSearchPageAtOffset:offset
+                                                                      returnedCount:(NSInteger)albums.count];
+            self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)albums.count
+                                                                             pageSize:kPageSize];
             [self.tableView reloadData];
 
             if (self.albumResults.count == 0) {
@@ -989,8 +982,10 @@ static const NSInteger kPageSize = 50;
             }
 
             if (artists) [self.artistResults addObjectsFromArray:artists];
-            self.currentOffset = offset + (NSInteger)artists.count;
-            self.hasMoreResults = (NSInteger)artists.count >= kPageSize;
+            self.currentOffset = [JLTidalBrowserLogic offsetAfterSearchPageAtOffset:offset
+                                                                      returnedCount:(NSInteger)artists.count];
+            self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)artists.count
+                                                                             pageSize:kPageSize];
             [self.tableView reloadData];
 
             if (self.artistResults.count == 0) {
@@ -1040,7 +1035,8 @@ static const NSInteger kPageSize = 50;
                     if (error || !tracks) return;
                     [self.trackResults addObjectsFromArray:tracks];
                     self.currentOffset += (NSInteger)tracks.count;
-                    self.hasMoreResults = (NSInteger)tracks.count >= kPageSize;
+                    self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
+                                                                                     pageSize:kPageSize];
                     [self.tableView reloadData];
                     self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
                                                     (unsigned long)self.trackResults.count,
@@ -1059,7 +1055,8 @@ static const NSInteger kPageSize = 50;
                     if (error || !albums) return;
                     [self.albumResults addObjectsFromArray:albums];
                     self.currentOffset += (NSInteger)albums.count;
-                    self.hasMoreResults = (NSInteger)albums.count >= kPageSize;
+                    self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)albums.count
+                                                                                     pageSize:kPageSize];
                     [self.tableView reloadData];
                     self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
                                                     (unsigned long)self.albumResults.count,

@@ -71,6 +71,13 @@ clang++ "${OBJCXX_FLAGS[@]}" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/response_parser_tests"
 
+echo "==> Compiling unit tests (BrowserLogic)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/BrowserLogicTests.mm" \
+    "$PROJECT_DIR/src/Core/BrowserLogic.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/browser_logic_tests"
+
 echo "==> Compiling unit tests (SyncPlanner)..."
 clang++ "${OBJCXX_FLAGS[@]}" \
     "$PROJECT_DIR/Tests/SyncPlannerTests.mm" \
@@ -99,4 +106,5 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/tidal_session_tests"
 "$TEST_BUILD_DIR/response_parser_tests"
 "$TEST_BUILD_DIR/sync_planner_tests"
+"$TEST_BUILD_DIR/browser_logic_tests"
 "$TEST_BUILD_DIR/stream_cache_tests"
