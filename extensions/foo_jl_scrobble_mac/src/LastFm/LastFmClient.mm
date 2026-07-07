@@ -8,11 +8,12 @@
 #import "LastFmClient.h"
 #import "LastFmClient+Private.h"
 #import "LastFmConstants.h"
+#import "LastFmRequestBuilder.h"
+#import "LastFmResponseParser.h"
 #import "../Core/ScrobbleTrack.h"
 #import "../Core/TopAlbum.h"
 #import "../Core/RecentTrack.h"
 #import "../Core/ScrobbleConfig.h"
-#import "../Core/MD5.h"
 
 // Discovery state implementation
 @implementation LastFmStreakDiscoveryState
@@ -49,49 +50,6 @@
     return self;
 }
 
-#pragma mark - Request Signing
-
-- (NSString*)signatureForParameters:(NSDictionary<NSString*, NSString*>*)params {
-    // Sort keys alphabetically, excluding "format" and "callback"
-    NSMutableArray* sortedKeys = [[params.allKeys sortedArrayUsingSelector:@selector(compare:)] mutableCopy];
-    [sortedKeys removeObject:@"format"];
-    [sortedKeys removeObject:@"callback"];
-
-    // Build signature base: key1value1key2value2...secret
-    NSMutableString* signatureBase = [NSMutableString string];
-    for (NSString* key in sortedKeys) {
-        [signatureBase appendString:key];
-        [signatureBase appendString:params[key]];
-    }
-    [signatureBase appendString:@(LastFm::kApiSecret)];
-
-    // Return MD5 hash
-    return MD5Hash(signatureBase);
-}
-
-#pragma mark - URL Building
-
-- (NSString*)urlEncode:(NSString*)string {
-    static NSCharacterSet *allowed = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSMutableCharacterSet *set = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
-        [set removeCharactersInString:@"&=+#"];
-        allowed = [set copy];
-    });
-    return [string stringByAddingPercentEncodingWithAllowedCharacters:allowed];
-}
-
-- (NSString*)buildPostBody:(NSDictionary<NSString*, NSString*>*)params {
-    NSMutableArray* pairs = [NSMutableArray array];
-    for (NSString* key in params) {
-        NSString* encodedKey = [self urlEncode:key];
-        NSString* encodedValue = [self urlEncode:params[key]];
-        [pairs addObject:[NSString stringWithFormat:@"%@=%@", encodedKey, encodedValue]];
-    }
-    return [pairs componentsJoinedByString:@"&"];
-}
-
 #pragma mark - Request Execution
 
 - (void)executeSignedRequest:(NSDictionary<NSString*, NSString*>*)baseParams
@@ -103,14 +61,16 @@
     params[@"format"] = @"json";
 
     // Add signature
-    NSString* signature = [self signatureForParameters:params];
+    NSString* signature = [LastFmRequestBuilder signatureForParameters:params
+                                                                secret:@(LastFm::kApiSecret)];
     params[@"api_sig"] = signature;
 
     // Build POST request
     NSURL* url = [NSURL URLWithString:@(LastFm::kBaseUrl)];
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"POST";
-    request.HTTPBody = [[self buildPostBody:params] dataUsingEncoding:NSUTF8StringEncoding];
+    request.HTTPBody = [[LastFmRequestBuilder postBodyFromParameters:params]
+                           dataUsingEncoding:NSUTF8StringEncoding];
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"foo_scrobble_mac/1.0" forHTTPHeaderField:@"User-Agent"];
 
@@ -224,8 +184,8 @@
             return;
         }
 
-        NSString* token = response[@"token"];
-        if ([token isKindOfClass:[NSString class]] && token.length > 0) {
+        NSString* token = [LastFmResponseParser tokenFromResponse:response];
+        if (token) {
             completion(token, nil);
         } else {
             completion(nil, LastFmMakeError(LastFmErrorOperationFailed, @"No token in response"));
@@ -259,7 +219,7 @@
     NSString* urlString = [NSString stringWithFormat:@"%s?api_key=%s&token=%@",
                            LastFm::kAuthUrl,
                            LastFm::kApiKey,
-                           [self urlEncode:token]];
+                           [LastFmRequestBuilder urlEncode:token]];
     return [NSURL URLWithString:urlString];
 }
 
@@ -287,9 +247,7 @@
             return;
         }
 
-        NSDictionary* user = response[@"user"];
-        NSString* name = user[@"name"];
-        completion(YES, name, nil);
+        completion(YES, [LastFmResponseParser usernameFromUserInfoResponse:response], nil);
     }];
 }
 
@@ -310,29 +268,9 @@
             return;
         }
 
-        NSDictionary* user = response[@"user"];
-        NSString* name = user[@"name"];
-
-        // Get profile image URL - Last.fm returns array of images in different sizes
-        // We want "large" (174x174) or "extralarge" (300x300)
-        NSURL* imageURL = nil;
-        NSArray* images = user[@"image"];
-        if ([images isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* img in images) {
-                NSString* size = img[@"size"];
-                NSString* urlStr = img[@"#text"];
-                if ([size isEqualToString:@"large"] || [size isEqualToString:@"extralarge"]) {
-                    if (urlStr.length > 0) {
-                        imageURL = [NSURL URLWithString:urlStr];
-                        if ([size isEqualToString:@"extralarge"]) {
-                            break;  // Prefer extralarge
-                        }
-                    }
-                }
-            }
-        }
-
-        completion(name, imageURL, nil);
+        completion([LastFmResponseParser usernameFromUserInfoResponse:response],
+                   [LastFmResponseParser userImageURLFromUserInfoResponse:response],
+                   nil);
     }];
 }
 
@@ -496,24 +434,8 @@
         return;
     }
 
-    NSMutableDictionary* params = [NSMutableDictionary dictionary];
-    params[@"method"] = @(LastFm::kMethodNowPlaying);
-    params[@"sk"] = _session.sessionKey;
-    params[@"artist"] = track.artist;
-    params[@"track"] = track.title;
-
-    if (track.album.length > 0) {
-        params[@"album"] = track.album;
-    }
-    if (track.albumArtist.length > 0) {
-        params[@"albumArtist"] = track.albumArtist;
-    }
-    if (track.duration > 0) {
-        params[@"duration"] = [NSString stringWithFormat:@"%ld", (long)track.duration];
-    }
-    if (track.trackNumber > 0) {
-        params[@"trackNumber"] = [NSString stringWithFormat:@"%ld", (long)track.trackNumber];
-    }
+    NSDictionary* params = [LastFmRequestBuilder nowPlayingParamsForTrack:track
+                                                               sessionKey:_session.sessionKey];
 
     [self executeSignedRequest:params completion:^(NSDictionary* response, NSError* error) {
         if (error) {
@@ -521,9 +443,7 @@
             return;
         }
 
-        // Check for nowplaying response
-        NSDictionary* nowplaying = response[@"nowplaying"];
-        completion(nowplaying != nil, nil);
+        completion([LastFmResponseParser nowPlayingConfirmedInResponse:response], nil);
     }];
 }
 
@@ -545,32 +465,8 @@
         batch = [tracks subarrayWithRange:NSMakeRange(0, LastFm::kMaxScrobblesPerBatch)];
     }
 
-    NSMutableDictionary* params = [NSMutableDictionary dictionary];
-    params[@"method"] = @(LastFm::kMethodScrobble);
-    params[@"sk"] = _session.sessionKey;
-
-    // Add indexed parameters for each track
-    for (NSUInteger i = 0; i < batch.count; i++) {
-        ScrobbleTrack* track = batch[i];
-        NSString* suffix = [NSString stringWithFormat:@"[%lu]", (unsigned long)i];
-
-        params[[@"artist" stringByAppendingString:suffix]] = track.artist;
-        params[[@"track" stringByAppendingString:suffix]] = track.title;
-        params[[@"timestamp" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%lld", track.timestamp];
-
-        if (track.album.length > 0) {
-            params[[@"album" stringByAppendingString:suffix]] = track.album;
-        }
-        if (track.albumArtist.length > 0) {
-            params[[@"albumArtist" stringByAppendingString:suffix]] = track.albumArtist;
-        }
-        if (track.duration > 0) {
-            params[[@"duration" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%ld", (long)track.duration];
-        }
-        if (track.trackNumber > 0) {
-            params[[@"trackNumber" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%ld", (long)track.trackNumber];
-        }
-    }
+    NSDictionary* params = [LastFmRequestBuilder scrobbleParamsForTracks:batch
+                                                              sessionKey:_session.sessionKey];
 
     [self executeSignedRequest:params completion:^(NSDictionary* response, NSError* error) {
         if (error) {
@@ -578,20 +474,9 @@
             return;
         }
 
-        // Parse scrobble response
-        NSDictionary* scrobbles = response[@"scrobbles"];
-        if (![scrobbles isKindOfClass:[NSDictionary class]]) {
-            completion(0, 0, nil);
-            return;
-        }
-        NSDictionary* attr = scrobbles[@"@attr"];
-        if (![attr isKindOfClass:[NSDictionary class]]) {
-            completion(0, 0, nil);
-            return;
-        }
-        NSInteger accepted = [attr[@"accepted"] integerValue];
-        NSInteger ignored = [attr[@"ignored"] integerValue];
-
+        NSInteger accepted = 0;
+        NSInteger ignored = 0;
+        [LastFmResponseParser scrobbleResponse:response accepted:&accepted ignored:&ignored];
         completion(accepted, ignored, nil);
     }];
 }
@@ -621,20 +506,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* albums = [NSMutableArray array];
-        NSDictionary* topAlbums = response[@"topalbums"];
-        NSArray* albumArray = topAlbums[@"album"];
-
-        if ([albumArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* albumDict in albumArray) {
-                TopAlbum* album = [TopAlbum albumFromDictionary:albumDict];
-                if (album) {
-                    [albums addObject:album];
-                }
-            }
-        }
-
-        completion(albums, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"topalbums"
+                                                      itemKey:@"album"
+                                                    asArtists:NO], nil);
     }];
 }
 
@@ -661,22 +536,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* artists = [NSMutableArray array];
-        NSDictionary* topArtists = response[@"topartists"];
-        NSArray* artistArray = topArtists[@"artist"];
-
-        if ([artistArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* artistDict in artistArray) {
-                TopAlbum* item = [TopAlbum albumFromDictionary:artistDict];
-                if (item) {
-                    // For artists, set artist = name (the item IS the artist)
-                    item.artist = item.name;
-                    [artists addObject:item];
-                }
-            }
-        }
-
-        completion(artists, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"topartists"
+                                                      itemKey:@"artist"
+                                                    asArtists:YES], nil);
     }];
 }
 
@@ -703,20 +566,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* tracks = [NSMutableArray array];
-        NSDictionary* topTracks = response[@"toptracks"];
-        NSArray* trackArray = topTracks[@"track"];
-
-        if ([trackArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* trackDict in trackArray) {
-                TopAlbum* item = [TopAlbum albumFromDictionary:trackDict];
-                if (item) {
-                    [tracks addObject:item];
-                }
-            }
-        }
-
-        completion(tracks, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"toptracks"
+                                                      itemKey:@"track"
+                                                    asArtists:NO], nil);
     }];
 }
 
@@ -744,19 +597,7 @@
         }
 
         // Total count is in the @attr pagination info
-        NSDictionary* recentTracks = response[@"recenttracks"];
-        if (![recentTracks isKindOfClass:[NSDictionary class]]) {
-            completion(0, nil);
-            return;
-        }
-        NSDictionary* attr = recentTracks[@"@attr"];
-        if (![attr isKindOfClass:[NSDictionary class]]) {
-            completion(0, nil);
-            return;
-        }
-        NSInteger total = [attr[@"total"] integerValue];
-
-        completion(total, nil);
+        completion([LastFmResponseParser totalFromRecentTracksResponse:response], nil);
     }];
 }
 
@@ -781,17 +622,7 @@
             return;
         }
 
-        NSDictionary* albumInfo = response[@"album"];
-        if (![albumInfo isKindOfClass:[NSDictionary class]]) {
-            completion(nil, nil);
-            return;
-        }
-
-        // Extract image URL using the same helper
-        NSArray* images = albumInfo[@"image"];
-        NSURL* imageURL = [TopAlbum bestImageURLFromArray:images];
-
-        completion(imageURL, nil);
+        completion([LastFmResponseParser albumImageURLFromAlbumInfoResponse:response], nil);
     }];
 }
 
@@ -816,26 +647,11 @@
             return;
         }
 
-        NSDictionary* trackInfo = response[@"track"];
-        if (![trackInfo isKindOfClass:[NSDictionary class]]) {
-            completion(nil, nil, nil);
-            return;
-        }
-
-        // Extract album name
         NSString* albumName = nil;
-        NSDictionary* albumDict = trackInfo[@"album"];
-        if ([albumDict isKindOfClass:[NSDictionary class]]) {
-            albumName = albumDict[@"title"];
-            if (![albumName isKindOfClass:[NSString class]]) {
-                albumName = nil;
-            }
-        }
-
-        // Extract image URL (album image)
-        NSArray* images = albumDict[@"image"];
-        NSURL* imageURL = [TopAlbum bestImageURLFromArray:images];
-
+        NSURL* imageURL = nil;
+        [LastFmResponseParser trackInfoFromResponse:response
+                                          albumName:&albumName
+                                           imageURL:&imageURL];
         completion(albumName, imageURL, nil);
     }];
 }
@@ -897,28 +713,9 @@
             return;
         }
 
-        NSDictionary* recentTracks = response[@"recenttracks"];
-        if (![recentTracks isKindOfClass:[NSDictionary class]]) {
-            completion(@[], 0, nil);
-            return;
-        }
-        NSDictionary* attr = recentTracks[@"@attr"];
-        NSInteger totalPages = [attr isKindOfClass:[NSDictionary class]] ? [attr[@"totalPages"] integerValue] : 0;
-
-        // Parse tracks
-        NSMutableArray* tracks = [NSMutableArray array];
-        id trackData = recentTracks[@"track"];
-
-        if ([trackData isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* trackDict in trackData) {
-                [tracks addObject:trackDict];
-            }
-        } else if ([trackData isKindOfClass:[NSDictionary class]]) {
-            // Single track is returned as object, not array
-            [tracks addObject:trackData];
-        }
-
-        completion(tracks, totalPages, nil);
+        completion([LastFmResponseParser recentTrackDictsFromResponse:response],
+                   [LastFmResponseParser totalPagesFromRecentTracksResponse:response],
+                   nil);
     }];
 }
 
@@ -941,13 +738,8 @@
             return;
         }
 
-        // Filter out "now playing" tracks (no timestamp)
-        NSArray* actualTracks = [tracks filteredArrayUsingPredicate:
-            [NSPredicate predicateWithBlock:^BOOL(NSDictionary* track, NSDictionary* bindings) {
-                return track[@"@attr"][@"nowplaying"] == nil;
-            }]];
-
-        completion(actualTracks.count > 0, nil);
+        // Ignore "now playing" entries (no timestamp)
+        completion([LastFmResponseParser containsActualScrobbles:tracks], nil);
     }];
 }
 

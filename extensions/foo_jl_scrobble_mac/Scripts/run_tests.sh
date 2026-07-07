@@ -33,6 +33,16 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/model_parsing_tests"
 
+echo "==> Compiling unit tests (Last.fm protocol)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/LastFmProtocolTests.mm" \
+    "$PROJECT_DIR/src/LastFm/LastFmRequestBuilder.mm" \
+    "$PROJECT_DIR/src/LastFm/LastFmResponseParser.mm" \
+    "$PROJECT_DIR/src/Core/TopAlbum.mm" \
+    "$PROJECT_DIR/src/Core/ScrobbleTrack.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/lastfm_protocol_tests"
+
 echo "==> Compiling unit tests (RateLimiter)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/RateLimiterTests.mm" \
@@ -44,4 +54,5 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/scrobble_rules_tests"
 "$TEST_BUILD_DIR/playback_tracker_tests"
 "$TEST_BUILD_DIR/model_parsing_tests"
+"$TEST_BUILD_DIR/lastfm_protocol_tests"
 "$TEST_BUILD_DIR/rate_limiter_tests"
