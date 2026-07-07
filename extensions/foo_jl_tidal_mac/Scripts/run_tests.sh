@@ -71,6 +71,16 @@ clang++ "${OBJCXX_FLAGS[@]}" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/response_parser_tests"
 
+echo "==> Compiling unit tests (SyncPlanner)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/SyncPlannerTests.mm" \
+    "$PROJECT_DIR/src/Core/SyncPlanner.mm" \
+    "$PROJECT_DIR/src/Core/TidalModels.mm" \
+    "$PROJECT_DIR/src/Core/ManifestParser.mm" \
+    "$PROJECT_DIR/src/Core/TidalLog.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/sync_planner_tests"
+
 echo "==> Compiling unit tests (StreamCache)..."
 clang++ "${OBJCXX_FLAGS[@]}" \
     "$PROJECT_DIR/Tests/StreamCacheTests.mm" \
@@ -88,4 +98,5 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/url_utils_tests"
 "$TEST_BUILD_DIR/tidal_session_tests"
 "$TEST_BUILD_DIR/response_parser_tests"
+"$TEST_BUILD_DIR/sync_planner_tests"
 "$TEST_BUILD_DIR/stream_cache_tests"

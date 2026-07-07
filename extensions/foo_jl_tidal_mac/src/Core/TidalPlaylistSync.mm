@@ -8,78 +8,15 @@
 #import "TidalPlaylistSync.h"
 #import "TidalConfig.h"
 #import "TidalModels.h"
+#import "SyncPlanner.h"
 #import "URLUtils.h"
 #import "../API/TidalAPI.h"
 #import "../Integration/TidalPlaylistLock.h"
 #include "../fb2k_sdk.h"
 
-#pragma mark - JLTidalSyncChange
-
-@implementation JLTidalSyncChange
-
-- (instancetype)initWithType:(JLTidalSyncChangeType)type
-                        name:(NSString *)name
-                 tracksAdded:(NSInteger)added
-               tracksRemoved:(NSInteger)removed
-                   tidalUUID:(NSString *)uuid {
-    self = [super init];
-    if (self) {
-        _changeType = type;
-        _playlistName = [name copy];
-        _tracksAdded = added;
-        _tracksRemoved = removed;
-        _tidalUUID = [uuid copy];
-    }
-    return self;
-}
-
-@end
-
-#pragma mark - JLTidalSyncReport
-
-@implementation JLTidalSyncReport
-
-- (instancetype)initWithChanges:(NSArray<JLTidalSyncChange *> *)changes {
-    self = [super init];
-    if (self) {
-        _changes = [changes copy];
-        NSInteger created = 0, updated = 0, deleted = 0, unchanged = 0;
-        for (JLTidalSyncChange *c in changes) {
-            switch (c.changeType) {
-                case JLTidalSyncChangeTypeCreate: created++; break;
-                case JLTidalSyncChangeTypeUpdate: updated++; break;
-                case JLTidalSyncChangeTypeDelete: deleted++; break;
-                case JLTidalSyncChangeTypeUnchanged: unchanged++; break;
-            }
-        }
-        _totalCreated = created;
-        _totalUpdated = updated;
-        _totalDeleted = deleted;
-        _totalUnchanged = unchanged;
-    }
-    return self;
-}
-
-- (NSString *)summary {
-    NSMutableString *s = [NSMutableString string];
-    if (_totalCreated > 0) [s appendFormat:@"%ld new", (long)_totalCreated];
-    if (_totalUpdated > 0) {
-        if (s.length > 0) [s appendString:@", "];
-        [s appendFormat:@"%ld updated", (long)_totalUpdated];
-    }
-    if (_totalDeleted > 0) {
-        if (s.length > 0) [s appendString:@", "];
-        [s appendFormat:@"%ld removed", (long)_totalDeleted];
-    }
-    if (_totalUnchanged > 0) {
-        if (s.length > 0) [s appendString:@", "];
-        [s appendFormat:@"%ld unchanged", (long)_totalUnchanged];
-    }
-    if (s.length == 0) [s appendString:@"No changes"];
-    return [s copy];
-}
-
-@end
+// JLTidalSyncChange / JLTidalSyncReport implementations live in
+// SyncPlanner.mm so the pure planner and its tests link without this
+// SDK-coupled orchestration file.
 
 #pragma mark - JLTidalPlaylistSync
 
@@ -123,28 +60,15 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 
 - (NSString *)foobarNameForPlaylist:(JLTidalPlaylist *)playlist
                          folderPath:(NSString *)folderPath {
-    if (folderPath.length > 0) {
-        return [NSString stringWithFormat:@"%@%@%@%@%@",
-                kTidalSyncPrefix, kTidalSyncDelimiter,
-                folderPath, kTidalSyncDelimiter,
-                playlist.title];
-    }
-    return [NSString stringWithFormat:@"%@%@%@",
-            kTidalSyncPrefix, kTidalSyncDelimiter,
-            playlist.title];
+    return [JLTidalSyncPlanner foobarNameForTitle:playlist.title folderPath:folderPath];
 }
 
 - (NSString *)tidalTitleFromFoobarName:(NSString *)foobarName {
-    if (![self isTidalSyncedName:foobarName]) return nil;
-
-    // Split by delimiter, last component is the playlist title
-    NSArray<NSString *> *parts = [foobarName componentsSeparatedByString:kTidalSyncDelimiter];
-    return parts.lastObject;
+    return [JLTidalSyncPlanner tidalTitleFromFoobarName:foobarName];
 }
 
 - (BOOL)isTidalSyncedName:(NSString *)foobarName {
-    NSString *prefix = [kTidalSyncPrefix stringByAppendingString:kTidalSyncDelimiter];
-    return [foobarName hasPrefix:prefix];
+    return [JLTidalSyncPlanner isTidalSyncedName:foobarName];
 }
 
 #pragma mark - Pull from Tidal (Preview)
@@ -198,13 +122,11 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
             return;
         }
 
-        // Build folder path mapping
-        NSMutableDictionary<NSString *, NSString *> *folderPaths = [NSMutableDictionary dictionary];
-        [self buildFolderPaths:folders parentPath:nil into:folderPaths];
-
-        // Build UUID -> folder path mapping for playlists
-        NSMutableDictionary<NSString *, NSString *> *playlistFolderPaths = [NSMutableDictionary dictionary];
-        [self mapPlaylistsToFolders:folders paths:folderPaths into:playlistFolderPaths];
+        // Build folder path mapping and UUID -> folder path mapping
+        NSDictionary<NSString *, NSString *> *folderPaths =
+            [JLTidalSyncPlanner folderPathsForFolders:folders];
+        NSDictionary<NSString *, NSString *> *playlistFolderPaths =
+            [JLTidalSyncPlanner playlistFolderPathsForFolders:folders folderPaths:folderPaths];
 
         // Fetch tracks for each playlist
         dispatch_group_t tracksGroup = dispatch_group_create();
@@ -246,76 +168,32 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
             pfc::string8 nameStr([foobarName UTF8String]);
             t_size existingIdx = pm->find_playlist(nameStr, nameStr.length());
 
-            if (existingIdx == SIZE_MAX) {
-                // New playlist
-                [changes addObject:[[JLTidalSyncChange alloc]
-                    initWithType:JLTidalSyncChangeTypeCreate
-                            name:foobarName
-                     tracksAdded:tracks.count
-                   tracksRemoved:0
-                       tidalUUID:playlist.playlistUUID]];
-            } else {
-                // Existing - diff tracks
+            // nil foobarTrackIDs = playlist absent -> Create; else diff sets
+            NSSet<NSString *> *foobarTrackIDs = nil;
+            if (existingIdx != SIZE_MAX) {
                 t_size existingCount = pm->playlist_get_item_count(existingIdx);
-                NSSet<NSString *> *tidalTrackIDs = [self trackIDSetFromTracks:tracks];
-                NSSet<NSString *> *foobarTrackIDs = [self trackIDSetFromPlaylist:existingIdx count:existingCount];
-
-                NSMutableSet *toAdd = [tidalTrackIDs mutableCopy];
-                [toAdd minusSet:foobarTrackIDs];
-                NSMutableSet *toRemove = [foobarTrackIDs mutableCopy];
-                [toRemove minusSet:tidalTrackIDs];
-
-                if (toAdd.count > 0 || toRemove.count > 0) {
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeUpdate
-                                name:foobarName
-                         tracksAdded:toAdd.count
-                       tracksRemoved:toRemove.count
-                           tidalUUID:playlist.playlistUUID]];
-                } else {
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeUnchanged
-                                name:foobarName
-                         tracksAdded:0
-                       tracksRemoved:0
-                           tidalUUID:playlist.playlistUUID]];
-                }
+                foobarTrackIDs = [self trackIDSetFromPlaylist:existingIdx count:existingCount];
             }
+            [changes addObject:[JLTidalSyncPlanner pullChangeForName:foobarName
+                                                                uuid:playlist.playlistUUID
+                                                         tidalTracks:tracks
+                                                      foobarTrackIDs:foobarTrackIDs]];
         }
 
         // Check for favorite tracks
         {
-            NSString *favName = [NSString stringWithFormat:@"%@%@%@",
-                                 kTidalSyncPrefix, kTidalSyncDelimiter, kTidalSyncFavoriteTracks];
+            NSString *favName = [JLTidalSyncPlanner favoriteTracksName];
             auto pm = playlist_manager::get();
             pfc::string8 nameStr([favName UTF8String]);
             t_size existingIdx = pm->find_playlist(nameStr, nameStr.length());
+            NSInteger existingCount = (existingIdx == SIZE_MAX)
+                ? -1 : (NSInteger)pm->playlist_get_item_count(existingIdx);
 
-            if (existingIdx == SIZE_MAX) {
-                [changes addObject:[[JLTidalSyncChange alloc]
-                    initWithType:JLTidalSyncChangeTypeCreate
-                            name:favName
-                     tracksAdded:favTracks.count
-                   tracksRemoved:0
-                       tidalUUID:@"__favorites__"]];
-            } else {
-                t_size existingCount = pm->playlist_get_item_count(existingIdx);
-                if ((NSInteger)existingCount != (NSInteger)favTracks.count) {
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeUpdate
-                                name:favName
-                         tracksAdded:favTracks.count
-                       tracksRemoved:existingCount
-                           tidalUUID:@"__favorites__"]];
-                } else {
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeUnchanged
-                                name:favName
-                         tracksAdded:0
-                       tracksRemoved:0
-                           tidalUUID:@"__favorites__"]];
-                }
-            }
+            [changes addObject:[JLTidalSyncPlanner favoritesPullChangeForName:favName
+                                                                         uuid:@"__favorites__"
+                                                                   tidalCount:favTracks.count
+                                                                existingCount:existingCount]];
+
             // Store fav tracks for apply
             NSMutableDictionary *cachedCopy = [self.cachedPlaylistTracks mutableCopy];
             cachedCopy[@"__favorites__"] = favTracks;
@@ -324,31 +202,13 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 
         // Check for favorite albums
         for (JLTidalAlbum *album in favAlbums) {
-            NSString *albumName = [NSString stringWithFormat:@"%@%@%@%@%@",
-                                   kTidalSyncPrefix, kTidalSyncDelimiter,
-                                   kTidalSyncFavoriteAlbums, kTidalSyncDelimiter,
-                                   album.title];
+            NSString *albumName = [JLTidalSyncPlanner favoriteAlbumNameForTitle:album.title];
             auto pm = playlist_manager::get();
             pfc::string8 nameStr([albumName UTF8String]);
             t_size existingIdx = pm->find_playlist(nameStr, nameStr.length());
 
-            NSString *albumKey = [NSString stringWithFormat:@"__favalbum_%@__", album.albumID];
-
-            if (existingIdx == SIZE_MAX) {
-                [changes addObject:[[JLTidalSyncChange alloc]
-                    initWithType:JLTidalSyncChangeTypeCreate
-                            name:albumName
-                     tracksAdded:album.numberOfTracks
-                   tracksRemoved:0
-                       tidalUUID:albumKey]];
-            } else {
-                [changes addObject:[[JLTidalSyncChange alloc]
-                    initWithType:JLTidalSyncChangeTypeUnchanged
-                            name:albumName
-                     tracksAdded:0
-                   tracksRemoved:0
-                       tidalUUID:albumKey]];
-            }
+            [changes addObject:[JLTidalSyncPlanner favoriteAlbumPullChangeForAlbum:album
+                                                                            exists:(existingIdx != SIZE_MAX)]];
         }
 
         // Check for foobar playlists that no longer exist on Tidal
@@ -473,32 +333,13 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                 pm->playlist_get_name(i, name);
                 NSString *foobarName = [NSString stringWithUTF8String:name.c_str()];
 
-                if (![self isTidalSyncedName:foobarName]) continue;
-                // Skip special playlists (favorites)
-                if ([foobarName containsString:kTidalSyncFavoriteTracks]) continue;
-                if ([foobarName containsString:kTidalSyncFavoriteAlbums]) continue;
+                if ([JLTidalSyncPlanner shouldSkipPushForName:foobarName]) continue;
 
                 NSString *uuid = self.nameToUUIDMap[foobarName];
-
-                if (!uuid || ![tidalUUIDs containsObject:uuid]) {
-                    // New playlist (not on Tidal yet)
-                    t_size itemCount = pm->playlist_get_item_count(i);
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeCreate
-                                name:foobarName
-                         tracksAdded:itemCount
-                       tracksRemoved:0
-                           tidalUUID:nil]];
-                } else {
-                    // Existing - track diff would require fetching Tidal tracks
-                    // For preview, just mark as potential update
-                    [changes addObject:[[JLTidalSyncChange alloc]
-                        initWithType:JLTidalSyncChangeTypeUpdate
-                                name:foobarName
-                         tracksAdded:0
-                       tracksRemoved:0
-                           tidalUUID:uuid]];
-                }
+                [changes addObject:[JLTidalSyncPlanner pushChangeForName:foobarName
+                                                                    uuid:uuid
+                                                         knownTidalUUIDs:tidalUUIDs
+                                                               itemCount:pm->playlist_get_item_count(i)]];
             }
 
             JLTidalSyncReport *report = [[JLTidalSyncReport alloc] initWithChanges:changes];
@@ -635,14 +476,6 @@ public:
     );
 }
 
-- (NSSet<NSString *> *)trackIDSetFromTracks:(NSArray<JLTidalTrack *> *)tracks {
-    NSMutableSet *set = [NSMutableSet setWithCapacity:tracks.count];
-    for (JLTidalTrack *t in tracks) {
-        [set addObject:t.trackID];
-    }
-    return set;
-}
-
 - (NSSet<NSString *> *)trackIDSetFromPlaylist:(t_size)playlistIdx count:(t_size)count {
     NSMutableSet *set = [NSMutableSet setWithCapacity:count];
     auto pm = playlist_manager::get();
@@ -776,35 +609,6 @@ public:
     });
 }
 
-- (void)buildFolderPaths:(NSArray<JLTidalPlaylistFolder *> *)folders
-              parentPath:(NSString *)parentPath
-                    into:(NSMutableDictionary<NSString *, NSString *> *)paths {
-    for (JLTidalPlaylistFolder *folder in folders) {
-        NSString *path = parentPath.length > 0
-            ? [NSString stringWithFormat:@"%@%@%@", parentPath, kTidalSyncDelimiter, folder.name]
-            : folder.name;
-        paths[folder.folderID] = path;
-
-        if (folder.subfolders.count > 0) {
-            [self buildFolderPaths:folder.subfolders parentPath:path into:paths];
-        }
-    }
-}
-
-- (void)mapPlaylistsToFolders:(NSArray<JLTidalPlaylistFolder *> *)folders
-                        paths:(NSDictionary<NSString *, NSString *> *)folderPaths
-                         into:(NSMutableDictionary<NSString *, NSString *> *)playlistFolderPaths {
-    for (JLTidalPlaylistFolder *folder in folders) {
-        NSString *folderPath = folderPaths[folder.folderID];
-        for (NSString *uuid in folder.playlistUUIDs) {
-            playlistFolderPaths[uuid] = folderPath;
-        }
-        if (folder.subfolders.count > 0) {
-            [self mapPlaylistsToFolders:folder.subfolders paths:folderPaths into:playlistFolderPaths];
-        }
-    }
-}
-
 - (void)fetchAndApplyFavoriteAlbums:(JLTidalSyncReport *)report
                          completion:(void (^)(BOOL, NSError *))completion {
     // Find album changes that need track fetching
@@ -825,9 +629,7 @@ public:
     dispatch_group_t group = dispatch_group_create();
 
     for (JLTidalSyncChange *change in albumChanges) {
-        // Extract album ID from key "__favalbum_{id}__"
-        NSString *albumID = [change.tidalUUID stringByReplacingOccurrencesOfString:@"__favalbum_" withString:@""];
-        albumID = [albumID stringByReplacingOccurrencesOfString:@"__" withString:@""];
+        NSString *albumID = [JLTidalSyncPlanner albumIDFromFavoriteAlbumKey:change.tidalUUID];
 
         dispatch_group_enter(group);
         [[JLTidalAPI shared] getAlbumTracksForAlbumID:albumID completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
@@ -864,11 +666,8 @@ public:
 
         // Resolve local tracks with ISRC matching
         [self resolveTidalTrackIDsFromFoobarPlaylist:foobarName completion:^(NSArray<NSString *> *localTrackIDs) {
-            NSSet<NSString *> *tidalSet = [self trackIDSetFromTracks:tidalTracks];
-            NSSet<NSString *> *localSet = [NSSet setWithArray:localTrackIDs];
-
-            NSMutableSet *toAdd = [localSet mutableCopy];
-            [toAdd minusSet:tidalSet];
+            NSArray<NSString *> *toAdd =
+                [JLTidalSyncPlanner trackIDsToAddFromLocalIDs:localTrackIDs tidalTracks:tidalTracks];
 
             if (toAdd.count == 0) {
                 completion(nil);
@@ -882,7 +681,7 @@ public:
                     return;
                 }
 
-                [[JLTidalAPI shared] addTrackIDs:[toAdd allObjects]
+                [[JLTidalAPI shared] addTrackIDs:toAdd
                                    toPlaylistID:uuid
                                            etag:etag
                                      completion:^(BOOL success, NSError *addError) {
