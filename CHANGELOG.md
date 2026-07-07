@@ -316,6 +316,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Last.fm Scrobbler
 
+### [Unreleased]
+
+#### Changed
+- Core logic extracted into pure, unit-tested modules gating every build (playback state machine, Last.fm signing/parsing, error policy, queue/dedup, streak validity, widget layout math). No functional change intended.
+
+#### Fixed
+- Latent double-queue of an already-scrobbled track on playback stop
+
 ### [1.4.0] - 2026-05-17
 
 #### Added

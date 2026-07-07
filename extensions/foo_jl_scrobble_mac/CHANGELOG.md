@@ -2,6 +2,18 @@
 
 All notable changes to foo_jl_scrobble (Last.fm Scrobbler) will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Core logic extracted into pure, host-independent modules covered by a unit-test suite (~340 checks) that now gates every build, mirroring the SimPlaylist testable architecture: playback-to-scrobble state machine (PlaybackTracker), Last.fm request signing/parameter assembly (LastFmRequestBuilder), per-endpoint JSON parsing (LastFmResponseParser), submission error policy and backoff (ScrobblePolicy), queue/duplicate detection (ScrobbleQueueModel), streak cache validity (StreakValidity), and widget layout geometry (WidgetLayoutMath). No functional change intended.
+
+### Fixed
+- Latent double-queue of an already-scrobbled track on playback stop (previously masked by cache duplicate detection)
+
+### Technical
+- Tests compile standalone with clang (no Xcode target) via Scripts/run_tests.sh; build.sh aborts if any test fails
+- Duplicated local-midnight and ARGB color conversion helpers consolidated into single definitions
+
 ## [1.4.0] - 2026-05-17
 
 ### Added
