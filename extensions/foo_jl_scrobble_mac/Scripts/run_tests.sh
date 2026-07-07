@@ -19,6 +19,11 @@ clang++ -std=c++17 -O1 -Wall \
     "$PROJECT_DIR/Tests/ScrobbleRulesTests.cpp" \
     -o "$TEST_BUILD_DIR/scrobble_rules_tests"
 
+echo "==> Compiling unit tests (PlaybackTracker)..."
+clang++ -std=c++17 -O1 -Wall \
+    "$PROJECT_DIR/Tests/PlaybackTrackerTests.cpp" \
+    -o "$TEST_BUILD_DIR/playback_tracker_tests"
+
 echo "==> Compiling unit tests (Model parsing)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/ModelParsingTests.mm" \
@@ -37,5 +42,6 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
 
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/scrobble_rules_tests"
+"$TEST_BUILD_DIR/playback_tracker_tests"
 "$TEST_BUILD_DIR/model_parsing_tests"
 "$TEST_BUILD_DIR/rate_limiter_tests"
