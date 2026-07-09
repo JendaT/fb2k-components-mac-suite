@@ -7,6 +7,7 @@
 
 #import "TidalInputDecoder.h"
 #import "TidalMemoryFile.h"
+#import "TidalDashCache.h"
 #import "../Core/URLUtils.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalErrors.h"
@@ -16,69 +17,6 @@
 #import <dispatch/dispatch.h>
 
 namespace tidal {
-
-// Synchronously GET a URL using a shared ephemeral session. Returns nil on failure or abort.
-static NSData *syncGET(NSString *url, abort_callback &p_abort) {
-    if (url.length == 0) return nil;
-    static NSURLSession *session = nil;
-    static dispatch_once_t tok;
-    dispatch_once(&tok, ^{
-        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-        cfg.timeoutIntervalForRequest = 30;
-        cfg.timeoutIntervalForResource = 120;
-        cfg.HTTPMaximumConnectionsPerHost = 6;
-        session = [NSURLSession sessionWithConfiguration:cfg];
-    });
-
-    __block NSData *result = nil;
-    __block NSInteger statusCode = 0;
-    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    NSURLSessionDataTask *task = [session dataTaskWithURL:[NSURL URLWithString:url]
-                                        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
-        if ([resp isKindOfClass:[NSHTTPURLResponse class]]) {
-            statusCode = ((NSHTTPURLResponse *)resp).statusCode;
-        }
-        if (!err && statusCode >= 200 && statusCode < 300) {
-            result = data;
-        }
-        dispatch_semaphore_signal(sem);
-    }];
-    [task resume];
-    while (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
-        if (p_abort.is_aborting()) {
-            [task cancel];
-            return nil;
-        }
-    }
-    if (!result && statusCode != 0) {
-        logError([[NSString stringWithFormat:@"DASH GET %@ → HTTP %ld",
-                   [url lastPathComponent], (long)statusCode] UTF8String]);
-    }
-    return result;
-}
-
-// Download all DASH segments and concatenate into one fMP4 blob.
-// Tidal's URL scheme treats media[$Number$=0] AS the initialization segment, so
-// we iterate from 0 to dashSegmentCount-1 with no separate init download.
-// Mirrors python-tidal DashInfo.get_urls (tidalapi/media.py:846-859).
-static NSData *downloadDASHSegments(JLTidalPlaybackInfo *info, abort_callback &p_abort) {
-    NSMutableData *out = [NSMutableData data];
-
-    for (NSInteger i = 0; i < info.dashSegmentCount; i++) {
-        if (p_abort.is_aborting()) return nil;
-        NSString *segURL = [info.dashMediaTemplate
-                            stringByReplacingOccurrencesOfString:@"$Number$"
-                                                      withString:[NSString stringWithFormat:@"%ld", (long)i]];
-        NSData *segData = syncGET(segURL, p_abort);
-        if (!segData) {
-            logError([[NSString stringWithFormat:@"DASH segment %ld of %ld failed",
-                       (long)(i + 1), (long)info.dashSegmentCount] UTF8String]);
-            return nil;
-        }
-        [out appendData:segData];
-    }
-    return out;
-}
 
 // Shared date formatter for metadata (not thread-safe, but only used on decoder thread)
 static NSDateFormatter* sharedDateFormatter() {
@@ -235,8 +173,19 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     // Either open the direct HTTP stream, or download & concatenate DASH segments.
     service_ptr_t<file> streamFile;
     if (hasDASH) {
-        // DASH path: assemble init + N media segments into one fMP4 file in memory.
-        NSData *assembled = downloadDASHSegments(resultInfo, p_abort);
+        // DASH path: assemble init + N media segments into one fMP4 file in
+        // memory. Served from JLTidalDashCache — instant when a prefetch (or a
+        // prior play) already assembled it, otherwise downloaded now. The blob
+        // stays cached for replays and for the prefetcher's coalescing.
+        NSString *tid = [NSString stringWithUTF8String:m_trackID.c_str()];
+        abort_callback *pa = &p_abort;
+        std::atomic<bool> *af = &m_abortFlag;
+        NSData *assembled = [[JLTidalDashCache shared] blobForTrackID:tid
+                                                        mediaTemplate:resultInfo.dashMediaTemplate
+                                                         segmentCount:resultInfo.dashSegmentCount
+                                                          isCancelled:^BOOL{
+            return pa->is_aborting() || af->load();
+        }];
         if (p_abort.is_aborting() || m_abortFlag) {
             // Cancellation — propagate as abort, NOT as a stream failure (or fb2k
             // will think the track is broken and advance to the next, cascading skips).
@@ -245,7 +194,7 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         if (!assembled || assembled.length == 0) {
             pfc::throw_exception_with_message<exception_io_data>("DASH segment download failed");
         }
-        logInfo([[NSString stringWithFormat:@"DASH assembled: %lu segments → %lu bytes (~%.1f MB)",
+        logInfo([[NSString stringWithFormat:@"DASH ready: %lu segments → %lu bytes (~%.1f MB)",
                   (unsigned long)resultInfo.dashSegmentCount,
                   (unsigned long)assembled.length,
                   assembled.length / (1024.0 * 1024.0)] UTF8String]);
@@ -305,6 +254,10 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     // Try to find decoder by path (extension-based matching)
     input_entry::ptr entry;
     bool foundDecoder = input_entry::g_find_service_by_path(entry, m_streamURL.c_str());
+    if (foundDecoder) {
+        logInfo([[NSString stringWithFormat:@"Decoder found by path (ext of %@)",
+                  [[NSString stringWithUTF8String:m_streamURL.c_str()] lastPathComponent]] UTF8String]);
+    }
 
     if (!foundDecoder) {
         logDebug("No decoder found by path, trying content type fallback");
@@ -343,7 +296,17 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     }
 
     logDebug("Found decoder, opening for decoding...");
-    entry->open_for_decoding(m_decoder, streamFile, m_streamURL.c_str(), p_abort);
+    try {
+        entry->open_for_decoding(m_decoder, streamFile, m_streamURL.c_str(), p_abort);
+    } catch (const exception_aborted &) {
+        throw;
+    } catch (const std::exception &e) {
+        // Surface WHICH decoder failed and WHY before rethrowing — without this
+        // the console shows "Found decoder, opening..." and then silence while
+        // fb2k skips to the next track.
+        logError(("open_for_decoding failed: " + std::string(e.what())).c_str());
+        throw;
+    }
 
     if (!m_decoder.is_valid()) {
         logError("Failed to open stream decoder");

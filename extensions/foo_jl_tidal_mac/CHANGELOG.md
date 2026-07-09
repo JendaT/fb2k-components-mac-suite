@@ -4,9 +4,10 @@ All notable changes to TIDAL Integration will be documented in this file.
 
 ## [Unreleased]
 
-Testability refactor following the simplaylist 1.5.0 pattern: pure logic extracted into Foundation-only Core modules, covered by a standalone clang++ unit-test suite (340 checks across 9 binaries, run under ASan+UBSan) that now gates every build via `Scripts/run_tests.sh`. No functional change intended; parsing and policy code was extracted verbatim and pinned by tests.
+Adds DASH prefetch so lossless/hi-res tracks start without the ~3-4s, 50+ MB segment-download stall on every track change. Plus a testability refactor following the simplaylist 1.5.0 pattern: pure logic extracted into Foundation-only Core modules, covered by a standalone clang++ unit-test suite (359 checks across 10 binaries, run under ASan+UBSan) that now gates every build via `Scripts/run_tests.sh`. The refactor is behavior-preserving; parsing and policy code was extracted verbatim and pinned by tests.
 
 ### Added
+- **DASH prefetch.** When a track starts playing, the next tidal:// track in the active playlist is resolved and its DASH segments are assembled in the background into an in-memory blob cache, so opening it is instant instead of stalling for the segment download. Sequential album/playlist playthrough is the target case; the first track picked is never prefetched, and shuffled orderings simply miss the cache. Cache is byte-capped (~320 MB, oldest-first eviction) and cleared on quit. New `Integration/TidalDashCache` (coalescing cache — a play open never double-downloads an in-flight prefetch), `Integration/TidalPrefetch` (play-callback trigger), and pure `Core/DashCachePolicy` (segment-URL generation + eviction, unit-tested).
 - `Core/ManifestParser` — BTS/JSON + DASH MPD parsing, SegmentTimeline segment-count math, DRM detection, codec normalization (pins the v0.3.1 DASH semantics).
 - `Core/StreamResolutionPolicy` — quality-fallback cascade and downgrade/fail decisions (403-only fallback, DASH acceptance gating, DRM handling).
 - `Core/HTTPResponsePolicy` — HTTP status to action/error mapping (429 Retry-After parsing, single 401 refresh-retry, 403/404/5xx).
@@ -17,6 +18,7 @@ Testability refactor following the simplaylist 1.5.0 pattern: pure logic extract
 - `Tests/` + `Scripts/run_tests.sh` — standalone test binaries (no XCTest, no Xcode) gating `build.sh`; suites for ManifestParser, both policies, URLUtils, TidalSession, StreamCache.
 
 ### Fixed
+- Decoder open failures are no longer silent: `open_for_decoding` now logs which decoder was selected and the exact exception before fb2k skips the track (previously the console showed "Found decoder, opening..." then nothing).
 - Debug-logging preference is now honored after restart (the cached flag was previously only synced when the pref was toggled).
 - Logging from static destructors can no longer touch torn-down fb2k services (console backend is dropped on component quit).
 

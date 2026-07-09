@@ -591,13 +591,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
-Testability refactor following the simplaylist 1.5.0 pattern. No functional change intended.
-
 #### Added
-- Pure Core modules extracted from SDK/network code: `ManifestParser` (BTS/DASH parsing), `StreamResolutionPolicy` (quality fallback), `HTTPResponsePolicy` (status-to-error mapping), `ResponseParser` (JSON to models, replacing 11 inline loops in the API client), `SyncPlanner` (playlist-sync naming/folder-paths/diff/push planning), `BrowserLogic` (browser panel active-list matrix, pagination, navigation decisions), `TidalLog` (Foundation-only logging funnel)
-- Standalone unit-test suite (340 checks, 9 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+- DASH prefetch: the next track in the active playlist is resolved and its segments pre-assembled into an in-memory blob cache while the current track plays, so lossless/hi-res tracks open instantly instead of stalling ~3-4s on the segment download. Byte-capped (~320 MB), cleared on quit
+- Pure Core modules extracted from SDK/network code (testability refactor, no functional change): `ManifestParser`, `StreamResolutionPolicy`, `HTTPResponsePolicy`, `ResponseParser` (replacing 11 inline API-parsing loops), `SyncPlanner`, `BrowserLogic`, `DashCachePolicy`, `TidalLog`
+- Standalone unit-test suite (359 checks, 10 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
+- Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services
 
