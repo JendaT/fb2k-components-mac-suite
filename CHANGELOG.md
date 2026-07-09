@@ -592,9 +592,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Added
+- Save to library (music.hq): personal playlist context-menu export of selected tidal:// tracks into a configured library root using the music.hq layout (genre collection / artist / `Artist [YYYY] Title`, with `[Releases]` and `[Compilations]` slots). Genre resolution: existing artist folder on disk > remembered choice > one-time picker. DASH FLAC remuxed losslessly to tagged `.flac` via ffmpeg; `cover.jpg` fetched per album; existing files skipped. Gated by the Preferences > Library folder setting (unset hides the feature)
 - DASH prefetch: the next track in the active playlist is resolved and its segments pre-assembled into an in-memory blob cache while the current track plays, so lossless/hi-res tracks open instantly instead of stalling ~3-4s on the segment download. Byte-capped (~320 MB), cleared on quit
 - Pure Core modules extracted from SDK/network code (testability refactor, no functional change): `ManifestParser`, `StreamResolutionPolicy`, `HTTPResponsePolicy`, `ResponseParser` (replacing 11 inline API-parsing loops), `SyncPlanner`, `BrowserLogic`, `DashCachePolicy`, `TidalLog`
-- Standalone unit-test suite (359 checks, 10 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+- Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track

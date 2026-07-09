@@ -115,4 +115,20 @@ void TidalConfig::setDASHEnabled(bool enabled) {
     setConfigBool(kDASHEnabled, enabled);
 }
 
+std::string TidalConfig::getLibraryRoot() {
+    return getConfigString(kLibraryRoot, "");
+}
+
+void TidalConfig::setLibraryRoot(const std::string& path) {
+    setConfigString(kLibraryRoot, path);
+}
+
+std::string TidalConfig::getGenreMapJSON() {
+    return getConfigString(kGenreMap, "{}");
+}
+
+void TidalConfig::setGenreMapJSON(const std::string& json) {
+    setConfigString(kGenreMap, json);
+}
+
 } // namespace tidal

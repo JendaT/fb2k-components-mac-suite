@@ -12,6 +12,7 @@
 ## Completed
 | Task | Completed | Notes |
 |------|-----------|-------|
+| Save to library (music.hq export) | 2026-07-09 | Playlist context menu downloads selected tracks into the configured library root using the music.hq layout. Pure Core/LibraryLayout (66 checks) + TidalLibrarySaver (ffmpeg fMP4->flac remux, tags, cover.jpg, genre resolution: disk scan > remembered map > prompt) + TidalSaveMenu. Gated by Preferences > Library folder. Runtime flow untested |
 | DASH prefetch (preload next track) | 2026-07-09 | Coalescing blob cache (TidalDashCache) + play-callback prefetcher (TidalPrefetch) + pure DashCachePolicy (segment URLs, LRU eviction). Next track pre-assembled while current plays; ~320MB cap, oldest-first eviction. Decoder reads from cache. 19 checks |
 | Decoder open-failure diagnostics | 2026-07-09 | open_for_decoding failures now log the selected decoder + exception instead of silently skipping. Resolved the "files refuse to play" HI_RES_LOSSLESS report (playback works; issue was swallowed decoder errors + first-open latency) |
 | Testability: browser decision logic (BrowserLogic) | 2026-07-07 | Core/BrowserState.h enums + Core/BrowserLogic: active-list matrix, load-more gate/threshold, offset/hasMore math, back routing, mode-change no-ops. Controller keeps state, forwards decisions; behavior preserved verbatim. 90 checks incl. exhaustive 54-combination matrix |

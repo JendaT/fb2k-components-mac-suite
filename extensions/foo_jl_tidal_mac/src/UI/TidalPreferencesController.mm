@@ -28,6 +28,7 @@
 @property (nonatomic, strong) NSPopUpButton *qualityPopup;
 @property (nonatomic, strong) NSButton *debugCheckbox;
 @property (nonatomic, strong) NSButton *dashCheckbox;
+@property (nonatomic, strong) NSTextField *libraryPathField;
 
 // Cached user info
 @property (nonatomic, strong) NSImage *cachedProfileImage;
@@ -73,7 +74,7 @@
 }
 
 - (void)loadView {
-    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 450, 350)];
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 450, 480)];
 
     CGFloat leftMargin = 20;
     __block CGFloat currentY = 20;
@@ -237,7 +238,47 @@
     self.dashCheckbox = [NSButton checkboxWithTitle:@"Download LOSSLESS via DASH segments"
                                              target:self
                                              action:@selector(dashChanged:)];
-    addIndentedRow(self.dashCheckbox, rowHeight);
+    addIndentedRow(self.dashCheckbox, rowHeight + sectionGap);
+
+    // ===== Library Section (personal music.hq export) =====
+    NSTextField *libraryLabel = [NSTextField labelWithString:@"Library"];
+    libraryLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    libraryLabel.textColor = [NSColor secondaryLabelColor];
+    addRow(libraryLabel, rowHeight);
+
+    NSStackView *libraryRow = [[NSStackView alloc] init];
+    libraryRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    libraryRow.spacing = 8;
+
+    self.libraryPathField = [NSTextField labelWithString:@"Not configured"];
+    self.libraryPathField.font = [NSFont systemFontOfSize:11];
+    self.libraryPathField.textColor = [NSColor secondaryLabelColor];
+    self.libraryPathField.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    [self.libraryPathField.widthAnchor constraintLessThanOrEqualToConstant:250].active = YES;
+    [libraryRow addArrangedSubview:self.libraryPathField];
+
+    NSButton *chooseButton = [NSButton buttonWithTitle:@"Choose…"
+                                                target:self
+                                                action:@selector(chooseLibraryRoot:)];
+    chooseButton.controlSize = NSControlSizeSmall;
+    [libraryRow addArrangedSubview:chooseButton];
+
+    NSButton *clearButton = [NSButton buttonWithTitle:@"Clear"
+                                               target:self
+                                               action:@selector(clearLibraryRoot:)];
+    clearButton.controlSize = NSControlSizeSmall;
+    [libraryRow addArrangedSubview:clearButton];
+
+    addIndentedRow(libraryRow, rowHeight);
+
+    NSTextField *libraryNote = [NSTextField wrappingLabelWithString:
+        @"Enables \"Save to library\" in the playlist context menu: selected tracks "
+        @"are downloaded into this folder using the music.hq layout. Leave unset to "
+        @"disable the feature."];
+    libraryNote.textColor = [NSColor tertiaryLabelColor];
+    libraryNote.font = [NSFont systemFontOfSize:10];
+    [libraryNote.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
+    addIndentedRow(libraryNote, 40);
 
     self.view = container;
 }
@@ -266,6 +307,19 @@
 
     // DASH experimental toggle
     self.dashCheckbox.state = tidal::TidalConfig::isDASHEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
+
+    [self updateLibraryPathField];
+}
+
+- (void)updateLibraryPathField {
+    std::string root = tidal::TidalConfig::getLibraryRoot();
+    if (root.empty()) {
+        self.libraryPathField.stringValue = @"Not configured";
+        self.libraryPathField.textColor = [NSColor secondaryLabelColor];
+    } else {
+        self.libraryPathField.stringValue = [NSString stringWithUTF8String:root.c_str()];
+        self.libraryPathField.textColor = [NSColor labelColor];
+    }
 }
 
 - (void)updateAuthUI {
@@ -545,6 +599,24 @@
 - (void)debugChanged:(id)sender {
     bool enabled = (self.debugCheckbox.state == NSControlStateValueOn);
     tidal::TidalConfig::setDebugLoggingEnabled(enabled);
+}
+
+- (void)chooseLibraryRoot:(id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.canCreateDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.message = @"Choose the music library root (e.g. music.hq)";
+    if ([panel runModal] == NSModalResponseOK && panel.URL.path.length > 0) {
+        tidal::TidalConfig::setLibraryRoot(std::string(panel.URL.path.UTF8String));
+        [self updateLibraryPathField];
+    }
+}
+
+- (void)clearLibraryRoot:(id)sender {
+    tidal::TidalConfig::setLibraryRoot("");
+    [self updateLibraryPathField];
 }
 
 - (void)dashChanged:(id)sender {

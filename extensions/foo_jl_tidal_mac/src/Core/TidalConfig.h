@@ -22,6 +22,8 @@ static const char* const kPreferredQuality = "preferred_quality";
 static const char* const kDebugLogging = "debug_logging";
 static const char* const kCacheStreamUrls = "cache_stream_urls";
 static const char* const kDASHEnabled = "dash_enabled";
+static const char* const kLibraryRoot = "library_root";
+static const char* const kGenreMap = "genre_map";
 
 // Default values
 constexpr int kDefaultPreferredQuality = static_cast<int>(JLTidalQualityHiResLossless);
@@ -68,6 +70,15 @@ public:
     // decoder. Untested across Tidal account types — leave off if playback breaks.
     static bool isDASHEnabled();
     static void setDASHEnabled(bool enabled);
+
+    // Personal library export ("Save to library"). Empty root disables the
+    // feature entirely (context menu hidden) — this is the gate for now.
+    static std::string getLibraryRoot();
+    static void setLibraryRoot(const std::string& path);
+
+    // Persisted artist -> genre-collection choices, serialized JSON object.
+    static std::string getGenreMapJSON();
+    static void setGenreMapJSON(const std::string& json);
 };
 
 // Sync the TidalLog debug-flag cache from the stored pref.
