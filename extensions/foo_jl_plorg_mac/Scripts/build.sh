@@ -38,6 +38,16 @@ BUILD_OPTS=""
 [ "$CLEAN_FIRST" = true ] && BUILD_OPTS="$BUILD_OPTS --clean"
 [ "$REGENERATE" = true ] && BUILD_OPTS="$BUILD_OPTS --regenerate"
 
+# Unit tests gate the build: pure-logic Core models must pass before compiling
+# the component. Fast (~1s) — Foundation-only, no SDK, no Xcode.
+if ! "$SCRIPT_DIR/run_tests.sh"; then
+    echo ""
+    echo "==> ========================================="
+    echo "==>   TESTS FAILED - build aborted"
+    echo "==> ========================================="
+    exit 1
+fi
+
 # Run build
 if do_build $BUILD_OPTS; then
     # Install if requested

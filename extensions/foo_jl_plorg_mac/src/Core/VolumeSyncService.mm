@@ -6,6 +6,7 @@
 //
 
 #import "VolumeSyncService.h"
+#import "VolumeSyncLogic.h"
 #include "../fb2k_sdk.h"
 #import "ConfigHelper.h"
 #import <DiskArbitration/DiskArbitration.h>
@@ -17,8 +18,6 @@
 
 NSString * const kVolumeSyncBackupPrefix = @"backup_volume_sync_";
 NSInteger const kVolumeSyncMaxBackups = 5;
-
-static NSString * const kMacVolumePrefix = @"mac-volume://";
 
 @interface VolumeSyncService ()
 @property (nonatomic, strong, readwrite) NSMutableArray<NSString *> *deferredLogMessages;
@@ -94,38 +93,7 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 }
 
 + (NSString *)shareNameFromMountSource:(const char *)mntfromname {
-    if (!mntfromname) return nil;
-
-    NSString *source = [NSString stringWithUTF8String:mntfromname];
-    if (!source || source.length == 0) return nil;
-
-    // Format: "//user@host/share" or "//host/share" or "host:/share"
-    // Extract the last path component after the host
-
-    // Handle SMB format: //[user@]host/share[/subpath]
-    if ([source hasPrefix:@"//"]) {
-        NSString *afterSlashes = [source substringFromIndex:2];
-        // Find the host part (everything up to the first /)
-        NSRange hostSlash = [afterSlashes rangeOfString:@"/"];
-        if (hostSlash.location == NSNotFound) return nil;
-
-        NSString *sharePart = [afterSlashes substringFromIndex:hostSlash.location + 1];
-        // Share name is the first component after the host
-        NSRange nextSlash = [sharePart rangeOfString:@"/"];
-        if (nextSlash.location != NSNotFound) {
-            return [sharePart substringToIndex:nextSlash.location];
-        }
-        return sharePart;
-    }
-
-    // Handle NFS format: host:/export/path
-    NSRange colonSlash = [source rangeOfString:@":/"];
-    if (colonSlash.location != NSNotFound) {
-        NSString *exportPath = [source substringFromIndex:colonSlash.location + 1];
-        return [exportPath lastPathComponent];
-    }
-
-    return nil;
+    return [VolumeSyncLogic shareNameFromMountSource:mntfromname];
 }
 
 - (NSString *)volumeUUIDForMountPath:(NSString *)path {
@@ -170,30 +138,8 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 #pragma mark - fplite Scanning
 
 - (NSDictionary<NSString *, NSNumber *> *)scanFpliteFileForUUIDs:(NSString *)path {
-    NSMutableDictionary<NSString *, NSNumber *> *result = [NSMutableDictionary dictionary];
-
     NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-    if (!content) return result;
-
-    NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-
-    for (NSString *line in lines) {
-        if (line.length == 0) continue;
-        if (![line hasPrefix:kMacVolumePrefix]) continue;
-
-        NSString *afterPrefix = [line substringFromIndex:kMacVolumePrefix.length];
-        NSRange firstSlash = [afterPrefix rangeOfString:@"/"];
-
-        if (firstSlash.location == NSNotFound || firstSlash.location < 8) continue;
-
-        NSString *uuid = [[afterPrefix substringToIndex:firstSlash.location] uppercaseString];
-        if (![uuid containsString:@"-"]) continue;
-
-        NSNumber *count = result[uuid];
-        result[uuid] = @(count ? count.unsignedIntegerValue + 1 : 1);
-    }
-
-    return result;
+    return [VolumeSyncLogic scanFpliteContentForUUIDs:content];
 }
 
 #pragma mark - UUID Remapping
@@ -206,56 +152,14 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     NSData *rawData = [NSData dataWithContentsOfFile:path options:0 error:error];
     if (!rawData) return NO;
 
-    // Check for UTF-8 BOM (EF BB BF)
-    BOOL hasBOM = NO;
-    const uint8_t bom[] = {0xEF, 0xBB, 0xBF};
-    if (rawData.length >= 3 && memcmp(rawData.bytes, bom, 3) == 0) {
-        hasBOM = YES;
+    NSData *newData = [VolumeSyncLogic remappedFpliteData:rawData fromUUIDs:sourceUUIDs toUUID:targetUUID];
+    if (!newData) return NO;  // nothing changed (or not UTF-8)
+
+    if (![newData writeToFile:path options:NSDataWritingAtomic error:error]) {
+        return NO;
     }
 
-    NSString *content = [[NSString alloc] initWithData:rawData encoding:NSUTF8StringEncoding];
-    if (!content) return NO;
-
-    NSMutableString *newContent = [content mutableCopy];
-    BOOL changed = NO;
-
-    for (NSString *sourceUUID in sourceUUIDs) {
-        NSString *search = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, sourceUUID];
-        NSString *replace = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, targetUUID];
-
-        NSRange searchRange = NSMakeRange(0, newContent.length);
-
-        while (searchRange.location < newContent.length) {
-            NSRange foundRange = [newContent rangeOfString:search
-                                                  options:NSCaseInsensitiveSearch
-                                                    range:searchRange];
-            if (foundRange.location == NSNotFound) break;
-
-            [newContent replaceCharactersInRange:foundRange withString:replace];
-            changed = YES;
-
-            searchRange.location = foundRange.location + replace.length;
-            searchRange.length = newContent.length - searchRange.location;
-        }
-    }
-
-    if (changed) {
-        NSData *outputData = [newContent dataUsingEncoding:NSUTF8StringEncoding];
-        if (!outputData) return NO;
-
-        NSMutableData *finalData = [NSMutableData data];
-        if (hasBOM) {
-            [finalData appendBytes:bom length:3];
-        }
-        // NSString strips BOM on read, so outputData won't have it
-        [finalData appendData:outputData];
-
-        if (![finalData writeToFile:path options:NSDataWritingAtomic error:error]) {
-            return NO;
-        }
-    }
-
-    return changed;
+    return YES;
 }
 
 #pragma mark - Backup
@@ -374,22 +278,8 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     // 2. Group UUIDs by their canonical path. A UUID is "live" iff its bookmark
     //    resolved to an existing path. Multiple UUIDs typically map to the same
     //    path because foobar registers a fresh UUID on each remount.
-    NSMutableDictionary<NSString *, NSMutableArray<NSString *> *> *liveUUIDsByPath = [NSMutableDictionary dictionary];
-
-    for (NSString *uuid in foobarVolumes) {
-        NSDictionary *info = foobarVolumes[uuid];
-        if (![info[@"isLive"] boolValue]) continue;
-
-        NSString *key = info[@"resolvedPath"] ?: info[@"originalPath"];
-        if (!key) continue;
-
-        NSMutableArray *list = liveUUIDsByPath[key];
-        if (!list) {
-            list = [NSMutableArray array];
-            liveUUIDsByPath[key] = list;
-        }
-        [list addObject:uuid];
-    }
+    NSDictionary<NSString *, NSArray<NSString *> *> *liveUUIDsByPath =
+        [VolumeSyncLogic liveUUIDsByPathFromRegistry:foobarVolumes];
 
     // 3. Scan .fplite files for UUIDs in active use.
     NSDictionary *fpliteIndex = [self buildFpliteUUIDIndexInDirectory:playlistsDir];
@@ -399,56 +289,16 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     }
 
     // 4. For each UUID found in .fplite, decide whether it needs remapping.
-    NSMutableDictionary *remapActions = [NSMutableDictionary dictionary]; // oldUUID -> newUUID
-
-    for (NSString *fpliteUUID in fpliteIndex) {
-        NSDictionary *info = foobarVolumes[fpliteUUID];
-
-        // Already live? Foobar can resolve it via its bookmark — leave alone.
-        if (info && [info[@"isLive"] boolValue]) {
-            continue;
+    __weak typeof(self) weakSelf = self;
+    NSDictionary *remapActions = [VolumeSyncLogic planRemapActionsWithRegistry:foobarVolumes
+        fpliteIndex:fpliteIndex
+        liveUUIDsByPath:liveUUIDsByPath
+        fileExists:^BOOL(NSString *path) {
+            return [[NSFileManager defaultManager] fileExistsAtPath:path];
         }
-
-        // Find a live UUID for the same path. Try originalPath first; fall back
-        // to sample-path verification against any live UUID's resolved path.
-        NSString *targetUUID = nil;
-        NSString *targetPath = nil;
-
-        if (info && info[@"originalPath"]) {
-            NSArray *candidates = liveUUIDsByPath[info[@"originalPath"]];
-            if (candidates.count > 0) {
-                targetUUID = candidates.firstObject;
-                targetPath = info[@"originalPath"];
-            }
-        }
-
-        if (!targetUUID) {
-            NSString *samplePath = fpliteIndex[fpliteUUID][@"samplePath"];
-            if (samplePath) {
-                for (NSString *path in liveUUIDsByPath) {
-                    NSString *full = [path stringByAppendingPathComponent:samplePath];
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:full]) {
-                        targetUUID = liveUUIDsByPath[path].firstObject;
-                        targetPath = path;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!targetUUID) {
-            [self deferLog:[NSString stringWithFormat:
-                @"[Plorg VolumeSync] Stale UUID %@ has no live replacement (originalPath: %@). "
-                @"Mount the volume and retry.",
-                fpliteUUID, info ? info[@"originalPath"] : @"unknown"]];
-            continue;
-        }
-
-        remapActions[fpliteUUID] = targetUUID;
-        [self deferLog:[NSString stringWithFormat:
-            @"[Plorg VolumeSync] Remapping stale %@ -> live %@ for %@",
-            fpliteUUID, targetUUID, targetPath]];
-    }
+        log:^(NSString *message) {
+            [weakSelf deferLog:message];
+        }];
 
     // 5. Apply .fplite remapping if needed.
     NSDictionary *result = @{};
@@ -527,28 +377,14 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     }
     sqlite3_close(db);
 
-    for (NSString *uuid in counts) {
-        NSDictionary *info = foobarVolumes[uuid];
-        if (!info) continue;                          // unknown to foobar
-        if ([info[@"isLive"] boolValue]) continue;    // already live
-
-        NSString *originalPath = info[@"originalPath"];
-        if (!originalPath) continue;
-
-        NSArray *liveCandidates = liveUUIDsByPath[originalPath];
-        if (liveCandidates.count == 0) continue;
-
-        NSString *target = liveCandidates.firstObject;
-        NSUInteger deadRows = counts[uuid].unsignedIntegerValue;
-        NSUInteger liveRows = counts[target] ? counts[target].unsignedIntegerValue : 0;
-
-        if (deadRows > liveRows) {
-            result[uuid] = target;
-            [self deferLog:[NSString stringWithFormat:
-                @"[Plorg VolumeSync] Orphan cache: %@ (%lu rows) -> %@ (%lu rows) for %@",
-                uuid, (unsigned long)deadRows, target, (unsigned long)liveRows, originalPath]];
-        }
-    }
+    __weak typeof(self) weakSelf = self;
+    [result addEntriesFromDictionary:
+        [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:counts
+                                                   registry:foobarVolumes
+                                            liveUUIDsByPath:liveUUIDsByPath
+                                                        log:^(NSString *message) {
+            [weakSelf deferLog:message];
+        }]];
 
     return result;
 }
@@ -650,16 +486,7 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 
 // "mac.volume.<UUID>.originalPath" / "mac.volume.<UUID>.bookmark" -> UUID (uppercase)
 - (NSString *)extractVolumeUUIDFromConfigKey:(NSString *)key {
-    static NSString * const prefix = @"mac.volume.";
-    if (![key hasPrefix:prefix]) return nil;
-
-    NSString *rest = [key substringFromIndex:prefix.length];
-    NSRange dot = [rest rangeOfString:@"."];
-    if (dot.location == NSNotFound) return nil;
-
-    NSString *uuid = [rest substringToIndex:dot.location];
-    if (![uuid containsString:@"-"]) return nil;
-    return [uuid uppercaseString];
+    return [VolumeSyncLogic volumeUUIDFromConfigKey:key];
 }
 
 // Write a snapshot to plorg_volume_uuids.json — purely diagnostic. We preserve
@@ -716,32 +543,7 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 
         NSString *content = [NSString stringWithContentsOfFile:fullPath
                                                       encoding:NSUTF8StringEncoding error:nil];
-        if (!content) continue;
-
-        NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-
-        for (NSString *line in lines) {
-            if (line.length == 0) continue;
-            if (![line hasPrefix:kMacVolumePrefix]) continue;
-
-            NSString *afterPrefix = [line substringFromIndex:kMacVolumePrefix.length];
-            NSRange firstSlash = [afterPrefix rangeOfString:@"/"];
-            if (firstSlash.location == NSNotFound || firstSlash.location < 8) continue;
-
-            NSString *uuid = [[afterPrefix substringToIndex:firstSlash.location] uppercaseString];
-            if (![uuid containsString:@"-"]) continue;
-
-            NSString *samplePath = [afterPrefix substringFromIndex:firstSlash.location + 1];
-
-            NSMutableDictionary *entry = index[uuid];
-            if (!entry) {
-                entry = [NSMutableDictionary dictionary];
-                entry[@"count"] = @0;
-                entry[@"samplePath"] = samplePath;
-                index[uuid] = entry;
-            }
-            entry[@"count"] = @([entry[@"count"] unsignedIntegerValue] + 1);
-        }
+        [VolumeSyncLogic indexFpliteContent:content into:index];
     }
 
     return index;
@@ -990,33 +792,8 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     }
 
     // Build the migration SQL.
-    NSMutableString *sql = [NSMutableString string];
-    [sql appendString:@"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\n"];
-
-    for (NSString *deadUUID in remapActions) {
-        NSString *liveUUID = remapActions[deadUUID];
-        NSString *fromTok = [NSString stringWithFormat:@"mac-volume://%@", deadUUID];
-        NSString *toTok = [NSString stringWithFormat:@"mac-volume://%@", liveUUID];
-        NSString *likePattern = [NSString stringWithFormat:@"%%mac-volume://%@/%%", deadUUID];
-
-        // Main metadb rows: copy under a new name with the UUID rewritten.
-        [sql appendFormat:
-            @"INSERT OR IGNORE INTO metadb "
-            @"(name, info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial) "
-            @"SELECT REPLACE(name, '%@', '%@'), info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial "
-            @"FROM metadb WHERE name LIKE '%@';\n",
-            fromTok, toTok, likePattern];
-
-        // Library / component index tables (key INTEGER, filename TEXT).
-        for (NSString *table in indexTables) {
-            [sql appendFormat:
-                @"INSERT OR IGNORE INTO \"%@\" (key, filename) "
-                @"SELECT key, REPLACE(filename, '%@', '%@') "
-                @"FROM \"%@\" WHERE filename LIKE '%@';\n",
-                table, fromTok, toTok, table, likePattern];
-        }
-    }
-    [sql appendString:@"COMMIT;\n"];
+    NSString *sql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:remapActions
+                                                           indexTables:indexTables];
 
     // Stage the SQL in /tmp; the helper script feeds it to sqlite3 after foobar exits.
     pid_t pid = getpid();

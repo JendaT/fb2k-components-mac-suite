@@ -6,6 +6,9 @@
 #import "TreeModel.h"
 #import "ConfigHelper.h"
 #import "TreeNode.h"
+#import "PathCodec.h"
+#import "TreeOps.h"
+#import "TreeYamlCodec.h"
 #include "../fb2k_sdk.h"
 
 // Notifications
@@ -13,11 +16,6 @@ NSNotificationName const TreeModelDidChangeNotification = @"TreeModelDidChangeNo
 NSString * const TreeModelChangeTypeKey = @"changeType";
 NSString * const TreeModelChangedNodeKey = @"changedNode";
 NSString * const TreeModelChangeIndexKey = @"changeIndex";
-
-// Path encoding separator: space + right guillemet (U+00BB) + space
-static NSString * const kPathSeparator = @" \u00BB ";
-// Single guillemet character used for escaping
-static unichar const kGuillemet = 0x00BB;
 
 @interface TreeModel ()
 @property (nonatomic, strong) NSMutableArray<TreeNode *> *mutableRootNodes;
@@ -114,16 +112,7 @@ static unichar const kGuillemet = 0x00BB;
 }
 
 - (TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes {
-    for (TreeNode *node in nodes) {
-        if (!node.isFolder && [node.name isEqualToString:name]) {
-            return node;
-        }
-        if (node.isFolder && node.children.count > 0) {
-            TreeNode *found = [self findPlaylistWithName:name inNodes:node.children];
-            if (found) return found;
-        }
-    }
-    return nil;
+    return [TreeOps findPlaylistNamed:name inNodes:nodes];
 }
 
 - (TreeNode *)findFolderAtPath:(NSString *)path {
@@ -147,22 +136,6 @@ static unichar const kGuillemet = 0x00BB;
 
 #pragma mark - Path-Encoded Foobar Names
 
-- (NSString *)escapePathComponent:(NSString *)component {
-    if (!component) return @"";  // Handle nil gracefully
-    // Escape guillemet by doubling: \u00BB -> \u00BB\u00BB
-    NSString *guilStr = [NSString stringWithCharacters:&kGuillemet length:1];
-    NSString *doubled = [NSString stringWithFormat:@"%@%@", guilStr, guilStr];
-    return [component stringByReplacingOccurrencesOfString:guilStr withString:doubled];
-}
-
-- (NSString *)unescapePathComponent:(NSString *)component {
-    if (!component) return @"";  // Handle nil gracefully
-    // Unescape doubled guillemet: \u00BB\u00BB -> \u00BB
-    NSString *guilStr = [NSString stringWithCharacters:&kGuillemet length:1];
-    NSString *doubled = [NSString stringWithFormat:@"%@%@", guilStr, guilStr];
-    return [component stringByReplacingOccurrencesOfString:doubled withString:guilStr];
-}
-
 - (NSString *)encodedFoobarNameForNode:(TreeNode *)node {
     if (!node || node.isFolder) return nil;
 
@@ -170,20 +143,11 @@ static unichar const kGuillemet = 0x00BB;
     NSMutableArray<NSString *> *components = [NSMutableArray array];
     TreeNode *current = node;
     while (current) {
-        NSString *escaped = [self escapePathComponent:current.name];
-        if (escaped.length > 0) {  // Skip empty/nil components
-            [components insertObject:escaped atIndex:0];
-        }
+        [components insertObject:(current.name ?: @"") atIndex:0];
         current = current.parent;
     }
 
-    // Root-level playlists have only 1 component -> no prefix
-    // components already contain escaped values from the while loop above
-    if (components.count <= 1) {
-        return components.firstObject ?: @"";
-    }
-
-    return [components componentsJoinedByString:kPathSeparator];
+    return [PathCodec encodedNameForComponents:components];
 }
 
 - (NSString *)foobarNameForNode:(TreeNode *)node {
@@ -198,21 +162,11 @@ static unichar const kGuillemet = 0x00BB;
     return [self encodedFoobarNameForNode:node];
 }
 
-- (NSArray<NSString *> *)splitEncodedName:(NSString *)encodedName {
-    // Split on " \u00BB " (the 3-char separator), then unescape each component
-    NSArray<NSString *> *rawComponents = [encodedName componentsSeparatedByString:kPathSeparator];
-    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:rawComponents.count];
-    for (NSString *raw in rawComponents) {
-        [result addObject:[self unescapePathComponent:raw]];
-    }
-    return result;
-}
-
 - (TreeNode *)findPlaylistForFoobarName:(NSString *)foobarName {
     if (!foobarName || foobarName.length == 0) return nil;
 
     // Decode the path components
-    NSArray<NSString *> *components = [self splitEncodedName:foobarName];
+    NSArray<NSString *> *components = [PathCodec splitEncodedName:foobarName];
     if (components.count == 0) return nil;
 
     // Single component -> search everywhere by leaf name
@@ -223,28 +177,7 @@ static unichar const kGuillemet = 0x00BB;
     // Multi-component: always try path-aware lookup regardless of encoding setting.
     // Foobar playlists may have encoded names from a previous migration even when
     // encoding is currently off. Without this, sync creates duplicate nodes.
-    NSArray<TreeNode *> *currentLevel = self.mutableRootNodes;
-    for (NSUInteger i = 0; i < components.count - 1; i++) {
-        NSString *folderName = components[i];
-        TreeNode *foundFolder = nil;
-        for (TreeNode *node in currentLevel) {
-            if (node.isFolder && [node.name isEqualToString:folderName]) {
-                foundFolder = node;
-                break;
-            }
-        }
-        if (!foundFolder) return nil;
-        currentLevel = foundFolder.children;
-    }
-
-    // Find the playlist in the final folder
-    NSString *playlistName = components.lastObject;
-    for (TreeNode *node in currentLevel) {
-        if (!node.isFolder && [node.name isEqualToString:playlistName]) {
-            return node;
-        }
-    }
-    return nil;
+    return [TreeOps findPlaylistForComponents:components inRoots:self.mutableRootNodes];
 }
 
 - (void)migrateToPathEncodedNames {
@@ -390,20 +323,20 @@ static unichar const kGuillemet = 0x00BB;
         // The old dirty node.name WAS the expected encoded name (e.g., "music.hq >> Ambient").
         // verifyEncodedNames treated it as a leaf, escaped it, and prepended the parent path.
         NSString *dirtyLeaf = expected;
-        NSString *escapedDirty = [self escapePathComponent:dirtyLeaf];
+        NSString *escapedDirty = [PathCodec escapeComponent:dirtyLeaf];
 
         // Build parent path components
         NSMutableArray<NSString *> *parentComponents = [NSMutableArray array];
         TreeNode *parent = node.parent;
         while (parent) {
-            NSString *escaped = [self escapePathComponent:parent.name];
+            NSString *escaped = [PathCodec escapeComponent:parent.name];
             if (escaped.length > 0) {
                 [parentComponents insertObject:escaped atIndex:0];
             }
             parent = parent.parent;
         }
         [parentComponents addObject:escapedDirty];
-        NSString *corruptedName = [parentComponents componentsJoinedByString:kPathSeparator];
+        NSString *corruptedName = [parentComponents componentsJoinedByString:PlorgPathSeparator];
 
         // Find the corrupted playlist
         t_size corruptedIdx = pm->find_playlist([corruptedName UTF8String], pfc_infinite);
@@ -461,13 +394,13 @@ static unichar const kGuillemet = 0x00BB;
     if ([self findPlaylistWithName:name]) return;
 
     // Add playlist - decode into folder hierarchy if name contains path separator
-    BOOL nameHasPath = [name containsString:kPathSeparator];
+    BOOL nameHasPath = [name containsString:PlorgPathSeparator];
     [self addPlaylistFromFoobarName:name encodingEnabled:(encodingEnabled || nameHasPath)];
 }
 
 - (void)addPlaylistFromFoobarName:(NSString *)foobarName encodingEnabled:(BOOL)encodingEnabled {
     if (encodingEnabled) {
-        NSArray<NSString *> *components = [self splitEncodedName:foobarName];
+        NSArray<NSString *> *components = [PathCodec splitEncodedName:foobarName];
         if (components.count > 1) {
             // Multi-component: create/find folder path, add playlist as leaf
             TreeNode *parent = nil;
@@ -535,11 +468,11 @@ static unichar const kGuillemet = 0x00BB;
     // (e.g., "music.hq >> Ambient" instead of just "Ambient"). These nodes are already
     // in the correct folder but need their names stripped to just the leaf component.
     NSMutableArray<TreeNode *> *toRelocate = [NSMutableArray array];
-    [self collectMisplacedNodes:self.mutableRootNodes separator:kPathSeparator into:toRelocate];
+    [self collectMisplacedNodes:self.mutableRootNodes separator:PlorgPathSeparator into:toRelocate];
 
     for (TreeNode *node in toRelocate) {
         NSString *encodedName = node.name;
-        NSArray<NSString *> *components = [self splitEncodedName:encodedName];
+        NSArray<NSString *> *components = [PathCodec splitEncodedName:encodedName];
         if (components.count < 2) continue;
 
         // Remove from current location
@@ -632,7 +565,7 @@ static unichar const kGuillemet = 0x00BB;
 
                 // Not tracked - always decode into folder hierarchy if name contains
                 // the path separator, even when encoding is off (the name IS encoded)
-                BOOL nameHasPath = [playlistName containsString:kPathSeparator];
+                BOOL nameHasPath = [playlistName containsString:PlorgPathSeparator];
                 [self addPlaylistFromFoobarName:playlistName encodingEnabled:(encodingEnabled || nameHasPath)];
                 addedCount++;
             }
@@ -653,302 +586,38 @@ static unichar const kGuillemet = 0x00BB;
 
 #pragma mark - YAML Serialization
 
-- (NSString *)nodeToYaml:(TreeNode *)node indent:(NSInteger)indent {
-    NSMutableString *yaml = [NSMutableString string];
-    NSString *indentStr = [@"" stringByPaddingToLength:indent withString:@"  " startingAtIndex:0];
-
-    if (node.isFolder) {
-        [yaml appendFormat:@"%@- folder: \"%@\"\n", indentStr, [self escapeYamlString:node.name]];
-        if (node.isExpanded) {
-            [yaml appendFormat:@"%@  expanded: true\n", indentStr];
-        }
-        if (node.children.count > 0) {
-            [yaml appendFormat:@"%@  items:\n", indentStr];
-            for (TreeNode *child in node.children) {
-                [yaml appendString:[self nodeToYaml:child indent:indent + 2]];
-            }
-        }
-    } else {
-        [yaml appendFormat:@"%@- playlist: \"%@\"\n", indentStr, [self escapeYamlString:node.name]];
-    }
-
-    return yaml;
-}
-
-- (NSString *)escapeYamlString:(NSString *)str {
-    return [[str stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
-            stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-}
-
-- (NSString *)unescapeYamlString:(NSString *)str {
-    return [[str stringByReplacingOccurrencesOfString:@"\\\"" withString:@"\""]
-            stringByReplacingOccurrencesOfString:@"\\\\" withString:@"\\"];
-}
-
 - (NSString *)toYaml {
-    NSMutableString *yaml = [NSMutableString string];
-    [yaml appendString:@"# Playlist Organizer Configuration\n"];
-    [yaml appendFormat:@"node_format: \"%@\"\n\n", [self escapeYamlString:self.nodeFormat ?: @"%node_name%"]];
-
-    if (self.mutableRootNodes.count > 0) {
-        [yaml appendString:@"tree:\n"];
-        for (TreeNode *node in self.mutableRootNodes) {
-            [yaml appendString:[self nodeToYaml:node indent:1]];
-        }
-    } else {
-        [yaml appendString:@"tree: []\n"];
-    }
-
-    return yaml;
+    return [TreeYamlCodec yamlForTree:self.mutableRootNodes nodeFormat:self.nodeFormat];
 }
 
 - (NSInteger)importFromYaml:(NSString *)yaml {
     if (!yaml || yaml.length == 0) return 0;
 
-    // Parse into temporary storage
-    NSArray *lines = [yaml componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    NSMutableArray<TreeNode *> *parsedRoots = [NSMutableArray array];
-    NSMutableArray<TreeNode *> *nodeStack = [NSMutableArray array];
-    NSMutableArray<NSNumber *> *indentStack = [NSMutableArray array];
+    NSArray<TreeNode *> *parsedRoots = [TreeYamlCodec parseNodeList:yaml];
 
-    BOOL inTree = NO;
-
-    for (NSString *rawLine in lines) {
-        if (rawLine.length == 0 || [rawLine hasPrefix:@"#"]) continue;
-
-        NSInteger indent = 0;
-        while (indent < rawLine.length && [rawLine characterAtIndex:indent] == ' ') {
-            indent++;
-        }
-
-        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-        if ([line hasPrefix:@"tree:"]) {
-            inTree = YES;
-            continue;
-        }
-
-        if (!inTree) continue;
-
-        while (indentStack.count > 0 && indent <= indentStack.lastObject.integerValue) {
-            [nodeStack removeLastObject];
-            [indentStack removeLastObject];
-        }
-
-        TreeNode *newNode = nil;
-
-        if ([line hasPrefix:@"- folder:"]) {
-            NSString *name = [self extractQuotedValue:line afterPrefix:@"- folder:"];
-            if (name) {
-                newNode = [TreeNode folderWithName:name];
-            }
-        } else if ([line hasPrefix:@"- playlist:"]) {
-            NSString *name = [self extractQuotedValue:line afterPrefix:@"- playlist:"];
-            if (name) {
-                newNode = [TreeNode playlistWithName:name];
-            }
-        } else if ([line hasPrefix:@"expanded:"]) {
-            if (nodeStack.count > 0 && nodeStack.lastObject.isFolder) {
-                BOOL expanded = [line containsString:@"true"];
-                nodeStack.lastObject.isExpanded = expanded;
-            }
-            continue;
-        } else if ([line hasPrefix:@"items:"]) {
-            continue;
-        }
-
-        if (newNode) {
-            if (nodeStack.count > 0) {
-                [nodeStack.lastObject addChild:newNode];
-            } else {
-                [parsedRoots addObject:newNode];
-            }
-
-            if (newNode.isFolder) {
-                [nodeStack addObject:newNode];
-                [indentStack addObject:@(indent)];
-            }
-        }
-    }
-
-    // Now merge parsed nodes into current tree
-    NSInteger imported = [self mergeNodes:parsedRoots intoParent:nil];
+    // Merge parsed nodes into current tree
+    NSInteger imported = [TreeOps mergeNodes:parsedRoots intoParent:nil roots:self.mutableRootNodes];
     [self saveToConfig];
     [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
 
     return imported;
 }
 
-- (NSInteger)mergeNodes:(NSArray<TreeNode *> *)nodes intoParent:(TreeNode *)parent {
-    NSInteger count = 0;
-
-    for (TreeNode *node in nodes) {
-        if (node.isFolder) {
-            // Check if folder exists
-            TreeNode *existingFolder = nil;
-            NSArray *searchNodes = parent ? parent.children : self.mutableRootNodes;
-
-            for (TreeNode *existing in searchNodes) {
-                if (existing.isFolder && [existing.name isEqualToString:node.name]) {
-                    existingFolder = existing;
-                    break;
-                }
-            }
-
-            if (existingFolder) {
-                // Merge children into existing folder
-                count += [self mergeNodes:node.children intoParent:existingFolder];
-            } else {
-                // Add new folder
-                if (parent) {
-                    [parent addChild:node];
-                } else {
-                    [self.mutableRootNodes addObject:node];
-                }
-                count += 1 + [self countNodes:node.children];
-            }
-        } else {
-            // Playlist - check if exists anywhere in tree
-            if (![self findPlaylistWithName:node.name]) {
-                if (parent) {
-                    [parent addChild:node];
-                } else {
-                    [self.mutableRootNodes addObject:node];
-                }
-                count++;
-            }
-        }
-    }
-
-    return count;
-}
-
-- (NSInteger)countNodes:(NSArray<TreeNode *> *)nodes {
-    NSInteger count = nodes.count;
-    for (TreeNode *node in nodes) {
-        if (node.isFolder) {
-            count += [self countNodes:node.children];
-        }
-    }
-    return count;
-}
-
 - (BOOL)parseYaml:(NSString *)yaml {
-    if (!yaml || yaml.length == 0) return NO;
+    NSArray<TreeNode *> *rootNodes = nil;
+    NSString *nodeFormat = nil;
+    BOOL hasTree = [TreeYamlCodec parseConfigYaml:yaml rootNodes:&rootNodes nodeFormat:&nodeFormat];
 
-    NSArray *lines = [yaml componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    NSMutableArray<TreeNode *> *rootNodes = [NSMutableArray array];
-    NSMutableArray<TreeNode *> *nodeStack = [NSMutableArray array];  // Stack of parent nodes
-    NSMutableArray<NSNumber *> *indentStack = [NSMutableArray array];  // Corresponding indents
-
-    BOOL inTree = NO;
-
-    for (NSString *rawLine in lines) {
-        // Skip empty lines and comments
-        if (rawLine.length == 0 || [rawLine hasPrefix:@"#"]) continue;
-
-        // Count leading spaces
-        NSInteger indent = 0;
-        while (indent < (NSInteger)rawLine.length && [rawLine characterAtIndex:indent] == ' ') {
-            indent++;
-        }
-
-        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (line.length == 0) continue;
-
-        // Parse node_format
-        if ([line hasPrefix:@"node_format:"]) {
-            NSString *value = [line substringFromIndex:12];
-            value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
-                value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
-            }
-            self.nodeFormat = [self unescapeYamlString:value];
-            continue;
-        }
-
-        // Start of tree section
-        if ([line hasPrefix:@"tree:"]) {
-            inTree = YES;
-            continue;
-        }
-
-        if (!inTree) continue;
-
-        // Parse folder or playlist
-        TreeNode *node = nil;
-
-        if ([line hasPrefix:@"- folder:"]) {
-            NSString *name = [self extractQuotedValue:line afterPrefix:@"- folder:"];
-            if (name) {
-                node = [TreeNode folderWithName:name];
-            }
-        } else if ([line hasPrefix:@"- playlist:"]) {
-            NSString *name = [self extractQuotedValue:line afterPrefix:@"- playlist:"];
-            if (name) {
-                node = [TreeNode playlistWithName:name];
-            }
-        } else if ([line hasPrefix:@"expanded:"]) {
-            // This is a property of the previous folder
-            if (nodeStack.count > 0) {
-                TreeNode *lastNode = nodeStack.lastObject;
-                if (lastNode.isFolder) {
-                    lastNode.isExpanded = [line containsString:@"true"];
-                }
-            }
-            continue;
-        } else if ([line isEqualToString:@"items:"]) {
-            // Items marker - children follow
-            continue;
-        }
-
-        if (!node) continue;
-
-        // Pop nodes from stack that are at same or higher indent
-        while (indentStack.count > 0 && indentStack.lastObject.integerValue >= indent) {
-            [nodeStack removeLastObject];
-            [indentStack removeLastObject];
-        }
-
-        // Add to parent or root
-        if (nodeStack.count > 0) {
-            TreeNode *parent = nodeStack.lastObject;
-            if (parent.isFolder) {
-                [parent addChild:node];
-            }
-        } else {
-            node.parent = nil;
-            [rootNodes addObject:node];
-        }
-
-        // Push this node if it's a folder (might have children)
-        if (node.isFolder) {
-            [nodeStack addObject:node];
-            [indentStack addObject:@(indent)];
-        }
+    if (nodeFormat) {
+        self.nodeFormat = nodeFormat;
     }
 
-    if (rootNodes.count > 0) {
+    if (hasTree) {
         [self.mutableRootNodes setArray:rootNodes];
         return YES;
     }
 
     return NO;
-}
-
-- (NSString *)extractQuotedValue:(NSString *)line afterPrefix:(NSString *)prefix {
-    NSRange range = [line rangeOfString:prefix];
-    if (range.location == NSNotFound) return nil;
-
-    NSString *value = [line substringFromIndex:range.location + range.length];
-    value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-    if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
-        value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
-        return [self unescapeYamlString:value];
-    }
-
-    return value;
 }
 
 #pragma mark - Persistence

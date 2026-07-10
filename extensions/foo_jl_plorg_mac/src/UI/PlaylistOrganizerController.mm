@@ -9,6 +9,7 @@
 #import "StrawberryImportPreviewController.h"
 #import "../Core/TreeModel.h"
 #import "../Core/TreeNode.h"
+#import "../Core/TreeYamlCodec.h"
 #import "../Core/ConfigHelper.h"
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -1962,7 +1963,7 @@ static NSString *leafNameForNode(TreeNode *node) {
             FB2K_console_formatter() << "[Plorg] YAML length: " << yaml.length << " chars";
 
             // Parse YAML into nodes
-            NSArray<TreeNode *> *parsedNodes = [strongSelf parseYamlToNodes:yaml];
+            NSArray<TreeNode *> *parsedNodes = [TreeYamlCodec parseNodeList:yaml];
             FB2K_console_formatter() << "[Plorg] Parsed " << parsedNodes.count << " root nodes from YAML";
 
             if (parsedNodes.count == 0) {
@@ -2012,94 +2013,6 @@ static NSString *leafNameForNode(TreeNode *node) {
             FB2K_console_formatter() << "[Plorg] Failed to import from YAML (unknown error)";
         }
     }];
-}
-
-- (NSArray<TreeNode *> *)parseYamlToNodes:(NSString *)yaml {
-    if (!yaml || yaml.length == 0) return @[];
-
-    NSMutableArray<TreeNode *> *parsedRoots = [NSMutableArray array];
-    NSMutableArray<TreeNode *> *nodeStack = [NSMutableArray array];
-    NSMutableArray<NSNumber *> *indentStack = [NSMutableArray array];
-
-    NSArray *lines = [yaml componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    BOOL inTree = NO;
-
-    for (NSString *rawLine in lines) {
-        if (rawLine.length == 0 || [rawLine hasPrefix:@"#"]) continue;
-
-        NSInteger indent = 0;
-        while (indent < rawLine.length && [rawLine characterAtIndex:indent] == ' ') {
-            indent++;
-        }
-
-        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-        if ([line hasPrefix:@"tree:"]) {
-            inTree = YES;
-            continue;
-        }
-
-        if (!inTree) continue;
-
-        while (indentStack.count > 0 && indent <= indentStack.lastObject.integerValue) {
-            [nodeStack removeLastObject];
-            [indentStack removeLastObject];
-        }
-
-        TreeNode *newNode = nil;
-
-        if ([line hasPrefix:@"- folder:"]) {
-            NSString *name = [self extractQuotedYamlValue:line afterPrefix:@"- folder:"];
-            if (name) {
-                newNode = [TreeNode folderWithName:name];
-            }
-        } else if ([line hasPrefix:@"- playlist:"]) {
-            NSString *name = [self extractQuotedYamlValue:line afterPrefix:@"- playlist:"];
-            if (name) {
-                newNode = [TreeNode playlistWithName:name];
-            }
-        } else if ([line hasPrefix:@"expanded:"]) {
-            if (nodeStack.count > 0 && nodeStack.lastObject.isFolder) {
-                BOOL expanded = [line containsString:@"true"];
-                nodeStack.lastObject.isExpanded = expanded;
-            }
-            continue;
-        } else if ([line hasPrefix:@"items:"]) {
-            continue;
-        }
-
-        if (newNode) {
-            if (nodeStack.count > 0) {
-                [nodeStack.lastObject addChild:newNode];
-            } else {
-                [parsedRoots addObject:newNode];
-            }
-
-            if (newNode.isFolder) {
-                [nodeStack addObject:newNode];
-                [indentStack addObject:@(indent)];
-            }
-        }
-    }
-
-    return parsedRoots;
-}
-
-- (NSString *)extractQuotedYamlValue:(NSString *)line afterPrefix:(NSString *)prefix {
-    NSRange range = [line rangeOfString:prefix];
-    if (range.location == NSNotFound) return nil;
-
-    NSString *value = [line substringFromIndex:range.location + range.length];
-    value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-    if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
-        value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
-        // Unescape
-        value = [value stringByReplacingOccurrencesOfString:@"\\\"" withString:@"\""];
-        value = [value stringByReplacingOccurrencesOfString:@"\\\\" withString:@"\\"];
-    }
-
-    return value;
 }
 
 - (IBAction)importFromStrawberry:(id)sender {

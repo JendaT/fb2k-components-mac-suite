@@ -23,6 +23,16 @@ All notable changes to Playlist Organizer will be documented in this file.
   - Logs to `/tmp/plorg_metadb_migration_<pid>.log`.
   - **Orphan cache detection**: runs on every startup; if any dead UUID holds cached rows that could be moved to a live equivalent, the migrator is scheduled even without a `.fplite` patch. Recovers caches from sessions where the playlist was remapped before this feature existed.
 
+### Changed
+- **Testable-core refactor** (simplaylist pattern): extracted pure logic from SDK/UI-entangled classes into Foundation-only `src/Core` modules, each covered by standalone clang unit tests that now gate every build (`Scripts/run_tests.sh`, invoked by `build.sh`):
+  - `PathCodec` - guillemet escaping and path-encoded foobar name encode/split (from `TreeModel`).
+  - `TreeYamlCodec` - tree YAML serialization and both parsers (from `TreeModel`; removes a duplicate parser in `PlaylistOrganizerController`).
+  - `TreeOps` - playlist search, path-aware lookup, and import merge semantics (from `TreeModel`).
+  - `VolumeSyncLogic` - share-name/config-key parsing, `.fplite` line scanning, BOM-preserving UUID remap, repair planning (filesystem probe injected), orphan-cache migration decisions, and metadb migration SQL builder (from `VolumeSyncService`; removes duplicated scan/remap loops in `UUIDRemappingWindowController`).
+
+### Fixed
+- Manual UUID remapping tool (`UUIDRemappingWindowController`) now preserves the UTF-8 BOM when rewriting `.fplite` files (previously stripped it; the automatic sync already preserved it). Both paths now share the same remap implementation.
+
 ### Documentation
 - `docs/research/volume-uuid-instability-deep-research.md` — deep research on macOS volume identity, foobar's storage, and prior incident history.
 - Updated `docs/VOLUME_UUID_ISSUE.md`.

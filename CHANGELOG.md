@@ -262,6 +262,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Background metadb cache migration: copies cached metadata rows from dead UUIDs into live ones across `metadb` and `metadb_index_*` tables; also scans for orphan caches on each startup
 - Documentation: `docs/research/volume-uuid-instability-deep-research.md`
 
+#### Changed
+- Testable-core refactor (simplaylist pattern): pure logic extracted into Foundation-only Core modules (`PathCodec`, `TreeYamlCodec`, `TreeOps`, `VolumeSyncLogic`) with standalone clang unit tests gating every build; deduplicates YAML parsing and fplite scan/remap loops across UI controllers
+
+#### Fixed
+- Manual UUID remapping tool now preserves the UTF-8 BOM when rewriting `.fplite` files (shares the remap implementation with the automatic sync)
+
 ### [1.4.0] - 2026-02-14
 
 #### Added

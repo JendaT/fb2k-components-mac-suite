@@ -6,6 +6,7 @@
 //
 
 #import "UUIDRemappingWindowController.h"
+#import "../Core/VolumeSyncLogic.h"
 #import <objc/runtime.h>
 #import <DiskArbitration/DiskArbitration.h>
 #include <sys/mount.h>
@@ -17,7 +18,7 @@ NSErrorDomain const UUIDRemappingErrorDomain = @"com.foobar2000.plorg.uuidremapp
 #pragma mark - Constants
 
 static const NSUInteger kMaxBackupDirectories = 5;
-static NSString * const kMacVolumePrefix = @"mac-volume://";
+// mac-volume:// prefix comes from VolumeSyncLogic (PlorgMacVolumePrefix)
 
 #pragma mark - VolumeUUIDEntry Implementation
 
@@ -662,7 +663,7 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 /// Get a sample file path (relative to volume root) for a given UUID from playlists
 - (NSString *)getSamplePathForUUID:(NSString *)uuid {
     // Scan a playlist file to find a path for this UUID
-    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, uuid];
+    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, uuid];
     NSUInteger prefixLen = searchPrefix.length;
 
     for (VolumeUUIDEntry *entry in self.allUUIDEntries) {
@@ -695,7 +696,7 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     if (!data) return nil;
 
     NSSet *playlists = data[@"playlists"];
-    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, uuid];
+    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, uuid];
     NSUInteger prefixLen = searchPrefix.length;
 
     for (NSString *playlistPath in playlists) {
@@ -996,20 +997,10 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
     NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
 
     for (NSString *line in lines) {
-        if (line.length == 0) continue;
-        if (![line hasPrefix:kMacVolumePrefix]) continue;
-
-        NSString *afterPrefix = [line substringFromIndex:kMacVolumePrefix.length];
-        NSRange firstSlash = [afterPrefix rangeOfString:@"/"];
-
-        if (firstSlash.location == NSNotFound || firstSlash.location < 8) {
-            self.malformedCount++;
-            continue;
-        }
-
-        NSString *uuid = [[afterPrefix substringToIndex:firstSlash.location] uppercaseString];
-
-        if (![uuid containsString:@"-"]) {
+        NSString *uuid = nil;
+        FpliteLineResult parsed = [VolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:NULL];
+        if (parsed == FpliteLineNotVolume) continue;
+        if (parsed == FpliteLineMalformed) {
             self.malformedCount++;
             continue;
         }
@@ -1168,39 +1159,20 @@ static NSString * const kMacVolumePrefix = @"mac-volume://";
 }
 
 - (BOOL)remapUUIDsInPlaylist:(NSString *)path targetUUID:(NSString *)targetUUID error:(NSError **)error {
-    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:error];
-    if (!content) return NO;
+    NSData *rawData = [NSData dataWithContentsOfFile:path options:0 error:error];
+    if (!rawData) return NO;
 
-    NSMutableString *newContent = [content mutableCopy];
-    BOOL changed = NO;
+    // Shared BOM-preserving remap (VolumeSyncLogic); nil means nothing changed
+    NSData *newData = [VolumeSyncLogic remappedFpliteData:rawData
+                                                fromUUIDs:self.selectedUUIDs
+                                                   toUUID:targetUUID];
+    if (!newData) return NO;
 
-    for (NSString *sourceUUID in self.selectedUUIDs) {
-        NSString *search = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, sourceUUID];
-        NSString *replace = [NSString stringWithFormat:@"%@%@/", kMacVolumePrefix, targetUUID];
-
-        NSRange searchRange = NSMakeRange(0, newContent.length);
-
-        while (searchRange.location < newContent.length) {
-            NSRange foundRange = [newContent rangeOfString:search
-                                                  options:NSCaseInsensitiveSearch
-                                                    range:searchRange];
-            if (foundRange.location == NSNotFound) break;
-
-            [newContent replaceCharactersInRange:foundRange withString:replace];
-            changed = YES;
-
-            searchRange.location = foundRange.location + replace.length;
-            searchRange.length = newContent.length - searchRange.location;
-        }
+    if (![newData writeToFile:path options:NSDataWritingAtomic error:error]) {
+        return NO;
     }
 
-    if (changed) {
-        if (![newContent writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:error]) {
-            return NO;
-        }
-    }
-
-    return changed;
+    return YES;
 }
 
 - (void)pruneOldBackups {
