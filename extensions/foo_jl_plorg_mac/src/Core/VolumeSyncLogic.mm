@@ -9,6 +9,37 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
 
 @implementation VolumeSyncLogic
 
+#pragma mark - Validation
+
++ (BOOL)isValidVolumeUUID:(NSString *)uuid {
+    static const NSUInteger groupLengths[] = {8, 4, 4, 4, 12};
+    static const NSUInteger groupCount = sizeof(groupLengths) / sizeof(groupLengths[0]);
+
+    if (uuid.length != 36) return NO;
+
+    NSArray<NSString *> *groups = [uuid componentsSeparatedByString:@"-"];
+    if (groups.count != groupCount) return NO;
+
+    NSCharacterSet *nonHex = [[NSCharacterSet characterSetWithCharactersInString:
+        @"0123456789abcdefABCDEF"] invertedSet];
+
+    for (NSUInteger i = 0; i < groupCount; i++) {
+        if (groups[i].length != groupLengths[i]) return NO;
+        if ([groups[i] rangeOfCharacterFromSet:nonHex].location != NSNotFound) return NO;
+    }
+    return YES;
+}
+
+// Double single quotes so a value cannot terminate a SQL string literal.
+static NSString *sqlQuote(NSString *value) {
+    return [value stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
+}
+
+// Double double-quotes so a value cannot terminate a SQL quoted identifier.
+static NSString *sqlIdentifier(NSString *value) {
+    return [value stringByReplacingOccurrencesOfString:@"\"" withString:@"\"\""];
+}
+
 #pragma mark - Mount / Config-Key Parsing
 
 + (NSString *)shareNameFromMountSource:(const char *)mntfromname {
@@ -55,7 +86,7 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
     if (dot.location == NSNotFound) return nil;
 
     NSString *uuid = [rest substringToIndex:dot.location];
-    if (![uuid containsString:@"-"]) return nil;
+    if (![self isValidVolumeUUID:uuid]) return nil;
     return [uuid uppercaseString];
 }
 
@@ -70,14 +101,16 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
 
     NSString *afterPrefix = [line substringFromIndex:PlorgMacVolumePrefix.length];
     NSRange firstSlash = [afterPrefix rangeOfString:@"/"];
-    if (firstSlash.location == NSNotFound || firstSlash.location < 8) {
+    if (firstSlash.location == NSNotFound) {
         return FpliteLineMalformed;
     }
 
-    NSString *uuid = [[afterPrefix substringToIndex:firstSlash.location] uppercaseString];
-    if (![uuid containsString:@"-"]) {
+    // Strict UUID grammar: these values flow into generated SQL and file paths.
+    NSString *rawUUID = [afterPrefix substringToIndex:firstSlash.location];
+    if (![self isValidVolumeUUID:rawUUID]) {
         return FpliteLineMalformed;
     }
+    NSString *uuid = [rawUUID uppercaseString];
 
     if (outUUID) *outUUID = uuid;
     if (outSamplePath) *outSamplePath = [afterPrefix substringFromIndex:firstSlash.location + 1];
@@ -145,20 +178,11 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
         NSString *search = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, sourceUUID];
         NSString *replace = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, targetUUID];
 
-        NSRange searchRange = NSMakeRange(0, newContent.length);
-
-        while (searchRange.location < newContent.length) {
-            NSRange foundRange = [newContent rangeOfString:search
-                                                  options:NSCaseInsensitiveSearch
-                                                    range:searchRange];
-            if (foundRange.location == NSNotFound) break;
-
-            [newContent replaceCharactersInRange:foundRange withString:replace];
-            changed = YES;
-
-            searchRange.location = foundRange.location + replace.length;
-            searchRange.length = newContent.length - searchRange.location;
-        }
+        NSUInteger count = [newContent replaceOccurrencesOfString:search
+                                                       withString:replace
+                                                          options:NSCaseInsensitiveSearch
+                                                            range:NSMakeRange(0, newContent.length)];
+        if (count > 0) changed = YES;
     }
 
     if (!changed) return nil;
@@ -305,9 +329,15 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
 
     for (NSString *deadUUID in remapActions) {
         NSString *liveUUID = remapActions[deadUUID];
-        NSString *fromTok = [NSString stringWithFormat:@"mac-volume://%@", deadUUID];
-        NSString *toTok = [NSString stringWithFormat:@"mac-volume://%@", liveUUID];
-        NSString *likePattern = [NSString stringWithFormat:@"%%mac-volume://%@/%%", deadUUID];
+
+        // Defense in depth: these are interpolated into SQL string literals.
+        // parseFpliteLine/volumeUUIDFromConfigKey already enforce this, but a
+        // malformed value must never reach the migrator.
+        if (![self isValidVolumeUUID:deadUUID] || ![self isValidVolumeUUID:liveUUID]) continue;
+
+        NSString *fromTok = sqlQuote([NSString stringWithFormat:@"mac-volume://%@", deadUUID]);
+        NSString *toTok = sqlQuote([NSString stringWithFormat:@"mac-volume://%@", liveUUID]);
+        NSString *likePattern = sqlQuote([NSString stringWithFormat:@"%%mac-volume://%@/%%", deadUUID]);
 
         // Main metadb rows: copy under a new name with the UUID rewritten.
         [sql appendFormat:
@@ -323,7 +353,7 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
                 @"INSERT OR IGNORE INTO \"%@\" (key, filename) "
                 @"SELECT key, REPLACE(filename, '%@', '%@') "
                 @"FROM \"%@\" WHERE filename LIKE '%@';\n",
-                table, fromTok, toTok, table, likePattern];
+                sqlIdentifier(table), fromTok, toTok, sqlIdentifier(table), likePattern];
         }
     }
     [sql appendString:@"COMMIT;\n"];

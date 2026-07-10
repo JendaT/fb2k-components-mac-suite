@@ -27,6 +27,13 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 
 @interface VolumeSyncLogic : NSObject
 
+// --- Validation ---
+
+// Strict volume-UUID grammar: 36 chars, 8-4-4-4-12 hex groups separated by '-'.
+// Values reaching SQL, shell, or filesystem paths must pass this. macOS volume
+// UUIDs always have this shape; anything else is malformed or hostile input.
++ (BOOL)isValidVolumeUUID:(nullable NSString *)uuid;
+
 // --- Mount / config-key parsing ---
 
 // Extract share name from statfs f_mntfromname:

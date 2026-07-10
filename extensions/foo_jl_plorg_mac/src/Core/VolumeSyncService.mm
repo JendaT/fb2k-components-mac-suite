@@ -252,12 +252,21 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     }
 
     NSString *dir = [[self mappingFilePath] stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSError *dirError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                   withIntermediateDirectories:YES
+                                                    attributes:nil
+                                                         error:&dirError]) {
+        [self deferLog:[NSString stringWithFormat:@"[Plorg VolumeSync] Failed to create mapping dir: %@",
+            dirError.localizedDescription]];
+        return;
+    }
 
-    [data writeToFile:[self mappingFilePath] options:NSDataWritingAtomic error:&error];
-    if (error) {
+    // Cocoa only guarantees `error` is populated when the call returns NO.
+    NSError *writeError = nil;
+    if (![data writeToFile:[self mappingFilePath] options:NSDataWritingAtomic error:&writeError]) {
         [self deferLog:[NSString stringWithFormat:@"[Plorg VolumeSync] Failed to write mapping file: %@",
-            error.localizedDescription]];
+            writeError.localizedDescription]];
     }
 }
 
@@ -641,14 +650,15 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     [self deferLog:[NSString stringWithFormat:@"[Plorg VolumeSync] Backup created: %@",
         [backupDir lastPathComponent]]];
 
-    // Apply remapping
-    NSInteger modifiedCount = 0;
+    // Apply remapping. A file touched by several target groups must only be
+    // counted once, so track distinct paths rather than incrementing per pass.
+    NSMutableSet<NSString *> *modifiedFiles = [NSMutableSet set];
     for (NSString *filePath in affectedFiles) {
         for (NSString *targetUUID in byTarget) {
             NSSet *sources = byTarget[targetUUID];
             NSError *error = nil;
             BOOL modified = [self remapUUIDsInFile:filePath fromUUIDs:sources toUUID:targetUUID error:&error];
-            if (modified) modifiedCount++;
+            if (modified) [modifiedFiles addObject:filePath];
             if (error) {
                 [self deferLog:[NSString stringWithFormat:
                     @"[Plorg VolumeSync] Error remapping %@: %@",
@@ -661,7 +671,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
     [self deferLog:[NSString stringWithFormat:
         @"[Plorg VolumeSync] Repaired %ld playlist files (%ld UUID(s) remapped)",
-        (long)modifiedCount, (long)remapActions.count]];
+        (long)modifiedFiles.count, (long)remapActions.count]];
 
     return remapActions;
 }

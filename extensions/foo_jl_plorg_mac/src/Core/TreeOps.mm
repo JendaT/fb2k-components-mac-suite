@@ -48,6 +48,29 @@
     return nil;
 }
 
++ (TreeNode *)findFolderForComponents:(NSArray<NSString *> *)components
+                              inRoots:(NSArray<TreeNode *> *)roots {
+    if (components.count == 0) return nil;
+
+    NSArray<TreeNode *> *currentLevel = roots;
+    TreeNode *resolved = nil;
+
+    for (NSString *component in components) {
+        TreeNode *found = nil;
+        for (TreeNode *node in currentLevel) {
+            if (node.isFolder && [node.name isEqualToString:component]) {
+                found = node;
+                break;
+            }
+        }
+        if (!found) return nil;
+        resolved = found;
+        currentLevel = found.children;
+    }
+
+    return resolved;
+}
+
 + (NSInteger)mergeNodes:(NSArray<TreeNode *> *)nodes
              intoParent:(TreeNode *)parent
                   roots:(NSMutableArray<TreeNode *> *)roots {

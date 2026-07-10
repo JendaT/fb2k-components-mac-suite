@@ -47,6 +47,59 @@ static NSString * const kOther = @"99999999-8888-7777-6666-555555555555";
 int main(void) {
     @autoreleasepool {
 
+    // --- isValidVolumeUUID (the gate protecting SQL/path interpolation) ---
+    {
+        g_context = "uuid-validation";
+        CHECK([VolumeSyncLogic isValidVolumeUUID:kDead], "canonical uppercase UUID valid");
+        CHECK(([VolumeSyncLogic isValidVolumeUUID:[kDead lowercaseString]]), "lowercase valid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:nil], "nil invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@""], "empty invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"NOTAUUID"], "short invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEE"],
+              "35 chars invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
+              "37 chars invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"GGGGGGGG-BBBB-CCCC-DDDD-EEEEEEEEEEEE"],
+              "non-hex invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAABBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
+              "wrong group shape invalid");
+        // SQL-injection payloads must never validate
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"X'; DROP TABLE metadb;--"],
+              "quote injection invalid");
+        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEE'E"],
+              "embedded quote invalid");
+    }
+
+    // --- Malformed UUIDs are rejected at the parse boundary ---
+    {
+        g_context = "injection-rejected";
+        // A crafted .fplite line whose "UUID" segment carries SQL
+        NSString *evil = @"mac-volume://X'; DROP TABLE metadb;--/a.flac";
+        CHECK([VolumeSyncLogic parseFpliteLine:evil uuid:NULL samplePath:NULL] == FpliteLineMalformed,
+              "SQL payload in UUID segment rejected as malformed");
+        CHECK([VolumeSyncLogic scanFpliteContentForUUIDs:evil].count == 0,
+              "malformed line contributes no UUID");
+
+        NSMutableDictionary *idx = [NSMutableDictionary dictionary];
+        [VolumeSyncLogic indexFpliteContent:evil into:idx];
+        CHECK(idx.count == 0, "malformed line not indexed");
+
+        // Config keys carrying SQL are rejected too
+        CHECK([VolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.X'; DROP TABLE x;--.bookmark"] == nil,
+              "SQL payload in config key rejected");
+
+        // Even if a bad value somehow reaches the SQL builder, it is skipped
+        NSString *sql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:
+                            @{ @"X'; DROP TABLE metadb;--": kLive } indexTables:@[]];
+        CHECK(![sql containsString:@"DROP TABLE"], "SQL builder skips invalid dead UUID");
+        CHECK_EQ(sql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
+                 "invalid action yields empty transaction");
+
+        NSString *sql2 = [VolumeSyncLogic metadbMigrationSQLForRemapActions:
+                            @{ kDead: @"bogus-target" } indexTables:@[]];
+        CHECK(![sql2 containsString:@"bogus"], "SQL builder skips invalid live UUID");
+    }
+
     // --- shareNameFromMountSource ---
     {
         g_context = "share-name";

@@ -73,6 +73,25 @@ int main(void) {
               "folder at leaf position does not match");
     }
 
+    // --- findFolderForComponents ---
+    {
+        g_context = "find-folder";
+        NSMutableArray *roots = makeFixture();
+        TreeNode *jazz = roots[0];
+        CHECK([TreeOps findFolderForComponents:@[@"Jazz"] inRoots:roots] == jazz,
+              "resolves top-level folder");
+        TreeNode *modal = jazz.children[1];
+        CHECK([TreeOps findFolderForComponents:(@[@"Jazz", @"Modal"]) inRoots:roots] == modal,
+              "resolves nested folder");
+        CHECK([TreeOps findFolderForComponents:(@[@"Jazz", @"Missing"]) inRoots:roots] == nil,
+              "missing component -> nil");
+        CHECK([TreeOps findFolderForComponents:@[@"Inbox"] inRoots:roots] == nil,
+              "playlist is not a folder -> nil");
+        CHECK([TreeOps findFolderForComponents:(@[@"Jazz", @"Bebop"]) inRoots:roots] == nil,
+              "nested playlist is not a folder -> nil");
+        CHECK([TreeOps findFolderForComponents:@[] inRoots:roots] == nil, "empty components -> nil");
+    }
+
     // --- mergeNodes: new folder subtree counts fully ---
     {
         g_context = "merge-new-folder";

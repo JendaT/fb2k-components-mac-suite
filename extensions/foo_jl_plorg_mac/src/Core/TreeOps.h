@@ -23,6 +23,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable TreeNode *)findPlaylistForComponents:(NSArray<NSString *> *)components
                                          inRoots:(NSArray<TreeNode *> *)roots;
 
+// Walk every component as a folder name. Returns the folder the full path
+// resolves to, or nil if any component is missing or is not a folder.
++ (nullable TreeNode *)findFolderForComponents:(NSArray<NSString *> *)components
+                                       inRoots:(NSArray<TreeNode *> *)roots;
+
 // Merge parsed nodes into the tree. Folders merge by name; playlists are
 // skipped when a playlist with the same name exists anywhere under roots.
 // Returns the number of nodes added (folders count their subtree).

@@ -7,23 +7,38 @@
 
 NSString * const PlorgPathSeparator = @" \u00BB ";
 
-// Single guillemet character used for escaping
-static unichar const kGuillemet = 0x00BB;
+// Single guillemet character used for escaping, and its doubled (escaped) form
+static NSString *guillemet(void) {
+    static NSString *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        unichar c = 0x00BB;
+        s = [NSString stringWithCharacters:&c length:1];
+    });
+    return s;
+}
+
+static NSString *doubledGuillemet(void) {
+    static NSString *s;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        s = [guillemet() stringByAppendingString:guillemet()];
+    });
+    return s;
+}
 
 @implementation PathCodec
 
 + (NSString *)escapeComponent:(NSString *)component {
     if (!component) return @"";  // Handle nil gracefully
-    NSString *guilStr = [NSString stringWithCharacters:&kGuillemet length:1];
-    NSString *doubled = [NSString stringWithFormat:@"%@%@", guilStr, guilStr];
-    return [component stringByReplacingOccurrencesOfString:guilStr withString:doubled];
+    return [component stringByReplacingOccurrencesOfString:guillemet()
+                                                withString:doubledGuillemet()];
 }
 
 + (NSString *)unescapeComponent:(NSString *)component {
     if (!component) return @"";  // Handle nil gracefully
-    NSString *guilStr = [NSString stringWithCharacters:&kGuillemet length:1];
-    NSString *doubled = [NSString stringWithFormat:@"%@%@", guilStr, guilStr];
-    return [component stringByReplacingOccurrencesOfString:doubled withString:guilStr];
+    return [component stringByReplacingOccurrencesOfString:doubledGuillemet()
+                                                withString:guillemet()];
 }
 
 + (NSString *)encodedNameForComponents:(NSArray<NSString *> *)components {

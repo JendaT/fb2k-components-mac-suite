@@ -117,21 +117,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
 - (TreeNode *)findFolderAtPath:(NSString *)path {
     NSArray *components = [path componentsSeparatedByString:@"/"];
-    NSArray<TreeNode *> *currentLevel = self.mutableRootNodes;
-
-    for (NSString *component in components) {
-        TreeNode *found = nil;
-        for (TreeNode *node in currentLevel) {
-            if (node.isFolder && [node.name isEqualToString:component]) {
-                found = node;
-                break;
-            }
-        }
-        if (!found) return nil;
-        currentLevel = found.children;
-    }
-
-    return nil;  // Path didn't resolve to a folder
+    return [TreeOps findFolderForComponents:components inRoots:self.mutableRootNodes];
 }
 
 #pragma mark - Path-Encoded Foobar Names

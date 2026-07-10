@@ -29,6 +29,13 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/treeyaml_tests"
 
+echo "==> Compiling unit tests (TreeNode format)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/TreeNodeFormatTests.mm" \
+    "$PROJECT_DIR/src/Core/TreeNode.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/treenode_tests"
+
 echo "==> Compiling unit tests (TreeOps)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/TreeOpsTests.mm" \
@@ -47,5 +54,6 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/pathcodec_tests"
 "$TEST_BUILD_DIR/treeyaml_tests"
+"$TEST_BUILD_DIR/treenode_tests"
 "$TEST_BUILD_DIR/treeops_tests"
 "$TEST_BUILD_DIR/volumesync_tests"

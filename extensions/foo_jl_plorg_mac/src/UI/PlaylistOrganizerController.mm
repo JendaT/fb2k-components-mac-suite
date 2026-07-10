@@ -10,6 +10,8 @@
 #import "../Core/TreeModel.h"
 #import "../Core/TreeNode.h"
 #import "../Core/TreeYamlCodec.h"
+#import "../Core/PathCodec.h"
+#import "../Core/VolumeSyncLogic.h"
 #import "../Core/ConfigHelper.h"
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -412,8 +414,9 @@ static NSString* makeUniquePlaylistName(NSString* baseName) {
 static NSString *leafNameForNode(TreeNode *node) {
     NSString *name = node.name;
     if (node.isFolder) return name;
-    static NSString *const pathSep = @" \u00BB ";
-    NSRange lastSep = [name rangeOfString:pathSep options:NSBackwardsSearch];
+    // Deliberately a lossy split: unlike PathCodec splitEncodedName:, this does
+    // not unescape doubled guillemets. It is a display heuristic for dirty names.
+    NSRange lastSep = [name rangeOfString:PlorgPathSeparator options:NSBackwardsSearch];
     if (lastSep.location != NSNotFound) {
         return [name substringFromIndex:lastSep.location + lastSep.length];
     }
@@ -2782,8 +2785,7 @@ static NSString *leafNameForNode(TreeNode *node) {
 
                 // Old foo_plorg themes store full path-encoded names (e.g., "folder >> leaf").
                 // Since we already build the folder hierarchy from <F> markers, extract just the leaf name.
-                static NSString *const pathSep = @" \u00BB ";
-                NSRange lastSep = [name rangeOfString:pathSep options:NSBackwardsSearch];
+                NSRange lastSep = [name rangeOfString:PlorgPathSeparator options:NSBackwardsSearch];
                 if (lastSep.location != NSNotFound) {
                     name = [name substringFromIndex:lastSep.location + lastSep.length];
                 }
@@ -2942,7 +2944,7 @@ static NSString *leafNameForNode(TreeNode *node) {
         if (!path || path.length == 0) continue;
 
         // Skip already-valid macOS paths
-        if ([path hasPrefix:@"/"] || [path hasPrefix:@"mac-volume://"]) {
+        if ([path hasPrefix:@"/"] || [path hasPrefix:PlorgMacVolumePrefix]) {
             [trackPaths addObject:path];
             continue;
         }
@@ -3384,7 +3386,7 @@ static NSString *leafNameForNode(TreeNode *node) {
                         if (trimmed.length == 0) continue;  // Empty lines OK
 
                         // Valid schemes for macOS foobar2000
-                        BOOL validScheme = [trimmed hasPrefix:@"mac-volume://"] ||
+                        BOOL validScheme = [trimmed hasPrefix:PlorgMacVolumePrefix] ||
                                            [trimmed hasPrefix:@"file://"] ||
                                            [trimmed hasPrefix:@"http://"] ||
                                            [trimmed hasPrefix:@"https://"];
