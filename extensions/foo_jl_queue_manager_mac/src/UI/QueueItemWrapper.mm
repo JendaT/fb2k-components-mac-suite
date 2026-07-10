@@ -55,27 +55,10 @@
 }
 
 - (NSString*)formatWithPattern:(NSString*)pattern {
-    if (!_handle.is_valid()) {
-        return @"[Invalid]";
-    }
-
-    try {
-        titleformat_object::ptr script = queue_ops::getCompiledScript([pattern UTF8String]);
-
-        pfc::string8 result;
-        _handle->format_title(nullptr, result, script, nullptr);
-
-        NSString* converted = [NSString stringWithUTF8String:result.c_str()];
-        return converted ?: @"[Invalid UTF-8]";
-    } catch (const std::exception& e) {
-        pfc::string8 msg;
-        msg << "[Queue Manager] Title format error: " << e.what();
-        console::error(msg);
-        return @"[Error]";
-    } catch (...) {
-        console::error("[Queue Manager] Unknown title format error");
-        return @"[Error]";
-    }
+    t_playback_queue_item item;
+    item.m_handle = _handle;
+    pfc::string8 result = queue_ops::formatItem(item, [pattern UTF8String]);
+    return [NSString stringWithUTF8String:result.c_str()] ?: @"[Invalid UTF-8]";
 }
 
 - (void)updateCachedValues {

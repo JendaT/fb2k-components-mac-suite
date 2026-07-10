@@ -13,6 +13,9 @@
 namespace queue_ops {
 
 titleformat_object::ptr getCompiledScript(const char* formatString) {
+    // Main-thread only (see header) and unbounded — acceptable while callers
+    // use a small fixed set of patterns; revisit if patterns become
+    // user-configurable.
     static std::unordered_map<std::string, titleformat_object::ptr> cache;
 
     std::string key(formatString);
@@ -41,9 +44,10 @@ std::vector<t_playback_queue_item> getContentsVector() {
     pfc::list_t<t_playback_queue_item> list;
     getContents(list);
 
+    const size_t count = list.get_count();
     std::vector<t_playback_queue_item> result;
-    result.reserve(list.get_count());
-    for (size_t i = 0; i < list.get_count(); i++) {
+    result.reserve(count);
+    for (size_t i = 0; i < count; i++) {
         result.push_back(list[i]);
     }
     return result;

@@ -421,6 +421,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 - Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
+- Code review cleanups: duration formatting UB on malformed track lengths, duplicated title-format error handling, orphan sentinel consistency, selection recolor efficiency
 
 ### [1.1.2] - 2026-02-09
 

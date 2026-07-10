@@ -9,6 +9,10 @@
 #import "../UI/QueueManagerController.h"
 #import <Foundation/Foundation.h>
 
+// Rapid queue callbacks (e.g. the N+1 storm from a flush-and-readd reorder)
+// within this window coalesce into a single reload.
+static const NSTimeInterval kReloadCoalesceDelay = 0.05;
+
 QueueCallbackManager::QueueCallbackManager() {
     m_controllers = [NSPointerArray weakObjectsPointerArray];
 }
@@ -54,8 +58,12 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
         }
     }
 
+    // Nothing to notify: skip the main-queue dispatch entirely
+    if (controllersToNotify.count == 0) {
+        return;
+    }
+
     // Coalesce rapid callbacks: cancel pending reload and schedule a new one.
-    // Multiple callbacks within 50ms window result in a single reload.
     dispatch_async(dispatch_get_main_queue(), ^{
         for (QueueManagerController* controller in controllersToNotify) {
             if (controller.isReorderingInProgress) {
@@ -66,7 +74,7 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
                                                        object:nil];
             [controller performSelector:@selector(reloadQueueContents)
                              withObject:nil
-                             afterDelay:0.05];
+                             afterDelay:kReloadCoalesceDelay];
         }
     });
 }

@@ -12,6 +12,7 @@
 ### Fixed
 
 - **Build**: Component failed to compile after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; QueueRowView now uses `selectedBackgroundColor()` like SimPlaylist
+- **Code review cleanups**: duration formatting now rejects NaN/infinite/overflow track lengths (was undefined behavior); title-format error handling deduplicated into `queue_ops::formatItem`; orphan sentinel uses named constants; selection recoloring only visits instantiated rows; queue callback dispatch skips work when no views are registered; dead `setupKeyboardHandling` removed; magic numbers named
 
 ### Technical
 

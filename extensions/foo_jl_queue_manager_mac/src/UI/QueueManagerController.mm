@@ -121,9 +121,6 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
 
     // Set up drag & drop
     [self setupDragAndDrop];
-
-    // Set up keyboard handling
-    [self setupKeyboardHandling];
 }
 
 - (void)viewDidLoad {
@@ -206,10 +203,6 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     [_tableView setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
 }
 
-- (void)setupKeyboardHandling {
-    // The table view handles Delete key via keyDown
-}
-
 #pragma mark - Data Loading
 
 - (void)reloadQueueContents {
@@ -265,8 +258,8 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     // Build a t_playback_queue_item for playItem
     t_playback_queue_item queueItem;
     queueItem.m_handle = [item handle];
-    queueItem.m_playlist = item.isOrphan ? ~(size_t)0 : item.sourcePlaylist;
-    queueItem.m_item = item.isOrphan ? ~(size_t)0 : item.sourceItem;
+    queueItem.m_playlist = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourcePlaylist;
+    queueItem.m_item = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourceItem;
 
     queue_ops::playItem(queueItem);
 }
@@ -377,10 +370,10 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     queue_ops::clear();
     for (size_t oldIndex : newOrder) {
         const auto& item = contents[oldIndex];
-        if (item.m_playlist != ~(size_t)0) {
-            queue_ops::addItemFromPlaylist(item.m_playlist, item.m_item);
-        } else {
+        if (queue_ops::isOrphanItem(item)) {
             queue_ops::addOrphanItem(item.m_handle);
+        } else {
+            queue_ops::addItemFromPlaylist(item.m_playlist, item.m_item);
         }
     }
 
@@ -516,22 +509,18 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
-    // Update text colors for all visible rows based on selection state
-    NSIndexSet* selectedRows = _tableView.selectedRowIndexes;
-
-    for (NSInteger row = 0; row < (NSInteger)_queueItems.count; row++) {
-        NSTableRowView* rowView = [_tableView rowViewAtRow:row makeIfNecessary:NO];
-        if (!rowView) continue;
-
-        BOOL isSelected = [selectedRows containsIndex:row];
+    // Update text colors based on selection state. Only instantiated row
+    // views need recoloring; enumerateAvailableRowViews skips the rest.
+    [_tableView enumerateAvailableRowViewsUsingBlock:^(NSTableRowView* rowView, NSInteger row) {
+        BOOL isSelected = rowView.selected;
         NSColor* textColor = isSelected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
         NSColor* secondaryColor = isSelected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor();
 
         // Update each column's text color
-        for (NSInteger col = 0; col < (NSInteger)_tableView.numberOfColumns; col++) {
-            NSTableCellView* cellView = [_tableView viewAtColumn:col row:row makeIfNecessary:NO];
+        for (NSInteger col = 0; col < (NSInteger)self->_tableView.numberOfColumns; col++) {
+            NSTableCellView* cellView = [self->_tableView viewAtColumn:col row:row makeIfNecessary:NO];
             if (cellView && cellView.textField) {
-                NSTableColumn* column = _tableView.tableColumns[col];
+                NSTableColumn* column = self->_tableView.tableColumns[col];
                 if ([column.identifier isEqualToString:kColumnIdQueueIndex]) {
                     cellView.textField.textColor = secondaryColor;
                 } else {
@@ -539,7 +528,7 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
                 }
             }
         }
-    }
+    }];
 }
 
 #pragma mark - Keyboard Handling

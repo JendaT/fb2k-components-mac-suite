@@ -92,6 +92,25 @@ int main() {
                   "reject-non-numeric-index", @"");
         }
 
+        // Negative indices wrap to huge unsigned values and must be filtered
+        // by the item-count bound (load-bearing for hostile/buggy payloads)
+        {
+            NSData* data = archive(@{@"indices": @[@(-1), @2]});
+            QueueDropRequest* req = [QueueDropRequest requestFromDragData:data];
+            check(req != nil, "negative-index-decodes", @"request is nil");
+            NSArray* valid = [req indicesBelowItemCount:10];
+            check([valid isEqualToArray:@[@2]], "negative-index-filtered",
+                  [NSString stringWithFormat:@"got %@", valid]);
+        }
+
+        // Duplicate indices pass through unchanged (caller adds twice)
+        {
+            NSData* data = archive(@{@"indices": @[@3, @3]});
+            QueueDropRequest* req = [QueueDropRequest requestFromDragData:data];
+            check([[req indicesBelowItemCount:10] isEqualToArray:@[@3, @3]],
+                  "duplicate-indices-preserved", @"");
+        }
+
         // Non-numeric sourcePlaylist degrades to the fallback, not a crash
         {
             NSData* data = archive(@{@"sourcePlaylist": @"three",

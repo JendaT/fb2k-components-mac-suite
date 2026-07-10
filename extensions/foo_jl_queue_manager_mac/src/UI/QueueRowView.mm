@@ -8,6 +8,10 @@
 #import "QueueRowView.h"
 #import "../../../../shared/UIStyles.h"
 
+// A table view background this transparent means the component runs in
+// glass/vibrancy mode and row backgrounds must not be painted over it.
+static const CGFloat kTransparentAlphaThreshold = 0.1;
+
 @implementation QueueRowView
 
 - (void)viewDidMoveToSuperview {
@@ -26,7 +30,7 @@
     while (view) {
         if ([view isKindOfClass:[NSTableView class]]) {
             NSTableView* tableView = (NSTableView*)view;
-            _cachedTransparentMode = tableView.backgroundColor.alphaComponent < 0.1;
+            _cachedTransparentMode = tableView.backgroundColor.alphaComponent < kTransparentAlphaThreshold;
             break;
         }
         view = view.superview;

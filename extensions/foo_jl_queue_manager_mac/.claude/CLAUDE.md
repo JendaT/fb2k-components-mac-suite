@@ -97,9 +97,12 @@ bool match_name(const char* name) override {
 ```
 src/
   Core/
-    ConfigHelper.h           # fb2k::configStore wrapper
+    ConfigHelper.h           # fb2k::configStore wrapper (SDK-bound)
     QueueConfig.h            # Configuration constants
-    QueueOperations.h/cpp    # SDK queue operations wrapper
+    QueueOperations.h/cpp    # SDK queue operations wrapper (SDK-bound)
+    QueueReorderPlanner.h/cpp  # Drag-reorder move planning (SDK-free, tested)
+    QueueFormatting.h/cpp    # Duration/status text formatting (SDK-free, tested)
+    QueueDropParser.h/mm     # SimPlaylist drag payload decoding (Foundation-only, tested)
   Integration/
     Main.mm                  # UI element registration
     QueueCallbackManager.h/mm  # Singleton callback dispatcher
@@ -107,7 +110,13 @@ src/
   UI/
     QueueManagerController.h/mm  # Main NSViewController
     QueueItemWrapper.h/mm    # Safe wrapper for t_playback_queue_item
+    QueueRowView.h/mm        # Custom row view (selection style)
+    QueueHeaderView.h/mm     # Custom header (currently unused; controller uses NSTableHeaderView)
+    QueueManagerPreferences.h/mm  # Preferences page
+Tests/                       # Standalone unit tests for SDK-free Core units
 Scripts/
+  build.sh                   # Build (runs unit tests first; tests gate the build)
+  run_tests.sh               # Compiles/runs Tests/ with bare clang (no SDK/Xcode)
   generate_xcode_project.rb  # Xcode project generator
   install.sh                 # Component installer
 Resources/
@@ -116,10 +125,12 @@ Resources/
 
 ## Build Commands
 
+Use the build script — NEVER call xcodebuild directly (see repo CLAUDE.md):
+
 ```bash
-ruby Scripts/generate_xcode_project.rb
-xcodebuild -project foo_jl_queue_manager.xcodeproj -configuration Release
-./Scripts/install.sh
+./Scripts/build.sh --install          # test-gated build + install
+./Scripts/build.sh --regenerate       # after adding/removing source files
+./Scripts/run_tests.sh                # unit tests only (~1s)
 ```
 
 ## Risk Mitigations

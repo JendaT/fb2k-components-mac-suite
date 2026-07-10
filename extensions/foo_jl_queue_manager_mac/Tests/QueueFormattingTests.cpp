@@ -8,6 +8,7 @@
 
 #include "../src/Core/QueueFormatting.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -38,6 +39,13 @@ int main() {
     // Non-positive lengths have no duration
     checkDuration(0.0, "--:--", "zero");
     checkDuration(-1.0, "--:--", "negative");
+
+    // Untrusted metadata: NaN/inf and overflow-range values are rejected
+    checkDuration(std::nan(""), "--:--", "nan");
+    checkDuration(INFINITY, "--:--", "positive-infinity");
+    checkDuration(-INFINITY, "--:--", "negative-infinity");
+    checkDuration(1e19, "--:--", "beyond-int64");
+    checkDuration(4000000000.0, "1111111:06:40", "beyond-int32-still-formats");
 
     // Fractional seconds truncate (matches the previous int cast)
     checkDuration(0.4, "0:00", "sub-second");

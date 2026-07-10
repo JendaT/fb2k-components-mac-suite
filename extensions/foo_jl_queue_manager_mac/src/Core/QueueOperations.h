@@ -48,8 +48,9 @@ bool isItemValid(const t_playback_queue_item& item);
 // Check if item is an orphan (not from a playlist)
 bool isOrphanItem(const t_playback_queue_item& item);
 
-// Play a queue item (starts playback)
-// Returns true if playback was started successfully
+// Play a queue item: from its source playlist position when the item is
+// still valid, otherwise by starting playback so the queue is consumed.
+// Always returns true (kept for interface stability).
 bool playItem(const t_playback_queue_item& item);
 
 // Format a queue item for display using title format script
