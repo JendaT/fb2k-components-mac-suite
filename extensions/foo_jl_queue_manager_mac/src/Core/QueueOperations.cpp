@@ -7,6 +7,7 @@
 
 #include "QueueOperations.h"
 #include "QueueConfig.h"
+#include "QueueFormatting.h"
 #include <unordered_map>
 
 namespace queue_ops {
@@ -164,26 +165,7 @@ pfc::string8 formatDuration(const t_playback_queue_item& item) {
         return result;
     }
 
-    double length = item.m_handle->get_length();
-    if (length <= 0) {
-        result = "--:--";
-        return result;
-    }
-
-    int seconds = static_cast<int>(length);
-    int minutes = seconds / 60;
-    seconds = seconds % 60;
-
-    if (minutes >= 60) {
-        int hours = minutes / 60;
-        minutes = minutes % 60;
-        result << hours << ":"
-               << pfc::format_int(minutes, 2) << ":"
-               << pfc::format_int(seconds, 2);
-    } else {
-        result << minutes << ":" << pfc::format_int(seconds, 2);
-    }
-
+    result = queue_format::formatDurationSeconds(item.m_handle->get_length()).c_str();
     return result;
 }
 

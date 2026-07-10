@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Testable Core extraction**: Pure logic moved into SDK-free Core units with standalone unit tests that gate every build (same pattern as SimPlaylist)
+  - `QueueReorderPlanner`: drag-reorder move planning extracted from QueueManagerController (also removes a leftover dead loop in the drop handler)
+  - `QueueFormatting`: duration and status bar text formatting extracted from QueueOperations and the controller
+  - `QueueDropParser`: SimPlaylist drag payload decoding/validation extracted from the controller; malformed payloads are now rejected up front
+
+### Fixed
+
+- **Build**: Component failed to compile after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; QueueRowView now uses `selectedBackgroundColor()` like SimPlaylist
+
+### Technical
+
+- New `Tests/` suite (476 checks) compiled standalone with clang, run by `Scripts/run_tests.sh` as a gating phase in `Scripts/build.sh`
+
 ## [1.1.2] - 2026-02-09
 
 ### Changed

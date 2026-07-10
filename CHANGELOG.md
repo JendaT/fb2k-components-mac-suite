@@ -414,6 +414,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Queue Manager
 
+### [Unreleased]
+
+#### Changed
+- Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with unit tests gating every build
+
+#### Fixed
+- Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
+
 ### [1.1.2] - 2026-02-09
 
 #### Changed

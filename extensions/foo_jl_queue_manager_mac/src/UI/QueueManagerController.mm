@@ -11,6 +11,9 @@
 #import "../Integration/QueueCallbackManager.h"
 #import "../Core/QueueOperations.h"
 #import "../Core/QueueConfig.h"
+#import "../Core/QueueDropParser.h"
+#import "../Core/QueueFormatting.h"
+#import "../Core/QueueReorderPlanner.h"
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/UIStyles.h"
 
@@ -231,15 +234,8 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
 }
 
 - (void)updateStatusBar {
-    NSUInteger count = _queueItems.count;
-    if (count == 0) {
-        _statusBar.stringValue = @"";
-    } else if (count == 1) {
-        _statusBar.stringValue = @"1 item in queue";
-    } else {
-        _statusBar.stringValue = [NSString stringWithFormat:@"%lu items in queue",
-                                  (unsigned long)count];
-    }
+    std::string text = queue_format::statusTextForCount(_queueItems.count);
+    _statusBar.stringValue = [NSString stringWithUTF8String:text.c_str()] ?: @"";
 }
 
 #pragma mark - Actions
@@ -360,64 +356,27 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     NSInteger sourceRow = [rowString integerValue];
     if (sourceRow < 0 || sourceRow >= (NSInteger)_queueItems.count) return NO;
     if (targetRow < 0) targetRow = 0;
-    if (targetRow > (NSInteger)_queueItems.count) targetRow = _queueItems.count;
-
-    // If dropping at the same position or the position right after, no change needed
-    if (sourceRow == targetRow || sourceRow + 1 == targetRow) return NO;
 
     // Set flag to prevent callback storm
     _isReorderingInProgress = YES;
 
     // Get current queue contents
     auto contents = queue_ops::getContentsVector();
-    if (sourceRow >= (NSInteger)contents.size()) {
+
+    auto newOrder = queue_reorder::planSingleMove(contents.size(),
+                                                  (size_t)sourceRow,
+                                                  (size_t)targetRow);
+    if (newOrder.empty()) {
+        // No-op drop (same position) or stale source row
         _isReorderingInProgress = NO;
         return NO;
     }
 
-    // Capture the item being moved
-    t_playback_queue_item movingItem = contents[sourceRow];
-
-    // Clear the queue
+    // Rebuild the queue in the planned order (flush-and-readd; the SDK has
+    // no reorder primitive for the playback queue)
     queue_ops::clear();
-
-    // Rebuild in new order
-    // Adjust target if source was before target
-    NSInteger adjustedTarget = targetRow;
-    if (sourceRow < targetRow) {
-        adjustedTarget--;
-    }
-
-    for (NSInteger i = 0; i < (NSInteger)contents.size(); i++) {
-        if (i == sourceRow) continue; // Skip source position
-
-        // Insert the moved item at target position
-        if (i == adjustedTarget || (i == 0 && adjustedTarget == 0 && sourceRow != 0)) {
-            // Actually we need a different approach - rebuild properly
-        }
-    }
-
-    // Simpler approach: build new order array
-    std::vector<t_playback_queue_item> newOrder;
-    newOrder.reserve(contents.size());
-
-    for (NSInteger i = 0; i < (NSInteger)contents.size(); i++) {
-        if (i == sourceRow) continue;
-
-        // Insert moved item at correct position
-        if ((NSInteger)newOrder.size() == adjustedTarget) {
-            newOrder.push_back(movingItem);
-        }
-        newOrder.push_back(contents[i]);
-    }
-
-    // If target is at the end
-    if (adjustedTarget >= (NSInteger)newOrder.size()) {
-        newOrder.push_back(movingItem);
-    }
-
-    // Add all items back to queue
-    for (const auto& item : newOrder) {
+    for (size_t oldIndex : newOrder) {
+        const auto& item = contents[oldIndex];
         if (item.m_playlist != ~(size_t)0) {
             queue_ops::addItemFromPlaylist(item.m_playlist, item.m_item);
         } else {
@@ -436,37 +395,18 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
 // Handle drop from SimPlaylist component
 - (BOOL)handleSimPlaylistDropFromPasteboard:(NSPasteboard*)pasteboard {
     NSData* data = [pasteboard dataForType:SimPlaylistPasteboardType];
-    if (!data) return NO;
 
-    // SimPlaylist now sends a dictionary with:
-    // - @"sourcePlaylist": NSNumber (playlist index)
-    // - @"indices": NSArray of NSNumber (row indices)
-    // - @"paths": (optional) NSArray of NSString (file paths)
-    NSError* error = nil;
-    NSSet* classes = [NSSet setWithObjects:[NSDictionary class], [NSArray class],
-                      [NSNumber class], [NSString class], nil];
-    NSDictionary* dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes
-                                                                 fromData:data
-                                                                    error:&error];
-    if (!dragData || ![dragData isKindOfClass:[NSDictionary class]]) {
+    QueueDropRequest* request = [QueueDropRequest requestFromDragData:data];
+    if (!request) {
         console::error("[Queue Manager] Failed to decode SimPlaylist drag data");
-        return NO;
-    }
-
-    // Extract source playlist and indices
-    NSNumber* sourcePlaylistNum = dragData[@"sourcePlaylist"];
-    NSArray<NSNumber*>* rowNumbers = dragData[@"indices"];
-
-    if (!rowNumbers || rowNumbers.count == 0) {
-        console::error("[Queue Manager] No indices in SimPlaylist drag data");
         return NO;
     }
 
     // Use the source playlist from the drag data, not the active playlist
     // This ensures correct behavior even if active playlist changes during drag
     size_t sourcePlaylist;
-    if (sourcePlaylistNum) {
-        sourcePlaylist = [sourcePlaylistNum unsignedLongValue];
+    if (request.hasSourcePlaylist) {
+        sourcePlaylist = request.sourcePlaylist;
     } else {
         // Fallback to active playlist if not specified
         auto pm = playlist_manager::get();
@@ -479,12 +419,9 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     auto pm = playlist_manager::get();
     size_t playlistItemCount = pm->playlist_get_item_count(sourcePlaylist);
 
-    // Add each item to the queue
-    for (NSNumber* rowNum in rowNumbers) {
-        size_t row = [rowNum unsignedLongValue];
-        if (row < playlistItemCount) {
-            queue_ops::addItemFromPlaylist(sourcePlaylist, row);
-        }
+    // Add each item to the queue, skipping stale rows past the playlist end
+    for (NSNumber* rowNum in [request indicesBelowItemCount:playlistItemCount]) {
+        queue_ops::addItemFromPlaylist(sourcePlaylist, [rowNum unsignedLongValue]);
     }
 
     return YES;
