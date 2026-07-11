@@ -111,7 +111,6 @@ src/
     QueueManagerController.h/mm  # Main NSViewController
     QueueItemWrapper.h/mm    # Safe wrapper for t_playback_queue_item
     QueueRowView.h/mm        # Custom row view (selection style)
-    QueueHeaderView.h/mm     # Custom header (currently unused; controller uses NSTableHeaderView)
     QueueManagerPreferences.h/mm  # Preferences page
 Tests/                       # Standalone unit tests for SDK-free Core units
 Scripts/

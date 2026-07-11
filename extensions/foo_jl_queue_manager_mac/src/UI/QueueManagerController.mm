@@ -17,10 +17,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/UIStyles.h"
 
-// Column identifiers
-static NSString* const kColumnIdQueueIndex = @"queue_index";
-static NSString* const kColumnIdArtistTitle = @"artist_title";
-static NSString* const kColumnIdDuration = @"duration";
+#include <algorithm>
 
 // Pasteboard type for internal drag & drop
 static NSPasteboardType const QueueItemPasteboardType = @"com.foobar2000.queue-manager.queue-item";
@@ -136,34 +133,32 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
 #pragma mark - Setup
 
 - (void)setupColumns {
-    // Column 1: Queue # (narrow, fixed width)
-    NSTableColumn* indexColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdQueueIndex];
-    indexColumn.title = @"#";
-    indexColumn.width = 30;
-    indexColumn.minWidth = 30;
-    indexColumn.maxWidth = 50;
-    indexColumn.resizingMask = NSTableColumnUserResizingMask;
-    indexColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"#"];
-    [_tableView addTableColumn:indexColumn];
+    // Phase 1: fixed default column set; all layout metadata comes from
+    // the shared column table in QueueConfig.h
+    static const char* const kVisibleColumns[] = {
+        queue_config::kColumnQueueIndex,
+        queue_config::kColumnArtistTitle,
+        queue_config::kColumnDuration,
+    };
 
-    // Column 2: Artist - Title (flex width)
-    NSTableColumn* titleColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdArtistTitle];
-    titleColumn.title = @"Artist - Title";
-    titleColumn.width = 200;
-    titleColumn.minWidth = 100;
-    titleColumn.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
-    titleColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"Artist - Title"];
-    [_tableView addTableColumn:titleColumn];
+    for (const char* identifier : kVisibleColumns) {
+        const queue_config::ColumnInfo* info = queue_config::findColumn(identifier);
+        if (!info) continue;
 
-    // Column 3: Duration (narrow, fixed width)
-    NSTableColumn* durationColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdDuration];
-    durationColumn.title = @"Duration";
-    durationColumn.width = 60;
-    durationColumn.minWidth = 50;
-    durationColumn.maxWidth = 80;
-    durationColumn.resizingMask = NSTableColumnUserResizingMask;
-    durationColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"Duration"];
-    [_tableView addTableColumn:durationColumn];
+        NSString* title = @(info->displayName);
+        NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@(info->identifier)];
+        column.title = title;
+        column.width = info->defaultWidth;
+        column.minWidth = info->minWidth;
+        if (info->maxWidth > 0) {
+            column.maxWidth = info->maxWidth;
+        }
+        column.resizingMask = info->flexible
+            ? (NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask)
+            : NSTableColumnUserResizingMask;
+        column.headerCell = [[NSTableHeaderCell alloc] initTextCell:title];
+        [_tableView addTableColumn:column];
+    }
 }
 
 - (void)setupStatusBar {
@@ -341,45 +336,45 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     return NO;
 }
 
-// Handle internal queue reordering
+// Handle internal queue reordering (single- or multi-row drag)
 - (BOOL)handleInternalDropAtRow:(NSInteger)targetRow fromPasteboard:(NSPasteboard*)pasteboard {
-    NSString* rowString = [pasteboard stringForType:QueueItemPasteboardType];
-    if (!rowString) return NO;
+    // One pasteboard item per dragged row (see pasteboardWriterForRow:)
+    std::vector<size_t> sourceRows;
+    for (NSPasteboardItem* pbItem in pasteboard.pasteboardItems) {
+        NSString* rowString = [pbItem stringForType:QueueItemPasteboardType];
+        if (!rowString) continue;
+        NSInteger row = [rowString integerValue];
+        if (row >= 0) {
+            sourceRows.push_back((size_t)row);
+        }
+    }
+    if (sourceRows.empty()) return NO;
+    std::sort(sourceRows.begin(), sourceRows.end());
+    sourceRows.erase(std::unique(sourceRows.begin(), sourceRows.end()), sourceRows.end());
 
-    NSInteger sourceRow = [rowString integerValue];
-    if (sourceRow < 0 || sourceRow >= (NSInteger)_queueItems.count) return NO;
     if (targetRow < 0) targetRow = 0;
 
-    // Set flag to prevent callback storm
-    _isReorderingInProgress = YES;
-
-    // Get current queue contents
     auto contents = queue_ops::getContentsVector();
-
-    auto newOrder = queue_reorder::planSingleMove(contents.size(),
-                                                  (size_t)sourceRow,
-                                                  (size_t)targetRow);
+    auto newOrder = queue_reorder::planMove(contents.size(), sourceRows, (size_t)targetRow);
     if (newOrder.empty()) {
-        // No-op drop (same position) or stale source row
-        _isReorderingInProgress = NO;
+        // No-op drop (same position) or stale source rows
         return NO;
     }
 
     // Rebuild the queue in the planned order (flush-and-readd; the SDK has
-    // no reorder primitive for the playback queue)
-    queue_ops::clear();
-    for (size_t oldIndex : newOrder) {
-        const auto& item = contents[oldIndex];
-        if (queue_ops::isOrphanItem(item)) {
-            queue_ops::addOrphanItem(item.m_handle);
-        } else {
-            queue_ops::addItemFromPlaylist(item.m_playlist, item.m_item);
-        }
+    // no reorder primitive for the playback queue). The flag suppresses the
+    // per-mutation callbacks, which arrive synchronously on this thread —
+    // it must be reset and the view reloaded even if an SDK call throws
+    // mid-rebuild, otherwise updates stay suppressed forever.
+    _isReorderingInProgress = YES;
+    try {
+        queue_ops::rebuildInOrder(contents, newOrder);
+    } catch (...) {
+        console::error("[Queue Manager] Queue rebuild failed mid-reorder");
     }
-
     _isReorderingInProgress = NO;
 
-    // Manually reload since we suppressed callbacks
+    // Manually reload since callbacks were suppressed
     [self reloadQueueContents];
 
     return YES;
@@ -400,17 +395,21 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     size_t sourcePlaylist;
     if (request.hasSourcePlaylist) {
         sourcePlaylist = request.sourcePlaylist;
+        // The payload is untrusted (any process can write this pasteboard
+        // type) and the playlist may have been deleted mid-drag
+        if (sourcePlaylist >= queue_ops::playlistCount()) {
+            console::error("[Queue Manager] Drop references nonexistent playlist");
+            return NO;
+        }
     } else {
         // Fallback to active playlist if not specified
-        auto pm = playlist_manager::get();
-        sourcePlaylist = pm->get_active_playlist();
+        sourcePlaylist = queue_ops::activePlaylist();
         if (sourcePlaylist == SIZE_MAX) {
             return NO;
         }
     }
 
-    auto pm = playlist_manager::get();
-    size_t playlistItemCount = pm->playlist_get_item_count(sourcePlaylist);
+    size_t playlistItemCount = queue_ops::playlistItemCount(sourcePlaylist);
 
     // Add each item to the queue, skipping stale rows past the playlist end
     for (NSNumber* rowNum in [request indicesBelowItemCount:playlistItemCount]) {
@@ -488,17 +487,17 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
     NSTextField* cell = cellView.textField;
 
     // Set cell content based on column
-    if ([identifier isEqualToString:kColumnIdQueueIndex]) {
+    if ([identifier isEqualToString:@(queue_config::kColumnQueueIndex)]) {
         cell.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)(row + 1)];
         cell.alignment = NSTextAlignmentRight;
         cell.font = fb2k_ui::monospacedDigitFont();
         cell.textColor = fb2k_ui::secondaryTextColor();
-    } else if ([identifier isEqualToString:kColumnIdArtistTitle]) {
+    } else if ([identifier isEqualToString:@(queue_config::kColumnArtistTitle)]) {
         cell.stringValue = item.cachedArtistTitle ?: @"";
         cell.alignment = NSTextAlignmentLeft;
         cell.font = fb2k_ui::rowFont();
         cell.textColor = fb2k_ui::textColor();
-    } else if ([identifier isEqualToString:kColumnIdDuration]) {
+    } else if ([identifier isEqualToString:@(queue_config::kColumnDuration)]) {
         cell.stringValue = item.cachedDuration ?: @"";
         cell.alignment = NSTextAlignmentRight;
         cell.font = fb2k_ui::monospacedDigitFont();
@@ -521,7 +520,7 @@ static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simpl
             NSTableCellView* cellView = [self->_tableView viewAtColumn:col row:row makeIfNecessary:NO];
             if (cellView && cellView.textField) {
                 NSTableColumn* column = self->_tableView.tableColumns[col];
-                if ([column.identifier isEqualToString:kColumnIdQueueIndex]) {
+                if ([column.identifier isEqualToString:@(queue_config::kColumnQueueIndex)]) {
                     cellView.textField.textColor = secondaryColor;
                 } else {
                     cellView.textField.textColor = textColor;

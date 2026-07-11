@@ -62,8 +62,10 @@
 }
 
 - (void)updateCachedValues {
-    // Cache Artist - Title
-    _cachedArtistTitle = [self formatWithPattern:@"[%artist% - ]%title%"];
+    // Cache Artist - Title, pattern from the shared column table
+    const queue_config::ColumnInfo* column =
+        queue_config::findColumn(queue_config::kColumnArtistTitle);
+    _cachedArtistTitle = [self formatWithPattern:@(column->titleFormat)];
 
     // Cache duration using shared formatting logic
     t_playback_queue_item item;

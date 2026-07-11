@@ -416,12 +416,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
+#### Added
+- Multi-row drag reorder (previously only the first selected row moved)
+
 #### Changed
 - Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with unit tests gating every build
+- Column metadata consolidated into a single source of truth; dead QueueHeaderView removed; real component GUIDs and corrected metadata
 
 #### Fixed
 - Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
 - Code review cleanups: duration formatting UB on malformed track lengths, duplicated title-format error handling, orphan sentinel consistency, selection recolor efficiency
+- Reorder debounce flag never suppressed callbacks (redundant double reload per reorder); reorder now exception-safe with stale items re-added as orphans; SimPlaylist drops validate the source playlist index
 
 ### [1.1.2] - 2026-02-09
 

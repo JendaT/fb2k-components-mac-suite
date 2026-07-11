@@ -19,15 +19,14 @@ DECLARE_COMPONENT_VERSION(
     "Features:\n"
     "- View and manage playback queue\n"
     "- Drag & drop reordering\n"
-    "- Live updates\n"
-    "- Configurable columns\n\n"
-    "MIT License - https://github.com/jl/foo_jl_queue_manager"
+    "- Drag tracks in from SimPlaylist\n"
+    "- Live updates\n\n"
+    "MIT License - https://github.com/JendaT/fb2k-components-mac-suite"
 );
 
-// Unique GUID for this component
-// Generated: use uuidgen command or online tool
+// Unique GUID for this component (uuidgen: 0D93E6FE-9DC3-4339-9BBF-532DA35D4EC5)
 static const GUID g_guid_queue_manager = {
-    0x8a1b2c3d, 0x4e5f, 0x6a7b, { 0x8c, 0x9d, 0x0e, 0x1f, 0x2a, 0x3b, 0x4c, 0x5d }
+    0x0d93e6fe, 0x9dc3, 0x4339, { 0x9b, 0xbf, 0x53, 0x2d, 0xa3, 0x5d, 0x4e, 0xc5 }
 };
 
 // UI Element implementation

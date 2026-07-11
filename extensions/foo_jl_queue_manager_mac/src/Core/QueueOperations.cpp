@@ -89,6 +89,34 @@ void addOrphanItem(metadb_handle_ptr handle) {
     pm->queue_add_item(handle);
 }
 
+void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
+                    const std::vector<size_t>& order) {
+    clear();
+    for (size_t oldIndex : order) {
+        if (oldIndex >= contents.size()) continue;
+        const auto& item = contents[oldIndex];
+        if (!isOrphanItem(item) && isItemValid(item)) {
+            addItemFromPlaylist(item.m_playlist, item.m_item);
+        } else {
+            // Playlist reference stale (or item was always an orphan):
+            // keep the track in the queue via its handle
+            addOrphanItem(item.m_handle);
+        }
+    }
+}
+
+size_t playlistCount() {
+    return playlist_manager::get()->get_playlist_count();
+}
+
+size_t activePlaylist() {
+    return playlist_manager::get()->get_active_playlist();
+}
+
+size_t playlistItemCount(size_t playlist) {
+    return playlist_manager::get()->playlist_get_item_count(playlist);
+}
+
 bool isItemValid(const t_playback_queue_item& item) {
     // Orphan items are always "valid" (no playlist reference to check)
     if (isOrphanItem(item)) {

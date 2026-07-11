@@ -91,9 +91,10 @@
 // Preferences page registration
 namespace {
     // Unique GUID for Queue Manager preferences
+    // (uuidgen: 12496D9A-A3A5-43FF-802E-4B7114C9E68A)
     static const GUID guid_queue_manager_preferences = {
-        0x7F3A2B1C, 0x4D5E, 0x6F78,
-        {0x9A, 0xBC, 0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78}
+        0x12496d9a, 0xa3a5, 0x43ff,
+        {0x80, 0x2e, 0x4b, 0x71, 0x14, 0xc9, 0xe6, 0x8a}
     };
 
     class queue_manager_preferences_page : public preferences_page {

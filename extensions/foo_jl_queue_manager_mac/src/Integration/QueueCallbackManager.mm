@@ -64,7 +64,14 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
     }
 
     // Coalesce rapid callbacks: cancel pending reload and schedule a new one.
-    dispatch_async(dispatch_get_main_queue(), ^{
+    //
+    // fb2k delivers this callback on the main thread — including
+    // synchronously from every queue mutation inside a controller's own
+    // flush-and-readd rebuild. The isReorderingInProgress check must
+    // therefore run HERE, not in a deferred block: by the time a
+    // dispatch_async block executes, the rebuild has finished and the flag
+    // is already cleared, so a deferred check can never suppress anything.
+    void (^notifyControllers)(void) = ^{
         for (QueueManagerController* controller in controllersToNotify) {
             if (controller.isReorderingInProgress) {
                 continue;
@@ -76,5 +83,11 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
                              withObject:nil
                              afterDelay:kReloadCoalesceDelay];
         }
-    });
+    };
+
+    if (NSThread.isMainThread) {
+        notifyControllers();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), notifyControllers);
+    }
 }
