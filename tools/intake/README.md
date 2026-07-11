@@ -18,11 +18,24 @@ export INTAKE_RULES_DIR=/path/to/music-rules   # or ~/.config/intake/config.toml
 
 bun run src/cli.ts scan --all          # discover, unpack archives, resolve
 bun run src/cli.ts resolve <dir>       # (re)detect roots, write sidecars
+bun run src/cli.ts identify <root>     # establish what a release is
+bun run src/cli.ts assign <root>       # rank genre-collection folders
+bun run src/cli.ts assign <root> --collection "[X]" --by user   # override + feedback
+bun run src/cli.ts collections         # genre map folder list (picker)
+bun run src/cli.ts bootstrap --tree <path> --out <dir>          # build maps
 bun run src/cli.ts status --json       # sidecar inventory
 ```
 
 All commands accept `--json` (single envelope on stdout) and `--dry-run`.
-Exit codes: 0 ok, 1 partial, 2 error.
+Exit codes: 0 ok, 1 partial, 2 error. Roots are addressed by path or
+sidecar id.
+
+Identify/assign run fully offline by default; network evidence is opt-in via
+`DISCOGS_TOKEN` and `LASTFM_API_KEY` (similar-artist cache under
+`INTAKE_CACHE_DIR`, default `~/.cache/intake`). The beets hard path uses
+`shim/beets_identify.py` (needs a python3 with beets installed; override the
+command with `INTAKE_BEETS_SHIM`); without it, identification degrades to
+`unconfirmed` and flags review.
 
 ## Development
 

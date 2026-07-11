@@ -29,7 +29,7 @@ test("version --json returns {cli, schema, engine} in an envelope", () => {
   const r = run(["version", "--json"]);
   expect(r.code).toBe(0);
   const env = JSON.parse(r.stdout);
-  expect(env).toEqual({ ok: true, data: { cli: "0.1.0", schema: 1, engine: null }, errors: [] });
+  expect(env).toEqual({ ok: true, data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [] });
 });
 
 test("unknown command exits 2 with E_BAD_ARGS envelope", () => {

@@ -153,3 +153,45 @@ The public repo contains schema docs + fixtures only, never the real maps.
 - Accuracy harness: replay N already-placed releases (strip location, run
   assign, compare) → report top-1/top-3 accuracy; gate: top-1 ≥0.90.
 - Network tiers mocked; caches deterministic in tests.
+
+## Implementation notes (v1, tools/intake)
+
+Decisions made during implementation; normative for schema v1 consumers.
+
+- **`identification` object** (sidecar): `{ status, source, release_id,
+  artist, album, year, label, catno, styles[], genres[], distance, grammar,
+  candidates, identified_at }`. `status` ∈ `fast_path` (Discogs-confirmed) |
+  `shim` (beets candidate accepted, distance ≤ threshold) | `unconfirmed`
+  (parse+tags merged, no external confirmation — offline or ambiguous;
+  ambiguous Discogs hits and rejected shim candidates land in `candidates`,
+  max 3) | `unidentified` (no usable artist/album). Anything except
+  `fast_path`/`shim` sets `needs_review`. `needs_review` is sticky: identify/
+  assign can raise it, never clear it (clearing is approve's job, P3).
+- **Score normalization**: `score = Σ wᵢ·eᵢ / Σ wᵢ over available tiers`, so
+  absent network tiers don't deflate confidence. Artist/label tiers count as
+  available whenever the input carries a value (an unknown artist is evidence
+  of absence); similar/style tiers only when they produced votes.
+- **Ties** break deterministically by collection name (ascending) after score.
+- **Feedback** lives in a separate `feedback:` section of `genre-map.yaml`
+  (same artist→{collection: count} shape, merged with `artists:` at prior
+  computation). Programmatic writes (feedback, learned `aliases:`) rewrite the
+  file via YAML serializer — hand comments are not preserved; keep curated
+  notes in the rules repo's git history instead.
+- **Singles**: `structure_slot: "singles"`, `target_path: null` — the singles
+  slot layout is one of the five pending structure TBDs; propose (P3) fills it
+  once decided. Tier `reject` likewise gets `target_path: null`.
+- **Config** (`structure.yaml`): `assign.weights{artist,label,similar,style}`,
+  `assign.short_circuit{min_releases,confidence}`,
+  `assign.needs_review{confidence,margin}`, `assign.shim_accept_distance`,
+  `naming.release`/`naming.release_no_label` templates, `tiers.*` as specced.
+- **Providers**: Discogs via `DISCOGS_TOKEN`, Last.fm via `LASTFM_API_KEY`
+  (similar-artist cache in `INTAKE_CACHE_DIR`, default `~/.cache/intake`,
+  TTL 90 d), shim command override via `INTAKE_BEETS_SHIM`. Without
+  credentials the engine runs fully offline on priors alone.
+- **Bootstrap**: `--tree <path>` repeatable, `--prior-weight <w>` applies to
+  the most recent `--tree`, `--out <dir>` (default: rules dir), refuses to
+  overwrite existing maps without `--force`. Collection dirs are the tree
+  root's children; inside them, release-grammar dirs are flat releases,
+  `[Slot]`-style dirs hold flat releases, anything else is an artist dir.
+- `intake bootstrap` is not (yet) in the doc 03 command surface — flagged to
+  the overseer for the next contract bump; the component never calls it.

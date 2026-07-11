@@ -192,5 +192,5 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult {
 }
 
 export function cmdVersion(): CommandResult {
-  return { data: { cli: "0.1.0", schema: 1, engine: null }, errors: [], exitCode: 0 };
+  return { data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
 }
