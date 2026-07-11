@@ -424,26 +424,154 @@ int main(void) {
         CHECK(m.count == 0, "live UUID skipped");
     }
 
+    // --- isValidMetadbIndexTableName ---
+    // Guards the migrator's table discovery. SQL LIKE treats '_' as a
+    // single-char wildcard, so 'metadb_index_%' matched the metadb_indexes
+    // metadata table (columns name/synced/retention) and generated an INSERT
+    // with nonexistent columns (observed 2026-07-11).
+    {
+        g_context = "index-table-name";
+        NSString *real = @"metadb_index_C653739F_14B3_4EF2_819B_A3E2883230AE";
+        CHECK([PlorgVolumeSyncLogic isValidMetadbIndexTableName:real], "real fb2k index table valid");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:@"metadb_indexes"],
+              "metadb_indexes metadata table rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:
+              [real stringByAppendingString:@"_data"]], "_data blob sibling rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:@"metadb"], "main table rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:@"metadb_index_abc"],
+              "non-GUID suffix rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:
+              @"metadb_index_C653739F_14B3_4EF2_819B_A3E2883230AG"], "non-hex GUID rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:nil], "nil rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:@""], "empty rejected");
+        CHECK(![PlorgVolumeSyncLogic isValidMetadbIndexTableName:
+              @"metadb_index_C653739F\"; DROP TABLE metadb;--"], "injection payload rejected");
+    }
+
     // --- metadbMigrationSQL ---
     {
         g_context = "migration-sql";
+        NSString *idxTable = @"metadb_index_C653739F_14B3_4EF2_819B_A3E2883230AE";
         NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{ kDead: kLive }
-                                                               indexTables:@[@"metadb_index_abc"]];
+                                                               indexTables:@[idxTable]];
         CHECK([sql hasPrefix:@"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\n"], "transaction preamble");
         CHECK([sql hasSuffix:@"COMMIT;\n"], "commit suffix");
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kDead, kLive]]),
             "metadb REPLACE clause");
         CHECK([sql containsString:@"INSERT OR IGNORE INTO metadb "], "metadb insert");
-        CHECK([sql containsString:@"INSERT OR IGNORE INTO \"metadb_index_abc\" (key, filename)"],
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:@"INSERT OR IGNORE INTO \"%@\" (key, filename)", idxTable]]),
               "index table insert");
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
             "LIKE pattern scoped to dead UUID");
 
+        // Move semantics: dead-UUID source rows are deleted in the same
+        // transaction, so copies do not accumulate across remount generations.
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
+            "metadb source rows deleted after copy");
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:@"DELETE FROM \"%@\" WHERE filename LIKE '%%mac-volume://%@/%%'",
+                idxTable, kDead]]),
+            "index table source rows deleted after copy");
+        NSRange insertPos = [sql rangeOfString:@"INSERT OR IGNORE INTO metadb "];
+        NSRange deletePos = [sql rangeOfString:@"DELETE FROM metadb "];
+        CHECK(insertPos.location != NSNotFound && deletePos.location != NSNotFound &&
+              insertPos.location < deletePos.location, "copy precedes delete");
+
+        // Tables failing the shape validator must never be written to.
+        NSString *guarded = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{ kDead: kLive }
+            indexTables:@[@"metadb_indexes", [idxTable stringByAppendingString:@"_data"], idxTable]];
+        CHECK(![guarded containsString:@"\"metadb_indexes\""], "metadb_indexes never written");
+        CHECK(![guarded containsString:@"_data\""], "_data sibling never written");
+        CHECK(([guarded containsString:
+            [NSString stringWithFormat:@"INSERT OR IGNORE INTO \"%@\" (key, filename)", idxTable]]),
+              "valid table still migrated alongside rejected ones");
+
         NSString *emptySql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{} indexTables:@[]];
         CHECK_EQ(emptySql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
                  "no actions -> empty transaction");
+    }
+
+    // --- selfHealCandidates ---
+    // The remediation gap (investigation item 5): every registry bookmark is
+    // dead but the stale UUID's originalPath IS mounted and readable. The
+    // candidate list drives the mint attempt (feeding one real file through
+    // fb2k's location machinery so the core registers the volume).
+    {
+        g_context = "self-heal-candidates";
+        NSString *stale = @"CFA535CA-9B1A-B84E-33C6-30D0FABC1BA7";
+        NSDictionary *deadRegistry = @{
+            stale:  @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+            kDead:  @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+            kOther: @{ @"originalPath": @"/Volumes/other", @"isLive": @NO },
+        };
+        NSDictionary *idx = @{
+            stale:  @{ @"count": @9, @"samplePath": @"Album/track.flac" },
+            kDead:  @{ @"count": @1, @"samplePath": @"b.flac" },
+            kOther: @{ @"count": @1, @"samplePath": @"c.flac" },
+        };
+        BOOL (^musicMounted)(NSString *) = ^BOOL(NSString *p) {
+            return [p isEqualToString:@"/Volumes/music"];
+        };
+
+        // Mounted path + existing sample file -> exactly one candidate per path
+        NSArray *cands = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[stale, kDead, kOther]
+            registry:deadRegistry fpliteIndex:idx
+            isMounted:musicMounted
+            fileExists:^BOOL(NSString *p) { return YES; }];
+        CHECK(cands.count == 1, "one candidate per distinct mounted path");
+        CHECK_EQ(cands.firstObject[@"path"], @"/Volumes/music", "candidate path is the mounted path");
+        CHECK_EQ(cands.firstObject[@"file"], @"/Volumes/music/Album/track.flac",
+                 "candidate file = mounted path + samplePath");
+
+        // Not mounted -> no candidate
+        NSArray *none = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[stale]
+            registry:deadRegistry fpliteIndex:idx
+            isMounted:^BOOL(NSString *p) { return NO; }
+            fileExists:^BOOL(NSString *p) { return YES; }];
+        CHECK(none.count == 0, "unmounted path yields no candidate");
+
+        // Mounted but sample file missing -> skipped; next UUID for the same
+        // path can still supply a candidate
+        NSArray *fallback = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[stale, kDead]
+            registry:deadRegistry fpliteIndex:idx
+            isMounted:musicMounted
+            fileExists:^BOOL(NSString *p) {
+                return [p isEqualToString:@"/Volumes/music/b.flac"];
+            }];
+        CHECK(fallback.count == 1, "second UUID supplies candidate when first sample is gone");
+        CHECK_EQ(fallback.firstObject[@"file"], @"/Volumes/music/b.flac",
+                 "verifiable sample file chosen");
+
+        // No sample path in the index (UUID not from .fplite) -> no candidate
+        NSArray *noSample = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[stale]
+            registry:deadRegistry fpliteIndex:@{}
+            isMounted:musicMounted
+            fileExists:^BOOL(NSString *p) { return YES; }];
+        CHECK(noSample.count == 0, "no samplePath -> no candidate");
+
+        // UUID without a registry originalPath -> no candidate
+        NSArray *noPath = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[kLive]
+            registry:@{} fpliteIndex:@{ kLive: @{ @"count": @1, @"samplePath": @"a.flac" } }
+            isMounted:^BOOL(NSString *p) { return YES; }
+            fileExists:^BOOL(NSString *p) { return YES; }];
+        CHECK(noPath.count == 0, "no registry originalPath -> no candidate");
+
+        // Two distinct mounted paths -> one candidate each, sorted by path
+        NSDictionary *twoReg = @{
+            stale:  @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+            kOther: @{ @"originalPath": @"/Volumes/other", @"isLive": @NO },
+        };
+        NSArray *two = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:@[kOther, stale]
+            registry:twoReg fpliteIndex:idx
+            isMounted:^BOOL(NSString *p) { return YES; }
+            fileExists:^BOOL(NSString *p) { return YES; }];
+        CHECK(two.count == 2, "one candidate per mounted path");
+        CHECK_EQ(two[0][@"path"], @"/Volumes/music", "sorted by path (1st)");
+        CHECK_EQ(two[1][@"path"], @"/Volumes/other", "sorted by path (2nd)");
     }
 
     }

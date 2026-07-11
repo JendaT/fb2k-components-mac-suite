@@ -1,6 +1,8 @@
 # Proposal: self-heal stale volume UUIDs when the share is mounted
 
-Status: **proposal, not implemented.** Design for review before building.
+Status: **IMPLEMENTED 2026-07-11** (1.5.0 unreleased) — see the implementation
+notes at the end. Field verification of step 2's load-bearing assumption is
+still pending.
 Date: 2026-07-11. Context: `docs/VOLUME_UUID_ISSUE.md`, investigation of the
 2026-07-11 `CFA535CA-…` playback failure.
 
@@ -137,3 +139,37 @@ unregistered volume via `process_locations_async` and inspect whether a new
 `mac.volume.<UUID>.bookmark` row appears in `config.sqlite`. The result decides
 between the "automatic mint" path and the "one-click prompt" fallback. Everything
 else is straightforward reuse of existing machinery.
+
+## Implementation notes (2026-07-11, 1.5.0 unreleased)
+
+Implemented as a **spike-in-place** instead of a separate scratch-build spike:
+the automatic mint attempt ships with full instrumentation, and the one-click
+prompt is wired as the runtime fallback, so the first real remount cycle
+answers the open question in the field.
+
+- **Pure logic** (`PlorgVolumeSyncLogic`, unit-tested):
+  `selfHealCandidatesForUnresolvedUUIDs:registry:fpliteIndex:isMounted:fileExists:`
+  emits one `{path, file}` candidate per distinct mounted registry path, where
+  `file` = mounted path + the stale UUID's `.fplite` samplePath, verified to
+  exist via the injected probe.
+- **Flow** (`VolumeSyncService`): the mounted-but-unregistered branch of
+  `performRepairInDirectory:` computes candidates and schedules
+  `attemptSelfHealForCandidates:` (2 s deferral past on_init). Files go
+  through `process_locations_async` (`op_flag_no_filter | op_flag_delay_ui`)
+  with a notify that never inserts the resolved items anywhere. On completion,
+  the registry is re-read (with up to 3 retries, 5 s apart, to absorb lazy
+  config writes); a live UUID appearing for the healed path re-runs the whole
+  repair, which then remaps `.fplite` files and schedules the metadb migrator
+  as usual.
+- **Fallback**: if no bookmark appears, a "Register volume with foobar2000?"
+  alert (gated by `kAutoRestartAfterVolumeSync`, like the restart prompt)
+  offers "Choose File…" → `NSOpenPanel` pre-pointed at the mounted path → the
+  chosen file is fed through the same machinery as a user-initiated action.
+  Console instructions are the last resort.
+- **Guards**: once per mounted path per app session; preference
+  `kVolumeSelfHeal` ("Self-register mounted volumes that have no working
+  bookmark", default on); `config.sqlite` remains strictly read-only for plorg.
+- **Still to verify in the field**: whether component-driven resolution makes
+  the core persist the bookmark (step 2's open question). The console log
+  answers it explicitly: "Self-heal succeeded: foobar2000 minted a live
+  bookmark…" vs "resolving a file did not make foobar2000 persist a bookmark…".

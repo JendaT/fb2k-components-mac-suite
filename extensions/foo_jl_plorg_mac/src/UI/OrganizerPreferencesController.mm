@@ -21,6 +21,7 @@
 @property (nonatomic, strong) NSButton *checkCorruptedNowButton;
 @property (nonatomic, strong) NSButton *autoVolumeSyncCheckbox;
 @property (nonatomic, strong) NSButton *autoRestartAfterSyncCheckbox;
+@property (nonatomic, strong) NSButton *volumeSelfHealCheckbox;
 @end
 
 @implementation OrganizerPreferencesController
@@ -170,6 +171,11 @@
                                                              action:@selector(settingsChanged:)];
     addIndentedRow(self.autoRestartAfterSyncCheckbox, rowHeight);
 
+    self.volumeSelfHealCheckbox = [NSButton checkboxWithTitle:@"Self-register mounted volumes that have no working bookmark"
+                                                       target:self
+                                                       action:@selector(settingsChanged:)];
+    addIndentedRow(self.volumeSelfHealCheckbox, rowHeight);
+
     NSTextField *volumeSyncHint = [NSTextField labelWithString:@"Fixes playlists when SMB shares remount with a new UUID"];
     volumeSyncHint.font = [NSFont systemFontOfSize:10];
     volumeSyncHint.textColor = [NSColor tertiaryLabelColor];
@@ -220,6 +226,7 @@
     BOOL checkCorruptedOnStartup = plorg_config::getConfigBool(plorg_config::kCheckCorruptedOnStartup, plorg_config::kDefaultCheckCorruptedOnStartup);
     BOOL autoVolumeSync = plorg_config::getConfigBool(plorg_config::kAutoVolumeSync, plorg_config::kDefaultAutoVolumeSync);
     BOOL autoRestartAfterSync = plorg_config::getConfigBool(plorg_config::kAutoRestartAfterVolumeSync, plorg_config::kDefaultAutoRestartAfterVolumeSync);
+    BOOL volumeSelfHeal = plorg_config::getConfigBool(plorg_config::kVolumeSelfHeal, plorg_config::kDefaultVolumeSelfHeal);
     NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, "%node_name%");
 
     self.singleClickActivateCheckbox.state = singleClick ? NSControlStateValueOn : NSControlStateValueOff;
@@ -232,6 +239,7 @@
     self.checkCorruptedOnStartupCheckbox.state = checkCorruptedOnStartup ? NSControlStateValueOn : NSControlStateValueOff;
     self.autoVolumeSyncCheckbox.state = autoVolumeSync ? NSControlStateValueOn : NSControlStateValueOff;
     self.autoRestartAfterSyncCheckbox.state = autoRestartAfterSync ? NSControlStateValueOn : NSControlStateValueOff;
+    self.volumeSelfHealCheckbox.state = volumeSelfHeal ? NSControlStateValueOn : NSControlStateValueOff;
     self.nodeFormatField.stringValue = format ?: @"%node_name%";
 }
 
@@ -254,6 +262,8 @@
                                 self.autoVolumeSyncCheckbox.state == NSControlStateValueOn);
     plorg_config::setConfigBool(plorg_config::kAutoRestartAfterVolumeSync,
                                 self.autoRestartAfterSyncCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kVolumeSelfHeal,
+                                self.volumeSelfHealCheckbox.state == NSControlStateValueOn);
 
     NSString *format = self.nodeFormatField.stringValue;
     if (format.length > 0) {
@@ -279,6 +289,7 @@
     self.checkCorruptedOnStartupCheckbox.state = NSControlStateValueOff;
     self.autoVolumeSyncCheckbox.state = NSControlStateValueOn;
     self.autoRestartAfterSyncCheckbox.state = NSControlStateValueOff;
+    self.volumeSelfHealCheckbox.state = NSControlStateValueOn;
     self.nodeFormatField.stringValue = @"%node_name%";
     [self saveSettings];
 

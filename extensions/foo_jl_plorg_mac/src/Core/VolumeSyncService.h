@@ -91,6 +91,17 @@ extern NSInteger const kVolumeSyncMaxBackups;
 - (void)startVolumeMonitor;
 - (void)stopVolumeMonitor;
 
+// --- Self-Heal (mint a fresh fb2k bookmark for a mounted volume) ---
+
+// When every registry bookmark for a mounted volume is dead, foobar2000 has
+// no live UUID to remap stale playlists onto. Feeding one real file from the
+// volume through the core's location machinery makes it register the volume
+// and store a fresh bookmark; the normal repair pass then takes over.
+// Attempted at most once per mounted path per app session. Preference:
+// kVolumeSelfHeal (default on). Falls back to a one-click registration
+// prompt (gated by kAutoRestartAfterVolumeSync) if the core does not mint.
+- (void)attemptSelfHealForCandidates:(NSArray<NSDictionary<NSString *, NSString *> *> *)candidates;
+
 // --- Restart Prompt ---
 
 // If the repair result indicates files were patched and the

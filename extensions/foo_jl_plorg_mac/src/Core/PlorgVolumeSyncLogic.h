@@ -34,6 +34,14 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 // UUIDs always have this shape; anything else is malformed or hostile input.
 + (BOOL)isValidVolumeUUID:(nullable NSString *)uuid;
 
+// Strict metadb index-table grammar: "metadb_index_" + 8_4_4_4_12 hex groups
+// separated by '_' (fb2k stores the component GUID with '-' replaced by '_').
+// Rejects the "metadb_indexes" metadata table (which a naive
+// LIKE 'metadb_index_%' matches, because SQL '_' is a single-char wildcard)
+// and the "*_data" blob siblings. Only tables passing this have the
+// (key, filename) shape the migration SQL writes to.
++ (BOOL)isValidMetadbIndexTableName:(nullable NSString *)name;
+
 // --- Mount / config-key parsing ---
 
 // Extract share name from statfs f_mntfromname:
@@ -102,6 +110,19 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
                                                        registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
                                                       isMounted:(BOOL (^)(NSString *path))isMounted;
 
+// Self-heal candidates: for each unresolved stale UUID whose registry
+// originalPath IS currently mounted, pick one real file (mounted path +
+// the UUID's .fplite samplePath, verified via the injected probe) that the
+// caller can feed through foobar2000's location-processing machinery so the
+// core mints a fresh volume bookmark. Returns at most one candidate per
+// distinct mounted path, sorted by path:
+//   @{ @"path": mountedPath, @"file": absoluteSampleFilePath }
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)selfHealCandidatesForUnresolvedUUIDs:(NSArray<NSString *> *)unresolvedUUIDs
+                                                                                 registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                                                              fpliteIndex:(NSDictionary<NSString *, NSDictionary *> *)fpliteIndex
+                                                                                isMounted:(BOOL (^)(NSString *path))isMounted
+                                                                               fileExists:(BOOL (^)(NSString *path))fileExists;
+
 // Decide which dead UUIDs' metadb cache rows to migrate to a live UUID for
 // the same originalPath. rowCounts: UUID -> cached row count in metadb.
 // Only migrates when the dead UUID has more rows than the live target.
@@ -112,8 +133,12 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 
 // --- Metadb migration SQL ---
 
-// Build the SQL script that copies cached rows from each dead UUID to its
-// live target across the main metadb table and all metadb_index_* tables.
+// Build the SQL script that moves cached rows from each dead UUID to its
+// live target across the main metadb table and all metadb_index_* tables:
+// copy under the rewritten name (INSERT OR IGNORE; both tables have a unique
+// primary key on the name/filename column), then DELETE the source rows in
+// the same transaction so dead-UUID copies do not accumulate across remounts.
+// Index tables not passing isValidMetadbIndexTableName: are skipped.
 + (NSString *)metadbMigrationSQLForRemapActions:(NSDictionary<NSString *, NSString *> *)remapActions
                                     indexTables:(NSArray<NSString *> *)indexTables;
 

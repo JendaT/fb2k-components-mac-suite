@@ -259,7 +259,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Startup hook (`initquit::on_init`) plus runtime `/Volumes` VNODE monitor for mid-session mount changes
 - Atomic `.fplite` rewrite with UTF-8 BOM preservation and timestamped backups (5 retained)
 - Opt-in auto-restart prompt with detached shell helper for clean relaunch
-- Background metadb cache migration: copies cached metadata rows from dead UUIDs into live ones across `metadb` and `metadb_index_*` tables; also scans for orphan caches on each startup
+- Background metadb cache migration: moves cached metadata rows from dead UUIDs into live ones across `metadb` and `metadb_index_*` tables (transactional, backup before writing, waits for exclusive DB access); also scans for orphan caches on each startup
+- **Volume self-heal**: when a volume is mounted but foobar2000 has no working bookmark for it, plorg resolves one real file through the core so it mints a fresh bookmark, then remaps stale playlists automatically; one-click registration prompt as fallback (preference, default on)
+- `Scripts/metadb_cleanup.sh`: offline tool to delete dead-UUID metadata copies and VACUUM the metadb (backup + integrity check; refuses to run while foobar2000 is running)
 - Documentation: `docs/research/volume-uuid-instability-deep-research.md`
 
 #### Changed
@@ -270,6 +272,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Volume sync outcome log reports the real result (stale-but-unrepairable vs genuinely all-live) and detects "mounted but unregistered in foobar2000" instead of advising to mount an already-mounted volume
 - `/Volumes` monitor coalesces event bursts into a single repair (previously up to 4 redundant registry scans per mount event storm)
 - Strict volume-UUID validation and SQL escaping in the metadb migration builder
+- Migrator index-table discovery no longer matches the `metadb_indexes` metadata table (SQL `LIKE` `_` wildcard bug); GLOB + strict shape validation
+- Restart no longer races the metadb migration: relauncher waits for the migration to finish before reopening foobar2000 (was: "database is locked" + interrupted migration)
 
 ### [1.4.0] - 2026-02-14
 

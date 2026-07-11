@@ -31,6 +31,7 @@ static const char* const kPathEncodedNames = "path_encoded_names";     // Encode
 static const char* const kCheckCorruptedOnStartup = "check_corrupted_on_startup"; // Check for corrupted playlists on startup
 static const char* const kAutoVolumeSync = "auto_volume_sync";                   // Auto-repair volume UUIDs on startup (network drives)
 static const char* const kAutoRestartAfterVolumeSync = "auto_restart_after_volume_sync"; // Prompt for restart after a UUID repair (opt-in)
+static const char* const kVolumeSelfHeal = "volume_self_heal";                   // Self-register mounted volumes that have no working bookmark
 
 // Default values
 static const char* const kDefaultNodeFormat = "%node_name%$if(%is_folder%,' ['%count%']',)";
@@ -44,6 +45,7 @@ static const bool kDefaultPathEncodedNames = false;
 static const bool kDefaultCheckCorruptedOnStartup = false;
 static const bool kDefaultAutoVolumeSync = true;
 static const bool kDefaultAutoRestartAfterVolumeSync = false;
+static const bool kDefaultVolumeSelfHeal = true;
 
 // Integer config
 inline int64_t getConfigInt(const char* key, int64_t defaultVal) {

@@ -30,6 +30,28 @@ NSString * const PlorgMacVolumePrefix = @"mac-volume://";
     return YES;
 }
 
++ (BOOL)isValidMetadbIndexTableName:(NSString *)name {
+    static NSString * const prefix = @"metadb_index_";
+    if (![name hasPrefix:prefix]) return NO;
+
+    // GUID with '-' replaced by '_': 8_4_4_4_12 hex groups.
+    static const NSUInteger groupLengths[] = {8, 4, 4, 4, 12};
+    static const NSUInteger groupCount = sizeof(groupLengths) / sizeof(groupLengths[0]);
+
+    NSString *guidPart = [name substringFromIndex:prefix.length];
+    NSArray<NSString *> *groups = [guidPart componentsSeparatedByString:@"_"];
+    if (groups.count != groupCount) return NO;
+
+    NSCharacterSet *nonHex = [[NSCharacterSet characterSetWithCharactersInString:
+        @"0123456789abcdefABCDEF"] invertedSet];
+
+    for (NSUInteger i = 0; i < groupCount; i++) {
+        if (groups[i].length != groupLengths[i]) return NO;
+        if ([groups[i] rangeOfCharacterFromSet:nonHex].location != NSNotFound) return NO;
+    }
+    return YES;
+}
+
 // Double single quotes so a value cannot terminate a SQL string literal.
 static NSString *sqlQuote(NSString *value) {
     return [value stringByReplacingOccurrencesOfString:@"'" withString:@"''"];
@@ -314,6 +336,37 @@ static NSString *sqlIdentifier(NSString *value) {
     return [mounted.allObjects sortedArrayUsingSelector:@selector(compare:)];
 }
 
++ (NSArray<NSDictionary<NSString *, NSString *> *> *)selfHealCandidatesForUnresolvedUUIDs:(NSArray<NSString *> *)unresolvedUUIDs
+                                                                                 registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                                                              fpliteIndex:(NSDictionary<NSString *, NSDictionary *> *)fpliteIndex
+                                                                                isMounted:(BOOL (^)(NSString *))isMounted
+                                                                               fileExists:(BOOL (^)(NSString *))fileExists {
+    // path -> candidate; first UUID with a verifiable sample file wins per path.
+    NSMutableDictionary<NSString *, NSDictionary *> *byPath = [NSMutableDictionary dictionary];
+
+    for (NSString *uuid in unresolvedUUIDs) {
+        NSString *originalPath = foobarVolumes[uuid][@"originalPath"];
+        if (originalPath.length == 0) continue;
+        if (byPath[originalPath]) continue;          // already have a candidate
+        if (!isMounted(originalPath)) continue;
+
+        NSString *samplePath = fpliteIndex[uuid][@"samplePath"];
+        if (samplePath.length == 0) continue;
+
+        NSString *fullFile = [originalPath stringByAppendingPathComponent:samplePath];
+        if (!fileExists(fullFile)) continue;         // volume mounted but file gone
+
+        byPath[originalPath] = @{ @"path": originalPath, @"file": fullFile };
+    }
+
+    NSArray *sortedPaths = [byPath.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:sortedPaths.count];
+    for (NSString *path in sortedPaths) {
+        [result addObject:byPath[path]];
+    }
+    return result;
+}
+
 + (NSDictionary<NSString *, NSString *> *)orphanCacheMigrationsWithRowCounts:(NSDictionary<NSString *, NSNumber *> *)rowCounts
                                                                     registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
                                                              liveUUIDsByPath:(NSDictionary<NSString *, NSArray<NSString *> *> *)liveUUIDsByPath
@@ -355,6 +408,15 @@ static NSString *sqlIdentifier(NSString *value) {
     NSMutableString *sql = [NSMutableString string];
     [sql appendString:@"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\n"];
 
+    // Only tables with the known (key, filename) shape may be written to.
+    // Guards against SQL-wildcard discovery accidents (e.g. LIKE
+    // 'metadb_index_%' matching the metadb_indexes metadata table, whose
+    // columns are (name, synced, retention) - observed 2026-07-11).
+    NSMutableArray<NSString *> *safeTables = [NSMutableArray array];
+    for (NSString *table in indexTables) {
+        if ([self isValidMetadbIndexTableName:table]) [safeTables addObject:table];
+    }
+
     for (NSString *deadUUID in remapActions) {
         NSString *liveUUID = remapActions[deadUUID];
 
@@ -367,21 +429,31 @@ static NSString *sqlIdentifier(NSString *value) {
         NSString *toTok = sqlQuote([NSString stringWithFormat:@"mac-volume://%@", liveUUID]);
         NSString *likePattern = sqlQuote([NSString stringWithFormat:@"%%mac-volume://%@/%%", deadUUID]);
 
-        // Main metadb rows: copy under a new name with the UUID rewritten.
+        // Main metadb rows: copy under a new name with the UUID rewritten,
+        // then delete the dead-UUID sources. metadb.name is a unique primary
+        // key, so OR IGNORE preserves rows foobar already cached for the live
+        // UUID; deleting the sources keeps one metadata copy per file instead
+        // of accumulating one per remount generation (observed: 4 full
+        // library copies, 8.7 GB).
         [sql appendFormat:
             @"INSERT OR IGNORE INTO metadb "
             @"(name, info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial) "
             @"SELECT REPLACE(name, '%@', '%@'), info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial "
             @"FROM metadb WHERE name LIKE '%@';\n",
             fromTok, toTok, likePattern];
+        [sql appendFormat:@"DELETE FROM metadb WHERE name LIKE '%@';\n", likePattern];
 
-        // Library / component index tables (key INTEGER, filename TEXT).
-        for (NSString *table in indexTables) {
+        // Library / component index tables (key INTEGER, filename TEXT UNIQUE
+        // PRIMARY KEY). The *_data blob siblings are keyed by `key`, which the
+        // copy preserves, so they need no migration and no cleanup here.
+        for (NSString *table in safeTables) {
             [sql appendFormat:
                 @"INSERT OR IGNORE INTO \"%@\" (key, filename) "
                 @"SELECT key, REPLACE(filename, '%@', '%@') "
                 @"FROM \"%@\" WHERE filename LIKE '%@';\n",
                 sqlIdentifier(table), fromTok, toTok, sqlIdentifier(table), likePattern];
+            [sql appendFormat:@"DELETE FROM \"%@\" WHERE filename LIKE '%@';\n",
+                sqlIdentifier(table), likePattern];
         }
     }
     [sql appendString:@"COMMIT;\n"];

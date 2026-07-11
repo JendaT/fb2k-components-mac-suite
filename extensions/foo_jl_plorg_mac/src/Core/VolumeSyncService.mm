@@ -16,15 +16,60 @@
 #import <unistd.h>
 #import <sqlite3.h>
 
+#include <string>
+#include <vector>
+
 NSString * const kVolumeSyncBackupPrefix = @"backup_volume_sync_";
 NSInteger const kVolumeSyncMaxBackups = 5;
+
+// Staged migration SQL for a given fb2k pid. Shared knowledge between the
+// migrator (creates it, deletes it when done) and the relauncher (waits for
+// it to disappear before reopening foobar2000, so the migration never runs
+// concurrently with a fresh fb2k session holding metadb write locks).
+static NSString *stagedMigrationSQLPathForPID(pid_t pid) {
+    return [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.sql", pid];
+}
 
 @interface VolumeSyncService ()
 @property (nonatomic, strong, readwrite) NSMutableArray<NSString *> *deferredLogMessages;
 @property (nonatomic, strong) dispatch_source_t volumeMonitorSource;
 @property (nonatomic, strong) NSString *playlistsDir; // cached for runtime monitor
 @property (nonatomic, copy) dispatch_block_t pendingVolumeCheck; // coalesces monitor bursts
+@property (nonatomic, strong) NSMutableSet<NSString *> *selfHealAttemptedPaths; // once per path per session
+
+- (void)selfHealResolutionCompletedForPaths:(NSArray<NSString *> *)paths
+                              resolvedCount:(NSUInteger)resolvedCount
+                                    isFinal:(BOOL)isFinal;
 @end
+
+namespace {
+
+// Receives the result of the self-heal location resolution. Resolving a real
+// file on a mounted-but-unregistered volume is what makes the fb2k core
+// register the volume and persist a fresh security-scoped bookmark; we never
+// insert the resolved items anywhere.
+class PlorgSelfHealNotify : public process_locations_notify {
+public:
+    std::vector<std::string> m_mountPaths; // volume mount points being healed
+    std::vector<std::string> m_files;      // stable storage for the fed paths
+    bool m_isFinal = false;                // user-driven fallback attempt?
+
+    void on_completion(metadb_handle_list_cref items) override {
+        NSMutableArray<NSString *> *paths = [NSMutableArray array];
+        for (const auto &p : m_mountPaths) {
+            [paths addObject:[NSString stringWithUTF8String:p.c_str()]];
+        }
+        [[VolumeSyncService shared] selfHealResolutionCompletedForPaths:paths
+                                                          resolvedCount:items.get_count()
+                                                                isFinal:m_isFinal];
+    }
+
+    void on_aborted() override {
+        FB2K_console_formatter() << "[Plorg VolumeSync] Self-heal: location resolution aborted";
+    }
+};
+
+} // anonymous namespace
 
 @implementation VolumeSyncService
 
@@ -41,6 +86,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     self = [super init];
     if (self) {
         _deferredLogMessages = [NSMutableArray array];
+        _selfHealAttemptedPaths = [NSMutableSet set];
     }
     return self;
 }
@@ -336,10 +382,22 @@ NSInteger const kVolumeSyncMaxBackups = 5;
                 [self deferLog:[NSString stringWithFormat:
                     @"[Plorg VolumeSync] %lu stale .fplite UUID(s); %@ IS mounted but "
                     @"foobar2000 has no working bookmark for this mount session (no registry "
-                    @"entry resolves). Nothing to remap onto. To register it, play or add any "
-                    @"file from that volume in foobar2000, then rescan.",
+                    @"entry resolves). Nothing to remap onto.",
                     (unsigned long)unresolved.count,
                     [mountedPaths componentsJoinedByString:@", "]]];
+
+                // Self-heal: make the core mint a fresh bookmark by resolving
+                // one real file from the mounted volume, then re-run repair.
+                NSArray *candidates = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:unresolved
+                    registry:foobarVolumes
+                    fpliteIndex:fpliteIndex
+                    isMounted:^BOOL(NSString *path) {
+                        return [self isCurrentlyMountedPath:path];
+                    }
+                    fileExists:^BOOL(NSString *path) {
+                        return [[NSFileManager defaultManager] fileExistsAtPath:path];
+                    }];
+                [self scheduleSelfHealForCandidates:candidates];
             } else {
                 [self deferLog:[NSString stringWithFormat:
                     @"[Plorg VolumeSync] %lu .fplite UUID(s) are stale with no live replacement "
@@ -791,6 +849,207 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     [self maybePromptForRestartAfterRepair:result];
 }
 
+#pragma mark - Self-Heal
+
+// Filter candidates against the once-per-session guard and the preference,
+// then schedule the mint attempt. Called from within performRepairInDirectory:
+// (which may run during on_init), so the actual SDK call is deferred to give
+// the core time to finish starting up.
+- (void)scheduleSelfHealForCandidates:(NSArray<NSDictionary *> *)candidates {
+    if (candidates.count == 0) {
+        [self deferLog:@"[Plorg VolumeSync] Self-heal: no readable sample file found on the "
+            @"mounted volume. To register it, play or add any file from that volume in "
+            @"foobar2000, then rescan."];
+        return;
+    }
+
+    if (!plorg_config::getConfigBool(plorg_config::kVolumeSelfHeal,
+                                     plorg_config::kDefaultVolumeSelfHeal)) {
+        [self deferLog:@"[Plorg VolumeSync] Self-heal disabled in preferences. To register the "
+            @"volume, play or add any file from it in foobar2000, then rescan."];
+        return;
+    }
+
+    NSMutableArray<NSDictionary *> *fresh = [NSMutableArray array];
+    for (NSDictionary *c in candidates) {
+        if ([self.selfHealAttemptedPaths containsObject:c[@"path"]]) continue;
+        [self.selfHealAttemptedPaths addObject:c[@"path"]];
+        [fresh addObject:c];
+    }
+    if (fresh.count == 0) return; // already attempted this session
+
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSDictionary *c in fresh) [paths addObject:c[@"path"]];
+    [self deferLog:[NSString stringWithFormat:
+        @"[Plorg VolumeSync] Self-heal: asking foobar2000 to register %@ by resolving a "
+        @"file from the volume...",
+        [paths componentsJoinedByString:@", "]]];
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+        dispatch_get_main_queue(), ^{
+        [weakSelf attemptSelfHealForCandidates:fresh];
+    });
+}
+
+- (void)attemptSelfHealForCandidates:(NSArray<NSDictionary<NSString *, NSString *> *> *)candidates {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSMutableArray<NSString *> *files = [NSMutableArray array];
+    for (NSDictionary *c in candidates) {
+        NSString *path = c[@"path"];
+        NSString *file = c[@"file"];
+        if (path.length == 0 || file.length == 0) continue;
+        [paths addObject:path];
+        [files addObject:file];
+    }
+    if (files.count == 0) return;
+    [self mintBookmarkForFiles:files mountPaths:paths isFinal:NO];
+}
+
+// Feed real file paths through the core's location machinery. Bookmark
+// creation goes through foobar2000 itself, which owns config.sqlite; plorg
+// stays read-only on that database (hard rule).
+- (void)mintBookmarkForFiles:(NSArray<NSString *> *)files
+                  mountPaths:(NSArray<NSString *> *)mountPaths
+                     isFinal:(BOOL)isFinal {
+    auto notify = fb2k::service_new<PlorgSelfHealNotify>();
+    notify->m_isFinal = isFinal;
+    for (NSString *p in mountPaths) notify->m_mountPaths.push_back(p.UTF8String);
+    for (NSString *f in files) notify->m_files.push_back(f.UTF8String);
+
+    pfc::list_t<const char *> filePtrs;
+    for (const auto &f : notify->m_files) filePtrs.add_item(f.c_str());
+
+    playlist_incoming_item_filter_v2::get()->process_locations_async(
+        filePtrs,
+        playlist_incoming_item_filter_v2::op_flag_no_filter |
+        playlist_incoming_item_filter_v2::op_flag_delay_ui,
+        nullptr, nullptr, nullptr,
+        notify);
+}
+
+- (void)selfHealResolutionCompletedForPaths:(NSArray<NSString *> *)paths
+                              resolvedCount:(NSUInteger)resolvedCount
+                                    isFinal:(BOOL)isFinal {
+    FB2K_console_formatter() << "[Plorg VolumeSync] Self-heal: resolved "
+        << (unsigned)resolvedCount << " item(s); verifying foobar's volume registry...";
+
+    // The core may persist the new volume bookmark to config.sqlite with a
+    // small lag after resolution; verify with retries before concluding.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+        dispatch_get_main_queue(), ^{
+        [weakSelf verifySelfHealForPaths:paths remainingRetries:3 isFinal:isFinal];
+    });
+}
+
+- (void)verifySelfHealForPaths:(NSArray<NSString *> *)paths
+              remainingRetries:(NSInteger)retries
+                       isFinal:(BOOL)isFinal {
+    NSDictionary *registry = [self readFoobarVolumeRegistry];
+    NSDictionary *liveByPath = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:registry];
+
+    NSMutableArray<NSString *> *healed = [NSMutableArray array];
+    NSMutableArray<NSString *> *pending = [NSMutableArray array];
+    for (NSString *path in paths) {
+        if ([liveByPath[path] count] > 0) [healed addObject:path];
+        else [pending addObject:path];
+    }
+
+    if (pending.count > 0 && retries > 0) {
+        [self flushDeferredLogsToConsole];
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+            dispatch_get_main_queue(), ^{
+            [weakSelf verifySelfHealForPaths:paths remainingRetries:retries - 1 isFinal:isFinal];
+        });
+        return;
+    }
+
+    if (healed.count > 0) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Self-heal succeeded: foobar2000 minted a live bookmark for "
+            @"%@. Re-running repair to remap stale playlists.",
+            [healed componentsJoinedByString:@", "]]];
+        NSDictionary *result = [self performRepairInDirectory:self.playlistsDir];
+        [self flushDeferredLogsToConsole];
+        [self maybePromptForRestartAfterRepair:result];
+    }
+
+    if (pending.count > 0) {
+        if (isFinal) {
+            [self deferLog:[NSString stringWithFormat:
+                @"[Plorg VolumeSync] Self-heal: foobar2000 did not register %@ even after "
+                @"resolving a file from it. Play or add any file from that volume in "
+                @"foobar2000 (e.g. drag it into a playlist), then rescan.",
+                [pending componentsJoinedByString:@", "]]];
+        } else {
+            [self deferLog:[NSString stringWithFormat:
+                @"[Plorg VolumeSync] Self-heal: resolving a file did not make foobar2000 "
+                @"persist a bookmark for %@. Falling back to manual registration.",
+                [pending componentsJoinedByString:@", "]]];
+            [self promptToRegisterMountedPaths:pending];
+        }
+    }
+
+    [self flushDeferredLogsToConsole];
+}
+
+// One-click fallback: the volume is mounted and readable, foobar2000 just has
+// no working bookmark for it. A user-initiated file choice fed through the
+// core is the reliable way to make it register the volume. Gated by the same
+// opt-in preference as the restart prompt; when off, log instructions only.
+- (void)promptToRegisterMountedPaths:(NSArray<NSString *> *)paths {
+    if (paths.count == 0) return;
+
+    BOOL autoPrompt = plorg_config::getConfigBool(
+        plorg_config::kAutoRestartAfterVolumeSync,
+        plorg_config::kDefaultAutoRestartAfterVolumeSync);
+    if (!autoPrompt) {
+        FB2K_console_formatter() << "[Plorg VolumeSync] To register the volume with "
+            "foobar2000, play or add any file from it (e.g. drag it into a playlist), "
+            "then rescan.";
+        return;
+    }
+
+    NSString *joined = [paths componentsJoinedByString:@", "];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"Register volume with foobar2000?";
+        alert.informativeText = [NSString stringWithFormat:
+            @"Playlists reference %@, which is mounted but not registered with "
+            @"foobar2000 in this session (no working bookmark).\n\n"
+            @"Choose any audio file from the volume to register it; stale playlists "
+            @"will then be repaired automatically.", joined];
+        [alert addButtonWithTitle:@"Choose File..."];
+        [alert addButtonWithTitle:@"Later"];
+        alert.alertStyle = NSAlertStyleInformational;
+
+        if ([alert runModal] != NSAlertFirstButtonReturn) {
+            FB2K_console_formatter() << "[Plorg VolumeSync] Registration deferred. Play or "
+                "add any file from the volume in foobar2000 to register it, then rescan.";
+            return;
+        }
+
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.canChooseFiles = YES;
+        panel.canChooseDirectories = NO;
+        panel.allowsMultipleSelection = NO;
+        panel.directoryURL = [NSURL fileURLWithPath:paths.firstObject];
+        panel.message = @"Choose any audio file on the volume to register it with foobar2000";
+        panel.prompt = @"Register";
+
+        if ([panel runModal] == NSModalResponseOK && panel.URL.path.length > 0) {
+            [weakSelf mintBookmarkForFiles:@[panel.URL.path]
+                                mountPaths:paths
+                                   isFinal:YES];
+        } else {
+            FB2K_console_formatter() << "[Plorg VolumeSync] Registration cancelled.";
+        }
+    });
+}
+
 #pragma mark - Restart Prompt
 
 - (void)maybePromptForRestartAfterRepair:(NSDictionary *)repairResult {
@@ -847,7 +1106,10 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         return;
     }
 
-    // Discover all metadb_index_<GUID> tables (skip the *_data sibling tables).
+    // Discover all metadb_index_<GUID> tables. GLOB (unlike LIKE) treats '_'
+    // literally, so 'metadb_index_*' cannot match the metadb_indexes metadata
+    // table; the SQL builder additionally shape-validates every name before
+    // writing to it.
     NSMutableArray<NSString *> *indexTables = [NSMutableArray array];
     sqlite3 *db = NULL;
     if (sqlite3_open_v2([dbPath fileSystemRepresentation], &db,
@@ -856,24 +1118,36 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(db,
                 "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'metadb_index_%' AND name NOT LIKE '%_data'",
+                "AND name GLOB 'metadb_index_*' AND NOT name GLOB '*_data'",
                 -1, &stmt, NULL) == SQLITE_OK) {
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 const unsigned char *n = sqlite3_column_text(stmt, 0);
-                if (n) [indexTables addObject:[NSString stringWithUTF8String:(const char *)n]];
+                if (!n) continue;
+                NSString *name = [NSString stringWithUTF8String:(const char *)n];
+                if ([PlorgVolumeSyncLogic isValidMetadbIndexTableName:name]) {
+                    [indexTables addObject:name];
+                }
             }
             sqlite3_finalize(stmt);
         }
         sqlite3_close(db);
     }
 
-    // Build the migration SQL.
+    // Build the migration SQL. ".bail on" makes sqlite3 abort on the first
+    // error instead of continuing to COMMIT; exiting with the transaction
+    // open rolls everything back, so the migration is all-or-nothing.
     NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:remapActions
                                                            indexTables:indexTables];
+    sql = [@".bail on\n" stringByAppendingString:sql];
 
-    // Stage the SQL in /tmp; the helper script feeds it to sqlite3 after foobar exits.
+    // Stage the SQL in /tmp; the helper script feeds it to sqlite3 after foobar
+    // exits and deletes it when done. The relauncher (relaunchApp) waits for
+    // this file to disappear before reopening foobar2000, so the migration and
+    // a fresh fb2k session never contend for metadb write locks (the
+    // 2026-07-11 incident: concurrent relaunch caused "database is locked"
+    // and an interrupted migration).
     pid_t pid = getpid();
-    NSString *sqlPath = [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.sql", pid];
+    NSString *sqlPath = stagedMigrationSQLPathForPID(pid);
     NSError *writeErr = nil;
     if (![sql writeToFile:sqlPath atomically:YES encoding:NSUTF8StringEncoding error:&writeErr]) {
         [self deferLog:[NSString stringWithFormat:
@@ -883,13 +1157,44 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     }
 
     NSString *logPath = [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.log", pid];
+    // The helper script, in order:
+    //  1. waits for this fb2k process to exit;
+    //  2. aborts if another foobar2000 is already running (user relaunched
+    //     manually before the migration could start) - never write to metadb
+    //     while any fb2k session may hold it;
+    //  3. best-effort backup: one rotating copy next to the DB when disk
+    //     space allows (DB + WAL/SHM siblings);
+    //  4. feeds the staged SQL to sqlite3 (transactional, .bail on);
+    //  5. removes the staged SQL, which releases the waiting relauncher.
     NSString *script = [NSString stringWithFormat:
-        @"while kill -0 %d 2>/dev/null; do sleep 0.5; done; "
-        @"sleep 1; "
-        @"/usr/bin/sqlite3 '%@' < '%@' > '%@' 2>&1; "
-        @"echo \"[Plorg VolumeSync] Metadb migration finished at $(date)\" >> '%@'; "
-        @"rm -f '%@'",
-        pid, dbPath, sqlPath, logPath, logPath, sqlPath];
+        @"DB='%@'; SQL='%@'; LOG='%@'; BK=\"$DB.plorg-pre-migration\"\n"
+        @"while kill -0 %d 2>/dev/null; do sleep 0.5; done\n"
+        @"sleep 1\n"
+        @"t=0\n"
+        @"while /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; do\n"
+        @"  t=$((t+1))\n"
+        @"  if [ \"$t\" -ge 120 ]; then\n"
+        @"    echo \"[Plorg VolumeSync] Migration SKIPPED: foobar2000 was relaunched before it could run. It will be rescheduled on next repair.\" > \"$LOG\"\n"
+        @"    rm -f \"$SQL\"\n"
+        @"    exit 0\n"
+        @"  fi\n"
+        @"  sleep 1\n"
+        @"done\n"
+        @"dbsize=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
+        @"avail_kb=$(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}')\n"
+        @"if [ \"$((avail_kb * 1024))\" -gt \"$((dbsize + dbsize / 10))\" ]; then\n"
+        @"  /bin/cp -f \"$DB\" \"$BK\" && echo \"[Plorg VolumeSync] metadb backed up to $BK\" > \"$LOG\"\n"
+        @"  for ext in -wal -shm; do\n"
+        @"    if [ -f \"$DB$ext\" ]; then /bin/cp -f \"$DB$ext\" \"$BK$ext\"; else rm -f \"$BK$ext\"; fi\n"
+        @"  done\n"
+        @"else\n"
+        @"  echo \"[Plorg VolumeSync] WARNING: not enough disk space for a metadb backup; proceeding (migration is transactional)\" > \"$LOG\"\n"
+        @"fi\n"
+        @"/usr/bin/sqlite3 \"$DB\" < \"$SQL\" >> \"$LOG\" 2>&1\n"
+        @"rc=$?\n"
+        @"echo \"[Plorg VolumeSync] Metadb migration finished (exit $rc) at $(date)\" >> \"$LOG\"\n"
+        @"rm -f \"$SQL\"\n",
+        dbPath, sqlPath, logPath, pid];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
@@ -898,7 +1203,8 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         [task launch];
         [self deferLog:[NSString stringWithFormat:
             @"[Plorg VolumeSync] Spawned metadb migrator (%lu UUID remap%@). "
-            @"It runs after foobar quits; log: %@",
+            @"It runs after foobar quits (backup first, transactional); a restart "
+            @"via the repair prompt waits for it to finish. Log: %@",
             (unsigned long)remapActions.count,
             remapActions.count == 1 ? @"" : @"s",
             logPath]];
@@ -915,10 +1221,20 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         return;
     }
 
+    // Wait for this process to exit, then - if a metadb migration was staged -
+    // for the migrator to finish (it deletes the staged SQL when done; bounded
+    // wait so a wedged migration cannot block the relaunch forever). Reopening
+    // foobar2000 while the migration writes metadb caused the 2026-07-11
+    // "database is locked" incident.
     pid_t pid = getpid();
+    NSString *sqlPath = stagedMigrationSQLPathForPID(pid);
     NSString *script = [NSString stringWithFormat:
-        @"while kill -0 %d 2>/dev/null; do sleep 0.1; done; sleep 0.3; /usr/bin/open '%@'",
-        pid, appPath];
+        @"while kill -0 %d 2>/dev/null; do sleep 0.1; done\n"
+        @"sleep 0.3\n"
+        @"t=0\n"
+        @"while [ -e '%@' ] && [ \"$t\" -lt 900 ]; do sleep 1; t=$((t+1)); done\n"
+        @"/usr/bin/open '%@'\n",
+        pid, sqlPath, appPath];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
