@@ -11,7 +11,11 @@
 #include <mutex>
 
 #ifdef __OBJC__
-@class BiographyController;
+/// Protocol for objects that want to receive artist change notifications (ARCH-4)
+@protocol BiographyArtistObserver <NSObject>
+- (void)handleArtistChange:(NSString * _Nullable)artistName;
+- (void)handlePlaybackStop;
+@end
 #endif
 
 /// Singleton callback manager that tracks registered biography controllers
@@ -21,11 +25,11 @@ public:
     static BiographyCallbackManager& instance();
 
 #ifdef __OBJC__
-    /// Register a controller to receive track change notifications
-    void registerController(BiographyController* controller);
+    /// Register an observer to receive track change notifications
+    void registerController(id<BiographyArtistObserver> controller);
 
-    /// Unregister a controller when it's being deallocated
-    void unregisterController(BiographyController* controller);
+    /// Unregister an observer when it's being deallocated
+    void unregisterController(id<BiographyArtistObserver> controller);
 #endif
 
     // Playback callbacks (called from C++ play_callback)

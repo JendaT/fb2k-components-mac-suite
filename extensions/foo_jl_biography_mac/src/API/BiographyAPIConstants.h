@@ -21,7 +21,7 @@ static NSString * const kAudioDbApiBaseUrl = @"https://www.theaudiodb.com/api/v1
 
 #pragma mark - Rate Limiter Constants
 
-// Last.fm: 5 requests per second, 5 burst
+// ARCH-15: Last.fm: 1 request per second, 5 burst
 static const double kLastFmRatePerSecond = 1.0;
 static const NSInteger kLastFmBurstCapacity = 5;
 
@@ -60,5 +60,13 @@ static const NSTimeInterval kMbidCacheTTL = 365 * 24 * 60 * 60;      // 1 year (
 
 static const NSUInteger kMaxCacheSizeBytes = 100 * 1024 * 1024;  // 100 MB
 static const NSUInteger kMaxImageCacheSizeBytes = 200 * 1024 * 1024;  // 200 MB
+
+#pragma mark - Placeholder Image Hashes
+
+// QUAL-15: Named constants for default placeholder image hashes (used to skip empty images)
+// Last.fm default star icon placeholder
+static NSString * const kLastFmPlaceholderHash = @"2a96cbd8b46e442fc41c2b86b821562f";
+// Deezer default silhouette placeholder
+static NSString * const kDeezerPlaceholderHash = @"d41d8cd98f00b204e9800998ecf8427e";
 
 NS_ASSUME_NONNULL_END

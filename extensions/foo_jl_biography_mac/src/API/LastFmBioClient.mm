@@ -69,7 +69,7 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
         }
 
         // Wait for rate limiter
-        [self waitForRateLimiter];
+        [self waitForRateLimiter:token];
 
         // Check cancellation again after wait
         if (token.isCancelled) {
@@ -81,7 +81,9 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 
         // Build request URL
         NSURL *url = [self artistInfoURLForArtist:artistName];
+#if DEBUG
         NSLog(@"[Biography] Fetching from URL: %@", url);
+#endif
 
         // Make request
         NSURLSessionDataTask *task = [self.session dataTaskWithURL:url
@@ -166,7 +168,7 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
             return;
         }
 
-        [self waitForRateLimiter];
+        [self waitForRateLimiter:token];
 
         if (token.isCancelled) {
             completion(nil, [self errorWithCode:LastFmBioErrorCodeCancelled message:@"Request cancelled"]);
@@ -205,13 +207,11 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 }
 
 - (void)cancelAllRequests {
-    [self.session invalidateAndCancel];
-
-    // Create new session for future requests
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
-    config.timeoutIntervalForRequest = kDefaultRequestTimeout;
-    config.HTTPAdditionalHeaders = @{@"User-Agent": kBiographyUserAgent};
-    self.session = [NSURLSession sessionWithConfiguration:config];
+    [self.session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
+        for (NSURLSessionTask *task in tasks) {
+            [task cancel];
+        }
+    }];
 }
 
 #pragma mark - URL Building
@@ -269,8 +269,9 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
         }
     }
 
-    // Tags
-    NSArray *tags = response[@"tags"][@"tag"];
+    // Tags (SEC-6: guard intermediate access)
+    NSDictionary *tagsContainer = response[@"tags"];
+    NSArray *tags = [tagsContainer isKindOfClass:[NSDictionary class]] ? tagsContainer[@"tag"] : nil;
     if ([tags isKindOfClass:[NSArray class]] && tags.count > 0) {
         NSMutableArray *tagNames = [NSMutableArray array];
         for (NSDictionary *tag in tags) {
@@ -304,8 +305,9 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
         result[@"playcount"] = @([stats[@"playcount"] integerValue]);
     }
 
-    // Similar artists (if included)
-    NSArray *similar = response[@"similar"][@"artist"];
+    // Similar artists (if included) (SEC-6: guard intermediate access)
+    NSDictionary *similarContainer = response[@"similar"];
+    NSArray *similar = [similarContainer isKindOfClass:[NSDictionary class]] ? similarContainer[@"artist"] : nil;
     if ([similar isKindOfClass:[NSArray class]]) {
         result[@"similarArtists"] = similar;
     }
@@ -316,22 +318,35 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 + (NSString *)cleanBiographyText:(NSString *)text {
     if (!text) return nil;
 
-    // Remove HTML tags
-    NSRegularExpression *htmlRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>"
-                                                                               options:0
-                                                                                 error:nil];
-    NSString *cleaned = [htmlRegex stringByReplacingMatchesInString:text
-                                                            options:0
-                                                              range:NSMakeRange(0, text.length)
-                                                       withTemplate:@""];
+    // SEC-8: Cap text length to prevent oversized API responses from filling cache
+    static const NSUInteger kMaxBiographyLength = 50000;
+    if (text.length > kMaxBiographyLength) {
+        text = [text substringToIndex:kMaxBiographyLength];
+    }
 
-    // Decode HTML entities
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&lt;" withString:@"<"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&gt;" withString:@">"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&quot;" withString:@"\""];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&#39;" withString:@"'"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "];
+    // Cache regex (PERF-8)
+    static NSRegularExpression *htmlRegex = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        htmlRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>"
+                                                             options:0
+                                                               error:nil];
+    });
+
+    // Decode HTML entities FIRST, then strip tags (SEC-4: prevents &lt;script&gt; bypass)
+    NSString *decoded = text;
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&lt;" withString:@"<"];
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&gt;" withString:@">"];
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&quot;" withString:@"\""];
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&#39;" withString:@"'"];
+    decoded = [decoded stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "];
+
+    // Remove HTML tags after entity decode
+    NSString *cleaned = [htmlRegex stringByReplacingMatchesInString:decoded
+                                                            options:0
+                                                              range:NSMakeRange(0, decoded.length)
+                                                       withTemplate:@""];
 
     // Trim whitespace
     cleaned = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -349,11 +364,17 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 
 #pragma mark - Helpers
 
-- (void)waitForRateLimiter {
+- (void)waitForRateLimiter:(BiographyRequest *)token {
+    NSTimeInterval totalWaited = 0;
+    static const NSTimeInterval kMaxSleepInterval = 0.1;
+    static const NSTimeInterval kMaxTotalWait = 5.0;
+
     while (![self.rateLimiter tryAcquire]) {
-        NSTimeInterval waitTime = self.rateLimiter.waitTimeForNextToken;
+        if (token.isCancelled || totalWaited >= kMaxTotalWait) return;
+        NSTimeInterval waitTime = MIN(self.rateLimiter.waitTimeForNextToken, kMaxSleepInterval);
         if (waitTime > 0) {
             [NSThread sleepForTimeInterval:waitTime];
+            totalWaited += waitTime;
         }
     }
 }

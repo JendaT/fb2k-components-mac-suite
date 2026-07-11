@@ -97,6 +97,8 @@
             return @"TheAudioDB";
         case BiographySourceFanartTv:
             return @"Fanart.tv";
+        case BiographySourceDeezer:
+            return @"Deezer";
         case BiographySourceCache:
             return @"Cache";
         case BiographySourceUnknown:

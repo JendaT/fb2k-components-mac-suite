@@ -17,7 +17,7 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
 @interface BiographyFetcher ()
 
 @property (nonatomic, strong, readwrite) dispatch_queue_t fetchQueue;
-@property (nonatomic, strong, readwrite, nullable) BiographyRequest *currentRequest;
+@property (atomic, strong, readwrite, nullable) BiographyRequest *currentRequest;
 @property (nonatomic, strong) BiographyCache *cache;
 
 @end
@@ -36,7 +36,10 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _fetchQueue = dispatch_queue_create("com.foobar2000.biography.fetcher", DISPATCH_QUEUE_SERIAL);
+        // PERF-15: Explicit QoS to prevent priority inversion from audio callback threads
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        _fetchQueue = dispatch_queue_create("com.foobar2000.biography.fetcher", attr);
         _cache = [[BiographyCache alloc] init];
     }
     return self;
@@ -139,14 +142,15 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
 }
 
 - (void)prefetchBiographyForArtist:(NSString *)artistName {
-    // Low priority prefetch - check cache first
+    // ARCH-12: Skip prefetch if a user-initiated fetch is in progress
+    if (self.isFetching) return;
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         BiographyData *cached = [self.cache fetchCachedBiographyForArtist:artistName];
         if (cached && !cached.isStale) {
-            return;  // Already cached
+            return;
         }
 
-        // Fetch in background with no completion
         [self fetchBiographyForArtist:artistName force:NO completion:^(BiographyData *data, NSError *error) {
             // Silent - just populates cache
         }];
@@ -174,8 +178,10 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
     builder.language = @"en";
 
     // Image URL (will need to be downloaded separately)
-    if (parsed[@"imageURL"]) {
-        builder.artistImageURL = parsed[@"imageURL"];
+    // Skip Last.fm default placeholder (star icon) - hash 2a96cbd8b46e442fc41c2b86b821562f
+    NSURL *imageURL = parsed[@"imageURL"];
+    if (imageURL && ![imageURL.absoluteString containsString:kLastFmPlaceholderHash]) {
+        builder.artistImageURL = imageURL;
         builder.imageSource = BiographySourceLastFm;
         builder.imageType = BiographyImageTypeThumb;
     }

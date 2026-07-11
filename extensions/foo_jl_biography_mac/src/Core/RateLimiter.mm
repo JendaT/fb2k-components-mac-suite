@@ -37,30 +37,36 @@
 }
 
 - (BOOL)tryAcquire {
-    [self refillTokens];
+    @synchronized(self) {
+        [self refillTokens];
 
-    if (_availableTokens >= 1.0) {
-        _availableTokens -= 1.0;
-        return YES;
+        if (_availableTokens >= 1.0) {
+            _availableTokens -= 1.0;
+            return YES;
+        }
+
+        return NO;
     }
-
-    return NO;
 }
 
 - (NSTimeInterval)waitTimeForNextToken {
-    [self refillTokens];
+    @synchronized(self) {
+        [self refillTokens];
 
-    if (_availableTokens >= 1.0) {
-        return 0;
+        if (_availableTokens >= 1.0) {
+            return 0;
+        }
+
+        double tokensNeeded = 1.0 - _availableTokens;
+        return tokensNeeded / _tokensPerSecond;
     }
-
-    double tokensNeeded = 1.0 - _availableTokens;
-    return tokensNeeded / _tokensPerSecond;
 }
 
 - (double)availableTokens {
-    [self refillTokens];
-    return _availableTokens;
+    @synchronized(self) {
+        [self refillTokens];
+        return _availableTokens;
+    }
 }
 
 @end

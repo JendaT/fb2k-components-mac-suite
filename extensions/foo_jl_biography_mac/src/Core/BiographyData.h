@@ -19,6 +19,7 @@ typedef NS_ENUM(NSInteger, BiographySource) {
     BiographySourceWikipedia,
     BiographySourceAudioDb,
     BiographySourceFanartTv,
+    BiographySourceDeezer,
     BiographySourceCache
 };
 

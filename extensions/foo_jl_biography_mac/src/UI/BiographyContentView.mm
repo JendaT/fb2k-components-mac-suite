@@ -7,9 +7,14 @@
 
 #import "BiographyContentView.h"
 #import "../Core/BiographyData.h"
+#import "../Core/ArtistImage.h"
+#import "ArtistGalleryView.h"
 #import <QuartzCore/QuartzCore.h>
 
-@interface BiographyContentView () <NSTextViewDelegate>
+@interface BiographyContentView () <NSTextViewDelegate, ArtistGalleryViewDelegate>
+
+// Artist image gallery (at top)
+@property (nonatomic, strong, readwrite) ArtistGalleryView *galleryView;
 
 // Main text view for scrollable biography content
 @property (nonatomic, strong) NSScrollView *scrollView;
@@ -20,10 +25,6 @@
 @property (nonatomic, strong) NSTextField *sourceLabel;
 @property (nonatomic, strong) NSScrollView *tagsScrollView;
 @property (nonatomic, strong) NSStackView *tagsStack;
-
-// Gradient overlay
-@property (nonatomic, strong) NSView *gradientView;
-@property (nonatomic, strong) CAGradientLayer *gradientLayer;
 
 @end
 
@@ -44,11 +45,19 @@
     // 1. Create bottom bar FIRST (will be at bottom)
     [self createBottomBar];
 
-    // 2. Create scroll view with text view
+    // 2. Create gallery view (at top)
+    [self createGalleryView];
+
+    // 3. Create scroll view with text view
     [self createScrollView];
 
-    // 3. Create gradient overlay
-    [self createGradientOverlay];
+}
+
+- (void)createGalleryView {
+    self.galleryView = [[ArtistGalleryView alloc] initWithFrame:NSZeroRect];
+    self.galleryView.delegate = self;
+    self.galleryView.hidden = YES;  // Hidden until images are loaded
+    [self addSubview:self.galleryView];
 }
 
 - (void)createBottomBar {
@@ -104,19 +113,6 @@
     self.scrollView.backgroundColor = [NSColor clearColor];
 
     [self addSubview:self.scrollView];
-
-    // Observe scroll position
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(scrollDidChange:)
-                                                 name:NSViewBoundsDidChangeNotification
-                                               object:self.scrollView.contentView];
-    self.scrollView.contentView.postsBoundsChangedNotifications = YES;
-}
-
-- (void)createGradientOverlay {
-    // Gradient disabled for now - was causing visual issues
-    self.gradientView = nil;
-    self.gradientLayer = nil;
 }
 
 #pragma mark - Layout
@@ -127,14 +123,18 @@
     CGFloat w = self.bounds.size.width;
     CGFloat h = self.bounds.size.height;
     CGFloat bottomH = [self bottomBarHeight];
-    CGFloat gradientH = 24;
 
     // Bottom bar at very bottom (y=0 in non-flipped)
     self.bottomBar.frame = NSMakeRect(0, 0, w, bottomH);
     [self layoutBottomBar];
 
-    // Scroll view above bottom bar
-    CGFloat scrollH = h - bottomH;
+    // Gallery at top (if visible)
+    CGFloat galleryH = self.galleryView.hidden ? 0 : self.galleryView.galleryHeight;
+    CGFloat galleryY = h - galleryH;
+    self.galleryView.frame = NSMakeRect(0, galleryY, w, galleryH);
+
+    // Scroll view between gallery and bottom bar
+    CGFloat scrollH = h - bottomH - galleryH;
     self.scrollView.frame = NSMakeRect(0, bottomH, w, scrollH);
 
     // Update text view width
@@ -143,12 +143,6 @@
     self.textView.textContainer.containerSize = containerSize;
     [self.textView.layoutManager ensureLayoutForTextContainer:self.textView.textContainer];
     [self.textView sizeToFit];
-
-    // Gradient just above bottom bar
-    self.gradientView.frame = NSMakeRect(0, bottomH, w, gradientH);
-    self.gradientLayer.frame = self.gradientView.bounds;
-
-    [self updateGradientOpacity];
 }
 
 - (CGFloat)bottomBarHeight {
@@ -186,19 +180,6 @@
 }
 
 #pragma mark - Scroll
-
-- (void)scrollDidChange:(NSNotification *)note {
-    [self updateGradientOpacity];
-}
-
-- (void)updateGradientOpacity {
-    NSRect docRect = self.textView.frame;
-    NSRect visibleRect = self.scrollView.documentVisibleRect;
-
-    CGFloat distanceFromBottom = NSMaxY(docRect) - NSMaxY(visibleRect);
-    CGFloat opacity = (distanceFromBottom < 5) ? 0 : MIN(distanceFromBottom / 40.0, 1.0);
-    self.gradientView.alphaValue = opacity;
-}
 
 - (void)scrollToBeginning {
     // Use NSTextView's built-in method to scroll to beginning
@@ -258,20 +239,9 @@
     [self setNeedsLayout:YES];
     [self layoutSubtreeIfNeeded];
 
-    // Scroll to beginning - multiple attempts with delays to ensure it works
+    // PERF-11: Force synchronous text layout then scroll once
+    [self.textView.layoutManager ensureLayoutForTextContainer:self.textView.textContainer];
     [self scrollToBeginning];
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self scrollToBeginning];
-    });
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self scrollToBeginning];
-    });
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self scrollToBeginning];
-    });
 }
 
 - (void)updateTags:(NSArray<NSString *> *)tags {
@@ -310,10 +280,47 @@
         [self.tagsStack removeArrangedSubview:v];
         [v removeFromSuperview];
     }
+
+    // Clear gallery
+    [self.galleryView clear];
+    self.galleryView.hidden = YES;
 }
 
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
+#pragma mark - Gallery
+
+- (void)updateGalleryImages:(NSArray<ArtistImage *> *)images {
+    if (!images || images.count == 0) {
+        self.galleryView.hidden = YES;
+        [self.galleryView clear];
+    } else {
+        self.galleryView.images = images;
+        self.galleryView.hidden = NO;
+    }
+
+    [self setNeedsLayout:YES];
+    [self layoutSubtreeIfNeeded];
+}
+
+- (void)setGalleryLoading:(BOOL)loading {
+    if (loading) {
+        self.galleryView.isLoading = YES;
+        self.galleryView.hidden = NO;
+    } else {
+        self.galleryView.isLoading = NO;
+        // Don't hide here - wait for images to arrive
+    }
+
+    [self setNeedsLayout:YES];
+    [self layoutSubtreeIfNeeded];
+}
+
+#pragma mark - ArtistGalleryViewDelegate
+
+- (void)galleryView:(ArtistGalleryView *)view didSelectImageAtIndex:(NSUInteger)index {
+    NSLog(@"[Gallery/ContentView] didSelectImageAtIndex:%lu, delegate: %@", (unsigned long)index, self.delegate);
+    if ([self.delegate respondsToSelector:@selector(contentView:didSelectGalleryImageAtIndex:)]) {
+        [self.delegate contentView:self didSelectGalleryImageAtIndex:index];
+    }
 }
 
 - (NSSize)intrinsicContentSize {
