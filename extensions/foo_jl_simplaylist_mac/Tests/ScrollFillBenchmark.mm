@@ -20,6 +20,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import "../src/Core/DecorationStore.h"
 #import "../src/Core/PlaylistLayoutModel.h"
 
 #include <algorithm>
@@ -81,6 +82,12 @@ static PlaylistLayoutModel *makeFixture(void) {
 // ---------------------------------------------------------------------------
 // Simulated frame: the query sequence of drawSparseModelInRect + drawSparseRow
 // for one dirty rect. Returns a checksum so the work cannot be optimized away.
+//
+// simulateFrame is the zero-provider baseline case captured in DEVLOG before
+// the decorator integration -- its body must stay byte-identical so BENCH
+// lines remain comparable. simulateFrameDecorated adds the per-row
+// DecorationStore lookup the view performs when a provider exists
+// (steady-state: all indices bound, 100% cache hit).
 // ---------------------------------------------------------------------------
 
 static NSInteger simulateFrame(PlaylistLayoutModel *m, CGFloat scrollY, CGFloat viewportH,
@@ -112,6 +119,38 @@ static NSInteger simulateFrame(PlaylistLayoutModel *m, CGFloat scrollY, CGFloat 
     return checksum;
 }
 
+static NSInteger simulateFrameDecorated(PlaylistLayoutModel *m, DecorationStore *store,
+                                        CGFloat scrollY, CGFloat viewportH,
+                                        NSInteger *rowsVisited) {
+    NSInteger firstRow = [m rowAtPoint:NSMakePoint(0, scrollY)];
+    NSInteger lastRow = [m rowAtPoint:NSMakePoint(0, scrollY + viewportH)];
+    NSInteger totalRows = [m rowCount];
+    if (firstRow < 0) firstRow = 0;
+    if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
+
+    NSInteger checksum = 0;
+    for (NSInteger row = firstRow; row <= lastRow; row++) {
+        CGFloat y = [m yOffsetForRow:row];
+        CGFloat h = [m heightForRow:row];
+        checksum += (NSInteger)y + (NSInteger)h;
+
+        BOOL isHeader = [m isRowGroupHeader:row];
+        BOOL isSubgroup = [m isRowSubgroupHeader:row];
+        BOOL isPadding = [m isRowPaddingRow:row];
+        if (isHeader) {
+            checksum += [m groupIndexForRow:row];
+        } else if (!isSubgroup && !isPadding) {
+            NSInteger playlistIndex = [m playlistIndexForRow:row];
+            checksum += playlistIndex;
+            // The decorated-path addition: cache-only decoration lookup
+            RowDecoration *dec = [store decorationForIndex:playlistIndex];
+            if (dec) checksum += dec.tintRGBA & 0xF;
+        }
+        (*rowsVisited)++;
+    }
+    return checksum;
+}
+
 // One full scroll pass over the playlist, ~3 rows (66 px) per frame,
 // matching a fast smooth scroll.
 static NSInteger scrollPass(PlaylistLayoutModel *m, CGFloat viewportH,
@@ -123,6 +162,35 @@ static NSInteger scrollPass(PlaylistLayoutModel *m, CGFloat viewportH,
         (*frames)++;
     }
     return checksum;
+}
+
+static NSInteger scrollPassDecorated(PlaylistLayoutModel *m, DecorationStore *store,
+                                     CGFloat viewportH, NSInteger *frames,
+                                     NSInteger *rowsVisited) {
+    CGFloat totalH = [m totalContentHeightCached];
+    NSInteger checksum = 0;
+    for (CGFloat y = 0; y + viewportH < totalH; y += 66.0) {
+        checksum += simulateFrameDecorated(m, store, y, viewportH, rowsVisited);
+        (*frames)++;
+    }
+    return checksum;
+}
+
+// Steady-state store for the decorated case: every index bound, every 25th
+// track decorated (200 of 5,000 -- the doc 04 acceptance scenario).
+static DecorationStore *makeDecoratedStore(NSInteger itemCount) {
+    DecorationStore *store = [[DecorationStore alloc] init];
+    for (NSInteger i = 0; i < itemCount; i++) {
+        uintptr_t key = (uintptr_t)(0x1000 + i * 16);  // Synthetic handle keys
+        [store bindIndex:i toHandleKey:key];
+        RowDecoration *dec = [[RowDecoration alloc] init];
+        if (i % 25 == 0) {
+            dec.tintRGBA = 0x4A90D938;
+            dec.iconId = 1;
+        }
+        [store setDecoration:dec forHandleKey:key];
+    }
+    return store;
 }
 
 int main(void) {
@@ -163,6 +231,28 @@ int main(void) {
         double minUs = passUs.front();
         double medianUs = passUs[passUs.size() / 2];
 
+        // Decorated fill: same pass with the per-row DecorationStore lookup
+        // (steady-state cache, 200 of 5,000 rows decorated).
+        DecorationStore *store = makeDecoratedStore(m.itemCount);
+        frames = 0;
+        rows = 0;
+        NSInteger decoratedChecksum = scrollPassDecorated(m, store, viewportH, &frames, &rows);  // Warmup
+        std::vector<double> decoratedUs;
+        for (int p = 0; p < passes; p++) {
+            frames = 0;
+            rows = 0;
+            uint64_t t0 = mach_absolute_time();
+            NSInteger c = scrollPassDecorated(m, store, viewportH, &frames, &rows);
+            uint64_t t1 = mach_absolute_time();
+            if (c != decoratedChecksum) {
+                printf("BENCH FAILED: decorated checksum mismatch across passes\n");
+                return 1;
+            }
+            decoratedUs.push_back(machToUs(t1 - t0));
+        }
+        std::sort(decoratedUs.begin(), decoratedUs.end());
+        double decoratedMinUs = decoratedUs.front();
+
         // Reload-path benchmark: cache rebuilds after a playlist change.
         const int reloads = 200;
         uint64_t r0 = mach_absolute_time();
@@ -178,6 +268,8 @@ int main(void) {
         printf("BENCH fill_frame_min_us=%.2f\n", minUs / framesPerPass);
         printf("BENCH fill_row_min_us=%.3f\n", minUs / rowsPerPass);
         printf("BENCH reload_us=%.1f\n", reloadUs);
+        printf("BENCH fill_pass_decorated_min_us=%.0f\n", decoratedMinUs);
+        printf("BENCH decorated_overhead_pct=%.2f\n", (decoratedMinUs - minUs) / minUs * 100.0);
         printf("BENCHMARK COMPLETE (checksum %ld)\n", (long)checksum);
         return 0;
     }

@@ -24,6 +24,7 @@ echo "==> Compiling scroll-fill benchmark (-O2)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O2 -Wall \
     "$PROJECT_DIR/Tests/ScrollFillBenchmark.mm" \
     "$PROJECT_DIR/src/Core/PlaylistLayoutModel.mm" \
+    "$PROJECT_DIR/src/Core/DecorationStore.mm" \
     -framework Foundation \
     -o "$BENCH_BUILD_DIR/scroll_fill_benchmark"
 

@@ -9,42 +9,92 @@
 A new suite-level extension point so SimPlaylist stays intake-agnostic and
 renders decorations from any registered provider. Lives in `shared/`.
 
-### Service interface (sketch, ObjC++ against fb2k service pattern)
+### Service interface (as implemented in `shared/jl_decorator_api.h`, v1)
 
 ```cpp
-// shared/jl_decorator_api.h
+// shared/jl_decorator_api.h (header-only; GUID is a C++17 inline variable)
 class NOVTABLE jl_row_decorator_provider : public service_base {
 public:
   // Batched, called off-main-thread; must be fast or answer from cache.
+  // out must be resized to items.get_count(), index-aligned; default-
+  // constructed entries mean "no decoration".
   virtual void decorate(metadb_handle_list_cref items,
                         pfc::list_t<jl_row_decoration> &out) = 0;
-  // Group-level decoration for SimPlaylist group headers.
+  // Group-level decoration for SimPlaylist group headers (off-main-thread).
   virtual bool decorate_group(const jl_group_key &key,
                               metadb_handle_list_cref members,
                               jl_group_decoration &out) = 0;
-  // Context menu contributions for current selection.
+  // Context menu contributions for current selection (main thread).
   virtual void context_actions(metadb_handle_list_cref sel,
                                pfc::list_t<jl_context_action> &out) = 0;
-  // Provider fires this callback to invalidate rows (async state changes).
-  virtual void set_invalidate_cb(jl_invalidate_cb cb) = 0;
+  // Invoke an action returned by context_actions() (main thread).
+  virtual void execute_context_action(uint32_t action_id,
+                                      metadb_handle_list_cref sel) = 0;
+  // Invalidation callbacks (register/unregister on main thread; providers
+  // may fire from any thread and must support multiple concurrent
+  // callbacks -- one per host panel instance).
+  virtual void register_invalidate_callback(jl_decoration_invalidate_callback *cb) = 0;
+  virtual void unregister_invalidate_callback(jl_decoration_invalidate_callback *cb) = 0;
   FB2K_MAKE_SERVICE_INTERFACE_ENTRYPOINT(jl_row_decorator_provider);
 };
 
-struct jl_row_decoration  { COLORREF bg_tint; float tint_alpha;
-                            jl_icon_id status_icon; const char* tooltip; };
-struct jl_group_decoration{ pfc::string8 badge_text; COLORREF badge_color;
-                            jl_icon_id icon; };
+typedef uint32_t jl_rgba_t;  // packed 0xRRGGBBAA; 0 = none / host default
+
+struct jl_row_decoration  { jl_rgba_t bg_tint = 0; jl_icon_id icon = jl_icon_none;
+                            jl_rgba_t icon_color = 0; pfc::string8 tooltip;
+                            bool strikethrough = false; bool pending = false; };
+struct jl_group_decoration{ pfc::string8 badge_text; jl_rgba_t badge_color = 0;
+                            jl_icon_id icon = jl_icon_none; };
+struct jl_group_key       { pfc::string8 header_text;
+                            metadb_handle_ptr first_member; };
+struct jl_context_action  { pfc::string8 title; uint32_t action_id = 0;
+                            bool enabled = true; };
+
+class NOVTABLE jl_decoration_invalidate_callback {
+public:
+  // Empty list = everything from this provider changed. Any thread.
+  virtual void on_decorations_invalidated(metadb_handle_list_cref affected) = 0;
+};
 ```
 
-### SimPlaylist changes
+Deviations from the draft v1 sketch (resolved during implementation):
+- `COLORREF bg_tint` + `float tint_alpha` merged into one packed
+  `jl_rgba_t` (0xRRGGBBAA); 0 means none — no Windows types on mac.
+- `const char* tooltip` became owned `pfc::string8` (no lifetime issues
+  across the async cache).
+- `set_invalidate_cb(cb)` became a register/unregister pair: multiple
+  SimPlaylist panel instances each observe invalidation.
+- Added `execute_context_action()` — the sketch listed actions but had no
+  invocation path.
+- Added `strikethrough` (rejected-row rendering) and `pending` (provider
+  will answer later; host renders undecorated and re-queries after the
+  invalidate callback) to `jl_row_decoration`.
+- `jl_icon_id` is a fixed generic glyph enum (circle open/left-half/
+  right-half/filled, warning, cross, check, arrow); values are stable ABI,
+  append-only. Hosts render them as text glyphs.
+
+### SimPlaylist changes (implemented)
 - Enumerate providers at panel init; query `decorate()` in the existing
-  virtual-scroll fill path (batch = visible range + overscan), cache per
-  handle, invalidate on provider callback or metadb change.
+  virtual-scroll fill path (batch = visible range + overscan of 32 rows),
+  cache per handle, invalidate on provider callback or metadb change.
+  Cache/index model is the pure `Core/DecorationStore` (unit-tested,
+  benchmarked); SDK bridging lives in `Integration/DecorationCoordinator`.
 - Render: row background tint under selection layer; status icon in a new
-  optional leading gutter column; group badge appended to group header.
-- Zero providers registered ⇒ zero overhead (guard before batching).
-- Providers must never block: SimPlaylist enforces a soft budget (answer from
-  cache or return "pending"; pending rows re-request on invalidate).
+  optional leading gutter column (16 pt, laid out in both the view and the
+  header bar only when a provider exists); group badge appended to group
+  header; tooltips via a dynamic tooltip owner; strikethrough on track text.
+- Zero providers registered ⇒ zero overhead (guard before batching): the
+  coordinator factory returns nil and the draw path adds only dead branches.
+  Verified against the pre-change scroll-fill benchmark (see the SimPlaylist
+  DEVLOG entries of 2026-07-11): post-change numbers inside the baseline
+  noise band on a 5k-row playlist.
+- Providers must never block: decorate()/decorate_group() run on a
+  background queue and must answer from the provider's own cache or return
+  "pending"; pending rows re-request after the provider's invalidate
+  callback fires.
+- Decorations render in the sparse group model path (the default); the flat
+  fallback mode for very large playlists and the legacy node path are
+  intentionally untouched in Part A.
 
 ## Part B — foo_jl_intake_mac (first provider)
 
