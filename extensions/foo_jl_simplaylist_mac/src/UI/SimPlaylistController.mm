@@ -18,6 +18,8 @@
 #import "../Core/ReorderPlanner.h"
 #import "../Core/SubgroupDetector.h"
 #import "../Core/GroupBuilder.h"
+#import "../Core/DecorationStore.h"
+#import "../Integration/DecorationCoordinator.h"
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
@@ -204,6 +206,12 @@ struct ReloadOperation {
     std::vector<titleformat_object::ptr> _compiledColumnScripts;
     // Selection holder — drives Selection Properties (sections=metadata) panel
     ui_selection_holder::ptr _selectionHolder;
+    // Row decorator providers (intake doc 04 Part A). nil when zero providers
+    // are registered — the guard for the whole decoration path.
+    DecorationCoordinator *_decorationCoordinator;
+    // Last row range handed to the coordinator; only newly entered rows are
+    // index-mapped each draw. Reset on invalidation/mapping changes.
+    NSRange _decorPreparedRange;
 }
 @property (nonatomic, strong) SimPlaylistView *playlistView;
 @property (nonatomic, strong) SimPlaylistHeaderBar *headerBar;
@@ -357,6 +365,23 @@ struct ReloadOperation {
                                              selector:@selector(handleRedrawNeeded:)
                                                  name:@"SimPlaylistRedrawNeeded"
                                                object:nil];
+
+    // Row decorator providers (intake doc 04 Part A): enumerate once at panel
+    // init. With zero providers the coordinator is nil, decorationsEnabled
+    // stays NO and the draw path is untouched.
+    __weak typeof(self) weakSelf = self;
+    _decorPreparedRange = NSMakeRange(NSNotFound, 0);
+    _decorationCoordinator = [DecorationCoordinator coordinatorWithInvalidationHandler:^{
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf->_decorPreparedRange = NSMakeRange(NSNotFound, 0);
+        [strongSelf.playlistView setNeedsDisplayInRect:strongSelf.playlistView.visibleRect];
+    }];
+    if (_decorationCoordinator) {
+        _playlistView.decorationGutterWidth = 16;
+        _playlistView.decorationsEnabled = YES;
+        _headerBar.decorationGutterWidth = 16;
+    }
 
     // Register for callbacks
     SimPlaylistCallbackManager_registerController(self);
@@ -524,6 +549,8 @@ struct ReloadOperation {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     // Unregister from callbacks
     SimPlaylistCallbackManager_unregisterController(self);
+    // Unregister decorator provider callbacks
+    [_decorationCoordinator shutdown];
 }
 
 #pragma mark - Playlist Data Loading (SPARSE MODEL)
@@ -755,6 +782,13 @@ struct ReloadOperation {
     // Clear cached data on any playlist change
     // TODO: For incremental updates (add/remove), could invalidate only affected entries
     [_playlistView clearFormattedValuesCache];
+
+    // Decoration index bindings and group badges are keyed by playlist
+    // position/grouping and are stale after any rebuild.
+    if (_decorationCoordinator) {
+        [_decorationCoordinator noteIndexMappingChanged];
+        _decorPreparedRange = NSMakeRange(NSNotFound, 0);
+    }
 
     if (activePlaylist == SIZE_MAX) {
         _playlistView.itemCount = 0;
@@ -1992,6 +2026,13 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     // changes that affect our current playlist to avoid unnecessary rebuilds.
     if (_currentPlaylistIndex < 0 || !changed || changed->get_count() == 0) return;
 
+    // Cached decorations for changed handles are stale regardless of whether
+    // the change also triggers a grouping rebuild below.
+    if (_decorationCoordinator) {
+        [_decorationCoordinator handleMetadbChanged:*changed];
+        _decorPreparedRange = NSMakeRange(NSNotFound, 0);
+    }
+
     auto pm = playlist_manager::get();
     metadb_handle_list playlistHandles;
     pm->playlist_get_all_items((t_size)_currentPlaylistIndex, playlistHandles);
@@ -2198,6 +2239,9 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
 
+        // Decorator provider actions (e.g. intake propose/approve)
+        [_decorationCoordinator appendContextActionsToMenu:menu forHandles:_contextMenuHandles];
+
         [self appendFocusPlayingNowItemToMenu:menu];
 
         // Show menu
@@ -2243,6 +2287,9 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     [menu addItem:[NSMenuItem separatorItem]];
 
     [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
+
+    // Decorator provider actions (e.g. intake propose/approve)
+    [_decorationCoordinator appendContextActionsToMenu:menu forHandles:_contextMenuHandles];
 
     [self appendFocusPlayingNowItemToMenu:menu];
 
@@ -2690,6 +2737,63 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     }
 
     return columnValues;
+}
+
+#pragma mark - Row decorations (SimPlaylistViewDelegate)
+
+// Cache-only lookups: the store is populated asynchronously by the prepare
+// pass; unresolved rows render undecorated and repaint on invalidation.
+// These are only reached when a decorator provider exists (view guard).
+
+- (RowDecoration *)playlistView:(SimPlaylistView *)view rowDecorationForPlaylistIndex:(NSInteger)playlistIndex {
+    return [_decorationCoordinator.store decorationForIndex:playlistIndex];
+}
+
+- (GroupDecoration *)playlistView:(SimPlaylistView *)view groupDecorationForGroupIndex:(NSInteger)groupIndex {
+    return [_decorationCoordinator.store groupDecorationForGroupIndex:groupIndex];
+}
+
+- (void)playlistView:(SimPlaylistView *)view prepareDecorationsForRowRange:(NSRange)rowRange {
+    if (!_decorationCoordinator || _currentPlaylistIndex < 0) return;
+    if (NSEqualRanges(rowRange, _decorPreparedRange)) return;  // Steady state: no scroll
+
+    NSArray<NSNumber *> *groupStarts = view.groupStarts;
+    NSArray<NSString *> *groupHeaders = view.groupHeaders;
+    NSInteger itemCount = view.itemCount;
+    NSMutableIndexSet *trackIndices = [NSMutableIndexSet indexSet];
+
+    // Only rows that newly entered the range need index mapping; rows kept
+    // from the previous range are already bound (bindings reset together
+    // with _decorPreparedRange on any invalidation).
+    for (NSInteger row = (NSInteger)rowRange.location; row < (NSInteger)NSMaxRange(rowRange); row++) {
+        if (NSLocationInRange((NSUInteger)row, _decorPreparedRange)) continue;
+
+        if ([view isRowGroupHeader:row]) {
+            NSInteger groupIndex = [view groupIndexForRow:row];
+            if (groupIndex >= 0 && groupIndex < (NSInteger)groupStarts.count) {
+                NSInteger start = [groupStarts[groupIndex] integerValue];
+                NSInteger end = (groupIndex + 1 < (NSInteger)groupStarts.count)
+                    ? [groupStarts[groupIndex + 1] integerValue] : itemCount;
+                NSString *header = (groupIndex < (NSInteger)groupHeaders.count)
+                    ? groupHeaders[groupIndex] : @"";
+                [_decorationCoordinator prepareGroup:groupIndex
+                                              header:header
+                                          indexRange:NSMakeRange(start, end - start)
+                                          inPlaylist:(t_size)_currentPlaylistIndex];
+            }
+        } else {
+            NSInteger playlistIndex = [view playlistIndexForRow:row];
+            if (playlistIndex >= 0) {
+                [trackIndices addIndex:(NSUInteger)playlistIndex];
+            }
+        }
+    }
+
+    _decorPreparedRange = rowRange;
+    if (trackIndices.count > 0) {
+        [_decorationCoordinator prepareTrackIndices:trackIndices
+                                         inPlaylist:(t_size)_currentPlaylistIndex];
+    }
 }
 
 #pragma mark - SimPlaylistHeaderBarDelegate

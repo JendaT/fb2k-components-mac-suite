@@ -76,7 +76,7 @@
 #pragma mark - Layout
 
 - (CGFloat)xOffsetForColumn:(NSInteger)columnIndex {
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
     for (NSInteger i = 0; i < columnIndex && i < (NSInteger)_columns.count; i++) {
         x += _columns[i].width;
     }
@@ -84,7 +84,7 @@
 }
 
 - (NSInteger)columnAtX:(CGFloat)x {
-    CGFloat currentX = _groupColumnWidth - _scrollOffset;
+    CGFloat currentX = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
@@ -106,7 +106,7 @@
         }
     }
 
-    CGFloat currentX = _groupColumnWidth - _scrollOffset;
+    CGFloat currentX = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
@@ -154,7 +154,7 @@
     }
 
     // Draw column headers - start right after group column
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         ColumnDefinition *col = _columns[i];
@@ -418,7 +418,7 @@
         [self addCursorRect:groupHandleRect cursor:[NSCursor resizeLeftRightCursor]];
     }
 
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;

@@ -14,6 +14,8 @@ NS_ASSUME_NONNULL_BEGIN
 @class GroupNode;
 @class GroupBoundary;
 @class ColumnDefinition;
+@class RowDecoration;
+@class GroupDecoration;
 @protocol SimPlaylistViewDelegate;
 
 // Settings changed notification
@@ -82,6 +84,13 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect
 @property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = normal, 1 = larger
+
+// Row decorator providers (intake doc 04 Part A). Set once by the controller
+// at panel init. When NO (zero providers registered — the common case) the
+// draw path takes the pre-decorator code path: no delegate calls, no cache
+// work, gutter width 0.
+@property (nonatomic, assign) BOOL decorationsEnabled;
+@property (nonatomic, assign) CGFloat decorationGutterWidth;  // 0 unless a provider exists
 
 // Reload data and redraw
 - (void)reloadData;
@@ -171,6 +180,17 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Lazy column value formatting - called when drawing track rows with nil columnValues
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view columnValuesForPlaylistIndex:(NSInteger)playlistIndex;
+
+// Row decorator providers (only called when decorationsEnabled is YES).
+// Synchronous cache-only lookup for a visible row; nil = no decoration.
+- (nullable RowDecoration *)playlistView:(SimPlaylistView *)view rowDecorationForPlaylistIndex:(NSInteger)playlistIndex;
+
+// Synchronous cache-only lookup for a group header badge; nil = none.
+- (nullable GroupDecoration *)playlistView:(SimPlaylistView *)view groupDecorationForGroupIndex:(NSInteger)groupIndex;
+
+// Called once per draw with the visible row range + overscan so the delegate
+// can batch-query providers off-main for uncached items and invalidate later.
+- (void)playlistView:(SimPlaylistView *)view prepareDecorationsForRowRange:(NSRange)rowRange;
 
 @end
 

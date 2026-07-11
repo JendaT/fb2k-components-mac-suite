@@ -13,10 +13,31 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/PlaylistLayoutModel.h"
 #import "../Core/PlaylistSelectionModel.h"
+#import "../Core/DecorationStore.h"
 #import "../../../../shared/UIStyles.h"
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+
+// Decoration RGBA (0xRRGGBBAA from jl_decorator_api) to NSColor; 0 = nil.
+static NSColor *colorFromRGBA(uint32_t rgba) {
+    if (rgba == 0) return nil;
+    return [NSColor colorWithSRGBRed:((rgba >> 24) & 0xFF) / 255.0
+                               green:((rgba >> 16) & 0xFF) / 255.0
+                                blue:((rgba >> 8) & 0xFF) / 255.0
+                               alpha:(rgba & 0xFF) / 255.0];
+}
+
+// Gutter glyphs for jl_icon_id values (index-aligned with the enum):
+// none, circle open/left-half/right-half/filled, warning, cross, check, arrow.
+static NSString *glyphForIconId(uint32_t iconId) {
+    static NSString *const glyphs[] = {
+        @"", @"○", @"◐", @"◑", @"●",
+        @"⚠", @"✕", @"✓", @"→",
+    };
+    if (iconId >= sizeof(glyphs) / sizeof(glyphs[0])) return nil;
+    return glyphs[iconId].length > 0 ? glyphs[iconId] : nil;
+}
 
 // Format total seconds as M:SS or H:MM:SS for display in group headers
 static NSString *formatGroupDuration(double seconds) {
@@ -318,6 +339,11 @@ static NSString *formatGroupDuration(double seconds) {
     return YES;
 }
 
+- (void)setDecorationsEnabled:(BOOL)decorationsEnabled {
+    _decorationsEnabled = decorationsEnabled;
+    [self updateTrackingAreas];  // (Un)register the decorator tooltip rect
+}
+
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
 
@@ -333,6 +359,28 @@ static NSString *formatGroupDuration(double seconds) {
                             owner:self
                          userInfo:nil];
     [self addTrackingArea:_trackingArea];
+
+    // Decorator tooltips: one dynamic full-bounds tooltip rect; the string is
+    // resolved per point in view:stringForToolTip:point:userData:. Registered
+    // only when a provider exists (zero-provider guard).
+    [self removeAllToolTips];
+    if (_decorationsEnabled) {
+        [self addToolTipRect:self.bounds owner:self userData:NULL];
+    }
+}
+
+// NSToolTipOwner: resolve the decoration tooltip for the row under the cursor.
+- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
+    if (!_decorationsEnabled ||
+        ![_delegate respondsToSelector:@selector(playlistView:rowDecorationForPlaylistIndex:)]) {
+        return nil;
+    }
+    NSInteger row = [self rowAtPoint:point];
+    if (row < 0) return nil;
+    NSInteger playlistIndex = [self playlistIndexForRow:row];
+    if (playlistIndex < 0) return nil;
+    RowDecoration *decoration = [_delegate playlistView:self rowDecorationForPlaylistIndex:playlistIndex];
+    return decoration.tooltip.length > 0 ? decoration.tooltip : nil;
 }
 
 #pragma mark - Data Management
@@ -472,7 +520,7 @@ static NSString *formatGroupDuration(double seconds) {
 // Internal method for calculating actual content size (for frame/scrolling)
 - (NSSize)calculatedContentSize {
     CGFloat totalHeight = [self totalContentHeightCached];
-    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth;
+    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth + _decorationGutterWidth;
     return NSMakeSize(totalWidth, totalHeight);
 }
 
@@ -570,6 +618,19 @@ static NSString *formatGroupDuration(double seconds) {
     if (firstRow < 0) firstRow = 0;
     if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
 
+    // Decorator providers: let the delegate batch-resolve decorations for the
+    // visible range + overscan (off-main; results land via invalidation).
+    // Zero providers registered => decorationsEnabled is NO and this whole
+    // block is a single branch.
+    if (_decorationsEnabled &&
+        [_delegate respondsToSelector:@selector(playlistView:prepareDecorationsForRowRange:)]) {
+        const NSInteger overscan = 32;
+        NSInteger prepFirst = MAX((NSInteger)0, firstRow - overscan);
+        NSInteger prepLast = MIN(totalRows - 1, lastRow + overscan);
+        [_delegate playlistView:self
+            prepareDecorationsForRowRange:NSMakeRange(prepFirst, prepLast - prepFirst + 1)];
+    }
+
     // STEP 1: Fill group column background FIRST (before any content)
     // This ensures header text drawn later won't be covered
     if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
@@ -653,6 +714,21 @@ static NSString *formatGroupDuration(double seconds) {
     BOOL isSelected = (playlistIndex >= 0 && [_selectedIndices containsIndex:playlistIndex]);
     BOOL isPlaying = (playlistIndex >= 0 && playlistIndex == _playingIndex);
 
+    // Row decoration (decorator providers): cache-only lookup, tint drawn
+    // UNDER the selection/playing background.
+    RowDecoration *decoration = nil;
+    if (_decorationsEnabled && playlistIndex >= 0 &&
+        [_delegate respondsToSelector:@selector(playlistView:rowDecorationForPlaylistIndex:)]) {
+        decoration = [_delegate playlistView:self rowDecorationForPlaylistIndex:playlistIndex];
+        NSColor *tint = colorFromRGBA(decoration.tintRGBA);
+        if (tint) {
+            [tint setFill];
+            NSRectFillUsingOperation(NSMakeRect(_groupColumnWidth, rect.origin.y,
+                                                rect.size.width - _groupColumnWidth, rect.size.height),
+                                     NSCompositingOperationSourceOver);
+        }
+    }
+
     // Selection/playing background - only in columns area, not album art column
     BOOL shouldDrawBackground = isSelected || (isPlaying && _showNowPlayingShading);
     if (shouldDrawBackground) {
@@ -673,7 +749,8 @@ static NSString *formatGroupDuration(double seconds) {
         NSString *subgroupText = [self subgroupHeaderForRow:row];
         [self drawSparseSubgroupRow:subgroupText inRect:rect];
     } else {
-        [self drawSparseTrackRow:playlistIndex inRect:rect selected:isSelected playing:isPlaying];
+        [self drawSparseTrackRow:playlistIndex inRect:rect selected:isSelected playing:isPlaying
+                      decoration:decoration];
     }
 }
 
@@ -716,13 +793,13 @@ static NSString *formatGroupDuration(double seconds) {
         lineY = rect.origin.y + rect.size.height / 2;
     } else if (_layout.headerDisplayStyle == 2) {
         // Style 2 (Inline): text at top of row
-        textX = _groupColumnWidth + 8;
+        textX = _groupColumnWidth + _decorationGutterWidth + 8;
         textY = rect.origin.y + 2;
         lineStartX = lineEndX + 1;  // No line for style 2
         lineY = 0;
     } else {
         // Style 0: text starts after album art column
-        textX = _groupColumnWidth + 8;
+        textX = _groupColumnWidth + _decorationGutterWidth + 8;
         // Center text vertically in the (now variable height) row
         textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = textX + textSize.width + 12;
@@ -782,25 +859,55 @@ static NSString *formatGroupDuration(double seconds) {
     NSMutableAttributedString *result =
         [[NSMutableAttributedString alloc] initWithString:title attributes:titleAttrs];
 
-    if (!_showGroupDuration) return result;
-    if (groupIndex >= (NSInteger)_groupDurations.count) return result;
-    double seconds = [_groupDurations[groupIndex] doubleValue];
-    if (seconds <= 0) return result;
-
-    NSString *durStr = [NSString stringWithFormat:@"  •  %@", formatGroupDuration(seconds)];
-    NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
-    NSDictionary *durAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
-    if (titleAttrs[NSParagraphStyleAttributeName]) {
-        NSMutableDictionary *m = [durAttrs mutableCopy];
-        m[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
-        durAttrs = m;
+    BOOL wantDuration = _showGroupDuration && groupIndex < (NSInteger)_groupDurations.count;
+    double seconds = wantDuration ? [_groupDurations[groupIndex] doubleValue] : 0;
+    if (wantDuration && seconds > 0) {
+        NSString *durStr = [NSString stringWithFormat:@"  •  %@", formatGroupDuration(seconds)];
+        NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
+        NSDictionary *durAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
+            NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+        };
+        if (titleAttrs[NSParagraphStyleAttributeName]) {
+            NSMutableDictionary *m = [durAttrs mutableCopy];
+            m[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
+            durAttrs = m;
+        }
+        [result appendAttributedString:[[NSAttributedString alloc] initWithString:durStr
+                                                                       attributes:durAttrs]];
     }
-    [result appendAttributedString:[[NSAttributedString alloc] initWithString:durStr
-                                                                   attributes:durAttrs]];
+
+    [self appendGroupBadgeForGroup:groupIndex to:result titleAttrs:titleAttrs];
     return result;
+}
+
+// Appends a decorator-provider badge (e.g. an intake assignment target) to a
+// group header attributed string. No-op when decorations are disabled.
+- (void)appendGroupBadgeForGroup:(NSInteger)groupIndex
+                              to:(NSMutableAttributedString *)header
+                      titleAttrs:(NSDictionary *)titleAttrs {
+    if (!_decorationsEnabled ||
+        ![_delegate respondsToSelector:@selector(playlistView:groupDecorationForGroupIndex:)]) {
+        return;
+    }
+    GroupDecoration *gd = [_delegate playlistView:self groupDecorationForGroupIndex:groupIndex];
+    if (gd.badgeText.length == 0) return;
+
+    NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
+    NSColor *badgeColor = colorFromRGBA(gd.badgeRGBA) ?: [NSColor secondaryLabelColor];
+    NSMutableDictionary *badgeAttrs = [@{
+        NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
+        NSForegroundColorAttributeName: badgeColor
+    } mutableCopy];
+    if (titleAttrs[NSParagraphStyleAttributeName]) {
+        badgeAttrs[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
+    }
+    NSString *glyph = glyphForIconId(gd.iconId);
+    NSString *badge = glyph
+        ? [NSString stringWithFormat:@"  %@ %@", glyph, gd.badgeText]
+        : [NSString stringWithFormat:@"  %@", gd.badgeText];
+    [header appendAttributedString:[[NSAttributedString alloc] initWithString:badge
+                                                                    attributes:badgeAttrs]];
 }
 
 // Draw subgroup header row - indented, smaller text with line
@@ -815,7 +922,7 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Calculate text size - indented more than group header
     NSSize textSize = [subgroupText sizeWithAttributes:attrs];
-    CGFloat textX = _groupColumnWidth + 24;  // More indent than group header
+    CGFloat textX = _groupColumnWidth + _decorationGutterWidth + 24;  // More indent than group header
     CGFloat textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
 
     // Draw subgroup text
@@ -884,7 +991,8 @@ static NSString *formatGroupDuration(double seconds) {
 }
 
 // Draw track row with lazy column formatting
-- (void)drawSparseTrackRow:(NSInteger)playlistIndex inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing {
+- (void)drawSparseTrackRow:(NSInteger)playlistIndex inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing
+                decoration:(RowDecoration *)decoration {
     if (playlistIndex < 0) return;
 
     // Get cached column values or request from delegate
@@ -909,8 +1017,8 @@ static NSString *formatGroupDuration(double seconds) {
         return;
     }
 
-    // Draw columns
-    CGFloat x = _groupColumnWidth;
+    // Draw columns (shifted right by the decoration gutter when providers exist)
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth;
     NSColor *textColor = selected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
     NSColor *dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
                                     : fb2k_ui::secondaryTextColor();
@@ -921,6 +1029,23 @@ static NSString *formatGroupDuration(double seconds) {
     // Calculate vertical centering with equal top/bottom padding
     CGFloat textHeight = font.ascender - font.descender;
     CGFloat verticalPadding = round((rect.size.height - textHeight) / 2.0);
+
+    // Decoration status icon in the leading gutter column
+    if (_decorationGutterWidth > 0 && decoration.iconId != 0) {
+        NSString *glyph = glyphForIconId(decoration.iconId);
+        if (glyph) {
+            NSColor *iconColor = colorFromRGBA(decoration.iconRGBA)
+                ?: (selected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor());
+            NSDictionary *iconAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:font.pointSize],
+                NSForegroundColorAttributeName: iconColor
+            };
+            NSSize glyphSize = [glyph sizeWithAttributes:iconAttrs];
+            CGFloat iconX = _groupColumnWidth + round((_decorationGutterWidth - glyphSize.width) / 2.0);
+            [glyph drawAtPoint:NSMakePoint(iconX, rect.origin.y + verticalPadding)
+                withAttributes:iconAttrs];
+        }
+    }
 
     for (NSUInteger colIndex = 0; colIndex < _columns.count; colIndex++) {
         ColumnDefinition *col = _columns[colIndex];
@@ -957,6 +1082,13 @@ static NSString *formatGroupDuration(double seconds) {
                                                        textColor:cellColor
                                                       dimmedColor:dimmedColor
                                                   paragraphStyle:style];
+            if (decoration.strikethrough) {
+                NSMutableAttributedString *struck = [attrStr mutableCopy];
+                [struck addAttribute:NSStrikethroughStyleAttributeName
+                               value:@(NSUnderlineStyleSingle)
+                               range:NSMakeRange(0, struck.length)];
+                attrStr = struck;
+            }
             [attrStr drawInRect:colRect];
         } else {
             // Draw normally (or queue accent)
@@ -965,6 +1097,11 @@ static NSString *formatGroupDuration(double seconds) {
                 NSForegroundColorAttributeName: cellColor,
                 NSParagraphStyleAttributeName: style
             };
+            if (decoration.strikethrough) {
+                NSMutableDictionary *struck = [attrs mutableCopy];
+                struck[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
+                attrs = struck;
+            }
             [value drawInRect:colRect withAttributes:attrs];
         }
         x += col.width;

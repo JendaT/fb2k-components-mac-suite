@@ -41,6 +41,13 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/subgroup_tests"
 
+echo "==> Compiling unit tests (DecorationStore)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/DecorationStoreTests.mm" \
+    "$PROJECT_DIR/src/Core/DecorationStore.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/decoration_tests"
+
 echo "==> Compiling unit tests (GroupBuilder)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/GroupBuilderTests.mm" \
@@ -53,3 +60,4 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/reorder_tests"
 "$TEST_BUILD_DIR/subgroup_tests"
 "$TEST_BUILD_DIR/groupbuilder_tests"
+"$TEST_BUILD_DIR/decoration_tests"
