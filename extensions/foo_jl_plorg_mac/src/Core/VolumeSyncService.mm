@@ -323,12 +323,30 @@ NSInteger const kVolumeSyncMaxBackups = 5;
                                                                               registry:foobarVolumes
                                                                           remapActions:remapActions];
         if (unresolved.count > 0) {
-            [self deferLog:[NSString stringWithFormat:
-                @"[Plorg VolumeSync] %lu .fplite UUID(s) are stale with no live replacement in "
-                @"foobar's volume registry; nothing patched. Mount the referenced volume in "
-                @"foobar2000 (Preferences > Media Library, or play a file from it) so it mints a "
-                @"fresh bookmark, then rescan.",
-                (unsigned long)unresolved.count]];
+            // Distinguish "not mounted" from "mounted but foobar has no working
+            // bookmark for this session" — advising the user to mount an
+            // already-mounted volume is a dead end (observed 2026-07-11).
+            NSArray<NSString *> *mountedPaths =
+                [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+                                                               registry:foobarVolumes
+                                                              isMounted:^BOOL(NSString *path) {
+                    return [self isCurrentlyMountedPath:path];
+                }];
+            if (mountedPaths.count > 0) {
+                [self deferLog:[NSString stringWithFormat:
+                    @"[Plorg VolumeSync] %lu stale .fplite UUID(s); %@ IS mounted but "
+                    @"foobar2000 has no working bookmark for this mount session (no registry "
+                    @"entry resolves). Nothing to remap onto. To register it, play or add any "
+                    @"file from that volume in foobar2000, then rescan.",
+                    (unsigned long)unresolved.count,
+                    [mountedPaths componentsJoinedByString:@", "]]];
+            } else {
+                [self deferLog:[NSString stringWithFormat:
+                    @"[Plorg VolumeSync] %lu .fplite UUID(s) are stale with no live replacement "
+                    @"in foobar's volume registry and the volume is not mounted; nothing patched. "
+                    @"Mount the volume, open it in foobar2000, then rescan.",
+                    (unsigned long)unresolved.count]];
+            }
         } else {
             [self deferLog:@"[Plorg VolumeSync] All .fplite UUIDs are live; nothing to patch"];
         }
@@ -413,6 +431,16 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         }]];
 
     return result;
+}
+
+// YES iff `path` is itself a current mount point (statfs f_mntonname == path).
+// Deliberately NOT fileExistsAtPath: — a leftover empty /Volumes/<name> dir
+// from a dead mount must not count as "mounted".
+- (BOOL)isCurrentlyMountedPath:(NSString *)path {
+    if (path.length == 0) return NO;
+    struct statfs stfs;
+    if (statfs(path.fileSystemRepresentation, &stfs) != 0) return NO;
+    return strcmp(stfs.f_mntonname, path.fileSystemRepresentation) == 0;
 }
 
 // Reads ~/Library/foobar2000-v2/config.sqlite read-only and returns

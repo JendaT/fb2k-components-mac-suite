@@ -299,6 +299,21 @@ static NSString *sqlIdentifier(NSString *value) {
     return unresolved;
 }
 
++ (NSArray<NSString *> *)mountedRegistryPathsForUnresolvedUUIDs:(NSArray<NSString *> *)unresolvedUUIDs
+                                                       registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                                      isMounted:(BOOL (^)(NSString *))isMounted {
+    NSMutableSet<NSString *> *mounted = [NSMutableSet set];
+    for (NSString *uuid in unresolvedUUIDs) {
+        NSString *originalPath = foobarVolumes[uuid][@"originalPath"];
+        if (!originalPath) continue;
+        if ([mounted containsObject:originalPath]) continue;
+        if (isMounted(originalPath)) {
+            [mounted addObject:originalPath];
+        }
+    }
+    return [mounted.allObjects sortedArrayUsingSelector:@selector(compare:)];
+}
+
 + (NSDictionary<NSString *, NSString *> *)orphanCacheMigrationsWithRowCounts:(NSDictionary<NSString *, NSNumber *> *)rowCounts
                                                                     registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
                                                              liveUUIDsByPath:(NSDictionary<NSString *, NSArray<NSString *> *> *)liveUUIDsByPath

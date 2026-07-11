@@ -92,6 +92,16 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
                                              registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
                                          remapActions:(NSDictionary<NSString *, NSString *> *)remapActions;
 
+// Of the unresolved stale UUIDs, the distinct registry originalPaths that ARE
+// currently mounted (per the injected probe), sorted. A non-empty result means
+// the user's volume is fine — foobar2000 just has no working bookmark for this
+// mount session, so the fix is registration (play/add a file from the volume
+// in fb2k), NOT mounting. Lets the caller stop advising "mount the volume"
+// when it already is.
++ (NSArray<NSString *> *)mountedRegistryPathsForUnresolvedUUIDs:(NSArray<NSString *> *)unresolvedUUIDs
+                                                       registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                                      isMounted:(BOOL (^)(NSString *path))isMounted;
+
 // Decide which dead UUIDs' metadb cache rows to migrate to a live UUID for
 // the same originalPath. rowCounts: UUID -> cached row count in metadb.
 // Only migrates when the dead UUID has more rows than the live target.

@@ -329,6 +329,62 @@ int main(void) {
         CHECK(unknown.count == 1, "UUID absent from registry is unresolved");
     }
 
+    // --- mounted-but-unregistered classification (2026-07-11 addendum item 4) ---
+    // Ground truth from the field: every registry bookmark can be dead while
+    // the stale UUID's originalPath IS a mounted, readable directory (SMB mount
+    // exposes no volume UUID, so no remap target is derivable from the mount;
+    // only fb2k minting a fresh bookmark can supply one). In that state the
+    // outcome must be "mounted but unregistered" — never "all live", and never
+    // advice to mount an already-mounted volume.
+    {
+        g_context = "mounted-unregistered";
+        NSString *stale = @"CFA535CA-9B1A-B84E-33C6-30D0FABC1BA7";
+        NSDictionary *deadRegistry = @{
+            stale:  @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+            kDead:  @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },   // same share, 2nd dead entry
+            kOther: @{ @"originalPath": @"/Volumes/music-1", @"isLive": @NO }, // dead, NOT mounted
+        };
+        NSDictionary *idx = @{
+            stale:  @{ @"count": @9, @"samplePath": @"Album/track.flac" },
+            kDead:  @{ @"count": @1, @"samplePath": @"b.flac" },
+            kOther: @{ @"count": @1, @"samplePath": @"c.flac" },
+        };
+        NSDictionary *plan = [VolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
+            fpliteIndex:idx
+            liveUUIDsByPath:[VolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry]
+            fileExists:^BOOL(NSString *p) { return YES; }
+            log:nil];
+        CHECK(plan.count == 0, "no live target exists anywhere -> nothing planned");
+
+        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+            registry:deadRegistry remapActions:plan];
+        CHECK(unresolved.count == 3, "all three stale UUIDs unresolved (never 'all live')");
+
+        // Only /Volumes/music is mounted; the probe is consulted once per path.
+        NSMutableArray<NSString *> *probed = [NSMutableArray array];
+        NSArray<NSString *> *mounted = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+            registry:deadRegistry
+            isMounted:^BOOL(NSString *path) {
+                [probed addObject:path];
+                return [path isEqualToString:@"/Volumes/music"];
+            }];
+        CHECK_EQ(mounted, @[@"/Volumes/music"],
+                 "mounted originalPath classified as mounted-but-unregistered, deduped");
+        CHECK(![mounted containsObject:@"/Volumes/music-1"], "unmounted path not classified mounted");
+
+        // Nothing mounted -> empty (the 'mount the volume' advice is then correct)
+        NSArray<NSString *> *none = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+            registry:deadRegistry
+            isMounted:^BOOL(NSString *path) { return NO; }];
+        CHECK(none.count == 0, "no mounted paths -> empty classification");
+
+        // Unresolved UUID with no registry entry (no originalPath) never probes
+        NSArray<NSString *> *noInfo = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:@[@"11111111-2222-3333-4444-999999999999"]
+            registry:@{}
+            isMounted:^BOOL(NSString *path) { return YES; }];
+        CHECK(noInfo.count == 0, "UUID without registry originalPath yields no path");
+    }
+
     // --- orphanCacheMigrations ---
     {
         g_context = "orphan-cache";

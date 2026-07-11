@@ -267,6 +267,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Fixed
 - Manual UUID remapping tool now preserves the UTF-8 BOM when rewriting `.fplite` files (shares the remap implementation with the automatic sync)
+- Volume sync outcome log reports the real result (stale-but-unrepairable vs genuinely all-live) and detects "mounted but unregistered in foobar2000" instead of advising to mount an already-mounted volume
+- `/Volumes` monitor coalesces event bursts into a single repair (previously up to 4 redundant registry scans per mount event storm)
+- Strict volume-UUID validation and SQL escaping in the metadb migration builder
 
 ### [1.4.0] - 2026-02-14
 

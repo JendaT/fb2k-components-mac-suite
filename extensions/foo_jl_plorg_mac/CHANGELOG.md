@@ -32,6 +32,9 @@ All notable changes to Playlist Organizer will be documented in this file.
 
 ### Fixed
 - Manual UUID remapping tool (`UUIDRemappingWindowController`) now preserves the UTF-8 BOM when rewriting `.fplite` files (previously stripped it; the automatic sync already preserved it). Both paths now share the same remap implementation.
+- **Volume sync outcome log no longer lies**: "All .fplite UUIDs are live; nothing to patch" was emitted whenever nothing was remapped, including when a stale UUID was found with no live replacement. The summary now reports the real outcome, and distinguishes "volume not mounted" from "volume IS mounted but foobar2000 has no working bookmark for this session" (statfs mount-point probe) - the latter tells the user to play/add a file from the volume in fb2k to register it, instead of the dead-end "mount the volume and retry".
+- **`/Volumes` monitor repair storm**: each vnode event scheduled an independent, uncancelled 3-second check, so one mount's event burst ran the full registry scan several times in a row (observed 4x within a second). Events now cancel and re-arm a single coalescing block.
+- Strict volume-UUID validation (8-4-4-4-12 hex) at all parse boundaries, plus escaping in the generated metadb migration SQL (defense in depth against malformed `.fplite`/config content).
 
 ### Documentation
 - `docs/research/volume-uuid-instability-deep-research.md` — deep research on macOS volume identity, foobar's storage, and prior incident history.

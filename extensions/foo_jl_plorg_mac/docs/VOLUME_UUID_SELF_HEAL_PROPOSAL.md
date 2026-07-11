@@ -4,6 +4,32 @@ Status: **proposal, not implemented.** Design for review before building.
 Date: 2026-07-11. Context: `docs/VOLUME_UUID_ISSUE.md`, investigation of the
 2026-07-11 `CFA535CA-…` playback failure.
 
+## 2026-07-11 addendum: probe results narrow the design space
+
+Two read-only probes on the affected machine settle earlier open questions:
+
+1. **All 18 registry bookmarks fail to resolve** when tested standalone with
+   the exact API/options VolumeSync uses (`URLByResolvingBookmarkData`,
+   `withoutUI|withoutMounting`). "18 volumes (0 live)" is factually correct —
+   liveness detection is not the problem.
+2. **The mounted SMB volume exposes NO volume UUID**: both
+   `NSURLVolumeUUIDStringKey` and DiskArbitration return nothing for
+   `/Volumes/music` (`DADiskCreateFromBSDName` on `//jendalen@Amunet…/music`
+   yields no description). Therefore a remap target can NEVER be derived from
+   the mount itself on this setup — neither by the automatic sync nor by the
+   manual Repair Volume UUIDs tool (whose mounted-volume discovery hits the
+   same wall). **Minting a fresh fb2k bookmark is the only viable source of a
+   live UUID.** Step 2's spike is now the whole feature, not one option of two.
+
+Also confirmed by git history: plorg has never written `mac.volume.*` entries
+or fb2k's `config.sqlite` in any commit, and the automatic + manual repair
+tools both first shipped in `cddda2a` (2026-05-17). Historically, live UUIDs
+were supplied by **foobar2000 itself minting a fresh registry entry + bookmark
+per remount** (hence 18 entries for one share); repair worked whenever the
+current session had one. The 2026-07-11 failure is that fb2k did not mint (or
+cannot resolve) an entry for the current mount session — that supply drying up
+is the actual root cause, and self-heal must replace it.
+
 ## Problem being solved
 
 Today, when **every** registry entry for a share is dead (fb2k's stored
