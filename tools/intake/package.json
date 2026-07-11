@@ -1,0 +1,21 @@
+{
+  "name": "@jl/intake",
+  "version": "0.1.0",
+  "description": "Intake CLI: release-root resolver, sidecars, scan/resolve/status",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "intake": "src/cli.ts"
+  },
+  "scripts": {
+    "intake": "bun run src/cli.ts",
+    "test": "bun test",
+    "gen-fixtures": "bun run scripts/gen-fixtures.ts"
+  },
+  "dependencies": {
+    "music-metadata": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0"
+  }
+}
