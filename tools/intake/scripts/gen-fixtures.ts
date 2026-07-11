@@ -209,14 +209,12 @@ async function main(): Promise<void> {
     tracks: ["Condemned", "Sentenced", "Released"],
   });
 
-  // ---- junk (skipped everywhere) ------------------------------------------
-  writeFileSync(join(INCOME, "downloads", ".DS_Store"), new Uint8Array([0, 0, 0, 1]));
-  writeFileSync(join(INCOME, ott, ".DS_Store"), new Uint8Array([0, 0, 0, 1]));
-  writeFileSync(join(INCOME, ott, "._01 - Jack's Cheese and Bread Snack.flac"), new Uint8Array(82));
+  // NAS thumbnail dir junk (committable; .DS_Store/._*/Thumbs.db junk is
+  // injected by the test helper instead, since the repo .gitignore excludes
+  // those names).
   const eaDir = join(INCOME, "slsk", "Solar Fields", "@eaDir");
   mkdirSync(eaDir, { recursive: true });
   writeFileSync(join(eaDir, "SYNO_THUMB.jpg"), new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
-  writeFileSync(join(INCOME, "slsk", "loose", "Thumbs.db"), new Uint8Array(16));
 
   console.log("fixture corpus generated at", INCOME);
 }

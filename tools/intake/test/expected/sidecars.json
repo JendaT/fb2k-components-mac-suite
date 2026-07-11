@@ -1,0 +1,1765 @@
+{
+  "downloads/.intake.itk_ee6416c9.json": {
+    "schema": 1,
+    "id": "itk_ee6416c9",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "downloads",
+      "source_type": "web",
+      "archive": "Ambient Collection (1997).iso"
+    },
+    "virtual": true,
+    "files": [],
+    "discs": null,
+    "cluster": {
+      "albumartist": null,
+      "album": null,
+      "confidence": 0,
+      "needs_review": true,
+      "signals": {
+        "purity": 0,
+        "seq": 0,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 0
+      }
+    },
+    "quality": {
+      "tier_eligible": "reject",
+      "issues": [
+        "iso_needs_manual_unpack"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "new",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "discovered",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "downloads/Aes Dana [2012] Pollen (Ultimae Records; inre042)/.intake.json": {
+    "schema": 1,
+    "id": "itk_5828a580",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "downloads",
+      "source_type": "web",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Iliona.flac",
+        "audio_hash": "flacmd5:a6e700f6e88e2c68960b98a2242c2ced",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Aes Dana",
+          "artist": "Aes Dana",
+          "album": "Pollen",
+          "title": "Iliona",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2012"
+        }
+      },
+      {
+        "path": "02 - Signs.flac",
+        "audio_hash": "flacmd5:8b52264e78c981cf8aa42652de1d6b8a",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Aes Dana",
+          "artist": "Aes Dana",
+          "album": "Pollen",
+          "title": "Signs",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2012"
+        }
+      },
+      {
+        "path": "03 - Adonai.flac",
+        "audio_hash": "flacmd5:d6052e371c7a9d54db25925a013c5c46",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Aes Dana",
+          "artist": "Aes Dana",
+          "album": "Pollen",
+          "title": "Adonai",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2012"
+        }
+      },
+      {
+        "path": "04 - Borderline.flac",
+        "audio_hash": "flacmd5:9b045ecec22b48d466c255249e841ba9",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Aes Dana",
+          "artist": "Aes Dana",
+          "album": "Pollen",
+          "title": "Borderline",
+          "tracknumber": 4,
+          "disc": null,
+          "date": "2012"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Aes Dana",
+      "album": "Pollen",
+      "confidence": 0.93,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 1,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "downloads/Carbon Based Lifeforms - Derelicts (2017).unpacked/Carbon Based Lifeforms - Derelicts (2017)/.intake.json": {
+    "schema": 1,
+    "id": "itk_724ff8a3",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "downloads",
+      "source_type": "web",
+      "archive": "../../Carbon Based Lifeforms - Derelicts (2017).zip"
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Accede.flac",
+        "audio_hash": "flacmd5:67d1146d9ce796e49a0c050758844a8b",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Carbon Based Lifeforms",
+          "artist": "Carbon Based Lifeforms",
+          "album": "Derelicts",
+          "title": "Accede",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2017"
+        }
+      },
+      {
+        "path": "02 - Clouds.flac",
+        "audio_hash": "flacmd5:0b1bc5359818ed77e2cefdc5de6c5baf",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Carbon Based Lifeforms",
+          "artist": "Carbon Based Lifeforms",
+          "album": "Derelicts",
+          "title": "Clouds",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2017"
+        }
+      },
+      {
+        "path": "03 - Path of Least Resistance.flac",
+        "audio_hash": "flacmd5:37495be776699dc40359d61d001b62fb",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Carbon Based Lifeforms",
+          "artist": "Carbon Based Lifeforms",
+          "album": "Derelicts",
+          "title": "Path of Least Resistance",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2017"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Carbon Based Lifeforms",
+      "album": "Derelicts",
+      "confidence": 0.81,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "downloads/Sync24 [2024] Omnimotion Remixed/.intake.json": {
+    "schema": 1,
+    "id": "itk_e1b58f43",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "downloads",
+      "source_type": "web",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Omnimotion.flac",
+        "audio_hash": "flacmd5:6a2042f1560af7c099e223403e11c789",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 96000,
+        "bit_depth": 24,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Sync24",
+          "artist": "Sync24",
+          "album": "Omnimotion Remixed",
+          "title": "Omnimotion",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2024"
+        }
+      },
+      {
+        "path": "02 - Dance of the Droids.flac",
+        "audio_hash": "flacmd5:008b8c0e3f44cca2f6d57639b65c8605",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 96000,
+        "bit_depth": 24,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Sync24",
+          "artist": "Sync24",
+          "album": "Omnimotion Remixed",
+          "title": "Dance of the Droids",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2024"
+        }
+      },
+      {
+        "path": "03 - Cargo.flac",
+        "audio_hash": "flacmd5:d40635c08ffc67ddf961c246882e07c2",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 96000,
+        "bit_depth": 24,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Sync24",
+          "artist": "Sync24",
+          "album": "Omnimotion Remixed",
+          "title": "Cargo",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2024"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Sync24",
+      "album": "Omnimotion Remixed",
+      "confidence": 0.89,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "uhq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "slsk/Solar Fields/Solar Fields - Movements (2009)/.intake.json": {
+    "schema": 1,
+    "id": "itk_b152c837",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Sombrero.mp3",
+        "audio_hash": "mp3sha1:1ab7d620336ed9016db6c27dc7e61f37177ea837",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Movements",
+          "title": "Sombrero",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2009"
+        }
+      },
+      {
+        "path": "02 - Perception.mp3",
+        "audio_hash": "mp3sha1:75b3cc9fc48ee88ec6ebae54306e86c855b92c11",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Movements",
+          "title": "Perception",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2009"
+        }
+      },
+      {
+        "path": "03 - Discovering.mp3",
+        "audio_hash": "mp3sha1:7330c190c1e297617d47351584b8ddb21b7d6928",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Movements",
+          "title": "Discovering",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2009"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Solar Fields",
+      "album": "Movements",
+      "confidence": 0.81,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "slsk/Solar Fields/Solar Fields [2001] Reflective Frequencies/.intake.json": {
+    "schema": 1,
+    "id": "itk_4bb3283c",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Wavescapes.flac",
+        "audio_hash": "flacmd5:69d590f24ad5c02e6844d1f539274c7a",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Reflective Frequencies",
+          "title": "Wavescapes",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2001"
+        }
+      },
+      {
+        "path": "02 - Cobalt.flac",
+        "audio_hash": "flacmd5:486d91e270ed28a34414848e6789df26",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Reflective Frequencies",
+          "title": "Cobalt",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2001"
+        }
+      },
+      {
+        "path": "03 - Skylab.flac",
+        "audio_hash": "flacmd5:16fec4ae83136e91c5913caddbeef5bf",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Reflective Frequencies",
+          "title": "Skylab",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2001"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Solar Fields",
+      "album": "Reflective Frequencies",
+      "confidence": 0.89,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "slsk/Solar Fields/Solar Fields [2005] Leaving Home/.intake.json": {
+    "schema": 1,
+    "id": "itk_e6fd505c",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Home.flac",
+        "audio_hash": "flacmd5:fe4c4ca3ae0b64f10c2f6df60957782b",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Leaving Home",
+          "title": "Home",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2005"
+        }
+      },
+      {
+        "path": "02 - Sol.flac",
+        "audio_hash": "flacmd5:798c532458c99f8137db7d67218bcefc",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Leaving Home",
+          "title": "Sol",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2005"
+        }
+      },
+      {
+        "path": "03 - Refractions.flac",
+        "audio_hash": "flacmd5:c0b2607bbfb96e7e37ddfa7ccb998a5f",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Solar Fields",
+          "artist": "Solar Fields",
+          "album": "Leaving Home",
+          "title": "Refractions",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2005"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Solar Fields",
+      "album": "Leaving Home",
+      "confidence": 0.89,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "slsk/loose/.intake.itk_9ce3e022.json": {
+    "schema": 1,
+    "id": "itk_9ce3e022",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "cell_calling_earth.ogg",
+        "audio_hash": "fsha1:aa0e216095c1e4a77c5722d28479b2ba3e0aa7b9",
+        "codec": "ogg",
+        "lossless": false,
+        "sample_rate": 48000,
+        "bit_depth": null,
+        "bitrate": 4,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Cell",
+          "album": "Live Sessions",
+          "title": "Calling Earth",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2005"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Cell",
+      "album": null,
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "reject",
+      "issues": [
+        "below_lossy_tolerance"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ],
+    "singles": true
+  },
+  "slsk/loose/.intake.itk_ae1ba168.json": {
+    "schema": 1,
+    "id": "itk_ae1ba168",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "miktek_awakenings.aiff",
+        "audio_hash": "pcmsha1:5f06ed2c36af600e6b8597358f5e68e43fe002e6",
+        "codec": "aiff",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Miktek",
+          "album": "Elsewhere",
+          "title": "Awakenings",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2014"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Miktek",
+      "album": null,
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ],
+    "singles": true
+  },
+  "slsk/loose/.intake.itk_ec774a27.json": {
+    "schema": 1,
+    "id": "itk_ec774a27",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "asura_lost_eden_edit.mp3",
+        "audio_hash": "mp3sha1:13fb4457159e6fee60763b8dae34c058567d028c",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Asura",
+          "album": "Singles",
+          "title": "Lost Eden (Edit)",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2004"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Asura",
+      "album": null,
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ],
+    "singles": true
+  },
+  "slsk/loose/.intake.itk_f2c3d216.json": {
+    "schema": 1,
+    "id": "itk_f2c3d216",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "hol_baumann_endless_park.wav",
+        "audio_hash": "pcmsha1:225e67f416334f3bab0cbe2121c94ca3b9499b7e",
+        "codec": "wav",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Hol Baumann",
+          "album": "Human",
+          "title": "Endless Park",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2008"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Hol Baumann",
+      "album": null,
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ],
+    "singles": true
+  },
+  "slsk/random_mix/.intake.itk_31bda3e1.json": {
+    "schema": 1,
+    "id": "itk_31bda3e1",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "zero_cult_breathe.mp3",
+        "audio_hash": "mp3sha1:aec83787307b4d64c49ea96579825cdc9dee9e43",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Zero Cult",
+          "album": "Breathe EP",
+          "title": "Breathe",
+          "tracknumber": 4,
+          "disc": null,
+          "date": "2008"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Zero Cult",
+      "album": null,
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ],
+    "singles": true
+  },
+  "slsk/random_mix/.intake.itk_8e6577b2.json": {
+    "schema": 1,
+    "id": "itk_8e6577b2",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "emantra_1_arcana.flac",
+        "audio_hash": "flacmd5:aed089f37f478ce5d86d9e47ae050e87",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "E-Mantra",
+          "artist": "E-Mantra",
+          "album": "Arcana",
+          "title": "Arcana",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2010"
+        }
+      },
+      {
+        "path": "emantra_2_nocturne.flac",
+        "audio_hash": "flacmd5:8a30037cdf4598e71a22aa45646fd915",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "E-Mantra",
+          "artist": "E-Mantra",
+          "album": "Arcana",
+          "title": "Nocturne",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2010"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "E-Mantra",
+      "album": "Arcana",
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "slsk/random_mix/.intake.itk_bca37a47.json": {
+    "schema": 1,
+    "id": "itk_bca37a47",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "slsk",
+      "source_type": "soulseek",
+      "archive": null
+    },
+    "virtual": true,
+    "files": [
+      {
+        "path": "koan_1_argonautica.mp3",
+        "audio_hash": "mp3sha1:0d6fe26fac6b775845bccd77638aced6a0fba724",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Argonautica",
+          "title": "Argonautica",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2013"
+        }
+      },
+      {
+        "path": "koan_2_silent_hero.mp3",
+        "audio_hash": "mp3sha1:261d201b0867b7cca7863c6518ba103980b1193f",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Argonautica",
+          "title": "Silent Hero",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2013"
+        }
+      },
+      {
+        "path": "koan_3_athena.mp3",
+        "audio_hash": "mp3sha1:32fe6e11dc65e7e964277e47eee6bfae3704b232",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Argonautica",
+          "title": "Athena",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2013"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Koan",
+      "album": "Argonautica",
+      "confidence": 0.7,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "todo/Asura [2003] Lost Eden (Ultimae Records; inre010)/.intake.json": {
+    "schema": 1,
+    "id": "itk_aed8f834",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "CD1/01 - Lost Eden.flac",
+        "audio_hash": "flacmd5:a77b3d6d2cfd469604a400168bd88489",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "Lost Eden",
+          "tracknumber": 1,
+          "disc": 1,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "CD1/02 - Regenesis.flac",
+        "audio_hash": "flacmd5:8614bfcd08a0e459f8a6c7cb4a7c035e",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "Regenesis",
+          "tracknumber": 2,
+          "disc": 1,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "CD1/03 - Atmosphere.flac",
+        "audio_hash": "flacmd5:4825cb561ecee07bbeb0cc0b01931ac6",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "Atmosphere",
+          "tracknumber": 3,
+          "disc": 1,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "CD2/01 - Celestial.flac",
+        "audio_hash": "flacmd5:dbea0c33c7316267cbd34baa12e4f131",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "Celestial",
+          "tracknumber": 1,
+          "disc": 2,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "CD2/02 - Golden Ocean.flac",
+        "audio_hash": "flacmd5:8463fdbbabcdafb94fdf6a227715c28b",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "Golden Ocean",
+          "tracknumber": 2,
+          "disc": 2,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "CD2/03 - The Prophecy.flac",
+        "audio_hash": "flacmd5:6b7dbfe2351a3995e74f752699f0c9ac",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Asura",
+          "artist": "Asura",
+          "album": "Lost Eden",
+          "title": "The Prophecy",
+          "tracknumber": 3,
+          "disc": 2,
+          "date": "2003"
+        }
+      }
+    ],
+    "discs": [
+      {
+        "dir": "CD1",
+        "disc": 1
+      },
+      {
+        "dir": "CD2",
+        "disc": 2
+      }
+    ],
+    "cluster": {
+      "albumartist": "Asura",
+      "album": "Lost Eden",
+      "confidence": 0.93,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 1,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "todo/Hilyard [2019] Division Cycle/.intake.json": {
+    "schema": 1,
+    "id": "itk_baf945ab",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Cascadia.flac",
+        "audio_hash": "flacmd5:8616047fd2c510ccda09bad79cd16259",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": null,
+          "album": null,
+          "title": null,
+          "tracknumber": null,
+          "disc": null,
+          "date": null
+        }
+      },
+      {
+        "path": "02 - Marrow.flac",
+        "audio_hash": "flacmd5:66aac20d34f3fa72e85e39714abef268",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": null,
+          "album": null,
+          "title": null,
+          "tracknumber": null,
+          "disc": null,
+          "date": null
+        }
+      },
+      {
+        "path": "03 - Redwood.flac",
+        "audio_hash": "flacmd5:bc0a984a7e5fadd9faf58c9fb596a5fb",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": null,
+          "album": null,
+          "title": null,
+          "tracknumber": null,
+          "disc": null,
+          "date": null
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Hilyard",
+      "album": "Division Cycle",
+      "confidence": 0.54,
+      "needs_review": true,
+      "signals": {
+        "purity": 0,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": []
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "todo/Koan-Condemned-(MKL033)-WEB-2016-KOAN/.intake.json": {
+    "schema": 1,
+    "id": "itk_47aadf50",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Condemned.mp3",
+        "audio_hash": "mp3sha1:f019de51b475f5d4050a2d93827eabd84a0be12c",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Condemned",
+          "title": "Condemned",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2016"
+        }
+      },
+      {
+        "path": "02 - Sentenced.mp3",
+        "audio_hash": "mp3sha1:5d4c2d5a7655a9ee10e15c1be98b246a77466c50",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Condemned",
+          "title": "Sentenced",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2016"
+        }
+      },
+      {
+        "path": "03 - Released.mp3",
+        "audio_hash": "mp3sha1:0b698e347bd7bc5dd0cd73ed2804ad145a220274",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Koan",
+          "artist": "Koan",
+          "album": "Condemned",
+          "title": "Released",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2016"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Koan",
+      "album": "Condemned",
+      "confidence": 0.85,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 1,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "todo/Oldskool - Demo Tape (1998)/.intake.json": {
+    "schema": 1,
+    "id": "itk_bcc16848",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Intro.mp3",
+        "audio_hash": "mp3sha1:70ef616080c124d16dc6727cec62da470b9a6d42",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 128,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Oldskool",
+          "artist": "Oldskool",
+          "album": "Demo Tape",
+          "title": "Intro",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "1998"
+        }
+      },
+      {
+        "path": "02 - Rough Cut.mp3",
+        "audio_hash": "mp3sha1:035d54ff484a19ddd55b6931bb96c2df21c3e0a2",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 128,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Oldskool",
+          "artist": "Oldskool",
+          "album": "Demo Tape",
+          "title": "Rough Cut",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "1998"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Oldskool",
+      "album": "Demo Tape",
+      "confidence": 0.81,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "reject",
+      "issues": [
+        "below_lossy_tolerance"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
+  "todo/Ott - Blumenkraft (2003)/.intake.json": {
+    "schema": 1,
+    "id": "itk_61c35a85",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Jack's Cheese and Bread Snack.flac",
+        "audio_hash": "flacmd5:34ac76db8445b92b67eb4be957063605",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Jack's Cheese and Bread Snack",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "01 - Jack's Cheese and Bread Snack.mp3",
+        "audio_hash": "mp3sha1:7d3d12c3d157014937951279fa652ef5eaa4bbb1",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Jack's Cheese and Bread Snack",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2003"
+        },
+        "quality_shadow": true
+      },
+      {
+        "path": "02 - Splitting an Atom.flac",
+        "audio_hash": "flacmd5:9f86a1f9103e98f10d61a2bc49ef796e",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Splitting an Atom",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "02 - Splitting an Atom.mp3",
+        "audio_hash": "mp3sha1:a151fa84b24a8bfd25a82dc9ec171b1314727534",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Splitting an Atom",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2003"
+        },
+        "quality_shadow": true
+      },
+      {
+        "path": "03 - Smoked Glass and Chrome.flac",
+        "audio_hash": "flacmd5:1ac3bb4944eaf9f4915306defa3e1da5",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Smoked Glass and Chrome",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2003"
+        }
+      },
+      {
+        "path": "03 - Smoked Glass and Chrome.mp3",
+        "audio_hash": "mp3sha1:fa352fc5b174d68bcfd15bd60ec133f2a46da472",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Ott",
+          "artist": "Ott",
+          "album": "Blumenkraft",
+          "title": "Smoked Glass and Chrome",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2003"
+        },
+        "quality_shadow": true
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Ott",
+      "album": "Blumenkraft",
+      "confidence": 0.81,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "quality_shadow_set:mp3"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  }
+}
