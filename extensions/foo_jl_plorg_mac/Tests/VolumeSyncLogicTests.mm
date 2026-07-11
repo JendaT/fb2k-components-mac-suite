@@ -280,6 +280,55 @@ int main(void) {
               "unresolvable UUID logged");
     }
 
+    // --- unresolvedFpliteUUIDs: the reported "contradiction" (item 1) ---
+    // Reproduces 2026-07-11: registry has 0 live entries; a playlist references
+    // a stale UUID for /Volumes/music. planRemapActions returns empty (no live
+    // replacement), and the outcome must NOT be classified as "all live".
+    {
+        g_context = "unresolved-outcome";
+        NSString *stale = @"CFA535CA-9B1A-B84E-33C6-30D0FABC1BA7";
+        // Whole registry dead — mirrors "18 volumes (0 live)".
+        NSDictionary *deadRegistry = @{
+            stale: @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+            kDead: @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
+        };
+        NSDictionary *noLivePaths = [VolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry];
+        CHECK(noLivePaths.count == 0, "0 live registry entries -> no live paths");
+
+        NSDictionary *idx = @{ stale: @{ @"count": @9, @"samplePath": @"Album/track.flac" } };
+        NSDictionary *plan = [VolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
+            fpliteIndex:idx
+            liveUUIDsByPath:noLivePaths
+            fileExists:^BOOL(NSString *p) { return YES; }  // path IS mounted & readable
+            log:nil];
+        CHECK(plan.count == 0, "stale UUID unrepairable when whole registry is dead");
+
+        // The core assertion: this is NOT "all .fplite UUIDs are live".
+        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+            registry:deadRegistry remapActions:plan];
+        CHECK(unresolved.count == 1 && [unresolved[0] isEqualToString:stale],
+              "stale referenced UUID reported unresolved, not 'all live'");
+
+        // Contrast: a genuinely-live fplite UUID is NOT reported unresolved.
+        NSDictionary *liveReg = @{ kLive: @{ @"originalPath": @"/Volumes/music",
+                                             @"resolvedPath": @"/Volumes/music", @"isLive": @YES } };
+        NSArray<NSString *> *none = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:
+            @{ kLive: @{ @"count": @1, @"samplePath": @"a.flac" } }
+            registry:liveReg remapActions:@{}];
+        CHECK(none.count == 0, "genuinely live UUID -> nothing unresolved (real 'all live')");
+
+        // A UUID scheduled for remap is resolved, not unresolved.
+        NSArray<NSString *> *afterPlan = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+            registry:deadRegistry remapActions:@{ stale: kLive }];
+        CHECK(afterPlan.count == 0, "UUID in remapActions counts as resolved");
+
+        // A UUID unknown to the registry (not live, not planned) is unresolved.
+        NSArray<NSString *> *unknown = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:
+            @{ kOther: @{ @"count": @1, @"samplePath": @"z.flac" } }
+            registry:deadRegistry remapActions:@{}];
+        CHECK(unknown.count == 1, "UUID absent from registry is unresolved");
+    }
+
     // --- orphanCacheMigrations ---
     {
         g_context = "orphan-cache";

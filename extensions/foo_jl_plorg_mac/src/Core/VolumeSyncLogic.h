@@ -84,6 +84,14 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
                                                             fileExists:(BOOL (^)(NSString *path))fileExists
                                                                    log:(void (^ _Nullable)(NSString *message))log;
 
+// The .fplite UUIDs that are neither live in the registry nor scheduled for
+// remap — i.e. stale references this pass could not fix. Lets the caller log
+// an accurate outcome instead of falsely claiming "all .fplite UUIDs are live"
+// when a stale UUID simply had no live replacement.
++ (NSArray<NSString *> *)unresolvedFpliteUUIDsInIndex:(NSDictionary<NSString *, NSDictionary *> *)fpliteIndex
+                                             registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                         remapActions:(NSDictionary<NSString *, NSString *> *)remapActions;
+
 // Decide which dead UUIDs' metadb cache rows to migrate to a live UUID for
 // the same originalPath. rowCounts: UUID -> cached row count in metadb.
 // Only migrates when the dead UUID has more rows than the live target.

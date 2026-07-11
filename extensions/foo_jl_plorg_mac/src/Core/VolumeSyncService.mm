@@ -23,6 +23,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 @property (nonatomic, strong, readwrite) NSMutableArray<NSString *> *deferredLogMessages;
 @property (nonatomic, strong) dispatch_source_t volumeMonitorSource;
 @property (nonatomic, strong) NSString *playlistsDir; // cached for runtime monitor
+@property (nonatomic, copy) dispatch_block_t pendingVolumeCheck; // coalesces monitor bursts
 @end
 
 @implementation VolumeSyncService
@@ -314,7 +315,23 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     if (remapActions.count > 0) {
         result = [self applyRemapping:remapActions inDirectory:playlistsDir];
     } else {
-        [self deferLog:@"[Plorg VolumeSync] All .fplite UUIDs are live; nothing to patch"];
+        // remapActions can be empty for two very different reasons: everything
+        // really is live, OR a stale UUID was found with no live replacement
+        // (already logged per-UUID above). Report which, so the log does not
+        // falsely claim liveness when playback is actually broken.
+        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:fpliteIndex
+                                                                              registry:foobarVolumes
+                                                                          remapActions:remapActions];
+        if (unresolved.count > 0) {
+            [self deferLog:[NSString stringWithFormat:
+                @"[Plorg VolumeSync] %lu .fplite UUID(s) are stale with no live replacement in "
+                @"foobar's volume registry; nothing patched. Mount the referenced volume in "
+                @"foobar2000 (Preferences > Media Library, or play a file from it) so it mints a "
+                @"fresh bookmark, then rescan.",
+                (unsigned long)unresolved.count]];
+        } else {
+            [self deferLog:@"[Plorg VolumeSync] All .fplite UUIDs are live; nothing to patch"];
+        }
     }
 
     // 5b. Orphan cache migrations — dead UUIDs that aren't in .fplite (so no
@@ -695,11 +712,28 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     __weak typeof(self) weakSelf = self;
 
     dispatch_source_set_event_handler(source, ^{
-        // Debounce: wait 3 seconds for mount to fully settle
+        // A single mount emits several /Volumes events; without coalescing each
+        // one scheduled an independent repair, so a burst produced N registry
+        // scans ~3s later. Cancel any pending check and (re)arm one 3s block so
+        // only the last event in a burst triggers a repair.
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
+        if (strongSelf.pendingVolumeCheck) {
+            dispatch_block_cancel(strongSelf.pendingVolumeCheck);
+        }
+
+        dispatch_block_t check = dispatch_block_create((dispatch_block_flags_t)0, ^{
+            typeof(self) s = weakSelf;
+            if (!s) return;
+            s.pendingVolumeCheck = nil;
+            [s handleVolumeChange];
+        });
+        strongSelf.pendingVolumeCheck = check;
+
+        // Wait 3 seconds for the mount to fully settle before scanning.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
-            dispatch_get_main_queue(), ^{
-                [weakSelf handleVolumeChange];
-            });
+            dispatch_get_main_queue(), check);
     });
 
     dispatch_source_set_cancel_handler(source, ^{
@@ -711,6 +745,10 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 }
 
 - (void)stopVolumeMonitor {
+    if (self.pendingVolumeCheck) {
+        dispatch_block_cancel(self.pendingVolumeCheck);
+        self.pendingVolumeCheck = nil;
+    }
     if (self.volumeMonitorSource) {
         dispatch_source_cancel(self.volumeMonitorSource);
         self.volumeMonitorSource = nil;

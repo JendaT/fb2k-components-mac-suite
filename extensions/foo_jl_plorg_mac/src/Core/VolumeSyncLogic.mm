@@ -286,6 +286,19 @@ static NSString *sqlIdentifier(NSString *value) {
     return remapActions;
 }
 
++ (NSArray<NSString *> *)unresolvedFpliteUUIDsInIndex:(NSDictionary<NSString *, NSDictionary *> *)fpliteIndex
+                                             registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
+                                         remapActions:(NSDictionary<NSString *, NSString *> *)remapActions {
+    NSMutableArray<NSString *> *unresolved = [NSMutableArray array];
+    for (NSString *uuid in fpliteIndex) {
+        if (remapActions[uuid]) continue;                        // will be repaired
+        NSDictionary *info = foobarVolumes[uuid];
+        if (info && [info[@"isLive"] boolValue]) continue;       // genuinely live
+        [unresolved addObject:uuid];
+    }
+    return unresolved;
+}
+
 + (NSDictionary<NSString *, NSString *> *)orphanCacheMigrationsWithRowCounts:(NSDictionary<NSString *, NSNumber *> *)rowCounts
                                                                     registry:(NSDictionary<NSString *, NSDictionary *> *)foobarVolumes
                                                              liveUUIDsByPath:(NSDictionary<NSString *, NSArray<NSString *> *> *)liveUUIDsByPath
