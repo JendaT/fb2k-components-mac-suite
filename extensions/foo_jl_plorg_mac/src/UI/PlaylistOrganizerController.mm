@@ -9,9 +9,9 @@
 #import "StrawberryImportPreviewController.h"
 #import "../Core/TreeModel.h"
 #import "../Core/TreeNode.h"
-#import "../Core/TreeYamlCodec.h"
-#import "../Core/PathCodec.h"
-#import "../Core/VolumeSyncLogic.h"
+#import "../Core/PlorgTreeYamlCodec.h"
+#import "../Core/PlorgPathCodec.h"
+#import "../Core/PlorgVolumeSyncLogic.h"
 #import "../Core/ConfigHelper.h"
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -414,7 +414,7 @@ static NSString* makeUniquePlaylistName(NSString* baseName) {
 static NSString *leafNameForNode(TreeNode *node) {
     NSString *name = node.name;
     if (node.isFolder) return name;
-    // Deliberately a lossy split: unlike PathCodec splitEncodedName:, this does
+    // Deliberately a lossy split: unlike PlorgPathCodec splitEncodedName:, this does
     // not unescape doubled guillemets. It is a display heuristic for dirty names.
     NSRange lastSep = [name rangeOfString:PlorgPathSeparator options:NSBackwardsSearch];
     if (lastSep.location != NSNotFound) {
@@ -1966,7 +1966,7 @@ static NSString *leafNameForNode(TreeNode *node) {
             FB2K_console_formatter() << "[Plorg] YAML length: " << yaml.length << " chars";
 
             // Parse YAML into nodes
-            NSArray<TreeNode *> *parsedNodes = [TreeYamlCodec parseNodeList:yaml];
+            NSArray<TreeNode *> *parsedNodes = [PlorgTreeYamlCodec parseNodeList:yaml];
             FB2K_console_formatter() << "[Plorg] Parsed " << parsedNodes.count << " root nodes from YAML";
 
             if (parsedNodes.count == 0) {

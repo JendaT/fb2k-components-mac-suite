@@ -1,5 +1,5 @@
 //
-//  VolumeSyncLogic.h
+//  PlorgVolumeSyncLogic.h
 //  foo_plorg_mac
 //
 //  Pure parsing and planning logic for volume UUID sync: mount-source and
@@ -25,7 +25,7 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
     FpliteLineParsed,
 };
 
-@interface VolumeSyncLogic : NSObject
+@interface PlorgVolumeSyncLogic : NSObject
 
 // --- Validation ---
 

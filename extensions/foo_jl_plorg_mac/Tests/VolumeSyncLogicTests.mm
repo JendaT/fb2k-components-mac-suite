@@ -2,13 +2,13 @@
 //  VolumeSyncLogicTests.mm
 //  foo_plorg_mac
 //
-//  Unit tests for VolumeSyncLogic (mount parsing, fplite scanning,
+//  Unit tests for PlorgVolumeSyncLogic (mount parsing, fplite scanning,
 //  BOM-preserving remap, repair planning, orphan migration, SQL builder).
 //  Compiled standalone (Foundation only); gating phase of Scripts/build.sh.
 //
 
 #import <Foundation/Foundation.h>
-#import "../src/Core/VolumeSyncLogic.h"
+#import "../src/Core/PlorgVolumeSyncLogic.h"
 
 #include <string>
 
@@ -50,23 +50,23 @@ int main(void) {
     // --- isValidVolumeUUID (the gate protecting SQL/path interpolation) ---
     {
         g_context = "uuid-validation";
-        CHECK([VolumeSyncLogic isValidVolumeUUID:kDead], "canonical uppercase UUID valid");
-        CHECK(([VolumeSyncLogic isValidVolumeUUID:[kDead lowercaseString]]), "lowercase valid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:nil], "nil invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@""], "empty invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"NOTAUUID"], "short invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEE"],
+        CHECK([PlorgVolumeSyncLogic isValidVolumeUUID:kDead], "canonical uppercase UUID valid");
+        CHECK(([PlorgVolumeSyncLogic isValidVolumeUUID:[kDead lowercaseString]]), "lowercase valid");
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:nil], "nil invalid");
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@""], "empty invalid");
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"NOTAUUID"], "short invalid");
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEE"],
               "35 chars invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
               "37 chars invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"GGGGGGGG-BBBB-CCCC-DDDD-EEEEEEEEEEEE"],
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"GGGGGGGG-BBBB-CCCC-DDDD-EEEEEEEEEEEE"],
               "non-hex invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAABBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"AAAAAAAABBBB-CCCC-DDDD-EEEEEEEEEEEEE"],
               "wrong group shape invalid");
         // SQL-injection payloads must never validate
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"X'; DROP TABLE metadb;--"],
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"X'; DROP TABLE metadb;--"],
               "quote injection invalid");
-        CHECK(![VolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEE'E"],
+        CHECK(![PlorgVolumeSyncLogic isValidVolumeUUID:@"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEE'E"],
               "embedded quote invalid");
     }
 
@@ -75,27 +75,27 @@ int main(void) {
         g_context = "injection-rejected";
         // A crafted .fplite line whose "UUID" segment carries SQL
         NSString *evil = @"mac-volume://X'; DROP TABLE metadb;--/a.flac";
-        CHECK([VolumeSyncLogic parseFpliteLine:evil uuid:NULL samplePath:NULL] == FpliteLineMalformed,
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:evil uuid:NULL samplePath:NULL] == FpliteLineMalformed,
               "SQL payload in UUID segment rejected as malformed");
-        CHECK([VolumeSyncLogic scanFpliteContentForUUIDs:evil].count == 0,
+        CHECK([PlorgVolumeSyncLogic scanFpliteContentForUUIDs:evil].count == 0,
               "malformed line contributes no UUID");
 
         NSMutableDictionary *idx = [NSMutableDictionary dictionary];
-        [VolumeSyncLogic indexFpliteContent:evil into:idx];
+        [PlorgVolumeSyncLogic indexFpliteContent:evil into:idx];
         CHECK(idx.count == 0, "malformed line not indexed");
 
         // Config keys carrying SQL are rejected too
-        CHECK([VolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.X'; DROP TABLE x;--.bookmark"] == nil,
+        CHECK([PlorgVolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.X'; DROP TABLE x;--.bookmark"] == nil,
               "SQL payload in config key rejected");
 
         // Even if a bad value somehow reaches the SQL builder, it is skipped
-        NSString *sql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:
+        NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:
                             @{ @"X'; DROP TABLE metadb;--": kLive } indexTables:@[]];
         CHECK(![sql containsString:@"DROP TABLE"], "SQL builder skips invalid dead UUID");
         CHECK_EQ(sql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
                  "invalid action yields empty transaction");
 
-        NSString *sql2 = [VolumeSyncLogic metadbMigrationSQLForRemapActions:
+        NSString *sql2 = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:
                             @{ kDead: @"bogus-target" } indexTables:@[]];
         CHECK(![sql2 containsString:@"bogus"], "SQL builder skips invalid live UUID");
     }
@@ -103,28 +103,28 @@ int main(void) {
     // --- shareNameFromMountSource ---
     {
         g_context = "share-name";
-        CHECK_EQ([VolumeSyncLogic shareNameFromMountSource:"//user@192.168.1.10/music.hq"],
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"//user@192.168.1.10/music.hq"],
                  @"music.hq", "SMB with user");
-        CHECK_EQ([VolumeSyncLogic shareNameFromMountSource:"//host/share"],
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"//host/share"],
                  @"share", "SMB without user");
-        CHECK_EQ([VolumeSyncLogic shareNameFromMountSource:"//host/share/sub/dir"],
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"//host/share/sub/dir"],
                  @"share", "SMB subpath ignored");
-        CHECK_EQ([VolumeSyncLogic shareNameFromMountSource:"nas:/export/media"],
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"nas:/export/media"],
                  @"media", "NFS last component");
-        CHECK([VolumeSyncLogic shareNameFromMountSource:"//hostonly"] == nil, "no share part -> nil");
-        CHECK([VolumeSyncLogic shareNameFromMountSource:"/dev/disk1s1"] == nil, "local device -> nil");
-        CHECK([VolumeSyncLogic shareNameFromMountSource:NULL] == nil, "NULL -> nil");
-        CHECK([VolumeSyncLogic shareNameFromMountSource:""] == nil, "empty -> nil");
+        CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:"//hostonly"] == nil, "no share part -> nil");
+        CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:"/dev/disk1s1"] == nil, "local device -> nil");
+        CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:NULL] == nil, "NULL -> nil");
+        CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:""] == nil, "empty -> nil");
     }
 
     // --- volumeUUIDFromConfigKey ---
     {
         g_context = "config-key";
         NSString *key = [NSString stringWithFormat:@"mac.volume.%@.originalPath", [kDead lowercaseString]];
-        CHECK_EQ([VolumeSyncLogic volumeUUIDFromConfigKey:key], kDead, "extracts and uppercases");
-        CHECK([VolumeSyncLogic volumeUUIDFromConfigKey:@"other.key"] == nil, "wrong prefix -> nil");
-        CHECK([VolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.nodot"] == nil, "no dot -> nil");
-        CHECK([VolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.nodash.bookmark"] == nil,
+        CHECK_EQ([PlorgVolumeSyncLogic volumeUUIDFromConfigKey:key], kDead, "extracts and uppercases");
+        CHECK([PlorgVolumeSyncLogic volumeUUIDFromConfigKey:@"other.key"] == nil, "wrong prefix -> nil");
+        CHECK([PlorgVolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.nodot"] == nil, "no dot -> nil");
+        CHECK([PlorgVolumeSyncLogic volumeUUIDFromConfigKey:@"mac.volume.nodash.bookmark"] == nil,
               "no dash in UUID -> nil");
     }
 
@@ -134,20 +134,20 @@ int main(void) {
         NSString *uuid = nil, *sample = nil;
         NSString *line = [NSString stringWithFormat:@"mac-volume://%@/Artist/Track.flac",
                           [kDead lowercaseString]];
-        CHECK([VolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:&sample] == FpliteLineParsed,
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:&sample] == FpliteLineParsed,
               "valid line parses");
         CHECK_EQ(uuid, kDead, "UUID uppercased");
         CHECK_EQ(sample, @"Artist/Track.flac", "sample path after UUID");
 
-        CHECK([VolumeSyncLogic parseFpliteLine:@"" uuid:NULL samplePath:NULL] == FpliteLineNotVolume,
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"" uuid:NULL samplePath:NULL] == FpliteLineNotVolume,
               "empty -> not volume");
-        CHECK([VolumeSyncLogic parseFpliteLine:@"file:///local/track.mp3" uuid:NULL samplePath:NULL]
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"file:///local/track.mp3" uuid:NULL samplePath:NULL]
               == FpliteLineNotVolume, "other scheme -> not volume");
-        CHECK([VolumeSyncLogic parseFpliteLine:@"mac-volume://short/x" uuid:NULL samplePath:NULL]
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"mac-volume://short/x" uuid:NULL samplePath:NULL]
               == FpliteLineMalformed, "UUID segment too short -> malformed");
-        CHECK([VolumeSyncLogic parseFpliteLine:@"mac-volume://NODASHNODASH/x" uuid:NULL samplePath:NULL]
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"mac-volume://NODASHNODASH/x" uuid:NULL samplePath:NULL]
               == FpliteLineMalformed, "no dash -> malformed");
-        CHECK([VolumeSyncLogic parseFpliteLine:@"mac-volume://noslashatall" uuid:NULL samplePath:NULL]
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"mac-volume://noslashatall" uuid:NULL samplePath:NULL]
               == FpliteLineMalformed, "no slash -> malformed");
     }
 
@@ -162,18 +162,18 @@ int main(void) {
             @"mac-volume://bad/x\n",
             kDead, kDead, kLive];
 
-        NSDictionary *counts = [VolumeSyncLogic scanFpliteContentForUUIDs:content];
+        NSDictionary *counts = [PlorgVolumeSyncLogic scanFpliteContentForUUIDs:content];
         CHECK_EQ(counts[kDead], @2, "dead UUID counted twice");
         CHECK_EQ(counts[kLive], @1, "live UUID counted once");
         CHECK(counts.count == 2, "malformed and non-volume lines skipped");
-        CHECK([VolumeSyncLogic scanFpliteContentForUUIDs:nil].count == 0, "nil content -> empty");
+        CHECK([PlorgVolumeSyncLogic scanFpliteContentForUUIDs:nil].count == 0, "nil content -> empty");
 
         NSMutableDictionary *index = [NSMutableDictionary dictionary];
-        [VolumeSyncLogic indexFpliteContent:content into:index];
+        [PlorgVolumeSyncLogic indexFpliteContent:content into:index];
         CHECK_EQ(index[kDead][@"count"], @2, "index counts");
         CHECK_EQ(index[kDead][@"samplePath"], @"a.flac", "samplePath from first entry");
         // Merging a second file accumulates
-        [VolumeSyncLogic indexFpliteContent:[NSString stringWithFormat:@"mac-volume://%@/z.flac\n", kDead]
+        [PlorgVolumeSyncLogic indexFpliteContent:[NSString stringWithFormat:@"mac-volume://%@/z.flac\n", kDead]
                                        into:index];
         CHECK_EQ(index[kDead][@"count"], @3, "second file accumulates count");
         CHECK_EQ(index[kDead][@"samplePath"], @"a.flac", "samplePath kept from first sighting");
@@ -186,7 +186,7 @@ int main(void) {
             @"mac-volume://%@/a.flac\nmac-volume://%@/b.flac\n", [kDead lowercaseString], kLive];
         NSData *plain = [body dataUsingEncoding:NSUTF8StringEncoding];
 
-        NSData *out = [VolumeSyncLogic remappedFpliteData:plain
+        NSData *out = [PlorgVolumeSyncLogic remappedFpliteData:plain
                                                 fromUUIDs:[NSSet setWithObject:kDead]
                                                    toUUID:kLive];
         CHECK(out != nil, "change detected (case-insensitive match)");
@@ -199,19 +199,19 @@ int main(void) {
         const uint8_t bom[] = {0xEF, 0xBB, 0xBF};
         NSMutableData *withBOM = [NSMutableData dataWithBytes:bom length:3];
         [withBOM appendData:plain];
-        NSData *outBOM = [VolumeSyncLogic remappedFpliteData:withBOM
+        NSData *outBOM = [PlorgVolumeSyncLogic remappedFpliteData:withBOM
                                                    fromUUIDs:[NSSet setWithObject:kDead]
                                                       toUUID:kLive];
         CHECK(outBOM.length >= 3 && memcmp(outBOM.bytes, bom, 3) == 0, "UTF-8 BOM preserved");
 
         // No match -> nil
-        CHECK([VolumeSyncLogic remappedFpliteData:plain
+        CHECK([PlorgVolumeSyncLogic remappedFpliteData:plain
                                         fromUUIDs:[NSSet setWithObject:kOther]
                                            toUUID:kLive] == nil, "no match -> nil");
 
         // Invalid UTF-8 -> nil
         const uint8_t junk[] = {0xFF, 0xFE, 0x00, 0xD8};
-        CHECK([VolumeSyncLogic remappedFpliteData:[NSData dataWithBytes:junk length:4]
+        CHECK([PlorgVolumeSyncLogic remappedFpliteData:[NSData dataWithBytes:junk length:4]
                                         fromUUIDs:[NSSet setWithObject:kDead]
                                            toUUID:kLive] == nil, "non-UTF-8 -> nil");
     }
@@ -225,7 +225,7 @@ int main(void) {
             kOther: @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
             kDead:  @{ @"isLive": @YES },  // live but no path -> skipped
         };
-        NSDictionary *byPath = [VolumeSyncLogic liveUUIDsByPathFromRegistry:registry];
+        NSDictionary *byPath = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:registry];
         CHECK(byPath.count == 1, "only pathed live UUIDs grouped");
         CHECK_EQ(byPath[@"/Volumes/music"], @[kLive], "live UUID grouped under path");
     }
@@ -243,7 +243,7 @@ int main(void) {
         void (^log)(NSString *) = ^(NSString *m) { [logs addObject:m]; };
 
         // Dead UUID with matching originalPath -> remapped
-        NSDictionary *plan = [VolumeSyncLogic planRemapActionsWithRegistry:registry
+        NSDictionary *plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:registry
             fpliteIndex:@{ kDead: @{ @"count": @3, @"samplePath": @"a.flac" } }
             liveUUIDsByPath:byPath
             fileExists:^BOOL(NSString *p) { return NO; }
@@ -251,7 +251,7 @@ int main(void) {
         CHECK_EQ(plan, @{ kDead: kLive }, "dead UUID remapped via originalPath");
 
         // Live UUID in fplite -> untouched
-        plan = [VolumeSyncLogic planRemapActionsWithRegistry:registry
+        plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:registry
             fpliteIndex:@{ kLive: @{ @"count": @1, @"samplePath": @"a.flac" } }
             liveUUIDsByPath:byPath
             fileExists:^BOOL(NSString *p) { return YES; }
@@ -259,7 +259,7 @@ int main(void) {
         CHECK(plan.count == 0, "live UUID left alone");
 
         // Unknown UUID, sample path found on a live volume -> remapped
-        plan = [VolumeSyncLogic planRemapActionsWithRegistry:registry
+        plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:registry
             fpliteIndex:@{ kOther: @{ @"count": @1, @"samplePath": @"x/y.flac" } }
             liveUUIDsByPath:byPath
             fileExists:^BOOL(NSString *p) {
@@ -270,7 +270,7 @@ int main(void) {
 
         // Unknown UUID, sample path nowhere -> no action, logged
         [logs removeAllObjects];
-        plan = [VolumeSyncLogic planRemapActionsWithRegistry:registry
+        plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:registry
             fpliteIndex:@{ kOther: @{ @"count": @1, @"samplePath": @"x/y.flac" } }
             liveUUIDsByPath:byPath
             fileExists:^BOOL(NSString *p) { return NO; }
@@ -292,11 +292,11 @@ int main(void) {
             stale: @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
             kDead: @{ @"originalPath": @"/Volumes/music", @"isLive": @NO },
         };
-        NSDictionary *noLivePaths = [VolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry];
+        NSDictionary *noLivePaths = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry];
         CHECK(noLivePaths.count == 0, "0 live registry entries -> no live paths");
 
         NSDictionary *idx = @{ stale: @{ @"count": @9, @"samplePath": @"Album/track.flac" } };
-        NSDictionary *plan = [VolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
+        NSDictionary *plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
             fpliteIndex:idx
             liveUUIDsByPath:noLivePaths
             fileExists:^BOOL(NSString *p) { return YES; }  // path IS mounted & readable
@@ -304,7 +304,7 @@ int main(void) {
         CHECK(plan.count == 0, "stale UUID unrepairable when whole registry is dead");
 
         // The core assertion: this is NOT "all .fplite UUIDs are live".
-        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+        NSArray<NSString *> *unresolved = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
             registry:deadRegistry remapActions:plan];
         CHECK(unresolved.count == 1 && [unresolved[0] isEqualToString:stale],
               "stale referenced UUID reported unresolved, not 'all live'");
@@ -312,18 +312,18 @@ int main(void) {
         // Contrast: a genuinely-live fplite UUID is NOT reported unresolved.
         NSDictionary *liveReg = @{ kLive: @{ @"originalPath": @"/Volumes/music",
                                              @"resolvedPath": @"/Volumes/music", @"isLive": @YES } };
-        NSArray<NSString *> *none = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:
+        NSArray<NSString *> *none = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:
             @{ kLive: @{ @"count": @1, @"samplePath": @"a.flac" } }
             registry:liveReg remapActions:@{}];
         CHECK(none.count == 0, "genuinely live UUID -> nothing unresolved (real 'all live')");
 
         // A UUID scheduled for remap is resolved, not unresolved.
-        NSArray<NSString *> *afterPlan = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+        NSArray<NSString *> *afterPlan = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
             registry:deadRegistry remapActions:@{ stale: kLive }];
         CHECK(afterPlan.count == 0, "UUID in remapActions counts as resolved");
 
         // A UUID unknown to the registry (not live, not planned) is unresolved.
-        NSArray<NSString *> *unknown = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:
+        NSArray<NSString *> *unknown = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:
             @{ kOther: @{ @"count": @1, @"samplePath": @"z.flac" } }
             registry:deadRegistry remapActions:@{}];
         CHECK(unknown.count == 1, "UUID absent from registry is unresolved");
@@ -349,20 +349,20 @@ int main(void) {
             kDead:  @{ @"count": @1, @"samplePath": @"b.flac" },
             kOther: @{ @"count": @1, @"samplePath": @"c.flac" },
         };
-        NSDictionary *plan = [VolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
+        NSDictionary *plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:deadRegistry
             fpliteIndex:idx
-            liveUUIDsByPath:[VolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry]
+            liveUUIDsByPath:[PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:deadRegistry]
             fileExists:^BOOL(NSString *p) { return YES; }
             log:nil];
         CHECK(plan.count == 0, "no live target exists anywhere -> nothing planned");
 
-        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
+        NSArray<NSString *> *unresolved = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:idx
             registry:deadRegistry remapActions:plan];
         CHECK(unresolved.count == 3, "all three stale UUIDs unresolved (never 'all live')");
 
         // Only /Volumes/music is mounted; the probe is consulted once per path.
         NSMutableArray<NSString *> *probed = [NSMutableArray array];
-        NSArray<NSString *> *mounted = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+        NSArray<NSString *> *mounted = [PlorgVolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
             registry:deadRegistry
             isMounted:^BOOL(NSString *path) {
                 [probed addObject:path];
@@ -373,13 +373,13 @@ int main(void) {
         CHECK(![mounted containsObject:@"/Volumes/music-1"], "unmounted path not classified mounted");
 
         // Nothing mounted -> empty (the 'mount the volume' advice is then correct)
-        NSArray<NSString *> *none = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+        NSArray<NSString *> *none = [PlorgVolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
             registry:deadRegistry
             isMounted:^BOOL(NSString *path) { return NO; }];
         CHECK(none.count == 0, "no mounted paths -> empty classification");
 
         // Unresolved UUID with no registry entry (no originalPath) never probes
-        NSArray<NSString *> *noInfo = [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:@[@"11111111-2222-3333-4444-999999999999"]
+        NSArray<NSString *> *noInfo = [PlorgVolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:@[@"11111111-2222-3333-4444-999999999999"]
             registry:@{}
             isMounted:^BOOL(NSString *path) { return YES; }];
         CHECK(noInfo.count == 0, "UUID without registry originalPath yields no path");
@@ -396,28 +396,28 @@ int main(void) {
         NSDictionary *byPath = @{ @"/Volumes/music": @[kLive] };
 
         // Dead has more rows than live -> migrate
-        NSDictionary *m = [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @500, kLive: @10 }
+        NSDictionary *m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @500, kLive: @10 }
                                                                      registry:registry
                                                               liveUUIDsByPath:byPath
                                                                           log:nil];
         CHECK_EQ(m, @{ kDead: kLive }, "dead cache with more rows migrates");
 
         // Dead has fewer rows -> already migrated, skip
-        m = [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @10, kLive: @500 }
+        m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @10, kLive: @500 }
                                                        registry:registry
                                                 liveUUIDsByPath:byPath
                                                             log:nil];
         CHECK(m.count == 0, "dead cache with fewer rows skipped");
 
         // Unknown to foobar -> skip
-        m = [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kOther: @500 }
+        m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kOther: @500 }
                                                        registry:registry
                                                 liveUUIDsByPath:byPath
                                                             log:nil];
         CHECK(m.count == 0, "UUID unknown to registry skipped");
 
         // Live UUID rows -> skip
-        m = [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kLive: @500 }
+        m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kLive: @500 }
                                                        registry:registry
                                                 liveUUIDsByPath:byPath
                                                             log:nil];
@@ -427,7 +427,7 @@ int main(void) {
     // --- metadbMigrationSQL ---
     {
         g_context = "migration-sql";
-        NSString *sql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:@{ kDead: kLive }
+        NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{ kDead: kLive }
                                                                indexTables:@[@"metadb_index_abc"]];
         CHECK([sql hasPrefix:@"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\n"], "transaction preamble");
         CHECK([sql hasSuffix:@"COMMIT;\n"], "commit suffix");
@@ -441,7 +441,7 @@ int main(void) {
             [NSString stringWithFormat:@"WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
             "LIKE pattern scoped to dead UUID");
 
-        NSString *emptySql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:@{} indexTables:@[]];
+        NSString *emptySql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{} indexTables:@[]];
         CHECK_EQ(emptySql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
                  "no actions -> empty transaction");
     }

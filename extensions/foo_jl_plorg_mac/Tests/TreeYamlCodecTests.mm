@@ -2,13 +2,13 @@
 //  TreeYamlCodecTests.mm
 //  foo_plorg_mac
 //
-//  Unit tests for TreeYamlCodec (tree YAML serialization/parsing).
+//  Unit tests for PlorgTreeYamlCodec (tree YAML serialization/parsing).
 //  Compiled standalone (Foundation only); gating phase of Scripts/build.sh.
 //
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/TreeNode.h"
-#import "../src/Core/TreeYamlCodec.h"
+#import "../src/Core/PlorgTreeYamlCodec.h"
 
 #include <string>
 
@@ -61,20 +61,20 @@ int main(void) {
     // --- Escaping ---
     {
         g_context = "escaping";
-        CHECK_EQ([TreeYamlCodec escapeString:@"a\"b\\c"], @"a\\\"b\\\\c", "quote and backslash escaped");
-        CHECK_EQ([TreeYamlCodec unescapeString:@"a\\\"b\\\\c"], @"a\"b\\c", "unescape round-trips");
+        CHECK_EQ([PlorgTreeYamlCodec escapeString:@"a\"b\\c"], @"a\\\"b\\\\c", "quote and backslash escaped");
+        CHECK_EQ([PlorgTreeYamlCodec unescapeString:@"a\\\"b\\\\c"], @"a\"b\\c", "unescape round-trips");
     }
 
     // --- extractQuotedValue ---
     {
         g_context = "extract-quoted";
-        CHECK_EQ([TreeYamlCodec extractQuotedValue:@"- folder: \"My Folder\"" afterPrefix:@"- folder:"],
+        CHECK_EQ([PlorgTreeYamlCodec extractQuotedValue:@"- folder: \"My Folder\"" afterPrefix:@"- folder:"],
                  @"My Folder", "simple quoted value");
-        CHECK_EQ([TreeYamlCodec extractQuotedValue:@"- playlist: \"Q \\\"A\\\"\"" afterPrefix:@"- playlist:"],
+        CHECK_EQ([PlorgTreeYamlCodec extractQuotedValue:@"- playlist: \"Q \\\"A\\\"\"" afterPrefix:@"- playlist:"],
                  @"Q \"A\"", "escaped quotes unescaped");
-        CHECK_EQ([TreeYamlCodec extractQuotedValue:@"- folder: bare" afterPrefix:@"- folder:"],
+        CHECK_EQ([PlorgTreeYamlCodec extractQuotedValue:@"- folder: bare" afterPrefix:@"- folder:"],
                  @"bare", "unquoted value returned raw");
-        CHECK(([TreeYamlCodec extractQuotedValue:@"- folder: \"x\"" afterPrefix:@"- playlist:"] == nil),
+        CHECK(([PlorgTreeYamlCodec extractQuotedValue:@"- folder: \"x\"" afterPrefix:@"- playlist:"] == nil),
               "missing prefix -> nil");
     }
 
@@ -86,14 +86,14 @@ int main(void) {
         [folder addChild:[TreeNode playlistWithName:@"Bebop"]];
         TreeNode *rootPl = [TreeNode playlistWithName:@"Inbox"];
 
-        NSString *yaml = [TreeYamlCodec yamlForTree:@[folder, rootPl] nodeFormat:@"%node_name%"];
+        NSString *yaml = [PlorgTreeYamlCodec yamlForTree:@[folder, rootPl] nodeFormat:@"%node_name%"];
         CHECK([yaml containsString:@"node_format: \"%node_name%\""], "node_format emitted");
         CHECK([yaml containsString:@"- folder: \"Jazz\""], "folder emitted");
         CHECK([yaml containsString:@"expanded: true"], "expanded emitted");
         CHECK([yaml containsString:@"- playlist: \"Bebop\""], "child playlist emitted");
         CHECK([yaml containsString:@"- playlist: \"Inbox\""], "root playlist emitted");
 
-        NSString *empty = [TreeYamlCodec yamlForTree:@[] nodeFormat:nil];
+        NSString *empty = [PlorgTreeYamlCodec yamlForTree:@[] nodeFormat:nil];
         CHECK([empty containsString:@"tree: []"], "empty tree emits []");
         CHECK([empty containsString:@"node_format: \"%node_name%\""], "nil format falls back to default");
     }
@@ -110,11 +110,11 @@ int main(void) {
         TreeNode *c = [TreeNode folderWithName:@"C"];  // collapsed, empty
         NSArray *orig = @[a, c, [TreeNode playlistWithName:@"root pl"]];
 
-        NSString *yaml = [TreeYamlCodec yamlForTree:orig nodeFormat:@"fmt \"x\""];
+        NSString *yaml = [PlorgTreeYamlCodec yamlForTree:orig nodeFormat:@"fmt \"x\""];
 
         NSArray<TreeNode *> *parsed = nil;
         NSString *fmt = nil;
-        BOOL ok = [TreeYamlCodec parseConfigYaml:yaml rootNodes:&parsed nodeFormat:&fmt];
+        BOOL ok = [PlorgTreeYamlCodec parseConfigYaml:yaml rootNodes:&parsed nodeFormat:&fmt];
         CHECK(ok, "parse succeeds");
         CHECK_EQ(fmt, @"fmt \"x\"", "node_format round-trips with escaping");
         CHECK(treesEqual(orig, parsed), "tree structure round-trips");
@@ -128,12 +128,12 @@ int main(void) {
         [a addChild:[TreeNode playlistWithName:@"80s"]];
         NSArray *orig = @[a, [TreeNode playlistWithName:@"Loose"]];
 
-        NSString *yaml = [TreeYamlCodec yamlForTree:orig nodeFormat:nil];
-        NSArray<TreeNode *> *parsed = [TreeYamlCodec parseNodeList:yaml];
+        NSString *yaml = [PlorgTreeYamlCodec yamlForTree:orig nodeFormat:nil];
+        NSArray<TreeNode *> *parsed = [PlorgTreeYamlCodec parseNodeList:yaml];
         CHECK(treesEqual(orig, parsed), "parseNodeList round-trips");
-        CHECK_EQ([TreeYamlCodec parseNodeList:nil], @[], "nil yaml -> empty");
-        CHECK_EQ([TreeYamlCodec parseNodeList:@""], @[], "empty yaml -> empty");
-        CHECK_EQ([TreeYamlCodec parseNodeList:@"no tree section"], @[], "no tree section -> empty");
+        CHECK_EQ([PlorgTreeYamlCodec parseNodeList:nil], @[], "nil yaml -> empty");
+        CHECK_EQ([PlorgTreeYamlCodec parseNodeList:@""], @[], "empty yaml -> empty");
+        CHECK_EQ([PlorgTreeYamlCodec parseNodeList:@"no tree section"], @[], "no tree section -> empty");
     }
 
     // --- Deep nesting round trip ---
@@ -151,11 +151,11 @@ int main(void) {
         // Sibling after the deep chain must return to root level
         NSArray *orig = @[root, [TreeNode playlistWithName:@"after"]];
 
-        NSString *yaml = [TreeYamlCodec yamlForTree:orig nodeFormat:nil];
+        NSString *yaml = [PlorgTreeYamlCodec yamlForTree:orig nodeFormat:nil];
         NSArray *viaConfig = nil;
-        [TreeYamlCodec parseConfigYaml:yaml rootNodes:&viaConfig nodeFormat:NULL];
+        [PlorgTreeYamlCodec parseConfigYaml:yaml rootNodes:&viaConfig nodeFormat:NULL];
         CHECK(treesEqual(orig, viaConfig), "deep nesting round-trips via parseConfigYaml");
-        CHECK(treesEqual(orig, [TreeYamlCodec parseNodeList:yaml]),
+        CHECK(treesEqual(orig, [PlorgTreeYamlCodec parseNodeList:yaml]),
               "deep nesting round-trips via parseNodeList");
     }
 
@@ -164,14 +164,14 @@ int main(void) {
         g_context = "malformed";
         NSArray *r = nil;
         NSString *f = nil;
-        CHECK(![TreeYamlCodec parseConfigYaml:@"" rootNodes:&r nodeFormat:&f], "empty -> NO");
+        CHECK(![PlorgTreeYamlCodec parseConfigYaml:@"" rootNodes:&r nodeFormat:&f], "empty -> NO");
         CHECK_EQ(r, @[], "empty -> empty roots");
-        CHECK(![TreeYamlCodec parseConfigYaml:@"tree:\n" rootNodes:&r nodeFormat:&f], "tree only -> NO");
-        CHECK(![TreeYamlCodec parseConfigYaml:@"node_format: \"X\"\ntree: []\n"
+        CHECK(![PlorgTreeYamlCodec parseConfigYaml:@"tree:\n" rootNodes:&r nodeFormat:&f], "tree only -> NO");
+        CHECK(![PlorgTreeYamlCodec parseConfigYaml:@"node_format: \"X\"\ntree: []\n"
                                      rootNodes:&r nodeFormat:&f], "empty tree -> NO");
         CHECK_EQ(f, @"X", "node_format still extracted when tree empty");
         // Comments and blank lines ignored
-        BOOL ok = [TreeYamlCodec parseConfigYaml:@"# c\n\ntree:\n  - playlist: \"P\"\n"
+        BOOL ok = [PlorgTreeYamlCodec parseConfigYaml:@"# c\n\ntree:\n  - playlist: \"P\"\n"
                                        rootNodes:&r nodeFormat:&f];
         CHECK(ok && r.count == 1, "comments/blank lines skipped");
     }

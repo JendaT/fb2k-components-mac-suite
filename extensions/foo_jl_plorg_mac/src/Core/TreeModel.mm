@@ -6,9 +6,9 @@
 #import "TreeModel.h"
 #import "ConfigHelper.h"
 #import "TreeNode.h"
-#import "PathCodec.h"
-#import "TreeOps.h"
-#import "TreeYamlCodec.h"
+#import "PlorgPathCodec.h"
+#import "PlorgTreeOps.h"
+#import "PlorgTreeYamlCodec.h"
 #include "../fb2k_sdk.h"
 
 // Notifications
@@ -112,12 +112,12 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 }
 
 - (TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes {
-    return [TreeOps findPlaylistNamed:name inNodes:nodes];
+    return [PlorgTreeOps findPlaylistNamed:name inNodes:nodes];
 }
 
 - (TreeNode *)findFolderAtPath:(NSString *)path {
     NSArray *components = [path componentsSeparatedByString:@"/"];
-    return [TreeOps findFolderForComponents:components inRoots:self.mutableRootNodes];
+    return [PlorgTreeOps findFolderForComponents:components inRoots:self.mutableRootNodes];
 }
 
 #pragma mark - Path-Encoded Foobar Names
@@ -133,7 +133,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         current = current.parent;
     }
 
-    return [PathCodec encodedNameForComponents:components];
+    return [PlorgPathCodec encodedNameForComponents:components];
 }
 
 - (NSString *)foobarNameForNode:(TreeNode *)node {
@@ -152,7 +152,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
     if (!foobarName || foobarName.length == 0) return nil;
 
     // Decode the path components
-    NSArray<NSString *> *components = [PathCodec splitEncodedName:foobarName];
+    NSArray<NSString *> *components = [PlorgPathCodec splitEncodedName:foobarName];
     if (components.count == 0) return nil;
 
     // Single component -> search everywhere by leaf name
@@ -163,7 +163,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
     // Multi-component: always try path-aware lookup regardless of encoding setting.
     // Foobar playlists may have encoded names from a previous migration even when
     // encoding is currently off. Without this, sync creates duplicate nodes.
-    return [TreeOps findPlaylistForComponents:components inRoots:self.mutableRootNodes];
+    return [PlorgTreeOps findPlaylistForComponents:components inRoots:self.mutableRootNodes];
 }
 
 - (void)migrateToPathEncodedNames {
@@ -309,13 +309,13 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         // The old dirty node.name WAS the expected encoded name (e.g., "music.hq >> Ambient").
         // verifyEncodedNames treated it as a leaf, escaped it, and prepended the parent path.
         NSString *dirtyLeaf = expected;
-        NSString *escapedDirty = [PathCodec escapeComponent:dirtyLeaf];
+        NSString *escapedDirty = [PlorgPathCodec escapeComponent:dirtyLeaf];
 
         // Build parent path components
         NSMutableArray<NSString *> *parentComponents = [NSMutableArray array];
         TreeNode *parent = node.parent;
         while (parent) {
-            NSString *escaped = [PathCodec escapeComponent:parent.name];
+            NSString *escaped = [PlorgPathCodec escapeComponent:parent.name];
             if (escaped.length > 0) {
                 [parentComponents insertObject:escaped atIndex:0];
             }
@@ -386,7 +386,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
 - (void)addPlaylistFromFoobarName:(NSString *)foobarName encodingEnabled:(BOOL)encodingEnabled {
     if (encodingEnabled) {
-        NSArray<NSString *> *components = [PathCodec splitEncodedName:foobarName];
+        NSArray<NSString *> *components = [PlorgPathCodec splitEncodedName:foobarName];
         if (components.count > 1) {
             // Multi-component: create/find folder path, add playlist as leaf
             TreeNode *parent = nil;
@@ -458,7 +458,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
     for (TreeNode *node in toRelocate) {
         NSString *encodedName = node.name;
-        NSArray<NSString *> *components = [PathCodec splitEncodedName:encodedName];
+        NSArray<NSString *> *components = [PlorgPathCodec splitEncodedName:encodedName];
         if (components.count < 2) continue;
 
         // Remove from current location
@@ -573,16 +573,16 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 #pragma mark - YAML Serialization
 
 - (NSString *)toYaml {
-    return [TreeYamlCodec yamlForTree:self.mutableRootNodes nodeFormat:self.nodeFormat];
+    return [PlorgTreeYamlCodec yamlForTree:self.mutableRootNodes nodeFormat:self.nodeFormat];
 }
 
 - (NSInteger)importFromYaml:(NSString *)yaml {
     if (!yaml || yaml.length == 0) return 0;
 
-    NSArray<TreeNode *> *parsedRoots = [TreeYamlCodec parseNodeList:yaml];
+    NSArray<TreeNode *> *parsedRoots = [PlorgTreeYamlCodec parseNodeList:yaml];
 
     // Merge parsed nodes into current tree
-    NSInteger imported = [TreeOps mergeNodes:parsedRoots intoParent:nil roots:self.mutableRootNodes];
+    NSInteger imported = [PlorgTreeOps mergeNodes:parsedRoots intoParent:nil roots:self.mutableRootNodes];
     [self saveToConfig];
     [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
 
@@ -592,7 +592,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 - (BOOL)parseYaml:(NSString *)yaml {
     NSArray<TreeNode *> *rootNodes = nil;
     NSString *nodeFormat = nil;
-    BOOL hasTree = [TreeYamlCodec parseConfigYaml:yaml rootNodes:&rootNodes nodeFormat:&nodeFormat];
+    BOOL hasTree = [PlorgTreeYamlCodec parseConfigYaml:yaml rootNodes:&rootNodes nodeFormat:&nodeFormat];
 
     if (nodeFormat) {
         self.nodeFormat = nodeFormat;

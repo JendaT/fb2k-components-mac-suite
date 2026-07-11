@@ -1,9 +1,9 @@
 //
-//  PathCodec.mm
+//  PlorgPathCodec.mm
 //  foo_plorg_mac
 //
 
-#import "PathCodec.h"
+#import "PlorgPathCodec.h"
 
 NSString * const PlorgPathSeparator = @" \u00BB ";
 
@@ -27,7 +27,7 @@ static NSString *doubledGuillemet(void) {
     return s;
 }
 
-@implementation PathCodec
+@implementation PlorgPathCodec
 
 + (NSString *)escapeComponent:(NSString *)component {
     if (!component) return @"";  // Handle nil gracefully

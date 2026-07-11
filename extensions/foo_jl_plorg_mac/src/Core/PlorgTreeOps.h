@@ -1,5 +1,5 @@
 //
-//  TreeOps.h
+//  PlorgTreeOps.h
 //  foo_plorg_mac
 //
 //  Pure tree queries and merge operations on TreeNode hierarchies.
@@ -13,7 +13,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface TreeOps : NSObject
+@interface PlorgTreeOps : NSObject
 
 // Recursive search for a playlist (leaf) by exact name
 + (nullable TreeNode *)findPlaylistNamed:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;

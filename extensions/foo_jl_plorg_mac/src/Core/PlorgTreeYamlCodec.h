@@ -1,5 +1,5 @@
 //
-//  TreeYamlCodec.h
+//  PlorgTreeYamlCodec.h
 //  foo_plorg_mac
 //
 //  YAML serialization and parsing for the playlist organizer tree.
@@ -13,7 +13,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface TreeYamlCodec : NSObject
+@interface PlorgTreeYamlCodec : NSObject
 
 // Escape backslash and double-quote for YAML output
 + (NSString *)escapeString:(NSString *)str;

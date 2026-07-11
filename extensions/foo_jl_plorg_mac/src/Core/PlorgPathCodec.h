@@ -1,5 +1,5 @@
 //
-//  PathCodec.h
+//  PlorgPathCodec.h
 //  foo_plorg_mac
 //
 //  Path-encoded foobar2000 playlist names: escaping, encoding and splitting.
@@ -15,7 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 // Path encoding separator: space + right guillemet (U+00BB) + space
 extern NSString * const PlorgPathSeparator;
 
-@interface PathCodec : NSObject
+@interface PlorgPathCodec : NSObject
 
 // Escape guillemet by doubling: » -> »»
 + (NSString *)escapeComponent:(nullable NSString *)component;

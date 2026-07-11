@@ -6,7 +6,7 @@
 //
 
 #import "VolumeSyncService.h"
-#import "VolumeSyncLogic.h"
+#import "PlorgVolumeSyncLogic.h"
 #include "../fb2k_sdk.h"
 #import "ConfigHelper.h"
 #import <DiskArbitration/DiskArbitration.h>
@@ -94,7 +94,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 }
 
 + (NSString *)shareNameFromMountSource:(const char *)mntfromname {
-    return [VolumeSyncLogic shareNameFromMountSource:mntfromname];
+    return [PlorgVolumeSyncLogic shareNameFromMountSource:mntfromname];
 }
 
 - (NSString *)volumeUUIDForMountPath:(NSString *)path {
@@ -140,7 +140,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
 - (NSDictionary<NSString *, NSNumber *> *)scanFpliteFileForUUIDs:(NSString *)path {
     NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-    return [VolumeSyncLogic scanFpliteContentForUUIDs:content];
+    return [PlorgVolumeSyncLogic scanFpliteContentForUUIDs:content];
 }
 
 #pragma mark - UUID Remapping
@@ -153,7 +153,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     NSData *rawData = [NSData dataWithContentsOfFile:path options:0 error:error];
     if (!rawData) return NO;
 
-    NSData *newData = [VolumeSyncLogic remappedFpliteData:rawData fromUUIDs:sourceUUIDs toUUID:targetUUID];
+    NSData *newData = [PlorgVolumeSyncLogic remappedFpliteData:rawData fromUUIDs:sourceUUIDs toUUID:targetUUID];
     if (!newData) return NO;  // nothing changed (or not UTF-8)
 
     if (![newData writeToFile:path options:NSDataWritingAtomic error:error]) {
@@ -289,7 +289,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     //    resolved to an existing path. Multiple UUIDs typically map to the same
     //    path because foobar registers a fresh UUID on each remount.
     NSDictionary<NSString *, NSArray<NSString *> *> *liveUUIDsByPath =
-        [VolumeSyncLogic liveUUIDsByPathFromRegistry:foobarVolumes];
+        [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:foobarVolumes];
 
     // 3. Scan .fplite files for UUIDs in active use.
     NSDictionary *fpliteIndex = [self buildFpliteUUIDIndexInDirectory:playlistsDir];
@@ -300,7 +300,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
     // 4. For each UUID found in .fplite, decide whether it needs remapping.
     __weak typeof(self) weakSelf = self;
-    NSDictionary *remapActions = [VolumeSyncLogic planRemapActionsWithRegistry:foobarVolumes
+    NSDictionary *remapActions = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:foobarVolumes
         fpliteIndex:fpliteIndex
         liveUUIDsByPath:liveUUIDsByPath
         fileExists:^BOOL(NSString *path) {
@@ -319,7 +319,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
         // really is live, OR a stale UUID was found with no live replacement
         // (already logged per-UUID above). Report which, so the log does not
         // falsely claim liveness when playback is actually broken.
-        NSArray<NSString *> *unresolved = [VolumeSyncLogic unresolvedFpliteUUIDsInIndex:fpliteIndex
+        NSArray<NSString *> *unresolved = [PlorgVolumeSyncLogic unresolvedFpliteUUIDsInIndex:fpliteIndex
                                                                               registry:foobarVolumes
                                                                           remapActions:remapActions];
         if (unresolved.count > 0) {
@@ -327,7 +327,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
             // bookmark for this session" — advising the user to mount an
             // already-mounted volume is a dead end (observed 2026-07-11).
             NSArray<NSString *> *mountedPaths =
-                [VolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
+                [PlorgVolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
                                                                registry:foobarVolumes
                                                               isMounted:^BOOL(NSString *path) {
                     return [self isCurrentlyMountedPath:path];
@@ -423,7 +423,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
     __weak typeof(self) weakSelf = self;
     [result addEntriesFromDictionary:
-        [VolumeSyncLogic orphanCacheMigrationsWithRowCounts:counts
+        [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:counts
                                                    registry:foobarVolumes
                                             liveUUIDsByPath:liveUUIDsByPath
                                                         log:^(NSString *message) {
@@ -540,7 +540,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
 // "mac.volume.<UUID>.originalPath" / "mac.volume.<UUID>.bookmark" -> UUID (uppercase)
 - (NSString *)extractVolumeUUIDFromConfigKey:(NSString *)key {
-    return [VolumeSyncLogic volumeUUIDFromConfigKey:key];
+    return [PlorgVolumeSyncLogic volumeUUIDFromConfigKey:key];
 }
 
 // Write a snapshot to plorg_volume_uuids.json — purely diagnostic. We preserve
@@ -597,7 +597,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
 
         NSString *content = [NSString stringWithContentsOfFile:fullPath
                                                       encoding:NSUTF8StringEncoding error:nil];
-        [VolumeSyncLogic indexFpliteContent:content into:index];
+        [PlorgVolumeSyncLogic indexFpliteContent:content into:index];
     }
 
     return index;
@@ -868,7 +868,7 @@ NSInteger const kVolumeSyncMaxBackups = 5;
     }
 
     // Build the migration SQL.
-    NSString *sql = [VolumeSyncLogic metadbMigrationSQLForRemapActions:remapActions
+    NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:remapActions
                                                            indexTables:indexTables];
 
     // Stage the SQL in /tmp; the helper script feeds it to sqlite3 after foobar exits.

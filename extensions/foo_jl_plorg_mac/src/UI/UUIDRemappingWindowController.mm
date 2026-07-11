@@ -6,7 +6,7 @@
 //
 
 #import "UUIDRemappingWindowController.h"
-#import "../Core/VolumeSyncLogic.h"
+#import "../Core/PlorgVolumeSyncLogic.h"
 #import <objc/runtime.h>
 #import <DiskArbitration/DiskArbitration.h>
 #include <sys/mount.h>
@@ -18,7 +18,7 @@ NSErrorDomain const UUIDRemappingErrorDomain = @"com.foobar2000.plorg.uuidremapp
 #pragma mark - Constants
 
 static const NSUInteger kMaxBackupDirectories = 5;
-// mac-volume:// prefix comes from VolumeSyncLogic (PlorgMacVolumePrefix)
+// mac-volume:// prefix comes from PlorgVolumeSyncLogic (PlorgMacVolumePrefix)
 
 #pragma mark - VolumeUUIDEntry Implementation
 
@@ -998,7 +998,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
     for (NSString *line in lines) {
         NSString *uuid = nil;
-        FpliteLineResult parsed = [VolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:NULL];
+        FpliteLineResult parsed = [PlorgVolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:NULL];
         if (parsed == FpliteLineNotVolume) continue;
         if (parsed == FpliteLineMalformed) {
             self.malformedCount++;
@@ -1162,8 +1162,8 @@ static const NSUInteger kMaxBackupDirectories = 5;
     NSData *rawData = [NSData dataWithContentsOfFile:path options:0 error:error];
     if (!rawData) return NO;
 
-    // Shared BOM-preserving remap (VolumeSyncLogic); nil means nothing changed
-    NSData *newData = [VolumeSyncLogic remappedFpliteData:rawData
+    // Shared BOM-preserving remap (PlorgVolumeSyncLogic); nil means nothing changed
+    NSData *newData = [PlorgVolumeSyncLogic remappedFpliteData:rawData
                                                 fromUUIDs:self.selectedUUIDs
                                                    toUUID:targetUUID];
     if (!newData) return NO;

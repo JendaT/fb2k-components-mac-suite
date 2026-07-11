@@ -1,11 +1,11 @@
 //
-//  TreeYamlCodec.mm
+//  PlorgTreeYamlCodec.mm
 //  foo_plorg_mac
 //
 
-#import "TreeYamlCodec.h"
+#import "PlorgTreeYamlCodec.h"
 
-@implementation TreeYamlCodec
+@implementation PlorgTreeYamlCodec
 
 #pragma mark - Escaping
 

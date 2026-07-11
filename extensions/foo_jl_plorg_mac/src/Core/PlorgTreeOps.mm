@@ -1,11 +1,11 @@
 //
-//  TreeOps.mm
+//  PlorgTreeOps.mm
 //  foo_plorg_mac
 //
 
-#import "TreeOps.h"
+#import "PlorgTreeOps.h"
 
-@implementation TreeOps
+@implementation PlorgTreeOps
 
 + (TreeNode *)findPlaylistNamed:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes {
     for (TreeNode *node in nodes) {

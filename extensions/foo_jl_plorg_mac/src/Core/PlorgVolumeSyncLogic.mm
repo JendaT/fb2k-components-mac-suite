@@ -1,13 +1,13 @@
 //
-//  VolumeSyncLogic.mm
+//  PlorgVolumeSyncLogic.mm
 //  foo_plorg_mac
 //
 
-#import "VolumeSyncLogic.h"
+#import "PlorgVolumeSyncLogic.h"
 
 NSString * const PlorgMacVolumePrefix = @"mac-volume://";
 
-@implementation VolumeSyncLogic
+@implementation PlorgVolumeSyncLogic
 
 #pragma mark - Validation
 
