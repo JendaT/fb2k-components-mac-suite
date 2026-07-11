@@ -159,3 +159,34 @@ Updated `SimPlaylistController::rebuildFromPlaylist` to:
 - Header and subgroup nodes created based on titleformat patterns
 - Track indentation based on group depth
 - Ready for Phase 3 (album art) or Phase 4 (column headers)
+
+## 2026-07-11: Scroll-Fill Benchmark Baseline (P4 Part A gate)
+
+### Purpose
+P4 Part A (decorator provider API) acceptance gate: SimPlaylist rendering
+benchmarks must be unchanged with zero providers registered. This entry
+records the pre-change baseline.
+
+### Harness
+`Tests/ScrollFillBenchmark.mm` via `Scripts/run_benchmark.sh` (standalone
+clang, -O2, Foundation only). Simulates the drawSparseModelInRect /
+drawSparseRow query sequence against PlaylistLayoutModel while scrolling a
+5,000-track playlist (250 groups of 20, 63 subgroups, 0-2 padding rows per
+group) end to end, 66 px per frame, 7 passes, min/median reported.
+AppKit drawing is excluded (headless); this measures the model-side fill
+path the decorator integration hooks into.
+
+### Baseline (this machine, Release-equivalent -O2, 2026-07-11)
+Two runs, min-of-7-passes each:
+
+| Metric | Run 1 | Run 2 |
+|--------|-------|-------|
+| fill_pass_min_us | 1613137 | 1590470 |
+| fill_pass_median_us | 1628075 | 1633047 |
+| fill_frame_min_us | 864.95 | 852.80 |
+| fill_row_min_us | 23.424 | 23.095 |
+| reload_us | 20.5 | 21.4 |
+
+Run-to-run variance ~1.5%, pass-to-pass ~3%. Post-change comparison must be
+within this noise band with zero providers registered. Checksum 4419639474
+(must stay identical — guards against accidental behavior change).
