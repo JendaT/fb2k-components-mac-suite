@@ -48,7 +48,9 @@ Per root, compute confidence 0–1 from weighted signals:
 
 Thresholds (config, `structure.yaml`): `≥0.80` → status `resolved`,
 auto-eligible for propose; `0.50–0.79` → `resolved` + `needs_review: true`;
-`<0.50` → `unresolved` (rendered for manual action, never auto-proposed).
+`<0.50` → status stays `new` + `needs_review: true` (doc 3 lifecycle has no
+`unresolved` status; UIs render `new` roots as unresolved — manual action,
+never auto-proposed).
 
 ### Untagged fallback chain
 filename pattern parse (`NN - Title`, `NN. Title`, `Artist - Title`) →
@@ -60,12 +62,18 @@ parent dir name parse → fingerprint via identify stage (doc 2), not here.
   treats unpacked dir; original archive referenced in sidecar `source.archive`.
 - `iso/bin+cue`: flag `needs_review`, never auto-unpack.
 - Mixed-quality duplicates in one dir (mp3 + flac of same tracks): cluster by
-  (album, tracknumber); prefer lossless set as primary, mark other set
-  `quality_shadow` in sidecar.
+  (album, tracknumber); prefer lossless set as primary, mark each file of the
+  other set with `"quality_shadow": true` in `files[]` and add a
+  `quality_shadow_set:<codec>` entry to `quality.issues`. Signals are computed
+  over primary (non-shadow) files.
 - Nested artist dumps (artist dir containing many release dirs): each release
   dir is its own root; artist dir is never a root if ≥2 children resolved.
 - Hidden/system junk: skip `@eaDir`, `.DS_Store`, `._*`, `Thumbs.db`.
 - Pre-existing sidecar: re-resolve only with `--force`; otherwise trust it.
+- FLAC with unset STREAMINFO MD5: `resolve` is pure and never fixes the file
+  (doc 3's "recompute+fix" happens at execute, on the copies); the sidecar
+  records an `fsha1:` fallback hash plus a `flac_md5_unset` quality issue so
+  execute knows to recompute.
 
 ## Tier eligibility (normative)
 
@@ -85,7 +93,17 @@ it may serve as a low-weight prior source only (doc 2).
 
 ## Sidecar schema — `.intake.json` v1
 
-Written at release root (or income-folder root for virtual/split roots).
+Written at release root as `.intake.json`. Virtual/split roots have no
+directory of their own: their sidecars are written in the candidate directory
+(the dump dir) as `.intake.<id>.json`, one per cluster, with `"virtual": true`
+and files enumerated explicitly. Singles-queue entries are per-file virtual
+sidecars additionally marked `"singles": true` (their `cluster.album` is null;
+they always carry `needs_review: true` until identify). `id` is deterministic
+(hash of income folder, root path relative to it, and cluster file set), so
+re-resolving reproduces the same id; `--force` re-resolve preserves the
+existing id and appends a `re-resolved` history event. `files[].bitrate` is
+integer kbps (lossy only, null for lossless); `discs` is
+`[{ "dir": "CD1", "disc": 1 }, …]` for merged multi-disc roots, else null.
 
 ```json
 {
