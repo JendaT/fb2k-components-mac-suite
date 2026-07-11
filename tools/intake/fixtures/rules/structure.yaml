@@ -1,0 +1,17 @@
+# Fixture structure.yaml (resolver section only; naming templates and tier
+# roots are P2+). Values below mirror the built-in defaults; the schema is
+# what matters — the real file lives in the private music-rules repo.
+resolver:
+  weights:
+    purity: 0.35
+    seq: 0.25
+    artifacts: 0.15
+    name_parse: 0.15
+    quality_homog: 0.10
+  thresholds:
+    resolved: 0.80
+    review: 0.50
+  lossy_tolerance_kbps: 256
+  hires:
+    bit_depth_over: 16
+    sample_rate_over: 48000
