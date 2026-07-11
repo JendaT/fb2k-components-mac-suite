@@ -73,7 +73,6 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
   }
 
   // Fast path step 3 — Discogs confirmation.
-  let ambiguous = false;
   if (deps.discogs && base.artist && base.album) {
     const results = await deps.discogs.searchRelease({
       artist: base.artist,
@@ -106,7 +105,20 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
           issues,
         };
       }
-      ambiguous = results.length > 1;
+      if (results.length > 1) {
+        // Ambiguous confirmation: keep the top hits as candidates for review.
+        base.candidates = results.slice(0, 3).map((r) => ({
+          source: "discogs" as const,
+          release_id: r.release_id,
+          artist: r.artist,
+          album: r.album,
+          year: r.year,
+          label: r.label,
+          catno: r.catno,
+          distance: null,
+          track_mapping: null,
+        }));
+      }
     }
   }
 
@@ -145,6 +157,6 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
   }
 
   // Degraded outcomes: parse+tags without external confirmation.
-  const status = base.artist && base.album && !ambiguous ? "unconfirmed" : "unidentified";
+  const status = base.artist && base.album ? "unconfirmed" : "unidentified";
   return { identification: { ...base, status }, needs_review: true, issues };
 }

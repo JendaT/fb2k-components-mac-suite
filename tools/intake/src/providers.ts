@@ -171,7 +171,12 @@ export function subprocessShim(cmd: string[] = shimCommand()): ShimProvider {
     async identify(dir) {
       let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
-        proc = Bun.spawn([...cmd, dir, "--json"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+        proc = Bun.spawn([...cmd, dir, "--json"], {
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env },
+        });
       } catch {
         return { error: "shim_unavailable" };
       }

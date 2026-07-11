@@ -274,6 +274,16 @@ export async function assign(
     ...Object.keys(style),
   ]);
   const w = cfg.weights;
+  // Scores are renormalized over the evidence tiers that could speak at all,
+  // so absent network tiers do not deflate confidence (doc 02 example: artist
+  // 0.95 + label 0.88 -> ~0.9, not 0.7). An artist/label present in the input
+  // but unknown to the maps IS evidence of absence and stays in the
+  // denominator; similar/style only count when they produced votes.
+  const denom =
+    (input.artist ? w.artist : 0) +
+    (input.label ? w.label : 0) +
+    (Object.keys(similar).length > 0 ? w.similar : 0) +
+    (Object.keys(style).length > 0 ? w.style : 0);
   const ranked: RankedFolder[] = [...folders]
     .map((collection) => {
       const evidence = {
@@ -282,13 +292,12 @@ export async function assign(
         similar_vote: round2(similar[collection] ?? 0),
         style_hint: round2(style[collection] ?? 0),
       };
-      const score = round2(
+      const raw =
         evidence.artist_prior * w.artist +
-          evidence.label_prior * w.label +
-          evidence.similar_vote * w.similar +
-          evidence.style_hint * w.style,
-      );
-      return { collection, score, evidence };
+        evidence.label_prior * w.label +
+        evidence.similar_vote * w.similar +
+        evidence.style_hint * w.style;
+      return { collection, score: round2(denom > 0 ? raw / denom : 0), evidence };
     })
     .sort((a, b) => b.score - a.score || (a.collection < b.collection ? -1 : 1));
 
