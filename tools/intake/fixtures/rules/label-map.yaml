@@ -1,0 +1,11 @@
+# Fixture label map (synthetic). label -> {collection: release count}.
+labels:
+  Ultimae Records:
+    "[Psychill & Chillout & Psydub]": 15
+    "[Ambient]": 3
+  Iboga Records:
+    "[Psytrance]": 9
+  Aleph Zero:
+    "[Downtempo & Electronica]": 4
+  Cyan Music:
+    "[Ambient]": 5

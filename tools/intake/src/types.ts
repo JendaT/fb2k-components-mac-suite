@@ -61,6 +61,66 @@ export interface HistoryEvent {
   by: string;
 }
 
+// ---- identification (doc 02, identify stage) ------------------------------
+
+export interface IdentCandidate {
+  source: "discogs" | "mb";
+  release_id: string | null;
+  artist: string | null;
+  album: string | null;
+  year: string | null;
+  label: string | null;
+  catno: string | null;
+  distance: number | null;
+  track_mapping: Record<string, string> | null;
+}
+
+export type IdentStatus = "fast_path" | "shim" | "unconfirmed" | "unidentified";
+
+export interface Identification {
+  status: IdentStatus;
+  source: "discogs" | "mb" | null;
+  release_id: string | null;
+  artist: string | null;
+  album: string | null;
+  year: string | null;
+  label: string | null;
+  catno: string | null;
+  styles: string[];
+  genres: string[];
+  distance: number | null;
+  grammar: string | null; // which folder-name grammar matched (fast path)
+  candidates: IdentCandidate[] | null; // top 3 when ambiguous
+  identified_at: string;
+}
+
+// ---- proposal (doc 02, assign stage) ---------------------------------------
+
+export interface RankedFolder {
+  collection: string;
+  score: number;
+  evidence: {
+    artist_prior: number;
+    label_prior: number;
+    similar_vote: number;
+    style_hint: number;
+  };
+}
+
+export type StructureSlot = "artist" | "releases" | "compilations" | "singles";
+
+export interface Proposal {
+  engine_version: string;
+  ranked: RankedFolder[];
+  target_collection: string;
+  confidence: number;
+  margin: number;
+  target_path: string | null; // null when tier is reject (no legal target)
+  structure_slot: StructureSlot;
+  assigned_by: "engine" | "user";
+  alternates_shown: boolean;
+}
+
 export interface Sidecar {
   schema: typeof SCHEMA_VERSION;
   id: string;
@@ -77,8 +137,8 @@ export interface Sidecar {
   discs: { dir: string; disc: number }[] | null;
   cluster: Cluster;
   quality: { tier_eligible: Tier; issues: string[] };
-  identification: null;
-  proposal: null;
+  identification: Identification | null;
+  proposal: Proposal | null;
   status: Status;
   history: HistoryEvent[];
 }
@@ -101,6 +161,24 @@ export interface ResolverConfig {
   thresholds: { resolved: number; review: number };
   lossy_tolerance_kbps: number;
   hires: { bit_depth_over: number; sample_rate_over: number };
+}
+
+export interface TierDef {
+  root: string;
+  gate: string;
+  growth: string;
+}
+
+export interface AssignConfig {
+  weights: { artist: number; label: number; similar: number; style: number };
+  short_circuit: { min_releases: number; confidence: number };
+  needs_review: { confidence: number; margin: number };
+  shim_accept_distance: number;
+  naming: {
+    release: string; // template with {artist} {year} {album} {label} {catno}
+    release_no_label: string;
+  };
+  tiers: Record<string, TierDef>; // "music.uhq" | "music.hq" | ...
 }
 
 export interface JsonError {

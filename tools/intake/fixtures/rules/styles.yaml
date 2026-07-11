@@ -1,0 +1,12 @@
+# Fixture style hints (synthetic). Discogs style/genre -> collection hints.
+styles:
+  Downtempo:
+    - "[Downtempo & Electronica]"
+  Ambient:
+    - "[Ambient]"
+  Psy-Trance:
+    - "[Psytrance]"
+  Dub:
+    - "[Psychill & Chillout & Psydub]"
+genres:
+  Electronic: []

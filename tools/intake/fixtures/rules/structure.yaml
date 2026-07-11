@@ -15,3 +15,20 @@ resolver:
   hires:
     bit_depth_over: 16
     sample_rate_over: 48000
+
+# Tier routing (doc 02). Roots are synthetic fixture paths; assign only
+# computes target strings, it never touches these locations.
+tiers:
+  music.uhq: { root: /library/music.uhq, gate: hires, growth: active }
+  music.hq: { root: /library/music.hq, gate: lossless-first, growth: primary }
+  music: { root: /library/music, gate: none, growth: frozen } # never a target
+
+assign:
+  weights: { artist: 0.5, label: 0.25, similar: 0.15, style: 0.10 }
+  short_circuit: { min_releases: 2, confidence: 0.95 }
+  needs_review: { confidence: 0.6, margin: 0.2 }
+  shim_accept_distance: 0.15
+
+naming:
+  release: "{artist} [{year}] {album} ({label}; {catno})"
+  release_no_label: "{artist} [{year}] {album}"

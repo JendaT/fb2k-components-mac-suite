@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import type { IncomeFolder, ResolverConfig } from "./types.ts";
+import type { AssignConfig, IncomeFolder, ResolverConfig, TierDef } from "./types.ts";
 
 export const DEFAULT_CONFIG: ResolverConfig = {
   weights: { purity: 0.35, seq: 0.25, artifacts: 0.15, name_parse: 0.15, quality_homog: 0.1 },
@@ -47,6 +47,52 @@ export function loadConfig(dir: string | null = rulesDir()): ResolverConfig {
   if (typeof r["lossy_tolerance_kbps"] === "number") cfg.lossy_tolerance_kbps = r["lossy_tolerance_kbps"];
   const hires = r["hires"] as Partial<ResolverConfig["hires"]> | undefined;
   if (hires) Object.assign(cfg.hires, hires);
+  return cfg;
+}
+
+export const DEFAULT_ASSIGN_CONFIG: AssignConfig = {
+  weights: { artist: 0.5, label: 0.25, similar: 0.15, style: 0.1 },
+  short_circuit: { min_releases: 2, confidence: 0.95 },
+  needs_review: { confidence: 0.6, margin: 0.2 },
+  shim_accept_distance: 0.15,
+  naming: {
+    release: "{artist} [{year}] {album} ({label}; {catno})",
+    release_no_label: "{artist} [{year}] {album}",
+  },
+  tiers: {},
+};
+
+/** Load assign config: structure.yaml `assign:`/`naming:`/`tiers:` over defaults. */
+export function loadAssignConfig(dir: string | null = rulesDir()): AssignConfig {
+  const cfg: AssignConfig = structuredClone(DEFAULT_ASSIGN_CONFIG);
+  if (!dir) return cfg;
+  const doc = readYaml(join(dir, "structure.yaml"));
+  if (!doc) return cfg;
+  const a = doc["assign"] as Record<string, unknown> | undefined;
+  if (a) {
+    const weights = a["weights"] as Partial<AssignConfig["weights"]> | undefined;
+    if (weights) Object.assign(cfg.weights, weights);
+    const sc = a["short_circuit"] as Partial<AssignConfig["short_circuit"]> | undefined;
+    if (sc) Object.assign(cfg.short_circuit, sc);
+    const nr = a["needs_review"] as Partial<AssignConfig["needs_review"]> | undefined;
+    if (nr) Object.assign(cfg.needs_review, nr);
+    if (typeof a["shim_accept_distance"] === "number") cfg.shim_accept_distance = a["shim_accept_distance"];
+  }
+  const naming = doc["naming"] as Partial<AssignConfig["naming"]> | undefined;
+  if (naming) Object.assign(cfg.naming, naming);
+  const tiers = doc["tiers"] as Record<string, unknown> | undefined;
+  if (tiers) {
+    for (const [name, def] of Object.entries(tiers)) {
+      if (typeof def !== "object" || def === null) continue;
+      const { root, gate, growth } = def as Record<string, unknown>;
+      if (typeof root !== "string") continue;
+      cfg.tiers[name] = {
+        root,
+        gate: typeof gate === "string" ? gate : "none",
+        growth: typeof growth === "string" ? growth : "primary",
+      } satisfies TierDef;
+    }
+  }
   return cfg;
 }
 

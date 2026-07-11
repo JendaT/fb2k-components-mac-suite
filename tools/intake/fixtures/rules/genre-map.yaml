@@ -1,0 +1,46 @@
+# Fixture genre map (synthetic; the real one lives in the private music-rules
+# repo). artist -> {collection: release count}. Feedback counts accumulate
+# from user overrides; aliases map alternate names to canonical map keys;
+# exceptions are full artist names containing collab separators.
+artists:
+  Aes Dana:
+    "[Psychill & Chillout & Psydub]": 6
+  Solar Fields:
+    "[Psychill & Chillout & Psydub]": 8
+    "[Ambient]": 1
+  Carbon Based Lifeforms:
+    "[Psychill & Chillout & Psydub]": 7
+  Asura:
+    "[Psychill & Chillout & Psydub]": 4
+  Ott:
+    "[Psychill & Chillout & Psydub]": 3
+  E-Mantra:
+    "[Psytrance]": 5
+  Koan:
+    "[Psychill & Chillout & Psydub]": 2
+    "[Ambient]": 2
+  Hilyard:
+    "[Ambient]": 3
+  Hol Baumann:
+    "[Psychill & Chillout & Psydub]": 2
+  Miktek:
+    "[Psychill & Chillout & Psydub]": 2
+  Cell:
+    "[Ambient]": 4
+  Zero Cult:
+    "[Ambient]": 3
+    "[Psychill & Chillout & Psydub]": 1
+  Sync24:
+    "[Downtempo & Electronica]": 3
+  Bluetech:
+    "[Downtempo & Electronica]": 5
+  Vibrasphere:
+    "[Psytrance]": 4
+  Nadja & Vampillia:
+    "[Ambient]": 2
+feedback: {}
+aliases:
+  CBL: Carbon Based Lifeforms
+  Magnus Birgersson: Solar Fields
+exceptions:
+  - Nadja & Vampillia

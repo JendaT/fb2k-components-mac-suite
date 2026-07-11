@@ -3,29 +3,49 @@
 // docs/intake/intake-03-contract-spec.md; scan/resolve/status per doc 01.
 
 import { cmdResolve, cmdScan, cmdStatus, cmdVersion, type CommandResult, type CommonOpts } from "./commands.ts";
+import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
+import type { TreeSpec } from "./bootstrap.ts";
 import type { Envelope } from "./types.ts";
 
 const USAGE = `usage: intake <command> [options]
 
 commands:
-  scan    [<income>|--all]        discover, unpack archives, then resolve
-  resolve <path> [--force]        (re)detect release roots, write sidecars
-  status  [--filter k=v ...]      sidecar inventory
-  version                         {cli, schema, engine} versions
+  scan       [<income>|--all]                    discover, unpack archives, then resolve
+  resolve    <path> [--force]                    (re)detect release roots, write sidecars
+  identify   <root...> [--force]                 establish what each release is
+  assign     <root...> [--collection <name>] [--by user|engine]
+                                                 rank genre-collection folders
+  collections                                    genre map folder list (picker)
+  bootstrap  --tree <path> [--prior-weight <w>] [--tree ...] [--out <dir>] [--force]
+                                                 build genre/label maps from a tree
+  status     [--filter k=v ...]                  sidecar inventory
+  version                                        {cli, schema, engine} versions
 
 options:
   --json      machine output (single JSON envelope on stdout)
-  --dry-run   compute without writing sidecars or unpacking
-  --force     re-resolve dirs that already have sidecars
+  --dry-run   compute without writing anything
+  --force     redo work that already has output (sidecars/identification/proposal/maps)
 `;
 
-function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: CommonOpts & { all: boolean } } {
-  const opts: CommonOpts & { all: boolean } = {
+interface AllOpts extends CommonOpts {
+  all: boolean;
+  collection: string | null;
+  by: string | null;
+  trees: TreeSpec[];
+  out: string | null;
+}
+
+function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts } {
+  const opts: AllOpts = {
     json: false,
     dryRun: false,
     force: false,
     all: false,
     filters: {},
+    collection: null,
+    by: null,
+    trees: [],
+    out: null,
   };
   const args: string[] = [];
   let cmd = "";
@@ -39,7 +59,17 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: CommonO
       const kv = argv[++i];
       const eq = kv?.indexOf("=") ?? -1;
       if (kv && eq > 0) opts.filters[kv.slice(0, eq)] = kv.slice(eq + 1);
-    } else if (!cmd) cmd = a;
+    } else if (a === "--collection") opts.collection = argv[++i] ?? null;
+    else if (a === "--by") opts.by = argv[++i] ?? null;
+    else if (a === "--tree") {
+      const p = argv[++i];
+      if (p) opts.trees.push({ path: p, weight: 1 });
+    } else if (a === "--prior-weight") {
+      const w = parseFloat(argv[++i] ?? "");
+      const last = opts.trees.at(-1);
+      if (last && !Number.isNaN(w)) last.weight = w;
+    } else if (a === "--out") opts.out = argv[++i] ?? null;
+    else if (!cmd) cmd = a;
     else args.push(a);
   }
   return { cmd, args, opts };
@@ -89,6 +119,18 @@ async function main(): Promise<number> {
       break;
     case "resolve":
       result = await cmdResolve(args, opts);
+      break;
+    case "identify":
+      result = await cmdIdentify(args, opts);
+      break;
+    case "assign":
+      result = await cmdAssign(args, opts);
+      break;
+    case "collections":
+      result = cmdCollections();
+      break;
+    case "bootstrap":
+      result = cmdBootstrap(opts);
       break;
     case "status":
       result = cmdStatus(args, opts);
