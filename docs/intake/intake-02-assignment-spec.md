@@ -139,7 +139,7 @@ music-rules/
 ├── genre-map.yaml       # artist → {collection: count}, aliases, exceptions
 ├── label-map.yaml       # label → {collection: count}
 ├── styles.yaml          # discogs style/genre → collection hints
-├── income.yaml          # income folders: path, source_type, handling opts
+├── income.yaml          # income folders: path, source_type, trust, handling (doc 5)
 ├── structure.yaml       # naming templates, tier gates, thresholds, weights
 ├── overrides.log.yaml   # append-only feedback events
 └── docs/music.hq-structure.md
