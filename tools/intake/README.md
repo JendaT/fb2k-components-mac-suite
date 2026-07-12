@@ -21,6 +21,11 @@ bun run src/cli.ts resolve <dir>       # (re)detect roots, write sidecars
 bun run src/cli.ts identify <root>     # establish what a release is
 bun run src/cli.ts assign <root>       # rank genre-collection folders
 bun run src/cli.ts assign <root> --collection "[X]" --by user   # override + feedback
+bun run src/cli.ts propose <root>      # identify+assign+naming -> proposed
+bun run src/cli.ts approve <root>      # or --batch <file> of ids/paths
+bun run src/cli.ts execute --approved  # copy, tag, verify, journal, place
+bun run src/cli.ts execute --resume    # crash recovery for `placing` roots
+bun run src/cli.ts gc [--age 30] [--relocate-dj]   # verified local cleanup
 bun run src/cli.ts collections         # genre map folder list (picker)
 bun run src/cli.ts bootstrap --tree <path> --out <dir>          # build maps
 bun run src/cli.ts status --json       # sidecar inventory
@@ -36,6 +41,14 @@ Identify/assign run fully offline by default; network evidence is opt-in via
 `shim/beets_identify.py` (needs a python3 with beets installed; override the
 command with `INTAKE_BEETS_SHIM`); without it, identification degrades to
 `unconfirmed` and flags review.
+
+Execute/gc need `journal.path` in structure.yaml (the Amunet location is
+pending confirmation; nothing runs without it). Execute copies and verifies —
+income originals are only ever removed by `gc`, which re-verifies both the
+journal record and the placed files' audio hashes first, then leaves the
+sidecar behind as a `gc_done` tombstone. `propose --all-resolved` never picks
+up `needs_review` roots — offline (no Discogs confirmation) that is every
+root, so unattended auto-proposing effectively requires network identify.
 
 ## Development
 
