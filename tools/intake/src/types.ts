@@ -139,8 +139,32 @@ export interface Sidecar {
   quality: { tier_eligible: Tier; issues: string[] };
   identification: Identification | null;
   proposal: Proposal | null;
+  placed?: PlacedInfo;
   status: Status;
   history: HistoryEvent[];
+}
+
+// ---- execute / gc (doc 03 protocol) -----------------------------------------
+
+export interface PlacedInfo {
+  target_path: string;
+  verified: boolean;
+  journal_seq: number;
+}
+
+export interface JournalRecord {
+  seq: number;
+  ts: string;
+  event: string; // placed | gc_done | gc_relocated
+  sidecar_id: string;
+  audio_hashes: string[];
+  target_path: string;
+  cli_version: string;
+}
+
+export interface P3Config {
+  journal_path: string | null;
+  gc: { dj_zone: string | null; dj_collections: string[] };
 }
 
 // A resolved root before sidecar serialization.

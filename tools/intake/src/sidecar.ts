@@ -52,19 +52,15 @@ export interface SidecarSummary {
 
 /** Summary shape per docs/intake/intake-03-contract-spec.md (`status --json`). */
 export function summarize(sidecar: Sidecar, dir: string): SidecarSummary {
-  const p = sidecar.proposal as { target_collection?: string; confidence?: number } | null;
-  const placedEvent = (sidecar as unknown as { placed?: { verified: boolean; target_path: string } }).placed;
+  const p = sidecar.proposal;
   return {
     id: sidecar.id,
     root_path: dir,
     status: sidecar.status,
     needs_review: sidecar.cluster.needs_review,
     cluster: { albumartist: sidecar.cluster.albumartist, album: sidecar.cluster.album },
-    proposal:
-      p && typeof p.target_collection === "string"
-        ? { target_collection: p.target_collection, confidence: p.confidence ?? 0 }
-        : null,
-    placed: placedEvent ?? null,
+    proposal: p ? { target_collection: p.target_collection, confidence: p.confidence } : null,
+    placed: sidecar.placed ? { verified: sidecar.placed.verified, target_path: sidecar.placed.target_path } : null,
   };
 }
 

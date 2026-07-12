@@ -105,6 +105,14 @@ export function recordFeedback(map: GenreMap, artist: string, collection: string
   map.feedback[existing] = counts;
 }
 
+/** Record an executed placement: increment the artist's real release count. */
+export function recordPlacement(map: GenreMap, artist: string, collection: string): void {
+  const existing = Object.keys(map.artists).find((a) => normKey(a) === normKey(artist)) ?? artist;
+  const counts = map.artists[existing] ?? {};
+  counts[collection] = (counts[collection] ?? 0) + 1;
+  map.artists[existing] = counts;
+}
+
 /** Case/diacritic-insensitive lookup helper for map keys. */
 export function findKey<T>(obj: Record<string, T>, name: string): string | null {
   const want = normKey(name);

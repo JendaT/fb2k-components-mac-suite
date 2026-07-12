@@ -21,14 +21,14 @@ function fail(code: string, msg: string, path: string | null = null): CommandRes
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
-interface RootRef {
+export interface RootRef {
   dir: string;
   sidecarPath: string;
   sidecar: Sidecar;
 }
 
 /** Resolve root refs: an existing directory (all sidecars directly in it) or a sidecar id. */
-function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
+export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
   const out: RootRef[] = [];
   for (const ref of refs) {
     if (existsSync(ref) && statSync(ref).isDirectory()) {
@@ -65,7 +65,7 @@ function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
   return out;
 }
 
-function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean): void {
+export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean): void {
   root.sidecar.history.push({ ts: isoLocal(), event, by: `intake@${RESOLVER_VERSION}` });
   if (!dryRun) writeFileSync(root.sidecarPath, serializeSidecar(root.sidecar));
 }

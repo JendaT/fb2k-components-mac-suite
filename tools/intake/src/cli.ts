@@ -4,6 +4,7 @@
 
 import { cmdResolve, cmdScan, cmdStatus, cmdVersion, type CommandResult, type CommonOpts } from "./commands.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
+import { cmdApprove, cmdExecute, cmdGc, cmdPropose } from "./commands-p3.ts";
 import type { TreeSpec } from "./bootstrap.ts";
 import type { Envelope } from "./types.ts";
 
@@ -15,6 +16,11 @@ commands:
   identify   <root...> [--force]                 establish what each release is
   assign     <root...> [--collection <name>] [--by user|engine]
                                                  rank genre-collection folders
+  propose    <root...>|--all-resolved            identify+assign+naming, flip to proposed
+  approve    <root...>|--batch <file>            proposed -> approved
+  execute    <root...>|--approved [--resume]     copy to target, verify, journal, place
+  gc         [<root...>] [--age <days>] [--relocate-dj]
+                                                 re-verify + delete local originals
   collections                                    genre map folder list (picker)
   bootstrap  --tree <path> [--prior-weight <w>] [--tree ...] [--out <dir>] [--force]
                                                  build genre/label maps from a tree
@@ -33,6 +39,12 @@ interface AllOpts extends CommonOpts {
   by: string | null;
   trees: TreeSpec[];
   out: string | null;
+  allResolved: boolean;
+  batch: string | null;
+  approved: boolean;
+  resume: boolean;
+  age: number | null;
+  relocateDj: boolean;
 }
 
 function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts } {
@@ -46,6 +58,12 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     by: null,
     trees: [],
     out: null,
+    allResolved: false,
+    batch: null,
+    approved: false,
+    resume: false,
+    age: null,
+    relocateDj: false,
   };
   const args: string[] = [];
   let cmd = "";
@@ -69,6 +87,14 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
       const last = opts.trees.at(-1);
       if (last && !Number.isNaN(w)) last.weight = w;
     } else if (a === "--out") opts.out = argv[++i] ?? null;
+    else if (a === "--all-resolved") opts.allResolved = true;
+    else if (a === "--batch") opts.batch = argv[++i] ?? null;
+    else if (a === "--approved") opts.approved = true;
+    else if (a === "--resume") opts.resume = true;
+    else if (a === "--age") {
+      const days = parseFloat(argv[++i] ?? "");
+      if (!Number.isNaN(days)) opts.age = days;
+    } else if (a === "--relocate-dj") opts.relocateDj = true;
     else if (!cmd) cmd = a;
     else args.push(a);
   }
@@ -125,6 +151,18 @@ async function main(): Promise<number> {
       break;
     case "assign":
       result = await cmdAssign(args, opts);
+      break;
+    case "propose":
+      result = await cmdPropose(args, opts);
+      break;
+    case "approve":
+      result = cmdApprove(args, opts);
+      break;
+    case "execute":
+      result = await cmdExecute(args, opts);
+      break;
+    case "gc":
+      result = await cmdGc(args, opts);
       break;
     case "collections":
       result = cmdCollections();

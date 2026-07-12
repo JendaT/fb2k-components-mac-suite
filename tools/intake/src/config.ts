@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
-import type { AssignConfig, IncomeFolder, ResolverConfig, TierDef } from "./types.ts";
+import type { AssignConfig, IncomeFolder, P3Config, ResolverConfig, TierDef } from "./types.ts";
 
 export const DEFAULT_CONFIG: ResolverConfig = {
   weights: { purity: 0.35, seq: 0.25, artifacts: 0.15, name_parse: 0.15, quality_homog: 0.1 },
@@ -92,6 +92,26 @@ export function loadAssignConfig(dir: string | null = rulesDir()): AssignConfig 
         growth: typeof growth === "string" ? growth : "primary",
       } satisfies TierDef;
     }
+  }
+  return cfg;
+}
+
+/** Load execute/gc config: structure.yaml `journal:` and `gc:` sections. */
+export function loadP3Config(dir: string | null = rulesDir()): P3Config {
+  const cfg: P3Config = { journal_path: null, gc: { dj_zone: null, dj_collections: [] } };
+  if (!dir) return cfg;
+  const doc = readYaml(join(dir, "structure.yaml"));
+  if (!doc) return cfg;
+  const journal = doc["journal"] as Record<string, unknown> | undefined;
+  if (typeof journal?.["path"] === "string") {
+    const p = journal["path"].replace(/^~(?=\/)/, homedir());
+    cfg.journal_path = isAbsolute(p) ? p : resolve(dir, p);
+  }
+  const gc = doc["gc"] as Record<string, unknown> | undefined;
+  if (gc) {
+    if (typeof gc["dj_zone"] === "string") cfg.gc.dj_zone = gc["dj_zone"];
+    if (Array.isArray(gc["dj_collections"]))
+      cfg.gc.dj_collections = gc["dj_collections"].filter((x): x is string => typeof x === "string");
   }
   return cfg;
 }
