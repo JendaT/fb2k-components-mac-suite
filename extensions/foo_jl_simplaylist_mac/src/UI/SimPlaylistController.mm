@@ -378,9 +378,11 @@ struct ReloadOperation {
         [strongSelf.playlistView setNeedsDisplayInRect:strongSelf.playlistView.visibleRect];
     }];
     if (_decorationCoordinator) {
-        _playlistView.decorationGutterWidth = 16;
+        // View and header bar must agree or columns misalign against headers
+        const CGFloat gutterWidth = 16;
+        _playlistView.decorationGutterWidth = gutterWidth;
         _playlistView.decorationsEnabled = YES;
-        _headerBar.decorationGutterWidth = 16;
+        _headerBar.decorationGutterWidth = gutterWidth;
     }
 
     // Register for callbacks

@@ -169,7 +169,7 @@ private:
 struct DummyDecoratorRegistrar {
     DummyDecoratorRegistrar() {
         const char *enabled = std::getenv("SIMPLAYLIST_DECOR_DUMMY");
-        if (enabled && enabled[0] == '1') {
+        if (enabled && enabled[0] == '1' && enabled[1] == '\0') {
             static service_factory_single_t<debug_dummy_decorator> g_factory;
         }
     }

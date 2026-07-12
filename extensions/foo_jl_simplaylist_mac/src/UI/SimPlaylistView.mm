@@ -28,12 +28,19 @@ static NSColor *colorFromRGBA(uint32_t rgba) {
                                alpha:(rgba & 0xFF) / 255.0];
 }
 
-// Gutter glyphs for jl_icon_id values (index-aligned with the enum):
-// none, circle open/left-half/right-half/filled, warning, cross, check, arrow.
+// Gutter glyphs for jl_icon_id values (index-aligned with the enum in
+// jl_decorator_api.h; keep in sync when the enum grows).
 static NSString *glyphForIconId(uint32_t iconId) {
     static NSString *const glyphs[] = {
-        @"", @"○", @"◐", @"◑", @"●",
-        @"⚠", @"✕", @"✓", @"→",
+        @"",
+        @"○",  // circle open
+        @"◐",  // circle left half
+        @"◑",  // circle right half
+        @"●",  // circle filled
+        @"⚠",  // warning
+        @"✕",  // cross
+        @"✓",  // check
+        @"→",  // arrow
     };
     if (iconId >= sizeof(glyphs) / sizeof(glyphs[0])) return nil;
     return glyphs[iconId].length > 0 ? glyphs[iconId] : nil;

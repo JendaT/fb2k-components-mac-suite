@@ -252,6 +252,7 @@ int main(void) {
         }
         std::sort(decoratedUs.begin(), decoratedUs.end());
         double decoratedMinUs = decoratedUs.front();
+        double decoratedMedianUs = decoratedUs[decoratedUs.size() / 2];
 
         // Reload-path benchmark: cache rebuilds after a playlist change.
         const int reloads = 200;
@@ -269,6 +270,7 @@ int main(void) {
         printf("BENCH fill_row_min_us=%.3f\n", minUs / rowsPerPass);
         printf("BENCH reload_us=%.1f\n", reloadUs);
         printf("BENCH fill_pass_decorated_min_us=%.0f\n", decoratedMinUs);
+        printf("BENCH fill_pass_decorated_median_us=%.0f\n", decoratedMedianUs);
         printf("BENCH decorated_overhead_pct=%.2f\n", (decoratedMinUs - minUs) / minUs * 100.0);
         printf("BENCHMARK COMPLETE (checksum %ld)\n", (long)checksum);
         return 0;

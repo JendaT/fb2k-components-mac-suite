@@ -13,6 +13,7 @@
 
 #import "../../../../shared/jl_decorator_api.h"
 
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -170,11 +171,20 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
             pfc::list_t<jl_row_decoration> out;
             try {
                 provider->decorate(items, out);
+            } catch (const std::exception &e) {
+                FB2K_console_formatter()
+                    << "[SimPlaylist] decorator provider threw in decorate(): " << e.what();
+                continue;
             } catch (...) {
                 console::error("[SimPlaylist] decorator provider threw in decorate()");
                 continue;
             }
-            if (out.get_count() != count) continue;  // Contract violation; skip
+            if (out.get_count() != count) {  // Contract violation; skip
+                FB2K_console_formatter()
+                    << "[SimPlaylist] decorator provider returned " << (unsigned)out.get_count()
+                    << " decorations for " << (unsigned)count << " items; batch skipped";
+                continue;
+            }
             for (t_size i = 0; i < count; i++) {
                 // First provider with a non-empty, non-pending answer wins
                 if (!taken[i] && !out[i].pending && !apiDecorationIsEmpty(out[i])) {
@@ -237,6 +247,10 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
             bool decorated = false;
             try {
                 decorated = provider->decorate_group(key, members, out);
+            } catch (const std::exception &e) {
+                FB2K_console_formatter()
+                    << "[SimPlaylist] decorator provider threw in decorate_group(): " << e.what();
+                continue;
             } catch (...) {
                 console::error("[SimPlaylist] decorator provider threw in decorate_group()");
                 continue;
@@ -310,20 +324,29 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         pfc::list_t<jl_context_action> actions;
         try {
             _providers[p]->context_actions(handles, actions);
+        } catch (const std::exception &e) {
+            FB2K_console_formatter()
+                << "[SimPlaylist] decorator provider " << (unsigned)p
+                << " threw in context_actions(): " << e.what();
+            continue;
         } catch (...) {
             console::error("[SimPlaylist] decorator provider threw in context_actions()");
             continue;
         }
         for (t_size a = 0; a < actions.get_count(); a++) {
             const jl_context_action &action = actions[a];
-            if (action.title.is_empty()) continue;
+            // nil on invalid UTF-8; NSMenuItem throws on a nil title
+            NSString *title = action.title.is_empty()
+                ? nil
+                : [NSString stringWithUTF8String:action.title.c_str()];
+            if (title.length == 0) continue;
             if (!added) {
                 [menu addItem:[NSMenuItem separatorItem]];
                 _menuHandles = handles;  // Retain selection for invocation
                 added = YES;
             }
             NSMenuItem *item = [[NSMenuItem alloc]
-                initWithTitle:[NSString stringWithUTF8String:action.title.c_str()]
+                initWithTitle:title
                        action:@selector(decorationActionInvoked:)
                 keyEquivalent:@""];
             item.target = self;
@@ -339,6 +362,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action == @selector(decorationActionInvoked:)) {
         NSArray *context = item.representedObject;
+        if (![context isKindOfClass:[NSArray class]]) return YES;
         return context.count < 3 || [context[2] boolValue];
     }
     return YES;
@@ -352,6 +376,9 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     if (providerIndex >= _providers.size()) return;
     try {
         _providers[providerIndex]->execute_context_action(actionId, _menuHandles);
+    } catch (const std::exception &e) {
+        FB2K_console_formatter()
+            << "[SimPlaylist] decorator provider threw in execute_context_action(): " << e.what();
     } catch (...) {
         console::error("[SimPlaylist] decorator provider threw in execute_context_action()");
     }

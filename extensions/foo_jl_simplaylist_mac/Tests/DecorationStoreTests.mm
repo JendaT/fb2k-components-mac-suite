@@ -104,6 +104,41 @@ int main(void) {
         [store clearGroupDecorations];
         CHECK(![store isGroupResolved:7], "group cache cleared");
 
+        // --- Icon-only decoration is not empty ---
+        RowDecoration *iconOnly = [[RowDecoration alloc] init];
+        iconOnly.iconId = 1;
+        CHECK(!iconOnly.isEmpty, "icon-only decoration is not empty");
+
+        // --- getHandleKey:forIndex: success and failure ---
+        DecorationStore *store2 = [[DecorationStore alloc] init];
+        uintptr_t outKey = 0;
+        CHECK(![store2 getHandleKey:&outKey forIndex:0], "getHandleKey fails when unbound");
+        [store2 bindIndex:0 toHandleKey:0xAAA0];
+        CHECK([store2 getHandleKey:&outKey forIndex:0] && outKey == 0xAAA0,
+              "getHandleKey returns bound key");
+
+        // --- Rebinding an index to a different key wins ---
+        [store2 setDecoration:makeTint(0x11111100) forHandleKey:0xAAA0];
+        [store2 bindIndex:0 toHandleKey:0xBBB0];
+        [store2 setDecoration:makeTint(0x22222200) forHandleKey:0xBBB0];
+        CHECK([store2 decorationForIndex:0].tintRGBA == 0x22222200,
+              "rebound index resolves via the new key");
+
+        // --- Multi-key invalidation drops exactly the given keys ---
+        [store2 bindIndex:1 toHandleKey:0xCCC0];
+        [store2 setDecoration:makeTint(0x33333300) forHandleKey:0xCCC0];
+        uintptr_t doomed[] = {0xAAA0, 0xBBB0};
+        [store2 invalidateHandleKeys:doomed count:2];
+        CHECK(![store2 hasEntryForHandleKey:0xAAA0], "multi-invalidate drops first key");
+        CHECK(![store2 hasEntryForHandleKey:0xBBB0], "multi-invalidate drops second key");
+        CHECK([store2 hasEntryForHandleKey:0xCCC0], "multi-invalidate keeps other keys");
+
+        // --- clearIndexBindings also clears the group cache ---
+        [store2 setGroupDecoration:[[GroupDecoration alloc] init] forGroupIndex:3];
+        CHECK([store2 isGroupResolved:3], "group resolved before binding clear");
+        [store2 clearIndexBindings];
+        CHECK(![store2 isGroupResolved:3], "binding clear drops group cache too");
+
         printf("%s: %d checks, %d failures\n",
                g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;
