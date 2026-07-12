@@ -31,6 +31,7 @@ income folders ──▶ intake CLI ──▶ proposals (.intake.json sidecars)
 | 2 | `docs/intake/intake-02-assignment-spec.md` | tools worker |
 | 3 | `docs/intake/intake-03-contract-spec.md` | **shared** — both workers comply; overseer guards changes |
 | 4 | `docs/intake/intake-04-extension-spec.md` | extension worker |
+| 5 | `docs/intake/intake-05-producer-protocol.md` | unassigned (P5, tidal plugin) |
 
 Development order: doc 1 first (pure, testable against a music.todo copy);
 doc 4 part A (decorator API) can proceed in parallel once doc 3 is accepted;
@@ -61,6 +62,9 @@ doc 2 second for the tools worker.
 7. **Sync (later phase): field-level three-way tag merge** with base snapshots
    keyed by audio hash; no side-ownership discipline required. Out of scope for
    the intake milestone; journal design (doc 3) is forward-compatible with it.
+8. **Producers (source plugins) feed intake via the producer protocol** (doc
+   5): one precache store with ephemeral/promoted states; promotion = hint
+   file write; suggestion UI backed by the shared `assign` ranking.
 
 ## External state (private, rules repo on Forgejo)
 
@@ -88,4 +92,4 @@ New sibling `/volume1/music/music.meta/` holding `intake-journal.ndjson`
 
 P1 resolver + sidecars (read-only) → P2 assignment engine + rules bootstrap →
 P3 propose/approve/execute/gc → P4 extension (decorator API + intake component)
-→ P5 Tidal-cache adoption of `assign` → P6 sync engine (separate milestone).
+→ P5 producer protocol (doc 5): Tidal plugin adoption of `assign` + promotion → P6 sync engine (separate milestone).
