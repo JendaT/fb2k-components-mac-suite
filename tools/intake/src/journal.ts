@@ -25,7 +25,7 @@ export function readJournal(path: string): JournalRecord[] {
 
 export function nextSeq(path: string): number {
   const records = readJournal(path);
-  return records.length === 0 ? 1 : Math.max(...records.map((r) => r.seq)) + 1;
+  return records.reduce((max, r) => (r.seq > max ? r.seq : max), 0) + 1;
 }
 
 export function appendJournal(path: string, record: JournalRecord): void {

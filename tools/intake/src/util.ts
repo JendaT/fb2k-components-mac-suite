@@ -117,10 +117,11 @@ export function isoLocal(d: Date = new Date()): string {
   const pad = (n: number, w = 2) => String(Math.abs(n)).padStart(w, "0");
   const off = -d.getTimezoneOffset();
   const sign = off >= 0 ? "+" : "-";
+  const abs = Math.abs(off); // compute h:m from magnitude so negative half-hour zones are correct
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
     `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
-    `${sign}${pad(Math.floor(off / 60))}:${pad(off % 60)}`
+    `${sign}${pad(Math.trunc(abs / 60))}:${pad(abs % 60)}`
   );
 }
 

@@ -397,7 +397,7 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
     if (!sc.virtual) {
       // Whole-dir root: artifacts were copied at execute; clear them and any
       // now-empty disc dirs. The sidecar stays as a gc_done tombstone.
-      for (const a of planFiles(root).artifacts) rmSync(join(root.dir, a.to), { force: true });
+      for (const a of plan.artifacts) rmSync(join(root.dir, a.to), { force: true });
       for (const e of walkDirs(root.dir)) {
         if (e.path !== root.dir && readdirSync(e.path).filter((n) => !isJunkFile(n)).length === 0)
           rmSync(e.path, { recursive: true, force: true });

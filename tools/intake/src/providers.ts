@@ -87,7 +87,9 @@ export function httpDiscogs(token: string): DiscogsProvider {
       );
       const first = Array.isArray(search?.results) ? (search.results[0] as Record<string, unknown>) : null;
       if (!first?.id) return null;
-      const artist = await get(`https://api.discogs.com/artists/${first.id}`);
+      const artistId = Number(first.id); // Discogs ids are positive integers; reject anything else before it reaches the URL path
+      if (!Number.isInteger(artistId) || artistId <= 0) return null;
+      const artist = await get(`https://api.discogs.com/artists/${artistId}`);
       if (!artist) return null;
       const names: string[] = [];
       for (const k of ["aliases", "groups"]) {
