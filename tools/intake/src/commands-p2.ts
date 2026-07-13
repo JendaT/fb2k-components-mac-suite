@@ -15,7 +15,7 @@ import {
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
 import type { JsonError, Proposal, Sidecar } from "./types.ts";
 import { RESOLVER_VERSION } from "./types.ts";
-import { isSidecarName, isoLocal, walkDirs } from "./util.ts";
+import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -251,7 +251,7 @@ export function cmdCollections(): CommandResult {
   }
   const data = [...agg.entries()]
     .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([collection, v]) => ({ collection, artists: v.artists, releases: Math.round(v.releases * 100) / 100 }));
+    .map(([collection, v]) => ({ collection, artists: v.artists, releases: round2(v.releases) }));
   return { data, errors: [], exitCode: 0 };
 }
 

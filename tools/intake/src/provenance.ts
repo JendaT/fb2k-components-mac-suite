@@ -54,7 +54,11 @@ function mp3PrependTags(path: string, tags: ProvenanceTags): TagWriteResult {
   const frames = Object.entries(tags).flatMap(([k, v]) => [...txxxFrame(k, v)]);
   const header = new Uint8Array([0x49, 0x44, 0x33, 3, 0, 0, ...syncSafe(frames.length)]);
   const original = readFileSync(path);
-  writeFileSync(path, new Uint8Array([...header, ...frames, ...original]));
+  const out = new Uint8Array(header.length + frames.length + original.length);
+  out.set(header, 0);
+  out.set(frames, header.length);
+  out.set(original, header.length + frames.length);
+  writeFileSync(path, out);
   return { written: true, issue: null };
 }
 

@@ -28,7 +28,10 @@ function readU32BE(b: Uint8Array, off: number): number {
 }
 
 function ascii(b: Uint8Array, off: number, len: number): string {
-  return String.fromCharCode(...b.subarray(off, off + len));
+  const end = Math.min(off + len, b.length);
+  let s = "";
+  for (let i = off; i < end; i++) s += String.fromCharCode(b[i]!);
+  return s;
 }
 
 /** Skip ID3v2 block(s) at the head; returns offset of first non-ID3 byte. */
@@ -87,7 +90,7 @@ function wavHash(b: Uint8Array): HashResult {
   let off = 12;
   while (off + 8 <= b.length) {
     const id = ascii(b, off, 4);
-    const size = readU32LE(b, off + 4);
+    const size = readU32LE(b, off + 4) >>> 0;
     if (id === "data") return { hash: "pcmsha1:" + sha1Of(b.subarray(off + 8, off + 8 + size)), issues: [] };
     off += 8 + size + (size & 1);
   }
@@ -101,7 +104,7 @@ function aiffHash(b: Uint8Array): HashResult {
   let off = 12;
   while (off + 8 <= b.length) {
     const id = ascii(b, off, 4);
-    const size = readU32BE(b, off + 4);
+    const size = readU32BE(b, off + 4) >>> 0;
     if (id === "SSND") return { hash: "pcmsha1:" + sha1Of(b.subarray(off + 8, off + 8 + size)), issues: [] };
     off += 8 + size + (size & 1);
   }
@@ -115,8 +118,9 @@ function dsfHash(b: Uint8Array): HashResult {
   while (off + 12 <= b.length) {
     const id = ascii(b, off, 4);
     // 64-bit LE size; high half assumed 0 for our purposes beyond 4 GiB safety
-    const size = readU32LE(b, off + 4) + readU32LE(b, off + 8) * 2 ** 32;
+    const size = (readU32LE(b, off + 4) >>> 0) + (readU32LE(b, off + 8) >>> 0) * 2 ** 32;
     if (id === "data") return { hash: "pcmsha1:" + sha1Of(b.subarray(off + 12, off + size)), issues: [] };
+    if (size < 12) break; // malformed chunk size cannot advance; fall back to whole-file hash
     off += size;
   }
   return { hash: "fsha1:" + sha1Of(b), issues: ["dsf_no_data_chunk"] };

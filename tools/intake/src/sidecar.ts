@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResolvedRoot, Sidecar } from "./types.ts";
 
@@ -62,8 +62,4 @@ export function summarize(sidecar: Sidecar, dir: string): SidecarSummary {
     proposal: p ? { target_collection: p.target_collection, confidence: p.confidence } : null,
     placed: sidecar.placed ? { verified: sidecar.placed.verified, target_path: sidecar.placed.target_path } : null,
   };
-}
-
-export function sidecarExists(dir: string): boolean {
-  return existsSync(join(dir, ".intake.json"));
 }

@@ -121,7 +121,7 @@ function seqScore(files: CandFile[]): number {
   let total = 0;
   for (const [d, count] of countByDisc) {
     const tracks = byDisc.get(d) ?? new Set<number>();
-    const n = Math.max(count, tracks.size === 0 ? 0 : Math.max(...tracks));
+    const n = Math.max(count, tracks.size === 0 ? 0 : [...tracks].reduce((m, t) => Math.max(m, t), -Infinity));
     const inRange = [...tracks].filter((t) => t >= 1 && t <= n).length;
     total += n === 0 ? 0 : inRange / n;
   }
