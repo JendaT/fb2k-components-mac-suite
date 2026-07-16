@@ -6,11 +6,12 @@ import {
   closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync,
   readFileSync, readdirSync, renameSync, rmSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHash } from "./audioHash.ts";
 import type { CommandResult, CommonOpts } from "./commands.ts";
 import { cmdAssign, cmdIdentify, rootsFromRefs, writeSidecarWithEvent, type RootRef } from "./commands-p2.ts";
-import { loadIncome, loadP3Config, rulesDir } from "./config.ts";
+import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
+import type { TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap } from "./rules.ts";
@@ -22,6 +23,24 @@ const CLI_VERSION = "0.1.0";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
+}
+
+/**
+ * A placement target is only honored if it lands under a configured tier root.
+ * Engine-built targets already do (assign.buildTargetPath), but execute/gc also
+ * act on `target_path` re-read from a sidecar — an untrusted value that must not
+ * be allowed to write/delete outside the library. If no tiers are configured the
+ * check cannot be enforced, so it is skipped (unconfigured setups are unchanged).
+ */
+function targetUnderTierRoot(target: string, tiers: Record<string, TierDef>): boolean {
+  const roots = Object.values(tiers);
+  if (roots.length === 0) return true;
+  if (!isAbsolute(target)) return false;
+  const t = resolve(target);
+  return roots.some((def) => {
+    const root = resolve(def.root);
+    return t === root || t.startsWith(root + "/");
+  });
 }
 
 /** All sidecars across the configured income folders. */
@@ -194,6 +213,7 @@ function fsyncFile(path: string): void {
 export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<CommandResult> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
+  const tiers = loadAssignConfig().tiers;
   const errors: JsonError[] = [];
   const wantStatus = opts.resume ? "placing" : "approved";
   let roots: RootRef[];
@@ -223,6 +243,10 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     }
     if (!target) {
       errors.push({ code: "E_NO_TARGET", msg: "approved sidecar has no target_path", path: root.dir });
+      continue;
+    }
+    if (!targetUnderTierRoot(target, tiers)) {
+      errors.push({ code: "E_NO_TARGET", msg: "target_path is outside all configured tier roots", path: target });
       continue;
     }
     if (existsSync(target)) {
@@ -338,6 +362,7 @@ export interface GcOpts extends CommonOpts {
 export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
+  const tiers = loadAssignConfig().tiers;
   const errors: JsonError[] = [];
   const roots = (args.length > 0 ? rootsFromRefs(args, errors) : allRoots(errors)).filter(
     (r) => r.sidecar.status === "placed",
@@ -358,6 +383,10 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
         data.push({ id: sc.id, root_path: root.dir, skipped: "too_young" });
         continue;
       }
+    }
+    if (!targetUnderTierRoot(placed.target_path, tiers)) {
+      errors.push({ code: "E_VERIFY", msg: "placed target_path is outside all configured tier roots", path: placed.target_path });
+      continue;
     }
     // Re-verify against the journal before touching anything (doc 03).
     const record = findRecord(cfg.journal_path, placed.journal_seq);

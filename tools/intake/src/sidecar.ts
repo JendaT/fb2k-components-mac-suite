@@ -1,11 +1,20 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ResolvedRoot, Sidecar } from "./types.ts";
+import { isSafeRelPath } from "./util.ts";
 
 export function readSidecar(path: string): Sidecar | null {
   try {
     const doc = JSON.parse(readFileSync(path, "utf8"));
     if (typeof doc !== "object" || doc === null || doc.schema !== 1) return null;
+    // Income is untrusted: a hand-crafted sidecar must not be able to steer
+    // execute/gc at a path outside its own release root. Reject any file entry
+    // whose relative path escapes (absolute or contains a `..` segment).
+    if (Array.isArray(doc.files)) {
+      for (const f of doc.files) {
+        if (typeof f?.path !== "string" || !isSafeRelPath(f.path)) return null;
+      }
+    }
     return doc as Sidecar;
   } catch {
     return null;

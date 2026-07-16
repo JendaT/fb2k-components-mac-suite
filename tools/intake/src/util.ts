@@ -1,5 +1,5 @@
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readdirSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 
 export const AUDIO_EXTS = new Set([
   "flac", "mp3", "wav", "aiff", "aif", "m4a", "ogg", "ape", "wv", "dsf", "dff",
@@ -21,6 +21,18 @@ export function isJunkDir(name: string): boolean {
 
 export function isSidecarName(name: string): boolean {
   return name === ".intake.json" || /^\.intake\.[a-z0-9_]+\.json$/i.test(name);
+}
+
+/**
+ * A sidecar-relative file path is safe iff it stays within the release root:
+ * non-empty, not absolute, no backslash or NUL, and no `.`/`..`/empty segment.
+ * Income is an untrusted landing zone, so a re-read sidecar's `files[].path`
+ * and any relative path derived from one must pass this before it reaches a
+ * filesystem sink (copy/delete/rename).
+ */
+export function isSafeRelPath(p: string): boolean {
+  if (!p || p.includes("\u0000") || p.includes("\\") || isAbsolute(p)) return false;
+  return p.split("/").every((s) => s !== "" && s !== "." && s !== "..");
 }
 
 export function ext(name: string): string {
@@ -55,10 +67,11 @@ export function walkDirs(root: string): DirEntry[] {
       const p = join(dir, n);
       let st;
       try {
-        st = statSync(p);
+        st = lstatSync(p);
       } catch {
         continue;
       }
+      if (st.isSymbolicLink()) continue; // never follow symlinks (traversal / recursion-cycle guard)
       if (st.isDirectory()) {
         if (isJunkDir(n)) continue;
         entry.subdirs.push(n);

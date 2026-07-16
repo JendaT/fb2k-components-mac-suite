@@ -138,7 +138,21 @@ export function audioHashBuffer(name: string, b: Uint8Array): HashResult {
   }
 }
 
+// STREAMINFO is always FLAC's first metadata block, right after the "fLaC"
+// magic (plus any leading ID3v2). 1 MiB covers it even with an embedded tag /
+// cover art, so the common flac path never reads the whole (multi-GB) file.
+const FLAC_PREFIX = 1 << 20;
+
 export async function audioHash(path: string): Promise<HashResult> {
-  const buf = new Uint8Array(await Bun.file(path).arrayBuffer());
+  const file = Bun.file(path);
+  if (ext(basename(path)) === "flac") {
+    const prefix = new Uint8Array(await file.slice(0, FLAC_PREFIX).arrayBuffer());
+    const r = flacHash(prefix);
+    // A resolved STREAMINFO MD5 is independent of the rest of the file, so it
+    // is byte-identical to the full-file result. Any fallback (fsha1 over the
+    // whole buffer, bad magic, unset MD5) needs the complete file, so re-read.
+    if (r.hash.startsWith("flacmd5:")) return r;
+  }
+  const buf = new Uint8Array(await file.arrayBuffer());
   return audioHashBuffer(basename(path), buf);
 }

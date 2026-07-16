@@ -324,7 +324,10 @@ export class Resolver {
     const roots: ResolvedRoot[] = [];
     const kept: string[] = [];
 
-    // Pass 1 — candidates: dirs directly containing audio.
+    // Pass 1 — candidates: dirs directly containing audio. Snapshots (tag
+    // headers) are needed here for the pass-2 merge decisions; audio_hash
+    // (a full-file read) is deferred to emit time so a directory that already
+    // has a sidecar — kept below without --force — is never re-hashed.
     let candidates: Candidate[] = [];
     for (const e of entries) {
       if (e.audioFiles.length === 0) continue;
@@ -332,8 +335,7 @@ export class Resolver {
       for (const name of e.audioFiles) {
         const abs = join(e.path, name);
         const snap = await readSnapshot(abs);
-        const h = await audioHash(abs);
-        files.push({ rel: name, abs, snap, hash: h.hash, hashIssues: h.issues, shadow: false });
+        files.push({ rel: name, abs, snap, hash: "", hashIssues: [], shadow: false });
       }
       candidates.push({ dir: e.path, files, artifactNames: [...e.otherFiles], discs: null });
     }
@@ -391,6 +393,15 @@ export class Resolver {
       if (this.hasSidecar(c.dir) && !this.ctx.force) {
         kept.push(c.dir);
         continue;
+      }
+      // Emit-time hashing: only candidates that actually produce a sidecar are
+      // read in full (deferred from pass 1). Merged-parent candidates carry the
+      // disc children's files, so this covers them too.
+      for (const f of c.files) {
+        if (f.hash) continue;
+        const h = await audioHash(f.abs);
+        f.hash = h.hash;
+        f.hashIssues = h.issues;
       }
       markShadows(c.files);
       const emit = (opts: Parameters<Resolver["buildSidecar"]>[0]) => roots.push(this.buildSidecar(opts));
