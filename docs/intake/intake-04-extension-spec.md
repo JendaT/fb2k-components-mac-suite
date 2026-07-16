@@ -2,7 +2,7 @@
 
 **Repo destination:** `docs/intake/intake-04-extension-spec.md`
 **Owner:** extension worker · **Depends on:** doc 3 (contract, normative)
-**Status:** draft v1 — 2026-07-11
+**Status:** v1.1 — 2026-07-16 (Part A implemented and review-hardened; Part B draft)
 
 ## Part A — SimPlaylist row/group decorator provider (generic)
 
@@ -73,12 +73,37 @@ Deviations from the draft v1 sketch (resolved during implementation):
   right-half/filled, warning, cross, check, arrow); values are stable ABI,
   append-only. Hosts render them as text glyphs.
 
+Contract clarifications (adopted after the Part A code review; normative,
+mirrored in the header):
+- `decorate()`/`decorate_group()` may be called **concurrently** from
+  multiple threads — each host panel runs its own serial query queue.
+  Providers must be thread-safe.
+- `unregister_invalidate_callback()` does **not** synchronize with in-flight
+  callback invocations. Hosts must keep the callback object valid after
+  unregistering (SimPlaylist intentionally never frees its adapter);
+  providers should stop invoking promptly but need not block on in-flight
+  deliveries.
+- Multi-provider merge is host-defined: first-registered-provider-wins per
+  row/group, whole-decoration (no field-wise merging); enumeration order is
+  unspecified. v1 targets a single active provider.
+- Hosts may truncate the `decorate_group()` member list for very large
+  groups (SimPlaylist passes at most the first 64; `first_member` is always
+  `members[0]`).
+- Struct layouts are **frozen** for v1 (they cross the dylib boundary by
+  value). Extensions require `jl_row_decorator_provider_v2` with its own
+  GUID and new struct types; `jl_icon_id` is the one append-only exception.
+
 ### SimPlaylist changes (implemented)
 - Enumerate providers at panel init; query `decorate()` in the existing
   virtual-scroll fill path (batch = visible range + overscan of 32 rows),
   cache per handle, invalidate on provider callback or metadb change.
   Cache/index model is the pure `Core/DecorationStore` (unit-tested,
   benchmarked); SDK bridging lives in `Integration/DecorationCoordinator`.
+  In-flight query batches are dropped on any invalidation (generation
+  counter), so stale answers never enter the cache.
+- The gutter is presence-based, not activity-based: any registered provider
+  (including one that is inert, e.g. after failing its own init gate) makes
+  the 16 pt gutter appear.
 - Render: row background tint under selection layer; status icon in a new
   optional leading gutter column (16 pt, laid out in both the view and the
   header bar only when a provider exists); group badge appended to group
@@ -110,26 +135,46 @@ Read-only view over intake state + command trigger. All mutations via
 - After every triggered command: targeted `intake status --json --filter`.
 
 ### Row decorations (status → visual)
+Covers the full doc 3 lifecycle (new → resolved → proposed → approved →
+placing → placed → gc_done, plus rejected; needs_review may accompany
+resolved/proposed):
+
 | status | tint | icon |
 |---|---|---|
 | new/resolved | intake blue | ○ |
 | resolved + needs_review | amber | ⚠ |
 | proposed | teal | ◐ |
+| proposed + needs_review | amber | ◐ |
 | approved | teal | ◑ |
+| placing (transient, during execute) | teal | → |
 | placed (verified) | green | ● |
+| gc_done | none | none |
 | rejected | grey strike | ✕ |
 
+`placing` rows carry a tooltip with the execute progress source ("placing —
+see intake status"). `gc_done` renders no decoration: the local copy is gone,
+and rows swapped to library paths no longer match any income sidecar root
+(which is the desired end state — library rows are not intake rows).
+
 Group header badge: `→ [Psychill & Chillout & Psydub] · 0.91` (target +
-confidence); low-confidence renders amber with alternates hint.
+confidence). Low-confidence renders amber with the alternates hint carried
+in the badge text itself (e.g. `→ [Psychill] · 0.61 (alt: Psydub)`) —
+`jl_group_decoration` has no tooltip field in API v1.
 
 ### Context actions (selection mapped to sidecar roots)
+`jl_context_action` is a flat list in API v1 — no submenus. Menu structure
+below is expressed within that constraint:
 - **Propose** → `intake propose <roots>`
-- **Assign to…** → submenu from `intake collections --json`
-  (+ ranked alternates from the sidecar pinned on top) →
-  `intake assign --collection X --by user`
+- **Assign to <top alternates>** — the top ranked alternates from the
+  sidecar as individual flat actions (max 4), plus **Assign to other
+  collection…** which opens a provider-owned picker window fed by
+  `intake collections --json`. Either path → `intake assign --collection X
+  --by user`. (True submenus, if ever wanted, arrive via provider_v2.)
 - **Approve** / **Approve batch** → `intake approve`
 - **Execute (copy to library)** → `intake execute` (confirmation sheet
-  summarizing targets — describe-then-confirm in UI)
+  summarizing targets — describe-then-confirm in UI; the API passes no
+  window context, so the provider presents against the application's key
+  window; execute_context_action runs on the main thread)
 - **Delete local copy** → `intake gc <root>`; enabled **only** when
   journal-verified `placed` (per doc 3 §execute step 6)
 - **Swap to library paths** → replace selected playlist entries' paths with
@@ -144,6 +189,9 @@ tint colors, confirmation toggles, log verbosity.
 Per doc 3 error codes: render inert (no tint, tooltip explains), log to
 console, never modal-interrupt playback. CLI timeout budget 10s per command
 (execute excepted: runs detached, progress via status polling of `placing`).
+Note: an inert provider still triggers SimPlaylist's 16 pt gutter (provider
+presence is what enables it — see Part A); acceptable, since the gutter is
+the natural place for the "intake unavailable" tooltip.
 
 ### Build/layout
 New `extensions/foo_jl_intake_mac/` following suite conventions
@@ -156,6 +204,9 @@ panel reusing SimPlaylist rendering.)
 - SimPlaylist with no provider: rendering benchmarks unchanged.
 - With intake provider on a 5k-row playlist incl. 200 intake rows: smooth
   scroll (no frame drops from decoration path; cache hit ≥99% steady-state).
+  The playlist must use the sparse group model (the default) — decorations
+  intentionally do not render in the flat fallback mode for very large
+  playlists (Part A scope note).
 - Full flow demo: slsk dump lands → rows tint → propose → adjust one target
   via picker → approve → execute → green ● → swap to library paths →
   delete local.
