@@ -59,7 +59,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Appends provider context actions for the selection to the menu (after a
 // separator). Returns YES if anything was added. The selection is retained
-// until the menu closes.
+// until an action is invoked or the next menu is built.
 - (BOOL)appendContextActionsToMenu:(NSMenu *)menu
                         forHandles:(metadb_handle_list_cref)handles;
 

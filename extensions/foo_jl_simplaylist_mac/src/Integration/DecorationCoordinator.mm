@@ -23,6 +23,12 @@
 // visible screen). Prevents unbounded growth across huge playlists.
 static const NSUInteger kMaxHandleEntries = 20000;
 
+// decorate_group() receives at most this many member handles: members are
+// resolved on the main thread before dispatch, so huge groups (degenerate
+// grouping schemes) must not stall the draw path. Truncation is part of the
+// API contract (see jl_decorator_api.h); first_member is always included.
+static const t_size kMaxGroupMembersQueried = 64;
+
 @interface DecorationCoordinator ()
 - (void)providerInvalidatedHandles:(const metadb_handle_list &)affected;
 @end
@@ -76,6 +82,13 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     std::unordered_set<uintptr_t> _inflightHandles;
     std::unordered_set<NSInteger> _inflightGroups;
 
+    // Bumped on every invalidation; in-flight batches capture the value at
+    // dispatch and drop their commit on mismatch. Without this, a batch racing
+    // an invalidation would commit pre-invalidation answers as resolved (never
+    // re-queried) and could key them by handles whose retention was dropped
+    // (pointer-reuse aliasing onto unrelated tracks). Main thread only.
+    uint64_t _generation;
+
     // Selection retained while a provider context menu is open.
     metadb_handle_list _menuHandles;
 }
@@ -110,9 +123,23 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         for (auto &provider : _providers) {
             provider->unregister_invalidate_callback(_invalidateAdapter.get());
         }
-        _invalidateAdapter.reset();
+        // Unregistration does not synchronize with in-flight callbacks (see the
+        // contract in jl_decorator_api.h): a provider thread may still be inside
+        // on_decorations_invalidated() on this adapter. The adapter therefore
+        // must outlive the coordinator -- intentionally leaked (a few bytes per
+        // panel close); its weak owner reference makes late fires no-ops.
+        _invalidateAdapter->owner = nil;
+        _invalidateAdapter.release();
     }
     _providers.clear();
+}
+
+- (void)dealloc {
+    // Belt-and-braces: if the owning controller never called shutdown, the
+    // providers would keep a dangling adapter pointer past this dealloc.
+    // shutdown is idempotent, so the normal controller-driven call is a no-op
+    // by the time this runs.
+    [self shutdown];
 }
 
 #pragma mark - Prepare (visible range + overscan)
@@ -125,6 +152,10 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         [_store invalidateAllHandles];
         [_store clearIndexBindings];
         _retainedHandles.clear();
+        _generation++;  // Drop in-flight commits against the wiped cache
+        // The owner tracks the prepared range; without this reset the rows on
+        // screen would stay undecorated until the next scroll.
+        if (_invalidationHandler) _invalidationHandler();
     }
 
     auto pm = playlist_manager::get();
@@ -159,6 +190,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     auto providers = _providers;
     std::vector<uintptr_t> keys = std::move(batchKeys);
     metadb_handle_list items = std::move(batch);
+    const uint64_t generation = _generation;
     __weak DecorationCoordinator *weakSelf = self;
 
     dispatch_async(_queryQueue, ^{
@@ -201,6 +233,15 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         dispatch_async(dispatch_get_main_queue(), ^{
             DecorationCoordinator *strongSelf = weakSelf;
             if (!strongSelf) return;
+            if (strongSelf->_generation != generation) {
+                // Invalidated while in flight: the answers are stale and the
+                // keys may no longer be retained. Drop the commit; releasing
+                // the in-flight markers plus the redraw makes the next draw
+                // re-query these rows.
+                for (uintptr_t key : keys) strongSelf->_inflightHandles.erase(key);
+                if (strongSelf->_invalidationHandler) strongSelf->_invalidationHandler();
+                return;
+            }
             for (size_t i = 0; i < keys.size(); i++) {
                 [strongSelf->_store setDecoration:resolved[i] forHandleKey:keys[i]];
                 strongSelf->_inflightHandles.erase(keys[i]);
@@ -223,6 +264,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     metadb_handle_list members;
     for (NSUInteger idx = indexRange.location; idx < NSMaxRange(indexRange); idx++) {
         if (idx >= playlistItemCount) break;
+        if (members.get_count() >= kMaxGroupMembersQueried) break;
         metadb_handle_ptr handle;
         if (pm->playlist_get_item_handle(handle, playlist, (t_size)idx)) {
             members.add_item(handle);
@@ -234,6 +276,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
 
     auto providers = _providers;
     pfc::string8 headerText([header UTF8String] ?: "");
+    const uint64_t generation = _generation;
     __weak DecorationCoordinator *weakSelf = self;
 
     dispatch_async(_queryQueue, ^{
@@ -270,6 +313,12 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
             DecorationCoordinator *strongSelf = weakSelf;
             if (!strongSelf) return;
             strongSelf->_inflightGroups.erase(groupIndex);
+            if (strongSelf->_generation != generation) {
+                // Grouping/content changed in flight: groupIndex may identify
+                // a different group now. Drop; the next draw re-queries.
+                if (strongSelf->_invalidationHandler) strongSelf->_invalidationHandler();
+                return;
+            }
             [strongSelf->_store setGroupDecoration:result forGroupIndex:groupIndex];
             if (result && strongSelf->_invalidationHandler) strongSelf->_invalidationHandler();
         });
@@ -283,8 +332,10 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     [_store invalidateAllHandles];
     _retainedHandles.clear();
     _inflightGroups.clear();
-    // In-flight batches commit against stale keys; harmless (unreferenced
-    // entries, reset by the safety valve at worst).
+    // In-flight batches see the bump, drop their commits and clear their own
+    // in-flight markers -- nothing stale (or keyed by unretained handles)
+    // enters the store.
+    _generation++;
 }
 
 - (void)handleMetadbChanged:(metadb_handle_list_cref)changed {
@@ -296,6 +347,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     }
     [_store invalidateHandleKeys:keys.data() count:keys.size()];
     [_store clearGroupDecorations];
+    _generation++;
     if (_invalidationHandler) _invalidationHandler();
 }
 
@@ -311,12 +363,14 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         [_store invalidateHandleKeys:keys.data() count:keys.size()];
     }
     [_store clearGroupDecorations];
+    _generation++;
     if (_invalidationHandler) _invalidationHandler();
 }
 
 #pragma mark - Context actions
 
 - (BOOL)appendContextActionsToMenu:(NSMenu *)menu forHandles:(metadb_handle_list_cref)handles {
+    _menuHandles.remove_all();  // Release the previous menu's selection
     if (_providers.empty() || handles.get_count() == 0) return NO;
 
     BOOL added = NO;
@@ -382,6 +436,10 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
     } catch (...) {
         console::error("[SimPlaylist] decorator provider threw in execute_context_action()");
     }
+    // One action fires per menu; drop the selection now instead of pinning the
+    // handles until the next menu is built. (A cancelled menu keeps them until
+    // then -- clearing on close would race NSMenu's action dispatch.)
+    _menuHandles.remove_all();
 }
 
 @end

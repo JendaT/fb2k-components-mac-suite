@@ -87,7 +87,11 @@ static PlaylistLayoutModel *makeFixture(void) {
 // the decorator integration -- its body must stay byte-identical so BENCH
 // lines remain comparable. simulateFrameDecorated adds the per-row
 // DecorationStore lookup the view performs when a provider exists
-// (steady-state: all indices bound, 100% cache hit).
+// (steady-state: all indices bound, 100% cache hit). Known limitation: the
+// real view reaches the store through a delegate call (one objc_msgSend per
+// visible row per frame) which is not modeled here, so decorated_overhead_pct
+// measures the store lookup only and slightly understates the provider-
+// present cost. The zero-provider gate is unaffected.
 // ---------------------------------------------------------------------------
 
 static NSInteger simulateFrame(PlaylistLayoutModel *m, CGFloat scrollY, CGFloat viewportH,

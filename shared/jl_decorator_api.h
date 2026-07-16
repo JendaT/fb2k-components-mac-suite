@@ -25,11 +25,33 @@
 // - decorate() / decorate_group() are called OFF the main thread and must be
 //   fast: answer from the provider's own cache or return pending=true; never
 //   block on I/O or subprocesses. Pending rows are re-requested after the
-//   provider fires its invalidate callback.
+//   provider fires its invalidate callback. Each host panel runs its own
+//   query queue, so these calls may arrive CONCURRENTLY from multiple
+//   threads (one per open panel); implementations must be thread-safe.
 // - context_actions() / execute_context_action() are called on the main
 //   thread (menu construction); keep context_actions() fast.
 // - register/unregister_invalidate_callback are called on the main thread.
 //   Providers may fire callbacks from ANY thread; hosts marshal to main.
+// - Callback lifetime: unregister_invalidate_callback() does NOT synchronize
+//   with in-flight invocations -- a callback may still be executing (or about
+//   to execute from a snapshot the provider already took) when unregister
+//   returns. The HOST must therefore keep the callback object valid after
+//   unregistering (SimPlaylist intentionally never frees its adapter);
+//   providers should stop invoking promptly after unregistration but need
+//   not block on in-flight deliveries.
+//
+// Multiple providers:
+// - The host merges per row/group with first-registered-provider-wins, taking
+//   the whole decoration from the winning provider (no field-wise merging;
+//   pending or default-constructed answers do not win). Provider precedence
+//   follows service enumeration order, which is unspecified. v1 of this API
+//   targets a single active provider.
+//
+// ABI / evolution:
+// - The structs below cross the dylib boundary by value: their layouts are
+//   FROZEN for v1. Do not add, remove or reorder fields. Extensions require a
+//   new service interface (jl_row_decorator_provider_v2 with its own GUID)
+//   carrying new struct types. jl_icon_id is the one append-only exception.
 //
 
 #include <foobar2000/SDK/foobar2000.h>
@@ -128,7 +150,9 @@ public:
                           pfc::list_t<jl_row_decoration> &out) = 0;
 
     // Group-level decoration for a group header. Called off-main-thread.
-    // Returns false when this provider has nothing for the group.
+    // Returns false when this provider has nothing for the group. Hosts may
+    // truncate `members` for very large groups (SimPlaylist passes at most
+    // the first 64); key.first_member is always members[0].
     virtual bool decorate_group(const jl_group_key &key,
                                 metadb_handle_list_cref members,
                                 jl_group_decoration &out) = 0;
