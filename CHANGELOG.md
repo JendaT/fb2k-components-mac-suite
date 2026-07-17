@@ -601,6 +601,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services
+- Pull sync no longer truncates playlists at 200 tracks (all sync fetches paginate to completeness); a failed remote fetch can no longer wipe a local playlist (excluded from the plan instead of diffing as empty)
+- fb2k playlist state read only on the main thread in sync previews; sync shared state serialized; request bursts bounded to 4 concurrent
+- Token refresh is single-flight (concurrent callers get the real result instead of a 1s sleep guess); sign-out during refresh can no longer resurrect a session
+- Two crash fixes (nil dictionary key in push-sync apply, std::string(NULL) in DASH 403 re-open) plus 58 review fixes: JSON type guards, album-art data cache, stale-response guards, leak fix, dedupe
+
+#### Security
+- tidal:// content IDs validated before use in authenticated API paths (blocks request forgery via crafted playlists); search/ISRC query values strictly encoded; path traversal guards on library export paths; request logs redacted to host+path; DASH manifest bomb hardening
 
 ### [0.3.1] - 2026-06-17
 

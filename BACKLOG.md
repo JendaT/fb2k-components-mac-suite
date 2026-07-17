@@ -8,10 +8,19 @@
 | Task | Priority | Added | Notes |
 |------|----------|-------|-------|
 | Verify quality fallback (96kbps issue) | High | 2026-02-11 | Fallback DECISION logic now unit-tested (StreamResolutionPolicy, 2026-07-07): downgrade only on 403/DRM/no-stream, cascade order pinned. Remaining step is runtime-only: play a track after restart and check resolved quality in the console log |
+| Concurrent DASH segment downloads | High | 2026-07-17 | Review finding (Critical): sequential segment fetches dominate time-to-first-audio on every cache miss. Windowed downloader (4-6 concurrent) into indexed slots, in-order assembly, preserve abort semantics. Consider waiter-refcount cancel of abandoned assemblies (skipped tracks currently download to completion) |
+| Runtime-verify sync + auth reworks | High | 2026-07-17 | Pagination/thread-safety/single-flight changes are build+unit-test green but the live flows (large-playlist pull, push, token expiry during playback, sign-out mid-refresh) are untested against the real API |
+| Drill-down stale-result guards | Medium | 2026-07-17 | Album/artist/playlist drill-down completions lack the generation guard search/library loads have (TidalBrowserController ~1131-1243); slow responses clobber the current view after Back |
+| tryReopen unification + mid-track resume | Medium | 2026-07-17 | 403 retry path diverges from openStream (no DASH branch, weaker decoder fallback) and restarts the track at 0:00 despite m_samplesDelivered being tracked |
+| ETag fetch through request pipeline | Medium | 2026-07-17 | getPlaylistETagForID bypasses rate limiter + 401 refresh; needs a response-headers-capable request variant, then push sync inherits refresh handling |
+| Review product decisions | Low | 2026-07-17 | Always-on 4KB manifest dump vs signed-URL redaction policy; push sync is add-only (undocumented, preview shows 0/0); favorites batching + honest status reporting; browser god-class split plan (extraction order documented in review); note on shared python-tidal credentials |
 
 ## Completed
 | Task | Completed | Notes |
 |------|-----------|-------|
+| Auth rework: cycle break + single-flight refresh | 2026-07-17 | tokenRefreshHandler injection removes API->Services import; AuthService sole session owner (atomic readonly + SessionOwner category); pending-completions refresh replaces 1s sleep; sign-out generation guard discards stale refresh results |
+| Sync correctness rework | 2026-07-17 | Full pagination (pure PaginationPolicy, 10k ceiling, 11 checks), fetch-failure isolation (no local wipes, no false deletes), fb2k main-thread snapshots, serialized state queue, width-4 fan-out with ISRC dedupe |
+| Multi-perspective code review + hardening | 2026-07-17 | 3 auto-loop rounds (security/perf/arch/quality reviewers), 58 fixes: ID validation, query encoding, path guards, log redaction, 2 crash fixes, JSON type guards, art data cache, generation/reuse guards, dedupe, dead code. All builds + 12 suites green |
 | Save to library (music.hq export) | 2026-07-09 | Playlist context menu downloads selected tracks into the configured library root using the music.hq layout. Pure Core/LibraryLayout (66 checks) + TidalLibrarySaver (ffmpeg fMP4->flac remux, tags, cover.jpg, genre resolution: disk scan > remembered map > prompt) + TidalSaveMenu. Gated by Preferences > Library folder. Runtime flow untested |
 | DASH prefetch (preload next track) | 2026-07-09 | Coalescing blob cache (TidalDashCache) + play-callback prefetcher (TidalPrefetch) + pure DashCachePolicy (segment URLs, LRU eviction). Next track pre-assembled while current plays; ~320MB cap, oldest-first eviction. Decoder reads from cache. 19 checks |
 | Decoder open-failure diagnostics | 2026-07-09 | open_for_decoding failures now log the selected decoder + exception instead of silently skipping. Resolved the "files refuse to play" HI_RES_LOSSLESS report (playback works; issue was swallowed decoder errors + first-open latency) |
