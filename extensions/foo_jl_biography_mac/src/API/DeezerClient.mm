@@ -9,7 +9,8 @@
 #import "BiographyAPIConstants.h"
 #import "../Core/BiographyRequest.h"
 #import "../Core/ArtistImage.h"
-#import "../Core/BiographyData.h"
+#import "../Core/ArtistNameMatcher.h"
+#import "../Core/GalleryImageParsing.h"
 
 static NSString * const kDeezerApiBaseUrl = @"https://api.deezer.com";
 static const NSTimeInterval kDeezerTimeout = 10.0;
@@ -107,74 +108,23 @@ static const NSTimeInterval kDeezerTimeout = 10.0;
             return;
         }
 
-        // Find best match (case-insensitive)
-        NSDictionary *matchedArtist = nil;
-        NSString *searchLower = [artistName lowercaseString];
-
-        for (NSDictionary *artist in results) {
-            NSString *name = artist[@"name"];
-            if ([[name lowercaseString] isEqualToString:searchLower]) {
-                matchedArtist = artist;
-                break;
-            }
-        }
-
         // SEC-9: Only accept exact match or close match (not arbitrary first result)
+        NSDictionary *matchedArtist = [ArtistNameMatcher bestMatchInResults:results
+                                                                    forName:artistName
+                                                                    nameKey:@"name"];
         if (!matchedArtist) {
-            // Check if first result at least contains the search term
-            NSDictionary *firstResult = results.firstObject;
-            NSString *firstName = firstResult[@"name"];
-            if ([firstName isKindOfClass:[NSString class]] &&
-                [[firstName lowercaseString] containsString:searchLower] &&
-                searchLower.length >= 4) {
-                matchedArtist = firstResult;
-                DEEZER_LOG(@"No exact match, using close match: %@", matchedArtist[@"name"]);
-            } else {
-                DEEZER_LOG(@"No acceptable match for %@", artistName);
-                completion(@[], nil);
-                return;
-            }
-        } else {
-            DEEZER_LOG(@"Found exact match: %@", matchedArtist[@"name"]);
+            DEEZER_LOG(@"No acceptable match for %@", artistName);
+            completion(@[], nil);
+            return;
         }
+        DEEZER_LOG(@"Matched: %@", matchedArtist[@"name"]);
 
-        // Extract images
-        NSMutableArray<ArtistImage *> *images = [NSMutableArray array];
-
-        // Get the XL image (1000x1000) as main, big (500x500) as thumbnail
-        NSString *pictureXL = matchedArtist[@"picture_xl"];
-        NSString *pictureBig = matchedArtist[@"picture_big"];
-        NSString *pictureMedium = matchedArtist[@"picture_medium"];
-
-        // Use the best available
-        NSString *mainUrl = pictureXL ?: pictureBig ?: pictureMedium;
-        NSString *thumbUrl = pictureBig ?: pictureMedium;
-
-        if (mainUrl.length > 0) {
-            // Check if it's the default placeholder
-            if ([mainUrl containsString:kDeezerPlaceholderHash]) {
-                DEEZER_LOG(@"Skipping default placeholder for %@", artistName);
-                completion(@[], nil);
-                return;
-            }
-
-            NSURL *url = [NSURL URLWithString:mainUrl];
-            NSURL *thumbnailURL = thumbUrl ? [NSURL URLWithString:thumbUrl] : nil;
-
-            if (url) {
-                ArtistImage *image = [[ArtistImage alloc] initWithURL:url
-                                                         thumbnailURL:thumbnailURL
-                                                            imageType:ArtistImageTypeThumbnail
-                                                               source:BiographySourceDeezer
-                                                                likes:0
-                                                         originalSize:CGSizeMake(1000, 1000)];
-                [images addObject:image];
-                DEEZER_LOG(@"Got image: %@", url.lastPathComponent);
-            }
-        }
+        // Extract the single best picture (skips the default placeholder)
+        ArtistImage *image = [GalleryImageParsing imageFromDeezerArtist:matchedArtist];
+        NSArray<ArtistImage *> *images = image ? @[image] : @[];
 
         DEEZER_LOG(@"%lu images for %@", (unsigned long)images.count, artistName);
-        completion([images copy], nil);
+        completion(images, nil);
     }];
 
     [task resume];

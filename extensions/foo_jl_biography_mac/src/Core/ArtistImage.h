@@ -7,8 +7,9 @@
 
 #pragma once
 
-#import <Cocoa/Cocoa.h>
-#import "BiographyData.h"  // For BiographySource enum
+#import <Foundation/Foundation.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import "BiographySource.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

@@ -10,6 +10,7 @@
 #import "ArtistGalleryData.h"
 #import "ArtistImageCache.h"
 #import "BiographyRequest.h"
+#import "GalleryFetchState.h"
 #import "../API/FanartTvClient.h"
 #import "../API/AudioDbClient.h"
 #import "../API/DeezerClient.h"
@@ -77,17 +78,9 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
     self.isLoading = YES;
     [self notifyDelegateLoadingStarted];
 
-    // Create builder for results
-    ArtistGalleryDataBuilder *builder = [[ArtistGalleryDataBuilder alloc] initWithArtistName:artistName];
-    builder.mbid = mbid;
-
-    // Track completion of all APIs
-    __block BOOL fanartDone = NO;
-    __block BOOL audioDbDone = NO;
-    __block BOOL deezerDone = NO;
-    __block NSError *fanartError = nil;
-    __block NSError *audioDbError = nil;
-    __block NSError *deezerError = nil;
+    // Thread-safe accumulator: dedups images, tracks per-source errors, and
+    // guards against the timeout racing the all-sources-done notification
+    GalleryFetchState *state = [[GalleryFetchState alloc] initWithArtistName:artistName mbid:mbid];
 
     // Weak reference for async callbacks
     __weak typeof(self) weakSelf = self;
@@ -96,10 +89,6 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
 
     // Dispatch group for parallel fetches
     dispatch_group_t group = dispatch_group_create();
-    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-
-    // Completion guard to prevent double-fire between timeout and group_notify
-    __block BOOL fetchCompleted = NO;
 
     // Timeout handler - route through main queue to avoid data races
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kOverallFetchTimeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -109,13 +98,9 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
         // Check if this request is still current
         if (![strongSelf.currentRequestId isEqualToString:reqId]) return;
 
-        if (!fetchCompleted && strongSelf.isLoading) {
-            fetchCompleted = YES;
+        if (strongSelf.isLoading && [state tryComplete]) {
             GALLERY_LOG(@"Overall timeout reached");
-            [strongSelf finishFetchWithBuilder:builder
-                                   fanartError:fanartError
-                                  audioDbError:audioDbError
-                                   deezerError:deezerError];
+            [strongSelf finishFetchWithState:state];
         }
     });
 
@@ -125,19 +110,11 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
         [[FanartTvClient shared] fetchImagesForMBID:mbid
                                               token:request
                                          completion:^(NSArray<ArtistImage *> *images, NSError *error) {
-            fanartDone = YES;
-            fanartError = error;
-
-            if (images.count > 0) {
-                @synchronized(builder) {
-                    [builder addImages:images];
-                }
-            }
-
+            [state recordImages:images error:error fromSource:BiographySourceFanartTv];
             dispatch_group_leave(group);
         }];
     } else {
-        fanartDone = YES;
+        [state recordSkippedSource:BiographySourceFanartTv];
         GALLERY_LOG(@"Skipping FanartTV (no MBID)");
     }
 
@@ -146,15 +123,7 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
     [[AudioDbClient shared] fetchImagesForArtist:artistName
                                            token:request
                                       completion:^(NSArray<ArtistImage *> *images, NSError *error) {
-        audioDbDone = YES;
-        audioDbError = error;
-
-        if (images.count > 0) {
-            @synchronized(builder) {
-                [builder addImages:images];
-            }
-        }
-
+        [state recordImages:images error:error fromSource:BiographySourceAudioDb];
         dispatch_group_leave(group);
     }];
 
@@ -163,15 +132,7 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
     [[DeezerClient shared] fetchImagesForArtist:artistName
                                           token:request
                                      completion:^(NSArray<ArtistImage *> *images, NSError *error) {
-        deezerDone = YES;
-        deezerError = error;
-
-        if (images.count > 0) {
-            @synchronized(builder) {
-                [builder addImages:images];
-            }
-        }
-
+        [state recordImages:images error:error fromSource:BiographySourceDeezer];
         dispatch_group_leave(group);
     }];
 
@@ -186,12 +147,8 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
             return;
         }
 
-        if (!fetchCompleted) {
-            fetchCompleted = YES;
-            [strongSelf finishFetchWithBuilder:builder
-                                   fanartError:fanartError
-                                  audioDbError:audioDbError
-                                   deezerError:deezerError];
+        if ([state tryComplete]) {
+            [strongSelf finishFetchWithState:state];
         }
     });
 }
@@ -225,45 +182,17 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
 
 #pragma mark - Private
 
-- (void)finishFetchWithBuilder:(ArtistGalleryDataBuilder *)builder
-                   fanartError:(NSError *)fanartError
-                  audioDbError:(NSError *)audioDbError
-                   deezerError:(NSError *)deezerError {
+- (void)finishFetchWithState:(GalleryFetchState *)state {
 
     self.isLoading = NO;
 
-    // Sort images by preference
-    [builder sortImagesByPreference];
+    // Sort, dedup, and append the Last.fm fallback when the APIs came up empty
+    ArtistGalleryData *data = [state buildGalleryDataWithFallbackURL:self.fallbackImageURL];
 
-    // Build gallery data
-    ArtistGalleryData *data = [builder build];
-
-    GALLERY_LOG(@"Fetch complete: %lu images (FanartTV: %@, AudioDB: %@, Deezer: %@)",
+    GALLERY_LOG(@"Fetch complete: %lu images%@",
                 (unsigned long)data.imageCount,
-                fanartError ? fanartError.localizedDescription : @"OK",
-                audioDbError ? audioDbError.localizedDescription : @"OK",
-                deezerError ? deezerError.localizedDescription : @"OK");
-
-    // If no images from APIs but we have a fallback URL, use it
-    // Skip Last.fm default placeholder (star icon) - hash 2a96cbd8b46e442fc41c2b86b821562f
-    BOOL isDefaultPlaceholder = [self.fallbackImageURL.absoluteString containsString:kLastFmPlaceholderHash];
-
-    if (data.isEmpty && self.fallbackImageURL && !isDefaultPlaceholder) {
-        GALLERY_LOG(@"No API images, using Last.fm fallback URL: %@", self.fallbackImageURL.absoluteString);
-        ArtistImage *fallbackImage = [[ArtistImage alloc] initWithURL:self.fallbackImageURL
-                                                         thumbnailURL:nil
-                                                            imageType:ArtistImageTypeThumbnail
-                                                               source:BiographySourceLastFm
-                                                                likes:0
-                                                         originalSize:CGSizeZero];
-        [builder addImages:@[fallbackImage]];
-        data = [builder build];
-        GALLERY_LOG(@"After adding fallback: %lu images", (unsigned long)data.imageCount);
-    } else if (data.isEmpty && isDefaultPlaceholder) {
-        GALLERY_LOG(@"No API images, Last.fm fallback is default placeholder - skipping");
-    } else if (data.isEmpty) {
-        GALLERY_LOG(@"No API images and no fallback URL available");
-    }
+                state.firstError ? [NSString stringWithFormat:@" (first error: %@)",
+                                    state.firstError.localizedDescription] : @"");
 
     self.galleryData = data;
 
@@ -275,9 +204,9 @@ static const NSTimeInterval kOverallFetchTimeout = 15.0;
     // Notify delegate
     [self notifyDelegateLoadingFinished];
 
-    if (data.isEmpty && fanartError && audioDbError && deezerError) {
+    if (data.isEmpty && state.allSourcesFailed) {
         // All failed and no fallback
-        [self notifyDelegateWithError:fanartError];
+        [self notifyDelegateWithError:state.firstError];
     } else {
         [self notifyDelegateWithImages:data.images];
     }

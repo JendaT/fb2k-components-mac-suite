@@ -9,6 +9,7 @@
 #import "BiographyData.h"
 #import "BiographyRequest.h"
 #import "BiographyCache.h"
+#import "LastFmParsing.h"
 #import "../API/LastFmBioClient.h"
 #import "../API/BiographyAPIConstants.h"
 
@@ -116,8 +117,8 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
             }
 
             // Parse response and build BiographyData
-            BiographyData *data = [self buildBiographyDataFromResponse:response
-                                                            artistName:artistName];
+            BiographyData *data = [LastFmParsing biographyDataFromArtistInfoResponse:response
+                                                                          artistName:artistName];
 
             // Cache the result
             [self.cache cacheBiography:data forArtist:artistName];
@@ -155,79 +156,6 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
             // Silent - just populates cache
         }];
     });
-}
-
-#pragma mark - Response Building
-
-- (BiographyData *)buildBiographyDataFromResponse:(NSDictionary *)response
-                                       artistName:(NSString *)artistName {
-
-    NSDictionary *parsed = [LastFmBioClient parseArtistInfoResponse:response];
-
-    BiographyDataBuilder *builder = [[BiographyDataBuilder alloc] initWithArtistName:artistName];
-
-    // Use corrected name if available
-    if (parsed[@"name"]) {
-        builder.artistName = parsed[@"name"];
-    }
-
-    builder.musicBrainzId = parsed[@"mbid"];
-    builder.biography = parsed[@"biography"];
-    builder.biographySummary = parsed[@"biographySummary"];
-    builder.biographySource = BiographySourceLastFm;
-    builder.language = @"en";
-
-    // Image URL (will need to be downloaded separately)
-    // Skip Last.fm default placeholder (star icon) - hash 2a96cbd8b46e442fc41c2b86b821562f
-    NSURL *imageURL = parsed[@"imageURL"];
-    if (imageURL && ![imageURL.absoluteString containsString:kLastFmPlaceholderHash]) {
-        builder.artistImageURL = imageURL;
-        builder.imageSource = BiographySourceLastFm;
-        builder.imageType = BiographyImageTypeThumb;
-    }
-
-    // Tags
-    builder.tags = parsed[@"tags"];
-
-    // Stats
-    builder.listeners = [parsed[@"listeners"] unsignedIntegerValue];
-    builder.playcount = [parsed[@"playcount"] unsignedIntegerValue];
-
-    // Similar artists
-    NSArray *similarRaw = parsed[@"similarArtists"];
-    if (similarRaw.count > 0) {
-        NSMutableArray<SimilarArtistRef *> *similar = [NSMutableArray array];
-        for (NSDictionary *artistDict in similarRaw) {
-            NSString *name = artistDict[@"name"];
-            if (name.length > 0) {
-                NSURL *thumbURL = nil;
-                NSArray *images = artistDict[@"image"];
-                if ([images isKindOfClass:[NSArray class]]) {
-                    for (NSDictionary *img in images) {
-                        if ([img[@"size"] isEqualToString:@"medium"]) {
-                            NSString *urlStr = img[@"#text"];
-                            if (urlStr.length > 0) {
-                                thumbURL = [NSURL URLWithString:urlStr];
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                SimilarArtistRef *ref = [[SimilarArtistRef alloc] initWithName:name
-                                                                  thumbnailURL:thumbURL
-                                                                 musicBrainzId:artistDict[@"mbid"]];
-                [similar addObject:ref];
-            }
-        }
-        builder.similarArtists = [similar copy];
-    }
-
-    builder.fetchedAt = [NSDate date];
-    builder.isFromCache = NO;
-    builder.isStale = NO;
-
-    return [builder build];
 }
 
 #pragma mark - Completion Helpers

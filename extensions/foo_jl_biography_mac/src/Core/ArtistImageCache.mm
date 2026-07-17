@@ -7,8 +7,8 @@
 
 #import "ArtistImageCache.h"
 #import "ArtistGalleryData.h"
+#import "GalleryCacheKeys.h"
 #import "BiographyAPIConstants.h"
-#import <CommonCrypto/CommonDigest.h>
 #import <ImageIO/ImageIO.h>
 #import <CoreServices/CoreServices.h>
 
@@ -24,38 +24,14 @@ static const NSInteger kMaxConcurrentDownloads = 4;
 
 #pragma mark - Cache Key Helper
 
+// Key derivation lives in GalleryCacheKeys (SDK-free, unit-tested)
 static NSString *CacheKeyForURL(NSURL *url, ArtistImageCacheSize size) {
-    // SHA256 hash of URL + size suffix
-    NSString *urlString = url.absoluteString;
-    NSData *data = [urlString dataUsingEncoding:NSUTF8StringEncoding];
-
-    unsigned char hash[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256(data.bytes, (CC_LONG)data.length, hash);
-
-    NSMutableString *hashString = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
-        [hashString appendFormat:@"%02x", hash[i]];
-    }
-
-    NSString *suffix = (size == ArtistImageCacheSizeThumbnail) ? @"_thumb" : @"_full";
-    return [hashString stringByAppendingString:suffix];
+    return [GalleryCacheKeys keyForImageURL:url
+                                  thumbnail:(size == ArtistImageCacheSizeThumbnail)];
 }
 
 static NSString *CacheKeyForArtist(NSString *artistName) {
-    // Normalize artist name for cache key
-    NSString *normalized = [[artistName lowercaseString]
-                            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSData *data = [normalized dataUsingEncoding:NSUTF8StringEncoding];
-
-    unsigned char hash[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256(data.bytes, (CC_LONG)data.length, hash);
-
-    NSMutableString *hashString = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
-        [hashString appendFormat:@"%02x", hash[i]];
-    }
-
-    return [hashString stringByAppendingString:@"_gallery"];
+    return [GalleryCacheKeys keyForArtist:artistName];
 }
 
 @interface ArtistImageCache ()

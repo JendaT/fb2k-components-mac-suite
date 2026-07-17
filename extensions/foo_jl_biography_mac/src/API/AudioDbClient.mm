@@ -11,6 +11,8 @@
 #import "../Core/BiographyRequest.h"
 #import "../Core/RateLimiter.h"
 #import "../Core/ArtistImage.h"
+#import "../Core/ArtistNameMatcher.h"
+#import "../Core/GalleryImageParsing.h"
 
 NSString * const AudioDbErrorDomain = @"com.foobar2000.biography.audiodb";
 
@@ -177,7 +179,7 @@ static const NSTimeInterval kAudioDbRequestTimeout = 10.0;
 
             // Disambiguation: validate returned artist matches request
             NSString *returnedName = artist[@"strArtist"];
-            if (returnedName && ![self artistName:returnedName matchesRequest:artistName]) {
+            if (returnedName && ![ArtistNameMatcher name:returnedName matchesRequested:artistName]) {
                 GALLERY_LOG(@"Artist mismatch: '%@' vs '%@', discarding", returnedName, artistName);
                 NSError *mismatchError = [self errorWithCode:AudioDbErrorCodeArtistMismatch
                                                      message:@"Artist name mismatch"];
@@ -186,7 +188,7 @@ static const NSTimeInterval kAudioDbRequestTimeout = 10.0;
             }
 
             // Parse images
-            NSArray<ArtistImage *> *images = [self parseImagesFromArtist:artist];
+            NSArray<ArtistImage *> *images = [GalleryImageParsing imagesFromAudioDbArtist:artist];
             GALLERY_LOG(@"%lu images in %.2fs", (unsigned long)images.count, duration);
 
             completion(images, nil);
@@ -215,111 +217,6 @@ static const NSTimeInterval kAudioDbRequestTimeout = 10.0;
                            AUDIODB_API_KEY,
                            encodedArtist];
     return [NSURL URLWithString:urlString];
-}
-
-#pragma mark - Response Parsing
-
-- (NSArray<ArtistImage *> *)parseImagesFromArtist:(NSDictionary *)artist {
-    NSMutableArray<ArtistImage *> *images = [NSMutableArray array];
-
-    // Parse fanart images (strArtistFanart, strArtistFanart2, strArtistFanart3, strArtistFanart4)
-    NSArray *fanartKeys = @[@"strArtistFanart", @"strArtistFanart2", @"strArtistFanart3", @"strArtistFanart4"];
-    for (NSString *key in fanartKeys) {
-        ArtistImage *image = [self parseImageFromArtist:artist key:key type:ArtistImageTypeBackground];
-        if (image) [images addObject:image];
-    }
-
-    // Parse thumbnail
-    ArtistImage *thumb = [self parseImageFromArtist:artist key:@"strArtistThumb" type:ArtistImageTypeThumbnail];
-    if (thumb) [images addObject:thumb];
-
-    // Parse logo
-    ArtistImage *logo = [self parseImageFromArtist:artist key:@"strArtistLogo" type:ArtistImageTypeLogo];
-    if (logo) [images addObject:logo];
-
-    // Parse wide thumb (use as thumbnail)
-    ArtistImage *wideThumb = [self parseImageFromArtist:artist key:@"strArtistWideThumb" type:ArtistImageTypeThumbnail];
-    if (wideThumb) [images addObject:wideThumb];
-
-    // Parse banner
-    ArtistImage *banner = [self parseImageFromArtist:artist key:@"strArtistBanner" type:ArtistImageTypeBanner];
-    if (banner) [images addObject:banner];
-
-    // Parse cutout (use as thumbnail)
-    ArtistImage *cutout = [self parseImageFromArtist:artist key:@"strArtistCutout" type:ArtistImageTypeThumbnail];
-    if (cutout) [images addObject:cutout];
-
-    // Parse clearart (use as logo)
-    ArtistImage *clearart = [self parseImageFromArtist:artist key:@"strArtistClearart" type:ArtistImageTypeLogo];
-    if (clearart) [images addObject:clearart];
-
-    return [images copy];
-}
-
-- (nullable ArtistImage *)parseImageFromArtist:(NSDictionary *)artist
-                                           key:(NSString *)key
-                                          type:(ArtistImageType)type {
-    id value = artist[key];
-    if (!value || value == [NSNull null]) return nil;
-    if (![value isKindOfClass:[NSString class]]) return nil;
-
-    NSString *urlString = (NSString *)value;
-    if (urlString.length == 0) return nil;
-
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) return nil;
-
-    // AudioDB provides /preview suffix for thumbnails
-    NSURL *thumbnailURL = nil;
-    if (type == ArtistImageTypeBackground) {
-        NSString *thumbUrlString = [urlString stringByAppendingString:@"/preview"];
-        thumbnailURL = [NSURL URLWithString:thumbUrlString];
-    }
-
-    return [[ArtistImage alloc] initWithURL:url
-                               thumbnailURL:thumbnailURL
-                                  imageType:type
-                                     source:BiographySourceAudioDb
-                                      likes:0];  // AudioDB doesn't provide likes
-}
-
-#pragma mark - Artist Name Matching
-
-- (BOOL)artistName:(NSString *)returnedName matchesRequest:(NSString *)requestedName {
-    if (!returnedName || !requestedName) return NO;
-
-    // Case-insensitive comparison
-    NSString *normalizedReturned = [returnedName lowercaseString];
-    NSString *normalizedRequested = [requestedName lowercaseString];
-
-    // Exact match
-    if ([normalizedReturned isEqualToString:normalizedRequested]) {
-        return YES;
-    }
-
-    // QUAL-16: Only use containsString for names >= 4 chars to avoid false positives
-    if (normalizedRequested.length >= 4 && normalizedReturned.length >= 4) {
-        if ([normalizedReturned containsString:normalizedRequested] ||
-            [normalizedRequested containsString:normalizedReturned]) {
-            return YES;
-        }
-    }
-
-    // Remove common prefixes and compare
-    NSArray *prefixes = @[@"the ", @"a ", @"an "];
-    NSString *strippedReturned = normalizedReturned;
-    NSString *strippedRequested = normalizedRequested;
-
-    for (NSString *prefix in prefixes) {
-        if ([strippedReturned hasPrefix:prefix]) {
-            strippedReturned = [strippedReturned substringFromIndex:prefix.length];
-        }
-        if ([strippedRequested hasPrefix:prefix]) {
-            strippedRequested = [strippedRequested substringFromIndex:prefix.length];
-        }
-    }
-
-    return [strippedReturned isEqualToString:strippedRequested];
 }
 
 #pragma mark - Helpers

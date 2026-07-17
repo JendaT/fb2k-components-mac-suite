@@ -11,6 +11,7 @@
 #import "../Core/BiographyRequest.h"
 #import "../Core/RateLimiter.h"
 #import "../Core/ArtistImage.h"
+#import "../Core/GalleryImageParsing.h"
 
 NSString * const FanartTvErrorDomain = @"com.foobar2000.biography.fanarttv";
 
@@ -93,8 +94,14 @@ static const NSTimeInterval kFanartTvRequestTimeout = 10.0;
             return;
         }
 
-        // Build request URL
+        // Build request URL (nil for malformed MBIDs - never pass nil to NSURLSession)
         NSURL *url = [self artistURLForMBID:mbid];
+        if (!url) {
+            NSError *invalidError = [self errorWithCode:FanartTvErrorCodeNoMBID
+                                                message:@"Malformed MusicBrainz ID"];
+            completion(nil, invalidError);
+            return;
+        }
 #if DEBUG
         GALLERY_LOG(@"Fetching from: %@", url);
 #endif
@@ -166,7 +173,7 @@ static const NSTimeInterval kFanartTvRequestTimeout = 10.0;
             }
 
             // Parse images
-            NSArray<ArtistImage *> *images = [self parseImagesFromResponse:json];
+            NSArray<ArtistImage *> *images = [GalleryImageParsing imagesFromFanartTvResponse:json];
             GALLERY_LOG(@"%lu images in %.2fs", (unsigned long)images.count, duration);
 
             completion(images, nil);
@@ -188,16 +195,7 @@ static const NSTimeInterval kFanartTvRequestTimeout = 10.0;
 
 - (NSURL *)artistURLForMBID:(NSString *)mbid {
     // Validate MBID is a proper UUID to prevent path injection
-    static NSRegularExpression *uuidRegex = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        uuidRegex = [NSRegularExpression regularExpressionWithPattern:
-                     @"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-                                                             options:NSRegularExpressionCaseInsensitive
-                                                               error:nil];
-    });
-
-    if ([uuidRegex numberOfMatchesInString:mbid options:0 range:NSMakeRange(0, mbid.length)] == 0) {
+    if (![GalleryImageParsing isValidMBID:mbid]) {
         return nil;
     }
 
@@ -207,84 +205,6 @@ static const NSTimeInterval kFanartTvRequestTimeout = 10.0;
         [NSURLQueryItem queryItemWithName:@"api_key" value:@FANARTTV_API_KEY]
     ];
     return components.URL;
-}
-
-#pragma mark - Response Parsing
-
-- (NSArray<ArtistImage *> *)parseImagesFromResponse:(NSDictionary *)response {
-    NSMutableArray<ArtistImage *> *images = [NSMutableArray array];
-
-    // Parse artist backgrounds (high priority)
-    NSArray *backgrounds = response[@"artistbackground"];
-    if ([backgrounds isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *item in backgrounds) {
-            ArtistImage *image = [self parseImageItem:item type:ArtistImageTypeBackground];
-            if (image) [images addObject:image];
-        }
-    }
-
-    // Parse artist thumbs
-    NSArray *thumbs = response[@"artistthumb"];
-    if ([thumbs isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *item in thumbs) {
-            ArtistImage *image = [self parseImageItem:item type:ArtistImageTypeThumbnail];
-            if (image) [images addObject:image];
-        }
-    }
-
-    // Parse HD music logos
-    NSArray *hdLogos = response[@"hdmusiclogo"];
-    if ([hdLogos isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *item in hdLogos) {
-            ArtistImage *image = [self parseImageItem:item type:ArtistImageTypeLogo];
-            if (image) [images addObject:image];
-        }
-    }
-
-    // Parse regular music logos (fallback)
-    NSArray *logos = response[@"musiclogo"];
-    if ([logos isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *item in logos) {
-            ArtistImage *image = [self parseImageItem:item type:ArtistImageTypeLogo];
-            if (image) [images addObject:image];
-        }
-    }
-
-    // Parse music banners
-    NSArray *banners = response[@"musicbanner"];
-    if ([banners isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *item in banners) {
-            ArtistImage *image = [self parseImageItem:item type:ArtistImageTypeBanner];
-            if (image) [images addObject:image];
-        }
-    }
-
-    return [images copy];
-}
-
-- (nullable ArtistImage *)parseImageItem:(NSDictionary *)item type:(ArtistImageType)type {
-    if (![item isKindOfClass:[NSDictionary class]]) return nil;
-
-    NSString *urlString = item[@"url"];
-    if (!urlString || ![urlString isKindOfClass:[NSString class]] || urlString.length == 0) {
-        return nil;
-    }
-
-    NSURL *url = [NSURL URLWithString:urlString];
-    if (!url) return nil;
-
-    // FanartTV provides likes count
-    NSInteger likes = 0;
-    id likesValue = item[@"likes"];
-    if ([likesValue respondsToSelector:@selector(integerValue)]) {
-        likes = [likesValue integerValue];
-    }
-
-    return [[ArtistImage alloc] initWithURL:url
-                               thumbnailURL:nil  // FanartTV doesn't provide thumbs
-                                  imageType:type
-                                     source:BiographySourceFanartTv
-                                      likes:likes];
 }
 
 #pragma mark - Helpers

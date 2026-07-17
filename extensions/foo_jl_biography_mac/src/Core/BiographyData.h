@@ -8,20 +8,11 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import "BiographySource.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 #pragma mark - Enums
-
-typedef NS_ENUM(NSInteger, BiographySource) {
-    BiographySourceUnknown = 0,
-    BiographySourceLastFm,
-    BiographySourceWikipedia,
-    BiographySourceAudioDb,
-    BiographySourceFanartTv,
-    BiographySourceDeezer,
-    BiographySourceCache
-};
 
 typedef NS_ENUM(NSInteger, BiographyImageType) {
     BiographyImageTypeThumb = 0,
