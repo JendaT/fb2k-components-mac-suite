@@ -102,6 +102,13 @@ clang++ "${OBJCXX_FLAGS[@]}" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/library_layout_tests"
 
+echo "==> Compiling unit tests (PaginationPolicy)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/PaginationPolicyTests.mm" \
+    "$PROJECT_DIR/src/Core/PaginationPolicy.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/pagination_policy_tests"
+
 echo "==> Compiling unit tests (StreamCache)..."
 clang++ "${OBJCXX_FLAGS[@]}" \
     "$PROJECT_DIR/Tests/StreamCacheTests.mm" \
@@ -123,4 +130,5 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/browser_logic_tests"
 "$TEST_BUILD_DIR/dash_cache_policy_tests"
 "$TEST_BUILD_DIR/library_layout_tests"
+"$TEST_BUILD_DIR/pagination_policy_tests"
 "$TEST_BUILD_DIR/stream_cache_tests"

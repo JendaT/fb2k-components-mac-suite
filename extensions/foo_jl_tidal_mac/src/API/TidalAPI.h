@@ -127,10 +127,19 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
                             offset:(NSInteger)offset
                         completion:(JLTidalTracksCompletion)completion;
 
+/// Get ALL favorite tracks, paging until a short page. Fails (nil result)
+/// on any page error or when the pagination ceiling is hit — never returns
+/// a partial list as if complete.
+- (void)getAllFavoriteTracksWithCompletion:(JLTidalTracksCompletion)completion;
+
 /// Get user's favorite albums
 - (void)getFavoriteAlbumsWithLimit:(NSInteger)limit
                             offset:(NSInteger)offset
                         completion:(JLTidalAlbumsCompletion)completion;
+
+/// Get ALL favorite albums, paging until a short page (same failure
+/// semantics as getAllFavoriteTracksWithCompletion:).
+- (void)getAllFavoriteAlbumsWithCompletion:(JLTidalAlbumsCompletion)completion;
 
 /// Add a track to favorites
 - (void)addTrackToFavorites:(NSString *)trackID
@@ -142,14 +151,20 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 
 #pragma mark - Playlists API
 
-/// Get user's playlists
+/// Get user's playlists. Pages internally until a short page, so the
+/// result is always the complete list (or an error — never truncated).
 - (void)getUserPlaylistsWithCompletion:(JLTidalPlaylistsCompletion)completion;
 
-/// Get tracks for a playlist
+/// Get tracks for a playlist (single page)
 - (void)getPlaylistTracksForPlaylistID:(NSString *)playlistUUID
                                  limit:(NSInteger)limit
                                 offset:(NSInteger)offset
                             completion:(JLTidalTracksCompletion)completion;
+
+/// Get ALL tracks for a playlist, paging until a short page (same failure
+/// semantics as getAllFavoriteTracksWithCompletion:).
+- (void)getAllPlaylistTracksForPlaylistID:(NSString *)playlistUUID
+                               completion:(JLTidalTracksCompletion)completion;
 
 /// Create a new playlist
 - (void)createPlaylistWithTitle:(NSString *)title

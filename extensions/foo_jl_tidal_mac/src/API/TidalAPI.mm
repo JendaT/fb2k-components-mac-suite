@@ -11,8 +11,19 @@
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
 #import "../Core/HTTPResponsePolicy.h"
+#import "../Core/PaginationPolicy.h"
 #import "../Core/ResponseParser.h"
 #import "../Services/TidalAuthService.h"
+
+#pragma mark - Pagination
+
+// Hard cap per collection. Hitting it fails the fetch (see
+// JLTidalPaginationPolicy) — the sync engine must never see a
+// truncated-but-"complete" list.
+static const NSInteger kTidalPaginationCeiling = 10000;
+
+typedef void (^JLTidalPageCompletion)(NSArray * _Nullable items, NSError * _Nullable error);
+typedef void (^JLTidalPageFetch)(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion);
 
 @implementation JLTidalDeviceCode
 
@@ -118,6 +129,54 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         _urlSession = [NSURLSession sessionWithConfiguration:config];
     }
     return self;
+}
+
+#pragma mark - Pagination Driver
+
+// Sequentially fetch pages via pageFetch, accumulating until a short page.
+// On any page error or on hitting the ceiling the whole fetch fails —
+// a partial list is never returned as if complete.
+- (void)fetchAllPagesWithLimit:(NSInteger)limit
+                        offset:(NSInteger)offset
+                   accumulated:(NSMutableArray *)accumulated
+                   description:(NSString *)what
+                     pageFetch:(JLTidalPageFetch)pageFetch
+                    completion:(JLTidalPageCompletion)completion {
+    pageFetch(limit, offset, ^(NSArray *items, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+        if (items.count > 0) {
+            [accumulated addObjectsFromArray:items];
+        }
+        JLTidalPageAction action =
+            [JLTidalPaginationPolicy actionAfterPageCount:(NSInteger)items.count
+                                              accumulated:(NSInteger)accumulated.count
+                                                    limit:limit
+                                                  ceiling:kTidalPaginationCeiling];
+        switch (action) {
+            case JLTidalPageActionDone:
+                completion([accumulated copy], nil);
+                break;
+            case JLTidalPageActionFailCeiling:
+                tidal::logError([[NSString stringWithFormat:
+                    @"Pagination ceiling (%ld) hit fetching %@ - treating fetch as failed",
+                    (long)kTidalPaginationCeiling, what] UTF8String]);
+                completion(nil, JLTidalError(JLTidalErrorInternal,
+                    [NSString stringWithFormat:@"%@ exceeds %ld items",
+                     what, (long)kTidalPaginationCeiling]));
+                break;
+            case JLTidalPageActionContinue:
+                [self fetchAllPagesWithLimit:limit
+                                      offset:(NSInteger)accumulated.count
+                                 accumulated:accumulated
+                                 description:what
+                                   pageFetch:pageFetch
+                                  completion:completion];
+                break;
+        }
+    });
 }
 
 #pragma mark - OAuth Device Authorization
@@ -567,6 +626,24 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
     }];
 }
 
+- (void)getAllFavoriteTracksWithCompletion:(JLTidalTracksCompletion)completion {
+    JLTidalPageFetch pageFetch = ^(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion) {
+        [self getFavoriteTracksWithLimit:limit offset:offset
+                              completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+            pageCompletion(tracks, error);
+        }];
+    };
+
+    [self fetchAllPagesWithLimit:200
+                          offset:0
+                     accumulated:[NSMutableArray array]
+                     description:@"favorite tracks"
+                       pageFetch:pageFetch
+                      completion:^(NSArray *tracks, NSError *error) {
+        completion((NSArray<JLTidalTrack *> *)tracks, error);
+    }];
+}
+
 - (void)getFavoriteAlbumsWithLimit:(NSInteger)limit
                             offset:(NSInteger)offset
                         completion:(JLTidalAlbumsCompletion)completion {
@@ -592,6 +669,24 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         tidal::logDebug([[NSString stringWithFormat:@"Got %lu favorite albums",
                           (unsigned long)albums.count] UTF8String]);
         completion(albums, nil);
+    }];
+}
+
+- (void)getAllFavoriteAlbumsWithCompletion:(JLTidalAlbumsCompletion)completion {
+    JLTidalPageFetch pageFetch = ^(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion) {
+        [self getFavoriteAlbumsWithLimit:limit offset:offset
+                              completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
+            pageCompletion(albums, error);
+        }];
+    };
+
+    [self fetchAllPagesWithLimit:100
+                          offset:0
+                     accumulated:[NSMutableArray array]
+                     description:@"favorite albums"
+                       pageFetch:pageFetch
+                      completion:^(NSArray *albums, NSError *error) {
+        completion((NSArray<JLTidalAlbum *> *)albums, error);
     }];
 }
 
@@ -652,22 +747,30 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         return;
     }
 
-    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/playlists?limit=50",
-                        kTidalAPIBaseURL, userId];
+    JLTidalPageFetch pageFetch = ^(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion) {
+        NSString *urlStr = [NSString stringWithFormat:@"%@/v1/users/%@/playlists?limit=%ld&offset=%ld",
+                            kTidalAPIBaseURL, userId, (long)limit, (long)offset];
+        [self requestWithURL:[NSURL URLWithString:urlStr] method:@"GET" body:nil
+                  completion:^(NSDictionary *json, NSError *error) {
+            if (error) {
+                pageCompletion(nil, error);
+                return;
+            }
+            pageCompletion([JLTidalResponseParser playlistsFromItems:json[@"items"]], nil);
+        }];
+    };
 
-    NSURL *url = [NSURL URLWithString:urlStr];
-
-    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) {
-            completion(nil, error);
-            return;
+    [self fetchAllPagesWithLimit:50
+                          offset:0
+                     accumulated:[NSMutableArray array]
+                     description:@"user playlists"
+                       pageFetch:pageFetch
+                      completion:^(NSArray *playlists, NSError *error) {
+        if (!error) {
+            tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlists",
+                              (unsigned long)playlists.count] UTF8String]);
         }
-
-        NSArray<JLTidalPlaylist *> *playlists =
-            [JLTidalResponseParser playlistsFromItems:json[@"items"]];
-        tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlists",
-                          (unsigned long)playlists.count] UTF8String]);
-        completion(playlists, nil);
+        completion((NSArray<JLTidalPlaylist *> *)playlists, error);
     }];
 }
 
@@ -697,6 +800,30 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         tidal::logDebug([[NSString stringWithFormat:@"Playlist %@ has %lu tracks",
                           playlistUUID, (unsigned long)tracks.count] UTF8String]);
         completion(tracks, nil);
+    }];
+}
+
+- (void)getAllPlaylistTracksForPlaylistID:(NSString *)playlistUUID
+                               completion:(JLTidalTracksCompletion)completion {
+    if (!playlistUUID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    JLTidalPageFetch pageFetch = ^(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion) {
+        [self getPlaylistTracksForPlaylistID:playlistUUID limit:limit offset:offset
+                                  completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+            pageCompletion(tracks, error);
+        }];
+    };
+
+    [self fetchAllPagesWithLimit:200
+                          offset:0
+                     accumulated:[NSMutableArray array]
+                     description:[NSString stringWithFormat:@"playlist %@ tracks", playlistUUID]
+                       pageFetch:pageFetch
+                      completion:^(NSArray *tracks, NSError *error) {
+        completion((NSArray<JLTidalTrack *> *)tracks, error);
     }];
 }
 
