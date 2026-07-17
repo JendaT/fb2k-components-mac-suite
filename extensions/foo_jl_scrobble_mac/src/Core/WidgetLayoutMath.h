@@ -13,6 +13,7 @@
 #import <Foundation/Foundation.h>
 
 #include <cmath>
+#include <vector>
 
 namespace WidgetLayout {
 
@@ -23,6 +24,19 @@ static const CGFloat kTargetAlbumSize = 130.0;
 static const CGFloat kAlbumSpacing = 6.0;
 static const CGFloat kPadding = 8.0;
 static const NSInteger kMaxBubbles = 10;
+static const CGFloat kFooterHeight = 20.0;
+static const CGFloat kTrackRowHeight = 44.0;
+
+// Header row constants
+static const CGFloat kProfileImageSize = 28.0;
+static const CGFloat kHeaderSpacing = 6.0;
+static const CGFloat kHeaderRowHeight = 28.0;
+static const CGFloat kHeaderButtonSize = 22.0;
+static const CGFloat kHeaderButtonGap = 2.0;
+static const CGFloat kPillChevronWidth = 8.0;
+static const CGFloat kPillPadH = 8.0;
+static const CGFloat kPillGap = 4.0;
+static const CGFloat kPillHeight = 20.0;
 
 /// Optimal album tile size: try 3-8 tiles per row, clamp each candidate
 /// to [min, max], pick the candidate closest to the 130px target.
@@ -130,6 +144,153 @@ inline CGFloat clampScrollOffset(CGFloat offset, CGFloat contentHeight,
                                  CGFloat visibleHeight) {
     CGFloat maxOffset = MAX((CGFloat)0, contentHeight - visibleHeight);
     return MAX((CGFloat)0, MIN(offset, maxOffset));
+}
+
+/// Dropdown pill width for a measured title width:
+/// padding + text + gap + chevron + padding
+inline CGFloat pillWidthForTextWidth(CGFloat textWidth) {
+    return kPillPadH + textWidth + 4 + kPillChevronWidth + kPillPadH;
+}
+
+/// Header row: [profile] [centered pills] [reload] [link].
+/// Text widths are measured by the caller (fonts are AppKit); unused
+/// pill rects come back as NSZeroRect.
+struct HeaderGeometry {
+    NSRect profileImageRect;
+    NSRect linkButtonRect;
+    NSRect reloadButtonRect;
+    NSRect viewModePillRect;
+    NSRect periodPillRect;       // charts mode only
+    NSRect typePillRect;         // charts mode only
+    NSRect trackCountPillRect;   // tracks mode only
+    CGFloat headerEndY;          // content starts here
+};
+
+inline HeaderGeometry headerGeometry(CGFloat topY, CGFloat width, bool chartsMode,
+                                     CGFloat viewModeTextWidth, CGFloat periodTextWidth,
+                                     CGFloat typeTextWidth, CGFloat trackCountTextWidth) {
+    HeaderGeometry h;
+    h.profileImageRect = NSMakeRect(kPadding, topY, kProfileImageSize, kProfileImageSize);
+
+    CGFloat buttonY = topY + (kHeaderRowHeight - kHeaderButtonSize) / 2;
+    h.linkButtonRect = NSMakeRect(kPadding + width - kHeaderButtonSize, buttonY,
+                                  kHeaderButtonSize, kHeaderButtonSize);
+    h.reloadButtonRect = NSMakeRect(h.linkButtonRect.origin.x - kHeaderButtonSize - kHeaderButtonGap,
+                                    buttonY, kHeaderButtonSize, kHeaderButtonSize);
+
+    // Pills are centered in the space between profile image and buttons
+    CGFloat navAreaStart = kPadding + kProfileImageSize + kHeaderSpacing;
+    CGFloat navAreaWidth = width - kProfileImageSize - kHeaderSpacing -
+                           (kHeaderButtonSize * 2 + kHeaderButtonGap) - kHeaderSpacing;
+    CGFloat navAreaCenterX = navAreaStart + navAreaWidth / 2;
+    CGFloat pillY = topY + kHeaderRowHeight / 2 - kPillHeight / 2;
+
+    CGFloat viewModePillWidth = pillWidthForTextWidth(viewModeTextWidth);
+    h.periodPillRect = NSZeroRect;
+    h.typePillRect = NSZeroRect;
+    h.trackCountPillRect = NSZeroRect;
+
+    if (chartsMode) {
+        // [Charts v] [Weekly v] [Albums v]
+        CGFloat periodPillWidth = pillWidthForTextWidth(periodTextWidth);
+        CGFloat typePillWidth = pillWidthForTextWidth(typeTextWidth);
+        CGFloat totalWidth = viewModePillWidth + kPillGap + periodPillWidth + kPillGap + typePillWidth;
+        CGFloat startX = navAreaCenterX - totalWidth / 2;
+
+        h.viewModePillRect = NSMakeRect(startX, pillY, viewModePillWidth, kPillHeight);
+        h.periodPillRect = NSMakeRect(NSMaxX(h.viewModePillRect) + kPillGap, pillY,
+                                      periodPillWidth, kPillHeight);
+        h.typePillRect = NSMakeRect(NSMaxX(h.periodPillRect) + kPillGap, pillY,
+                                    typePillWidth, kPillHeight);
+    } else {
+        // [Tracks v] [Show: 10 v]
+        CGFloat countPillWidth = pillWidthForTextWidth(trackCountTextWidth);
+        CGFloat totalWidth = viewModePillWidth + kPillGap + countPillWidth;
+        CGFloat startX = navAreaCenterX - totalWidth / 2;
+
+        h.viewModePillRect = NSMakeRect(startX, pillY, viewModePillWidth, kPillHeight);
+        h.trackCountPillRect = NSMakeRect(NSMaxX(h.viewModePillRect) + kPillGap, pillY,
+                                          countPillWidth, kPillHeight);
+    }
+
+    h.headerEndY = topY + kHeaderRowHeight + kHeaderSpacing;
+    return h;
+}
+
+/// What fills the content area between header and footer
+enum class ContentMode { Grid, Bubbles, TrackRows };
+
+/// Full content-area geometry: computed BEFORE drawing so both the draw
+/// pass and hit-testing consume the same rects (no draw side effects)
+struct ContentGeometry {
+    NSRect contentAreaRect;
+    CGFloat contentTotalHeight;      // for scroll bounds (0 = fits)
+    CGFloat scrollOffset;            // input offset clamped to valid range
+    CGFloat albumSize;               // grid tile side (0 in other modes)
+    std::vector<NSRect> itemRects;   // album tiles, bubbles, or track rows
+    CGFloat footerY;
+};
+
+inline ContentGeometry contentGeometry(NSSize boundsSize, CGFloat headerEndY,
+                                       ContentMode mode, NSInteger itemCount,
+                                       CGFloat requestedScrollOffset) {
+    ContentGeometry c;
+    CGFloat contentWidth = boundsSize.width - kPadding * 2;
+    c.footerY = boundsSize.height - kFooterHeight - kPadding;
+
+    CGFloat contentStartY = headerEndY;
+    CGFloat availableHeight = (c.footerY - kPadding) - contentStartY;
+    c.contentAreaRect = NSMakeRect(kPadding, contentStartY, contentWidth, availableHeight);
+    c.albumSize = 0;
+
+    // Content height first, so the scroll clamp uses CURRENT content
+    GridGeometry grid = {};
+    switch (mode) {
+        case ContentMode::TrackRows:
+            c.contentTotalHeight = itemCount * kTrackRowHeight;
+            break;
+        case ContentMode::Bubbles:
+            c.contentTotalHeight = 0;  // bubbles fit the visible area
+            break;
+        case ContentMode::Grid:
+            c.albumSize = albumSizeForWidth(contentWidth);
+            grid = gridGeometryForWidth(contentWidth, c.albumSize, itemCount);
+            c.contentTotalHeight = itemCount > 0 ? grid.contentHeight : 0;
+            break;
+    }
+    c.scrollOffset = clampScrollOffset(requestedScrollOffset, c.contentTotalHeight,
+                                       availableHeight);
+
+    CGFloat scrolledStartY = contentStartY - c.scrollOffset;
+
+    switch (mode) {
+        case ContentMode::TrackRows:
+            for (NSInteger i = 0; i < itemCount; i++) {
+                c.itemRects.push_back(NSMakeRect(kPadding, scrolledStartY + i * kTrackRowHeight,
+                                                 contentWidth, kTrackRowHeight));
+            }
+            break;
+
+        case ContentMode::Bubbles: {
+            CGFloat bubbleSize = MIN(contentWidth, availableHeight);
+            CGFloat bubbleStartY = contentStartY + (availableHeight - bubbleSize) / 2;
+            CGFloat areaSize = bubbleAreaSize(contentWidth, bubbleSize);
+            CGFloat offsetX = kPadding + (contentWidth - areaSize) / 2;
+            NSInteger count = MIN(itemCount, kMaxBubbles);
+            for (NSInteger i = 0; i < count; i++) {
+                c.itemRects.push_back(bubbleRectForIndex(i, offsetX, bubbleStartY, areaSize));
+            }
+            break;
+        }
+
+        case ContentMode::Grid:
+            for (NSInteger i = 0; i < itemCount; i++) {
+                c.itemRects.push_back(gridRectForIndex(grid, c.albumSize, scrolledStartY, i));
+            }
+            break;
+    }
+
+    return c;
 }
 
 }  // namespace WidgetLayout

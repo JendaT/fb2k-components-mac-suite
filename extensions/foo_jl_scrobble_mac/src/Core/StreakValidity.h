@@ -14,7 +14,8 @@
 
 /// Local midnight of `date` in the given calendar (single definition for
 /// the day-bucketing previously duplicated across controller and cache)
-static inline NSDate *ScrobbleLocalMidnight(NSDate *date, NSCalendar *calendar) {
+static inline NSDate *_Nonnull ScrobbleLocalMidnight(NSDate *_Nonnull date,
+                                                     NSCalendar *_Nonnull calendar) {
     return [calendar startOfDayForDate:date];
 }
 
@@ -22,12 +23,12 @@ static inline NSDate *ScrobbleLocalMidnight(NSDate *date, NSCalendar *calendar) 
 /// cacheDuration, the local day has not rolled over, and the timezone
 /// identifier is unchanged. All inputs injected for determinism.
 static inline BOOL StreakCacheIsValid(NSDate *_Nullable calculatedAt,
-                                      NSDate *now,
+                                      NSDate *_Nonnull now,
                                       NSTimeInterval cacheDuration,
                                       NSDate *_Nullable storedMidnight,
-                                      NSDate *currentMidnight,
+                                      NSDate *_Nonnull currentMidnight,
                                       NSString *_Nullable storedTimezoneName,
-                                      NSString *currentTimezoneName) {
+                                      NSString *_Nonnull currentTimezoneName) {
     // 1. Must have been calculated
     if (!calculatedAt) {
         return NO;

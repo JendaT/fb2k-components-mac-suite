@@ -163,6 +163,114 @@ int main(void) {
                     @"2 day streak | 200+ scrobbles today", "200+ cap");
     }
 
+    // --- Header geometry: charts mode pills centered between chrome ---
+    {
+        g_context = "header-charts";
+        // width 500; text widths: viewMode 40, period 45, type 44
+        HeaderGeometry h = headerGeometry(kPadding, 500, true, 40, 45, 44, 0);
+
+        CHECK_NEAR(h.profileImageRect.origin.x, kPadding, "profile at left padding");
+        CHECK_NEAR(h.profileImageRect.size.width, kProfileImageSize, "profile size");
+
+        CHECK_NEAR(NSMaxX(h.linkButtonRect), kPadding + 500, "link at right edge");
+        CHECK_NEAR(NSMaxX(h.reloadButtonRect), h.linkButtonRect.origin.x - kHeaderButtonGap,
+                   "reload left of link");
+
+        CHECK_NEAR(h.viewModePillRect.size.width, pillWidthForTextWidth(40), "view mode width");
+        CHECK_NEAR(h.periodPillRect.size.width, pillWidthForTextWidth(45), "period width");
+        CHECK_NEAR(h.typePillRect.size.width, pillWidthForTextWidth(44), "type width");
+        CHECK(h.trackCountPillRect.size.width == 0, "no track-count pill in charts mode");
+
+        CHECK_NEAR(h.periodPillRect.origin.x, NSMaxX(h.viewModePillRect) + kPillGap,
+                   "pills laid out left to right");
+        CHECK_NEAR(h.typePillRect.origin.x, NSMaxX(h.periodPillRect) + kPillGap,
+                   "type follows period");
+
+        // Pills centered in the nav area between profile and buttons
+        CGFloat navStart = kPadding + kProfileImageSize + kHeaderSpacing;
+        CGFloat navWidth = 500 - kProfileImageSize - kHeaderSpacing -
+                           (kHeaderButtonSize * 2 + kHeaderButtonGap) - kHeaderSpacing;
+        CGFloat pillsCenter = (h.viewModePillRect.origin.x + NSMaxX(h.typePillRect)) / 2;
+        CHECK_NEAR(pillsCenter, navStart + navWidth / 2, "pill row centered in nav area");
+
+        CHECK_NEAR(h.headerEndY, kPadding + kHeaderRowHeight + kHeaderSpacing, "header end");
+
+        // All pills share the vertical center of the header row
+        CHECK_NEAR(NSMidY(h.viewModePillRect), kPadding + kHeaderRowHeight / 2, "pill centered");
+    }
+
+    // --- Header geometry: tracks mode ---
+    {
+        g_context = "header-tracks";
+        HeaderGeometry h = headerGeometry(kPadding, 500, false, 40, 0, 0, 52);
+        CHECK(h.periodPillRect.size.width == 0, "no period pill in tracks mode");
+        CHECK(h.typePillRect.size.width == 0, "no type pill in tracks mode");
+        CHECK_NEAR(h.trackCountPillRect.size.width, pillWidthForTextWidth(52), "count pill width");
+        CHECK_NEAR(h.trackCountPillRect.origin.x, NSMaxX(h.viewModePillRect) + kPillGap,
+                   "count pill follows view mode pill");
+    }
+
+    // --- Content geometry: track rows with scrolling ---
+    {
+        g_context = "content-tracks";
+        // bounds 400x300, header ends at 42 -> footer at 300-20-8=272,
+        // content area from 42 to 264 (height 222)
+        ContentGeometry c = contentGeometry(NSMakeSize(400, 300), 42,
+                                            ContentMode::TrackRows, 10, 0);
+        CHECK_NEAR(c.footerY, 272.0, "footer position");
+        CHECK_NEAR(c.contentAreaRect.origin.y, 42.0, "content starts after header");
+        CHECK_NEAR(c.contentAreaRect.size.height, 222.0, "content height");
+        CHECK_NEAR(c.contentTotalHeight, 10 * kTrackRowHeight, "total content height");
+        CHECK(c.itemRects.size() == 10, "one rect per row");
+        CHECK_NEAR(c.itemRects[0].origin.y, 42.0, "first row at content start");
+        CHECK_NEAR(c.itemRects[1].origin.y, 42.0 + kTrackRowHeight, "rows stacked");
+
+        // Scroll offset shifts rows and is clamped to content bounds
+        ContentGeometry scrolled = contentGeometry(NSMakeSize(400, 300), 42,
+                                                   ContentMode::TrackRows, 10, 100);
+        CHECK_NEAR(scrolled.scrollOffset, 100.0, "valid offset kept");
+        CHECK_NEAR(scrolled.itemRects[0].origin.y, 42.0 - 100.0, "rows shifted by scroll");
+
+        ContentGeometry over = contentGeometry(NSMakeSize(400, 300), 42,
+                                               ContentMode::TrackRows, 10, 9999);
+        CHECK_NEAR(over.scrollOffset, 10 * kTrackRowHeight - 222.0, "offset clamped to max");
+    }
+
+    // --- Content geometry: grid mode computes size, height, and rects together ---
+    {
+        g_context = "content-grid";
+        ContentGeometry c = contentGeometry(NSMakeSize(400, 600), 42,
+                                            ContentMode::Grid, 12, 0);
+        CHECK(c.albumSize >= kMinAlbumSize && c.albumSize <= kMaxAlbumSize, "album size solved");
+        CHECK(c.itemRects.size() == 12, "one rect per album");
+        CHECK(c.contentTotalHeight > 0, "grid reports scrollable height");
+        // First rect at the content start, consistent with the solved size
+        CHECK_NEAR(c.itemRects[0].origin.y, 42.0, "first tile at content start");
+        CHECK_NEAR(c.itemRects[0].size.width, c.albumSize, "tile uses solved size");
+
+        ContentGeometry empty = contentGeometry(NSMakeSize(400, 600), 42,
+                                                ContentMode::Grid, 0, 50);
+        CHECK(empty.itemRects.empty(), "no rects for empty grid");
+        CHECK_NEAR(empty.contentTotalHeight, 0.0, "empty grid has no height");
+        CHECK_NEAR(empty.scrollOffset, 0.0, "scroll reset when content vanishes");
+    }
+
+    // --- Content geometry: bubbles never scroll, capped at 10 ---
+    {
+        g_context = "content-bubbles";
+        ContentGeometry c = contentGeometry(NSMakeSize(400, 500), 42,
+                                            ContentMode::Bubbles, 25, 80);
+        CHECK(c.itemRects.size() == (size_t)kMaxBubbles, "capped at kMaxBubbles");
+        CHECK_NEAR(c.contentTotalHeight, 0.0, "bubbles report no scroll height");
+        CHECK_NEAR(c.scrollOffset, 0.0, "scroll forced to zero");
+        // Every bubble inside the content area
+        for (const NSRect &r : c.itemRects) {
+            CHECK(r.origin.y >= c.contentAreaRect.origin.y - 1e-6 &&
+                  NSMaxY(r) <= NSMaxY(c.contentAreaRect) + 1e-6,
+                  "bubble within content area vertically");
+        }
+    }
+
     // --- Footer error text ---
     {
         g_context = "footer-error";
