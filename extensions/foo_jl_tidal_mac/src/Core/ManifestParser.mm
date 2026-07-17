@@ -19,9 +19,20 @@ static NSRegularExpression *sharedDASHBaseURLRegex(void) {
 
 // Extract a single attribute value (e.g. initialization="...") from an XML tag.
 static NSString *extractXMLAttr(NSString *tag, NSString *attr) {
-    NSString *pattern = [NSString stringWithFormat:@"\\b%@\\s*=\\s*\"([^\"]*)\"", attr];
-    NSError *err = nil;
-    NSRegularExpression *r = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:&err];
+    static NSMutableDictionary<NSString *, NSRegularExpression *> *regexCache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        regexCache = [NSMutableDictionary dictionary];
+    });
+    NSRegularExpression *r;
+    @synchronized (regexCache) {
+        r = regexCache[attr];
+        if (!r) {
+            NSString *pattern = [NSString stringWithFormat:@"\\b%@\\s*=\\s*\"([^\"]*)\"", attr];
+            r = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+            if (r) regexCache[attr] = r;
+        }
+    }
     if (!r) return nil;
     NSTextCheckingResult *m = [r firstMatchInString:tag options:0 range:NSMakeRange(0, tag.length)];
     if (m && m.numberOfRanges > 1) {
@@ -30,10 +41,15 @@ static NSString *extractXMLAttr(NSString *tag, NSString *attr) {
     return nil;
 }
 
+// Hard ceiling on the declared segment count. A hostile manifest with e.g.
+// <S r="2000000000"/> would otherwise drive ~2 billion URL strings and one
+// giant assembly buffer; real tracks are a few hundred segments at most.
+static const NSInteger kMaxDASHSegmentCount = 10000;
+
 // Walk every <S t=... d=... r=.../> element in a SegmentTimeline block and
 // return the total segment count. Each S contributes (r ?: 1) segments; the
 // caller adds the implicit init/first segment base of 2 (mirrors python-tidal
-// DashInfo.get_urls).
+// DashInfo.get_urls). Counting stops once kMaxDASHSegmentCount is exceeded.
 static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
     if (manifestStr.length == 0) return 0;
     NSRange tlOpen = [manifestStr rangeOfString:@"<SegmentTimeline"];
@@ -61,7 +77,12 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
         NSString *sTag = [body substringWithRange:m.range];
         NSString *rStr = extractXMLAttr(sTag, @"r");
         NSInteger r = rStr.length ? [rStr integerValue] : 0;
+        // Clamp each contribution so a huge r cannot overflow the sum
+        if (r > kMaxDASHSegmentCount) r = kMaxDASHSegmentCount + 1;
         count += (r > 0) ? r : 1;
+        if (count > kMaxDASHSegmentCount) {
+            *stop = YES;  // clamp: caller treats the manifest as invalid
+        }
     }];
     return count;
 }
@@ -194,6 +215,13 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
 
                     // Segment count = base (2) + sum of SegmentTimeline S contributions.
                     NSInteger segCount = 1 + 1 + countSegmentTimelineSElements(manifestStr);
+
+                    if (segCount > kMaxDASHSegmentCount) {
+                        tidal::logError([[NSString stringWithFormat:
+                            @"DASH manifest declares more than %ld segments; treating as invalid",
+                            (long)kMaxDASHSegmentCount] UTF8String]);
+                        segCount = 0;  // falls through to the incomplete branch below
+                    }
 
                     if (mediaTpl.length && [mediaTpl containsString:@"$Number$"] && segCount > 2) {
                         result.dashMediaTemplate = mediaTpl;

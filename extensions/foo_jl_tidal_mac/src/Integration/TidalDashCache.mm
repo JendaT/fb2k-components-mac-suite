@@ -174,7 +174,9 @@ static NSData *dashSyncGET(NSString *url, BOOL (^cancelled)(void)) {
     dispatch_async(self.work, ^{
         NSData *data = [self assembleTrackID:trackID mediaTemplate:tpl segmentCount:segmentCount];
         dispatch_async(self.meta, ^{
-            if (data.length > 0) {
+            // Re-check stopped: a late assembly must not repopulate the
+            // cache after shutdown has cleared it.
+            if (!self.stopped && data.length > 0) {
                 self.blobs[trackID] = data;
                 [self.order removeObject:trackID];
                 [self.order addObject:trackID];
@@ -220,7 +222,13 @@ static NSData *dashSyncGET(NSString *url, BOOL (^cancelled)(void)) {
         return s == nil || s.stopped;
     };
 
-    NSMutableData *out = [NSMutableData data];
+    // Reserve capacity up front (~1 MB per segment) so the buffer does not
+    // repeatedly reallocate on its way to a 50-75 MB hi-res blob. Clamp the
+    // hint so a hostile server-declared segment count cannot demand
+    // gigabytes of address space before a single byte arrives.
+    static const NSUInteger kMaxAssembledBytes = 1024u * 1024u * 1024u;  // 1 GB
+    NSUInteger capacityHint = MIN((NSUInteger)urls.count, (NSUInteger)512) * 1024 * 1024;
+    NSMutableData *out = [NSMutableData dataWithCapacity:capacityHint];
     NSInteger idx = 0;
     for (NSString *url in urls) {
         if (cancelled()) return nil;
@@ -231,6 +239,11 @@ static NSData *dashSyncGET(NSString *url, BOOL (^cancelled)(void)) {
             return nil;
         }
         [out appendData:seg];
+        if (out.length > kMaxAssembledBytes) {
+            tidal::logError([[NSString stringWithFormat:@"DASH assembly for %@ exceeded %lu MB, aborting",
+                              trackID, (unsigned long)(kMaxAssembledBytes / (1024 * 1024))] UTF8String]);
+            return nil;
+        }
         idx++;
     }
     tidal::logDebug([[NSString stringWithFormat:@"DASH cache assembled %@: %lu segments → %.1f MB",

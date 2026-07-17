@@ -11,6 +11,7 @@
 #import "../Core/TidalConfig.h"
 #import "../Core/TidalModels.h"
 #import "../Core/TidalPlaylistSync.h"
+#import "../Core/URLUtils.h"
 #import "../API/TidalAPI.h"
 #import "../Services/TidalAuthService.h"
 #include "../fb2k_sdk.h"
@@ -38,8 +39,22 @@ static NSString * const kColumnArtistName = @"artistname";
 static NSString * const kColumnPlaylistTitle = @"playlisttitle";
 static NSString * const kColumnPlaylistTracks = @"playlisttracks";
 
+// UserDefaults keys for persisted search state
+static NSString * const kDefaultsKeySearchType = @"JLTidalSearchType";
+static NSString * const kDefaultsKeyLastSearch = @"JLTidalLastSearch";
+
+// Page size for search/favorites pagination
+static const NSInteger kPageSize = 50;
+
 // Pasteboard type for drag operations
 NSString * const JLTidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
+
+// Canonical tidal://track/<id> URL for playlist insertion and drag payloads.
+// Single funnel delegating to the shared C++ builder in URLUtils.
+static NSString *trackURLString(NSString *trackID) {
+    return [NSString stringWithUTF8String:
+            tidal::makeTrackURL(std::string(trackID.UTF8String ?: "")).c_str()];
+}
 
 // Root container view that reports no intrinsic content size, so the host fb2k
 // column can be freely resized regardless of how wide our subviews would prefer to be.
@@ -168,10 +183,14 @@ public:
         _librarySection = JLTidalLibrarySectionFavTracks;
         _browseMode = JLTidalBrowseModeSearchResults;
 
-        // Restore saved search state
+        // Restore saved search state (clamp: defaults can hold any integer)
         NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-        _searchType = (JLTidalSearchType)[defaults integerForKey:@"JLTidalSearchType"];
-        _lastSearchQuery = [defaults stringForKey:@"JLTidalLastSearch"];
+        NSInteger savedType = [defaults integerForKey:kDefaultsKeySearchType];
+        if (savedType < JLTidalSearchTypeTracks || savedType > JLTidalSearchTypeArtists) {
+            savedType = JLTidalSearchTypeTracks;
+        }
+        _searchType = (JLTidalSearchType)savedType;
+        _lastSearchQuery = [defaults stringForKey:kDefaultsKeyLastSearch];
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(authStateChanged:)
@@ -709,6 +728,14 @@ public:
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
 
+    // Same stale-result guard as search: rapid section switching must not
+    // let a slow earlier completion overwrite the newer section's state.
+    self.searchGeneration++;
+    NSUInteger generation = self.searchGeneration;
+    // An in-flight load-more for the previous section will be dropped as
+    // stale, so its flag must not block loading in the new section.
+    self.isLoadingMore = NO;
+
     switch (self.librarySection) {
         case JLTidalLibrarySectionFavTracks: {
             [self setupColumnsForCurrentMode];
@@ -717,6 +744,7 @@ public:
             [[JLTidalAPI shared] getFavoriteTracksWithLimit:kPageSize offset:0
                                                 completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.searchGeneration) return; // Stale result
                     [self finishLoading];
                     if (error) {
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
@@ -727,10 +755,9 @@ public:
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
                                                                                      pageSize:kPageSize];
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
-                                                    (unsigned long)self.trackResults.count,
-                                                    self.trackResults.count == 1 ? @"" : @"s",
-                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                    self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                                   noun:@"favorite track"
+                                                                hasMore:self.hasMoreResults];
                 });
             }];
             break;
@@ -743,6 +770,7 @@ public:
             [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:kPageSize offset:0
                                                 completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.searchGeneration) return; // Stale result
                     [self finishLoading];
                     if (error) {
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
@@ -753,10 +781,9 @@ public:
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)albums.count
                                                                                      pageSize:kPageSize];
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
-                                                    (unsigned long)self.albumResults.count,
-                                                    self.albumResults.count == 1 ? @"" : @"s",
-                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                    self.statusLabel.stringValue = [self statusForCount:self.albumResults.count
+                                                                   noun:@"favorite album"
+                                                                hasMore:self.hasMoreResults];
                 });
             }];
             break;
@@ -768,6 +795,7 @@ public:
             [self.playlistResults removeAllObjects];
             [[JLTidalAPI shared] getUserPlaylistsWithCompletion:^(NSArray<JLTidalPlaylist *> *playlists, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.searchGeneration) return; // Stale result
                     [self finishLoading];
                     if (error) {
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
@@ -776,9 +804,9 @@ public:
                     if (playlists) [self.playlistResults addObjectsFromArray:playlists];
                     self.hasMoreResults = NO;  // Playlists API returns all at once
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu playlist%@",
-                                                    (unsigned long)self.playlistResults.count,
-                                                    self.playlistResults.count == 1 ? @"" : @"s"];
+                    self.statusLabel.stringValue = [self statusForCount:self.playlistResults.count
+                                                                   noun:@"playlist"
+                                                                hasMore:NO];
                 });
             }];
             break;
@@ -849,8 +877,6 @@ public:
 
 #pragma mark - Search
 
-static const NSInteger kPageSize = 50;
-
 - (void)searchWithQuery:(NSString *)query {
     if (query.length == 0) {
         [self clearResults];
@@ -870,8 +896,8 @@ static const NSInteger kPageSize = 50;
 
     // Persist search state
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setObject:query forKey:@"JLTidalLastSearch"];
-    [defaults setInteger:self.searchType forKey:@"JLTidalSearchType"];
+    [defaults setObject:query forKey:kDefaultsKeyLastSearch];
+    [defaults setInteger:self.searchType forKey:kDefaultsKeySearchType];
 
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
@@ -921,10 +947,9 @@ static const NSInteger kPageSize = 50;
             if (self.trackResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No tracks for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@%@",
-                                                (unsigned long)self.trackResults.count,
-                                                self.trackResults.count == 1 ? @"" : @"s",
-                                                self.hasMoreResults ? @" (scroll for more)" : @""];
+                self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                               noun:@"track"
+                                                            hasMore:self.hasMoreResults];
             }
         });
     }];
@@ -956,10 +981,9 @@ static const NSInteger kPageSize = 50;
             if (self.albumResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No albums for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@%@",
-                                                (unsigned long)self.albumResults.count,
-                                                self.albumResults.count == 1 ? @"" : @"s",
-                                                self.hasMoreResults ? @" (scroll for more)" : @""];
+                self.statusLabel.stringValue = [self statusForCount:self.albumResults.count
+                                                               noun:@"album"
+                                                            hasMore:self.hasMoreResults];
             }
         });
     }];
@@ -991,10 +1015,9 @@ static const NSInteger kPageSize = 50;
             if (self.artistResults.count == 0) {
                 self.statusLabel.stringValue = [NSString stringWithFormat:@"No artists for \"%@\"", query];
             } else {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu artist%@%@",
-                                                (unsigned long)self.artistResults.count,
-                                                self.artistResults.count == 1 ? @"" : @"s",
-                                                self.hasMoreResults ? @" (scroll for more)" : @""];
+                self.statusLabel.stringValue = [self statusForCount:self.artistResults.count
+                                                               noun:@"artist"
+                                                            hasMore:self.hasMoreResults];
             }
         });
     }];
@@ -1026,11 +1049,15 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)loadMoreLibraryResults {
+    // Stale-result guard: drop the completion if the user switched
+    // sections (or searched) while the page was loading.
+    NSUInteger generation = self.searchGeneration;
     switch (self.librarySection) {
         case JLTidalLibrarySectionFavTracks: {
             [[JLTidalAPI shared] getFavoriteTracksWithLimit:kPageSize offset:self.currentOffset
                                                 completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.searchGeneration) return; // Stale result
                     self.isLoadingMore = NO;
                     if (error || !tracks) return;
                     [self.trackResults addObjectsFromArray:tracks];
@@ -1038,10 +1065,9 @@ static const NSInteger kPageSize = 50;
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
                                                                                      pageSize:kPageSize];
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite track%@%@",
-                                                    (unsigned long)self.trackResults.count,
-                                                    self.trackResults.count == 1 ? @"" : @"s",
-                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                    self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                                   noun:@"favorite track"
+                                                                hasMore:self.hasMoreResults];
                 });
             }];
             break;
@@ -1051,6 +1077,7 @@ static const NSInteger kPageSize = 50;
             [[JLTidalAPI shared] getFavoriteAlbumsWithLimit:kPageSize offset:self.currentOffset
                                                 completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
+                    if (generation != self.searchGeneration) return; // Stale result
                     self.isLoadingMore = NO;
                     if (error || !albums) return;
                     [self.albumResults addObjectsFromArray:albums];
@@ -1058,10 +1085,9 @@ static const NSInteger kPageSize = 50;
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)albums.count
                                                                                      pageSize:kPageSize];
                     [self.tableView reloadData];
-                    self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu favorite album%@%@",
-                                                    (unsigned long)self.albumResults.count,
-                                                    self.albumResults.count == 1 ? @"" : @"s",
-                                                    self.hasMoreResults ? @" (scroll for more)" : @""];
+                    self.statusLabel.stringValue = [self statusForCount:self.albumResults.count
+                                                                   noun:@"favorite album"
+                                                                hasMore:self.hasMoreResults];
                 });
             }];
             break;
@@ -1082,8 +1108,11 @@ static const NSInteger kPageSize = 50;
 }
 
 - (void)showError:(NSString *)errorMessage forQuery:(NSString *)query {
-    tidal::logError([[NSString stringWithFormat:@"Search failed: %@", errorMessage] UTF8String]);
-    self.statusLabel.stringValue = [NSString stringWithFormat:@"Search failed: %@", errorMessage];
+    NSString *message = query.length > 0
+        ? [NSString stringWithFormat:@"Search for \"%@\" failed: %@", query, errorMessage]
+        : [NSString stringWithFormat:@"Search failed: %@", errorMessage];
+    tidal::logError([message UTF8String]);
+    self.statusLabel.stringValue = message;
 }
 
 - (void)clearResults {
@@ -1125,9 +1154,9 @@ static const NSInteger kPageSize = 50;
             if (tracks) [self.trackResults addObjectsFromArray:tracks];
             [self.tableView reloadData];
 
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@",
-                                            (unsigned long)self.trackResults.count,
-                                            self.trackResults.count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                           noun:@"track"
+                                                        hasMore:NO];
         });
     }];
 }
@@ -1159,9 +1188,9 @@ static const NSInteger kPageSize = 50;
             [self.albumResults addObjectsFromArray:albums];
             [self.tableView reloadData];
 
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@",
-                                            (unsigned long)self.albumResults.count,
-                                            self.albumResults.count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:self.albumResults.count
+                                                           noun:@"album"
+                                                        hasMore:NO];
         });
     }];
 }
@@ -1186,9 +1215,9 @@ static const NSInteger kPageSize = 50;
             if (tracks) [self.trackResults addObjectsFromArray:tracks];
             [self.tableView reloadData];
 
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu top track%@",
-                                            (unsigned long)self.trackResults.count,
-                                            self.trackResults.count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                           noun:@"top track"
+                                                        hasMore:NO];
         });
     }];
 }
@@ -1219,14 +1248,22 @@ static const NSInteger kPageSize = 50;
             if (tracks) [self.trackResults addObjectsFromArray:tracks];
             [self.tableView reloadData];
 
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@",
-                                            (unsigned long)self.trackResults.count,
-                                            self.trackResults.count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
+                                                           noun:@"track"
+                                                        hasMore:NO];
         });
     }];
 }
 
 #pragma mark - Status
+
+// Pluralized result-count status, e.g. "5 favorite tracks (scroll for more)".
+- (NSString *)statusForCount:(NSUInteger)count noun:(NSString *)noun hasMore:(BOOL)hasMore {
+    return [NSString stringWithFormat:@"%lu %@%@%@",
+            (unsigned long)count, noun,
+            count == 1 ? @"" : @"s",
+            hasMore ? @" (scroll for more)" : @""];
+}
 
 - (void)updateStatusLabel {
     if ([[JLTidalAuthService shared] isAuthenticated]) {
@@ -1247,24 +1284,21 @@ static const NSInteger kPageSize = 50;
         if (count == 0) {
             self.statusLabel.stringValue = @"";
         } else {
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu track%@",
-                                            (unsigned long)count, count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:count noun:@"track" hasMore:NO];
         }
     } else if ([self isShowingAlbums]) {
         NSUInteger count = self.albumResults.count;
         if (count == 0) {
             self.statusLabel.stringValue = @"";
         } else {
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu album%@",
-                                            (unsigned long)count, count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:count noun:@"album" hasMore:NO];
         }
     } else if ([self isShowingArtists]) {
         NSUInteger count = self.artistResults.count;
         if (count == 0) {
             self.statusLabel.stringValue = @"";
         } else {
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu artist%@",
-                                            (unsigned long)count, count == 1 ? @"" : @"s"];
+            self.statusLabel.stringValue = [self statusForCount:count noun:@"artist" hasMore:NO];
         }
     }
 }
@@ -1454,7 +1488,12 @@ static const NSInteger kPageSize = 50;
     if ([identifier isEqualToString:kColumnAlbumYear]) {
         NSString *yearStr = @"";
         if (album.releaseDate) {
-            NSCalendar *cal = [NSCalendar currentCalendar];
+            // [NSCalendar currentCalendar] allocates; this runs per visible row
+            static NSCalendar *cal = nil;
+            static dispatch_once_t calOnce;
+            dispatch_once(&calOnce, ^{
+                cal = [NSCalendar currentCalendar];
+            });
             NSInteger year = [cal component:NSCalendarUnitYear fromDate:album.releaseDate];
             if (year > 0) yearStr = [NSString stringWithFormat:@"%ld", (long)year];
         }
@@ -1540,6 +1579,11 @@ static const NSInteger kPageSize = 50;
         ]];
     }
 
+    // Record which cover this image view currently represents so a late
+    // download completion for a recycled cell is dropped instead of
+    // painting the wrong artwork.
+    cell.imageView.identifier = coverID.length > 0 ? coverID : @"";
+
     if (coverID.length > 0) {
         NSImage *cached = [[JLTidalAlbumArtCache shared] cachedImageForCoverID:coverID size:80];
         if (cached) {
@@ -1556,6 +1600,7 @@ static const NSInteger kPageSize = 50;
                                                           size:80
                                                     completion:^(NSImage *image) {
                 if (!image || !weakSelf || !weakImageView) return;
+                if (![weakImageView.identifier isEqualToString:coverID]) return; // cell reused
                 weakImageView.image = image;
                 weakImageView.contentTintColor = nil;
             }];
@@ -1628,15 +1673,19 @@ static const NSInteger kPageSize = 50;
 #pragma mark - Drag & Drop
 
 - (nullable id<NSPasteboardWriting>)tableView:(NSTableView *)tableView pasteboardWriterForRow:(NSInteger)row {
-    tidal::logInfo([[NSString stringWithFormat:@"Drag: pasteboardWriterForRow:%ld called (showingTracks=%d, trackCount=%lu)",
-                      (long)row, [self isShowingTracks], (unsigned long)self.trackResults.count] UTF8String]);
+    // Called once per dragged row; skip the eager NSString formatting
+    // unless debug logging is actually enabled (same as URLUtils).
+    if (tidal::isDebugLoggingCached()) {
+        tidal::logDebug([[NSString stringWithFormat:@"Drag: pasteboardWriterForRow:%ld called (showingTracks=%d, trackCount=%lu)",
+                          (long)row, [self isShowingTracks], (unsigned long)self.trackResults.count] UTF8String]);
+    }
     // Only allow dragging tracks
     if (![self isShowingTracks]) {
-        tidal::logInfo("Drag: rejected - not showing tracks");
+        tidal::logDebug("Drag: rejected - not showing tracks");
         return nil;
     }
     if (row < 0 || row >= (NSInteger)self.trackResults.count) {
-        tidal::logInfo("Drag: rejected - row out of bounds");
+        tidal::logDebug("Drag: rejected - row out of bounds");
         return nil;
     }
 
@@ -1652,7 +1701,7 @@ static const NSInteger kPageSize = 50;
     [draggedRows enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
         if (idx < self.trackResults.count) {
             JLTidalTrack *track = self.trackResults[idx];
-            [urls addObject:[NSString stringWithFormat:@"tidal://track/%@", track.trackID]];
+            [urls addObject:trackURLString(track.trackID)];
         }
     }];
 
@@ -1669,7 +1718,7 @@ static const NSInteger kPageSize = 50;
     NSString *thisRowURL = nil;
     if ((NSUInteger)row < self.trackResults.count) {
         JLTidalTrack *track = self.trackResults[(NSUInteger)row];
-        thisRowURL = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        thisRowURL = trackURLString(track.trackID);
     }
 
     NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
@@ -1697,7 +1746,7 @@ static const NSInteger kPageSize = 50;
     NSString *urlString = [urls componentsJoinedByString:@"\n"];
     [item setString:urlString forType:NSPasteboardTypeString];
 
-    tidal::logInfo([[NSString stringWithFormat:@"Drag: row %ld -> %@ (archive=%s, urlSet=%s)",
+    tidal::logDebug([[NSString stringWithFormat:@"Drag: row %ld -> %@ (archive=%s, urlSet=%s)",
                       (long)row, thisRowURL ?: @"?",
                       data ? "ok" : "FAIL",
                       thisRowURL.length ? "yes" : "no"] UTF8String]);
@@ -1713,7 +1762,7 @@ static const NSInteger kPageSize = 50;
     if ([self isShowingTracks]) {
         if (row >= (NSInteger)self.trackResults.count) return;
         JLTidalTrack *track = self.trackResults[(NSUInteger)row];
-        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        NSString *url = trackURLString(track.trackID);
         tidal::logDebug([[NSString stringWithFormat:@"Double-clicked track: %@", url] UTF8String]);
         [self addTrackToPlaylistAndPlay:url];
 
@@ -1751,7 +1800,7 @@ static const NSInteger kPageSize = 50;
     t_size activePlaylist, insertPosition;
     [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
-    auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, true);
+    auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, true);
     notify->m_paths.add_item([urlString UTF8String]);
     notify->startImport();
 
@@ -1781,7 +1830,7 @@ static const NSInteger kPageSize = 50;
         if (tracks.count == 0) return;
 
         JLTidalTrack *track = tracks.firstObject;
-        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        NSString *url = trackURLString(track.trackID);
         [self addTrackToPlaylistAndPlay:url];
 
     } else if ([self isShowingAlbums]) {
@@ -1801,9 +1850,9 @@ static const NSInteger kPageSize = 50;
         t_size activePlaylist, insertPosition;
         [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
-        auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false);
+        auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, false);
         for (JLTidalTrack *track in tracks) {
-            NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+            NSString *url = trackURLString(track.trackID);
             notify->m_paths.add_item([url UTF8String]);
         }
         notify->startImport();
@@ -1838,9 +1887,9 @@ static const NSInteger kPageSize = 50;
     t_size activePlaylist, insertPosition;
     [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
 
-    auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false, true);
+    auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, false, true);
     for (JLTidalTrack *track in tracks) {
-        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        NSString *url = trackURLString(track.trackID);
         notify->m_paths.add_item([url UTF8String]);
     }
     notify->startImport();
@@ -1850,8 +1899,10 @@ static const NSInteger kPageSize = 50;
                                     tracks.count == 1 ? @"" : @"s"];
 }
 
-- (void)addAlbumToPlaylistAndQueue:(JLTidalAlbum *)album {
-    self.statusLabel.stringValue = @"Loading album tracks for queue...";
+// Shared implementation for the three album-add variants below.
+- (void)addAlbum:(JLTidalAlbum *)album play:(BOOL)play queue:(BOOL)queue {
+    self.statusLabel.stringValue = queue ? @"Loading album tracks for queue..."
+                                         : @"Loading album tracks...";
 
     [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
                                        completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
@@ -1860,65 +1911,39 @@ static const NSInteger kPageSize = 50;
                 self.statusLabel.stringValue = @"Failed to load album tracks";
                 return;
             }
-            [self addTracksToPlaylistAndQueue:tracks];
+
+            if (queue) {
+                [self addTracksToPlaylistAndQueue:tracks];
+                return;
+            }
+
+            t_size activePlaylist, insertPosition;
+            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
+
+            auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, play);
+
+            for (JLTidalTrack *track in tracks) {
+                NSString *url = trackURLString(track.trackID);
+                notify->m_paths.add_item([url UTF8String]);
+            }
+            notify->startImport();
+
+            self.statusLabel.stringValue = [NSString stringWithFormat:@"Adding %lu tracks from \"%@\"...",
+                                            (unsigned long)tracks.count, album.title];
         });
     }];
+}
+
+- (void)addAlbumToPlaylistAndQueue:(JLTidalAlbum *)album {
+    [self addAlbum:album play:NO queue:YES];
 }
 
 - (void)addAlbumToPlaylistAndPlay:(JLTidalAlbum *)album {
-    self.statusLabel.stringValue = @"Loading album tracks...";
-
-    [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
-                                       completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error || tracks.count == 0) {
-                self.statusLabel.stringValue = @"Failed to load album tracks";
-                return;
-            }
-
-            t_size activePlaylist, insertPosition;
-            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
-
-            auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, true);
-
-            for (JLTidalTrack *track in tracks) {
-                NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
-                notify->m_paths.add_item([url UTF8String]);
-            }
-            notify->startImport();
-
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"Adding %lu tracks from \"%@\"...",
-                                            (unsigned long)tracks.count, album.title];
-        });
-    }];
+    [self addAlbum:album play:YES queue:NO];
 }
 
 - (void)addAlbumToPlaylist:(JLTidalAlbum *)album {
-    self.statusLabel.stringValue = @"Loading album tracks...";
-
-    [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
-                                       completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error || tracks.count == 0) {
-                self.statusLabel.stringValue = @"Failed to load album tracks";
-                return;
-            }
-
-            t_size activePlaylist, insertPosition;
-            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
-
-            auto notify = new service_impl_t<TidalPlayNotify>(activePlaylist, insertPosition, false);
-
-            for (JLTidalTrack *track in tracks) {
-                NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
-                notify->m_paths.add_item([url UTF8String]);
-            }
-            notify->startImport();
-
-            self.statusLabel.stringValue = [NSString stringWithFormat:@"Adding %lu tracks from \"%@\"...",
-                                            (unsigned long)tracks.count, album.title];
-        });
-    }];
+    [self addAlbum:album play:NO queue:NO];
 }
 
 - (void)contextMenuCopyURL:(id)sender {
@@ -1928,7 +1953,7 @@ static const NSInteger kPageSize = 50;
 
         NSMutableArray *urls = [NSMutableArray array];
         for (JLTidalTrack *track in tracks) {
-            [urls addObject:[NSString stringWithFormat:@"tidal://track/%@", track.trackID]];
+            [urls addObject:trackURLString(track.trackID)];
         }
 
         NSString *urlString = [urls componentsJoinedByString:@"\n"];
@@ -2049,9 +2074,9 @@ static const NSInteger kPageSize = 50;
     pm->set_active_playlist(newPlaylist);
 
     // Import tracks
-    auto notify = new service_impl_t<TidalPlayNotify>(newPlaylist, 0, false);
+    auto notify = fb2k::service_new<TidalPlayNotify>(newPlaylist, 0, false);
     for (JLTidalTrack *track in tracks) {
-        NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
+        NSString *url = trackURLString(track.trackID);
         notify->m_paths.add_item([url UTF8String]);
     }
     notify->startImport();
@@ -2085,57 +2110,50 @@ static const NSInteger kPageSize = 50;
 #pragma mark - Playlist Sync
 
 - (void)syncPullClicked:(id)sender {
-    if (![[JLTidalAuthService shared] isAuthenticated]) {
-        self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
-        return;
+    [self runSyncWithCheckingMessage:@"Checking TIDAL playlists..."
+                           direction:@"Pull from TIDAL"
+                        emptyMessage:@"Everything is up to date"
+                     applyingMessage:@"Syncing playlists..."
+                       successPrefix:@"Pull complete"
+                         errorPrefix:@"Sync error"
+                   includesDeletions:YES
+                             preview:^(JLTidalSyncPreviewCompletion completion) {
+        [[JLTidalPlaylistSync shared] previewPullFromTidalWithCompletion:completion];
     }
-
-    self.syncPullButton.enabled = NO;
-    self.syncPushButton.enabled = NO;
-    self.statusLabel.stringValue = @"Checking TIDAL playlists...";
-    [self.loadingSpinner setHidden:NO];
-    [self.loadingSpinner startAnimation:nil];
-
-    [[JLTidalPlaylistSync shared] previewPullFromTidalWithCompletion:^(JLTidalSyncReport *report, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.loadingSpinner setHidden:YES];
-            [self.loadingSpinner stopAnimation:nil];
-            self.syncPullButton.enabled = YES;
-            self.syncPushButton.enabled = YES;
-
-            if (error) {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync failed: %@", error.localizedDescription];
-                return;
-            }
-
-            if (report.totalCreated == 0 && report.totalUpdated == 0 && report.totalDeleted == 0) {
-                self.statusLabel.stringValue = @"Everything is up to date";
-                return;
-            }
-
-            [self showSyncConfirmDialog:report direction:@"Pull from TIDAL" applyBlock:^{
-                self.statusLabel.stringValue = @"Syncing playlists...";
-                [self.loadingSpinner setHidden:NO];
-                [self.loadingSpinner startAnimation:nil];
-
-                [[JLTidalPlaylistSync shared] applyPullWithReport:report completion:^(BOOL success, NSError *applyError) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.loadingSpinner setHidden:YES];
-                        [self.loadingSpinner stopAnimation:nil];
-                        if (success) {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Pull complete: %@", [report summary]];
-                        } else {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync error: %@",
-                                                            applyError.localizedDescription];
-                        }
-                    });
-                }];
-            }];
-        });
+                               apply:^(JLTidalSyncReport *report, void (^completion)(BOOL, NSError *)) {
+        [[JLTidalPlaylistSync shared] applyPullWithReport:report completion:completion];
     }];
 }
 
 - (void)syncPushClicked:(id)sender {
+    [self runSyncWithCheckingMessage:@"Checking local playlists..."
+                           direction:@"Push to TIDAL"
+                        emptyMessage:@"Nothing to push"
+                     applyingMessage:@"Pushing to TIDAL..."
+                       successPrefix:@"Push complete"
+                         errorPrefix:@"Push error"
+                   includesDeletions:NO
+                             preview:^(JLTidalSyncPreviewCompletion completion) {
+        [[JLTidalPlaylistSync shared] previewPushToTidalWithCompletion:completion];
+    }
+                               apply:^(JLTidalSyncReport *report, void (^completion)(BOOL, NSError *)) {
+        [[JLTidalPlaylistSync shared] applyPushWithReport:report completion:completion];
+    }];
+}
+
+// Shared driver for the pull/push sync buttons; the two flows differ only in
+// their preview/apply calls, user-facing strings, and whether deletions count
+// toward the "anything to do" check.
+- (void)runSyncWithCheckingMessage:(NSString *)checkingMessage
+                         direction:(NSString *)direction
+                      emptyMessage:(NSString *)emptyMessage
+                   applyingMessage:(NSString *)applyingMessage
+                     successPrefix:(NSString *)successPrefix
+                       errorPrefix:(NSString *)errorPrefix
+                 includesDeletions:(BOOL)includesDeletions
+                           preview:(void (^)(JLTidalSyncPreviewCompletion))preview
+                             apply:(void (^)(JLTidalSyncReport *report,
+                                             void (^completion)(BOOL, NSError *)))apply {
     if (![[JLTidalAuthService shared] isAuthenticated]) {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
         return;
@@ -2143,11 +2161,11 @@ static const NSInteger kPageSize = 50;
 
     self.syncPullButton.enabled = NO;
     self.syncPushButton.enabled = NO;
-    self.statusLabel.stringValue = @"Checking local playlists...";
+    self.statusLabel.stringValue = checkingMessage;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
 
-    [[JLTidalPlaylistSync shared] previewPushToTidalWithCompletion:^(JLTidalSyncReport *report, NSError *error) {
+    preview(^(JLTidalSyncReport *report, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.loadingSpinner setHidden:YES];
             [self.loadingSpinner stopAnimation:nil];
@@ -2159,31 +2177,33 @@ static const NSInteger kPageSize = 50;
                 return;
             }
 
-            if (report.totalCreated == 0 && report.totalUpdated == 0) {
-                self.statusLabel.stringValue = @"Nothing to push";
+            if (report.totalCreated == 0 && report.totalUpdated == 0 &&
+                (!includesDeletions || report.totalDeleted == 0)) {
+                self.statusLabel.stringValue = emptyMessage;
                 return;
             }
 
-            [self showSyncConfirmDialog:report direction:@"Push to TIDAL" applyBlock:^{
-                self.statusLabel.stringValue = @"Pushing to TIDAL...";
+            [self showSyncConfirmDialog:report direction:direction applyBlock:^{
+                self.statusLabel.stringValue = applyingMessage;
                 [self.loadingSpinner setHidden:NO];
                 [self.loadingSpinner startAnimation:nil];
 
-                [[JLTidalPlaylistSync shared] applyPushWithReport:report completion:^(BOOL success, NSError *applyError) {
+                apply(report, ^(BOOL success, NSError *applyError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [self.loadingSpinner setHidden:YES];
                         [self.loadingSpinner stopAnimation:nil];
                         if (success) {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Push complete: %@", [report summary]];
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"%@: %@",
+                                                            successPrefix, [report summary]];
                         } else {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"Push error: %@",
-                                                            applyError.localizedDescription];
+                            self.statusLabel.stringValue = [NSString stringWithFormat:@"%@: %@",
+                                                            errorPrefix, applyError.localizedDescription];
                         }
                     });
-                }];
+                });
             }];
         });
-    }];
+    });
 }
 
 - (void)showSyncConfirmDialog:(JLTidalSyncReport *)report

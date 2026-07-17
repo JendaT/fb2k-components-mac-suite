@@ -64,10 +64,10 @@ public:
     static bool isCacheEnabled();
     static void setCacheEnabled(bool enabled);
 
-    // Experimental: enable DASH segment streaming for LOSSLESS/HiRes (default off).
-    // When enabled, the decoder downloads all DASH segments for a track upfront,
-    // assembles them into an in-memory fMP4 file, and hands it to fb2k's MP4
-    // decoder. Untested across Tidal account types — leave off if playback breaks.
+    // Enable DASH segment streaming for LOSSLESS/HiRes (default on, see
+    // kDefaultDASHEnabled). When enabled, the decoder downloads all DASH
+    // segments for a track upfront, assembles them into an in-memory fMP4
+    // file, and hands it to fb2k's MP4 decoder. Disable if playback breaks.
     static bool isDASHEnabled();
     static void setDASHEnabled(bool enabled);
 

@@ -388,7 +388,7 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                                     if (addError && !firstError) firstError = addError;
                                     self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
                                     self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
-                                    [self saveMappings];
+                                    // Mappings are persisted once, after the group completes
                                     dispatch_group_leave(group);
                                 }];
                             } else {
@@ -396,9 +396,11 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                             }
                         }];
                     } else {
-                        self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
-                        self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
-                        [self saveMappings];
+                        if (playlist.playlistUUID) {
+                            self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
+                            self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
+                            // Mappings are persisted once, after the group completes
+                        }
                         dispatch_group_leave(group);
                     }
                 }];
@@ -481,37 +483,18 @@ public:
     auto pm = playlist_manager::get();
 
     for (t_size i = 0; i < count; i++) {
-        metadb_handle_ptr handle = pm->playlist_get_item_handle(playlistIdx, i);
-        if (handle.is_valid()) {
-            const char *path = handle->get_path();
-            auto parsed = tidal::parseURL(std::string(path));
-            if (parsed.has_value() && parsed->type == tidal::TidalContentType::Track) {
-                [set addObject:[NSString stringWithUTF8String:parsed->id.c_str()]];
+        @autoreleasepool {
+            metadb_handle_ptr handle = pm->playlist_get_item_handle(playlistIdx, i);
+            if (handle.is_valid()) {
+                const char *path = handle->get_path();
+                auto parsed = tidal::parseURL(std::string(path));
+                if (parsed.has_value() && parsed->type == tidal::TidalContentType::Track) {
+                    [set addObject:[NSString stringWithUTF8String:parsed->id.c_str()]];
+                }
             }
         }
     }
     return set;
-}
-
-- (NSArray<NSString *> *)tidalTrackIDsFromFoobarPlaylist:(NSString *)foobarName {
-    auto pm = playlist_manager::get();
-    pfc::string8 name([foobarName UTF8String]);
-    t_size idx = pm->find_playlist(name, name.length());
-    if (idx == SIZE_MAX) return @[];
-
-    NSMutableArray *ids = [NSMutableArray array];
-    t_size count = pm->playlist_get_item_count(idx);
-    for (t_size i = 0; i < count; i++) {
-        metadb_handle_ptr handle = pm->playlist_get_item_handle(idx, i);
-        if (handle.is_valid()) {
-            const char *path = handle->get_path();
-            auto parsed = tidal::parseURL(std::string(path));
-            if (parsed.has_value() && parsed->type == tidal::TidalContentType::Track) {
-                [ids addObject:[NSString stringWithUTF8String:parsed->id.c_str()]];
-            }
-        }
-    }
-    return [ids copy];
 }
 
 /// Resolve track IDs with ISRC fallback for non-tidal tracks.
@@ -532,33 +515,35 @@ public:
 
     t_size count = pm->playlist_get_item_count(idx);
     for (t_size i = 0; i < count; i++) {
-        metadb_handle_ptr handle = pm->playlist_get_item_handle(idx, i);
-        if (!handle.is_valid()) {
-            [resolvedIDs addObject:@""];  // placeholder
-            continue;
-        }
+        @autoreleasepool {
+            metadb_handle_ptr handle = pm->playlist_get_item_handle(idx, i);
+            if (!handle.is_valid()) {
+                [resolvedIDs addObject:@""];  // placeholder
+                continue;
+            }
 
-        const char *path = handle->get_path();
-        auto parsed = tidal::parseURL(std::string(path));
-        if (parsed.has_value() && parsed->type == tidal::TidalContentType::Track) {
-            [resolvedIDs addObject:[NSString stringWithUTF8String:parsed->id.c_str()]];
-            continue;
-        }
+            const char *path = handle->get_path();
+            auto parsed = tidal::parseURL(std::string(path));
+            if (parsed.has_value() && parsed->type == tidal::TidalContentType::Track) {
+                [resolvedIDs addObject:[NSString stringWithUTF8String:parsed->id.c_str()]];
+                continue;
+            }
 
-        // Non-tidal track - try to get ISRC
-        [resolvedIDs addObject:@""];  // placeholder, may be filled by ISRC lookup
+            // Non-tidal track - try to get ISRC
+            [resolvedIDs addObject:@""];  // placeholder, may be filled by ISRC lookup
 
-        metadb_info_container::ptr info;
-        if (handle->get_info_ref(info)) {
-            const char *isrc = info->info().meta_get("ISRC", 0);
-            if (isrc && strlen(isrc) > 0) {
-                NSString *isrcStr = [NSString stringWithUTF8String:isrc];
-                [isrcsToResolve addObject:isrcStr];
-                isrcPositions[isrcStr] = @(resolvedIDs.count - 1);
-                tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: found ISRC %@ for local track %s",
-                                  isrcStr, path] UTF8String]);
-            } else {
-                tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: no ISRC for local track %s, skipping", path] UTF8String]);
+            metadb_info_container::ptr info;
+            if (handle->get_info_ref(info)) {
+                const char *isrc = info->info().meta_get("ISRC", 0);
+                if (isrc && strlen(isrc) > 0) {
+                    NSString *isrcStr = [NSString stringWithUTF8String:isrc];
+                    [isrcsToResolve addObject:isrcStr];
+                    isrcPositions[isrcStr] = @(resolvedIDs.count - 1);
+                    tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: found ISRC %@ for local track %s",
+                                      isrcStr, path] UTF8String]);
+                } else {
+                    tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: no ISRC for local track %s, skipping", path] UTF8String]);
+                }
             }
         }
     }
@@ -709,7 +694,13 @@ public:
     }
     if (data) {
         NSString *path = [self mappingFilePath];
-        [data writeToFile:path atomically:YES];
+        NSError *writeError = nil;
+        if (![data writeToURL:[NSURL fileURLWithPath:path]
+                      options:NSDataWritingAtomic
+                        error:&writeError]) {
+            tidal::logError([[NSString stringWithFormat:@"PlaylistSync: failed to write mappings: %@",
+                              writeError.localizedDescription] UTF8String]);
+        }
     }
 }
 

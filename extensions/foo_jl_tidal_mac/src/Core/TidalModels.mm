@@ -29,13 +29,23 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
     return fmt;
 }
 
+// String form of a JSON "id" value, or nil when the value is missing or
+// NSNull — [NSNull description] would otherwise yield the literal "<null>"
+// and flow into tidal://track/<null> URLs.
+static NSString *stringIDFromValue(id value) {
+    if (!value || value == [NSNull null]) return nil;
+    return [value description];
+}
+
 @implementation JLTidalTrack
 
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
-        _trackID = [dict[@"id"] description];
-        _title = dict[@"title"] ?: @"Unknown Title";
+        _trackID = stringIDFromValue(dict[@"id"]);
+        if (_trackID.length == 0) return nil;
+        id title = dict[@"title"];
+        _title = [title isKindOfClass:[NSString class]] ? title : @"Unknown Title";
         _duration = [dict[@"duration"] integerValue];
         _trackNumber = [dict[@"trackNumber"] integerValue];
         _discNumber = [dict[@"volumeNumber"] integerValue];
@@ -50,7 +60,8 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
         // Artist - may be nested object or null
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {
-            _artist = artist[@"name"];
+            id artistName = artist[@"name"];
+            if ([artistName isKindOfClass:[NSString class]]) _artist = artistName;
         } else if ([artist isKindOfClass:[NSString class]]) {
             _artist = artist;
         }
@@ -61,7 +72,8 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
             if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
                 NSDictionary *firstArtist = artists[0];
                 if ([firstArtist isKindOfClass:[NSDictionary class]]) {
-                    _artist = firstArtist[@"name"];
+                    id firstName = firstArtist[@"name"];
+                    if ([firstName isKindOfClass:[NSString class]]) _artist = firstName;
                 }
             }
         }
@@ -69,7 +81,8 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
         // Album - may be nested object
         id album = dict[@"album"];
         if ([album isKindOfClass:[NSDictionary class]]) {
-            _album = album[@"title"];
+            id albumTitle = album[@"title"];
+            if ([albumTitle isKindOfClass:[NSString class]]) _album = albumTitle;
 
             // Album art from cover
             id cover = album[@"cover"];
@@ -83,7 +96,8 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
             // Album artist
             id albumArtist = album[@"artist"];
             if ([albumArtist isKindOfClass:[NSDictionary class]]) {
-                _albumArtist = albumArtist[@"name"];
+                id albumArtistName = albumArtist[@"name"];
+                if ([albumArtistName isKindOfClass:[NSString class]]) _albumArtist = albumArtistName;
             }
 
             // Total tracks from album
@@ -130,16 +144,24 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
-        _albumID = [dict[@"id"] description];
-        _title = dict[@"title"] ?: @"Unknown Album";
+        _albumID = stringIDFromValue(dict[@"id"]);
+        if (_albumID.length == 0) return nil;
+        id title = dict[@"title"];
+        _title = [title isKindOfClass:[NSString class]] ? title : @"Unknown Album";
         _numberOfTracks = [dict[@"numberOfTracks"] integerValue];
         _duration = [dict[@"duration"] integerValue];
-        _audioQuality = dict[@"audioQuality"];
+
+        // Audio quality (same NSNull guard as JLTidalTrack)
+        id audioQuality = dict[@"audioQuality"];
+        if ([audioQuality isKindOfClass:[NSString class]]) {
+            _audioQuality = audioQuality;
+        }
 
         // Artist - may be nested object or null
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {
-            _artist = artist[@"name"];
+            id artistName = artist[@"name"];
+            if ([artistName isKindOfClass:[NSString class]]) _artist = artistName;
         } else if ([artist isKindOfClass:[NSString class]]) {
             _artist = artist;
         }
@@ -150,7 +172,8 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
             if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
                 NSDictionary *firstArtist = artists[0];
                 if ([firstArtist isKindOfClass:[NSDictionary class]]) {
-                    _artist = firstArtist[@"name"];
+                    id firstName = firstArtist[@"name"];
+                    if ([firstName isKindOfClass:[NSString class]]) _artist = firstName;
                 }
             }
         }
@@ -177,8 +200,10 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
-        _artistID = [dict[@"id"] description];
-        _name = dict[@"name"] ?: @"Unknown Artist";
+        _artistID = stringIDFromValue(dict[@"id"]);
+        if (_artistID.length == 0) return nil;
+        id name = dict[@"name"];
+        _name = [name isKindOfClass:[NSString class]] ? name : @"Unknown Artist";
 
         // Picture ID - used to build CDN URLs
         id picture = dict[@"picture"];
@@ -196,9 +221,14 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
-        _playlistUUID = dict[@"uuid"] ?: [dict[@"id"] description];
-        _title = dict[@"title"] ?: @"Untitled Playlist";
-        _playlistDescription = dict[@"description"];
+        id rawUUID = dict[@"uuid"];
+        _playlistUUID = [rawUUID isKindOfClass:[NSString class]]
+            ? rawUUID : stringIDFromValue(dict[@"id"]);
+        if (_playlistUUID.length == 0) return nil;
+        id title = dict[@"title"];
+        _title = [title isKindOfClass:[NSString class]] ? title : @"Untitled Playlist";
+        id desc = dict[@"description"];
+        if ([desc isKindOfClass:[NSString class]]) _playlistDescription = desc;
         _numberOfTracks = [dict[@"numberOfTracks"] integerValue];
         _duration = [dict[@"duration"] integerValue];
 
@@ -240,12 +270,13 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
             NSArray *parts = [trn componentsSeparatedByString:@":"];
             _folderID = parts.lastObject ?: trn;
         } else {
-            id dictID = dict[@"id"];
-            _folderID = dictID ? [dictID description] : [[NSUUID UUID] UUIDString];
+            _folderID = stringIDFromValue(dict[@"id"]) ?: [[NSUUID UUID] UUIDString];
         }
 
-        _name = dict[@"name"] ?: @"Untitled Folder";
-        _parentFolderID = dict[@"parentFolderId"];
+        id name = dict[@"name"];
+        _name = [name isKindOfClass:[NSString class]] ? name : @"Untitled Folder";
+        id parentID = dict[@"parentFolderId"];
+        if ([parentID isKindOfClass:[NSString class]]) _parentFolderID = parentID;
         _subfolders = [NSMutableArray array];
         _playlistUUIDs = [NSMutableArray array];
 
@@ -253,7 +284,9 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
         NSArray *items = dict[@"items"];
         if ([items isKindOfClass:[NSArray class]]) {
             for (NSDictionary *item in items) {
-                NSString *type = item[@"type"];
+                if (![item isKindOfClass:[NSDictionary class]]) continue;
+                id type = item[@"type"];
+                if (![type isKindOfClass:[NSString class]]) continue;
                 if ([type isEqualToString:@"FOLDER"]) {
                     JLTidalPlaylistFolder *subfolder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
                     if (subfolder) {
@@ -261,7 +294,10 @@ static NSISO8601DateFormatter *sharedISO8601Formatter(void) {
                     }
                 } else if ([type isEqualToString:@"PLAYLIST"]) {
                     NSDictionary *data = item[@"data"];
-                    NSString *uuid = data[@"uuid"] ?: [data[@"id"] description];
+                    if (![data isKindOfClass:[NSDictionary class]]) continue;
+                    id rawUUID = data[@"uuid"];
+                    NSString *uuid = [rawUUID isKindOfClass:[NSString class]]
+                        ? rawUUID : stringIDFromValue(data[@"id"]);
                     if (uuid.length > 0) {
                         [_playlistUUIDs addObject:uuid];
                     }

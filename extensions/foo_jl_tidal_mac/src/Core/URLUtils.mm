@@ -9,8 +9,40 @@
 #import "TidalErrors.h"
 #include "TidalLog.h"
 #import <Foundation/Foundation.h>
+#include <cctype>
 
 namespace tidal {
+
+// Extracted IDs are spliced verbatim into authenticated API URL paths, so
+// validate them at the parse boundary. NSURL.path percent-decodes, meaning
+// a crafted entry like "tidal://track/1%2F..%2Fusers" arrives here with a
+// literal "/" in the ID — accepting it would let a playlist entry redirect
+// an authenticated request to an attacker-chosen path/query.
+static bool isValidContentID(TidalContentType type, const std::string& id) {
+    if (id.empty()) return false;
+    switch (type) {
+        case TidalContentType::Track:
+        case TidalContentType::Album:
+        case TidalContentType::Artist:
+            // Numeric IDs only
+            for (char c : id) {
+                if (!isdigit(static_cast<unsigned char>(c))) return false;
+            }
+            return true;
+        case TidalContentType::Playlist:
+            // UUID charset: hex digits and dashes
+            for (char c : id) {
+                if (!isxdigit(static_cast<unsigned char>(c)) && c != '-') return false;
+            }
+            return true;
+        default:
+            // Conservative allowlist for any future content type
+            for (char c : id) {
+                if (!isalnum(static_cast<unsigned char>(c)) && c != '-') return false;
+            }
+            return true;
+    }
+}
 
 std::optional<TidalURL> parseURL(const std::string& url) {
     if (url.empty()) {
@@ -34,8 +66,12 @@ std::optional<TidalURL> parseURL(const std::string& url) {
     NSString *host = [nsurl.host lowercaseString];
     NSString *path = nsurl.path;
 
-    logDebug([[NSString stringWithFormat:@"parseURL: scheme=%@, host=%@, path=%@",
-               scheme ?: @"(nil)", host ?: @"(nil)", path ?: @"(nil)"] UTF8String]);
+    // parseURL runs per playlist item in hot paths; skip the eager
+    // NSString formatting unless debug logging is actually enabled.
+    if (isDebugLoggingCached()) {
+        logDebug([[NSString stringWithFormat:@"parseURL: scheme=%@, host=%@, path=%@",
+                   scheme ?: @"(nil)", host ?: @"(nil)", path ?: @"(nil)"] UTF8String]);
+    }
 
     // Handle tidal:// scheme
     if ([scheme isEqualToString:@"tidal"]) {
@@ -86,6 +122,10 @@ std::optional<TidalURL> parseURL(const std::string& url) {
     }
 
     if (result.isValid()) {
+        if (!isValidContentID(result.type, result.id)) {
+            logDebug(("parseURL: rejected ID with invalid characters in: " + url).c_str());
+            return std::nullopt;
+        }
         return result;
     }
 

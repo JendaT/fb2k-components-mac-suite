@@ -67,6 +67,43 @@ static void testRoundTrip(void) {
     CHECK(toExternalURL(unknown) == "whatever", "unknown type returns original");
 }
 
+static void testIDValidation(void) {
+    // Valid IDs of each type
+    auto r = parseURL("tidal://track/123456");
+    CHECK(r.has_value() && r->id == "123456", "numeric track ID accepted");
+    r = parseURL("tidal://album/42");
+    CHECK(r.has_value() && r->id == "42", "numeric album ID accepted");
+    r = parseURL("tidal://artist/7");
+    CHECK(r.has_value() && r->id == "7", "numeric artist ID accepted");
+    r = parseURL("tidal://playlist/0dc1590b-3f97-49b5-ac34-8bec1f2a5b6e");
+    CHECK(r.has_value() && r->id == "0dc1590b-3f97-49b5-ac34-8bec1f2a5b6e",
+          "UUID playlist ID accepted");
+
+    // Encoded-slash path traversal: NSURL percent-decodes the path, so the
+    // ID would contain "/" and ".." and be spliced into an API URL.
+    CHECK(!parseURL("tidal://track/1%2F..%2F..%2Fusers%2Fme").has_value(),
+          "encoded-slash traversal in track ID rejected");
+    CHECK(!parseURL("tidal://playlist/x%2F..%2Fetc").has_value(),
+          "encoded-slash traversal in playlist ID rejected");
+
+    // Query/param injection attempts
+    CHECK(!parseURL("tidal://track/123%3Fquality%3DLOW").has_value(),
+          "encoded query injection in track ID rejected");
+    CHECK(!parseURL("tidal://track/123abc").has_value(),
+          "non-numeric track ID rejected");
+    CHECK(!parseURL("tidal://album/12%2034").has_value(),
+          "album ID with encoded space rejected");
+    CHECK(!parseURL("tidal://playlist/abc_def!").has_value(),
+          "playlist ID with invalid charset rejected");
+    CHECK(!parseURL("tidal://artist/../1").has_value(),
+          "dot-dot artist ID rejected");
+    // For web URLs the decoded "/" splits the path component, so only the
+    // clean numeric segment survives — nothing after the slash leaks in.
+    r = parseURL("https://tidal.com/browse/track/123%2F456");
+    CHECK(!r.has_value() || r->id == "123",
+          "web URL with encoded slash cannot smuggle extra path into the ID");
+}
+
 static void testIsTidalURL(void) {
     CHECK(isTidalURL("tidal://track/1"), "tidal:// scheme");
     CHECK(isTidalURL("https://tidal.com/track/1"), "tidal.com host");
@@ -84,6 +121,7 @@ int main(void) {
         testParseTidalScheme();
         testParseWebURLs();
         testRoundTrip();
+        testIDValidation();
         testIsTidalURL();
     }
     return testHarnessFinish("URLUtils");

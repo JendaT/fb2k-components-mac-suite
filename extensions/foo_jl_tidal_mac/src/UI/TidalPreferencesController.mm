@@ -10,8 +10,32 @@
 #import "../Core/TidalConfig.h"
 #import "../Core/StreamCache.h"
 #import "../API/TidalConstants.h"
-#import "../API/TidalAPI.h"
 #import "../../../../shared/PreferencesCommon.h"
+
+// Single source of truth for the quality popup: index in this array ==
+// popup item index. Used by both loadSettings and qualityChanged: so the
+// two directions of the mapping cannot drift apart.
+static const JLTidalQuality kQualityPopupOrder[] = {
+    JLTidalQualityHiResLossless,
+    JLTidalQualityHiRes,
+    JLTidalQualityLossless,
+    JLTidalQualityHigh,
+    JLTidalQualityLow,
+};
+static const NSInteger kQualityPopupCount =
+    (NSInteger)(sizeof(kQualityPopupOrder) / sizeof(kQualityPopupOrder[0]));
+
+static NSInteger popupIndexForQuality(JLTidalQuality quality) {
+    for (NSInteger i = 0; i < kQualityPopupCount; i++) {
+        if (kQualityPopupOrder[i] == quality) return i;
+    }
+    return 0;
+}
+
+static JLTidalQuality qualityForPopupIndex(NSInteger index) {
+    if (index < 0 || index >= kQualityPopupCount) return JLTidalQualityHiResLossless;
+    return kQualityPopupOrder[index];
+}
 
 @interface JLTidalPreferencesController ()
 // Authentication UI
@@ -292,15 +316,7 @@
 - (void)loadSettings {
     // Quality
     JLTidalQuality quality = tidal::TidalConfig::getPreferredQuality();
-    NSInteger index = 0;
-    switch (quality) {
-        case JLTidalQualityHiResLossless: index = 0; break;
-        case JLTidalQualityHiRes: index = 1; break;
-        case JLTidalQualityLossless: index = 2; break;
-        case JLTidalQualityHigh: index = 3; break;
-        case JLTidalQualityLow: index = 4; break;
-    }
-    [self.qualityPopup selectItemAtIndex:index];
+    [self.qualityPopup selectItemAtIndex:popupIndexForQuality(quality)];
 
     // Debug
     self.debugCheckbox.state = tidal::TidalConfig::isDebugLoggingEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
@@ -430,9 +446,6 @@
             self.userCodeLabel.hidden = YES;
             [self.authSpinner setHidden:YES];
             [self.authSpinner stopAnimation:nil];
-
-            // Fetch user profile if we don't have it
-            [self fetchUserProfileIfNeeded];
             break;
         }
 
@@ -510,11 +523,6 @@
     }
 }
 
-- (void)fetchUserProfileIfNeeded {
-    // For now, we don't have user profile API - would need to add Tidal user endpoint
-    // This is a placeholder for when we add /v1/users/me endpoint support
-}
-
 - (void)authStateChanged:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self updateAuthUI];
@@ -584,16 +592,7 @@
 
 - (void)qualityChanged:(id)sender {
     NSInteger index = [self.qualityPopup indexOfSelectedItem];
-    JLTidalQuality quality;
-    switch (index) {
-        case 0: quality = JLTidalQualityHiResLossless; break;
-        case 1: quality = JLTidalQualityHiRes; break;
-        case 2: quality = JLTidalQualityLossless; break;
-        case 3: quality = JLTidalQualityHigh; break;
-        case 4: quality = JLTidalQualityLow; break;
-        default: quality = JLTidalQualityHiResLossless; break;
-    }
-    tidal::TidalConfig::setPreferredQuality(quality);
+    tidal::TidalConfig::setPreferredQuality(qualityForPopupIndex(index));
 }
 
 - (void)debugChanged:(id)sender {

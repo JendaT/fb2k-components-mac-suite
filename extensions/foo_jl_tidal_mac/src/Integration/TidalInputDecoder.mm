@@ -18,7 +18,8 @@
 
 namespace tidal {
 
-// Shared date formatter for metadata (not thread-safe, but only used on decoder thread)
+// Shared date formatter for metadata (NSDateFormatter is thread-safe on macOS 10.9+,
+// so concurrent use from decoder and info-reader threads is fine)
 static NSDateFormatter* sharedDateFormatter() {
     static NSDateFormatter *fmt = nil;
     static dispatch_once_t onceToken;
@@ -28,6 +29,51 @@ static NSDateFormatter* sharedDateFormatter() {
         fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
     });
     return fmt;
+}
+
+// Overlay Tidal track metadata onto a file_info. Shared by TidalInputDecoder
+// and TidalInfoReader. When logFields is true, TITLE/ARTIST sets are logged
+// at debug level (info-reader diagnostics).
+static void applyTrackMeta(file_info& p_info, JLTidalTrack* track, bool logFields) {
+    if (track.title) {
+        p_info.meta_set("TITLE", [track.title UTF8String]);
+        if (logFields) {
+            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set TITLE=%@", track.title] UTF8String]);
+        }
+    }
+    if (track.artist) {
+        p_info.meta_set("ARTIST", [track.artist UTF8String]);
+        if (logFields) {
+            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set ARTIST=%@", track.artist] UTF8String]);
+        }
+    }
+    if (track.album) {
+        p_info.meta_set("ALBUM", [track.album UTF8String]);
+    }
+    if (track.albumArtist) {
+        p_info.meta_set("ALBUM ARTIST", [track.albumArtist UTF8String]);
+    }
+    if (track.duration > 0) {
+        p_info.set_length(track.duration);
+    }
+    if (track.trackNumber > 0) {
+        p_info.meta_set("TRACKNUMBER", [[NSString stringWithFormat:@"%ld", (long)track.trackNumber] UTF8String]);
+    }
+    if (track.discNumber > 0) {
+        p_info.meta_set("DISCNUMBER", [[NSString stringWithFormat:@"%ld", (long)track.discNumber] UTF8String]);
+    }
+    if (track.totalTracks > 0) {
+        p_info.meta_set("TOTALTRACKS", [[NSString stringWithFormat:@"%ld", (long)track.totalTracks] UTF8String]);
+    }
+    if (track.isrc) {
+        p_info.meta_set("ISRC", [track.isrc UTF8String]);
+    }
+    if (track.releaseDate) {
+        p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:track.releaseDate] UTF8String]);
+    }
+    if (track.copyright) {
+        p_info.meta_set("COPYRIGHT", [track.copyright UTF8String]);
+    }
 }
 
 // GUIDs for this input
@@ -355,6 +401,13 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
             return false;
         }
 
+        if (!resultInfo.streamURL) {
+            // DASH resolution has no direct stream URL; this retry path only
+            // handles direct-URL streams.
+            logDebug("tryReopen: no direct stream URL (DASH resolution), giving up");
+            return false;
+        }
+
         m_playbackInfo = resultInfo;
         m_streamURL = std::string([[resultInfo.streamURL absoluteString] UTF8String]);
 
@@ -412,39 +465,7 @@ void TidalInputDecoder::get_info(t_uint32 p_subsong, file_info& p_info, abort_ca
 
     // Overlay our metadata
     if (m_trackInfo) {
-        if (m_trackInfo.title) {
-            p_info.meta_set("TITLE", [m_trackInfo.title UTF8String]);
-        }
-        if (m_trackInfo.artist) {
-            p_info.meta_set("ARTIST", [m_trackInfo.artist UTF8String]);
-        }
-        if (m_trackInfo.album) {
-            p_info.meta_set("ALBUM", [m_trackInfo.album UTF8String]);
-        }
-        if (m_trackInfo.albumArtist) {
-            p_info.meta_set("ALBUM ARTIST", [m_trackInfo.albumArtist UTF8String]);
-        }
-        if (m_trackInfo.duration > 0) {
-            p_info.set_length(m_trackInfo.duration);
-        }
-        if (m_trackInfo.trackNumber > 0) {
-            p_info.meta_set("TRACKNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.trackNumber] UTF8String]);
-        }
-        if (m_trackInfo.discNumber > 0) {
-            p_info.meta_set("DISCNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.discNumber] UTF8String]);
-        }
-        if (m_trackInfo.totalTracks > 0) {
-            p_info.meta_set("TOTALTRACKS", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.totalTracks] UTF8String]);
-        }
-        if (m_trackInfo.isrc) {
-            p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
-        }
-        if (m_trackInfo.releaseDate) {
-            p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:m_trackInfo.releaseDate] UTF8String]);
-        }
-        if (m_trackInfo.copyright) {
-            p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);
-        }
+        applyTrackMeta(p_info, m_trackInfo, false);
     }
 
     // Add quality info
@@ -618,41 +639,7 @@ void TidalInfoReader::get_info(t_uint32 p_subsong, file_info& p_info, abort_call
               ", hasTrackInfo=" + (m_trackInfo ? "yes" : "no")).c_str());
 
     if (m_trackInfo) {
-        if (m_trackInfo.title) {
-            p_info.meta_set("TITLE", [m_trackInfo.title UTF8String]);
-            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set TITLE=%@", m_trackInfo.title] UTF8String]);
-        }
-        if (m_trackInfo.artist) {
-            p_info.meta_set("ARTIST", [m_trackInfo.artist UTF8String]);
-            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set ARTIST=%@", m_trackInfo.artist] UTF8String]);
-        }
-        if (m_trackInfo.album) {
-            p_info.meta_set("ALBUM", [m_trackInfo.album UTF8String]);
-        }
-        if (m_trackInfo.albumArtist) {
-            p_info.meta_set("ALBUM ARTIST", [m_trackInfo.albumArtist UTF8String]);
-        }
-        if (m_trackInfo.duration > 0) {
-            p_info.set_length(m_trackInfo.duration);
-        }
-        if (m_trackInfo.trackNumber > 0) {
-            p_info.meta_set("TRACKNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.trackNumber] UTF8String]);
-        }
-        if (m_trackInfo.discNumber > 0) {
-            p_info.meta_set("DISCNUMBER", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.discNumber] UTF8String]);
-        }
-        if (m_trackInfo.totalTracks > 0) {
-            p_info.meta_set("TOTALTRACKS", [[NSString stringWithFormat:@"%ld", (long)m_trackInfo.totalTracks] UTF8String]);
-        }
-        if (m_trackInfo.isrc) {
-            p_info.meta_set("ISRC", [m_trackInfo.isrc UTF8String]);
-        }
-        if (m_trackInfo.releaseDate) {
-            p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:m_trackInfo.releaseDate] UTF8String]);
-        }
-        if (m_trackInfo.copyright) {
-            p_info.meta_set("COPYRIGHT", [m_trackInfo.copyright UTF8String]);
-        }
+        applyTrackMeta(p_info, m_trackInfo, true);
     } else {
         // Fallback if metadata fetch failed - show track ID so user knows what it is
         logDebug("TidalInfoReader: no track info, using fallback");
@@ -666,7 +653,7 @@ void TidalInfoReader::get_info(t_uint32 p_subsong, file_info& p_info, abort_call
     }
 
     if (!m_trackID.empty()) {
-        p_info.info_set("TIDAL_TRACK_ID", m_trackID.c_str());
+        p_info.info_set(kTidalMetadataTrackID.UTF8String, m_trackID.c_str());
     }
 }
 

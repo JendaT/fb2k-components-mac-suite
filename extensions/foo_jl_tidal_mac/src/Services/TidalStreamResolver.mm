@@ -171,46 +171,6 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
     }];
 }
 
-- (void)resolveStreamForTrackID:(NSString *)trackID
-                        quality:(JLTidalQuality)quality
-                     completion:(JLTidalStreamResolverCompletion)completion {
-    // Ensure we have a valid token
-    [[JLTidalAuthService shared] ensureValidTokenWithCompletion:^(NSError *tokenError) {
-        if (tokenError) {
-            completion(nil, tokenError);
-            return;
-        }
-
-        [[JLTidalAPI shared] getPlaybackInfoForTrackID:trackID
-                                               quality:quality
-                                            completion:^(NSDictionary *json, NSError *error) {
-            if (error) {
-                completion(nil, error);
-                return;
-            }
-
-            JLTidalPlaybackInfo *info = [[JLTidalPlaybackInfo alloc] initWithDictionary:json
-                                                                                trackID:trackID
-                                                                        requestedQuality:quality];
-            dumpRawManifestIfNeeded(info);
-
-            if (!info.streamURL) {
-                completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable, @"No stream URL in response"));
-                return;
-            }
-
-            if (info.isDRMProtected) {
-                completion(nil, JLTidalError(JLTidalErrorDRMProtected, @"Track is DRM protected"));
-                return;
-            }
-
-            // Cache and return
-            tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
-            completion(info, nil);
-        }];
-    }];
-}
-
 - (void)invalidateCacheForTrackID:(NSString *)trackID {
     tidal::StreamCache::shared().remove(std::string([trackID UTF8String]));
 }
@@ -219,7 +179,11 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
 
 - (void)getMetadataForTrackID:(NSString *)trackID
                    completion:(JLTidalMetadataCompletion)completion {
-    tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: %@", trackID] UTF8String]);
+    // Runs per track in hot paths; skip the eager NSString formatting
+    // unless debug logging is actually enabled (same as URLUtils).
+    if (tidal::isDebugLoggingCached()) {
+        tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: %@", trackID] UTF8String]);
+    }
 
     // Check cache first
     __block JLTidalTrack *cached = nil;
@@ -236,8 +200,10 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
     // Ensure we have a valid token
     [[JLTidalAuthService shared] ensureValidTokenWithCompletion:^(NSError *tokenError) {
         if (tokenError) {
-            tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: token error: %@",
-                             tokenError.localizedDescription] UTF8String]);
+            if (tidal::isDebugLoggingCached()) {
+                tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: token error: %@",
+                                 tokenError.localizedDescription] UTF8String]);
+            }
             completion(nil, tokenError);
             return;
         }
@@ -247,19 +213,25 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
         [[JLTidalAPI shared] getTrackMetadataForTrackID:trackID
                                              completion:^(NSDictionary *json, NSError *error) {
             if (error) {
-                tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: API error: %@",
-                                 error.localizedDescription] UTF8String]);
+                if (tidal::isDebugLoggingCached()) {
+                    tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: API error: %@",
+                                     error.localizedDescription] UTF8String]);
+                }
                 completion(nil, error);
                 return;
             }
 
-            tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: got JSON with %lu keys",
-                             (unsigned long)[json count]] UTF8String]);
+            if (tidal::isDebugLoggingCached()) {
+                tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: got JSON with %lu keys",
+                                 (unsigned long)[json count]] UTF8String]);
+            }
 
             JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:json];
 
-            tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: parsed track - title=%@, artist=%@",
-                             track.title ?: @"(nil)", track.artist ?: @"(nil)"] UTF8String]);
+            if (tidal::isDebugLoggingCached()) {
+                tidal::logDebug([[NSString stringWithFormat:@"getMetadataForTrackID: parsed track - title=%@, artist=%@",
+                                 track.title ?: @"(nil)", track.artist ?: @"(nil)"] UTF8String]);
+            }
 
             // Cache it (with size limit)
             dispatch_async(self.metadataQueue, ^{

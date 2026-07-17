@@ -124,8 +124,14 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 }
 
 - (void)storeSession:(JLTidalSession *)session {
-    [JLTidalKeychainHelper storeAccessToken:session.accessToken];
-    [JLTidalKeychainHelper storeRefreshToken:session.refreshToken];
+    BOOL accessStored = [JLTidalKeychainHelper storeAccessToken:session.accessToken];
+    BOOL refreshStored = [JLTidalKeychainHelper storeRefreshToken:session.refreshToken];
+    if (!accessStored || !refreshStored) {
+        tidal::logError([[NSString stringWithFormat:
+                          @"AuthService: failed to persist session tokens (access=%@, refresh=%@) — user may be signed out after restart",
+                          accessStored ? @"ok" : @"FAILED",
+                          refreshStored ? @"ok" : @"FAILED"] UTF8String]);
+    }
     [JLTidalKeychainHelper storeTokenExpiry:session.expiryDate];
     [JLTidalKeychainHelper storeUserId:session.userId];
     [JLTidalKeychainHelper storeUsername:session.username];

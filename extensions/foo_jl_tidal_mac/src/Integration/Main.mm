@@ -18,6 +18,7 @@
 #import "../UI/TidalPreferencesController.h"
 #import "../UI/TidalBrowserController.h"
 
+#ifdef DEBUG
 // Early static initialization check (runs when dylib loads)
 namespace {
     struct EarlyInit {
@@ -27,6 +28,7 @@ namespace {
     };
     static EarlyInit g_earlyInit;
 }
+#endif
 
 // Component registration
 JL_COMPONENT_ABOUT(

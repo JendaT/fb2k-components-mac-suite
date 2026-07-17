@@ -16,6 +16,20 @@
 
 namespace tidal {
 
+// Raw cover-data cache shared across extractor instances, keyed by
+// coverID + size. Every track on an album shares one cover, so without
+// this a 15-track album downloads the same ~100-300 KB image 15 times.
+// (JLTidalAlbumArtCache caches decoded NSImages for the browser only.)
+static NSCache<NSString*, NSData*>* coverDataCache(void) {
+    static NSCache<NSString*, NSData*>* cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [[NSCache alloc] init];
+        cache.totalCostLimit = 16 * 1024 * 1024;  // ~16 MB of raw image data
+    });
+    return cache;
+}
+
 // Must match TidalInputEntry GUID for SDK album art routing
 // {B2C3D4E5-F6A7-8B9C-0D1E-2F3A4B5C6D7E}
 static const GUID g_tidalAlbumArtExtractorGUID =
@@ -77,62 +91,74 @@ private:
             throw exception_album_art_not_found();
         }
 
-        // Build CDN URL (640x640 for good quality)
-        NSURL* coverURL = [JLTidalAlbumArtCache coverURLForCoverID:coverID size:640];
-        logDebug(std::string("TidalAlbumArtExtractor: downloading from ") +
-                 [[coverURL absoluteString] UTF8String]);
+        // Check the raw-data cache before downloading — every track on an
+        // album resolves to the same coverID.
+        NSString* cacheKey = [NSString stringWithFormat:@"%@_640", coverID];
+        NSData* imageData = [coverDataCache() objectForKey:cacheKey];
+        if (imageData.length > 0) {
+            logDebug(std::string("TidalAlbumArtExtractor: raw-data cache hit for cover ") +
+                     [coverID UTF8String]);
+        } else {
+            // Build CDN URL (640x640 for good quality)
+            NSURL* coverURL = [JLTidalAlbumArtCache coverURLForCoverID:coverID size:640];
+            logDebug(std::string("TidalAlbumArtExtractor: downloading from ") +
+                     [[coverURL absoluteString] UTF8String]);
 
-        // Download image using shared session
-        static NSURLSession* session = nil;
-        static dispatch_once_t sessionOnce;
-        dispatch_once(&sessionOnce, ^{
-            NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
-            config.timeoutIntervalForRequest = 10;
-            config.timeoutIntervalForResource = 15;
-            session = [NSURLSession sessionWithConfiguration:config];
-        });
+            // Download image using shared session
+            static NSURLSession* session = nil;
+            static dispatch_once_t sessionOnce;
+            dispatch_once(&sessionOnce, ^{
+                NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+                config.timeoutIntervalForRequest = 10;
+                config.timeoutIntervalForResource = 15;
+                session = [NSURLSession sessionWithConfiguration:config];
+            });
 
-        __block NSData* imageData = nil;
-        __block NSError* downloadError = nil;
-        dispatch_semaphore_t dlSemaphore = dispatch_semaphore_create(0);
+            __block NSData* downloadedData = nil;
+            __block NSError* downloadError = nil;
+            dispatch_semaphore_t dlSemaphore = dispatch_semaphore_create(0);
 
-        NSURLSessionDataTask* task = [session dataTaskWithURL:coverURL
-                                            completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-            if (!error) {
-                NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
-                if (httpResponse.statusCode == 200 && data.length > 0) {
-                    imageData = data;
+            NSURLSessionDataTask* task = [session dataTaskWithURL:coverURL
+                                                completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
+                if (!error) {
+                    NSHTTPURLResponse* httpResponse = (NSHTTPURLResponse*)response;
+                    if (httpResponse.statusCode == 200 && data.length > 0) {
+                        downloadedData = data;
+                    }
+                    // Non-200 status: downloadedData stays nil, handled below
+                } else {
+                    downloadError = error;
                 }
-                // Non-200 status: imageData stays nil, handled below
-            } else {
-                downloadError = error;
-            }
-            dispatch_semaphore_signal(dlSemaphore);
-        }];
-        [task resume];
+                dispatch_semaphore_signal(dlSemaphore);
+            }];
+            [task resume];
 
-        // Wait with periodic abort checks (max 15 seconds)
-        attempts = 0;
-        while (dispatch_semaphore_wait(dlSemaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
-            if (p_abort.is_aborting()) {
-                [task cancel];
-                logDebug("TidalAlbumArtExtractor: aborted during download");
-                throw exception_aborted();
+            // Wait with periodic abort checks (max 15 seconds)
+            attempts = 0;
+            while (dispatch_semaphore_wait(dlSemaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+                if (p_abort.is_aborting()) {
+                    [task cancel];
+                    logDebug("TidalAlbumArtExtractor: aborted during download");
+                    throw exception_aborted();
+                }
+                if (++attempts > 150) {
+                    [task cancel];
+                    logDebug("TidalAlbumArtExtractor: download timed out");
+                    throw exception_album_art_not_found();
+                }
             }
-            if (++attempts > 150) {
-                [task cancel];
-                logDebug("TidalAlbumArtExtractor: download timed out");
+
+            imageData = downloadedData;
+            if (!imageData || imageData.length == 0) {
+                logDebug("TidalAlbumArtExtractor: download failed or empty response");
                 throw exception_album_art_not_found();
             }
-        }
 
-        if (!imageData || imageData.length == 0) {
-            logDebug("TidalAlbumArtExtractor: download failed or empty response");
-            throw exception_album_art_not_found();
-        }
+            [coverDataCache() setObject:imageData forKey:cacheKey cost:imageData.length];
 
-        logDebug(std::string("TidalAlbumArtExtractor: got image data, ") +
-                 std::to_string(imageData.length) + " bytes");
+            logDebug(std::string("TidalAlbumArtExtractor: got image data, ") +
+                     std::to_string(imageData.length) + " bytes");
+        }
 
         // Wrap in album_art_data_impl
         album_art_data_ptr artData = album_art_data_impl::g_create(

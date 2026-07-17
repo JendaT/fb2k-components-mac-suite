@@ -34,6 +34,8 @@ static void testSanitize(void) {
     CHECK_STREQ([Layout sanitizeComponent:@""], @"Unknown", "empty -> Unknown");
     CHECK_STREQ([Layout sanitizeComponent:@"///"], @"---", "all-forbidden input keeps replacements");
     CHECK_STREQ([Layout sanitizeComponent:@"..."], @"Unknown", "dots-only collapses to Unknown");
+    CHECK_STREQ([Layout sanitizeComponent:@"."], @"Unknown", ". -> Unknown (no subtree escape)");
+    CHECK_STREQ([Layout sanitizeComponent:@".."], @"Unknown", ".. -> Unknown (no subtree escape)");
     CHECK_STREQ([Layout sanitizeComponent:@"Čajovna u Šamana"], @"Čajovna u Šamana", "diacritics preserved");
 
     // Length cap

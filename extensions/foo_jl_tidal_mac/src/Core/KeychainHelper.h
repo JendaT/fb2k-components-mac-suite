@@ -2,7 +2,13 @@
 //  KeychainHelper.h
 //  foo_jl_tidal_mac
 //
-//  Secure storage for Tidal OAuth tokens using macOS Keychain
+//  Secure storage for Tidal OAuth tokens using macOS Keychain.
+//
+//  Two-tier storage by design: only the actual secrets (access and refresh
+//  tokens) live in the Keychain; non-secret metadata (token expiry, userId,
+//  username, countryCode) is stored in NSUserDefaults. This keeps frequent
+//  reads of non-sensitive values from touching the Keychain while the
+//  tokens stay protected (kSecAttrAccessibleWhenUnlocked).
 //
 
 #pragma once

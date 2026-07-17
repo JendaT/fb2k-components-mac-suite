@@ -73,6 +73,11 @@ void StreamCache::setWithTTL(const std::string& trackID, JLTidalPlaybackInfo* in
         return;
     }
 
+    // Drop expired entries opportunistically so the cache cannot grow
+    // without bound (expired entries were otherwise only removed on a
+    // same-trackID lookup). Runs async on the same serial queue.
+    purgeExpired();
+
     NSString* key = [NSString stringWithUTF8String:trackID.c_str()];
 
     dispatch_async(m_queue, ^{

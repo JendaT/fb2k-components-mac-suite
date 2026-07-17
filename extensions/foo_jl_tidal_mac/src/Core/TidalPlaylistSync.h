@@ -91,12 +91,6 @@ typedef void (^JLTidalSyncPreviewCompletion)(JLTidalSyncReport * _Nullable repor
 /// Check if a foobar playlist name belongs to the TIDAL sync namespace
 - (BOOL)isTidalSyncedName:(NSString *)foobarName;
 
-/// Stored mapping: Tidal UUID -> foobar playlist name
-@property (nonatomic, strong, readonly) NSMutableDictionary<NSString *, NSString *> *uuidToNameMap;
-
-/// Stored mapping: foobar playlist name -> Tidal UUID
-@property (nonatomic, strong, readonly) NSMutableDictionary<NSString *, NSString *> *nameToUUIDMap;
-
 @end
 
 NS_ASSUME_NONNULL_END

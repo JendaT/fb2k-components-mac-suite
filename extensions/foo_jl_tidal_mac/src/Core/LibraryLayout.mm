@@ -59,6 +59,11 @@ static const NSUInteger kMaxComponentLength = 180;
         result = [[result substringToIndex:kMaxComponentLength]
                   stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     }
+
+    // "." and ".." as path components escape the library subtree
+    if ([result isEqualToString:@"."] || [result isEqualToString:@".."]) {
+        result = @"Unknown";
+    }
     return result.length > 0 ? result : @"Unknown";
 }
 
@@ -156,6 +161,20 @@ static const NSUInteger kMaxComponentLength = 180;
     return nil;
 }
 
+// Replace newlines/control characters in a metadata value with spaces —
+// they would otherwise confuse ffmpeg's -metadata key=value parsing.
++ (NSString *)stripControlCharacters:(NSString *)value {
+    if (value.length == 0) return value;
+    NSCharacterSet *controls = [NSCharacterSet controlCharacterSet];
+    if ([value rangeOfCharacterFromSet:controls].location == NSNotFound) return value;
+    NSArray<NSString *> *parts = [value componentsSeparatedByCharactersInSet:controls];
+    NSMutableArray<NSString *> *nonEmpty = [NSMutableArray array];
+    for (NSString *p in parts) {
+        if (p.length > 0) [nonEmpty addObject:p];
+    }
+    return [nonEmpty componentsJoinedByString:@" "];
+}
+
 + (NSArray<NSString *> *)ffmpegArgumentsForInput:(NSString *)inputPath
                                           output:(NSString *)outputPath
                                         metadata:(NSDictionary<NSString *, NSString *> *)metadata {
@@ -163,7 +182,7 @@ static const NSUInteger kMaxComponentLength = 180;
         @"-y", @"-i", inputPath, @"-map_metadata", @"-1", @"-vn", @"-c:a", @"copy", nil];
     NSArray<NSString *> *keys = [metadata.allKeys sortedArrayUsingSelector:@selector(compare:)];
     for (NSString *key in keys) {
-        NSString *value = metadata[key];
+        NSString *value = [self stripControlCharacters:metadata[key]];
         if (value.length == 0) continue;
         [args addObject:@"-metadata"];
         [args addObject:[NSString stringWithFormat:@"%@=%@", key, value]];

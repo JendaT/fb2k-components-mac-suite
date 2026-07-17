@@ -38,11 +38,6 @@ typedef void (^JLTidalMetadataCompletion)(JLTidalTrack * _Nullable track, NSErro
 - (void)resolveStreamForTrackID:(NSString *)trackID
                      completion:(JLTidalStreamResolverCompletion)completion;
 
-/// Resolve stream with specific quality (no fallback)
-- (void)resolveStreamForTrackID:(NSString *)trackID
-                        quality:(JLTidalQuality)quality
-                     completion:(JLTidalStreamResolverCompletion)completion;
-
 /// Invalidate cached stream for a track (e.g., after 403 error)
 - (void)invalidateCacheForTrackID:(NSString *)trackID;
 

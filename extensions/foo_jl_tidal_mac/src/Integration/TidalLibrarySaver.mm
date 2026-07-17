@@ -43,7 +43,7 @@ static void saverError(NSString *msg) {
 
 - (instancetype)init {
     if ((self = [super init])) {
-        _queue = dispatch_queue_create("com.jl.tidal.librarysaver", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create("com.foobar2000.tidal.librarysaver", DISPATCH_QUEUE_SERIAL);
         _cancelled.store(false);
     }
     return self;
@@ -309,12 +309,12 @@ static void saverError(NSString *msg) {
             NSString *value = [combo.stringValue stringByTrimmingCharactersInSet:
                                [NSCharacterSet whitespaceCharacterSet]];
             if (value.length > 0) {
-                if (![value hasPrefix:@"["]) {
-                    value = [NSString stringWithFormat:@"[%@]",
-                             [value stringByTrimmingCharactersInSet:
-                              [NSCharacterSet characterSetWithCharactersInString:@"[]"]]];
-                }
-                result = value;
+                // User input flows into directory creation under the library
+                // root; sanitize so path separators cannot escape it.
+                NSString *inner = [value stringByTrimmingCharactersInSet:
+                                   [NSCharacterSet characterSetWithCharactersInString:@"[]"]];
+                inner = [JLTidalLibraryLayout sanitizeComponent:inner];
+                result = [NSString stringWithFormat:@"[%@]", inner];
             }
         } else if (response == NSAlertThirdButtonReturn) {
             cancelAll = YES;
@@ -336,7 +336,15 @@ static void saverError(NSString *msg) {
             for (id k in parsed) {
                 id v = parsed[k];
                 if ([k isKindOfClass:[NSString class]] && [v isKindOfClass:[NSString class]]) {
-                    _genreMap[k] = v;
+                    // Values flow into directory creation under the library
+                    // root; re-sanitize on load (same as the prompt path) so
+                    // a tampered stored entry cannot escape it.
+                    NSString *inner = [v stringByTrimmingCharactersInSet:
+                                       [NSCharacterSet characterSetWithCharactersInString:@"[]"]];
+                    inner = [JLTidalLibraryLayout sanitizeComponent:inner];
+                    if (inner.length > 0) {
+                        _genreMap[k] = [NSString stringWithFormat:@"[%@]", inner];
+                    }
                 }
             }
         }
@@ -486,10 +494,22 @@ static void saverError(NSString *msg) {
 }
 
 - (NSData *)downloadURL:(NSURL *)url {
+    // Dedicated session with explicit timeouts. sharedSession's 7-day
+    // resource timeout would let a stalled CDN transfer hold the serial
+    // saver queue until the 300 s outer semaphore expires per file.
+    static NSURLSession *session = nil;
+    static dispatch_once_t sessionOnce;
+    dispatch_once(&sessionOnce, ^{
+        NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
+        cfg.timeoutIntervalForRequest = 60;
+        cfg.timeoutIntervalForResource = 240;
+        session = [NSURLSession sessionWithConfiguration:cfg];
+    });
+
     __block NSData *result = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
-                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url
+                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [(NSHTTPURLResponse *)response statusCode];
         if (!error && status >= 200 && status < 300) result = data;
         dispatch_semaphore_signal(sem);

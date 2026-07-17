@@ -6,6 +6,18 @@
 #import "ResponseParser.h"
 #include "TidalLog.h"
 
+// Server-controlled "items" payloads are consumed by fast enumeration that
+// immediately subscripts elements; a non-array container or non-dictionary
+// element (error payloads do this) would throw unrecognized selector.
+// Guard both levels once, uniformly, in every ...FromItems: method.
+static NSArray *JLTidalSafeItemsArray(NSArray *items) {
+    return [items isKindOfClass:[NSArray class]] ? items : @[];
+}
+
+static BOOL JLTidalIsDictionary(id obj) {
+    return [obj isKindOfClass:[NSDictionary class]];
+}
+
 @implementation JLTidalResponseParser
 
 #pragma mark - OAuth token responses
@@ -20,8 +32,9 @@
     }
 
     // Extract user info if present
-    NSDictionary *user = json[@"user"];
-    NSString *userId = [user[@"userId"] description];
+    NSDictionary *user = JLTidalIsDictionary(json[@"user"]) ? json[@"user"] : nil;
+    id rawUserId = user[@"userId"];
+    NSString *userId = (rawUserId && rawUserId != [NSNull null]) ? [rawUserId description] : nil;
     NSString *username = user[@"username"];
     NSString *countryCode = user[@"countryCode"];
 
@@ -60,7 +73,8 @@
 
 + (NSArray<JLTidalTrack *> *)tracksFromItems:(NSArray *)items {
     NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-    for (NSDictionary *trackDict in items) {
+    for (NSDictionary *trackDict in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(trackDict)) continue;
         JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
         if (track) {
             [tracks addObject:track];
@@ -71,7 +85,8 @@
 
 + (NSArray<JLTidalAlbum *> *)albumsFromItems:(NSArray *)items {
     NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
-    for (NSDictionary *albumDict in items) {
+    for (NSDictionary *albumDict in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(albumDict)) continue;
         JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
         if (album) {
             [albums addObject:album];
@@ -82,7 +97,8 @@
 
 + (NSArray<JLTidalArtist *> *)artistsFromItems:(NSArray *)items {
     NSMutableArray<JLTidalArtist *> *artists = [NSMutableArray array];
-    for (NSDictionary *artistDict in items) {
+    for (NSDictionary *artistDict in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(artistDict)) continue;
         JLTidalArtist *artist = [[JLTidalArtist alloc] initWithDictionary:artistDict];
         if (artist) {
             [artists addObject:artist];
@@ -93,7 +109,8 @@
 
 + (NSArray<JLTidalPlaylist *> *)playlistsFromItems:(NSArray *)items {
     NSMutableArray<JLTidalPlaylist *> *playlists = [NSMutableArray array];
-    for (NSDictionary *playlistDict in items) {
+    for (NSDictionary *playlistDict in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(playlistDict)) continue;
         JLTidalPlaylist *playlist = [[JLTidalPlaylist alloc] initWithDictionary:playlistDict];
         if (playlist) {
             [playlists addObject:playlist];
@@ -104,9 +121,10 @@
 
 + (NSArray<JLTidalTrack *> *)tracksFromWrappedItems:(NSArray *)items {
     NSMutableArray<JLTidalTrack *> *tracks = [NSMutableArray array];
-    for (NSDictionary *item in items) {
+    for (NSDictionary *item in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(item)) continue;
         NSDictionary *trackDict = item[@"item"];
-        if (!trackDict) trackDict = item;
+        if (!JLTidalIsDictionary(trackDict)) trackDict = item;
 
         JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
         if (track) {
@@ -118,9 +136,10 @@
 
 + (NSArray<JLTidalAlbum *> *)albumsFromWrappedItems:(NSArray *)items {
     NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
-    for (NSDictionary *item in items) {
+    for (NSDictionary *item in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(item)) continue;
         NSDictionary *albumDict = item[@"item"];
-        if (!albumDict) albumDict = item;
+        if (!JLTidalIsDictionary(albumDict)) albumDict = item;
 
         JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:albumDict];
         if (album) {
@@ -132,9 +151,10 @@
 
 + (NSArray<JLTidalPlaylistFolder *> *)foldersFromItems:(NSArray *)items {
     NSMutableArray<JLTidalPlaylistFolder *> *folders = [NSMutableArray array];
-    for (NSDictionary *item in items) {
+    for (NSDictionary *item in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(item)) continue;
         NSString *type = item[@"type"];
-        if ([type isEqualToString:@"FOLDER"]) {
+        if ([type isKindOfClass:[NSString class]] && [type isEqualToString:@"FOLDER"]) {
             JLTidalPlaylistFolder *folder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
             if (folder) {
                 [folders addObject:folder];
@@ -147,7 +167,8 @@
 + (NSArray<JLTidalTrack *> *)tracksFromItems:(NSArray *)items
                                matchingISRC:(NSString *)isrc {
     NSMutableArray<JLTidalTrack *> *matches = [NSMutableArray array];
-    for (NSDictionary *trackDict in items) {
+    for (NSDictionary *trackDict in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(trackDict)) continue;
         JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackDict];
         // Match ISRC exactly
         if (track && [track.isrc isEqualToString:isrc]) {

@@ -36,6 +36,64 @@
 
 @end
 
+#pragma mark - Form Encoding
+
+// Percent-encode a value for an application/x-www-form-urlencoded body.
+// URLQueryAllowedCharacterSet minus the characters that break form parsing:
+// "&" (pair separator), "+" (decodes to space), "?" and "/". "=" stays
+// allowed to keep the request bytes identical to the previous inline
+// builders (servers split each pair on the first "=", so a literal "="
+// inside a value — e.g. base64 padding in the client secret — is safe).
+static NSString *JLTidalFormEncode(NSString *value) {
+    static NSCharacterSet *allowed = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableCharacterSet *set = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+        [set removeCharactersInString:@"&+?/"];
+        allowed = [set copy];
+    });
+    return [value stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+}
+
+// Percent-encode a value used inside a URL query string. Stricter than
+// URLQueryAllowedCharacterSet (used previously), which leaves "&", "=",
+// "+", "?" and "/" raw — a crafted value (e.g. a malicious ISRC tag read
+// from a local file) could otherwise inject extra query parameters into
+// an authenticated request.
+static NSString *JLTidalQueryValueEncode(NSString *value) {
+    static NSCharacterSet *allowed = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableCharacterSet *set = [[NSCharacterSet URLQueryAllowedCharacterSet] mutableCopy];
+        [set removeCharactersInString:@"&=+?/"];
+        allowed = [set copy];
+    });
+    return [value stringByAddingPercentEncodingWithAllowedCharacters:allowed];
+}
+
+// Build an OAuth form body from ordered key/value pairs
+// (@[key1, value1, key2, value2, ...]). Every value is form-encoded.
+static NSData *JLTidalOAuthFormBody(NSArray<NSString *> *keysAndValues) {
+    NSMutableArray<NSString *> *pairs = [NSMutableArray arrayWithCapacity:keysAndValues.count / 2];
+    for (NSUInteger i = 0; i + 1 < keysAndValues.count; i += 2) {
+        [pairs addObject:[NSString stringWithFormat:@"%@=%@",
+                          keysAndValues[i], JLTidalFormEncode(keysAndValues[i + 1])]];
+    }
+    return [[pairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
+}
+
+#pragma mark - JSON Access
+
+// Defensive json[key][@"items"] lookup for search responses — returns nil
+// unless every level has the expected type.
+static NSArray *JLTidalItemsArray(id json, NSString *key) {
+    if (![json isKindOfClass:[NSDictionary class]]) return nil;
+    id container = ((NSDictionary *)json)[key];
+    if (![container isKindOfClass:[NSDictionary class]]) return nil;
+    id items = ((NSDictionary *)container)[@"items"];
+    return [items isKindOfClass:[NSArray class]] ? (NSArray *)items : nil;
+}
+
 @interface JLTidalAPI ()
 @property (nonatomic, strong) NSURLSession *urlSession;
 @end
@@ -72,13 +130,9 @@
     request.HTTPMethod = @"POST";
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
 
-    NSString *body = [NSString stringWithFormat:@"client_id=%@&client_secret=%@&scope=%@",
-                      kTidalClientID,
-                      [kTidalClientSecret stringByAddingPercentEncodingWithAllowedCharacters:
-                       [NSCharacterSet URLQueryAllowedCharacterSet]],
-                      [kTidalOAuthScopes stringByAddingPercentEncodingWithAllowedCharacters:
-                       [NSCharacterSet URLQueryAllowedCharacterSet]]];
-    request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+    request.HTTPBody = JLTidalOAuthFormBody(@[@"client_id", kTidalClientID,
+                                              @"client_secret", kTidalClientSecret,
+                                              @"scope", kTidalOAuthScopes]);
 
     tidal::logDebug("Requesting device code...");
 
@@ -90,7 +144,8 @@
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
         if (httpResponse.statusCode != 200) {
             tidal::logError([[NSString stringWithFormat:@"Device code request failed with status: %ld", (long)httpResponse.statusCode] UTF8String]);
             completion(nil, JLTidalError(JLTidalErrorServerError,
@@ -100,6 +155,7 @@
 
         NSError *jsonError;
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (![json isKindOfClass:[NSDictionary class]]) json = nil;
         if (jsonError || !json) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Invalid JSON response"));
             return;
@@ -112,7 +168,10 @@
         NSNumber *expiresIn = json[@"expiresIn"] ?: @(300);
         NSNumber *interval = json[@"interval"] ?: @(5);
 
-        if (!deviceCode || !userCode || !verificationUri) {
+        // verificationURI is declared nonnull; an unparseable URL string is a
+        // missing-field error, not a nil passed through the contract.
+        NSURL *verificationURL = verificationUri ? [NSURL URLWithString:verificationUri] : nil;
+        if (!deviceCode || !userCode || !verificationURL) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Missing required fields"));
             return;
         }
@@ -120,7 +179,7 @@
         JLTidalDeviceCode *code = [[JLTidalDeviceCode alloc]
             initWithDeviceCode:deviceCode
                       userCode:userCode
-               verificationURI:[NSURL URLWithString:verificationUri]
+               verificationURI:verificationURL
        verificationURIComplete:verificationUriComplete ? [NSURL URLWithString:verificationUriComplete] : nil
                      expiresIn:expiresIn.doubleValue
                       interval:interval.doubleValue];
@@ -141,16 +200,11 @@
     request.HTTPMethod = @"POST";
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
 
-    NSString *body = [NSString stringWithFormat:
-        @"client_id=%@&client_secret=%@&device_code=%@&grant_type=urn:ietf:params:oauth:grant-type:device_code&scope=%@",
-        kTidalClientID,
-        [kTidalClientSecret stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]],
-        [deviceCode stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]],
-        [kTidalOAuthScopes stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]]];
-    request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+    request.HTTPBody = JLTidalOAuthFormBody(@[@"client_id", kTidalClientID,
+                                              @"client_secret", kTidalClientSecret,
+                                              @"device_code", deviceCode,
+                                              @"grant_type", @"urn:ietf:params:oauth:grant-type:device_code",
+                                              @"scope", kTidalOAuthScopes]);
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
                                                     completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -159,10 +213,12 @@
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
 
         NSError *jsonError;
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (![json isKindOfClass:[NSDictionary class]]) json = nil;
 
         if (httpResponse.statusCode == 400) {
             // Check for pending/expired errors
@@ -215,16 +271,11 @@
     request.HTTPMethod = @"POST";
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
 
-    NSString *body = [NSString stringWithFormat:
-        @"client_id=%@&client_secret=%@&refresh_token=%@&grant_type=refresh_token&scope=%@",
-        kTidalClientID,
-        [kTidalClientSecret stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]],
-        [self.session.refreshToken stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]],
-        [kTidalOAuthScopes stringByAddingPercentEncodingWithAllowedCharacters:
-         [NSCharacterSet URLQueryAllowedCharacterSet]]];
-    request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+    request.HTTPBody = JLTidalOAuthFormBody(@[@"client_id", kTidalClientID,
+                                              @"client_secret", kTidalClientSecret,
+                                              @"refresh_token", self.session.refreshToken,
+                                              @"grant_type", @"refresh_token",
+                                              @"scope", kTidalOAuthScopes]);
 
     tidal::logDebug("Refreshing access token...");
 
@@ -235,12 +286,14 @@
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
         if (httpResponse.statusCode != 200) {
             // Log response body for debugging refresh failures
             NSString *errorDetail = @"";
             if (data.length > 0) {
                 NSDictionary *errorJson = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                if (![errorJson isKindOfClass:[NSDictionary class]]) errorJson = nil;
                 if (errorJson) {
                     errorDetail = [NSString stringWithFormat:@" (%@: %@)",
                                    errorJson[@"error"] ?: @"unknown",
@@ -256,6 +309,7 @@
 
         NSError *jsonError;
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        if (![json isKindOfClass:[NSDictionary class]]) json = nil;
         if (jsonError || !json) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Invalid JSON response"));
             return;
@@ -315,8 +369,7 @@
         return;
     }
 
-    NSString *encodedQuery = [query stringByAddingPercentEncodingWithAllowedCharacters:
-                              [NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSString *encodedQuery = JLTidalQueryValueEncode(query);
 
     NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search?query=%@&types=TRACKS&limit=%ld&offset=%ld",
                         kTidalAPIBaseURL,
@@ -333,7 +386,7 @@
         }
 
         NSArray<JLTidalTrack *> *tracks =
-            [JLTidalResponseParser tracksFromItems:json[@"tracks"][@"items"]];
+            [JLTidalResponseParser tracksFromItems:JLTidalItemsArray(json, @"tracks")];
         tidal::logDebug([[NSString stringWithFormat:@"Search returned %lu tracks", (unsigned long)tracks.count] UTF8String]);
         completion(tracks, nil);
     }];
@@ -348,8 +401,7 @@
         return;
     }
 
-    NSString *encodedQuery = [query stringByAddingPercentEncodingWithAllowedCharacters:
-                              [NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSString *encodedQuery = JLTidalQueryValueEncode(query);
 
     NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search?query=%@&types=ALBUMS&limit=%ld&offset=%ld",
                         kTidalAPIBaseURL, encodedQuery, (long)limit, (long)offset];
@@ -363,7 +415,7 @@
         }
 
         NSArray<JLTidalAlbum *> *albums =
-            [JLTidalResponseParser albumsFromItems:json[@"albums"][@"items"]];
+            [JLTidalResponseParser albumsFromItems:JLTidalItemsArray(json, @"albums")];
         tidal::logDebug([[NSString stringWithFormat:@"Album search returned %lu results",
                           (unsigned long)albums.count] UTF8String]);
         completion(albums, nil);
@@ -379,8 +431,7 @@
         return;
     }
 
-    NSString *encodedQuery = [query stringByAddingPercentEncodingWithAllowedCharacters:
-                              [NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSString *encodedQuery = JLTidalQueryValueEncode(query);
 
     NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search?query=%@&types=ARTISTS&limit=%ld&offset=%ld",
                         kTidalAPIBaseURL, encodedQuery, (long)limit, (long)offset];
@@ -394,7 +445,7 @@
         }
 
         NSArray<JLTidalArtist *> *artists =
-            [JLTidalResponseParser artistsFromItems:json[@"artists"][@"items"]];
+            [JLTidalResponseParser artistsFromItems:JLTidalItemsArray(json, @"artists")];
         tidal::logDebug([[NSString stringWithFormat:@"Artist search returned %lu results",
                           (unsigned long)artists.count] UTF8String]);
         completion(artists, nil);
@@ -796,7 +847,8 @@
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
         if (httpResponse.statusCode != 200) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse,
                 [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode]));
@@ -846,8 +898,7 @@
     // Use search API with ISRC as query (v1 approach)
     NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search/tracks?query=%@&limit=5",
                         kTidalAPIBaseURL,
-                        [isrc stringByAddingPercentEncodingWithAllowedCharacters:
-                         [NSCharacterSet URLQueryAllowedCharacterSet]]];
+                        JLTidalQueryValueEncode(isrc)];
     NSURL *url = [NSURL URLWithString:urlStr];
 
     [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
@@ -922,8 +973,10 @@
         return;
     }
 
-    tidal::logDebug([[NSString stringWithFormat:@"API request: %@ %@ (countryCode=%@)",
-                      method, url.absoluteString, self.session.countryCode ?: @"(nil)"] UTF8String]);
+    // Log host + path only — query strings can carry signed-URL tokens.
+    tidal::logDebug([[NSString stringWithFormat:@"API request: %@ %@%@ (countryCode=%@)",
+                      method, url.host ?: @"?", url.path ?: @"",
+                      self.session.countryCode ?: @"(nil)"] UTF8String]);
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = method;
@@ -971,7 +1024,8 @@
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
+            ? (NSHTTPURLResponse *)response : nil;
 
         // Status -> action mapping lives in JLTidalHTTPResponsePolicy (pure,
         // unit-tested); this block applies the decision (limiter bookkeeping,
@@ -1025,7 +1079,8 @@
 
         NSError *jsonError;
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-        if (jsonError) {
+        if (![json isKindOfClass:[NSDictionary class]]) json = nil;
+        if (jsonError || !json) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Invalid JSON response"));
             return;
         }

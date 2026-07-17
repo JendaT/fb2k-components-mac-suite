@@ -6,6 +6,7 @@
 //
 
 #import "KeychainHelper.h"
+#import "TidalLog.h"
 #import "../API/TidalConstants.h"
 #import <Security/Security.h>
 
@@ -36,6 +37,10 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     };
 
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+    if (status != errSecSuccess) {
+        tidal::logError([[NSString stringWithFormat:@"Keychain: SecItemAdd failed for account %@ (OSStatus %d)",
+                          account, (int)status] UTF8String]);
+    }
     return status == errSecSuccess;
 }
 
@@ -106,7 +111,6 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     [defaults removeObjectForKey:kUserIdKey];
     [defaults removeObjectForKey:kUsernameKey];
     [defaults removeObjectForKey:kCountryCodeKey];
-    [defaults synchronize];
 
     return accessDeleted && refreshDeleted;
 }
@@ -115,7 +119,6 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
 
 + (void)storeTokenExpiry:(NSDate *)expiryDate {
     [[NSUserDefaults standardUserDefaults] setObject:expiryDate forKey:kTokenExpiryKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
 + (nullable NSDate *)loadTokenExpiry {
@@ -148,7 +151,6 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     } else {
         [defaults removeObjectForKey:kUserIdKey];
     }
-    [defaults synchronize];
 }
 
 + (void)storeUsername:(nullable NSString *)username {
@@ -158,7 +160,6 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     } else {
         [defaults removeObjectForKey:kUsernameKey];
     }
-    [defaults synchronize];
 }
 
 + (void)storeCountryCode:(nullable NSString *)countryCode {
@@ -168,7 +169,6 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     } else {
         [defaults removeObjectForKey:kCountryCodeKey];
     }
-    [defaults synchronize];
 }
 
 + (nullable NSString *)loadUserId {
