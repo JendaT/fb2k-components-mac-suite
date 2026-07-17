@@ -61,6 +61,23 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation -framework CoreGraphics \
     -o "$TEST_BUILD_DIR/fetch_state_tests"
 
+echo "==> Compiling unit tests (MusicBrainzParsing)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/MusicBrainzParsingTests.mm" \
+    "$PROJECT_DIR/src/Core/MusicBrainzParsing.mm" \
+    "$PROJECT_DIR/src/Core/ArtistNameMatcher.mm" \
+    "$PROJECT_DIR/src/Core/GalleryImageParsing.mm" \
+    "$PROJECT_DIR/src/Core/ArtistImage.mm" \
+    -framework Foundation -framework CoreGraphics \
+    -o "$TEST_BUILD_DIR/musicbrainz_parsing_tests"
+
+echo "==> Compiling unit tests (WikipediaParsing)..."
+clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
+    "$PROJECT_DIR/Tests/WikipediaParsingTests.mm" \
+    "$PROJECT_DIR/src/Core/WikipediaParsing.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/wikipedia_parsing_tests"
+
 echo "==> Compiling unit tests (GalleryCacheKeys)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/GalleryCacheKeysTests.mm" \
@@ -75,4 +92,6 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/gallery_data_tests"
 "$TEST_BUILD_DIR/rate_limiter_tests"
 "$TEST_BUILD_DIR/fetch_state_tests"
+"$TEST_BUILD_DIR/musicbrainz_parsing_tests"
+"$TEST_BUILD_DIR/wikipedia_parsing_tests"
 "$TEST_BUILD_DIR/cache_keys_tests"

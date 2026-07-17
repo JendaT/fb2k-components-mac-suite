@@ -26,8 +26,8 @@
 #define ALBUMART_VERSION_INT 102
 
 // Artist Biography
-#define BIOGRAPHY_VERSION "1.0.0"
-#define BIOGRAPHY_VERSION_INT 100
+#define BIOGRAPHY_VERSION "1.1.0"
+#define BIOGRAPHY_VERSION_INT 110
 
 // Queue Manager
 #define QUEUE_MANAGER_VERSION "1.1.2"

@@ -460,6 +460,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Biography
 
+### [1.1.0] - 2026-07-17
+
+#### Added
+- Artist image gallery (Fanart.tv, TheAudioDB, Deezer) with full-screen lightbox viewer
+- MusicBrainz MBID lookup when Last.fm returns none (unlocks Fanart.tv coverage)
+- Wikipedia biography fallback resolved via MusicBrainz -> Wikidata -> Wikipedia
+- Dual-layer artist image cache with request coalescing
+
+#### Changed
+- Testable-core refactor (SimPlaylist pattern): SDK-free Core logic with 9 unit test suites gating the build
+
+#### Fixed
+- Data race in the gallery coordinator's multi-source completion tracking
+- Fanart.tv client crash on malformed MusicBrainz IDs
+
 ### [1.0.0] - 2025-12-30
 
 #### Added

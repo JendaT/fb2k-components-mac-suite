@@ -48,7 +48,7 @@ static const NSTimeInterval kImageDownloadTimeout = 60.0;
 
 #pragma mark - User Agent
 
-static NSString * const kBiographyUserAgent = @"foo_jl_biography/1.0.0 (foobar2000 macOS component; contact@example.com)";
+static NSString * const kBiographyUserAgent = @"foo_jl_biography/1.1.0 (foobar2000 macOS component; https://github.com/JendaT/fb2k-components-mac-suite)";
 
 #pragma mark - Cache TTL (seconds)
 

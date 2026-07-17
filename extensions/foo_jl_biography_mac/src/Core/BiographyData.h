@@ -118,6 +118,10 @@ typedef NS_ENUM(NSInteger, BiographyImageType) {
 @property (nonatomic, assign) BOOL isStale;
 
 - (instancetype)initWithArtistName:(NSString *)artistName;
+
+/// Start from an existing immutable data object (for enrichment passes)
+- (instancetype)initWithData:(BiographyData *)data;
+
 - (BiographyData *)build;
 
 @end

@@ -49,6 +49,7 @@ Apply this pattern when adding logic to any component.
 |-----------|--------------|-------|
 | SimPlaylist | PlaylistLayoutModel, PlaylistSelectionModel, ReorderPlanner, SubgroupDetector, GroupBuilder | ~108k checks |
 | Scrobbler | PlaybackTracker, ScrobbleRules, LastFmRequestBuilder, LastFmResponseParser, ScrobblePolicy, ScrobbleQueueModel, RateLimiter, StreakValidity, StreakWalker, WidgetLayoutMath | ~430 checks |
+| Biography | LastFmParsing, ArtistNameMatcher, GalleryImageParsing, GalleryFetchState (thread-safe accumulator with once-guard), GalleryCacheKeys, MusicBrainzParsing, WikipediaParsing, clock-injectable RateLimiter | see Tests/ |
 
 The Scrobbler widget also demonstrates the compute-then-draw inversion:
 `computeGeometry` builds every interactive rect (header pills, item
