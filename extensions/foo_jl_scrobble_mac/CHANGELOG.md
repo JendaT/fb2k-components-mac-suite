@@ -5,10 +5,12 @@ All notable changes to foo_jl_scrobble (Last.fm Scrobbler) will be documented in
 ## [Unreleased]
 
 ### Changed
-- Core logic extracted into pure, host-independent modules covered by a unit-test suite (~340 checks) that now gates every build, mirroring the SimPlaylist testable architecture: playback-to-scrobble state machine (PlaybackTracker), Last.fm request signing/parameter assembly (LastFmRequestBuilder), per-endpoint JSON parsing (LastFmResponseParser), submission error policy and backoff (ScrobblePolicy), queue/duplicate detection (ScrobbleQueueModel), streak cache validity (StreakValidity), and widget layout geometry (WidgetLayoutMath). No functional change intended.
+- Core logic extracted into pure, host-independent modules covered by a unit-test suite (~430 checks) that now gates every build, mirroring the SimPlaylist testable architecture: playback-to-scrobble state machine (PlaybackTracker), Last.fm request signing/parameter assembly (LastFmRequestBuilder), per-endpoint JSON parsing (LastFmResponseParser), submission error policy and backoff (ScrobblePolicy), queue/duplicate detection (ScrobbleQueueModel), streak cache validity (StreakValidity), streak discovery walk (StreakWalker), and widget layout geometry (WidgetLayoutMath). No functional change intended.
+- Widget layout is now computed in a dedicated geometry pass consumed by both drawing and mouse hit-testing; previously rects were a side effect of drawing (style switches even forced a synchronous draw just to obtain them)
 
 ### Fixed
 - Latent double-queue of an already-scrobbled track on playback stop (previously masked by cache duplicate detection)
+- Streak inflated by one day when the user had not scrobbled today (yesterday was checked and counted twice during discovery)
 
 ### Technical
 - Tests compile standalone with clang (no Xcode target) via Scripts/run_tests.sh; build.sh aborts if any test fails

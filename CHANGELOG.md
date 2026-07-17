@@ -319,10 +319,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Changed
-- Core logic extracted into pure, unit-tested modules gating every build (playback state machine, Last.fm signing/parsing, error policy, queue/dedup, streak validity, widget layout math). No functional change intended.
+- Core logic extracted into pure, unit-tested modules gating every build (playback state machine, Last.fm signing/parsing, error policy, queue/dedup, streak validity, streak discovery walk, widget layout math). No functional change intended.
+- Widget layout computed in a geometry pass shared by drawing and hit-testing (was a side effect of drawing)
 
 #### Fixed
 - Latent double-queue of an already-scrobbled track on playback stop
+- Streak inflated by one day when the user had not scrobbled today
 
 ### [1.4.0] - 2026-05-17
 

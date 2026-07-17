@@ -48,7 +48,11 @@ Apply this pattern when adding logic to any component.
 | Component | Pure modules | Tests |
 |-----------|--------------|-------|
 | SimPlaylist | PlaylistLayoutModel, PlaylistSelectionModel, ReorderPlanner, SubgroupDetector, GroupBuilder | ~108k checks |
-| Scrobbler | PlaybackTracker, ScrobbleRules, LastFmRequestBuilder, LastFmResponseParser, ScrobblePolicy, ScrobbleQueueModel, RateLimiter, StreakValidity, WidgetLayoutMath | ~340 checks |
+| Scrobbler | PlaybackTracker, ScrobbleRules, LastFmRequestBuilder, LastFmResponseParser, ScrobblePolicy, ScrobbleQueueModel, RateLimiter, StreakValidity, StreakWalker, WidgetLayoutMath | ~430 checks |
 
-Known gap in the Scrobbler: widget hit-testing still reads `_*Rect` ivars
-populated during drawing (see BACKLOG "compute-then-draw inversion").
+The Scrobbler widget also demonstrates the compute-then-draw inversion:
+`computeGeometry` builds every interactive rect (header pills, item
+tiles, content/scroll metrics) via `WidgetLayout::headerGeometry` /
+`contentGeometry` before any drawing, and both `drawRect:` and mouse
+hit-testing consume the same stored rects. Rects must never be produced
+as a side effect of drawing.
