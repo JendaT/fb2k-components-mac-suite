@@ -33,6 +33,11 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/model_parsing_tests"
 
+echo "==> Compiling unit tests (StreakWalker)..."
+clang++ -std=c++17 -O1 -Wall \
+    "$PROJECT_DIR/Tests/StreakWalkerTests.cpp" \
+    -o "$TEST_BUILD_DIR/streak_walker_tests"
+
 echo "==> Compiling unit tests (Queue + Streak)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/QueueAndStreakTests.mm" \
@@ -67,6 +72,7 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/scrobble_rules_tests"
 "$TEST_BUILD_DIR/playback_tracker_tests"
+"$TEST_BUILD_DIR/streak_walker_tests"
 "$TEST_BUILD_DIR/model_parsing_tests"
 "$TEST_BUILD_DIR/queue_streak_tests"
 "$TEST_BUILD_DIR/widget_layout_tests"

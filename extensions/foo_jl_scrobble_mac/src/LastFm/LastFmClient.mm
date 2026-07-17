@@ -14,9 +14,13 @@
 #import "../Core/TopAlbum.h"
 #import "../Core/RecentTrack.h"
 #import "../Core/ScrobbleConfig.h"
+#import "../Core/StreakWalker.h"
 
-// Discovery state implementation
-@implementation LastFmStreakDiscoveryState
+// Discovery state implementation; the pure walk lives in the walker
+@implementation LastFmStreakDiscoveryState {
+@public
+    scrobble::StreakWalker walker;
+}
 @end
 
 @interface LastFmClient ()
@@ -754,13 +758,8 @@
     state.username = username;
     state.token = token;
     state.cancelled = NO;
-    state.currentStreak = 0;
-    state.daysChecked = 0;
-    state.scrobbledToday = NO;
     state.useBatchStrategy = YES;  // Will be determined after sampling
     state.estimatedDailyRate = 0;
-    state.retryCount = 0;
-    state.currentBackoff = 0;
     state.progressBlock = progress;
     state.completionBlock = completion;
 
@@ -791,17 +790,12 @@
                 return;
             }
 
-            state.scrobbledToday = hasScrobbles;
-
             // If scrobbled today, streak includes today. Otherwise we start from yesterday.
-            if (hasScrobbles) {
-                state.currentStreak = 1;
-                state.daysChecked = 1;
-            }
+            state->walker.begin(hasScrobbles);
 
             // Report initial progress
             if (state.progressBlock) {
-                state.progressBlock(state.currentStreak, NO, state.daysChecked);
+                state.progressBlock(state->walker.currentStreak(), NO, state->walker.daysChecked());
             }
 
             // Schedule first discovery request with rate limiting
@@ -838,7 +832,8 @@
                                            userInfo:@{NSLocalizedDescriptionKey: @"Streak discovery cancelled"}];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        completion(state.currentStreak, state.scrobbledToday, NO, [NSDate date], cancelError);
+        completion(state->walker.currentStreak(), state->walker.scrobbledToday(),
+                   NO, [NSDate date], cancelError);
     });
 }
 
@@ -867,15 +862,13 @@
         return;
     }
 
-    // Calculate which day to check next
+    // The walker decides which day to check; this method only does I/O
     NSCalendar *calendar = [NSCalendar currentCalendar];
     NSDate *today = [NSDate date];
-    NSInteger daysBack = state.daysChecked;
-    if (!state.scrobbledToday && state.daysChecked == 0) {
-        daysBack = 1;
-    }
-
-    NSDate *dayToCheck = [calendar dateByAddingUnit:NSCalendarUnitDay value:-daysBack toDate:today options:0];
+    NSDate *dayToCheck = [calendar dateByAddingUnit:NSCalendarUnitDay
+                                              value:-(NSInteger)state->walker.daysBack()
+                                             toDate:today
+                                            options:0];
 
     [self checkDayHasScrobbles:state.username date:dayToCheck completion:^(BOOL hasScrobbles, NSError* error) {
         if (state.cancelled) {
@@ -884,43 +877,41 @@
         }
 
         if (error) {
-            // Handle error with retry logic
-            state.retryCount++;
-            if (state.retryCount >= 3) {
-                // Max retries reached - complete with partial results
-                [self completeStreakDiscovery:state complete:NO error:error];
+            switch (state->walker.onDayError()) {
+                case scrobble::StreakWalker::Action::Exhausted:
+                    // Max retries reached - complete with partial results
+                    [self completeStreakDiscovery:state complete:NO error:error];
+                    return;
+
+                default: {
+                    // Retry same day with exponential backoff (2s, 4s)
+                    NSTimeInterval backoff = state->walker.retryDelay();
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(backoff * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        [self continueStreakDiscovery:state];
+                    });
+                    return;
+                }
+            }
+        }
+
+        switch (state->walker.onDayResult(hasScrobbles)) {
+            case scrobble::StreakWalker::Action::CheckDay: {
+                // Day had scrobbles - streak extended, keep walking
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (state.progressBlock) {
+                        state.progressBlock(state->walker.currentStreak(), NO,
+                                            state->walker.daysChecked());
+                    }
+                });
+                [self scheduleNextRequest:state];
                 return;
             }
 
-            // Exponential backoff: 2s, 4s, 8s
-            NSTimeInterval backoff = pow(2, state.retryCount);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(backoff * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [self continueStreakDiscovery:state];  // Retry same day
-            });
-            return;
-        }
-
-        // Reset retry count on success
-        state.retryCount = 0;
-        state.daysChecked++;
-
-        if (hasScrobbles) {
-            // Day had scrobbles - extend streak
-            state.currentStreak++;
-
-            // Report progress
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (state.progressBlock) {
-                    state.progressBlock(state.currentStreak, NO, state.daysChecked);
-                }
-            });
-
-            // Continue checking older days
-            [self scheduleNextRequest:state];
-        } else {
-            // Gap found - streak is complete
-            [self completeStreakDiscovery:state complete:YES error:nil];
+            default:
+                // Gap found - streak is complete
+                [self completeStreakDiscovery:state complete:YES error:nil];
+                return;
         }
     }];
 }
@@ -936,12 +927,13 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         // Final progress callback
         if (state.progressBlock) {
-            state.progressBlock(state.currentStreak, YES, state.daysChecked);
+            state.progressBlock(state->walker.currentStreak(), YES, state->walker.daysChecked());
         }
 
         // Completion callback
         if (state.completionBlock) {
-            state.completionBlock(state.currentStreak, state.scrobbledToday, isComplete, calculatedAt, error);
+            state.completionBlock(state->walker.currentStreak(), state->walker.scrobbledToday(),
+                                  isComplete, calculatedAt, error);
         }
     });
 }
