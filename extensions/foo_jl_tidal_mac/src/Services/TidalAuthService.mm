@@ -7,6 +7,7 @@
 
 #import "TidalAuthService.h"
 #import "../API/TidalAPI.h"
+#import "../API/TidalAPIPrivate.h"
 #import "../API/TidalConstants.h"
 #import "../Core/TidalErrors.h"
 #import "../Core/TidalConfig.h"
@@ -17,7 +18,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
 @interface JLTidalAuthService ()
 @property (nonatomic, readwrite) JLTidalAuthState state;
-@property (nonatomic, strong, readwrite, nullable) JLTidalSession *session;
+@property (atomic, strong, readwrite, nullable) JLTidalSession *session;
 @property (nonatomic, copy, readwrite, nullable) NSString *userCode;
 @property (nonatomic, copy, readwrite, nullable) NSURL *verificationURL;
 @property (nonatomic, copy, readwrite, nullable) NSString *errorMessage;
@@ -29,10 +30,17 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 @property (nonatomic, strong, nullable) NSTimer *refreshTimer;
 @property (nonatomic, copy, nullable) NSString *pendingDeviceCode;
 @property (nonatomic, copy, nullable) JLTidalAuthCompletion pendingCompletion;
-@property (nonatomic, assign) BOOL isRefreshing;
 @end
 
-@implementation JLTidalAuthService
+@implementation JLTidalAuthService {
+    // Single-flight refresh state. All three fields are guarded by
+    // @synchronized(self); never touch them outside that lock.
+    BOOL _isRefreshing;
+    NSMutableArray<void (^)(BOOL)> *_pendingRefreshCompletions;
+    // Bumped by signOut to invalidate an in-flight refresh so its result
+    // cannot resurrect a session after sign-out.
+    NSUInteger _refreshGeneration;
+}
 
 #pragma mark - Singleton
 
@@ -50,6 +58,19 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     if (self) {
         _state = JLTidalAuthStateIdle;
         _isRefreshing = NO;
+        _pendingRefreshCompletions = [NSMutableArray array];
+
+        // The API layer must not depend on Services, so it delegates token
+        // refresh through this handler instead of calling us directly.
+        __weak typeof(self) weakSelf = self;
+        [JLTidalAPI shared].tokenRefreshHandler = ^(void (^completion)(BOOL success)) {
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) {
+                completion(NO);
+                return;
+            }
+            [strongSelf refreshTokenIfNeededWithCompletion:completion];
+        };
     }
     return self;
 }
@@ -57,7 +78,8 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 #pragma mark - Properties
 
 - (BOOL)isAuthenticated {
-    return _state == JLTidalAuthStateAuthenticated && _session != nil && _session.isValid;
+    JLTidalSession *session = self.session;
+    return _state == JLTidalAuthStateAuthenticated && session != nil && session.isValid;
 }
 
 - (void)setState:(JLTidalAuthState)state {
@@ -93,18 +115,19 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
         NSTimeInterval expiresIn = expiry ? [expiry timeIntervalSinceNow] : 0;
         if (expiresIn < 0) expiresIn = 0;
 
-        _session = [[JLTidalSession alloc] initWithAccessToken:accessToken
-                                                  refreshToken:refreshToken
-                                                     expiresIn:expiresIn
-                                                        userId:userId
-                                                      username:username
-                                                   countryCode:countryCode];
-        [JLTidalAPI shared].session = _session;
+        JLTidalSession *session = [[JLTidalSession alloc] initWithAccessToken:accessToken
+                                                                 refreshToken:refreshToken
+                                                                    expiresIn:expiresIn
+                                                                       userId:userId
+                                                                     username:username
+                                                                  countryCode:countryCode];
+        self.session = session;
+        [[JLTidalAPI shared] updateSession:session];
 
         tidal::logDebug([[NSString stringWithFormat:@"Loaded session: userId=%@, countryCode=%@",
                          userId ?: @"(nil)", countryCode ?: @"(nil)"] UTF8String]);
 
-        if (_session.needsRefresh) {
+        if (session.needsRefresh) {
             // Token expired or expiring soon - refresh it
             tidal::logDebug("Stored token needs refresh");
             [self refreshTokenIfNeededWithCompletion:^(BOOL success) {
@@ -145,10 +168,11 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 - (void)scheduleProactiveRefresh {
     [self cancelRefreshTimer];
 
-    if (!_session || !_session.refreshToken.length) return;
+    JLTidalSession *session = self.session;
+    if (!session.refreshToken.length) return;
 
     // Schedule refresh kTidalTokenRefreshBuffer seconds before expiry
-    NSTimeInterval delay = [_session.expiryDate timeIntervalSinceNow] - kTidalTokenRefreshBuffer;
+    NSTimeInterval delay = [session.expiryDate timeIntervalSinceNow] - kTidalTokenRefreshBuffer;
     if (delay < 60) delay = 60; // At least 60s from now
 
     __weak typeof(self) weakSelf = self;
@@ -277,8 +301,8 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 - (void)handleAuthSuccess:(JLTidalSession *)session {
     [self stopTimers];
 
-    _session = session;
-    [JLTidalAPI shared].session = session;
+    self.session = session;
+    [[JLTidalAPI shared] updateSession:session];
     [self storeSession:session];
 
     self.state = JLTidalAuthStateAuthenticated;
@@ -363,8 +387,20 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     [self cancelRefreshTimer];
     [self clearStoredSession];
 
-    _session = nil;
-    [JLTidalAPI shared].session = nil;
+    // Invalidate any in-flight refresh: bumping the generation makes its
+    // eventual result stale (discarded), so a refreshed session cannot
+    // resurrect after sign-out. Its waiters are failed here, after the
+    // session is cleared, so they observe the signed-out state.
+    NSArray<void (^)(BOOL)> *waiters;
+    @synchronized (self) {
+        _refreshGeneration++;
+        _isRefreshing = NO;
+        waiters = [_pendingRefreshCompletions copy];
+        [_pendingRefreshCompletions removeAllObjects];
+    }
+
+    self.session = nil;
+    [[JLTidalAPI shared] updateSession:nil];
     _pendingDeviceCode = nil;
     _pendingCompletion = nil;
     self.errorMessage = nil;
@@ -372,81 +408,112 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     self.verificationURL = nil;
     self.state = JLTidalAuthStateIdle;
 
+    for (void (^waiter)(BOOL) in waiters) {
+        waiter(NO);
+    }
+
     tidal::logInfo("Signed out");
 }
 
 #pragma mark - Token Refresh
 
 - (void)refreshTokenIfNeededWithCompletion:(void(^)(BOOL success))completion {
-    if (!_session.refreshToken) {
+    JLTidalSession *session = self.session;
+    if (!session.refreshToken) {
         tidal::logInfo("refreshToken: no refresh token available");
         if (completion) completion(NO);
         return;
     }
 
-    if (!_session.needsRefresh) {
+    if (!session.needsRefresh) {
         if (completion) completion(YES);
         return;
     }
 
-    @synchronized(self) {
+    // Single-flight: the first caller starts the refresh; concurrent callers
+    // just enqueue their completion and are drained with the real result.
+    NSUInteger generation;
+    @synchronized (self) {
+        if (completion) {
+            [_pendingRefreshCompletions addObject:[completion copy]];
+        }
         if (_isRefreshing) {
-            tidal::logInfo("refreshToken: already refreshing, will wait 1s then return current session validity");
-            // Already refreshing - wait and check again
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                if (completion) completion(self.session.isValid);
-            });
+            tidal::logInfo("refreshToken: refresh already in flight, waiting for its result");
             return;
         }
         _isRefreshing = YES;
+        generation = _refreshGeneration;
     }
     tidal::logInfo("refreshToken: starting refresh");
 
-    [[JLTidalAPI shared] refreshTokenWithCompletion:^(JLTidalSession *session, NSError *error) {
-        self.isRefreshing = NO;
-        self.lastRefreshAttempt = [NSDate date];
-
-        if (session) {
-            self.session = session;
-            [JLTidalAPI shared].session = session;
-            [self storeSession:session];
-            [self scheduleProactiveRefresh];
-            self.lastRefreshError = nil;
-            tidal::logInfo([[NSString stringWithFormat:@"refreshToken: success, new expiry in %.0fs",
-                             [session.expiryDate timeIntervalSinceNow]] UTF8String]);
-            if (completion) completion(YES);
-        } else {
-            self.lastRefreshError = error.localizedDescription ?: @"unknown error";
-            tidal::logError([[NSString stringWithFormat:@"refreshToken: failed - %@", error.localizedDescription] UTF8String]);
-            // Don't signOut here - let the caller decide how to handle the failure.
-            // Signing out aggressively wipes the refresh token before reconnect
-            // fallback can start, and prevents manual retry.
-            if (completion) completion(NO);
-        }
+    [[JLTidalAPI shared] refreshTokenWithCompletion:^(JLTidalSession *newSession, NSError *error) {
+        [self finishRefreshWithSession:newSession error:error generation:generation];
     }];
+}
+
+- (void)finishRefreshWithSession:(JLTidalSession *)newSession
+                           error:(NSError *)error
+                      generation:(NSUInteger)generation {
+    NSArray<void (^)(BOOL)> *waiters = nil;
+    @synchronized (self) {
+        if (generation != _refreshGeneration) {
+            // signOut ran while this refresh was in flight: it already failed
+            // the waiters and cleared the session. Discard the result so a
+            // refreshed session cannot resurrect after sign-out.
+            tidal::logInfo("refreshToken: result discarded (signed out during refresh)");
+            return;
+        }
+        _isRefreshing = NO;
+        waiters = [_pendingRefreshCompletions copy];
+        [_pendingRefreshCompletions removeAllObjects];
+    }
+
+    self.lastRefreshAttempt = [NSDate date];
+
+    BOOL success = (newSession != nil);
+    if (newSession) {
+        self.session = newSession;
+        // AuthService is the sole writer of the API session.
+        [[JLTidalAPI shared] updateSession:newSession];
+        [self storeSession:newSession];
+        [self scheduleProactiveRefresh];
+        self.lastRefreshError = nil;
+        tidal::logInfo([[NSString stringWithFormat:@"refreshToken: success, new expiry in %.0fs",
+                         [newSession.expiryDate timeIntervalSinceNow]] UTF8String]);
+    } else {
+        self.lastRefreshError = error.localizedDescription ?: @"unknown error";
+        tidal::logError([[NSString stringWithFormat:@"refreshToken: failed - %@", error.localizedDescription] UTF8String]);
+        // Don't signOut here - let the caller decide how to handle the failure.
+        // Signing out aggressively wipes the refresh token before reconnect
+        // fallback can start, and prevents manual retry.
+    }
+
+    for (void (^waiter)(BOOL) in waiters) {
+        waiter(success);
+    }
 }
 
 - (void)ensureValidTokenWithCompletion:(void(^)(NSError *error))completion {
     // Check if we have a session at all
-    if (_state != JLTidalAuthStateAuthenticated || !_session) {
+    JLTidalSession *session = self.session;
+    if (_state != JLTidalAuthStateAuthenticated || !session) {
         tidal::logError([[NSString stringWithFormat:@"ensureValidToken: not authenticated (state=%ld, session=%@) — playback will fail",
                          (long)_state,
-                         _session ? @"yes" : @"no"] UTF8String]);
+                         session ? @"yes" : @"no"] UTF8String]);
         completion(JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
         return;
     }
 
     // If token is valid and doesn't need refresh, we're good
-    if (_session.isValid && !_session.needsRefresh) {
+    if (session.isValid && !session.needsRefresh) {
         completion(nil);
         return;
     }
 
     // Token is expired or expiring - try to refresh
-    if (_session.refreshToken.length > 0) {
+    if (session.refreshToken.length > 0) {
         tidal::logInfo([[NSString stringWithFormat:@"ensureValidToken: token expired/expiring (valid=%d, needsRefresh=%d), refreshing on-demand",
-                         _session.isValid, _session.needsRefresh] UTF8String]);
+                         session.isValid, session.needsRefresh] UTF8String]);
         [self refreshTokenIfNeededWithCompletion:^(BOOL success) {
             if (success) {
                 completion(nil);

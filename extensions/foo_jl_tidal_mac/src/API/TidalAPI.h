@@ -54,8 +54,15 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 /// Shared API client instance
 + (instancetype)shared;
 
-/// Current session (set after successful authentication)
-@property (nonatomic, strong, nullable) JLTidalSession *session;
+/// Current session. Readonly: JLTidalAuthService is the sole writer
+/// (via -updateSession: in TidalAPIPrivate.h).
+@property (atomic, strong, readonly, nullable) JLTidalSession *session;
+
+/// Installed once by JLTidalAuthService. Invoked when a request needs a
+/// token refresh (expired-session pre-check, 401 retry). Keeps the API
+/// layer free of any dependency on the Services layer. The completion
+/// must always be called exactly once.
+@property (atomic, copy, nullable) void (^tokenRefreshHandler)(void (^completion)(BOOL success));
 
 #pragma mark - OAuth Device Authorization
 

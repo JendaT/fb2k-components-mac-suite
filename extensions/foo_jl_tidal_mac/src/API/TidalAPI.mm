@@ -6,6 +6,7 @@
 //
 
 #import "TidalAPI.h"
+#import "TidalAPIPrivate.h"
 #import "RateLimiter.h"
 #import "../Core/TidalErrors.h"
 #import "../Core/TidalConfig.h"
@@ -13,7 +14,6 @@
 #import "../Core/HTTPResponsePolicy.h"
 #import "../Core/PaginationPolicy.h"
 #import "../Core/ResponseParser.h"
-#import "../Services/TidalAuthService.h"
 
 #pragma mark - Pagination
 
@@ -107,6 +107,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
 @interface JLTidalAPI ()
 @property (nonatomic, strong) NSURLSession *urlSession;
+@property (atomic, strong, readwrite, nullable) JLTidalSession *session;
 @end
 
 @implementation JLTidalAPI
@@ -318,7 +319,9 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 }
 
 - (void)refreshTokenWithCompletion:(JLTidalSessionCompletion)completion {
-    if (!self.session.refreshToken) {
+    // Snapshot: the session may be swapped by AuthService mid-request.
+    JLTidalSession *currentSession = self.session;
+    if (!currentSession.refreshToken) {
         completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"No refresh token available"));
         return;
     }
@@ -332,7 +335,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
     request.HTTPBody = JLTidalOAuthFormBody(@[@"client_id", kTidalClientID,
                                               @"client_secret", kTidalClientSecret,
-                                              @"refresh_token", self.session.refreshToken,
+                                              @"refresh_token", currentSession.refreshToken,
                                               @"grant_type", @"refresh_token",
                                               @"scope", kTidalOAuthScopes]);
 
@@ -376,12 +379,13 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
         // Parse refreshed token (handles refresh-token rotation)
         JLTidalSession *newSession = [JLTidalResponseParser sessionFromRefreshResponse:json
-                                                                        currentSession:self.session];
+                                                                        currentSession:currentSession];
         if (!newSession) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Missing access token"));
             return;
         }
-        self.session = newSession;
+        // Transport only: the new session is handed to the completion.
+        // AuthService persists it and pushes it back via -updateSession:.
         [[JLTidalRateLimiter shared] recordSuccess];
         tidal::logDebug([[NSString stringWithFormat:@"Token refreshed, expires in %.0fs",
                           [newSession.expiryDate timeIntervalSinceNow]] UTF8String]);
@@ -957,14 +961,15 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
     NSURL *url = [NSURL URLWithString:urlStr];
 
     // We need the raw response headers, so do a manual request
-    if (!self.session.isValid) {
+    JLTidalSession *session = self.session;
+    if (!session.isValid) {
         completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
         return;
     }
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"GET";
-    [request setValue:[NSString stringWithFormat:@"Bearer %@", self.session.accessToken]
+    [request setValue:[NSString stringWithFormat:@"Bearer %@", session.accessToken]
    forHTTPHeaderField:@"Authorization"];
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
@@ -1082,18 +1087,22 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                       headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
                       isRetry:(BOOL)isRetry
                    completion:(JLTidalDataCompletion)completion {
-    if (!self.session.isValid) {
+    // Snapshot: the session may be swapped by AuthService mid-request;
+    // token and countryCode must come from the same session object.
+    JLTidalSession *session = self.session;
+    if (!session.isValid) {
         // Token expired - try refresh before giving up (unless already retrying)
-        if (!isRetry && self.session.refreshToken.length > 0) {
+        void (^refreshHandler)(void (^)(BOOL)) = self.tokenRefreshHandler;
+        if (!isRetry && session.refreshToken.length > 0 && refreshHandler) {
             tidal::logDebug("Session expired, attempting token refresh before request");
-            [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+            refreshHandler(^(BOOL success) {
                 if (success) {
                     [self performRequestWithURL:url method:method body:body
                                        headers:extraHeaders isRetry:YES completion:completion];
                 } else {
                     completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
                 }
-            }];
+            });
             return;
         }
         completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
@@ -1103,11 +1112,11 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
     // Log host + path only — query strings can carry signed-URL tokens.
     tidal::logDebug([[NSString stringWithFormat:@"API request: %@ %@%@ (countryCode=%@)",
                       method, url.host ?: @"?", url.path ?: @"",
-                      self.session.countryCode ?: @"(nil)"] UTF8String]);
+                      session.countryCode ?: @"(nil)"] UTF8String]);
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = method;
-    [request setValue:[NSString stringWithFormat:@"Bearer %@", self.session.accessToken]
+    [request setValue:[NSString stringWithFormat:@"Bearer %@", session.accessToken]
    forHTTPHeaderField:@"Authorization"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
 
@@ -1116,7 +1125,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         [request setValue:extraHeaders[key] forHTTPHeaderField:key];
     }
 
-    if (self.session.countryCode) {
+    if (session.countryCode) {
         // Add country code as query parameter if not already present
         NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
         NSMutableArray *queryItems = [components.queryItems mutableCopy] ?: [NSMutableArray array];
@@ -1128,7 +1137,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
             }
         }
         if (!hasCountry) {
-            [queryItems addObject:[NSURLQueryItem queryItemWithName:@"countryCode" value:self.session.countryCode]];
+            [queryItems addObject:[NSURLQueryItem queryItemWithName:@"countryCode" value:session.countryCode]];
             components.queryItems = queryItems;
             request.URL = components.URL;
         }
@@ -1179,15 +1188,20 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         }
 
         if (decision.action == JLTidalHTTPActionRetryAuth) {
+            void (^refreshHandler)(void (^)(BOOL)) = self.tokenRefreshHandler;
+            if (!refreshHandler) {
+                completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+                return;
+            }
             tidal::logDebug("Got 401, attempting token refresh and retry");
-            [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+            refreshHandler(^(BOOL success) {
                 if (success) {
                     [self performRequestWithURL:url method:method body:body
                                        headers:extraHeaders isRetry:YES completion:completion];
                 } else {
                     completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
                 }
-            }];
+            });
             return;
         }
 
@@ -1216,6 +1230,14 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
     }];
 
     [task resume];
+}
+
+@end
+
+@implementation JLTidalAPI (SessionOwner)
+
+- (void)updateSession:(JLTidalSession *)session {
+    self.session = session;
 }
 
 @end

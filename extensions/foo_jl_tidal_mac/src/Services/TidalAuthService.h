@@ -37,8 +37,9 @@ typedef void (^JLTidalAuthCompletion)(BOOL success, NSError * _Nullable error);
 /// Current authentication state
 @property (nonatomic, readonly) JLTidalAuthState state;
 
-/// Current session (nil if not authenticated)
-@property (nonatomic, strong, readonly, nullable) JLTidalSession *session;
+/// Current session (nil if not authenticated). Atomic: read from network
+/// callback threads while written on refresh.
+@property (atomic, strong, readonly, nullable) JLTidalSession *session;
 
 /// User code to display during authentication
 @property (nonatomic, copy, readonly, nullable) NSString *userCode;
