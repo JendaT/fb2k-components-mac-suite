@@ -250,15 +250,14 @@
 #pragma mark - Cell Editing
 
 - (void)textFieldChanged:(NSTextField *)sender {
-    // Find the row from the cell view
-    NSTableCellView *cellView = (NSTableCellView *)sender.superview;
-    if (![cellView isKindOfClass:[NSTableCellView class]]) return;
-
-    NSInteger row = [cellView.objectValue integerValue];
+    // Resolve row/column at action time; the objectValue snapshot taken at
+    // cell creation goes stale when rows are added or removed, and
+    // columnForView: returns -1 for a detached view.
+    NSInteger row = [_tableView rowForView:sender];
     if (row < 0 || row >= (NSInteger)_columns.count) return;
 
-    // Determine which column based on the cell identifier
-    NSInteger column = [_tableView columnForView:cellView];
+    NSInteger column = [_tableView columnForView:sender];
+    if (column < 0) return;
     NSTableColumn *tableColumn = _tableView.tableColumns[column];
 
     if ([tableColumn.identifier isEqualToString:@"name"]) {
@@ -274,10 +273,8 @@
 }
 
 - (void)alignmentChanged:(NSPopUpButton *)sender {
-    NSTableCellView *cellView = (NSTableCellView *)sender.superview;
-    if (![cellView isKindOfClass:[NSTableCellView class]]) return;
-
-    NSInteger row = [cellView.objectValue integerValue];
+    // Same stale-identity concern as textFieldChanged: above.
+    NSInteger row = [_tableView rowForView:sender];
     if (row < 0 || row >= (NSInteger)_columns.count) return;
 
     _columns[row].alignment = (ColumnAlignment)sender.indexOfSelectedItem;

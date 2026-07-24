@@ -7,6 +7,7 @@
 
 #pragma once
 #include "../fb2k_sdk.h"
+#include <exception>
 #include <string>
 
 namespace simplaylist_config {
@@ -20,22 +21,18 @@ static const char* const kActivePresetIndex = "active_preset_index";
 
 // Column configuration keys
 static const char* const kColumns = "columns";
-static const char* const kColumnOrder = "column_order";
 static const char* const kCustomColumns = "custom_columns";  // User-defined column templates
 
 // Appearance keys
-static const char* const kRowHeight = "row_height";
-static const char* const kHeaderHeight = "header_height";
 static const char* const kSubgroupHeight = "subgroup_height";
 static const char* const kGroupColumnWidth = "group_column_width";
 static const char* const kAlbumArtSize = "album_art_size";
-static const char* const kShowRowNumbers = "show_row_numbers";
 
 // Behavior keys
-static const char* const kSmoothScrolling = "smooth_scrolling";
 static const char* const kNowPlayingShading = "now_playing_shading";
 
-// Header display style: 0 = above tracks (current), 1 = album art aligned, 2 = inline (no header row)
+// Header display style: 0 = above tracks, 1 = album art aligned,
+// 2 = inline (no header row), 3 = under album art (no header row)
 static const char* const kHeaderDisplayStyle = "header_display_style";
 
 // Show first subgroup header (e.g., "Disc 1" even when there's only one disc)
@@ -59,7 +56,8 @@ static const char* const kHeaderAccentColor = "header_accent_color";
 // Glass (transparent) background - allows content behind to show through
 static const char* const kGlassBackground = "glass_background";
 
-// Group header spacing: 0 = normal (4px symmetrical), 1 = larger (7px symmetrical)
+// Group header spacing: 0 = compact, 1 = normal, 2 = larger
+// (matches kDefaultGroupHeaderSpacing below and the preferences popup)
 static const char* const kGroupHeaderSpacing = "group_header_spacing";
 
 // Debug rendering: show diagnostic text on rendering anomalies
@@ -90,12 +88,9 @@ static const char* const kFinderOpenTargetPlaylist = "finder_open_target_playlis
 
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
-static const int64_t kDefaultHeaderHeight = 28;
 static const int64_t kDefaultSubgroupHeight = 24;
 static const int64_t kDefaultGroupColumnWidth = 80;  // Album art column width
 static const int64_t kDefaultAlbumArtSize = 64;      // Album art size in pixels
-static const bool kDefaultShowRowNumbers = false;
-static const bool kDefaultSmoothScrolling = true;
 static const bool kDefaultNowPlayingShading = true;
 static const int64_t kDefaultHeaderDisplayStyle = 0;  // 0 = above tracks
 static const bool kDefaultShowFirstSubgroupHeader = true;  // Show "Disc 1" etc.
@@ -126,6 +121,8 @@ inline int64_t getConfigInt(const char* key, int64_t defaultValue) {
         if (store.is_valid()) {
             return store->getConfigInt(getFullKey(key).c_str(), defaultValue);
         }
+    } catch (const std::exception& e) {
+        FB2K_console_formatter() << "[SimPlaylist] Config read error for key: " << key << ": " << e.what();
     } catch (...) {
         FB2K_console_formatter() << "[SimPlaylist] Config read error for key: " << key;
     }
@@ -138,6 +135,8 @@ inline void setConfigInt(const char* key, int64_t value) {
         if (store.is_valid()) {
             store->setConfigInt(getFullKey(key).c_str(), value);
         }
+    } catch (const std::exception& e) {
+        FB2K_console_formatter() << "[SimPlaylist] Config write error for key: " << key << ": " << e.what();
     } catch (...) {
         FB2K_console_formatter() << "[SimPlaylist] Config write error for key: " << key;
     }
@@ -151,6 +150,9 @@ inline void setConfigBool(const char* key, bool value) {
     setConfigInt(key, value ? 1 : 0);
 }
 
+// NOTE: A stored empty string is indistinguishable from a missing key — both
+// return defaultValue. Callers rely on this: writing "" is the deliberate
+// idiom for deleting a persisted entry (e.g. per-playlist group caches).
 inline std::string getConfigString(const char* key, const char* defaultValue) {
     try {
         auto store = fb2k::configStore::get();
@@ -171,6 +173,8 @@ inline std::string getConfigString(const char* key, const char* defaultValue) {
         if (cstr != nullptr && cstr[0] != '\0') {
             return std::string(cstr);
         }
+    } catch (const std::exception& e) {
+        FB2K_console_formatter() << "[SimPlaylist] Config read error for key: " << key << ": " << e.what();
     } catch (...) {
         FB2K_console_formatter() << "[SimPlaylist] Config read error for key: " << key;
     }
@@ -183,6 +187,8 @@ inline void setConfigString(const char* key, const char* value) {
         if (store.is_valid()) {
             store->setConfigString(getFullKey(key).c_str(), value);
         }
+    } catch (const std::exception& e) {
+        FB2K_console_formatter() << "[SimPlaylist] Config write error for key: " << key << ": " << e.what();
     } catch (...) {
         FB2K_console_formatter() << "[SimPlaylist] Config write error for key: " << key;
     }

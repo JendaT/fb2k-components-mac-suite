@@ -51,6 +51,9 @@
 }
 
 - (void)setScrollOffset:(CGFloat)offset {
+    // Vertical scrolling fires bounds-change notifications too; skip the
+    // redraw when the horizontal offset did not actually change.
+    if (_scrollOffset == offset) return;
     _scrollOffset = offset;
     [self setNeedsDisplay:YES];
 }
@@ -294,6 +297,14 @@
         [self setNeedsDisplay:YES];
 
     } else if (_resizingColumn >= 0) {
+        // The column list can be replaced mid-gesture (settings reload); a
+        // stale index would go out of range.
+        if (_resizingColumn >= (NSInteger)_columns.count) {
+            _resizingColumn = -1;
+            [NSCursor pop];
+            return;
+        }
+
         // Resizing regular column
         CGFloat delta = location.x - _resizeStartX;
         CGFloat newWidth = MAX(40, _resizeStartWidth + delta);  // Min width 40
@@ -308,6 +319,13 @@
         [self setNeedsDisplay:YES];
 
     } else if (_draggingColumn >= 0) {
+        // Same stale-index concern as the resize branch above.
+        if (_draggingColumn >= (NSInteger)_columns.count) {
+            _draggingColumn = -1;
+            _dropTargetIndex = -1;
+            return;
+        }
+
         // Dragging column for reorder
         CGFloat dragDelta = location.x - ([self xOffsetForColumn:_draggingColumn]);
         _dragStartX = [self xOffsetForColumn:_draggingColumn] + _scrollOffset + dragDelta;
@@ -343,14 +361,16 @@
     } else if (_resizingColumn >= 0) {
         [NSCursor pop];
 
-        if ([_delegate respondsToSelector:@selector(headerBar:didFinishResizingColumn:)]) {
+        if (_resizingColumn < (NSInteger)_columns.count &&
+            [_delegate respondsToSelector:@selector(headerBar:didFinishResizingColumn:)]) {
             [_delegate headerBar:self didFinishResizingColumn:_resizingColumn];
         }
 
         _resizingColumn = -1;
 
     } else if (_draggingColumn >= 0) {
-        if (_dropTargetIndex >= 0 && _dropTargetIndex != _draggingColumn &&
+        if (_draggingColumn < (NSInteger)_columns.count &&
+            _dropTargetIndex >= 0 && _dropTargetIndex != _draggingColumn &&
             _dropTargetIndex != _draggingColumn + 1) {
             // Reorder columns
             if ([_delegate respondsToSelector:@selector(headerBar:didReorderColumnFrom:to:)]) {

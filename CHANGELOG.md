@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [Unreleased]
+
+#### Fixed
+- Drop indicator appeared up to ~150 px below the cursor when dragging into grouped playlists, and the drop landed at the indicator — drop positions were scored against uniform row heights that ignored taller group headers
+- Delete/Backspace with an empty selection hung the app
+- With multiple SimPlaylist panels open, one panel's rebuild cancelled another's in-progress group detection
+- Album art cache is now bounded by decoded size (256 MB) as well as image count, which previously allowed ~1 GB resident
+- Assorted crash guards and correctness fixes from a multi-pass code review
+
+#### Changed
+- Removed ~1,100 lines of unreferenced legacy rendering code (node/boundary drawing, disabled flat mode, `GroupNode`/`GroupBoundary`)
+- Unified the group-data application sequence that was duplicated across five call sites and had drifted between copies
+
 ### [1.5.1] - 2026-07-07
 
 #### Added

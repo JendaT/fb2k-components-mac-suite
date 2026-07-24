@@ -10,8 +10,8 @@
 //  so this logic can be unit-tested without instantiating an NSView or the host.
 //
 //  The owning view feeds the inputs (itemCount, group/subgroup arrays, header
-//  style, row metrics) and queries the pure methods. See the project
-//  testability audit (code-reviews/2026-06-24-simplaylist-testability.md).
+//  style, row metrics) and queries the pure methods. Extracted in the 1.5.0
+//  testability refactor (see CHANGELOG.md).
 //
 
 #pragma once

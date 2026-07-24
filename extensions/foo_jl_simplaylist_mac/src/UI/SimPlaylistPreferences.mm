@@ -492,6 +492,15 @@
     [self loadSettings];
 }
 
+// Popup indices come from persisted config; an out-of-range value (corrupt or
+// hand-edited store) would raise NSRangeException on every prefs-page open.
+static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
+    if (popup.numberOfItems == 0) return;
+    if (index < 0) index = 0;
+    if (index >= popup.numberOfItems) index = popup.numberOfItems - 1;
+    [popup selectItemAtIndex:(NSInteger)index];
+}
+
 - (void)loadSettings {
     // Load presets
     _presets = [GroupPreset defaultPresets];
@@ -519,7 +528,7 @@
     int64_t headerStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
-    [_headerStylePopup selectItemAtIndex:headerStyle];
+    selectClampedItem(_headerStylePopup, headerStyle);
 
     // Load now playing shading
     bool nowPlayingShading = simplaylist_config::getConfigBool(
@@ -555,25 +564,25 @@
     int64_t displaySize = simplaylist_config::getConfigInt(
         simplaylist_config::kDisplaySize,
         simplaylist_config::kDefaultDisplaySize);
-    [_displaySizePopup selectItemAtIndex:displaySize];
+    selectClampedItem(_displaySizePopup, displaySize);
 
     // Load header size (0=compact, 1=normal, 2=large)
     int64_t headerSize = simplaylist_config::getConfigInt(
         simplaylist_config::kColumnHeaderSize,
         simplaylist_config::kDefaultColumnHeaderSize);
-    [_headerSizePopup selectItemAtIndex:headerSize];
+    selectClampedItem(_headerSizePopup, headerSize);
 
     // Load header accent (0=none, 1=tinted)
     int64_t headerAccent = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderAccentColor,
         simplaylist_config::kDefaultHeaderAccentColor);
-    [_headerAccentPopup selectItemAtIndex:headerAccent];
+    selectClampedItem(_headerAccentPopup, headerAccent);
 
     // Load group header spacing (0=normal, 1=larger)
     int64_t groupHeaderSpacing = simplaylist_config::getConfigInt(
         simplaylist_config::kGroupHeaderSpacing,
         simplaylist_config::kDefaultGroupHeaderSpacing);
-    [_groupHeaderSpacingPopup selectItemAtIndex:groupHeaderSpacing];
+    selectClampedItem(_groupHeaderSpacingPopup, groupHeaderSpacing);
 
     // Load glass background
     bool glassBackground = simplaylist_config::getConfigBool(
@@ -607,7 +616,7 @@
     int64_t queueStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
         simplaylist_config::kDefaultQueueDisplayStyle);
-    [_queueDisplayStylePopup selectItemAtIndex:queueStyle];
+    selectClampedItem(_queueDisplayStylePopup, queueStyle);
 
     // Load Finder-open behavior
     int64_t finderBehavior = simplaylist_config::getConfigInt(
@@ -729,7 +738,9 @@
     if (script.is_empty()) return @"(invalid pattern)";
 
     std::string result = simplaylist::TitleFormatHelper::format(handle, script);
-    NSString *str = [NSString stringWithUTF8String:result.c_str()];
+    // nil on invalid UTF-8 (corrupt tags) — callers assign this to
+    // NSTextField.stringValue, which must never receive nil
+    NSString *str = [NSString stringWithUTF8String:result.c_str()] ?: @"";
     NSString *trimmed = [str stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length == 0) return @"(empty — fields may be missing on this track)";

@@ -359,14 +359,13 @@
 
     NSInteger headerRowsBefore = 0;
     if (_headerDisplayStyle != 3 && _groupStarts.count > 0) {
-        for (NSInteger g = 0; g < (NSInteger)_groupStarts.count; g++) {
-            NSInteger headerRow = [self rowForGroupHeader:g];
-            if (headerRow < row) {
-                headerRowsBefore++;
-            } else {
-                break;  // Groups are ordered, so no more headers before this row
-            }
-        }
+        // groupIndexForRow: binary-searches for the last group whose header
+        // row is <= row (clamped to 0 when row precedes the first header).
+        // Headers strictly before row: g + 1 when g's header is above row,
+        // g when row is g's header row itself or precedes the first header.
+        NSInteger g = [self groupIndexForRow:row];
+        NSInteger headerRow = [self rowForGroupHeader:g];
+        headerRowsBefore = (headerRow < row) ? g + 1 : g;
     }
 
     CGFloat extraHeaderHeight = headerRowsBefore * (_headerHeight - _rowHeight);

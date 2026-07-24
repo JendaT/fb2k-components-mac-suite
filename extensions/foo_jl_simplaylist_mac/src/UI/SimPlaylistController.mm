@@ -8,8 +8,6 @@
 #import "SimPlaylistController.h"
 #import "SimPlaylistView.h"
 #import "SimPlaylistHeaderBar.h"
-#import "../Core/GroupNode.h"
-#import "../Core/GroupBoundary.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/GroupPreset.h"
 #import "../Core/TitleFormatHelper.h"
@@ -20,6 +18,7 @@
 #import "../Core/GroupBuilder.h"
 #import "../Core/DecorationStore.h"
 #import "../Integration/DecorationCoordinator.h"
+#import "../Integration/PlaylistCallbacks.h"
 #import "../../../../shared/UIStyles.h"
 
 #include <SDK/menu_helpers.h>
@@ -36,6 +35,11 @@
 // Global debug flag - set to true to enable debug logging
 // Output goes to /tmp/simplaylist_subgroup_debug.txt
 static std::atomic<bool> g_subgroupDebugEnabled{false};
+
+// Scroll-anchor dictionary keys. Also the persisted JSON field names of the
+// per-playlist anchors - do not rename.
+static NSString * const kAnchorIndexKey = @"index";
+static NSString * const kAnchorOffsetKey = @"offset";
 
 // =============================================================================
 // ASYNC FILE IMPORT (copied from Plorg's working implementation)
@@ -149,7 +153,9 @@ static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NS
             // Web URL (e.g., soundcloud://, mixcloud://) - use full URL string
             NSString* urlString = url.absoluteString;
             if (urlString && urlString.length > 0) {
-                FB2K_console_formatter() << "[SimPlaylist] importing web URL: " << [urlString UTF8String];
+                // Log scheme only — full URLs may carry signed query parameters
+                FB2K_console_formatter() << "[SimPlaylist] importing web URL, scheme: "
+                                         << (url.scheme.UTF8String ?: "unknown");
                 notify->m_paths.add_item([urlString UTF8String]);
             }
         }
@@ -182,11 +188,6 @@ static void importFb2kPathsToPlaylistAsync(t_size playlistIndex, t_size insertAt
     notify->startImport();
 }
 
-// Forward declare callback manager
-@class SimPlaylistController;
-void SimPlaylistCallbackManager_registerController(SimPlaylistController* controller);
-void SimPlaylistCallbackManager_unregisterController(SimPlaylistController* controller);
-
 // Track reload operations for progress display
 struct ReloadOperation {
     t_size totalCount;
@@ -212,6 +213,11 @@ struct ReloadOperation {
     // Last row range handed to the coordinator; only newly entered rows are
     // index-mapped each draw. Reset on invalidation/mapping changes.
     NSRange _decorPreparedRange;
+    // Cancels stale group detection. Per-instance: the component supports several
+    // panels at once, and a process-wide counter let one panel's rebuild cancel
+    // another's in-flight detection. Heap-allocated so background blocks can
+    // observe it by value without keeping the controller alive.
+    std::shared_ptr<std::atomic<NSInteger>> _groupDetectionGeneration;
 }
 @property (nonatomic, strong) SimPlaylistView *playlistView;
 @property (nonatomic, strong) SimPlaylistHeaderBar *headerBar;
@@ -222,9 +228,9 @@ struct ReloadOperation {
 @property (nonatomic, assign) NSInteger activePresetIndex;
 @property (nonatomic, assign) NSInteger currentPlaylistIndex;
 @property (nonatomic, assign) NSInteger playingPlaylistIndex;  // Track which playlist item is playing
-@property (nonatomic, assign) BOOL needsRedraw;  // Coalesced redraw flag
-// Per-playlist scroll anchors: playlist index -> @{@"index": first visible
-// track's playlist index, @"offset": pixel delta between the viewport top and
+@property (nonatomic, assign) BOOL artRedrawScheduled;  // Album-art redraw batching flag (50 ms window)
+// Per-playlist scroll anchors: playlist index -> @{kAnchorIndexKey: first visible
+// track's playlist index, kAnchorOffsetKey: pixel delta between the viewport top and
 // that row's top (negative when a header/padding block is scrolled above it)}.
 // Pixel-exact so switching away and back lands on the identical position.
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *scrollAnchorIndices;
@@ -238,13 +244,13 @@ struct ReloadOperation {
 // target playlist has rebuilt (consumed by performScrollRestore).
 @property (nonatomic, assign) NSInteger pendingCenterIndex;
 @property (nonatomic, assign) NSInteger pendingCenterPlaylist;
-@property (nonatomic, assign) BOOL isSettingSelection;  // Flag to skip callback when we're setting selection
 @property (nonatomic, strong) NSDictionary<NSNumber *, NSNumber *> *queuePositionMap;  // item_index → 1-based queue position
 @property (nonatomic, assign) BOOL hasQueueColumn;  // True if any visible column uses __queue_position__
 @property (nonatomic, assign) BOOL activePlaylistJustCleared;  // Finder-open detection: full clear of active playlist
 @property (nonatomic, assign) BOOL internalModification;  // True while we are mutating playlist programmatically
 
 - (void)recomputeGroupDurations;
+- (void)clearGroupData;
 - (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles;
 - (void)refreshSelectionTracking;
 @end
@@ -268,6 +274,7 @@ struct ReloadOperation {
         _scrollPositionEstablished = NO;
         _pendingCenterIndex = -1;
         _pendingCenterPlaylist = -1;
+        _groupDetectionGeneration = std::make_shared<std::atomic<NSInteger>>(0);
     }
     return self;
 }
@@ -562,10 +569,8 @@ struct ReloadOperation {
     NSArray<NSNumber *> *groupStarts = _playlistView.groupStarts;
     NSArray<NSNumber *> *subgroupStarts = _playlistView.subgroupStarts;
 
-    NSMutableArray<NSNumber *> *counts = [NSMutableArray arrayWithCapacity:groupStarts.count];
-    for (NSUInteger g = 0; g < groupStarts.count; g++) {
-        [counts addObject:@(0)];
-    }
+    // Accumulate in a plain vector; box to NSNumber once at the end
+    std::vector<NSInteger> rawCounts(groupStarts.count, 0);
 
     // For each subgroup, find which group it belongs to and increment that group's count
     NSUInteger groupIndex = 0;
@@ -576,11 +581,15 @@ struct ReloadOperation {
                [groupStarts[groupIndex + 1] integerValue] <= sgIndex) {
             groupIndex++;
         }
-        if (groupIndex < counts.count) {
-            counts[groupIndex] = @([counts[groupIndex] integerValue] + 1);
+        if (groupIndex < rawCounts.size()) {
+            rawCounts[groupIndex]++;
         }
     }
 
+    NSMutableArray<NSNumber *> *counts = [NSMutableArray arrayWithCapacity:rawCounts.size()];
+    for (NSInteger c : rawCounts) {
+        [counts addObject:@(c)];
+    }
     _playlistView.subgroupCountPerGroup = counts;
 }
 
@@ -698,6 +707,14 @@ struct ReloadOperation {
     if (behavior == 1) {
         // Append to current: requires undo to restore previous content
         if (!undoAvailable) {
+            FB2K_console_formatter() << "[SimPlaylist] Finder-open override (append): no undo available, leaving replacement as-is";
+            _internalModification = NO;
+            return;
+        }
+        // Respect the add lock (as every drop handler does) before mutating
+        if (pm->playlist_lock_is_present(active) &&
+            (pm->playlist_lock_get_filter_mask(active) & playlist_lock::filter_add)) {
+            FB2K_console_formatter() << "[SimPlaylist] Finder-open override (append): playlist is locked for add, leaving replacement as-is";
             _internalModification = NO;
             return;
         }
@@ -715,19 +732,29 @@ struct ReloadOperation {
             targetName = simplaylist_config::kDefaultFinderOpenTargetPlaylist;
         }
 
+        // Find or create target playlist BEFORE touching the active playlist,
+        // so a missing or add-locked target does not cost the restore.
+        t_size target = pm->find_or_create_playlist(targetName.c_str(), pfc_infinite);
+        if (target == SIZE_MAX) {
+            FB2K_console_formatter() << "[SimPlaylist] Finder-open override: could not find or create target playlist \"" << targetName.c_str() << "\"";
+            _internalModification = NO;
+            return;
+        }
+        // Respect the add lock (as every drop handler does) before mutating
+        if (pm->playlist_lock_is_present(target) &&
+            (pm->playlist_lock_get_filter_mask(target) & playlist_lock::filter_add)) {
+            FB2K_console_formatter() << "[SimPlaylist] Finder-open override: target playlist \"" << targetName.c_str() << "\" is locked for add, leaving replacement as-is";
+            _internalModification = NO;
+            return;
+        }
+
         // Restore active playlist's previous content if possible
         if (undoAvailable) {
             pm->playlist_undo_restore(active);
         } else {
             // No undo — clear the active playlist (user's previous content is lost).
+            FB2K_console_formatter() << "[SimPlaylist] Finder-open override (send to playlist): no undo available, clearing active playlist";
             pm->playlist_clear(active);
-        }
-
-        // Find or create target playlist
-        t_size target = pm->find_or_create_playlist(targetName.c_str(), pfc_infinite);
-        if (target == SIZE_MAX) {
-            _internalModification = NO;
-            return;
         }
         t_size endPos = pm->playlist_get_item_count(target);
         pfc::bit_array_false selectNone;
@@ -779,10 +806,10 @@ struct ReloadOperation {
     // Without this, switching to an ungrouped/empty playlist (which doesn't start
     // its own detection) leaves the generation counter unchanged, allowing stale
     // callbacks to apply old group data to the new playlist's view.
-    ++_groupDetectionGeneration;
+    ++(*_groupDetectionGeneration);
 
-    // Clear cached data on any playlist change
-    // TODO: For incremental updates (add/remove), could invalidate only affected entries
+    // Clear cached data on any playlist change (incremental invalidation is
+    // tracked in BACKLOG.md)
     [_playlistView clearFormattedValuesCache];
 
     // Decoration index bindings and group badges are keyed by playlist
@@ -794,17 +821,7 @@ struct ReloadOperation {
 
     if (activePlaylist == SIZE_MAX) {
         _playlistView.itemCount = 0;
-        _playlistView.groupStarts = @[];
-        _playlistView.groupHeaders = @[];
-        _playlistView.groupArtKeys = @[];
-        _playlistView.groupPaddingRows = @[];
-        _playlistView.totalPaddingRowsCached = 0;
-        _playlistView.cumulativePaddingCache = @[];
-        _playlistView.subgroupStarts = @[];
-        _playlistView.subgroupHeaders = @[];
-        _playlistView.subgroupCountPerGroup = @[];
-        _playlistView.subgroupRowSet = [NSIndexSet indexSet];
-        _playlistView.subgroupRowToIndex = @{};
+        [self clearGroupData];
         _currentPlaylistIndex = -1;
         _playlistView.sourcePlaylistIndex = -1;  // For drag validation
         [_playlistView reloadData];
@@ -827,17 +844,7 @@ struct ReloadOperation {
 
     if (itemCount == 0) {
         _playlistView.itemCount = 0;
-        _playlistView.groupStarts = @[];
-        _playlistView.groupHeaders = @[];
-        _playlistView.groupArtKeys = @[];
-        _playlistView.groupPaddingRows = @[];
-        _playlistView.totalPaddingRowsCached = 0;
-        _playlistView.cumulativePaddingCache = @[];
-        _playlistView.subgroupStarts = @[];
-        _playlistView.subgroupHeaders = @[];
-        _playlistView.subgroupCountPerGroup = @[];
-        _playlistView.subgroupRowSet = [NSIndexSet indexSet];
-        _playlistView.subgroupRowToIndex = @{};
+        [self clearGroupData];
         [_playlistView reloadData];
         return;
     }
@@ -877,16 +884,7 @@ struct ReloadOperation {
     } else {
         // No grouping - just set item count
         _playlistView.itemCount = itemCount;
-        _playlistView.groupStarts = @[];
-        _playlistView.groupHeaders = @[];
-        _playlistView.groupArtKeys = @[];
-        _playlistView.groupPaddingRows = @[];
-        [_playlistView rebuildPaddingCache];
-        _playlistView.subgroupStarts = @[];
-        _playlistView.subgroupHeaders = @[];
-        _playlistView.subgroupCountPerGroup = @[];
-        _playlistView.subgroupRowSet = [NSIndexSet indexSet];
-        _playlistView.subgroupRowToIndex = @{};
+        [self clearGroupData];
     }
 
     // Set frame size
@@ -974,8 +972,8 @@ struct ReloadOperation {
 
     NSDictionary *anchor = _scrollAnchorIndices[@(_scrollRestorePlaylistIndex)];
     if (anchor) {
-        NSInteger playlistIndex = [anchor[@"index"] integerValue];
-        CGFloat offset = [anchor[@"offset"] doubleValue];
+        NSInteger playlistIndex = [anchor[kAnchorIndexKey] integerValue];
+        CGFloat offset = [anchor[kAnchorOffsetKey] doubleValue];
         // Clamp to valid range (items may have been deleted after the anchor)
         if (playlistIndex >= _playlistView.itemCount) {
             playlistIndex = MAX(0, _playlistView.itemCount - 1);
@@ -1012,11 +1010,14 @@ struct ReloadOperation {
     // Find the first row that corresponds to an actual playlist item. The
     // offset is negative when header/padding rows sit between the viewport top
     // and that track, so the restore reveals the same header block above it.
-    for (NSInteger row = firstRow; row < totalRows && row < firstRow + 50; row++) {
+    // Bounded scan: header + subgroup + padding blocks between the viewport top
+    // and the first real track never approach this many consecutive rows.
+    static const NSInteger kAnchorScanRowLimit = 50;
+    for (NSInteger row = firstRow; row < totalRows && row < firstRow + kAnchorScanRowLimit; row++) {
         NSInteger playlistIndex = [_playlistView playlistIndexForRow:row];
         if (playlistIndex >= 0) {
             CGFloat offset = NSMinY(visibleRect) - [_playlistView yOffsetForRow:row];
-            return @{@"index": @(playlistIndex), @"offset": @(offset)};
+            return @{kAnchorIndexKey: @(playlistIndex), kAnchorOffsetKey: @(offset)};
         }
     }
 
@@ -1053,9 +1054,6 @@ struct ReloadOperation {
     [_scrollView reflectScrolledClipView:clipView];
 }
 
-// Generation counter to cancel stale group detection
-static std::atomic<NSInteger> _groupDetectionGeneration{0};
-
 // Shared padding calculation for album art minimum group height
 static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgroupsInGroup,
                                            CGFloat albumArtSize, CGFloat rowHeight,
@@ -1072,21 +1070,90 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     return MAX(minPadding, minContentRows - trackCount - subgroupsInGroup - extraHeaderSpace + extraTextSpace);
 }
 
+// Drops the view back to an ungrouped flat list. The derived caches are rebuilt
+// from the now-empty arrays rather than hand-cleared, which is what the rebuild
+// methods do for empty input anyway. Callers own itemCount.
+- (void)clearGroupData {
+    _playlistView.groupStarts = @[];
+    _playlistView.groupHeaders = @[];
+    _playlistView.groupArtKeys = @[];
+    _playlistView.groupPaddingRows = @[];
+    _playlistView.subgroupStarts = @[];
+    _playlistView.subgroupHeaders = @[];
+    _playlistView.subgroupCountPerGroup = @[];
+    [_playlistView rebuildPaddingCache];
+    [_playlistView rebuildSubgroupRowCache];
+}
+
+// Single entry point for handing a complete set of group arrays to the view.
+// The order here is load-bearing and was previously duplicated at five call
+// sites: subgroup counts must exist before the padding math reads them, the
+// padding cache must exist before the subgroup row cache, and the frame height
+// depends on both.
+//
+// lastGroupEnd is the end index of the final group — the sync path passes its
+// partial detection limit, every other path passes the playlist item count.
+// updateFrameSize is NO for the cache-apply path, whose caller sizes the view
+// itself once the rest of the restore completes.
+- (void)applyGroupData:(NSArray<NSNumber *> *)groupStarts
+               headers:(NSArray<NSString *> *)groupHeaders
+               artKeys:(NSArray<NSString *> *)groupArtKeys
+        subgroupStarts:(NSArray<NSNumber *> *)subgroupStarts
+       subgroupHeaders:(NSArray<NSString *> *)subgroupHeaders
+          lastGroupEnd:(NSInteger)lastGroupEnd
+       updateFrameSize:(BOOL)updateFrameSize {
+    _playlistView.groupStarts = groupStarts;
+    _playlistView.groupHeaders = groupHeaders;
+    _playlistView.groupArtKeys = groupArtKeys;
+    _playlistView.subgroupStarts = subgroupStarts ?: @[];
+    _playlistView.subgroupHeaders = subgroupHeaders ?: @[];
+    [self updateSubgroupCountPerGroup];
+    [self filterSingleSubgroupsIfNeeded];
+
+    CGFloat rowHeight = _playlistView.rowHeight;
+    CGFloat albumArtSize = _playlistView.albumArtSize;
+    NSInteger headerStyle = _playlistView.headerDisplayStyle;
+
+    NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
+    for (NSUInteger g = 0; g < groupStarts.count; g++) {
+        NSInteger groupStart = [groupStarts[g] integerValue];
+        NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : lastGroupEnd;
+        NSInteger trackCount = groupEnd - groupStart;
+        NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
+            ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
+        [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
+                                                          albumArtSize, rowHeight, headerStyle))];
+    }
+    _playlistView.groupPaddingRows = paddingRows;
+    [_playlistView rebuildPaddingCache];
+    [_playlistView rebuildSubgroupRowCache];
+
+    if (updateFrameSize) {
+        CGFloat newHeight = [_playlistView totalContentHeightCached];
+        [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
+    }
+}
+
 // FAST PARTIAL GROUP DETECTION: Only detect groups up to scroll anchor for instant restore
 - (void)detectGroupsForPlaylistSync:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
     // Get the anchor position we need to scroll to
     NSDictionary *anchor = _scrollAnchorIndices[@(playlist)];
-    NSInteger anchorIndex = anchor ? [anchor[@"index"] integerValue] : 0;
+    NSInteger anchorIndex = anchor ? [anchor[kAnchorIndexKey] integerValue] : 0;
 
     // Only detect groups up to anchor + buffer (for visible area)
     // Cap at 5000 to prevent main thread blocking for deep scroll positions
     static const t_size kMaxSyncDetect = 5000;
-    t_size detectUpTo = MIN(itemCount, MIN((t_size)(anchorIndex + 200), kMaxSyncDetect));
+    // Buffer past the anchor so the visible area below it is fully grouped
+    static const t_size kSyncDetectAnchorBuffer = 200;
+    t_size detectUpTo = MIN(itemCount, MIN((t_size)anchorIndex + kSyncDetectAnchorBuffer, kMaxSyncDetect));
 
     // Increment generation to cancel any in-progress async detection
-    NSInteger currentGeneration = ++_groupDetectionGeneration;
+    auto generationCounter = _groupDetectionGeneration;
+    NSInteger currentGeneration = ++(*generationCounter);
 
-    // Get handles only up to what we need
+    // Fetch all handles: the sync pass below only walks [0, detectUpTo), but
+    // the background continuation started at the end of this method consumes
+    // the rest of the list.
     auto pm = playlist_manager::get();
     metadb_handle_list handles;
     pm->playlist_get_all_items(playlist, handles);
@@ -1143,39 +1210,17 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                              groupStarts, groupHeaders, groupArtKeys,
                              subgroupStarts, subgroupHeaders);
 
-    // Set partial data immediately - enough for visible area
+    // Set partial data immediately - enough for visible area. The last group
+    // ends at detectUpTo, not itemCount: the rest is still undetected.
+    // Frame size gets updated again when full detection completes.
     _playlistView.itemCount = itemCount;
-    _playlistView.groupStarts = groupStarts;
-    _playlistView.groupHeaders = groupHeaders;
-    _playlistView.groupArtKeys = groupArtKeys;
-    _playlistView.subgroupStarts = subgroupStarts;
-    _playlistView.subgroupHeaders = subgroupHeaders;
-    [self updateSubgroupCountPerGroup];
-    [self filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
-    // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
-
-    // Calculate padding rows for detected groups
-    CGFloat rowHeight = _playlistView.rowHeight;
-    CGFloat albumArtSize = _playlistView.albumArtSize;
-    NSInteger headerStyle = _playlistView.headerDisplayStyle;
-
-    NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
-    for (NSUInteger g = 0; g < groupStarts.count; g++) {
-        NSInteger groupStart = [groupStarts[g] integerValue];
-        NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : (NSInteger)detectUpTo;
-        NSInteger trackCount = groupEnd - groupStart;
-        NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
-            ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-        [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                          albumArtSize, rowHeight, headerStyle))];
-    }
-    _playlistView.groupPaddingRows = paddingRows;
-    [_playlistView rebuildPaddingCache];
-    [_playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
-
-    // Set frame size (will be updated when full detection completes)
-    CGFloat newHeight = [_playlistView totalContentHeightCached];
-    [_playlistView setFrameSize:NSMakeSize(_playlistView.frame.size.width, newHeight)];
+    [self applyGroupData:groupStarts
+                 headers:groupHeaders
+                 artKeys:groupArtKeys
+          subgroupStarts:subgroupStarts
+         subgroupHeaders:subgroupHeaders
+            lastGroupEnd:(NSInteger)detectUpTo
+         updateFrameSize:YES];
 
     // Restore scroll position immediately (we have enough groups)
     [self performScrollRestore];
@@ -1194,7 +1239,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            if (_groupDetectionGeneration != currentGeneration) return;
+            if (*generationCounter != currentGeneration) return;
 
             // Continue from where we left off
             NSMutableArray<NSNumber *> *moreGroupStarts = [NSMutableArray array];
@@ -1238,7 +1283,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 };
             }
             buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
-            buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+            buildCb.isCancelled = [&]() { return *generationCounter != currentGeneration; };
 
             if (!simplaylist::buildGroups(detectUpTo, handlesPtr->get_count(),
                                           hasSubgroups, /* forceFirstNewGroup */ false,
@@ -1248,13 +1293,13 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 return;
             }
 
-            if (_groupDetectionGeneration != currentGeneration) return;
+            if (*generationCounter != currentGeneration) return;
 
             // Merge results on main thread
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) strongSelf = weakSelf;
                 if (!strongSelf) return;
-                if (_groupDetectionGeneration != currentGeneration) return;
+                if (*generationCounter != currentGeneration) return;
 
                 // Save scroll anchor BEFORE merging groups (new groups shift items)
                 NSDictionary *mergeAnchor = [strongSelf captureScrollAnchor];
@@ -1268,48 +1313,25 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
                 [allHeaders addObjectsFromArray:moreGroupHeaders];
                 [allArtKeys addObjectsFromArray:moreGroupArtKeys];
 
-                strongSelf.playlistView.groupStarts = allStarts;
-                strongSelf.playlistView.groupHeaders = allHeaders;
-                strongSelf.playlistView.groupArtKeys = allArtKeys;
-
                 // Merge subgroups
                 NSMutableArray *allSubgroupStarts = [strongSelf.playlistView.subgroupStarts mutableCopy];
                 NSMutableArray *allSubgroupHeaders = [strongSelf.playlistView.subgroupHeaders mutableCopy];
                 [allSubgroupStarts addObjectsFromArray:moreSubgroupStarts];
                 [allSubgroupHeaders addObjectsFromArray:moreSubgroupHeaders];
-                strongSelf.playlistView.subgroupStarts = allSubgroupStarts;
-                strongSelf.playlistView.subgroupHeaders = allSubgroupHeaders;
-                [strongSelf updateSubgroupCountPerGroup];
-                [strongSelf filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
-                // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
 
-                // Recalculate all padding rows (accounting for subgroups and header style)
-                CGFloat bgRowHeight = strongSelf.playlistView.rowHeight;
-                CGFloat bgAlbumArtSize = strongSelf.playlistView.albumArtSize;
-                NSInteger bgHeaderStyle = strongSelf.playlistView.headerDisplayStyle;
-
-                NSMutableArray<NSNumber *> *allPaddingRows = [NSMutableArray arrayWithCapacity:allStarts.count];
-                for (NSUInteger g = 0; g < allStarts.count; g++) {
-                    NSInteger gStart = [allStarts[g] integerValue];
-                    NSInteger gEnd = (g + 1 < allStarts.count) ? [allStarts[g + 1] integerValue] : (NSInteger)itemCount;
-                    NSInteger trackCount = gEnd - gStart;
-                    NSInteger subgroupsInGroup = (g < strongSelf.playlistView.subgroupCountPerGroup.count)
-                        ? [strongSelf.playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-                    [allPaddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                                         bgAlbumArtSize, bgRowHeight, bgHeaderStyle))];
-                }
-                strongSelf.playlistView.groupPaddingRows = allPaddingRows;
-                [strongSelf.playlistView rebuildPaddingCache];
-                [strongSelf.playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
-
-                // Update frame size with complete data
-                CGFloat finalHeight = [strongSelf.playlistView totalContentHeightCached];
-                [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, finalHeight)];
+                // Whole list is detected now, so the last group ends at itemCount.
+                [strongSelf applyGroupData:allStarts
+                                   headers:allHeaders
+                                   artKeys:allArtKeys
+                            subgroupStarts:allSubgroupStarts
+                           subgroupHeaders:allSubgroupHeaders
+                              lastGroupEnd:(NSInteger)itemCount
+                           updateFrameSize:YES];
 
                 // Restore scroll position pixel-exactly (new groups shifted items down)
                 if (mergeAnchor) {
-                    [strongSelf scrollToPlaylistIndex:[mergeAnchor[@"index"] integerValue]
-                                          pixelOffset:[mergeAnchor[@"offset"] doubleValue]];
+                    [strongSelf scrollToPlaylistIndex:[mergeAnchor[kAnchorIndexKey] integerValue]
+                                          pixelOffset:[mergeAnchor[kAnchorOffsetKey] doubleValue]];
                 }
 
                 // NOW it's safe to save scroll positions - full data available
@@ -1334,21 +1356,12 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 // PROGRESSIVE GROUP DETECTION: Shows UI immediately, detects groups without freezing
 - (void)detectGroupsForPlaylist:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
     // Increment generation to cancel any in-progress detection
-    NSInteger currentGeneration = ++_groupDetectionGeneration;
+    auto generationCounter = _groupDetectionGeneration;
+    NSInteger currentGeneration = ++(*generationCounter);
 
     // IMMEDIATE: Set item count and show flat list right away
     _playlistView.itemCount = itemCount;
-    _playlistView.groupStarts = @[];
-    _playlistView.groupHeaders = @[];
-    _playlistView.groupArtKeys = @[];
-    _playlistView.groupPaddingRows = @[];
-    _playlistView.totalPaddingRowsCached = 0;
-    _playlistView.cumulativePaddingCache = @[];
-    _playlistView.subgroupStarts = @[];
-    _playlistView.subgroupHeaders = @[];
-    _playlistView.subgroupCountPerGroup = @[];
-    _playlistView.subgroupRowSet = [NSIndexSet indexSet];
-    _playlistView.subgroupRowToIndex = @{};
+    [self clearGroupData];
 
     // Set frame size and display immediately
     CGFloat totalHeight = [_playlistView totalContentHeightCached];
@@ -1368,7 +1381,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // PROGRESSIVE: Detect groups in background without blocking UI
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (_groupDetectionGeneration != currentGeneration) return;
+        if (*generationCounter != currentGeneration) return;
 
         // Compile header pattern
         titleformat_object::ptr headerScript =
@@ -1415,7 +1428,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             };
         }
         buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
-        buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+        buildCb.isCancelled = [&]() { return *generationCounter != currentGeneration; };
 
         if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
                                       hasSubgroups, /* forceFirstNewGroup */ true,
@@ -1425,48 +1438,21 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             return;
         }
 
-        if (_groupDetectionGeneration != currentGeneration) return;
+        if (*generationCounter != currentGeneration) return;
 
         // Update UI on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
-            if (_groupDetectionGeneration != currentGeneration) return;
+            if (*generationCounter != currentGeneration) return;
 
-            strongSelf.playlistView.groupStarts = groupStarts;
-            strongSelf.playlistView.groupHeaders = groupHeaders;
-            strongSelf.playlistView.groupArtKeys = groupArtKeys;
-            strongSelf.playlistView.subgroupStarts = subgroupStarts;
-            strongSelf.playlistView.subgroupHeaders = subgroupHeaders;
-            [strongSelf updateSubgroupCountPerGroup];
-            [strongSelf filterSingleSubgroupsIfNeeded];  // Filter out single subgroups if setting enabled
-            // NOTE: rebuildSubgroupRowCache must be called AFTER padding is set (below)
-
-            // Calculate padding rows for each group based on minimum height for album art
-            CGFloat asyncRowHeight = strongSelf.playlistView.rowHeight;
-            CGFloat asyncAlbumArtSize = strongSelf.playlistView.albumArtSize;
-            NSInteger asyncHeaderStyle = strongSelf.playlistView.headerDisplayStyle;
-
-            NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
-            NSInteger totalItems = strongSelf.playlistView.itemCount;
-
-            for (NSUInteger g = 0; g < groupStarts.count; g++) {
-                NSInteger groupStart = [groupStarts[g] integerValue];
-                NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : totalItems;
-                NSInteger trackCount = groupEnd - groupStart;
-                NSInteger subgroupsInGroup = (g < strongSelf.playlistView.subgroupCountPerGroup.count)
-                    ? [strongSelf.playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-                [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                                   asyncAlbumArtSize, asyncRowHeight, asyncHeaderStyle))];
-            }
-
-            strongSelf.playlistView.groupPaddingRows = paddingRows;
-            [strongSelf.playlistView rebuildPaddingCache];
-            [strongSelf.playlistView rebuildSubgroupRowCache];  // MUST be after padding cache is built
-
-            // Recalculate height with group headers, subgroups, and padding
-            CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
-            [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, newHeight)];
+            [strongSelf applyGroupData:groupStarts
+                               headers:groupHeaders
+                               artKeys:groupArtKeys
+                        subgroupStarts:subgroupStarts
+                       subgroupHeaders:subgroupHeaders
+                          lastGroupEnd:strongSelf.playlistView.itemCount
+                       updateFrameSize:YES];
 
             // Full detection complete - safe to save scroll positions now
             strongSelf->_currentPlaylistInitialized = YES;
@@ -1515,8 +1501,8 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 
 - (void)persistScrollAnchor:(NSDictionary *)anchor forPlaylistName:(const char *)playlistName {
     NSString *json = [NSString stringWithFormat:@"{\"index\":%ld,\"offset\":%.1f}",
-                      (long)[anchor[@"index"] integerValue],
-                      [anchor[@"offset"] doubleValue]];
+                      (long)[anchor[kAnchorIndexKey] integerValue],
+                      [anchor[kAnchorOffsetKey] doubleValue]];
     simplaylist_config::setConfigString(scrollAnchorKeyForName(playlistName).c_str(), json.UTF8String);
 }
 
@@ -1533,9 +1519,11 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     if (!data) return nil;
     NSDictionary *parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![parsed isKindOfClass:[NSDictionary class]]) return nil;
-    NSNumber *index = parsed[@"index"];
-    if (!index || [index integerValue] < 0) return nil;
-    return @{@"index": index, @"offset": parsed[@"offset"] ?: @0};
+    NSNumber *index = parsed[kAnchorIndexKey];
+    if (![index isKindOfClass:[NSNumber class]] || [index integerValue] < 0) return nil;
+    NSNumber *offset = parsed[kAnchorOffsetKey];
+    if (![offset isKindOfClass:[NSNumber class]]) offset = @0;
+    return @{kAnchorIndexKey: index, kAnchorOffsetKey: offset};
 }
 
 - (void)saveGroupCacheForPlaylist:(t_size)playlist synchronous:(BOOL)synchronous {
@@ -1585,8 +1573,8 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 
     // Legacy cache fields, kept for older builds reading this entry. The
     // authoritative anchor is the separate scroll_anchor.<name> entry above.
-    NSInteger scrollAnchor = anchor ? [anchor[@"index"] integerValue] : -1;
-    double scrollOffset = anchor ? [anchor[@"offset"] doubleValue] : 0;
+    NSInteger scrollAnchor = anchor ? [anchor[kAnchorIndexKey] integerValue] : -1;
+    double scrollOffset = anchor ? [anchor[kAnchorOffsetKey] doubleValue] : 0;
 
     // Get current preset hash
     GroupPreset *activePreset = nil;
@@ -1627,13 +1615,42 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     if (synchronous) {
         doSave();
     } else {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), doSave);
+        // Serial queue so rapid saves persist in submission order; the
+        // concurrent global queue could write an older cache last.
+        static dispatch_queue_t sSaveQueue;
+        static dispatch_once_t sOnce;
+        dispatch_once(&sOnce, ^{
+            sSaveQueue = dispatch_queue_create("simplaylist.groupcache.save",
+                dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        });
+        dispatch_async(sSaveQueue, doSave);
     }
 }
 
 - (void)saveGroupCacheForCurrentPlaylist {
     if (_currentPlaylistIndex < 0) return;
     [self saveGroupCacheForPlaylist:(t_size)_currentPlaylistIndex synchronous:YES];
+}
+
+// Validation for persisted cache arrays: a corrupted/hand-edited config entry
+// must fail the load (falling back to fresh detection), not crash on playlist
+// switch-in — that would be a crash loop at every startup.
+static BOOL validCachedIndexArray(NSArray *arr, t_size itemCount) {
+    NSInteger prev = -1;
+    for (id v in arr) {
+        if (![v isKindOfClass:[NSNumber class]]) return NO;
+        NSInteger x = [v integerValue];
+        if (x < 0 || x >= (NSInteger)itemCount || x <= prev) return NO;
+        prev = x;
+    }
+    return YES;
+}
+
+static BOOL validCachedStringArray(NSArray *arr) {
+    for (id v in arr) {
+        if (![v isKindOfClass:[NSString class]]) return NO;
+    }
+    return YES;
 }
 
 - (BOOL)loadGroupCacheForPlaylist:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
@@ -1676,9 +1693,20 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     NSNumber *scrollAnchor = cache[@"scrollAnchor"];
     NSNumber *scrollOffset = cache[@"scrollOffset"];  // may be nil in older caches
 
-    if (!groupStarts || !groupHeaders) return NO;
+    if (![groupStarts isKindOfClass:[NSArray class]] ||
+        ![groupHeaders isKindOfClass:[NSArray class]]) return NO;
     if (groupStarts.count != groupHeaders.count) return NO;
     if (groupStarts.count == 0) return NO;
+    if (subgroupStarts && ![subgroupStarts isKindOfClass:[NSArray class]]) return NO;
+    if (subgroupHeaders && ![subgroupHeaders isKindOfClass:[NSArray class]]) return NO;
+    if (subgroupStarts.count != subgroupHeaders.count) return NO;
+    if (!validCachedIndexArray(groupStarts, itemCount) ||
+        !validCachedStringArray(groupHeaders)) return NO;
+    if (subgroupStarts &&
+        (!validCachedIndexArray(subgroupStarts, itemCount) ||
+         !validCachedStringArray(subgroupHeaders))) return NO;
+    if (scrollAnchor && ![scrollAnchor isKindOfClass:[NSNumber class]]) scrollAnchor = nil;
+    if (scrollOffset && ![scrollOffset isKindOfClass:[NSNumber class]]) scrollOffset = nil;
 
     // Generate placeholder art keys — the view only checks count, not values.
     // Actual art paths are resolved from track handles by the delegate.
@@ -1687,41 +1715,25 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
         [groupArtKeys addObject:@""];
     }
 
-    // Apply cached data to view
+    // Apply cached data to view. Padding is recomputed from current display
+    // settings rather than restored — it depends on runtime layout, not the
+    // cache. Frame sizing is left to the caller, which sizes the view once the
+    // rest of the restore completes.
     _playlistView.itemCount = itemCount;
-    _playlistView.groupStarts = groupStarts;
-    _playlistView.groupHeaders = groupHeaders;
-    _playlistView.groupArtKeys = groupArtKeys;
-    _playlistView.subgroupStarts = subgroupStarts ?: @[];
-    _playlistView.subgroupHeaders = subgroupHeaders ?: @[];
-    [self updateSubgroupCountPerGroup];
-    [self filterSingleSubgroupsIfNeeded];
-
-    // Recompute padding from current display settings (not cached — depends on runtime layout)
-    CGFloat rowHeight = _playlistView.rowHeight;
-    CGFloat albumArtSize = _playlistView.albumArtSize;
-    NSInteger headerStyle = _playlistView.headerDisplayStyle;
-
-    NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
-    for (NSUInteger g = 0; g < groupStarts.count; g++) {
-        NSInteger groupStart = [groupStarts[g] integerValue];
-        NSInteger groupEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : (NSInteger)itemCount;
-        NSInteger trackCount = groupEnd - groupStart;
-        NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
-            ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-        [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                          albumArtSize, rowHeight, headerStyle))];
-    }
-    _playlistView.groupPaddingRows = paddingRows;
-    [_playlistView rebuildPaddingCache];
-    [_playlistView rebuildSubgroupRowCache];
+    [self applyGroupData:groupStarts
+                 headers:groupHeaders
+                 artKeys:groupArtKeys
+          subgroupStarts:subgroupStarts
+         subgroupHeaders:subgroupHeaders
+            lastGroupEnd:(NSInteger)itemCount
+         updateFrameSize:NO];
 
     // Seed the scroll anchor from the persisted cache ONLY when this session
     // has none yet (cold start). The in-memory anchor is always fresher than
     // the persisted one - the cache write is async and can lose an A-B-A race.
     if (!_scrollAnchorIndices[@(playlist)] && scrollAnchor && [scrollAnchor integerValue] >= 0) {
-        _scrollAnchorIndices[@(playlist)] = @{@"index": scrollAnchor,
-                                              @"offset": scrollOffset ?: @0};
+        _scrollAnchorIndices[@(playlist)] = @{kAnchorIndexKey: scrollAnchor,
+                                              kAnchorOffsetKey: scrollOffset ?: @0};
     }
 
     return YES;
@@ -1730,7 +1742,8 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 // Background re-detection that validates cached groups without clearing the current display.
 // If results differ from what's currently shown, applies the new data + reloads.
 - (void)detectGroupsForPlaylistBackground:(t_size)playlist itemCount:(t_size)itemCount preset:(GroupPreset *)preset {
-    NSInteger currentGeneration = ++_groupDetectionGeneration;
+    auto generationCounter = _groupDetectionGeneration;
+    NSInteger currentGeneration = ++(*generationCounter);
 
     // Get all handles on main thread
     auto pm = playlist_manager::get();
@@ -1743,7 +1756,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (_groupDetectionGeneration != currentGeneration) return;
+        if (*generationCounter != currentGeneration) return;
 
         // Compile patterns
         titleformat_object::ptr headerScript =
@@ -1784,7 +1797,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             };
         }
         buildCb.artKey = [&](size_t i) { return (*handlesPtr)[i]->get_path(); };
-        buildCb.isCancelled = [&]() { return _groupDetectionGeneration != currentGeneration; };
+        buildCb.isCancelled = [&]() { return *generationCounter != currentGeneration; };
 
         if (!simplaylist::buildGroups(0, handlesPtr->get_count(),
                                       hasSubgroups, /* forceFirstNewGroup */ true,
@@ -1794,13 +1807,13 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             return;
         }
 
-        if (_groupDetectionGeneration != currentGeneration) return;
+        if (*generationCounter != currentGeneration) return;
 
         // Compare with current cached data on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
-            if (_groupDetectionGeneration != currentGeneration) return;
+            if (*generationCounter != currentGeneration) return;
 
             // Check if groups changed. groupArtKeys are deliberately EXCLUDED:
             // after a cache load the view holds placeholder art keys (paths are
@@ -1819,40 +1832,18 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
                 // it can be re-established pixel-exactly in the new one.
                 NSDictionary *applyAnchor = [strongSelf captureScrollAnchor];
 
-                strongSelf.playlistView.groupStarts = groupStarts;
-                strongSelf.playlistView.groupHeaders = groupHeaders;
-                strongSelf.playlistView.groupArtKeys = groupArtKeys;
-                strongSelf.playlistView.subgroupStarts = subgroupStarts;
-                strongSelf.playlistView.subgroupHeaders = subgroupHeaders;
-                [strongSelf updateSubgroupCountPerGroup];
-                [strongSelf filterSingleSubgroupsIfNeeded];
-
-                // Recalculate padding
-                CGFloat rh = strongSelf.playlistView.rowHeight;
-                CGFloat aas = strongSelf.playlistView.albumArtSize;
-                NSInteger hs = strongSelf.playlistView.headerDisplayStyle;
-
-                NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
-                for (NSUInteger g = 0; g < groupStarts.count; g++) {
-                    NSInteger gStart = [groupStarts[g] integerValue];
-                    NSInteger gEnd = (g + 1 < groupStarts.count) ? [groupStarts[g + 1] integerValue] : (NSInteger)itemCount;
-                    NSInteger trackCount = gEnd - gStart;
-                    NSInteger subgroupsInGroup = (g < strongSelf.playlistView.subgroupCountPerGroup.count)
-                        ? [strongSelf.playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-                    [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                                       aas, rh, hs))];
-                }
-                strongSelf.playlistView.groupPaddingRows = paddingRows;
-                [strongSelf.playlistView rebuildPaddingCache];
-                [strongSelf.playlistView rebuildSubgroupRowCache];
-
-                CGFloat newHeight = [strongSelf.playlistView totalContentHeightCached];
-                [strongSelf.playlistView setFrameSize:NSMakeSize(strongSelf.playlistView.frame.size.width, newHeight)];
+                [strongSelf applyGroupData:groupStarts
+                                   headers:groupHeaders
+                                   artKeys:groupArtKeys
+                            subgroupStarts:subgroupStarts
+                           subgroupHeaders:subgroupHeaders
+                              lastGroupEnd:(NSInteger)itemCount
+                           updateFrameSize:YES];
 
                 // Re-establish the viewport position in the corrected layout
                 if (applyAnchor) {
-                    [strongSelf scrollToPlaylistIndex:[applyAnchor[@"index"] integerValue]
-                                          pixelOffset:[applyAnchor[@"offset"] doubleValue]];
+                    [strongSelf scrollToPlaylistIndex:[applyAnchor[kAnchorIndexKey] integerValue]
+                                          pixelOffset:[applyAnchor[kAnchorOffsetKey] doubleValue]];
                 }
 
                 [strongSelf recomputeGroupDurations];
@@ -1878,11 +1869,14 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     pfc::bit_array_bittable selectionMask(itemCount);
     pm->playlist_get_selection_mask(activePlaylist, selectionMask);
 
-    // Efficiently iterate only set bits
-    for (t_size i = selectionMask.find_first(true, 0, itemCount);
-         i < itemCount;
-         i = selectionMask.find_first(true, i + 1, itemCount)) {
-        [_playlistView.selectedIndices addIndex:i];
+    // Iterate set bits as contiguous runs - one addIndexesInRange: per run
+    // instead of one message per selected index (select-all on a large
+    // playlist would otherwise send N messages).
+    t_size i = selectionMask.find_first(true, 0, itemCount);
+    while (i < itemCount) {
+        t_size runEnd = selectionMask.find_first(false, i + 1, itemCount);
+        [_playlistView.selectedIndices addIndexesInRange:NSMakeRange((NSUInteger)i, (NSUInteger)(runEnd - i))];
+        i = selectionMask.find_first(true, runEnd, itemCount);
     }
 }
 
@@ -2090,16 +2084,16 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     // Sync selection back to playlist_manager
     // SDK calls must be on main thread - callbacks trigger UI updates in fb2k core
 
-
     // Copy indices and capture current playlist for the async block
     NSIndexSet *indicesCopy = [selectedPlaylistIndices copy];
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
+    if (activePlaylist == SIZE_MAX) return;
+
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
+    if (itemCount == 0) return;
 
-    if (activePlaylist == SIZE_MAX || itemCount == 0) return;
-
-    // Async to coalesce rapid selection changes, but must be main thread
+    // Deferred one runloop turn (SDK calls must be on the main thread)
     dispatch_async(dispatch_get_main_queue(), ^{
         // Build new state bit array directly from NSIndexSet - O(selection count)
         __block bit_array_bittable newState(itemCount);
@@ -2141,7 +2135,18 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             auto pm2 = playlist_manager::get();
             for (t_size i = 0; i < savedQueue.get_count(); i++) {
                 const auto& item = savedQueue[i];
-                if (item.m_playlist != pfc_infinite)
+                // Playlists can mutate between capture and this turn; re-validate
+                // the saved location (and that it still holds the same track)
+                // before replaying it, else fall back to the handle.
+                bool locationValid = false;
+                if (item.m_playlist != pfc_infinite &&
+                    item.m_playlist < pm2->get_playlist_count() &&
+                    item.m_item < pm2->playlist_get_item_count(item.m_playlist)) {
+                    metadb_handle_ptr current;
+                    locationValid = pm2->playlist_get_item_handle(current, item.m_playlist, item.m_item)
+                        && current == item.m_handle;
+                }
+                if (locationValid)
                     pm2->queue_add_item_playlist(item.m_playlist, item.m_item);
                 else
                     pm2->queue_add_item(item.m_handle);
@@ -2182,8 +2187,25 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     [self showContextMenuForHandles:handles atPoint:point inView:view];
 }
 
-- (void)showContextMenuForHandles:(metadb_handle_list_cref)handles atPoint:(NSPoint)point inView:(NSView *)view {
+// SDK failures surface as C++ exceptions, which @catch (NSException *) cannot
+// intercept — both handler kinds are needed around every SDK menu call.
+static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void)) {
+    try {
     @try {
+        block();
+    } @catch (NSException *exception) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: "
+                                 << (exception.reason.UTF8String ?: "unknown");
+    }
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: unknown exception";
+    }
+}
+
+- (void)showContextMenuForHandles:(metadb_handle_list_cref)handles atPoint:(NSPoint)point inView:(NSView *)view {
+    runGuardedSDKAction("Context menu build", ^{
         // Clear previous managers
         _contextMenuManager.release();
         _contextMenuManagerV1.release();
@@ -2212,32 +2234,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
         NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
         [menu setAutoenablesItems:NO];
 
-        // Add custom "Reload Info" item at top
-        NSMenuItem *reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload Info"
-                                                            action:@selector(reloadInfoClicked:)
-                                                     keyEquivalent:@""];
-        reloadItem.target = self;
-        [menu addItem:reloadItem];
-
-        // Show progress for any active reload operations
-        // Clean up completed operations first
-        _reloadOperations.erase(
-            std::remove_if(_reloadOperations.begin(), _reloadOperations.end(),
-                [](const ReloadOperation& op) { return op.completed; }),
-            _reloadOperations.end());
-
-        for (size_t i = 0; i < _reloadOperations.size(); i++) {
-            const auto& op = _reloadOperations[i];
-            NSString *progressText = [NSString stringWithFormat:@"Reloading: %zu / %zu",
-                                      op.processedCount, op.totalCount];
-            NSMenuItem *progressItem = [[NSMenuItem alloc] initWithTitle:progressText
-                                                                  action:nil
-                                                           keyEquivalent:@""];
-            progressItem.enabled = NO;  // Non-selectable
-            [menu addItem:progressItem];
-        }
-
-        [menu addItem:[NSMenuItem separatorItem]];
+        [self appendReloadSectionToMenu:menu];
 
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
 
@@ -2249,10 +2246,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
         // Show menu
         NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
         [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
-
-    } @catch (NSException *exception) {
-        // Ignore Objective-C exceptions
-    }
+    });
 }
 
 - (void)showContextMenuWithManagerV1:(contextmenu_manager::ptr)cmm atPoint:(NSPoint)point inView:(NSView *)view {
@@ -2262,14 +2256,29 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     [menu setAutoenablesItems:NO];
 
-    // Add custom "Reload Info" item at top
+    [self appendReloadSectionToMenu:menu];
+
+    [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
+
+    // Decorator provider actions (e.g. intake propose/approve)
+    [_decorationCoordinator appendContextActionsToMenu:menu forHandles:_contextMenuHandles];
+
+    [self appendFocusPlayingNowItemToMenu:menu];
+
+    NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
+    [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
+}
+
+// Shared context-menu preamble (v2 and v1 builders): the "Reload Info" item,
+// progress rows for in-flight reload operations, and a trailing separator.
+// Completed operations are compacted out before display.
+- (void)appendReloadSectionToMenu:(NSMenu *)menu {
     NSMenuItem *reloadItem = [[NSMenuItem alloc] initWithTitle:@"Reload Info"
                                                         action:@selector(reloadInfoClicked:)
                                                  keyEquivalent:@""];
     reloadItem.target = self;
     [menu addItem:reloadItem];
 
-    // Show progress for any active reload operations
     _reloadOperations.erase(
         std::remove_if(_reloadOperations.begin(), _reloadOperations.end(),
             [](const ReloadOperation& op) { return op.completed; }),
@@ -2282,21 +2291,11 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
         NSMenuItem *progressItem = [[NSMenuItem alloc] initWithTitle:progressText
                                                               action:nil
                                                        keyEquivalent:@""];
-        progressItem.enabled = NO;
+        progressItem.enabled = NO;  // Non-selectable
         [menu addItem:progressItem];
     }
 
     [menu addItem:[NSMenuItem separatorItem]];
-
-    [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
-
-    // Decorator provider actions (e.g. intake propose/approve)
-    [_decorationCoordinator appendContextActionsToMenu:menu forHandles:_contextMenuHandles];
-
-    [self appendFocusPlayingNowItemToMenu:menu];
-
-    NSPoint screenPoint = [view.window convertPointToScreen:[view convertPoint:point toView:nil]];
-    [menu popUpMenuPositioningItem:nil atLocation:screenPoint inView:nil];
 }
 
 // Append the custom "Focus Playing Now" navigation item at the very bottom of
@@ -2327,7 +2326,6 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     t_size count = pm->playlist_get_item_count(playingPlaylist);
     if (playingItem >= count) return;
 
-
     // Focus + select the playing track (valid on non-active playlists too);
     // the playlist callbacks propagate this into the view.
     pm->playlist_set_focus_item(playingPlaylist, playingItem);
@@ -2357,7 +2355,8 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             }
 
             case menu_tree_item::itemCommand: {
-                NSString *title = [NSString stringWithUTF8String:child->name()];
+                // nil on invalid UTF-8 — initWithTitle:nil would throw
+                NSString *title = [NSString stringWithUTF8String:child->name()] ?: @"";
                 NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title
                                                                   action:@selector(contextMenuItemClicked:)
                                                            keyEquivalent:@""];
@@ -2373,7 +2372,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             }
 
             case menu_tree_item::itemSubmenu: {
-                NSString *title = [NSString stringWithUTF8String:child->name()];
+                NSString *title = [NSString stringWithUTF8String:child->name()] ?: @"";
                 NSMenuItem *submenuItem = [[NSMenuItem alloc] initWithTitle:title
                                                                      action:nil
                                                               keyEquivalent:@""];
@@ -2401,7 +2400,8 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             }
 
             case contextmenu_item_node::TYPE_COMMAND: {
-                NSString *title = [NSString stringWithUTF8String:child->get_name()];
+                // nil on invalid UTF-8 — initWithTitle:nil would throw
+                NSString *title = [NSString stringWithUTF8String:child->get_name()] ?: @"";
                 NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title
                                                                   action:@selector(contextMenuItemClickedV1:)
                                                            keyEquivalent:@""];
@@ -2417,7 +2417,7 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
             }
 
             case contextmenu_item_node::TYPE_POPUP: {
-                NSString *title = [NSString stringWithUTF8String:child->get_name()];
+                NSString *title = [NSString stringWithUTF8String:child->get_name()] ?: @"";
                 NSMenuItem *submenuItem = [[NSMenuItem alloc] initWithTitle:title
                                                                      action:nil
                                                               keyEquivalent:@""];
@@ -2441,27 +2441,21 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     // Execute using the stored contextmenu_manager_v2
     // The command ID is stored in the tag
     unsigned commandID = (unsigned)sender.tag;
-
-    @try {
+    runGuardedSDKAction("Context menu command", ^{
         if (_contextMenuManager.is_valid()) {
             _contextMenuManager->execute_by_id(commandID);
         }
-    } @catch (NSException *exception) {
-        // Ignore
-    }
+    });
 }
 
 - (void)contextMenuItemClickedV1:(NSMenuItem *)sender {
     // Execute using the stored contextmenu_manager (v1)
     unsigned commandID = (unsigned)sender.tag;
-
-    @try {
+    runGuardedSDKAction("Context menu command", ^{
         if (_contextMenuManagerV1.is_valid()) {
             _contextMenuManagerV1->execute_by_id(commandID);
         }
-    } @catch (NSException *exception) {
-        // Ignore
-    }
+    });
 }
 
 - (void)reloadInfoClicked:(NSMenuItem *)sender {
@@ -2505,6 +2499,11 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
 }
 
 - (void)playlistViewDidRequestRemoveSelection:(SimPlaylistView *)view {
+    // Empty selection: nothing to remove. Without this guard, lastIndex below
+    // returns NSNotFound and the focus-recalculation loop runs ~2^63 times,
+    // freezing the app.
+    if (view.selectedIndices.count == 0) return;
+
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
 
@@ -2526,19 +2525,26 @@ static std::string scrollAnchorKeyForName(const char *playlistName) {
     // Note: selectedIndices contains playlist indices directly (not row indices)
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
     __block bit_array_bittable mask(itemCount);
+    __block t_size removedCount = 0;
 
     [view.selectedIndices enumerateIndexesUsingBlock:^(NSUInteger playlistIndex, BOOL *stop) {
         if (playlistIndex < itemCount) {
             mask.set((t_size)playlistIndex, true);
+            removedCount++;
         }
     }];
+
+    // The view selection can be stale relative to the playlist - out-of-range
+    // indices are dropped above, so derive all counts from what actually goes
+    // into the mask (itemCount - selectedIndices.count could wrap otherwise).
+    if (removedCount == 0) return;
 
     // Calculate new focus position BEFORE removal
     // Focus should move to the next item after the last selected, or previous if at end
     NSInteger lastSelectedIndex = (NSInteger)[view.selectedIndices lastIndex];
     NSInteger firstSelectedIndex = (NSInteger)[view.selectedIndices firstIndex];
-    t_size selectionCount = [view.selectedIndices count];
-    t_size newItemCount = itemCount - selectionCount;
+    if ((t_size)lastSelectedIndex >= itemCount) lastSelectedIndex = (NSInteger)itemCount - 1;
+    t_size newItemCount = itemCount - removedCount;
 
     t_size newFocusIndex = SIZE_MAX;
     if (newItemCount > 0) {
@@ -2612,7 +2618,9 @@ static BOOL isRemotePath(const char *path) {
         return nil;  // Just show placeholder for remote files
     }
 
-    NSString *cacheKey = [NSString stringWithFormat:@"%s", path];
+    // nil on invalid UTF-8 — a nil key would throw inside the cache
+    NSString *cacheKey = [NSString stringWithUTF8String:path];
+    if (!cacheKey) return nil;
     AlbumArtCache *cache = [AlbumArtCache sharedCache];
     NSImage *cached = [cache cachedImageForKey:cacheKey];
     if (cached) {
@@ -2632,8 +2640,8 @@ static BOOL isRemotePath(const char *path) {
             if (image) {
                 // Coalesce redraws with small delay to batch multiple image loads
                 SimPlaylistController *strongSelf = weakSelf;
-                if (strongSelf && !strongSelf.needsRedraw) {
-                    strongSelf.needsRedraw = YES;
+                if (strongSelf && !strongSelf.artRedrawScheduled) {
+                    strongSelf.artRedrawScheduled = YES;
                     // Use performSelector with delay to batch multiple completions
                     [NSObject cancelPreviousPerformRequestsWithTarget:strongSelf
                                                              selector:@selector(performDelayedRedraw)
@@ -2652,7 +2660,7 @@ static BOOL isRemotePath(const char *path) {
 }
 
 - (void)performDelayedRedraw {
-    _needsRedraw = NO;
+    _artRedrawScheduled = NO;
     [_playlistView setNeedsDisplay:YES];
 }
 
@@ -2660,8 +2668,13 @@ static BOOL isRemotePath(const char *path) {
     if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
     auto pm = playlist_manager::get();
     t_size playlist = (t_size)_currentPlaylistIndex;
+    // The view selection can be stale relative to the playlist - skip
+    // out-of-range indices, matching the other selection consumers.
+    t_size itemCount = pm->playlist_get_item_count(playlist);
     [playlistIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
-        pm->queue_add_item_playlist(playlist, (t_size)idx);
+        if (idx < itemCount) {
+            pm->queue_add_item_playlist(playlist, (t_size)idx);
+        }
     }];
 }
 
@@ -2712,9 +2725,9 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
         _queuePositionMap = [self buildQueuePositionMap];
     }
 
-    int64_t queueStyle = simplaylist_config::getConfigInt(
-        simplaylist_config::kQueueDisplayStyle,
-        simplaylist_config::kDefaultQueueDisplayStyle);
+    // The view caches this setting (refreshed on settings-changed notification);
+    // avoid a configStore round-trip per formatted row.
+    NSInteger queueStyle = _playlistView.queueDisplayStyle;
 
     // Format column values using pre-compiled scripts
     NSMutableArray<NSString *> *columnValues = [NSMutableArray arrayWithCapacity:_compiledColumnScripts.size()];
@@ -2734,7 +2747,9 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
         } else {
             std::string value = simplaylist::TitleFormatHelper::formatWithPlaylistContext(
                 activePlaylist, playlistIndex, _compiledColumnScripts[i]);
-            [columnValues addObject:[NSString stringWithUTF8String:value.c_str()]];
+            // nil on invalid UTF-8 in tags; addObject:nil would throw on every
+            // redraw of the row — an effective crash loop from one corrupt file
+            [columnValues addObject:([NSString stringWithUTF8String:value.c_str()] ?: @"")];
         }
     }
 
@@ -3001,11 +3016,27 @@ static const GUID guid_simplaylist_custom_columns =
             uiControl->show_preferences(guid_simplaylist_custom_columns);
         }
     } @catch (...) {
-        // Silently fail if preferences can't be opened
+        FB2K_console_formatter() << "[SimPlaylist] Failed to open custom columns preferences";
     }
 }
 
 #pragma mark - Drag & Drop
+
+// Convert a drop row to the playlist index the drop should insert before.
+// Header/subgroup/padding rows resolve to the next track row. Returns -1 when
+// the row is out of range or no track row follows (callers append at end).
+static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) {
+    NSInteger totalRows = [view rowCount];
+    if (row < 0 || row >= totalRows) return -1;
+    NSInteger playlistIdx = [view playlistIndexForRow:row];
+    if (playlistIdx >= 0) return playlistIdx;
+    // Row is header/subgroup/padding - find next valid track
+    for (NSInteger r = row + 1; r < totalRows; r++) {
+        NSInteger idx = [view playlistIndexForRow:r];
+        if (idx >= 0) return idx;
+    }
+    return -1;
+}
 
 - (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRowIndices toRow:(NSInteger)destinationRow operation:(NSDragOperation)operation {
     if (_currentPlaylistIndex < 0) return;
@@ -3044,32 +3075,11 @@ static const GUID guid_simplaylist_custom_columns =
 
     if (sourcePlaylistIndices.count == 0) return;
 
-    // Sort source indices
-    [sourcePlaylistIndices sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
-        return [a compare:b];
-    }];
+    // Already sorted: NSIndexSet enumerates in ascending index order.
 
     // Convert destination row to playlist index
-    NSInteger totalRows = [view rowCount];
-    NSInteger destPlaylistIndex = itemCount;  // Default to end of playlist
-    if (destinationRow >= totalRows) {
-        destPlaylistIndex = itemCount;
-    } else if (destinationRow >= 0) {
-        NSInteger destIdx = [view playlistIndexForRow:destinationRow];
-        if (destIdx >= 0) {
-            destPlaylistIndex = destIdx;
-        } else {
-            // Row is header/subgroup/padding - find next valid track
-            for (NSInteger r = destinationRow; r < totalRows; r++) {
-                NSInteger idx = [view playlistIndexForRow:r];
-                if (idx >= 0) {
-                    destPlaylistIndex = idx;
-                    break;
-                }
-            }
-            // If no track found after, destPlaylistIndex remains itemCount (end)
-        }
-    }
+    NSInteger dropIdx = insertionIndexForDropRow(view, destinationRow);
+    NSInteger destPlaylistIndex = (dropIdx >= 0) ? dropIdx : (NSInteger)itemCount;
 
     pm->playlist_undo_backup(activePlaylist);
 
@@ -3143,23 +3153,8 @@ static const GUID guid_simplaylist_custom_columns =
     }
 
     // Convert row index to playlist index for insertion point
-    t_size insertAt = SIZE_MAX;  // Default: append at end
-    NSInteger totalRows = [view rowCount];
-    if (row >= 0 && row < totalRows) {
-        NSInteger playlistIdx = [view playlistIndexForRow:row];
-        if (playlistIdx >= 0) {
-            insertAt = (t_size)playlistIdx;
-        } else {
-            // Row is header/subgroup/padding - find next valid track
-            for (NSInteger r = row; r < totalRows; r++) {
-                NSInteger idx = [view playlistIndexForRow:r];
-                if (idx >= 0) {
-                    insertAt = (t_size)idx;
-                    break;
-                }
-            }
-        }
-    }
+    NSInteger dropIdx = insertionIndexForDropRow(view, row);
+    t_size insertAt = (dropIdx >= 0) ? (t_size)dropIdx : SIZE_MAX;  // SIZE_MAX: append at end
 
     // Use async import to avoid crash from synchronous process_location
     importFilesToPlaylistAsync(activePlaylist, insertAt, urls);
@@ -3180,7 +3175,9 @@ static const GUID guid_simplaylist_custom_columns =
             if (pm->playlist_get_item_handle(handle, activePlaylist, idx)) {
                 const char* path = handle->get_path();
                 if (path) {
-                    [paths addObject:[NSString stringWithUTF8String:path]];
+                    // nil on invalid UTF-8 — addObject:nil would throw at drag start
+                    NSString *pathStr = [NSString stringWithUTF8String:path];
+                    if (pathStr) [paths addObject:pathStr];
                 }
             }
         }
@@ -3217,31 +3214,8 @@ static const GUID guid_simplaylist_custom_columns =
     }
 
     // Convert row index to playlist index for insertion point
-    t_size insertAt = SIZE_MAX;  // Default: append at end
-    NSInteger totalRows = [view rowCount];
-    if (row >= 0 && row < totalRows) {
-        NSInteger playlistIdx = [view playlistIndexForRow:row];
-        if (playlistIdx >= 0) {
-            insertAt = (t_size)playlistIdx;
-        } else {
-            // Row is header/subgroup/padding - find next valid track
-            for (NSInteger r = row; r < totalRows; r++) {
-                NSInteger idx = [view playlistIndexForRow:r];
-                if (idx >= 0) {
-                    insertAt = (t_size)idx;
-                    break;
-                }
-            }
-        }
-    }
-
-    FB2K_console_formatter() << "[SimPlaylist] Cross-playlist " << (isMove ? "MOVE" : "COPY")
-                             << ": src=" << srcPlaylist
-                             << ", dest=" << destPlaylist
-                             << ", items=" << sourceIndices.count
-                             << ", insertAt=" << (insertAt == SIZE_MAX ? -1 : (int)insertAt)
-                             << ", operation=" << (int)operation
-                             << ", srcValid=" << (srcPlaylist < pm->get_playlist_count() ? "YES" : "NO");
+    NSInteger dropIdx = insertionIndexForDropRow(view, row);
+    t_size insertAt = (dropIdx >= 0) ? (t_size)dropIdx : SIZE_MAX;  // SIZE_MAX: append at end
 
     // For MOVE: remove items from source playlist (do this before inserting)
     if (isMove && srcPlaylist < pm->get_playlist_count() && sourceIndices.count > 0) {
@@ -3251,7 +3225,6 @@ static const GUID guid_simplaylist_custom_columns =
         t_size srcItemCount = pm->playlist_get_item_count(srcPlaylist);
         pfc::bit_array_bittable removeMask(srcItemCount);
 
-        // Iterate without block (bit_array can't be captured in ObjC blocks)
         NSUInteger idx = [sourceIndices firstIndex];
         while (idx != NSNotFound) {
             if (idx < srcItemCount) {

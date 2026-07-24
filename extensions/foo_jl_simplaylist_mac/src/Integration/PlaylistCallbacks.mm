@@ -8,11 +8,41 @@
 #import "PlaylistCallbacks.h"
 #import "../UI/SimPlaylistController.h"
 #import "../Core/ConfigHelper.h"
+#import <atomic>
 #import <mutex>
 
 // Global controller storage - NSHashTable with weak memory properly supports ARC zeroing
 static std::mutex g_controllersMutex;
 static NSHashTable<SimPlaylistController *> *g_controllers;
+
+// Snapshot the registry so handlers run OUTSIDE the (non-recursive) mutex:
+// a handler that re-enters register/unregisterController on the same thread
+// would deadlock, and mutating the table mid-enumeration would throw. The
+// returned array holds strong references, keeping controllers alive while
+// their handlers run.
+static NSArray<SimPlaylistController *> *copyControllers() {
+    std::lock_guard<std::mutex> lock(g_controllersMutex);
+    return g_controllers.allObjects ?: @[];
+}
+
+// Cheap pre-dispatch check so global callbacks skip list copies and main-queue
+// hops when no SimPlaylist panel exists.
+static bool hasControllers() {
+    std::lock_guard<std::mutex> lock(g_controllersMutex);
+    return g_controllers.count > 0;
+}
+
+// Shared fan-out for every event forwarder below: skip the main-queue hop
+// when no panel exists, then run the per-controller block against a strong
+// snapshot of the registry on the main queue.
+static void dispatchToControllers(void (^perController)(SimPlaylistController *)) {
+    if (!hasControllers()) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (SimPlaylistController *c in copyControllers()) {
+            perController(c);
+        }
+    });
+}
 
 // Callback manager implementation
 SimPlaylistCallbackManager& SimPlaylistCallbackManager::instance() {
@@ -34,11 +64,8 @@ void SimPlaylistCallbackManager::unregisterController(SimPlaylistController* con
 }
 
 void SimPlaylistCallbackManager::onPlaylistSwitched() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handlePlaylistSwitched];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handlePlaylistSwitched];
     });
 }
 
@@ -46,106 +73,73 @@ void SimPlaylistCallbackManager::onItemsAdded(t_size base, t_size count, std::sh
     NSInteger b = base;
     NSInteger cnt = count;
     auto handlesCopy = handles;  // captured by block
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsAdded:b count:cnt addedHandles:handlesCopy];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleItemsAdded:b count:cnt addedHandles:handlesCopy];
     });
 }
 
 void SimPlaylistCallbackManager::onItemsRemoved(t_size newCount) {
     NSInteger nc = (NSInteger)newCount;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsRemoved:nc];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleItemsRemoved:nc];
     });
 }
 
 void SimPlaylistCallbackManager::onItemsReordered() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsReordered];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleItemsReordered];
     });
 }
 
 void SimPlaylistCallbackManager::onSelectionChanged() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleSelectionChanged];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleSelectionChanged];
     });
 }
 
 void SimPlaylistCallbackManager::onFocusChanged(t_size from, t_size to) {
     NSInteger f = (from == SIZE_MAX) ? -1 : from;
     NSInteger t = (to == SIZE_MAX) ? -1 : to;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleFocusChanged:f to:t];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleFocusChanged:f to:t];
     });
 }
 
 void SimPlaylistCallbackManager::onItemsModified() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleItemsModified];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleItemsModified];
     });
 }
 
 void SimPlaylistCallbackManager::onEnsureVisible(t_size idx) {
     NSInteger i = idx;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleEnsureVisible:i];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleEnsureVisible:i];
     });
 }
 
 void SimPlaylistCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handlePlaybackNewTrack:track];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handlePlaybackNewTrack:track];
     });
 }
 
 void SimPlaylistCallbackManager::onPlaybackStopped() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handlePlaybackStopped];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handlePlaybackStopped];
     });
 }
 
 void SimPlaylistCallbackManager::onQueueChanged() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleQueueChanged];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleQueueChanged];
     });
 }
 
 void SimPlaylistCallbackManager::onMetadbChanged(std::shared_ptr<metadb_handle_list> changed) {
     auto changedCopy = changed;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-        for (SimPlaylistController *c in g_controllers) {
-            [c handleMetadbChanged:changedCopy];
-        }
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handleMetadbChanged:changedCopy];
     });
 }
 
@@ -172,6 +166,7 @@ public:
     ) {}
 
     void on_items_added(t_size base, metadb_handle_list_cref data, const bit_array& selection) override {
+        if (!hasControllers()) return;  // skip the list copy when no panel exists
         auto copy = std::make_shared<metadb_handle_list>(data);
         SimPlaylistCallbackManager::instance().onItemsAdded(base, data.get_count(), copy);
     }
@@ -215,6 +210,7 @@ static simplaylist_playlist_callback* g_playlist_callback = nullptr;
 class simplaylist_metadb_callback : public metadb_io_callback_dynamic_impl_base {
 public:
     void on_changed_sorted(metadb_handle_list_cref items, bool /*fromhook*/) override {
+        if (!hasControllers()) return;  // skip the list copy when no panel exists
         auto copy = std::make_shared<metadb_handle_list>(items);
         SimPlaylistCallbackManager::instance().onMetadbChanged(copy);
     }
@@ -238,20 +234,22 @@ static simplaylist_metadb_callback* g_metadb_callback = nullptr;
 // main queue. A low-frequency timer backstops redirects that don't touch
 // playlist contents (e.g. re-clicking the same ReFacets selection).
 
-static bool g_playingGuardActive = false;
-static bool g_playingGuardCheckPending = false;
+static std::atomic<bool> g_playingGuardActive{false};
+static std::atomic<bool> g_playingGuardCheckPending{false};
 static NSTimer* g_playingGuardTimer = nil;
 
 static void runPlayingPlaylistGuardCheck() {
     if (!g_playingGuardActive) return;
+    // Cheap config check first — this runs from a 2 s repeating timer, so do
+    // not touch the playback/playlist SDK state when the feature is disabled.
+    if (!simplaylist_config::getConfigBool(simplaylist_config::kKeepPlayingPlaylist,
+                                           simplaylist_config::kDefaultKeepPlayingPlaylist)) return;
     auto pm = playlist_manager::get();
     t_size itemPlaylist = SIZE_MAX, itemIndex = SIZE_MAX;
     if (!pm->get_playing_item_location(&itemPlaylist, &itemIndex)) return;
     t_size playingPlaylist = pm->get_playing_playlist();
     if (playingPlaylist == itemPlaylist) return;
     if (itemPlaylist >= pm->get_playlist_count()) return;
-    if (!simplaylist_config::getConfigBool(simplaylist_config::kKeepPlayingPlaylist,
-                                           simplaylist_config::kDefaultKeepPlayingPlaylist)) return;
 
     pfc::string8 thief = "<none>";
     if (playingPlaylist < pm->get_playlist_count()) {
@@ -316,14 +314,16 @@ void SimPlaylistCallbackManager::initCallbacks() {
                                                                 block:^(NSTimer* timer) {
             runPlayingPlaylistGuardCheck();
         }];
+        // The check tolerates jitter (get_playing_item_location early-out when
+        // idle); let the system coalesce wakeups.
+        g_playingGuardTimer.tolerance = 0.5;
     }
 }
 
 void SimPlaylistCallbackManager::onShutdown() {
     // Save group cache for all registered controllers before shutdown.
     // Must run on main thread (accesses UI state), and we're already on main in on_quit.
-    std::lock_guard<std::mutex> lock(g_controllersMutex);
-    for (SimPlaylistController *c in g_controllers) {
+    for (SimPlaylistController *c in copyControllers()) {
         [c saveGroupCacheForCurrentPlaylist];
     }
 }

@@ -11,8 +11,6 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class GroupNode;
-@class GroupBoundary;
 @class ColumnDefinition;
 @class RowDecoration;
 @class GroupDecoration;
@@ -37,7 +35,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, copy) NSArray<NSNumber *> *groupStarts;  // Playlist indices where groups start
 @property (nonatomic, copy) NSArray<NSString *> *groupHeaders;  // Header text per group
 @property (nonatomic, copy) NSArray<NSString *> *groupArtKeys;  // Album art cache key per group
-@property (nonatomic, copy) NSArray<NSNumber *> *groupDurations;  // Total seconds per group, or nil if disabled
+@property (nonatomic, copy, nullable) NSArray<NSNumber *> *groupDurations;  // Total seconds per group, or nil if disabled
 @property (nonatomic, copy) NSArray<NSNumber *> *groupPaddingRows;  // Extra padding rows per group for min height
 @property (nonatomic, assign) NSInteger totalPaddingRowsCached;  // Pre-computed sum of all padding rows
 @property (nonatomic, copy) NSArray<NSNumber *> *cumulativePaddingCache;  // Pre-computed cumulative padding before each group
@@ -51,15 +49,6 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Formatted column values cache (lazily populated during draw, auto-evicts under memory pressure)
 @property (nonatomic, strong) NSCache<NSNumber *, NSArray<NSString *> *> *formattedValuesCache;
-
-// Legacy properties (for compatibility)
-@property (nonatomic, strong) NSArray<GroupNode *> *nodes;  // Deprecated
-@property (nonatomic, strong) NSMutableArray<GroupBoundary *> *groupBoundaries;  // Deprecated
-@property (nonatomic, assign) NSInteger totalItemCount;
-@property (nonatomic, assign) BOOL groupsComplete;
-@property (nonatomic, assign) NSInteger groupsCalculatedUpTo;
-@property (nonatomic, assign) BOOL flatModeEnabled;
-@property (nonatomic, assign) NSInteger flatModeTrackCount;
 
 // Layout metrics
 @property (nonatomic, assign) CGFloat rowHeight;
@@ -77,13 +66,13 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Appearance settings
 @property (nonatomic, assign) BOOL showNowPlayingShading;  // Yellow background for playing row
-@property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline
+@property (nonatomic, assign) NSInteger headerDisplayStyle;  // 0 = above tracks, 1 = album art aligned, 2 = inline, 3 = under album art
 @property (nonatomic, assign) BOOL dimParentheses;  // Dim text inside () and []
 @property (nonatomic, assign) BOOL showGroupDuration;  // Show total duration in group headers
 @property (nonatomic, assign) NSInteger queueDisplayStyle;  // 0 = brackets [1], 1 = accent color
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect
-@property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = normal, 1 = larger
+@property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = compact, 1 = normal, 2 = larger
 
 // Row decorator providers (intake doc 04 Part A). Set once by the controller
 // at panel init. When NO (zero providers registered — the common case) the
@@ -114,7 +103,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 - (CGFloat)yOffsetForRow:(NSInteger)row;
 
 // Row mapping for sparse groups (O(log g) operations)
-- (NSInteger)rowCount;  // Total display rows = itemCount + groupCount
+- (NSInteger)rowCount;  // Total display rows = tracks + headers + subgroups + padding
 - (NSInteger)playlistIndexForRow:(NSInteger)row;  // -1 for header rows
 - (BOOL)isRowGroupHeader:(NSInteger)row;
 - (NSInteger)groupIndexForRow:(NSInteger)row;  // Which group does row belong to
@@ -131,9 +120,6 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Settings reload
 - (void)reloadSettings;
-
-// Rebuild row offset cache for grouped mode
-- (void)rebuildRowOffsetCache;
 
 // Total content height (for frame sizing)
 - (CGFloat)totalContentHeightCached;

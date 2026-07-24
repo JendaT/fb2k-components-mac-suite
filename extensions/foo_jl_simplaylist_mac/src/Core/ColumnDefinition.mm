@@ -99,27 +99,27 @@
                 return cleaned;
             }
 
-        // Migration: remove legacy ">" pattern from Playing columns now that the 
-        // native ▶ drawing in SimPlaylistView handles the indicator.
-        // TODO: This migration for Playing column can be removed in future. Let's keep it until end of 2026.
-        BOOL migrated = NO;
-        NSMutableArray<ColumnDefinition *> *migrating = [cleaned mutableCopy];
-        for (ColumnDefinition *col in migrating) {
-            if ([col.name isEqualToString:@"Playing"] &&
-                [col.pattern isEqualToString:@"$if(%isplaying%,>,)"]) {
-                col.pattern = @"";
-                migrated = YES;
+            // Migration: remove legacy ">" pattern from Playing columns now that the
+            // native ▶ drawing in SimPlaylistView handles the indicator.
+            // TODO: This migration for Playing column can be removed in future. Let's keep it until end of 2026.
+            BOOL migrated = NO;
+            NSMutableArray<ColumnDefinition *> *migrating = [cleaned mutableCopy];
+            for (ColumnDefinition *col in migrating) {
+                if ([col.name isEqualToString:@"Playing"] &&
+                    [col.pattern isEqualToString:@"$if(%isplaying%,>,)"]) {
+                    col.pattern = @"";
+                    migrated = YES;
+                }
             }
-        }
-        if (migrated) {
-            NSString *migratedJSON = [self columnsToJSON:migrating];
-            simplaylist_config::setConfigString(
-                simplaylist_config::kColumns, migratedJSON.UTF8String);
-            FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
-            return migrating;
-        }
+            if (migrated) {
+                NSString *migratedJSON = [self columnsToJSON:migrating];
+                simplaylist_config::setConfigString(
+                    simplaylist_config::kColumns, migratedJSON.UTF8String);
+                FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
+                return migrating;
+            }
 
-        return columns;
+            return cleaned;
         }
     }
 
@@ -305,7 +305,8 @@
             }
         }
     } @catch (NSException *exception) {
-        // Ignore enumeration errors
+        FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: "
+                                 << (exception.reason.UTF8String ?: "unknown");
     }
 
     return columns;
@@ -426,6 +427,11 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
+    if (!jsonData) {
+        // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
+        // would throw on nil data.
+        return @[];
+    }
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
                                                          options:0
                                                            error:&error];
@@ -450,7 +456,14 @@
         NSNumber *autoResizeNum = colDict[@"auto_resize"];
         NSNumber *clickableNum = colDict[@"clickable"];
 
-        if (!name || !pattern) continue;
+        // Corrupted config can put non-strings/non-numbers here; wrong types
+        // crash later on isEqualToString:/doubleValue sends.
+        if (![name isKindOfClass:[NSString class]] ||
+            ![pattern isKindOfClass:[NSString class]]) continue;
+        if (widthNum && ![widthNum isKindOfClass:[NSNumber class]]) widthNum = nil;
+        if (alignmentStr && ![alignmentStr isKindOfClass:[NSString class]]) alignmentStr = nil;
+        if (autoResizeNum && ![autoResizeNum isKindOfClass:[NSNumber class]]) autoResizeNum = nil;
+        if (clickableNum && ![clickableNum isKindOfClass:[NSNumber class]]) clickableNum = nil;
 
         // Migration: "Track no" removed - use "#" instead (v1.1.7+)
         if ([name isEqualToString:@"Track no"]) {
@@ -460,7 +473,12 @@
         ColumnDefinition *col = [[ColumnDefinition alloc] init];
         col.name = name;
         col.pattern = pattern;
-        col.width = widthNum ? [widthNum doubleValue] : 100;
+        // Persisted width may be NaN/Inf/non-positive; that would flow into
+        // NSRect math and hit-testing. Fall back to the default and cap.
+        // (No higher floor: stock columns legitimately persist widths of 24.)
+        double width = widthNum ? [widthNum doubleValue] : 100;
+        if (!isfinite(width) || width <= 0) width = 100;
+        col.width = MIN(10000.0, width);
         col.alignment = alignmentStr ? [self alignmentFromString:alignmentStr] : ColumnAlignmentLeft;
         col.autoResize = autoResizeNum ? [autoResizeNum boolValue] : NO;
         col.clickable = clickableNum ? [clickableNum boolValue] : NO;
@@ -476,8 +494,9 @@
 
     for (ColumnDefinition *col in columns) {
         NSMutableDictionary *colDict = [NSMutableDictionary dictionary];
-        colDict[@"name"] = col.name;
-        colDict[@"pattern"] = col.pattern;
+        // nil field would crash the dictionary literal-style assignment
+        colDict[@"name"] = col.name ?: @"";
+        colDict[@"pattern"] = col.pattern ?: @"";
         colDict[@"width"] = @(col.width);
         colDict[@"alignment"] = [self stringFromAlignment:col.alignment];
         if (col.autoResize) {

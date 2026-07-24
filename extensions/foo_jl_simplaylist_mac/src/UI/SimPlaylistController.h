@@ -14,7 +14,6 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class SimPlaylistView;
-@class GroupNode;
 
 @interface SimPlaylistController : NSViewController
 

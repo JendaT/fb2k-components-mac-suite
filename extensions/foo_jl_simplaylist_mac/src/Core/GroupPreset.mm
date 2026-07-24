@@ -90,6 +90,9 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
+    // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
+    // would throw on nil data.
+    if (!jsonData) return 0;
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
                                                          options:0
                                                            error:&error];
@@ -104,6 +107,7 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
+    if (!jsonData) return @[];
     NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
                                                          options:0
                                                            error:&error];
@@ -117,14 +121,16 @@
     for (NSDictionary *presetDict in presetsArray) {
         if (![presetDict isKindOfClass:[NSDictionary class]]) continue;
 
+        // Corrupted config can put non-strings in these slots; a number here
+        // would crash later on isEqualToString:/UTF8String sends.
         NSString *name = presetDict[@"name"];
-        if (!name) continue;
+        if (![name isKindOfClass:[NSString class]]) continue;
 
         GroupPreset *preset = [GroupPreset presetWithName:name];
 
         // Sorting pattern
         NSString *sortingPattern = presetDict[@"sorting_pattern"];
-        if (sortingPattern) {
+        if ([sortingPattern isKindOfClass:[NSString class]]) {
             preset.sortingPattern = sortingPattern;
         }
 
@@ -133,8 +139,8 @@
         if ([headerDict isKindOfClass:[NSDictionary class]]) {
             NSString *pattern = headerDict[@"pattern"];
             NSString *display = headerDict[@"display"];
-            if (pattern) preset.headerPattern = pattern;
-            if (display) preset.headerDisplayType = [self displayTypeFromString:display];
+            if ([pattern isKindOfClass:[NSString class]]) preset.headerPattern = pattern;
+            if ([display isKindOfClass:[NSString class]]) preset.headerDisplayType = [self displayTypeFromString:display];
         }
 
         // Group column
@@ -142,8 +148,8 @@
         if ([groupColDict isKindOfClass:[NSDictionary class]]) {
             NSString *pattern = groupColDict[@"pattern"];
             NSString *display = groupColDict[@"display"];
-            if (pattern) preset.groupColumnPattern = pattern;
-            if (display) preset.groupColumnDisplayType = [self displayTypeFromString:display];
+            if ([pattern isKindOfClass:[NSString class]]) preset.groupColumnPattern = pattern;
+            if ([display isKindOfClass:[NSString class]]) preset.groupColumnDisplayType = [self displayTypeFromString:display];
         }
 
         // Subgroups
@@ -155,8 +161,9 @@
 
                 NSString *pattern = subDict[@"pattern"];
                 NSString *display = subDict[@"display"];
-                if (pattern) {
-                    GroupDisplayType type = display ? [self displayTypeFromString:display] : GroupDisplayTypeText;
+                if ([pattern isKindOfClass:[NSString class]]) {
+                    GroupDisplayType type = [display isKindOfClass:[NSString class]]
+                        ? [self displayTypeFromString:display] : GroupDisplayTypeText;
                     [subgroups addObject:[SubgroupDefinition subgroupWithPattern:pattern displayType:type]];
                 }
             }
@@ -174,8 +181,9 @@
 
     for (GroupPreset *preset in presets) {
         NSMutableDictionary *presetDict = [NSMutableDictionary dictionary];
-        presetDict[@"name"] = preset.name;
-        presetDict[@"sorting_pattern"] = preset.sortingPattern;
+        // nil field would crash the dictionary assignment
+        presetDict[@"name"] = preset.name ?: @"";
+        presetDict[@"sorting_pattern"] = preset.sortingPattern ?: @"";
 
         // Header
         presetDict[@"header"] = @{
@@ -193,7 +201,7 @@
         NSMutableArray *subgroupsArray = [NSMutableArray array];
         for (SubgroupDefinition *sub in preset.subgroups) {
             [subgroupsArray addObject:@{
-                @"pattern": sub.pattern,
+                @"pattern": sub.pattern ?: @"",
                 @"display": [self stringFromDisplayType:sub.displayType]
             }];
         }

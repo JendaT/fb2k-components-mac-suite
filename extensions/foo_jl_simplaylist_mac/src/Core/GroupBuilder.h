@@ -57,9 +57,11 @@ inline bool buildGroups(size_t begin, size_t end,
         bool isNewGroup = (forceFirstNewGroup && i == begin) || (currentHeader != header);
 
         if (isNewGroup) {
+            // stringWithUTF8String: returns nil on invalid UTF-8 in tags;
+            // addObject:nil would throw on a background thread.
             [groupStarts addObject:@(i)];
-            [groupHeaders addObject:[NSString stringWithUTF8String:header]];
-            [groupArtKeys addObject:[NSString stringWithUTF8String:cb.artKey(i)]];
+            [groupHeaders addObject:([NSString stringWithUTF8String:header] ?: @"")];
+            [groupArtKeys addObject:([NSString stringWithUTF8String:cb.artKey(i)] ?: @"")];
             currentHeader = header;
             detector.enterNewGroup();
         }

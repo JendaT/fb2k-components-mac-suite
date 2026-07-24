@@ -2,6 +2,20 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Drop indicator landed below the cursor**: Dragging into a grouped playlist placed the insertion line up to ~150 px below the pointer, and the drop landed where the line was drawn. Drop positions were scored against a uniform row height that ignored taller group headers, so the error grew with every header above the cursor. Positions are now scored against real layout geometry and only candidates near the cursor are examined, which also removes a full-playlist scan on every mouse-move during a drag.
+- **Delete/Backspace with an empty selection hung the app**: The removal path looped ~2^63 times when nothing was selected.
+- **Group detection interfered across panels**: With two or more SimPlaylist panels open, one panel rebuilding its playlist cancelled another's in-progress group detection, leaving that panel with partial groups and an unsaved group cache. The cancellation counter is now per panel.
+- **Album art cache could grow to ~1 GB**: The cache was bounded by image count only. It is now also bounded by decoded size (256 MB default), evicting oldest-first on insert. Eviction still never happens behind the drawing code's back, so on-screen art cannot blank out.
+- Assorted crash guards and correctness fixes from a multi-pass code review (nil handling on tag-derived text, bounds and lifetime checks, error-path cleanups).
+
+### Changed
+- **Dead code removal**: Deleted the unused legacy rendering pipeline (node-based and boundary-based drawing, the disabled flat-mode path) and the `GroupNode`/`GroupBoundary` classes, which nothing referenced — about 1,100 lines. No behavior change; the sparse model is the only path and was already the only one running.
+- **Group-data application unified**: The "apply detected groups to the view" sequence was copied at five call sites, each repeating an order-dependent ritual with a warning comment, and had already drifted between copies. It is now a single method, with the intentional per-site differences (last group's end index, whether the frame is resized) as parameters. The four empty-reset blocks collapsed into one method likewise.
+- Drag start no longer allocates per-file Objective-C objects for tracks it then discards when checking which selected files still exist on disk.
+
 ## [1.5.1] - 2026-07-07
 
 ### Added

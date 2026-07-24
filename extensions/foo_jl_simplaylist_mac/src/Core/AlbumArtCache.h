@@ -4,6 +4,10 @@
 //
 //  Async album art loading and caching
 //
+//  Threading contract: the image store is main-thread-only. loadImageForKey:,
+//  cachedImageForKey:, clearCache and completion delivery all run on the main
+//  thread; only the decode/resize work happens on the internal load queue.
+//
 
 #import <Cocoa/Cocoa.h>
 #import "../fb2k_sdk.h"
@@ -36,6 +40,11 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Maximum number of images to keep in cache (default 1000)
 @property (nonatomic, assign) NSUInteger maxImageCount;
+
+// Maximum decoded bytes to keep in cache (default 256 MB). Enforced alongside
+// maxImageCount: whichever budget binds first drives eviction. Without this the
+// count cap alone permits ~1 GB resident at 512x512 art.
+@property (nonatomic, assign) NSUInteger maxImageBytes;
 
 // Get placeholder image for missing art
 + (NSImage *)placeholderImage;
