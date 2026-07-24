@@ -263,8 +263,10 @@ static void runPlayingPlaylistGuardCheck() {
 }
 
 static void schedulePlayingPlaylistGuardCheck() {
-    if (g_playingGuardCheckPending) return;
-    g_playingGuardCheckPending = true;
+    // Single test-and-set: a separate load + store lets two callbacks both see
+    // false and schedule the check twice.
+    bool expected = false;
+    if (!g_playingGuardCheckPending.compare_exchange_strong(expected, true)) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         g_playingGuardCheckPending = false;
         runPlayingPlaylistGuardCheck();

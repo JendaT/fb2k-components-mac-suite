@@ -20,6 +20,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// PRECONDITIONS the row arithmetic relies on (not enforced at runtime - the
+// producer must guarantee them, and persisted data must be validated first):
+//   - groupStarts[0] == 0 and groupStarts is strictly increasing, in-range
+//   - subgroupStarts is strictly increasing and in-range
+//   - subgroupHeaders.count == subgroupStarts.count
+//   - groupPaddingRows.count == groupStarts.count
+//   - rebuildPaddingCache runs before rebuildSubgroupRowCache after any change
+// Violating the first turns playlistIndexForRow: into a negative index and
+// blanks the leading rows rather than failing loudly.
 @interface PlaylistLayoutModel : NSObject
 
 // --- Inputs (sparse group model) ---

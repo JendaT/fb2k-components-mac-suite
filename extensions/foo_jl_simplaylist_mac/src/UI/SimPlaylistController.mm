@@ -32,8 +32,9 @@
 // Subgroup detection state machine lives in Core/SubgroupDetector.h
 // (SDK-free, unit-tested) so all detection code paths share IDENTICAL logic.
 
-// Global debug flag - set to true to enable debug logging
-// Output goes to /tmp/simplaylist_subgroup_debug.txt
+// Global debug flag - set to true to enable debug logging.
+// Output goes to simplaylist_subgroup_debug.txt in NSTemporaryDirectory()
+// (see SubgroupDetector.h - a fixed /tmp path would be symlink-attackable).
 static std::atomic<bool> g_subgroupDebugEnabled{false};
 
 // Scroll-anchor dictionary keys. Also the persisted JSON field names of the
@@ -188,8 +189,11 @@ static void importFb2kPathsToPlaylistAsync(t_size playlistIndex, t_size insertAt
     notify->startImport();
 }
 
-// Track reload operations for progress display
+// Track reload operations for progress display. Identified by a monotonic ID,
+// not by position: completed entries are compacted out whenever the context
+// menu is built, which shifts every index after them.
 struct ReloadOperation {
+    uint64_t opID;
     t_size totalCount;
     t_size processedCount;
     bool completed;
@@ -227,7 +231,6 @@ struct ReloadOperation {
 @property (nonatomic, strong) NSArray<GroupPreset *> *groupPresets;
 @property (nonatomic, assign) NSInteger activePresetIndex;
 @property (nonatomic, assign) NSInteger currentPlaylistIndex;
-@property (nonatomic, assign) NSInteger playingPlaylistIndex;  // Track which playlist item is playing
 @property (nonatomic, assign) BOOL artRedrawScheduled;  // Album-art redraw batching flag (50 ms window)
 // Per-playlist scroll anchors: playlist index -> @{kAnchorIndexKey: first visible
 // track's playlist index, kAnchorOffsetKey: pixel delta between the viewport top and
@@ -251,6 +254,7 @@ struct ReloadOperation {
 
 - (void)recomputeGroupDurations;
 - (void)clearGroupData;
+- (void)persistColumns;
 - (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles;
 - (void)refreshSelectionTracking;
 @end
@@ -267,7 +271,6 @@ struct ReloadOperation {
         _groupPresets = [GroupPreset defaultPresets];
         _activePresetIndex = 0;
         _currentPlaylistIndex = -1;
-        _playingPlaylistIndex = -1;
         _scrollAnchorIndices = [NSMutableDictionary dictionary];
         _scrollRestorePlaylistIndex = -1;
         _currentPlaylistInitialized = NO;
@@ -608,6 +611,11 @@ struct ReloadOperation {
 
     if (subgroupStarts.count == 0 || groupStarts.count == 0) return;
 
+    // starts and headers are 1:1. If a caller ever desyncs them, filtering would
+    // drop the pairs unevenly and leave subgroup rows with no header text (blank
+    // rows that still occupy space) - leave the arrays untouched instead.
+    if (subgroupHeaders.count != subgroupStarts.count) return;
+
     // Build filtered arrays - keep only subgroups in groups with count > 1
     NSMutableArray<NSNumber *> *filteredStarts = [NSMutableArray array];
     NSMutableArray<NSString *> *filteredHeaders = [NSMutableArray array];
@@ -627,9 +635,7 @@ struct ReloadOperation {
             NSInteger count = [subgroupCountPerGroup[groupIndex] integerValue];
             if (count > 1) {
                 [filteredStarts addObject:subgroupStarts[i]];
-                if (i < subgroupHeaders.count) {
-                    [filteredHeaders addObject:subgroupHeaders[i]];
-                }
+                [filteredHeaders addObject:subgroupHeaders[i]];
             }
         }
     }
@@ -1234,8 +1240,10 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         NSString *headerPattern = preset.headerPattern;
         NSString *lastHeader = (groupHeaders.count > 0) ? [groupHeaders lastObject] : @"";
         // IMPORTANT: Use the actual subgroup state from detector, not subgroupHeaders.lastObject
-        // because if showFirstSubgroup=OFF, the first subgroup wasn't added to the list
-        NSString *lastSubgroup = [NSString stringWithUTF8String:subgroupDetector.getCurrentSubgroup()];
+        // because if showFirstSubgroup=OFF, the first subgroup wasn't added to the list.
+        // Kept as std::string: the NSString round-trip yielded nil for invalid
+        // UTF-8, which silently reset the continuation state at the seam.
+        std::string lastSubgroup(subgroupDetector.getCurrentSubgroup());
 
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -1267,7 +1275,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 
             // Use shared SubgroupDetector - initialized from sync portion's final state
             SubgroupDetector bgSubgroupDetector(bgShowFirstSubgroup, g_subgroupDebugEnabled);
-            bgSubgroupDetector.initFromState([lastSubgroup UTF8String]);
+            bgSubgroupDetector.initFromState(lastSubgroup.c_str());
 
             // Continuation: no forced first group (the seam is only a group
             // boundary if the header actually changes from the sync portion).
@@ -1345,11 +1353,11 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             });
         });
     } else {
-        // No background detection needed - full data already available
+        // No background detection needed - full data already available.
+        // Durations were already recomputed above from the same group arrays.
         _currentPlaylistInitialized = YES;
         // Persist group cache
         [self saveGroupCacheForPlaylist:playlist synchronous:NO];
-        [self recomputeGroupDurations];
     }
 }
 
@@ -1446,12 +1454,14 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
             if (!strongSelf) return;
             if (*generationCounter != currentGeneration) return;
 
+            // The captured itemCount is the count these groups were detected
+            // against; reading it back off the view could pick up a newer one.
             [strongSelf applyGroupData:groupStarts
                                headers:groupHeaders
                                artKeys:groupArtKeys
                         subgroupStarts:subgroupStarts
                        subgroupHeaders:subgroupHeaders
-                          lastGroupEnd:strongSelf.playlistView.itemCount
+                          lastGroupEnd:(NSInteger)itemCount
                        updateFrameSize:YES];
 
             // Full detection complete - safe to save scroll positions now
@@ -1668,9 +1678,13 @@ static BOOL validCachedStringArray(NSArray *arr) {
     NSData *jsonData = [[NSString stringWithUTF8String:jsonStr.c_str()] dataUsingEncoding:NSUTF8StringEncoding];
     if (!jsonData) return NO;
 
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it below would raise. A config entry corrupted to "[]" must fail the load,
+    // not crash on every playlist switch-in.
     NSError *error = nil;
-    NSDictionary *cache = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&error];
-    if (!cache || error) return NO;
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) return NO;
+    NSDictionary *cache = root;
 
     // Validate schema version
     NSNumber *version = cache[@"v"];
@@ -1702,6 +1716,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
     if (subgroupStarts.count != subgroupHeaders.count) return NO;
     if (!validCachedIndexArray(groupStarts, itemCount) ||
         !validCachedStringArray(groupHeaders)) return NO;
+    // PlaylistLayoutModel requires the first group to start at 0 (see the
+    // preconditions in PlaylistLayoutModel.h): a cache claiming otherwise makes
+    // playlistIndexForRow: return wrong negative indices for the leading tracks.
+    if ([groupStarts.firstObject integerValue] != 0) return NO;
     if (subgroupStarts &&
         (!validCachedIndexArray(subgroupStarts, itemCount) ||
          !validCachedStringArray(subgroupHeaders))) return NO;
@@ -1826,7 +1844,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
             BOOL subgroupsChanged = ![subgroupStarts isEqualToArray:strongSelf.playlistView.subgroupStarts] ||
                                     ![subgroupHeaders isEqualToArray:strongSelf.playlistView.subgroupHeaders];
 
-            if (groupsChanged || subgroupsChanged) {
+            BOOL dataChanged = (groupsChanged || subgroupsChanged);
+            strongSelf->_currentPlaylistInitialized = YES;
+
+            if (dataChanged) {
                 // Data changed (e.g. stale cache entry was applied on switch-in).
                 // Capture the viewport position against the OLD layout first so
                 // it can be re-established pixel-exactly in the new one.
@@ -1848,11 +1869,12 @@ static BOOL validCachedStringArray(NSArray *arr) {
 
                 [strongSelf recomputeGroupDurations];
                 [strongSelf.playlistView reloadData];
-            }
 
-            // Mark initialized and save updated cache
-            strongSelf->_currentPlaylistInitialized = YES;
-            [strongSelf saveGroupCacheForPlaylist:playlist synchronous:NO];
+                // Persist the corrected layout. When nothing changed the stored
+                // cache already matches what was just verified, so re-serializing
+                // and rewriting it is pure work.
+                [strongSelf saveGroupCacheForPlaylist:playlist synchronous:NO];
+            }
         });
     });
 }
@@ -2461,9 +2483,12 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 - (void)reloadInfoClicked:(NSMenuItem *)sender {
     if (_contextMenuHandles.get_count() == 0) return;
 
-    // Create a new reload operation to track progress
-    size_t opIndex = _reloadOperations.size();
+    // Create a new reload operation to track progress. Main-thread only (menu
+    // action), so the counter needs no synchronisation.
+    static uint64_t sNextReloadOpID = 1;
+    uint64_t opID = sNextReloadOpID++;
     _reloadOperations.push_back({
+        .opID = opID,
         .totalCount = _contextMenuHandles.get_count(),
         .processedCount = 0,
         .completed = false
@@ -2477,13 +2502,15 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     __weak SimPlaylistController *weakSelf = self;
 
     // Create completion callback
-    auto notify = fb2k::makeCompletionNotify([weakSelf, opIndex](unsigned status) {
+    auto notify = fb2k::makeCompletionNotify([weakSelf, opID](unsigned status) {
         dispatch_async(dispatch_get_main_queue(), ^{
             SimPlaylistController *strongSelf = weakSelf;
-            if (strongSelf && opIndex < strongSelf->_reloadOperations.size()) {
-                strongSelf->_reloadOperations[opIndex].completed = true;
-                strongSelf->_reloadOperations[opIndex].processedCount =
-                    strongSelf->_reloadOperations[opIndex].totalCount;
+            if (!strongSelf) return;
+            for (auto &op : strongSelf->_reloadOperations) {
+                if (op.opID != opID) continue;
+                op.completed = true;
+                op.processedCount = op.totalCount;
+                break;
             }
         });
     });
@@ -2827,12 +2854,21 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     [_playlistView reloadData];
 }
 
+// Single writer for the persisted column layout. An empty serialization must
+// never reach setConfigString: writing "" is the DELETE idiom (ConfigHelper.h),
+// so a failed serialize would wipe the user's columns back to the defaults.
+- (void)persistColumns {
+    NSString *columnsJSON = [ColumnDefinition columnsToJSON:_columns];
+    if (columnsJSON.length == 0) {
+        FB2K_console_formatter() << "[SimPlaylist] Column layout not saved: serialization failed";
+        return;
+    }
+    simplaylist_config::setConfigString(simplaylist_config::kColumns, columnsJSON.UTF8String);
+}
+
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didFinishResizingColumn:(NSInteger)columnIndex {
     // Persist column widths
-    NSString *columnsJSON = [ColumnDefinition columnsToJSON:_columns];
-    if (columnsJSON) {
-        simplaylist_config::setConfigString(simplaylist_config::kColumns, columnsJSON.UTF8String);
-    }
+    [self persistColumns];
 }
 
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didReorderColumnFrom:(NSInteger)fromIndex to:(NSInteger)toIndex {
@@ -2862,10 +2898,7 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     [_playlistView setNeedsDisplay:YES];
 
     // Persist column order
-    NSString *columnsJSON = [ColumnDefinition columnsToJSON:_columns];
-    if (columnsJSON) {
-        simplaylist_config::setConfigString(simplaylist_config::kColumns, columnsJSON.UTF8String);
-    }
+    [self persistColumns];
 }
 
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didClickColumn:(NSInteger)columnIndex {
@@ -2960,11 +2993,11 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
 }
 
 - (void)columnMenuItemClicked:(NSMenuItem *)sender {
-    // Use the combined templates array stored during menu creation
+    // Tags were assigned against the combined templates + SDK + custom array
+    // built in showColumnMenuAtPoint:; any other array indexes a different
+    // column, so there is no usable fallback.
     NSArray<ColumnDefinition *> *templates = _availableColumnTemplates;
-    if (!templates) {
-        templates = [ColumnDefinition availableColumnTemplates];
-    }
+    if (!templates) return;
     NSInteger templateIndex = sender.tag;
 
     if (templateIndex < 0 || templateIndex >= (NSInteger)templates.count) return;
@@ -3001,8 +3034,7 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
     [_playlistView setNeedsDisplay:YES];
 
     // Save to config
-    NSString *json = [ColumnDefinition columnsToJSON:_columns];
-    simplaylist_config::setConfigString(simplaylist_config::kColumns, [json UTF8String]);
+    [self persistColumns];
 }
 
 // GUID for custom columns preferences page

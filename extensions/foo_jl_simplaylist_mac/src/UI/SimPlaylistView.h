@@ -87,7 +87,6 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Selection management
 - (void)selectRowAtIndex:(NSInteger)index;
 - (void)selectRowAtIndex:(NSInteger)index extendSelection:(BOOL)extend;
-- (void)selectRowsInRange:(NSRange)range;
 - (void)selectAll;
 - (void)deselectAll;
 - (void)toggleSelectionAtIndex:(NSInteger)index;

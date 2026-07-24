@@ -8,7 +8,6 @@
 #import "SimPlaylistView.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
-#import "../Core/AlbumArtCache.h"
 #import "../Core/PlaylistLayoutModel.h"
 #import "../Core/PlaylistSelectionModel.h"
 #import "../Core/DecorationStore.h"
@@ -45,6 +44,25 @@ static NSString *glyphForIconId(uint32_t iconId) {
     };
     if (iconId >= sizeof(glyphs) / sizeof(glyphs[0])) return nil;
     return glyphs[iconId].length > 0 ? glyphs[iconId] : nil;
+}
+
+// SDK failures surface as C++ exceptions, which @catch (NSException *) cannot
+// intercept and which AppKit's frames are not exception-transparent for — an
+// escaping exception terminates the process. Mirrors runGuardedSDKAction in
+// SimPlaylistController.mm; every SDK call made from an event handler needs it.
+static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void)) {
+    try {
+    @try {
+        block();
+    } @catch (NSException *exception) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: "
+                                 << (exception.reason.UTF8String ?: "unknown");
+    }
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: unknown exception";
+    }
 }
 
 // Format total seconds as M:SS or H:MM:SS for display in group headers
@@ -94,9 +112,6 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) BOOL suppressFocusRing;  // Suppress focus ring briefly after drag
 @property (nonatomic, assign) NSInteger dropTargetRow;  // Row where items would be dropped
 @property (nonatomic, assign) NSInteger pendingClickRow;  // Row to select on mouseUp if no drag (for multi-select drag)
-// Performance: cached row y-offsets for O(1) lookup
-@property (nonatomic, strong) NSMutableArray<NSNumber *> *rowYOffsets;
-@property (nonatomic, assign) CGFloat totalContentHeight;
 @property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
@@ -107,6 +122,10 @@ static NSString *formatGroupDuration(double seconds) {
 // Pure selection state machine — owns selectedIndices/focus/anchor and the
 // multi-select math. The view's _selectedIndices ivar aliases its set.
 @property (nonatomic, strong) PlaylistSelectionModel *selection;
+// Optional-method availability of the delegate, resolved once in setDelegate:.
+// Both are queried per row / per group on every frame.
+@property (nonatomic, assign) BOOL delegateHasColumnValues;
+@property (nonatomic, assign) BOOL delegateHasAlbumArt;
 @end
 
 @implementation SimPlaylistView
@@ -210,6 +229,17 @@ static NSString *formatGroupDuration(double seconds) {
                                              selector:@selector(handleRedrawNeeded:)
                                                  name:@"SimPlaylistRedrawNeeded"
                                                object:nil];
+}
+
+// The draw path queries two optional delegate methods per row / per group, so
+// resolve their availability once here instead of sending respondsToSelector:
+// on every frame.
+- (void)setDelegate:(id<SimPlaylistViewDelegate>)delegate {
+    _delegate = delegate;
+    _delegateHasColumnValues =
+        [delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)];
+    _delegateHasAlbumArt =
+        [delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)];
 }
 
 #pragma mark - Geometry properties (pure forwarders to the layout model)
@@ -396,14 +426,6 @@ static NSString *formatGroupDuration(double seconds) {
     return [_layout rowCount];
 }
 
-- (NSInteger)cumulativePaddingBeforeGroup:(NSInteger)groupIndex {
-    return [_layout cumulativePaddingBeforeGroup:groupIndex];
-}
-
-- (NSInteger)totalRowsInGroup:(NSInteger)groupIndex {
-    return [_layout totalRowsInGroup:groupIndex];
-}
-
 #pragma mark - Row Mapping (O(log g) using binary search) — forwards to PlaylistLayoutModel
 
 - (NSInteger)groupIndexForRow:(NSInteger)row {
@@ -449,24 +471,12 @@ static NSString *formatGroupDuration(double seconds) {
     return [_layout playlistIndexRangeForGroup:groupIndex];
 }
 
-- (NSInteger)subgroupCountBeforePlaylistIndex:(NSInteger)playlistIndex {
-    return [_layout subgroupCountBeforePlaylistIndex:playlistIndex];
-}
-
-- (BOOL)hasSubgroupAtPlaylistIndex:(NSInteger)playlistIndex {
-    return [_layout hasSubgroupAtPlaylistIndex:playlistIndex];
-}
-
 - (BOOL)isRowSubgroupHeader:(NSInteger)row {
     return [_layout isRowSubgroupHeader:row];
 }
 
 - (NSString *)subgroupHeaderForRow:(NSInteger)row {
     return [_layout subgroupHeaderForRow:row];
-}
-
-- (NSInteger)rowForSubgroupAtPlaylistIndex:(NSInteger)subgroupPlaylistIndex {
-    return [_layout rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
 }
 
 - (NSSize)intrinsicContentSize {
@@ -492,10 +502,6 @@ static NSString *formatGroupDuration(double seconds) {
 }
 
 // Pixel geometry — forwards to PlaylistLayoutModel (pure, unit-testable).
-- (CGFloat)heightForRow:(NSInteger)row {
-    return [_layout heightForRow:row];
-}
-
 - (CGFloat)yOffsetForRow:(NSInteger)row {
     return [_layout yOffsetForRow:row];
 }
@@ -585,9 +591,9 @@ static NSString *formatGroupDuration(double seconds) {
     }
 
     // STEP 2: Draw only visible rows (typically ~30 rows)
-    // Draw all rows in range without dirtyRect filtering — the row range is already
-    // bounded to visible rows (±1 buffer), and skipping the intersection test prevents
-    // sub-pixel boundary mismatches that can leave unrendered strips at scroll edges.
+    // Draw every row in the range without a per-row dirtyRect intersection test —
+    // the range comes from dirtyRect itself, and the extra test would re-introduce
+    // the sub-pixel boundary mismatches that left unrendered strips at scroll edges.
     for (NSInteger row = firstRow; row <= lastRow; row++) {
         NSRect rowRect = [self rectForRow:row];
         [self drawSparseRow:row inRect:rowRect];
@@ -709,11 +715,17 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)drawSparseHeaderRow:(NSInteger)groupIndex inRect:(NSRect)rect {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupHeaders.count) return;
 
-    // Text attributes: bold, primary color
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
-        NSForegroundColorAttributeName: [NSColor labelColor]
-    };
+    // Text attributes: bold, primary color. Fixed contents, so one allocation
+    // for the process lifetime instead of one per header row per frame
+    // (labelColor stays dynamic — the appearance is resolved at draw time).
+    static NSDictionary *attrs;
+    static dispatch_once_t headerAttrsOnce;
+    dispatch_once(&headerAttrsOnce, ^{
+        attrs = @{
+            NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
+            NSForegroundColorAttributeName: [NSColor labelColor]
+        };
+    });
 
     // Build attributed string: title + optional duration
     NSAttributedString *displayString = [self headerAttributedStringForGroup:groupIndex
@@ -857,11 +869,16 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)drawSparseSubgroupRow:(NSString *)subgroupText inRect:(NSRect)rect {
     if (!subgroupText || subgroupText.length == 0) return;
 
-    // Subgroup text attributes - smaller and secondary color
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
+    // Subgroup text attributes - smaller and secondary color. Fixed contents,
+    // so allocated once rather than per subgroup row per frame.
+    static NSDictionary *attrs;
+    static dispatch_once_t subgroupAttrsOnce;
+    dispatch_once(&subgroupAttrsOnce, ^{
+        attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+            NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+        };
+    });
 
     // Calculate text size - indented more than group header
     NSSize textSize = [subgroupText sizeWithAttributes:attrs];
@@ -990,7 +1007,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     // Get cached column values or request from delegate
     NSNumber *indexKey = @(playlistIndex);
     NSArray<NSString *> *columnValues = [_formattedValuesCache objectForKey:indexKey];
-    if (!columnValues && [_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
+    if (!columnValues && _delegate && _delegateHasColumnValues) {
         columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
         if (columnValues) {
             [_formattedValuesCache setObject:columnValues forKey:indexKey];
@@ -1012,8 +1029,13 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     // Draw columns (shifted right by the decoration gutter when providers exist)
     CGFloat x = _groupColumnWidth + _decorationGutterWidth;
     NSColor *textColor = selected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
-    NSColor *dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
-                                    : fb2k_ui::secondaryTextColor();
+    // Only the dim-parentheses path reads this; deriving it unconditionally
+    // allocated a color per selected row per frame that was never used.
+    NSColor *dimmedColor = nil;
+    if (_dimParentheses) {
+        dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
+                               : fb2k_ui::secondaryTextColor();
+    }
     // Font size from shared UIStyles
     fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
     NSFont *font = fb2k_ui::rowFont(size);
@@ -1177,7 +1199,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 
         // Get album art from cache or delegate
         NSImage *albumArt = nil;
-        if (g < (NSInteger)_groupArtKeys.count && [_delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)]) {
+        if (g < (NSInteger)_groupArtKeys.count && _delegate && _delegateHasAlbumArt) {
             albumArt = [_delegate playlistView:self albumArtForGroupAtPlaylistIndex:groupStart];
         }
 
@@ -1267,28 +1289,6 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     [musicNote drawAtPoint:point withAttributes:attrs];
 }
 
-- (NSColor *)groupColumnBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.05
-                                                              ofColor:[NSColor blackColor]];
-}
-
-#pragma mark - Colors
-
-- (NSColor *)alternateRowColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.03
-                                                              ofColor:[NSColor labelColor]];
-}
-
-- (NSColor *)headerBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.08
-                                                              ofColor:[NSColor labelColor]];
-}
-
-- (NSColor *)subgroupBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.04
-                                                              ofColor:[NSColor labelColor]];
-}
-
 #pragma mark - Selection Management (state math in PlaylistSelectionModel)
 
 // The selection/anchor/focus math lives in Core/PlaylistSelectionModel so it
@@ -1309,12 +1309,6 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     if (playlistIndex < 0) return;  // Don't select headers
 
     [_selection selectPlaylistIndex:playlistIndex extendFromAnchor:extend];
-    [self notifySelectionChanged];
-    [self setNeedsDisplay:YES];
-}
-
-- (void)selectRowsInRange:(NSRange)range {
-    [_selection addIndexesInRange:range];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
@@ -1523,20 +1517,22 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     NSMutableArray<NSURL *> *fileURLs = [NSMutableArray array];
     NSArray<NSString *> *dragPaths = dragData[@"paths"];
     if (dragPaths) {
-        for (NSString *path in dragPaths) {
-            pfc::string8 nativePath;
-            if (filesystem::g_get_native_path(path.UTF8String, nativePath)) {
-                // Same existence test as -fileExistsAtPath:, but on the native
-                // bytes we already hold: this loop walks the entire selection on
-                // the main thread, so missing entries cost no NSString/NSURL.
-                if (access(nativePath.c_str(), F_OK) != 0) continue;
-                NSString *posix = [NSString stringWithUTF8String:nativePath.c_str()];
-                if (posix) {
-                    NSURL *url = [NSURL fileURLWithPath:posix];
-                    if (url) [fileURLs addObject:url];
+        runGuardedSDKAction("Drag path resolution", ^{
+            for (NSString *path in dragPaths) {
+                pfc::string8 nativePath;
+                if (filesystem::g_get_native_path(path.UTF8String, nativePath)) {
+                    // Same existence test as -fileExistsAtPath:, but on the native
+                    // bytes we already hold: this loop walks the entire selection on
+                    // the main thread, so missing entries cost no NSString/NSURL.
+                    if (access(nativePath.c_str(), F_OK) != 0) continue;
+                    NSString *posix = [NSString stringWithUTF8String:nativePath.c_str()];
+                    if (posix) {
+                        NSURL *url = [NSURL fileURLWithPath:posix];
+                        if (url) [fileURLs addObject:url];
+                    }
                 }
             }
-        }
+        });
     }
 
     // Create a simple drag image
@@ -1700,14 +1696,17 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 
     if (cmd && (key == 'z' || key == 'Z')) {
         // Cmd+Z: undo, Cmd+Shift+Z: redo
-        auto pm = playlist_manager::get();
-        if (cmdShift) {
-            pm->activeplaylist_redo_restore();
-        } else if (onlyCmd) {
-            pm->activeplaylist_undo_restore();
-        } else {
+        if (!cmdShift && !onlyCmd) {
             return [super performKeyEquivalent:event];
         }
+        runGuardedSDKAction("Undo/redo", ^{
+            auto pm = playlist_manager::get();
+            if (cmdShift) {
+                pm->activeplaylist_redo_restore();
+            } else {
+                pm->activeplaylist_undo_restore();
+            }
+        });
         return YES;
     }
 
@@ -1769,12 +1768,14 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 
         case ' ':  // Space - toggle play/pause (consistent with foobar2000 convention)
         {
-            auto pc = playback_control::get();
-            if (pc->is_playing() || pc->is_paused()) {
-                pc->toggle_pause();
-            } else {
-                pc->play_or_unpause();
-            }
+            runGuardedSDKAction("Play/pause", ^{
+                auto pc = playback_control::get();
+                if (pc->is_playing() || pc->is_paused()) {
+                    pc->toggle_pause();
+                } else {
+                    pc->play_or_unpause();
+                }
+            });
             break;
         }
 
@@ -1938,33 +1939,24 @@ static BOOL isSupportedURLString(NSString *str) {
     // A position is valid if:
     // 1. It's before a track row (inserting before that track)
     // 2. It's after a track row that's followed by padding/header/end (album boundary)
+    // playlistIndexForRow: is a nested binary search, and each position needs the
+    // index at pos and at pos-1 — carry the previous iteration's value forward
+    // instead of re-deriving it (this runs per mouse-move during a drag).
+    NSInteger prevIdx = (scanStart > 0) ? [self playlistIndexForRow:scanStart - 1] : -1;
     for (NSInteger pos = scanStart; pos <= scanEnd; pos++) {
         BOOL isValid = NO;
+        NSInteger curIdx = (pos < totalRows) ? [self playlistIndexForRow:pos] : -1;
 
-        if (pos < totalRows) {
-            // Check if row at 'pos' is a track - if so, we can drop before it
-            NSInteger rowAtPosPlaylistIdx = [self playlistIndexForRow:pos];
-            if (rowAtPosPlaylistIdx >= 0) {
-                isValid = YES;
-            }
+        if (curIdx >= 0) {
+            // Row at 'pos' is a track - we can drop before it
+            isValid = YES;
+        } else if (pos > 0 && prevIdx >= 0) {
+            // Row at 'pos-1' is a track and this one is padding/header/end of
+            // playlist - an album boundary
+            isValid = YES;
         }
 
-        if (!isValid && pos > 0) {
-            // Check if row at 'pos-1' is a track followed by non-track (album boundary)
-            NSInteger prevRowPlaylistIdx = [self playlistIndexForRow:pos - 1];
-            if (prevRowPlaylistIdx >= 0) {
-                if (pos >= totalRows) {
-                    // End of playlist
-                    isValid = YES;
-                } else {
-                    NSInteger nextRowPlaylistIdx = [self playlistIndexForRow:pos];
-                    if (nextRowPlaylistIdx < 0) {
-                        // Next row is padding/header - album boundary
-                        isValid = YES;
-                    }
-                }
-            }
-        }
+        prevIdx = curIdx;
 
         if (isValid) {
             CGFloat posY = (pos >= totalRows) ? [self totalContentHeightCached]

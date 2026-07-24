@@ -97,7 +97,9 @@ static NSImage *_placeholderImage = nil;
 }
 
 - (nullable NSImage *)cachedImageForKey:(NSString *)key {
-    NSAssert(NSThread.isMainThread, @"AlbumArtCache image store is main-thread-only");
+    // dispatch_assert_queue, not NSAssert: assertions are compiled out in
+    // Release, and the image store has no lock behind the convention.
+    dispatch_assert_queue(dispatch_get_main_queue());
     return _imageStore[key];
 }
 
@@ -139,15 +141,21 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
 // (a surprise eviction would blank art that is currently on screen).
 // Must be called on main thread (imageStore/imageKeyOrder are main-thread-only).
 - (void)storeImage:(NSImage *)image forKey:(NSString *)key {
-    NSAssert(NSThread.isMainThread, @"AlbumArtCache image store is main-thread-only");
+    dispatch_assert_queue(dispatch_get_main_queue());
     if (_imageStore[key]) {
-        // Already stored — just move to end of LRU order
+        // Already stored — a re-store counts as a fresh insertion, so move the
+        // key to the end of the eviction order (plain cache hits do not).
         [_imageKeyOrder removeObject:key];
         [_imageKeyOrder addObject:key];
         return;
     }
 
     NSUInteger bytes = EstimatedImageBytes(image);
+
+    // One image big enough to need a quarter of the budget would evict most of
+    // the cache to make room for itself. Unreachable while loads are downscaled
+    // to 512 px (~1 MB); this keeps that an assumption, not a load-bearing one.
+    if (bytes > _maxImageBytes / 4) return;
 
     // Work out how many of the oldest entries have to go for both budgets to
     // fit, then remove them in one pass so the order array is compacted once.
@@ -185,7 +193,7 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
 - (void)loadImageForKey:(NSString *)key
                  handle:(metadb_handle_ptr)handle
              completion:(void (^)(NSImage * _Nullable image))completion {
-    NSAssert(NSThread.isMainThread, @"AlbumArtCache image store is main-thread-only");
+    dispatch_assert_queue(dispatch_get_main_queue());
 
     // Check image store first (strong references — no surprise eviction)
     NSImage *cached = _imageStore[key];
@@ -549,7 +557,7 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
 }
 
 - (void)clearCache {
-    NSAssert(NSThread.isMainThread, @"AlbumArtCache image store is main-thread-only");
+    dispatch_assert_queue(dispatch_get_main_queue());
     [_imageStore removeAllObjects];
     [_imageKeyOrder removeAllObjects];
     [_imageBytes removeAllObjects];

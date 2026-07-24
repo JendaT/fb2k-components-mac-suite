@@ -432,12 +432,15 @@
         // would throw on nil data.
         return @[];
     }
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) {
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it would raise NSInvalidArgumentException on every panel construction.
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) {
         return @[];
     }
+    NSDictionary *json = root;
 
     NSArray *columnsArray = json[@"columns"];
     if (![columnsArray isKindOfClass:[NSArray class]]) {

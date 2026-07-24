@@ -93,13 +93,18 @@
     // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
     // would throw on nil data.
     if (!jsonData) return 0;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) return 0;
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it would raise NSInvalidArgumentException on every panel construction.
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) return 0;
+    NSDictionary *json = root;
 
+    // A corrupted entry can hold any type here; integerValue is not universal.
     NSNumber *activeIndex = json[@"active_index"];
-    return activeIndex ? [activeIndex integerValue] : 0;
+    if (![activeIndex isKindOfClass:[NSNumber class]]) return 0;
+    return [activeIndex integerValue];
 }
 
 + (NSArray<GroupPreset *> *)presetsFromJSON:(NSString *)jsonString {
@@ -108,10 +113,11 @@
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
     if (!jsonData) return @[];
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) return @[];
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) return @[];
+    NSDictionary *json = root;
 
     NSArray *presetsArray = json[@"presets"];
     if (![presetsArray isKindOfClass:[NSArray class]]) return @[];

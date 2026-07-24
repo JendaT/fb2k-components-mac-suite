@@ -8,8 +8,6 @@
 
 #include "ReorderPlanner.h"
 
-#include <set>
-
 namespace simplaylist {
 
 size_t adjustedReorderDestination(const std::vector<size_t> &sortedSources,
@@ -37,15 +35,20 @@ std::vector<size_t> planReorder(size_t itemCount,
                                 size_t destIndex) {
     std::vector<size_t> order(itemCount);
 
-    // Create a set of source indices for quick lookup. Out-of-range entries
-    // are dropped: with duplicate or >= itemCount sources the write loops
-    // below would run past the end of `order` (heap overflow). The set also
-    // dedupes, so `sources` is unique, sorted and in-range from here on.
-    std::set<size_t> sourceSet;
+    // Flag source indices for O(1) lookup. Out-of-range entries are dropped:
+    // with duplicate or >= itemCount sources the write loops below would run
+    // past the end of `order` (heap overflow). Rebuilding `sources` from the
+    // flags also dedupes and sorts, so it is unique, sorted and in-range from
+    // here on (a flat array rather than a tree: select-all on a large playlist
+    // would otherwise allocate one heap node per selected index).
+    std::vector<char> isSource(itemCount, 0);
     for (size_t s : sortedSources) {
-        if (s < itemCount) sourceSet.insert(s);
+        if (s < itemCount) isSource[s] = 1;
     }
-    std::vector<size_t> sources(sourceSet.begin(), sourceSet.end());
+    std::vector<size_t> sources;
+    for (size_t i = 0; i < itemCount; i++) {
+        if (isSource[i]) sources.push_back(i);
+    }
 
     // Calculate where items actually go after removal
     size_t adjustedDest = adjustedReorderDestination(sources, destIndex);
@@ -55,7 +58,7 @@ std::vector<size_t> planReorder(size_t itemCount,
     // 2. Insert moved items at the adjusted destination
     std::vector<size_t> nonMovedItems;
     for (size_t i = 0; i < itemCount; i++) {
-        if (sourceSet.find(i) == sourceSet.end()) {
+        if (!isSource[i]) {
             nonMovedItems.push_back(i);
         }
     }

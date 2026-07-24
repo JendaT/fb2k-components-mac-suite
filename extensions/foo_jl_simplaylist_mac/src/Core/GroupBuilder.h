@@ -58,10 +58,13 @@ inline bool buildGroups(size_t begin, size_t end,
 
         if (isNewGroup) {
             // stringWithUTF8String: returns nil on invalid UTF-8 in tags;
-            // addObject:nil would throw on a background thread.
+            // addObject:nil would throw on a background thread. A NULL is worse
+            // still - stringWithUTF8String:NULL is undefined, and the SDK's
+            // get_path() behind artKey has no non-NULL guarantee.
+            const char *art = cb.artKey(i);
             [groupStarts addObject:@(i)];
             [groupHeaders addObject:([NSString stringWithUTF8String:header] ?: @"")];
-            [groupArtKeys addObject:([NSString stringWithUTF8String:cb.artKey(i)] ?: @"")];
+            [groupArtKeys addObject:(art ? ([NSString stringWithUTF8String:art] ?: @"") : @"")];
             currentHeader = header;
             detector.enterNewGroup();
         }

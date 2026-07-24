@@ -29,9 +29,17 @@ TEST_BUILD_DIR="$PROJECT_DIR/build/tests"
 mkdir -p "$TEST_BUILD_DIR"
 
 COVERAGE=0
-if [ "${1:-}" = "--coverage" ]; then
-    COVERAGE=1
-fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --coverage) COVERAGE=1 ;;
+        *)
+            echo "ERROR: unknown argument: $1" >&2
+            echo "Usage: run_tests.sh [--coverage]" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 if [ "$COVERAGE" = "1" ]; then
     INSTRUMENT_FLAGS=(-fprofile-instr-generate -fcoverage-mapping)
@@ -61,15 +69,20 @@ for test_file in "$PROJECT_DIR"/Tests/*Tests.mm "$PROJECT_DIR"/Tests/*Tests.cpp;
     done
 
     # Per-test extra deps: "// TEST_DEPS: <path> [<path>...]" (project-relative).
-    # Paths are whitespace-split, so they must not contain spaces or glob chars.
+    # Paths are whitespace-split, so they must not contain spaces. Globbing is
+    # disabled for the split so a literal * in a path cannot expand to the
+    # working directory's contents.
     deps="$(grep -h '^// TEST_DEPS:' "$test_file" | sed 's|^// TEST_DEPS:||' || true)"
+    set -f
     for dep in $deps; do
         if [ ! -f "$PROJECT_DIR/$dep" ]; then
+            set +f
             echo "ERROR: $base declares missing TEST_DEPS file: $dep" >&2
             exit 1
         fi
         sources+=("$PROJECT_DIR/$dep")
     done
+    set +f
 
     out="$TEST_BUILD_DIR/$name"
     echo "==> Compiling unit tests ($module)..."
@@ -105,11 +118,14 @@ if [ "$COVERAGE" = "1" ]; then
     profdata="$TEST_BUILD_DIR/tests.profdata"
     xcrun llvm-profdata merge -sparse "${BINARIES[@]/%/.profraw}" -o "$profdata"
     # First binary positional, the rest as -object; trailing source paths
-    # restrict the report to the Core modules.
+    # restrict the report to the Core modules. The count guard is for bash 3.2
+    # (macOS): "${BINARIES[@]:1}" on a single-element array trips set -u there.
     object_args=("${BINARIES[0]}")
-    for bin in "${BINARIES[@]:1}"; do
-        object_args+=(-object "$bin")
-    done
+    if [ "${#BINARIES[@]}" -gt 1 ]; then
+        for bin in "${BINARIES[@]:1}"; do
+            object_args+=(-object "$bin")
+        done
+    fi
     xcrun llvm-cov report "${object_args[@]}" -instr-profile="$profdata" \
         "$PROJECT_DIR"/src/Core/*.h "$PROJECT_DIR"/src/Core/*.mm "$PROJECT_DIR"/src/Core/*.cpp
 fi
