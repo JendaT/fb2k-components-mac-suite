@@ -8,21 +8,9 @@
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/SubgroupDetector.h"
+#import "TestHarness.h"
 
 #include <string>
-
-static int g_failures = 0;
-static int g_checks = 0;
-static std::string g_context;
-
-#define CHECK(cond, what)                                                        \
-    do {                                                                         \
-        g_checks++;                                                             \
-        if (!(cond)) {                                                          \
-            g_failures++;                                                       \
-            printf("FAIL [%s] %s\n", g_context.c_str(), what);                  \
-        }                                                                       \
-    } while (0)
 
 // Assert the emitted (index, header) pairs so far.
 static void checkEmitted(NSArray<NSNumber *> *starts, NSArray<NSString *> *headers,
@@ -113,9 +101,22 @@ int main(void) {
         CHECK(std::string(d.getCurrentSubgroup()).empty(), "nullptr state treated as empty");
     }
 
-    printf("%s: %d checks, %d failures\n",
-           g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
-    return g_failures == 0 ? 0 : 1;
+    // --- Invalid UTF-8: emitted header is "", never nil (documented crash fix) ---
+    {
+        g_context = "invalid-utf8";
+        SubgroupDetector d(true);
+        NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
+        NSMutableArray<NSString *> *headers = [NSMutableArray array];
+
+        d.enterNewGroup();
+        CHECK(d.shouldAddSubgroup("\xC3\x28", true, starts, headers, 0),
+              "invalid UTF-8 still emits at group start");
+        checkEmitted(starts, headers, @[@0], @[@""], "guarded conversion yields empty string");
+        CHECK(std::string(d.getCurrentSubgroup()) == "\xC3\x28",
+              "raw bytes still tracked for change detection");
+    }
+
+    TEST_MAIN_END();
 
     }
 }

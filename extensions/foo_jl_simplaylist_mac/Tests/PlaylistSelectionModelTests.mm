@@ -10,27 +10,15 @@
 //  phase of Scripts/build.sh. See Scripts/run_tests.sh.
 //
 
+// TEST_DEPS: src/Core/PlaylistLayoutModel.mm
+
 #import <Foundation/Foundation.h>
 #import "../src/Core/PlaylistLayoutModel.h"
 #import "../src/Core/PlaylistSelectionModel.h"
+#import "TestHarness.h"
 
 #include <string>
 #include <vector>
-
-static int g_failures = 0;
-static int g_checks = 0;
-static std::string g_context;
-
-#define CHECK_EQ(actual, expected, what)                                          \
-    do {                                                                          \
-        g_checks++;                                                              \
-        long long a__ = (long long)(actual), e__ = (long long)(expected);        \
-        if (a__ != e__) {                                                        \
-            g_failures++;                                                        \
-            printf("FAIL [%s] %s: got %lld, expected %lld\n",                    \
-                   g_context.c_str(), what, a__, e__);                           \
-        }                                                                        \
-    } while (0)
 
 // Selection must equal exactly this set of playlist indices.
 static void checkSelection(PlaylistSelectionModel *sel, NSIndexSet *expected, const char *what) {
@@ -137,6 +125,17 @@ int main(void) {
         CHECK_EQ(sel.anchorIndex, 5, "toggle leaves anchor");
         [sel togglePlaylistIndex:3];
         checkSelection(sel, singleSet(5), "toggle removes");
+    }
+    {
+        g_context = "addIndexesInRange";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:1 extendFromAnchor:NO];
+        [sel addIndexesInRange:NSMakeRange(4, 3)];  // adds 4, 5, 6
+        NSMutableIndexSet *expected = [NSMutableIndexSet indexSetWithIndex:1];
+        [expected addIndexesInRange:NSMakeRange(4, 3)];
+        checkSelection(sel, expected, "range added on top of existing selection");
+        CHECK_EQ(sel.anchorIndex, 1, "addIndexesInRange leaves anchor");
+        CHECK_EQ(sel.focusIndex, 1, "addIndexesInRange leaves focus");
     }
 
     // --- selectAll / deselectAll ---
@@ -280,9 +279,7 @@ int main(void) {
         CHECK_EQ(row, 4, "clamped row");
     }
 
-    printf("%s: %d checks, %d failures\n",
-           g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
-    return g_failures == 0 ? 0 : 1;
+    TEST_MAIN_END();
 
     }
 }

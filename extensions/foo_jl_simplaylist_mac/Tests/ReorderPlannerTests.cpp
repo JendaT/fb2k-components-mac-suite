@@ -11,6 +11,7 @@
 //
 
 #include "../src/Core/ReorderPlanner.h"
+#include "TestHarness.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,10 +20,10 @@
 #include <string>
 #include <vector>
 
-static int g_failures = 0;
-static int g_checks = 0;
-
-// Naive ground truth: literally remove then insert.
+// Naive ground truth: literally remove then insert. The insert position is
+// derived independently of adjustedReorderDestination (the function under
+// test): "insert before original index destIndex" means the moved block goes
+// after every remaining item whose original index is below destIndex.
 static std::vector<size_t> simulateMove(size_t itemCount,
                                         const std::vector<size_t> &sortedSources,
                                         size_t destIndex) {
@@ -31,8 +32,10 @@ static std::vector<size_t> simulateMove(size_t itemCount,
     for (size_t i = 0; i < itemCount; i++) {
         if (!sourceSet.count(i)) remaining.push_back(i);
     }
-    size_t insertPos = simplaylist::adjustedReorderDestination(sortedSources, destIndex);
-    if (insertPos > remaining.size()) insertPos = remaining.size();
+    size_t insertPos = 0;
+    for (size_t v : remaining) {
+        if (v < destIndex) insertPos++;
+    }
     std::vector<size_t> result(remaining.begin(), remaining.begin() + insertPos);
     result.insert(result.end(), sortedSources.begin(), sortedSources.end());
     result.insert(result.end(), remaining.begin() + insertPos, remaining.end());
@@ -73,6 +76,40 @@ static void checkCase(size_t itemCount, const std::vector<size_t> &sources,
     }
 }
 
+// Direct unit check on adjustedReorderDestination with a hand-computed
+// expectation (not derived from the implementation).
+static void checkAdjustedDest(const std::vector<size_t> &sources, size_t dest,
+                              size_t want, const char *name) {
+    g_checks++;
+    size_t got = simplaylist::adjustedReorderDestination(sources, dest);
+    if (got != want) {
+        g_failures++;
+        printf("FAIL [%s] adjustedReorderDestination(%s, %zu): got %zu want %zu\n",
+               name, describe(sources).c_str(), dest, got, want);
+    }
+}
+
+// Hostile/degenerate input: planReorder must sanitize (dedupe, drop
+// out-of-range) and produce the same plan as the clean equivalent, never
+// running past the end of the order array.
+static void checkHostileCase(size_t itemCount, const std::vector<size_t> &rawSources,
+                             size_t dest, const char *name) {
+    std::set<size_t> sanitized;
+    for (size_t s : rawSources) {
+        if (s < itemCount) sanitized.insert(s);
+    }
+    std::vector<size_t> clean(sanitized.begin(), sanitized.end());
+    g_checks++;
+    std::vector<size_t> got = simplaylist::planReorder(itemCount, rawSources, dest);
+    std::vector<size_t> want = simulateMove(itemCount, clean, dest);
+    if (got != want) {
+        g_failures++;
+        printf("FAIL [%s] N=%zu raw=%s dest=%zu:\n  got  %s\n  want %s\n",
+               name, itemCount, describe(rawSources).c_str(), dest,
+               describe(got).c_str(), describe(want).c_str());
+    }
+}
+
 // Deterministic PRNG so failures are reproducible.
 static uint64_t g_rng = 0xC0FFEE;
 static uint64_t nextRand() {
@@ -97,6 +134,24 @@ int main() {
     checkCase(5, {2}, 5, "dest at end (itemCount)");
     checkCase(7, {2, 3}, 3, "dest inside the moved block");
 
+    // adjustedReorderDestination directly: dest minus distinct sources below it
+    checkAdjustedDest({}, 5, 5, "no sources");
+    checkAdjustedDest({0}, 5, 4, "one below");
+    checkAdjustedDest({1, 2}, 2, 1, "one of two below");
+    checkAdjustedDest({3, 4}, 2, 2, "none below");
+    checkAdjustedDest({0, 1, 2}, 3, 0, "all below");
+    checkAdjustedDest({2}, 0, 0, "dest zero");
+    checkAdjustedDest({1, 1, 1}, 3, 2, "duplicates counted once");
+    checkAdjustedDest({0, 0, 0}, 1, 0, "duplicates must not underflow");
+
+    // Hostile/degenerate planReorder inputs (heap-overflow guard coverage):
+    // duplicates, out-of-range sources, dest far past the end
+    checkHostileCase(5, {2, 2, 3}, 4, "duplicate sources");
+    checkHostileCase(5, {7, 8}, 2, "all sources out of range");
+    checkHostileCase(5, {1, 100, 1}, 9, "mixed junk, huge dest");
+    checkHostileCase(3, {0, 1, 2, 0, 1, 2}, 1, "everything duplicated");
+    checkHostileCase(4, {3, 3}, 100, "dup at tail, dest past end");
+
     // Randomized sweep: every subset size, dest across full range incl. end
     for (int iter = 0; iter < 2000; iter++) {
         size_t n = 1 + nextRand() % 30;
@@ -108,7 +163,5 @@ int main() {
         checkCase(n, sources, dest, "random");
     }
 
-    printf("%s: %d checks, %d failures\n",
-           g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
-    return g_failures == 0 ? 0 : 1;
+    TEST_MAIN_END();
 }
