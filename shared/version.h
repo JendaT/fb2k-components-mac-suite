@@ -22,8 +22,8 @@
 #define SCROBBLE_VERSION_INT 140
 
 // Album Art (Extended)
-#define ALBUMART_VERSION "1.0.2"
-#define ALBUMART_VERSION_INT 102
+#define ALBUMART_VERSION "1.1.0"
+#define ALBUMART_VERSION_INT 110
 
 // Artist Biography
 #define BIOGRAPHY_VERSION "1.1.0"

@@ -9,6 +9,9 @@
 
 #import <Cocoa/Cocoa.h>
 #import "AlbumArtView.h"
+#import "ArtworkLightboxController.h"
+#import "../Core/RemoteArtworkSearchController.h"
+#import "../Core/ArtworkSaveController.h"
 
 #ifdef __cplusplus
 #include "../Core/AlbumArtConfig.h"
@@ -17,7 +20,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface AlbumArtController : NSViewController <AlbumArtViewDelegate>
+@interface AlbumArtController : NSViewController <AlbumArtViewDelegate, RemoteArtworkSearchDelegate, ArtworkLightboxDelegate, ArtworkSaveDelegate>
 
 // Initialize with layout parameters
 - (instancetype)initWithParameters:(nullable NSDictionary<NSString*, NSString*>*)params;
@@ -34,6 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Refresh artwork (e.g., after type change)
 - (void)refreshArtwork;
+
+// Remote artwork search
+- (void)fetchMissingArtwork;
+- (void)cancelSearch;
 
 @end
 

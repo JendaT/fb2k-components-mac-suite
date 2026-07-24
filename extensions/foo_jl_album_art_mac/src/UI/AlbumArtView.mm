@@ -6,10 +6,18 @@
 //
 
 #import "AlbumArtView.h"
+#import "../Core/ArtworkResult.h"
+#import "../Core/RemoteArtworkTypes.h"
 #import <QuartzCore/QuartzCore.h>
 
 static const CGFloat kArrowWidth = 40.0;
 static const NSTimeInterval kArrowFadeDuration = 0.2;
+static const CGFloat kFooterHeight = 80.0;  // Increased to fit type labels
+static const CGFloat kThumbnailSize = 48.0;
+static const CGFloat kThumbnailSpacing = 8.0;
+static const CGFloat kTypeLabelHeight = 12.0;
+
+static const CGFloat kCancelButtonWidth = 50.0;
 
 @interface AlbumArtView ()
 @property (nonatomic, assign) BOOL isHovering;
@@ -17,6 +25,18 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
 @property (nonatomic, strong, nullable) NSTrackingArea *trackingArea;
 @property (nonatomic, assign) BOOL isOverLeftArrow;
 @property (nonatomic, assign) BOOL isOverRightArrow;
+
+// Footer state
+@property (nonatomic, assign) BOOL footerVisible;
+@property (nonatomic, assign) CGFloat footerAnimatedHeight;
+@property (nonatomic, assign) NSInteger hoveredThumbnailIndex;
+
+// Animated search dots
+@property (nonatomic, assign) NSUInteger searchAnimationFrame;
+@property (nonatomic, strong, nullable) NSTimer *searchAnimationTimer;
+
+// Cancel button hover state
+@property (nonatomic, assign) BOOL isOverCancelButton;
 @end
 
 @implementation AlbumArtView
@@ -46,11 +66,30 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
     _canNavigatePrevious = NO;
     _canNavigateNext = NO;
 
+    // Footer defaults
+    _footerState = AlbumArtFooterStateIdle;
+    _footerVisible = NO;
+    _footerAnimatedHeight = 0;
+    _hoveredThumbnailIndex = -1;
+    _searchAnimationFrame = 0;
+    _isOverCancelButton = NO;
+
     // Ensure the view doesn't resist being resized by the layout system
     [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
     [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationVertical];
+}
+
+- (void)viewWillMoveToWindow:(NSWindow *)newWindow {
+    [super viewWillMoveToWindow:newWindow];
+
+    // Stop the search animation when the panel is detached; otherwise the
+    // repeating timer keeps firing (and, before the weak-timer fix, leaked
+    // the view). It restarts on the next search if the view is reattached.
+    if (newWindow == nil) {
+        [self stopSearchAnimation];
+    }
 }
 
 - (void)updateTrackingAreas {
@@ -86,21 +125,43 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
     [super drawRect:dirtyRect];
 
     NSRect bounds = self.bounds;
+    CGFloat footerH = self.footerAnimatedHeight;
 
-    // Draw background
-    NSColor *bgColor = [self effectiveBackgroundColor];
-    [bgColor setFill];
-    NSRectFill(bounds);
-
-    if (self.image) {
-        [self drawImage:self.image inRect:bounds];
-    } else {
-        [self drawPlaceholderInRect:bounds];
+    // Calculate artwork area (above footer)
+    NSRect artworkRect = bounds;
+    if (footerH > 0) {
+        artworkRect.size.height -= footerH;
     }
 
-    // Draw navigation arrows if hovering and navigation is available
-    if (self.isHovering && self.arrowOpacity > 0.01) {
-        [self drawNavigationArrowsInRect:bounds];
+    // Fill only the invalidated region. Filling the whole bounds here would
+    // erase the (potentially very large) artwork every time only the footer
+    // is invalidated - e.g. the 0.4s search-animation tick, which redraws
+    // just the footer rect.
+    NSColor *bgColor = [self effectiveBackgroundColor];
+    [bgColor setFill];
+    NSRectFill(dirtyRect);
+
+    // Rescaling a full-resolution image with high interpolation is expensive;
+    // only do it when the artwork area is actually part of the dirty region.
+    if (NSIntersectsRect(dirtyRect, artworkRect)) {
+        if (self.image) {
+            [self drawImage:self.image inRect:artworkRect];
+        } else {
+            [self drawPlaceholderInRect:artworkRect];
+        }
+
+        // Draw navigation arrows if hovering and navigation is available
+        if (self.isHovering && self.arrowOpacity > 0.01) {
+            [self drawNavigationArrowsInRect:artworkRect];
+        }
+    }
+
+    // Draw footer if visible
+    if (footerH > 0) {
+        NSRect footerRect = NSMakeRect(0, artworkRect.size.height, bounds.size.width, footerH);
+        if (NSIntersectsRect(dirtyRect, footerRect)) {
+            [self drawFooterInRect:footerRect];
+        }
     }
 }
 
@@ -279,17 +340,46 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
 
     BOOL wasOverLeft = self.isOverLeftArrow;
     BOOL wasOverRight = self.isOverRightArrow;
+    NSInteger wasHoveredThumb = self.hoveredThumbnailIndex;
+    BOOL wasOverCancel = self.isOverCancelButton;
 
     self.isOverLeftArrow = self.canNavigatePrevious && location.x < kArrowWidth;
     self.isOverRightArrow = self.canNavigateNext && location.x > self.bounds.size.width - kArrowWidth;
 
-    if (wasOverLeft != self.isOverLeftArrow || wasOverRight != self.isOverRightArrow) {
+    // Check for thumbnail hover
+    self.hoveredThumbnailIndex = [self thumbnailIndexAtPoint:location];
+
+    // Check for cancel button hover
+    self.isOverCancelButton = (self.footerState == AlbumArtFooterStateSearching &&
+                               [self isCancelButtonAtPoint:location]);
+
+    if (wasOverLeft != self.isOverLeftArrow ||
+        wasOverRight != self.isOverRightArrow ||
+        wasHoveredThumb != self.hoveredThumbnailIndex ||
+        wasOverCancel != self.isOverCancelButton) {
         [self setNeedsDisplay:YES];
     }
 }
 
 - (void)mouseDown:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+
+    // Check if clicking Cancel in search footer
+    if (self.footerState == AlbumArtFooterStateSearching && [self isCancelButtonAtPoint:location]) {
+        if ([self.delegate respondsToSelector:@selector(albumArtViewDidRequestCancelSearch:)]) {
+            [self.delegate albumArtViewDidRequestCancelSearch:self];
+        }
+        return;
+    }
+
+    // Check if clicking on a thumbnail in footer
+    NSInteger thumbIndex = [self thumbnailIndexAtPoint:location];
+    if (thumbIndex >= 0) {
+        if ([self.delegate respondsToSelector:@selector(albumArtView:didSelectThumbnailAtIndex:)]) {
+            [self.delegate albumArtView:self didSelectThumbnailAtIndex:thumbIndex];
+        }
+        return;
+    }
 
     // Check if clicking on arrows
     if (self.isHovering) {
@@ -354,6 +444,372 @@ static const NSTimeInterval kArrowFadeDuration = 0.2;
 - (void)setCanNavigateNext:(BOOL)canNavigateNext {
     _canNavigateNext = canNavigateNext;
     [self setNeedsDisplay:YES];
+}
+
+#pragma mark - Footer Drawing
+
+- (void)drawFooterInRect:(NSRect)rect {
+    // Draw footer background
+    NSColor *footerBg = [[self effectiveBackgroundColor] blendedColorWithFraction:0.05
+                                                                           ofColor:[NSColor blackColor]];
+    [footerBg setFill];
+    NSRectFill(rect);
+
+    // Draw top separator line
+    NSColor *separatorColor = [[self effectiveForegroundColor] colorWithAlphaComponent:0.1];
+    [separatorColor setFill];
+    NSRectFill(NSMakeRect(rect.origin.x, rect.origin.y, rect.size.width, 1));
+
+    switch (self.footerState) {
+        case AlbumArtFooterStateSearching:
+            [self drawSearchingFooterInRect:rect];
+            break;
+
+        case AlbumArtFooterStateThumbnails:
+            [self drawThumbnailsFooterInRect:rect];
+            break;
+
+        case AlbumArtFooterStateError:
+            [self drawErrorFooterInRect:rect];
+            break;
+
+        case AlbumArtFooterStateIdle:
+        default:
+            break;
+    }
+}
+
+- (void)drawSearchingFooterInRect:(NSRect)rect {
+    // Animated dots suffix
+    static NSString *const dotFrames[] = { @"", @".", @"..", @"..." };
+    NSString *dots = dotFrames[self.searchAnimationFrame % 4];
+
+    NSString *baseMessage = self.footerMessage ?: @"Searching";
+    // Strip trailing dots from the message if present (we add our own)
+    while ([baseMessage hasSuffix:@"."]) {
+        baseMessage = [baseMessage substringToIndex:baseMessage.length - 1];
+    }
+    NSString *message = [baseMessage stringByAppendingString:dots];
+
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+        NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.7],
+        NSParagraphStyleAttributeName: style
+    };
+
+    NSSize textSize = [message sizeWithAttributes:attrs];
+    NSRect textRect = NSMakeRect(
+        rect.origin.x + (rect.size.width - textSize.width) / 2,
+        rect.origin.y + (rect.size.height - textSize.height) / 2 - 8,
+        textSize.width,
+        textSize.height
+    );
+
+    [message drawInRect:textRect withAttributes:attrs];
+
+    // Draw "Cancel" link below the message
+    NSDictionary *cancelAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+        NSForegroundColorAttributeName: self.isOverCancelButton
+            ? [NSColor controlAccentColor]
+            : [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
+        NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
+        NSParagraphStyleAttributeName: style
+    };
+
+    NSString *cancelText = @"Cancel";
+    NSSize cancelSize = [cancelText sizeWithAttributes:cancelAttrs];
+    NSRect cancelRect = NSMakeRect(
+        rect.origin.x + (rect.size.width - cancelSize.width) / 2,
+        rect.origin.y + (rect.size.height - cancelSize.height) / 2 + 10,
+        cancelSize.width,
+        cancelSize.height
+    );
+    [cancelText drawInRect:cancelRect withAttributes:cancelAttrs];
+}
+
+- (void)drawThumbnailsFooterInRect:(NSRect)rect {
+    if (self.footerThumbnails.count == 0) {
+        return;
+    }
+
+    // Draw count label at top of footer
+    NSString *countLabel = [NSString stringWithFormat:@"%lu images found",
+                            (unsigned long)self.footerThumbnails.count];
+
+    NSDictionary *countAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+        NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.7]
+    };
+
+    NSSize countSize = [countLabel sizeWithAttributes:countAttrs];
+    NSRect countRect = NSMakeRect(
+        rect.origin.x + (rect.size.width - countSize.width) / 2,
+        rect.origin.y + 6,
+        countSize.width,
+        countSize.height
+    );
+    [countLabel drawInRect:countRect withAttributes:countAttrs];
+
+    // Calculate thumbnail positions (below count label, above type labels)
+    CGFloat totalWidth = self.footerThumbnails.count * kThumbnailSize +
+                         (self.footerThumbnails.count - 1) * kThumbnailSpacing;
+    CGFloat startX = rect.origin.x + (rect.size.width - totalWidth) / 2;
+    CGFloat thumbY = rect.origin.y + 22;  // Below count label
+
+    for (NSUInteger i = 0; i < self.footerThumbnails.count; i++) {
+        NSImage *thumb = self.footerThumbnails[i];
+        CGFloat x = startX + i * (kThumbnailSize + kThumbnailSpacing);
+        NSRect thumbRect = NSMakeRect(x, thumbY, kThumbnailSize, kThumbnailSize);
+
+        // Draw thumbnail with aspect fit
+        [self drawThumbnail:thumb inRect:thumbRect hovered:(NSInteger)i == self.hoveredThumbnailIndex];
+
+        // Draw type label below thumbnail
+        if (i < self.footerResults.count) {
+            ArtworkResult *result = self.footerResults[i];
+            NSString *typeLabel = RemoteArtworkTypeName(result.artworkType);
+
+            NSMutableParagraphStyle *paraStyle = [[NSMutableParagraphStyle alloc] init];
+            paraStyle.alignment = NSTextAlignmentCenter;
+            NSDictionary *typeLabelAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:8.0],
+                NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
+                NSParagraphStyleAttributeName: paraStyle
+            };
+
+            NSRect labelRect = NSMakeRect(x - 4, thumbY + kThumbnailSize + 2, kThumbnailSize + 8, kTypeLabelHeight);
+            [typeLabel drawInRect:labelRect withAttributes:typeLabelAttrs];
+        }
+    }
+}
+
+- (void)drawThumbnail:(NSImage *)image inRect:(NSRect)rect hovered:(BOOL)hovered {
+    // Draw background
+    NSColor *thumbBg = [[NSColor blackColor] colorWithAlphaComponent:0.1];
+    [thumbBg setFill];
+    NSRectFill(rect);
+
+    // Draw image
+    if (image) {
+        NSSize imageSize = image.size;
+        if (imageSize.width > 0 && imageSize.height > 0) {
+            CGFloat scale = MIN(rect.size.width / imageSize.width,
+                               rect.size.height / imageSize.height);
+            CGFloat w = imageSize.width * scale;
+            CGFloat h = imageSize.height * scale;
+            NSRect drawRect = NSMakeRect(
+                rect.origin.x + (rect.size.width - w) / 2,
+                rect.origin.y + (rect.size.height - h) / 2,
+                w, h
+            );
+
+            [image drawInRect:drawRect
+                     fromRect:NSZeroRect
+                    operation:NSCompositingOperationSourceOver
+                     fraction:1.0
+               respectFlipped:YES
+                        hints:nil];
+        }
+    }
+
+    // Draw hover highlight
+    if (hovered) {
+        NSColor *highlightColor = [[NSColor systemBlueColor] colorWithAlphaComponent:0.3];
+        [highlightColor setFill];
+        NSRectFillUsingOperation(rect, NSCompositingOperationSourceOver);
+
+        // Draw border
+        NSColor *borderColor = [NSColor systemBlueColor];
+        [borderColor setStroke];
+        NSBezierPath *border = [NSBezierPath bezierPathWithRect:NSInsetRect(rect, 0.5, 0.5)];
+        border.lineWidth = 2.0;
+        [border stroke];
+    }
+}
+
+- (void)drawErrorFooterInRect:(NSRect)rect {
+    NSString *message = self.footerMessage ?: @"Search failed";
+
+    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+    style.alignment = NSTextAlignmentCenter;
+
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+        NSForegroundColorAttributeName: [NSColor systemRedColor],
+        NSParagraphStyleAttributeName: style
+    };
+
+    NSSize textSize = [message sizeWithAttributes:attrs];
+    NSRect textRect = NSMakeRect(
+        rect.origin.x + (rect.size.width - textSize.width) / 2,
+        rect.origin.y + (rect.size.height - textSize.height) / 2,
+        textSize.width,
+        textSize.height
+    );
+
+    [message drawInRect:textRect withAttributes:attrs];
+}
+
+#pragma mark - Footer Public Methods
+
+- (CGFloat)footerHeight {
+    return self.footerAnimatedHeight;
+}
+
+- (void)setFooterVisible:(BOOL)visible animated:(BOOL)animated {
+    if (self.footerVisible == visible) {
+        return;
+    }
+
+    self.footerVisible = visible;
+    CGFloat targetHeight = visible ? kFooterHeight : 0;
+
+    if (animated) {
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext *context) {
+            context.duration = 0.25;
+            context.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            self.footerAnimatedHeight = targetHeight;
+            [self setNeedsDisplay:YES];
+        }];
+    } else {
+        self.footerAnimatedHeight = targetHeight;
+        [self setNeedsDisplay:YES];
+    }
+}
+
+- (void)showSearchProgress:(NSString *)message {
+    self.footerState = AlbumArtFooterStateSearching;
+    self.footerMessage = message;
+    self.footerThumbnails = nil;
+    self.footerResults = nil;
+    [self setFooterVisible:YES animated:YES];
+    [self startSearchAnimation];
+}
+
+- (void)showThumbnails:(NSArray<NSImage *> *)thumbnails results:(NSArray<ArtworkResult *> *)results {
+    [self stopSearchAnimation];
+    self.footerState = AlbumArtFooterStateThumbnails;
+    self.footerMessage = nil;
+    self.footerThumbnails = thumbnails;
+    self.footerResults = results;
+    self.isOverCancelButton = NO;
+    [self setFooterVisible:YES animated:NO];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)showError:(NSString *)message {
+    [self stopSearchAnimation];
+    self.footerState = AlbumArtFooterStateError;
+    self.footerMessage = message;
+    self.footerThumbnails = nil;
+    self.footerResults = nil;
+    self.isOverCancelButton = NO;
+    [self setFooterVisible:YES animated:NO];
+    [self setNeedsDisplay:YES];
+}
+
+- (void)hideFooter {
+    [self stopSearchAnimation];
+    self.footerState = AlbumArtFooterStateIdle;
+    self.footerMessage = nil;
+    self.footerThumbnails = nil;
+    self.footerResults = nil;
+    self.hoveredThumbnailIndex = -1;
+    self.isOverCancelButton = NO;
+    [self setFooterVisible:NO animated:YES];
+}
+
+#pragma mark - Search Animation
+
+- (void)startSearchAnimation {
+    if (self.searchAnimationTimer) return;
+
+    self.searchAnimationFrame = 0;
+    // Block-based timer with a weak self so the timer does not retain the view.
+    // A target-based repeating timer would keep the view (and its full-res
+    // image) alive forever if the panel is torn down mid-search.
+    __weak typeof(self) weakSelf = self;
+    self.searchAnimationTimer = [NSTimer scheduledTimerWithTimeInterval:0.4
+                                                                repeats:YES
+                                                                  block:^(NSTimer *timer) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf) {
+            [strongSelf searchAnimationTick];
+        } else {
+            [timer invalidate];
+        }
+    }];
+}
+
+- (void)stopSearchAnimation {
+    [self.searchAnimationTimer invalidate];
+    self.searchAnimationTimer = nil;
+    self.searchAnimationFrame = 0;
+}
+
+- (void)searchAnimationTick {
+    self.searchAnimationFrame++;
+    if (self.footerState == AlbumArtFooterStateSearching) {
+        // Only redraw the footer region
+        CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
+        [self setNeedsDisplayInRect:NSMakeRect(0, footerTop, self.bounds.size.width, self.footerAnimatedHeight)];
+    } else {
+        [self stopSearchAnimation];
+    }
+}
+
+#pragma mark - Cancel Button Hit Test
+
+- (BOOL)isCancelButtonAtPoint:(NSPoint)point {
+    if (self.footerAnimatedHeight <= 0) return NO;
+
+    CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
+    if (point.y < footerTop) return NO;
+
+    // Cancel button is centered, below the message text
+    // Match the position from drawSearchingFooterInRect:
+    CGFloat centerX = self.bounds.size.width / 2;
+    CGFloat cancelY = footerTop + (self.footerAnimatedHeight / 2) + 10;
+
+    NSRect cancelHitRect = NSMakeRect(centerX - kCancelButtonWidth / 2,
+                                       cancelY - 4,
+                                       kCancelButtonWidth,
+                                       20);
+
+    return NSPointInRect(point, cancelHitRect);
+}
+
+#pragma mark - Footer Mouse Handling
+
+- (NSInteger)thumbnailIndexAtPoint:(NSPoint)point {
+    if (self.footerState != AlbumArtFooterStateThumbnails || self.footerThumbnails.count == 0) {
+        return -1;
+    }
+
+    CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
+    if (point.y < footerTop) {
+        return -1;
+    }
+
+    CGFloat totalWidth = self.footerThumbnails.count * kThumbnailSize +
+                         (self.footerThumbnails.count - 1) * kThumbnailSpacing;
+    CGFloat startX = (self.bounds.size.width - totalWidth) / 2;
+    CGFloat thumbY = footerTop + 22;  // Below count label (matches drawThumbnailsFooterInRect)
+
+    for (NSUInteger i = 0; i < self.footerThumbnails.count; i++) {
+        CGFloat x = startX + i * (kThumbnailSize + kThumbnailSpacing);
+        NSRect thumbRect = NSMakeRect(x, thumbY, kThumbnailSize, kThumbnailSize);
+
+        if (NSPointInRect(point, thumbRect)) {
+            return (NSInteger)i;
+        }
+    }
+
+    return -1;
 }
 
 @end

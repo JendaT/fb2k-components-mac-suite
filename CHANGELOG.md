@@ -390,6 +390,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Album Art
 
+### [1.1.0] - 2026-07-09
+
+#### Added
+- Fetch Missing Artwork: search Cover Art Archive, iTunes, Deezer, and TIDAL (optional) for album art via right-click
+- Lightbox preview with type filters and multi-type selection; save to album folder and/or embed into file tags
+- Unit test suite gating every build
+
+#### Fixed
+- Save-to-folder failed for track paths containing spaces
+- Restarted searches could complete with stale or missing results
+- Thumbnails could attach to the wrong results; footer clicks could open the wrong image
+- First search after startup could falsely report offline; offline state now actually disables the menu item
+- Track changes now cancel in-flight searches and clear stale results
+- "Save Selected" could silently save fewer images than claimed; lightbox window leaked on every presentation
+- Remembered "embed" preference was ignored for multi-image saves; remembered choices can now be reset from the context menu
+
 ### [1.0.2] - 2025-12-30
 
 #### Fixed

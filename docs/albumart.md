@@ -40,9 +40,21 @@ Cycles through all available artwork types for the current track.
 
 Right-click for quick access to:
 - Switch to specific artwork type
+- Fetch missing artwork from online sources
 - See which types are available for current track
 
 <!-- Screenshot: Context menu -->
+
+### Fetch Missing Artwork
+
+Search online sources for artwork matching the current track (right-click >
+**Fetch Missing...**). Results appear as thumbnails in a footer; click one to
+open a lightbox with type filters (Front/Back/Disc/...), pick the images you
+want, then save them to the album folder and/or embed them into the file tags.
+
+Sources: Cover Art Archive (via MusicBrainz), iTunes, Deezer - no setup
+required. TIDAL is available as an additional source with free developer
+credentials (see the component README for setup).
 
 ### Per-Instance Configuration
 
