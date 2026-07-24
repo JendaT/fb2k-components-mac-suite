@@ -14,6 +14,16 @@
 
 static const NSTimeInterval kGlobalSearchTimeout = 45.0;
 
+// Sorts after every known source when the identifier was not registered
+static const NSInteger kUnknownSourcePriority = NSIntegerMax;
+
+// Lower is better; matches the order providers were registered in
+static NSInteger ArtworkSourcePriority(NSDictionary<NSString *, NSNumber *> *priorities,
+                                       NSString *source) {
+    NSNumber *priority = source ? priorities[source] : nil;
+    return priority ? priority.integerValue : kUnknownSourcePriority;
+}
+
 @interface RemoteArtworkSearchController ()
 
 @property (nonatomic, assign) BOOL searching;
@@ -32,6 +42,10 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
 @property (atomic, assign) NSUInteger searchGeneration;
 
 @property (nonatomic, strong) dispatch_queue_t serialQueue;
+
+// Source identifier -> registration index, precomputed so the sort comparator
+// does not walk the providers array (or capture self) per comparison
+@property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *sourcePriorities;
 
 @end
 
@@ -57,6 +71,17 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
         _seenURLs = [NSMutableSet set];
         _pendingSourceNames = [NSMutableArray array];
         _searchGeneration = 0;
+
+        NSMutableDictionary<NSString *, NSNumber *> *priorities = [NSMutableDictionary dictionary];
+        NSUInteger index = 0;
+        for (id<ArtworkSourceProvider> provider in _providers) {
+            NSString *identifier = provider.identifier;
+            if (identifier && !priorities[identifier]) {
+                priorities[identifier] = @((NSInteger)index);
+            }
+            index++;
+        }
+        _sourcePriorities = [priorities copy];
     }
     return self;
 }
@@ -124,14 +149,17 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
         for (id<ArtworkSourceProvider> provider in activeProviders) {
             [names addObject:provider.displayName];
         }
+        // No ellipsis: the view appends its own animated dots
         [self.delegate searchDidUpdateProgress:
-            [NSString stringWithFormat:@"Searching %@...", [names componentsJoinedByString:@", "]]];
+            [NSString stringWithFormat:@"Searching %@", [names componentsJoinedByString:@", "]]];
     });
 
-    // Schedule global timeout
+    // Schedule global timeout. Captured weakly so a controller torn down
+    // mid-search is not retained on the main queue's timer for 45 seconds.
+    __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kGlobalSearchTimeout * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        [self handleGlobalTimeoutForGeneration:generation];
+        [weakSelf handleGlobalTimeoutForGeneration:generation];
     });
 
     // Start parallel searches
@@ -215,11 +243,13 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
             }
 
             if (remaining.count > 0) {
-                NSString *progressMsg = [NSString stringWithFormat:@"Searching %@...",
+                NSString *progressMsg = [NSString stringWithFormat:@"Searching %@",
                                          [remaining componentsJoinedByString:@", "]];
                 [self.delegate searchDidUpdateProgress:progressMsg];
             } else {
-                NSString *countMsg = [NSString stringWithFormat:@"Found %lu images",
+                // Same wording the thumbnails footer uses, so the text does
+                // not change when the footer switches state
+                NSString *countMsg = [NSString stringWithFormat:@"%lu images found",
                                       (unsigned long)sortedResults.count];
                 [self.delegate searchDidUpdateProgress:countMsg];
             }
@@ -276,6 +306,8 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
     // 2. Resolution (higher first)
     // 3. Source priority (provider order)
 
+    NSDictionary<NSString *, NSNumber *> *priorities = self.sourcePriorities;
+
     return [self.aggregatedResults sortedArrayUsingComparator:
         ^NSComparisonResult(ArtworkResult *a, ArtworkResult *b) {
 
@@ -292,22 +324,10 @@ static const NSTimeInterval kGlobalSearchTimeout = 45.0;
         }
 
         // Tertiary: source priority
-        NSInteger aPriority = [self priorityForSource:a.sourceIdentifier];
-        NSInteger bPriority = [self priorityForSource:b.sourceIdentifier];
+        NSInteger aPriority = ArtworkSourcePriority(priorities, a.sourceIdentifier);
+        NSInteger bPriority = ArtworkSourcePriority(priorities, b.sourceIdentifier);
         return [@(aPriority) compare:@(bPriority)];
     }];
-}
-
-- (NSInteger)priorityForSource:(NSString *)source {
-    // Lower is better; matches the order providers were registered in
-    NSUInteger index = 0;
-    for (id<ArtworkSourceProvider> provider in self.providers) {
-        if ([provider.identifier isEqualToString:source]) {
-            return (NSInteger)index;
-        }
-        index++;
-    }
-    return 99;
 }
 
 @end

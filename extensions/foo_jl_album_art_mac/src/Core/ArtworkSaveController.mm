@@ -50,6 +50,8 @@ static const CGFloat kJPEGSaveQuality = 0.9;
 
 #pragma mark - Pre-flight Checks
 
+/// UI hint only - the answer can be stale by the time the write happens, so
+/// the save paths attempt the write and act on its error instead.
 - (BOOL)canSaveToFolder {
     NSURL *folderURL = self.metadata.folderURL;
     if (!folderURL) {
@@ -223,11 +225,9 @@ static const CGFloat kJPEGSaveQuality = 0.9;
 
     // Save to folder
     if (options & ArtworkSaveOptionSaveToFolder) {
-        if ([self canSaveToFolder]) {
-            folderSaveOK = [self saveImageToFolder];
-        } else {
-            folderSaveOK = NO;
-        }
+        // No writability pre-check: it can go stale between check and write,
+        // and a failed write already lands in the save-panel fallback below
+        folderSaveOK = [self saveImageToFolder];
 
         if (!folderSaveOK) {
             // Direct save failed or not writable - use save panel
@@ -336,10 +336,12 @@ static const CGFloat kJPEGSaveQuality = 0.9;
                                  options:NSDataWritingAtomic
                                    error:&error];
 
+    // Filenames only: full paths end up in the unified system log
     if (!success) {
-        NSLog(@"[AlbumArt] Failed to save artwork to %@: %@", targetURL.path, error.localizedDescription);
+        NSLog(@"[AlbumArt] Failed to save artwork to %@: %@",
+              targetURL.lastPathComponent, error.localizedDescription);
     } else {
-        NSLog(@"[AlbumArt] Saved artwork to %@", targetURL.path);
+        NSLog(@"[AlbumArt] Saved artwork to %@", targetURL.lastPathComponent);
     }
 
     return success;

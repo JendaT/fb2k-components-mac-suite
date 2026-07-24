@@ -116,8 +116,11 @@ static const NSTimeInterval kDeezerTimeout = 30.0;
 #pragma mark - String Escaping
 
 - (NSString *)escapeDeezerQuotes:(NSString *)input {
-    // Deezer query uses "..." syntax - strip embedded double quotes to avoid breaking the query
-    return [input stringByReplacingOccurrencesOfString:@"\"" withString:@""];
+    // Deezer query uses "..." syntax - strip embedded double quotes to avoid
+    // breaking the query. Backslashes go too: a value ending in one would
+    // escape the closing quote and let the rest act as query operators.
+    NSString *stripped = [input stringByReplacingOccurrencesOfString:@"\\" withString:@""];
+    return [stripped stringByReplacingOccurrencesOfString:@"\"" withString:@""];
 }
 
 #pragma mark - URL Building

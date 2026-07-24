@@ -45,12 +45,13 @@ static inline albumart_config::ArtworkType RemoteToLocalArtworkType(RemoteArtwor
     return ![unsupportedFormats containsObject:extension];
 }
 
+/// UI hint only - the writability half can go stale before the write, so
+/// -embedImage: does not gate on it and reports the SDK's own I/O error.
 + (BOOL)canEmbedArtworkForTrack:(TrackMetadata *)metadata {
     if (![self formatSupportsEmbedding:metadata]) {
         return NO;
     }
 
-    // Check if file is writable
     NSFileManager *fm = [NSFileManager defaultManager];
     return [fm isWritableFileAtPath:metadata.fileURL.path];
 }
@@ -69,7 +70,9 @@ static inline albumart_config::ArtworkType RemoteToLocalArtworkType(RemoteArtwor
         return ArtworkEmbedResultFileNotWritable;
     }
 
-    if (![self canEmbedArtworkForTrack:metadata]) {
+    // Only the format is checked up front; an unwritable file surfaces as
+    // exception_io below, which maps to ArtworkEmbedResultFileNotWritable
+    if (![self formatSupportsEmbedding:metadata]) {
         NSString *ext = [metadata.fileURL.pathExtension uppercaseString];
         if (error) {
             *error = [NSError errorWithDomain:ArtworkFetchErrorDomain

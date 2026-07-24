@@ -17,7 +17,44 @@ static const CGFloat kThumbnailSize = 48.0;
 static const CGFloat kThumbnailSpacing = 8.0;
 static const CGFloat kTypeLabelHeight = 12.0;
 
-static const CGFloat kCancelButtonWidth = 50.0;
+// Footer layout, shared by the drawing and hit-testing paths
+static const CGFloat kThumbnailRowTopInset = 22.0;   // Below the count label
+static const CGFloat kCancelButtonTopOffset = 10.0;  // Below the message text
+static const CGFloat kCancelButtonHitSlopX = 6.0;
+static const CGFloat kCancelButtonHitSlopY = 4.0;
+
+static NSString *const kCancelButtonTitle = @"Cancel";
+
+// Text attributes are rebuilt on every draw only where the colour is
+// appearance-dependent; the paragraph styles and fonts never change.
+static NSParagraphStyle *CenteredParagraphStyle(void) {
+    static NSParagraphStyle *style = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableParagraphStyle *mutableStyle = [[NSMutableParagraphStyle alloc] init];
+        mutableStyle.alignment = NSTextAlignmentCenter;
+        style = [mutableStyle copy];
+    });
+    return style;
+}
+
+static NSFont *CancelButtonFont(void) {
+    static NSFont *font = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        font = [NSFont systemFontOfSize:10.0];
+    });
+    return font;
+}
+
+static NSSize CancelButtonTextSize(void) {
+    static NSSize size;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        size = [kCancelButtonTitle sizeWithAttributes:@{NSFontAttributeName: CancelButtonFont()}];
+    });
+    return size;
+}
 
 @interface AlbumArtView ()
 @property (nonatomic, assign) BOOL isHovering;
@@ -158,11 +195,29 @@ static const CGFloat kCancelButtonWidth = 50.0;
 
     // Draw footer if visible
     if (footerH > 0) {
-        NSRect footerRect = NSMakeRect(0, artworkRect.size.height, bounds.size.width, footerH);
+        NSRect footerRect = [self currentFooterRect];
         if (NSIntersectsRect(dirtyRect, footerRect)) {
             [self drawFooterInRect:footerRect];
         }
     }
+}
+
+// The footer occupies the bottom strip of the view; NSZeroRect when hidden.
+// Drawing and hit-testing both derive their geometry from this rect.
+- (NSRect)currentFooterRect {
+    CGFloat footerH = self.footerAnimatedHeight;
+    if (footerH <= 0) {
+        return NSZeroRect;
+    }
+    return NSMakeRect(0, self.bounds.size.height - footerH, self.bounds.size.width, footerH);
+}
+
+// The artwork strips that the navigation arrows are drawn into
+- (NSRect)arrowStripRectForDirection:(int)direction {
+    NSRect bounds = self.bounds;
+    CGFloat artworkHeight = bounds.size.height - self.footerAnimatedHeight;
+    CGFloat x = (direction < 0) ? 0 : bounds.size.width - kArrowWidth;
+    return NSMakeRect(x, 0, kArrowWidth, artworkHeight);
 }
 
 - (void)drawImage:(NSImage*)image inRect:(NSRect)rect {
@@ -218,13 +273,16 @@ static const CGFloat kCancelButtonWidth = 50.0;
     // Draw "No artwork" or type name placeholder
     NSString *text = self.artworkTypeName ?: @"No Artwork";
 
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentCenter;
+    static NSFont *placeholderFont = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        placeholderFont = [NSFont systemFontOfSize:14.0 weight:NSFontWeightLight];
+    });
 
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:14.0 weight:NSFontWeightLight],
+        NSFontAttributeName: placeholderFont,
         NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
-        NSParagraphStyleAttributeName: style
+        NSParagraphStyleAttributeName: CenteredParagraphStyle()
     };
 
     NSSize textSize = [text sizeWithAttributes:attrs];
@@ -353,11 +411,20 @@ static const CGFloat kCancelButtonWidth = 50.0;
     self.isOverCancelButton = (self.footerState == AlbumArtFooterStateSearching &&
                                [self isCancelButtonAtPoint:location]);
 
-    if (wasOverLeft != self.isOverLeftArrow ||
-        wasOverRight != self.isOverRightArrow ||
-        wasHoveredThumb != self.hoveredThumbnailIndex ||
+    // Invalidate only the affected region; a full-bounds invalidation would
+    // re-scale the full-resolution artwork for a footer-only hover change.
+    if (wasOverLeft != self.isOverLeftArrow) {
+        [self setNeedsDisplayInRect:[self arrowStripRectForDirection:-1]];
+    }
+    if (wasOverRight != self.isOverRightArrow) {
+        [self setNeedsDisplayInRect:[self arrowStripRectForDirection:1]];
+    }
+    if (wasHoveredThumb != self.hoveredThumbnailIndex ||
         wasOverCancel != self.isOverCancelButton) {
-        [self setNeedsDisplay:YES];
+        NSRect footerRect = [self currentFooterRect];
+        if (!NSIsEmptyRect(footerRect)) {
+            [self setNeedsDisplayInRect:footerRect];
+        }
     }
 }
 
@@ -480,24 +547,25 @@ static const CGFloat kCancelButtonWidth = 50.0;
 }
 
 - (void)drawSearchingFooterInRect:(NSRect)rect {
-    // Animated dots suffix
+    // Animated dots suffix. The message arrives without an ellipsis; the
+    // trailing dots belong to this animation and are owned here.
     static NSString *const dotFrames[] = { @"", @".", @"..", @"..." };
-    NSString *dots = dotFrames[self.searchAnimationFrame % 4];
+    static const NSUInteger dotFrameCount = sizeof(dotFrames) / sizeof(dotFrames[0]);
+    NSString *dots = dotFrames[self.searchAnimationFrame % dotFrameCount];
 
     NSString *baseMessage = self.footerMessage ?: @"Searching";
-    // Strip trailing dots from the message if present (we add our own)
-    while ([baseMessage hasSuffix:@"."]) {
-        baseMessage = [baseMessage substringToIndex:baseMessage.length - 1];
-    }
     NSString *message = [baseMessage stringByAppendingString:dots];
 
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentCenter;
+    static NSFont *messageFont = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        messageFont = [NSFont systemFontOfSize:11.0];
+    });
 
     NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+        NSFontAttributeName: messageFont,
         NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.7],
-        NSParagraphStyleAttributeName: style
+        NSParagraphStyleAttributeName: CenteredParagraphStyle()
     };
 
     NSSize textSize = [message sizeWithAttributes:attrs];
@@ -512,23 +580,45 @@ static const CGFloat kCancelButtonWidth = 50.0;
 
     // Draw "Cancel" link below the message
     NSDictionary *cancelAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+        NSFontAttributeName: CancelButtonFont(),
         NSForegroundColorAttributeName: self.isOverCancelButton
             ? [NSColor controlAccentColor]
             : [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
         NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle),
-        NSParagraphStyleAttributeName: style
+        NSParagraphStyleAttributeName: CenteredParagraphStyle()
     };
 
-    NSString *cancelText = @"Cancel";
-    NSSize cancelSize = [cancelText sizeWithAttributes:cancelAttrs];
-    NSRect cancelRect = NSMakeRect(
-        rect.origin.x + (rect.size.width - cancelSize.width) / 2,
-        rect.origin.y + (rect.size.height - cancelSize.height) / 2 + 10,
-        cancelSize.width,
-        cancelSize.height
+    [kCancelButtonTitle drawInRect:[self cancelButtonRectInFooter:rect]
+                    withAttributes:cancelAttrs];
+}
+
+#pragma mark - Footer Geometry
+
+- (NSRect)cancelButtonRectInFooter:(NSRect)footerRect {
+    NSSize textSize = CancelButtonTextSize();
+    return NSMakeRect(
+        footerRect.origin.x + (footerRect.size.width - textSize.width) / 2,
+        footerRect.origin.y + (footerRect.size.height - textSize.height) / 2 + kCancelButtonTopOffset,
+        textSize.width,
+        textSize.height
     );
-    [cancelText drawInRect:cancelRect withAttributes:cancelAttrs];
+}
+
+- (NSRect)thumbnailRectAtIndex:(NSUInteger)index inFooter:(NSRect)footerRect {
+    NSUInteger count = self.footerThumbnails.count;
+    if (count == 0) {
+        return NSZeroRect;
+    }
+
+    CGFloat totalWidth = count * kThumbnailSize + (count - 1) * kThumbnailSpacing;
+    CGFloat startX = footerRect.origin.x + (footerRect.size.width - totalWidth) / 2;
+
+    return NSMakeRect(
+        startX + index * (kThumbnailSize + kThumbnailSpacing),
+        footerRect.origin.y + kThumbnailRowTopInset,
+        kThumbnailSize,
+        kThumbnailSize
+    );
 }
 
 - (void)drawThumbnailsFooterInRect:(NSRect)rect {
@@ -540,8 +630,16 @@ static const CGFloat kCancelButtonWidth = 50.0;
     NSString *countLabel = [NSString stringWithFormat:@"%lu images found",
                             (unsigned long)self.footerThumbnails.count];
 
+    static NSFont *countFont = nil;
+    static NSFont *typeLabelFont = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        countFont = [NSFont systemFontOfSize:10.0];
+        typeLabelFont = [NSFont systemFontOfSize:8.0];
+    });
+
     NSDictionary *countAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:10.0],
+        NSFontAttributeName: countFont,
         NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.7]
     };
 
@@ -554,16 +652,15 @@ static const CGFloat kCancelButtonWidth = 50.0;
     );
     [countLabel drawInRect:countRect withAttributes:countAttrs];
 
-    // Calculate thumbnail positions (below count label, above type labels)
-    CGFloat totalWidth = self.footerThumbnails.count * kThumbnailSize +
-                         (self.footerThumbnails.count - 1) * kThumbnailSpacing;
-    CGFloat startX = rect.origin.x + (rect.size.width - totalWidth) / 2;
-    CGFloat thumbY = rect.origin.y + 22;  // Below count label
+    NSDictionary *typeLabelAttrs = @{
+        NSFontAttributeName: typeLabelFont,
+        NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
+        NSParagraphStyleAttributeName: CenteredParagraphStyle()
+    };
 
     for (NSUInteger i = 0; i < self.footerThumbnails.count; i++) {
         NSImage *thumb = self.footerThumbnails[i];
-        CGFloat x = startX + i * (kThumbnailSize + kThumbnailSpacing);
-        NSRect thumbRect = NSMakeRect(x, thumbY, kThumbnailSize, kThumbnailSize);
+        NSRect thumbRect = [self thumbnailRectAtIndex:i inFooter:rect];
 
         // Draw thumbnail with aspect fit
         [self drawThumbnail:thumb inRect:thumbRect hovered:(NSInteger)i == self.hoveredThumbnailIndex];
@@ -573,15 +670,10 @@ static const CGFloat kCancelButtonWidth = 50.0;
             ArtworkResult *result = self.footerResults[i];
             NSString *typeLabel = RemoteArtworkTypeName(result.artworkType);
 
-            NSMutableParagraphStyle *paraStyle = [[NSMutableParagraphStyle alloc] init];
-            paraStyle.alignment = NSTextAlignmentCenter;
-            NSDictionary *typeLabelAttrs = @{
-                NSFontAttributeName: [NSFont systemFontOfSize:8.0],
-                NSForegroundColorAttributeName: [[self effectiveForegroundColor] colorWithAlphaComponent:0.5],
-                NSParagraphStyleAttributeName: paraStyle
-            };
-
-            NSRect labelRect = NSMakeRect(x - 4, thumbY + kThumbnailSize + 2, kThumbnailSize + 8, kTypeLabelHeight);
+            NSRect labelRect = NSMakeRect(thumbRect.origin.x - 4,
+                                          NSMaxY(thumbRect) + 2,
+                                          kThumbnailSize + 8,
+                                          kTypeLabelHeight);
             [typeLabel drawInRect:labelRect withAttributes:typeLabelAttrs];
         }
     }
@@ -634,14 +726,15 @@ static const CGFloat kCancelButtonWidth = 50.0;
 - (void)drawErrorFooterInRect:(NSRect)rect {
     NSString *message = self.footerMessage ?: @"Search failed";
 
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.alignment = NSTextAlignmentCenter;
-
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11.0],
-        NSForegroundColorAttributeName: [NSColor systemRedColor],
-        NSParagraphStyleAttributeName: style
-    };
+    static NSDictionary *attrs = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:11.0],
+            NSForegroundColorAttributeName: [NSColor systemRedColor],
+            NSParagraphStyleAttributeName: CenteredParagraphStyle()
+        };
+    });
 
     NSSize textSize = [message sizeWithAttributes:attrs];
     NSRect textRect = NSMakeRect(
@@ -692,13 +785,22 @@ static const CGFloat kCancelButtonWidth = 50.0;
 
 - (void)showThumbnails:(NSArray<NSImage *> *)thumbnails results:(NSArray<ArtworkResult *> *)results {
     [self stopSearchAnimation];
+    BOOL footerWasVisible = self.footerVisible;
     self.footerState = AlbumArtFooterStateThumbnails;
     self.footerMessage = nil;
     self.footerThumbnails = thumbnails;
     self.footerResults = results;
     self.isOverCancelButton = NO;
     [self setFooterVisible:YES animated:NO];
-    [self setNeedsDisplay:YES];
+
+    // Thumbnails arrive one download at a time. Once the footer is up, only
+    // the footer needs redrawing - invalidating the whole view would re-scale
+    // the full-resolution artwork on every completed thumbnail.
+    if (footerWasVisible) {
+        [self setNeedsDisplayInRect:[self currentFooterRect]];
+    } else {
+        [self setNeedsDisplay:YES];
+    }
 }
 
 - (void)showError:(NSString *)message {
@@ -755,8 +857,7 @@ static const CGFloat kCancelButtonWidth = 50.0;
     self.searchAnimationFrame++;
     if (self.footerState == AlbumArtFooterStateSearching) {
         // Only redraw the footer region
-        CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
-        [self setNeedsDisplayInRect:NSMakeRect(0, footerTop, self.bounds.size.width, self.footerAnimatedHeight)];
+        [self setNeedsDisplayInRect:[self currentFooterRect]];
     } else {
         [self stopSearchAnimation];
     }
@@ -765,20 +866,15 @@ static const CGFloat kCancelButtonWidth = 50.0;
 #pragma mark - Cancel Button Hit Test
 
 - (BOOL)isCancelButtonAtPoint:(NSPoint)point {
-    if (self.footerAnimatedHeight <= 0) return NO;
+    NSRect footerRect = [self currentFooterRect];
+    if (NSIsEmptyRect(footerRect) || point.y < footerRect.origin.y) {
+        return NO;
+    }
 
-    CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
-    if (point.y < footerTop) return NO;
-
-    // Cancel button is centered, below the message text
-    // Match the position from drawSearchingFooterInRect:
-    CGFloat centerX = self.bounds.size.width / 2;
-    CGFloat cancelY = footerTop + (self.footerAnimatedHeight / 2) + 10;
-
-    NSRect cancelHitRect = NSMakeRect(centerX - kCancelButtonWidth / 2,
-                                       cancelY - 4,
-                                       kCancelButtonWidth,
-                                       20);
+    // Same rect the link is drawn into, widened slightly for easier clicking
+    NSRect cancelHitRect = NSInsetRect([self cancelButtonRectInFooter:footerRect],
+                                       -kCancelButtonHitSlopX,
+                                       -kCancelButtonHitSlopY);
 
     return NSPointInRect(point, cancelHitRect);
 }
@@ -790,21 +886,13 @@ static const CGFloat kCancelButtonWidth = 50.0;
         return -1;
     }
 
-    CGFloat footerTop = self.bounds.size.height - self.footerAnimatedHeight;
-    if (point.y < footerTop) {
+    NSRect footerRect = [self currentFooterRect];
+    if (NSIsEmptyRect(footerRect) || point.y < footerRect.origin.y) {
         return -1;
     }
 
-    CGFloat totalWidth = self.footerThumbnails.count * kThumbnailSize +
-                         (self.footerThumbnails.count - 1) * kThumbnailSpacing;
-    CGFloat startX = (self.bounds.size.width - totalWidth) / 2;
-    CGFloat thumbY = footerTop + 22;  // Below count label (matches drawThumbnailsFooterInRect)
-
     for (NSUInteger i = 0; i < self.footerThumbnails.count; i++) {
-        CGFloat x = startX + i * (kThumbnailSize + kThumbnailSpacing);
-        NSRect thumbRect = NSMakeRect(x, thumbY, kThumbnailSize, kThumbnailSize);
-
-        if (NSPointInRect(point, thumbRect)) {
+        if (NSPointInRect(point, [self thumbnailRectAtIndex:i inFooter:footerRect])) {
             return (NSInteger)i;
         }
     }

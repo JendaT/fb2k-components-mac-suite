@@ -22,8 +22,27 @@ static NSString *const kTidalAPIBaseURL = @"https://openapi.tidal.com/v2";
 static const NSTimeInterval kTidalTimeout = 30.0;
 static const NSTimeInterval kTokenExpiryMargin = 60.0;
 static const NSUInteger kMaxAlbumResults = 5;
+static const NSUInteger kMaxAccessTokenLength = 8192;
 
-@interface TidalProvider ()
+/// An OAuth token is interpolated into an Authorization header, so reject
+/// anything outside the token68 character set before it gets there.
+static BOOL TidalAccessTokenIsWellFormed(NSString *token) {
+    if (token.length == 0 || token.length > kMaxAccessTokenLength) {
+        return NO;
+    }
+
+    static NSCharacterSet *disallowed = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:
+            @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="];
+        disallowed = [allowed invertedSet];
+    });
+
+    return [token rangeOfCharacterFromSet:disallowed].location == NSNotFound;
+}
+
+@interface TidalProvider () <NSURLSessionTaskDelegate>
 
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, strong, nullable) NSURLSessionTask *tokenTask;
@@ -74,9 +93,36 @@ static const NSUInteger kMaxAlbumResults = 5;
     if (self) {
         NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
         config.timeoutIntervalForRequest = kTidalTimeout;
-        _session = [NSURLSession sessionWithConfiguration:config];
+        // Delegate is needed for the redirect handling below; both the token
+        // and the API requests carry an Authorization header.
+        _session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
     }
     return self;
+}
+
+#pragma mark - NSURLSessionTaskDelegate
+
+/// CFNetwork forwards manually-set headers across hosts on a 30x, which would
+/// hand the Basic client secret (or the bearer token) to the redirect target.
+/// Strip the Authorization header whenever the host changes.
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+willPerformHTTPRedirection:(NSHTTPURLResponse *)response
+        newRequest:(NSURLRequest *)request
+ completionHandler:(void (^)(NSURLRequest *_Nullable))completionHandler {
+
+    NSString *originalHost = task.originalRequest.URL.host;
+    NSString *newHost = request.URL.host;
+
+    if (originalHost.length > 0 && newHost.length > 0 &&
+        [originalHost caseInsensitiveCompare:newHost] == NSOrderedSame) {
+        completionHandler(request);
+        return;
+    }
+
+    NSMutableURLRequest *stripped = [request mutableCopy];
+    [stripped setValue:nil forHTTPHeaderField:@"Authorization"];
+    completionHandler(stripped);
 }
 
 #pragma mark - Credentials
@@ -200,7 +246,7 @@ static const NSUInteger kMaxAlbumResults = 5;
     }
 
     NSString *token = json[@"access_token"];
-    if (![token isKindOfClass:[NSString class]] || token.length == 0) {
+    if (![token isKindOfClass:[NSString class]] || !TidalAccessTokenIsWellFormed(token)) {
         return NO;
     }
 

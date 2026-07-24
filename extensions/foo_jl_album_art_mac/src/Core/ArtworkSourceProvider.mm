@@ -10,7 +10,9 @@
 #import "../../../../shared/NetworkReachability.h"
 
 @implementation ArtworkSourceProviderBase {
-    BOOL _cancelled;
+    // Written by -cancel on the main thread, read from NSURLSession
+    // completion handlers on background threads
+    _Atomic(BOOL) _cancelled;
 }
 
 #pragma mark - Shared Session

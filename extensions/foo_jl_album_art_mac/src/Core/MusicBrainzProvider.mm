@@ -206,13 +206,15 @@ static const NSTimeInterval kMusicBrainzTimeout = 30.0;
         luceneChars = [NSCharacterSet characterSetWithCharactersInString:@"+-&|!(){}[]^\"~*?:\\/"];
     });
 
-    NSMutableString *escaped = [NSMutableString string];
+    NSMutableString *escaped = [NSMutableString stringWithCapacity:input.length];
+    CFMutableStringRef escapedRef = (__bridge CFMutableStringRef)escaped;
     for (NSUInteger i = 0; i < input.length; i++) {
         unichar c = [input characterAtIndex:i];
         if ([luceneChars characterIsMember:c]) {
             [escaped appendString:@"\\"];
         }
-        [escaped appendString:[NSString stringWithCharacters:&c length:1]];
+        // Appending the character directly avoids an NSString per character
+        CFStringAppendCharacters(escapedRef, &c, 1);
     }
 
     return escaped;

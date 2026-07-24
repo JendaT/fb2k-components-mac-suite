@@ -18,53 +18,54 @@ mkdir -p "$TEST_BUILD_DIR"
 CXXFLAGS="-x objective-c++ -std=gnu++17 -fobjc-arc -O1 -Wall"
 FRAMEWORKS="-framework Foundation -framework CoreGraphics -framework Network"
 
-# Sources shared by the provider and controller test binaries
-CORE_SOURCES=(
-    "$PROJECT_DIR/src/Core/ArtworkResult.mm"
-    "$PROJECT_DIR/src/Core/TrackMetadata.mm"
-    "$PROJECT_DIR/src/Core/ArtworkSourceProvider.mm"
-    "$PROJECT_DIR/src/Core/iTunesProvider.mm"
-    "$PROJECT_DIR/src/Core/DeezerProvider.mm"
-    "$PROJECT_DIR/src/Core/CoverArtArchiveProvider.mm"
-    "$PROJECT_DIR/src/Core/MusicBrainzProvider.mm"
-    "$PROJECT_DIR/src/Core/TidalProvider.mm"
+# Core sources are globbed so a new file is covered without editing this
+# script, matching generate_xcode_project.rb. Files that pull in the
+# foobar2000 SDK or AppKit cannot compile standalone and are excluded.
+SDK_DEPENDENT_SOURCES=(
+    "AlbumArtFetcher.mm"
+    "ArtworkEmbedController.mm"
+    "ArtworkSaveController.mm"
+    "TrackMetadataFB2K.mm"
+)
+
+CORE_SOURCES=()
+for src in "$PROJECT_DIR"/src/Core/*.mm; do
+    base="$(basename "$src")"
+    excluded=0
+    for skipped in "${SDK_DEPENDENT_SOURCES[@]}"; do
+        if [ "$base" = "$skipped" ]; then
+            excluded=1
+            break
+        fi
+    done
+    if [ $excluded -eq 0 ]; then
+        CORE_SOURCES+=("$src")
+    fi
+done
+CORE_SOURCES+=(
     "$SHARED_DIR/RateLimiter.mm"
     "$SHARED_DIR/NetworkReachability.mm"
 )
 
-echo "==> Compiling unit tests (TrackMetadata)..."
-clang++ $CXXFLAGS \
-    "$PROJECT_DIR/Tests/TrackMetadataTests.mm" \
-    "$PROJECT_DIR/src/Core/TrackMetadata.mm" \
-    -framework Foundation \
-    -o "$TEST_BUILD_DIR/trackmetadata_tests"
+# Every Tests/*.mm file is its own binary with its own main()
+TEST_BINARIES=()
+for test_src in "$PROJECT_DIR"/Tests/*.mm; do
+    test_name="$(basename "$test_src" .mm)"
+    test_binary="$TEST_BUILD_DIR/$(echo "$test_name" | tr '[:upper:]' '[:lower:]')"
 
-echo "==> Compiling unit tests (ArtworkResult)..."
-clang++ $CXXFLAGS \
-    "$PROJECT_DIR/Tests/ArtworkResultTests.mm" \
-    "$PROJECT_DIR/src/Core/ArtworkResult.mm" \
-    -framework Foundation -framework CoreGraphics \
-    -o "$TEST_BUILD_DIR/artworkresult_tests"
+    echo "==> Compiling unit tests ($test_name)..."
+    clang++ $CXXFLAGS \
+        "$test_src" \
+        "${CORE_SOURCES[@]}" \
+        $FRAMEWORKS \
+        -o "$test_binary"
 
-echo "==> Compiling unit tests (Provider parsing)..."
-clang++ $CXXFLAGS \
-    "$PROJECT_DIR/Tests/ProviderParsingTests.mm" \
-    "${CORE_SOURCES[@]}" \
-    $FRAMEWORKS \
-    -o "$TEST_BUILD_DIR/providerparsing_tests"
-
-echo "==> Compiling unit tests (RemoteArtworkSearchController)..."
-clang++ $CXXFLAGS \
-    "$PROJECT_DIR/Tests/RemoteArtworkSearchControllerTests.mm" \
-    "$PROJECT_DIR/src/Core/RemoteArtworkSearchController.mm" \
-    "${CORE_SOURCES[@]}" \
-    $FRAMEWORKS \
-    -o "$TEST_BUILD_DIR/searchcontroller_tests"
+    TEST_BINARIES+=("$test_binary")
+done
 
 echo "==> Running unit tests..."
-"$TEST_BUILD_DIR/trackmetadata_tests"
-"$TEST_BUILD_DIR/artworkresult_tests"
-"$TEST_BUILD_DIR/providerparsing_tests"
-"$TEST_BUILD_DIR/searchcontroller_tests"
+for test_binary in "${TEST_BINARIES[@]}"; do
+    "$test_binary"
+done
 
 echo "==> All unit tests passed"

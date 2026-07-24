@@ -36,6 +36,10 @@ static const NSTimeInterval kErrorAutoHideDelay = 3.0;
 // as sources respond, so index-based keys would attach images to the wrong
 // results
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSImage *> *thumbnailCache;
+// In-flight thumbnail downloads, so the same URL is not requested twice and
+// pending downloads can be cancelled when the search state is cleared
+@property (nonatomic, strong) NSMutableArray<NSURLSessionDataTask *> *thumbnailTasks;
+@property (nonatomic, strong) NSMutableSet<NSString *> *inFlightThumbnailKeys;
 // Results currently shown in the footer (subset of searchResults with
 // loaded thumbnails, in display order) - used to resolve thumbnail clicks
 @property (nonatomic, strong) NSArray<ArtworkResult *> *displayedResults;
@@ -101,6 +105,8 @@ static const NSTimeInterval kErrorAutoHideDelay = 3.0;
         _searchController = [[RemoteArtworkSearchController alloc] init];
         _searchController.delegate = self;
         _thumbnailCache = [NSMutableDictionary dictionary];
+        _thumbnailTasks = [NSMutableArray array];
+        _inFlightThumbnailKeys = [NSMutableSet set];
     }
     return self;
 }
@@ -381,15 +387,27 @@ static const NSTimeInterval kErrorAutoHideDelay = 3.0;
 
 - (void)cancelSearch {
     [self.searchController cancel];
+    [self cancelThumbnailDownloads];
     [self.artView hideFooter];
 }
 
 - (void)clearSearchState {
     [self.searchController cancel];
+    [self cancelThumbnailDownloads];
     self.searchResults = nil;
     self.displayedResults = nil;
     [self.thumbnailCache removeAllObjects];
     [self.artView hideFooter];
+}
+
+/// Thumbnail downloads outlive a cancelled search otherwise: they keep
+/// running for their full timeout, decode, and are then discarded.
+- (void)cancelThumbnailDownloads {
+    for (NSURLSessionDataTask *task in self.thumbnailTasks) {
+        [task cancel];
+    }
+    [self.thumbnailTasks removeAllObjects];
+    [self.inFlightThumbnailKeys removeAllObjects];
 }
 
 #pragma mark - RemoteArtworkSearchDelegate
@@ -452,8 +470,8 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
     for (NSUInteger i = 0; i < count; i++) {
         ArtworkResult *result = results[i];
         NSString *key = [self thumbnailKeyForResult:result];
-        if (!key || self.thumbnailCache[key]) {
-            continue;  // No URL, already loaded, or download in flight completed
+        if (!key || self.thumbnailCache[key] || [self.inFlightThumbnailKeys containsObject:key]) {
+            continue;  // No URL, already loaded, or already downloading
         }
 
         // thumbnailURL can be nil when the provider's URL parse failed while
@@ -463,11 +481,17 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
             continue;
         }
 
-        NSURLSessionDataTask *task = [[AlbumArtController thumbnailSession]
+        [self.inFlightThumbnailKeys addObject:key];
+
+        __block NSURLSessionDataTask *task = nil;
+        task = [[AlbumArtController thumbnailSession]
             dataTaskWithURL:thumbURL
             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
 
             dispatch_async(dispatch_get_main_queue(), ^{
+                [self.inFlightThumbnailKeys removeObject:key];
+                [self.thumbnailTasks removeObject:task];
+
                 // Ignore downloads that finished after the search state changed
                 if (![self.searchResults containsObject:result]) return;
 
@@ -485,6 +509,8 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
                 [self updateThumbnailDisplay];
             });
         }];
+
+        [self.thumbnailTasks addObject:task];
         [task resume];
     }
 
@@ -514,30 +540,38 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
     }
 }
 
+/// The same image every time, so it is built once rather than per failed
+/// download (the fallback path draws into a bitmap, which is not cheap).
 - (NSImage *)placeholderThumbnailImage {
-    NSImage *placeholder = nil;
+    static NSImage *placeholder = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (@available(macOS 11.0, *)) {
+            placeholder = [NSImage imageWithSystemSymbolName:@"photo.fill"
+                                    accessibilityDescription:@"Failed to load"];
+        }
 
-    if (@available(macOS 11.0, *)) {
-        placeholder = [NSImage imageWithSystemSymbolName:@"photo.fill" accessibilityDescription:@"Failed to load"];
-        if (placeholder) return placeholder;
-    }
+        if (placeholder) {
+            return;
+        }
 
-    // Fallback: draw a simple placeholder
-    NSSize size = NSMakeSize(48, 48);
-    placeholder = [[NSImage alloc] initWithSize:size];
-    [placeholder lockFocus];
-    [[NSColor tertiaryLabelColor] setFill];
-    NSRectFill(NSMakeRect(0, 0, size.width, size.height));
-    // Draw an X
-    NSBezierPath *path = [NSBezierPath bezierPath];
-    path.lineWidth = 1.5;
-    [path moveToPoint:NSMakePoint(16, 16)];
-    [path lineToPoint:NSMakePoint(32, 32)];
-    [path moveToPoint:NSMakePoint(32, 16)];
-    [path lineToPoint:NSMakePoint(16, 32)];
-    [[NSColor secondaryLabelColor] setStroke];
-    [path stroke];
-    [placeholder unlockFocus];
+        // Fallback: draw a simple placeholder
+        NSSize size = NSMakeSize(48, 48);
+        placeholder = [[NSImage alloc] initWithSize:size];
+        [placeholder lockFocus];
+        [[NSColor tertiaryLabelColor] setFill];
+        NSRectFill(NSMakeRect(0, 0, size.width, size.height));
+        // Draw an X
+        NSBezierPath *path = [NSBezierPath bezierPath];
+        path.lineWidth = 1.5;
+        [path moveToPoint:NSMakePoint(16, 16)];
+        [path lineToPoint:NSMakePoint(32, 32)];
+        [path moveToPoint:NSMakePoint(32, 16)];
+        [path lineToPoint:NSMakePoint(16, 32)];
+        [[NSColor secondaryLabelColor] setStroke];
+        [path stroke];
+        [placeholder unlockFocus];
+    });
 
     return placeholder;
 }
@@ -732,7 +766,9 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
             continue;
         }
 
-        if ([saver canSaveToFolder] && [saver saveImageToFolder]) {
+        // No writability pre-check: it can go stale before the write, and a
+        // failed write already routes into the save-panel fallback below
+        if ([saver saveImageToFolder]) {
             [savedFiles addObject:[targetURL lastPathComponent]];
         } else {
             failedResults[typeKey] = result;
@@ -778,6 +814,26 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
                    images:(NSDictionary<NSNumber *, NSImage *> *)failedImages
                savedFiles:(NSMutableArray<NSString *> *)savedFiles {
 
+    // The metadata is needed for every write below, so resolve it before
+    // asking for a folder - otherwise the user picks a directory and then
+    // every image is skipped with no explanation
+    TrackMetadata *meta = nil;
+    if (self.currentTrack.is_valid()) {
+        meta = [TrackMetadata metadataFromTrack:self.currentTrack];
+    }
+
+    if (!meta) {
+        if (savedFiles.count > 0) {
+            [self showPartialSuccessAlert:
+                [NSString stringWithFormat:
+                    @"Saved %lu images. The track is no longer available, so %lu could not be saved.",
+                    (unsigned long)savedFiles.count, (unsigned long)failedResults.count]];
+        } else {
+            [self.artView showError:@"Track is no longer available"];
+        }
+        return;
+    }
+
     // Use NSOpenPanel to let user pick a writable directory
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.title = [NSString stringWithFormat:@"Choose folder for %lu remaining images",
@@ -787,10 +843,6 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
     panel.canCreateDirectories = YES;
 
     // Try to start in the album folder
-    TrackMetadata *meta = nil;
-    if (self.currentTrack.is_valid()) {
-        meta = [TrackMetadata metadataFromTrack:self.currentTrack];
-    }
     if (meta.folderURL) {
         panel.directoryURL = meta.folderURL;
     }
@@ -807,8 +859,6 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
     for (NSNumber *typeKey in failedResults) {
         ArtworkResult *result = failedResults[typeKey];
         NSImage *image = failedImages[typeKey];
-
-        if (!meta) continue;
 
         ArtworkSaveController *saver = [[ArtworkSaveController alloc] initWithResult:result
                                                                                image:image
@@ -840,6 +890,9 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
                             (unsigned long)failedCount,
                             [savedFiles componentsJoinedByString:@", "]];
         [self showPartialSuccessAlert:message];
+    } else if (failedCount == 0) {
+        // Nothing was attempted - not a failure
+        [self.artView showError:@"No images to save"];
     } else {
         [self.artView showError:@"Failed to save images"];
     }
@@ -888,7 +941,8 @@ static const NSTimeInterval kThumbnailTimeout = 15.0;
             self.artView.image = controller.image;
 
             // Log success
-            NSLog(@"[AlbumArt] Saved artwork to: %@", controller.targetFileURL.path);
+            // Filename only: full paths end up in the unified system log
+            NSLog(@"[AlbumArt] Saved artwork to: %@", controller.targetFileURL.lastPathComponent);
 
             // Refresh to pick up the new artwork
             [self refreshArtwork];

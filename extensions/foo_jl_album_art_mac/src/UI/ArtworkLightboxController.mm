@@ -14,6 +14,31 @@ static const CGFloat kBottomBarHeight = 50.0;
 static const CGFloat kTypeButtonHeight = 24.0;
 static const CGFloat kNavButtonSize = 36.0;
 
+static const NSUInteger kImageCacheCostLimit = 96 * 1024 * 1024;
+
+/// Approximate decoded footprint of an image in bytes (RGBA), used as the
+/// NSCache cost so the cache is bounded by memory rather than entry count.
+static NSUInteger ArtworkImageCacheCost(NSImage *image) {
+    NSInteger widest = 0;
+    NSInteger tallest = 0;
+
+    for (NSImageRep *rep in image.representations) {
+        widest = MAX(widest, rep.pixelsWide);
+        tallest = MAX(tallest, rep.pixelsHigh);
+    }
+
+    if (widest <= 0 || tallest <= 0) {
+        widest = (NSInteger)image.size.width;
+        tallest = (NSInteger)image.size.height;
+    }
+
+    if (widest <= 0 || tallest <= 0) {
+        return 0;
+    }
+
+    return (NSUInteger)(widest * tallest * 4);
+}
+
 @interface ArtworkLightboxController () <NSWindowDelegate>
 
 // Window
@@ -74,6 +99,10 @@ static const CGFloat kNavButtonSize = 36.0;
         _currentIndex = initialIndex;
         _currentTypeFilter = nil;
         _imageCache = [[NSCache alloc] init];
+        // Bounded by bytes first: ten decoded 4000x4000 covers would be
+        // roughly 640 MB, and NSCache only reacts to memory pressure after
+        // the allocation has already happened.
+        _imageCache.totalCostLimit = kImageCacheCostLimit;
         _imageCache.countLimit = 10;
         _selectedResultsByType = [NSMutableDictionary dictionary];
         _selectedImagesByType = [NSMutableDictionary dictionary];
@@ -392,9 +421,6 @@ static const CGFloat kNavButtonSize = 36.0;
     if (count == 0) {
         self.confirmButton.title = @"Save Selected";
         self.confirmButton.enabled = NO;
-    } else if (count == 1) {
-        self.confirmButton.title = @"Save Selected (1)";
-        self.confirmButton.enabled = YES;
     } else {
         self.confirmButton.title = [NSString stringWithFormat:@"Save Selected (%lu)", (unsigned long)count];
         self.confirmButton.enabled = YES;
@@ -579,7 +605,7 @@ static const CGFloat kNavButtonSize = 36.0;
             }
 
             // Cache it
-            [self.imageCache setObject:image forKey:url];
+            [self.imageCache setObject:image forKey:url cost:ArtworkImageCacheCost(image)];
             [self handleLoadedImage:image forURL:url];
         });
     }];
