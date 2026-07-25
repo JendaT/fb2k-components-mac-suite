@@ -415,10 +415,15 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
     let destDir: string | null = null;
     if (relocate) {
       destDir = join(cfg.gc.dj_zone!, basename(placed.target_path));
-      for (const p of localAudio.filter(existsSync)) {
-        const to = join(destDir, basename(p));
+      // Keep each file's path relative to the release root. Flattening to
+      // basename() collides whenever discs number tracks independently
+      // (CD1/01.flac + CD2/01.flac), and renameSync overwrites in silence.
+      for (const f of sc.files) {
+        const from = join(root.dir, f.path);
+        if (!existsSync(from)) continue;
+        const to = join(destDir, f.path);
         mkdirSync(dirname(to), { recursive: true });
-        renameSync(p, to);
+        renameSync(from, to);
       }
     } else {
       for (const p of localAudio.filter(existsSync)) rmSync(p);
