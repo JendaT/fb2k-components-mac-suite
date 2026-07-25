@@ -70,10 +70,12 @@ parent dir name parse → fingerprint via identify stage (doc 2), not here.
   dir is its own root; artist dir is never a root if ≥2 children resolved.
 - Hidden/system junk: skip `@eaDir`, `.DS_Store`, `._*`, `Thumbs.db`.
 - Pre-existing sidecar: re-resolve only with `--force`; otherwise trust it.
-- FLAC with unset STREAMINFO MD5: `resolve` is pure and never fixes the file
-  (doc 3's "recompute+fix" happens at execute, on the copies); the sidecar
-  records an `fsha1:` fallback hash plus a `flac_md5_unset` quality issue so
-  execute knows to recompute.
+- FLAC with unset STREAMINFO MD5: `resolve` is pure and never fixes the file;
+  the sidecar records an `fsha1:` fallback hash plus a `flac_md5_unset`
+  quality issue. Whether the repair happens at execute (on the copies) at all
+  is **open** — it conflicts with doc 3's verify step and with hash
+  immutability; filed as CR-001.4 in `CHANGE-REQUESTS.md`. Execute does not
+  repair today.
 
 ## Tier eligibility (normative)
 

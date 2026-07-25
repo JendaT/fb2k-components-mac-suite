@@ -193,5 +193,6 @@ Decisions made during implementation; normative for schema v1 consumers.
   overwrite existing maps without `--force`. Collection dirs are the tree
   root's children; inside them, release-grammar dirs are flat releases,
   `[Slot]`-style dirs hold flat releases, anything else is an artist dir.
-- `intake bootstrap` is not (yet) in the doc 03 command surface — flagged to
-  the overseer for the next contract bump; the component never calls it.
+- `intake bootstrap` is not (yet) in the doc 03 command surface — filed as
+  CR-001.2 in `CHANGE-REQUESTS.md` for the next contract bump; the component
+  never calls it.
