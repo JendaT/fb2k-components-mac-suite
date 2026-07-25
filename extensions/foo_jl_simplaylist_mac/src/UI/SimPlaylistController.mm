@@ -253,6 +253,7 @@ struct ReloadOperation {
 @property (nonatomic, assign) BOOL internalModification;  // True while we are mutating playlist programmatically
 
 - (void)recomputeGroupDurations;
+- (void)recomputeGroupDurationsWithHandles:(const metadb_handle_list &)handles;
 - (void)clearGroupData;
 - (void)persistColumns;
 - (void)maybeApplyFinderOpenOverride:(std::shared_ptr<metadb_handle_list>)addedHandles;
@@ -658,8 +659,7 @@ struct ReloadOperation {
         _playlistView.groupDurations = nil;
         return;
     }
-    NSArray<NSNumber *> *starts = _playlistView.groupStarts;
-    if (starts.count == 0) {
+    if (_playlistView.groupStarts.count == 0) {
         _playlistView.groupDurations = nil;
         return;
     }
@@ -667,6 +667,27 @@ struct ReloadOperation {
     auto pm = playlist_manager::get();
     metadb_handle_list handles;
     pm->playlist_get_all_items((t_size)_currentPlaylistIndex, handles);
+    [self recomputeGroupDurationsWithHandles:handles];
+}
+
+// Overload for callers that already hold the playlist's handle list: the fetch
+// above copies the whole list (one refcount per item) on the main thread, and
+// the sync detection path had just fetched the identical list.
+- (void)recomputeGroupDurationsWithHandles:(const metadb_handle_list &)handles {
+    if (!_playlistView.showGroupDuration) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+    if (_currentPlaylistIndex < 0) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+    NSArray<NSNumber *> *starts = _playlistView.groupStarts;
+    if (starts.count == 0) {
+        _playlistView.groupDurations = nil;
+        return;
+    }
+
     t_size itemCount = handles.get_count();
 
     NSMutableArray<NSNumber *> *durations = [NSMutableArray arrayWithCapacity:starts.count];
@@ -1231,7 +1252,9 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     // Restore scroll position immediately (we have enough groups)
     [self performScrollRestore];
 
-    [self recomputeGroupDurations];
+    // handles is still owned here (moved into handlesPtr below), so reuse it
+    // instead of refetching the same list.
+    [self recomputeGroupDurationsWithHandles:handles];
     [_playlistView setNeedsDisplay:YES];
 
     // Continue detecting remaining groups in background
@@ -1686,18 +1709,23 @@ static BOOL validCachedStringArray(NSArray *arr) {
     if (error || ![root isKindOfClass:[NSDictionary class]]) return NO;
     NSDictionary *cache = root;
 
-    // Validate schema version
+    // Validate schema version. JSON can put an array/dictionary/null in any of
+    // these three fields; NSArray does not respond to integerValue and neither
+    // NSNumber nor NSArray responds to isEqualToString:, so an unguarded read
+    // is an unrecognised selector on every playlist switch-in.
     NSNumber *version = cache[@"v"];
-    if (!version || [version integerValue] != 1) return NO;
+    if (![version isKindOfClass:[NSNumber class]] || [version integerValue] != 1) return NO;
 
     // Validate item count
     NSNumber *cachedItemCount = cache[@"itemCount"];
-    if (!cachedItemCount || [cachedItemCount integerValue] != (NSInteger)itemCount) return NO;
+    if (![cachedItemCount isKindOfClass:[NSNumber class]] ||
+        [cachedItemCount integerValue] != (NSInteger)itemCount) return NO;
 
     // Validate preset hash
     NSString *cachedPresetHash = cache[@"presetHash"];
     NSString *currentPresetHash = presetHashForPreset(preset);
-    if (!cachedPresetHash || ![cachedPresetHash isEqualToString:currentPresetHash]) return NO;
+    if (![cachedPresetHash isKindOfClass:[NSString class]] ||
+        ![cachedPresetHash isEqualToString:currentPresetHash]) return NO;
 
     // Extract arrays
     NSArray *groupStarts = cache[@"groupStarts"];

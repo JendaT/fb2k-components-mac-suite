@@ -32,6 +32,9 @@ public:
         return tf;
     }
 
+    // Upper bound on distinct compiled patterns kept alive by the cache.
+    static constexpr size_t kMaxCachedScripts = 100;
+
     // Compile with caching (patterns are often reused)
     static titleformat_object::ptr compileWithCache(const std::string& pattern) {
         std::lock_guard<std::mutex> lock(s_cacheMutex);
@@ -43,7 +46,7 @@ public:
 
         // Evict one entry if the cache grows too large (prevents unbounded
         // memory growth without discarding every cached compilation)
-        if (s_cache.size() >= 100) {
+        if (s_cache.size() >= kMaxCachedScripts) {
             s_cache.erase(s_cache.begin());
         }
 

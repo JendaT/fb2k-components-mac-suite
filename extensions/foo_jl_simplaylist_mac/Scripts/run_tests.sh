@@ -43,8 +43,12 @@ done
 
 if [ "$COVERAGE" = "1" ]; then
     INSTRUMENT_FLAGS=(-fprofile-instr-generate -fcoverage-mapping)
+    # -O0 for coverage: at -O1 the header-only modules the report is most
+    # useful for get inlined, which distorts per-line counts.
+    OPT_FLAG=-O0
 else
     INSTRUMENT_FLAGS=(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    OPT_FLAG=-O1
 fi
 
 BINARIES=()
@@ -87,12 +91,12 @@ for test_file in "$PROJECT_DIR"/Tests/*Tests.mm "$PROJECT_DIR"/Tests/*Tests.cpp;
     out="$TEST_BUILD_DIR/$name"
     echo "==> Compiling unit tests ($module)..."
     if [[ "$test_file" == *.mm ]]; then
-        clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall "${INSTRUMENT_FLAGS[@]}" \
+        clang++ -x objective-c++ -std=c++17 -fobjc-arc "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
             "${sources[@]}" \
             -framework Foundation \
             -o "$out"
     else
-        clang++ -std=c++17 -O1 -Wall "${INSTRUMENT_FLAGS[@]}" \
+        clang++ -std=c++17 "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
             "${sources[@]}" \
             -o "$out"
     fi

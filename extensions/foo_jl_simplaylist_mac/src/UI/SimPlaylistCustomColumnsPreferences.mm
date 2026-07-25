@@ -104,6 +104,14 @@
     [self loadColumns];
 }
 
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    // kCustomColumns can change while this page exists (rename sync, another
+    // panel). Without a reload the next edit writes the stale array back over
+    // the newer state.
+    [self loadColumns];
+}
+
 - (void)loadColumns {
     _columns = [[ColumnDefinition customColumns] mutableCopy];
     if (!_columns) {
@@ -212,8 +220,15 @@
             popup.action = @selector(alignmentChanged:);
             [cellView addSubview:popup];
         }
-        NSPopUpButton *popup = cellView.subviews.firstObject;
-        [popup selectItemAtIndex:(NSInteger)col.alignment];
+        // Recycled cell views come back from makeViewWithIdentifier:; nothing
+        // guarantees the first subview is still the popup.
+        NSView *firstSubview = cellView.subviews.firstObject;
+        NSPopUpButton *popup = [firstSubview isKindOfClass:[NSPopUpButton class]]
+            ? (NSPopUpButton *)firstSubview : nil;
+        NSInteger alignmentItem = (NSInteger)col.alignment;
+        if (popup && alignmentItem >= 0 && alignmentItem < popup.numberOfItems) {
+            [popup selectItemAtIndex:alignmentItem];
+        }
         cellView.objectValue = @(row);
         return cellView;
     }

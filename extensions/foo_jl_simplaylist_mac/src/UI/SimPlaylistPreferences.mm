@@ -57,6 +57,12 @@
 
 @implementation SimPlaylistPreferencesController
 
+- (void)dealloc {
+    // performSelector:afterDelay: keeps a pending save or preview alive on the
+    // run loop; firing it after the page closes would touch dead fields.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+}
+
 - (void)loadView {
     // Build the preferences inside a flipped container, then wrap it in a scroll view
     // so users can scroll if their preferences window is shorter than the content.
@@ -506,6 +512,12 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
     _presets = [GroupPreset defaultPresets];
     _currentPresetIndex = simplaylist_config::getConfigInt(
         simplaylist_config::kActivePresetIndex, 0);
+    // Clamp: an out-of-range persisted index left the popup on item 0 with
+    // blank fields while every later saveAndNotify no-opped, so typed patterns
+    // were silently lost.
+    if (_currentPresetIndex < 0 || _currentPresetIndex >= (NSInteger)_presets.count) {
+        _currentPresetIndex = 0;
+    }
 
     [_presetPopup removeAllItems];
     for (GroupPreset *preset in _presets) {
@@ -622,8 +634,7 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
     int64_t finderBehavior = simplaylist_config::getConfigInt(
         simplaylist_config::kFinderOpenBehavior,
         simplaylist_config::kDefaultFinderOpenBehavior);
-    if (finderBehavior < 0 || finderBehavior > 2) finderBehavior = 0;
-    [_finderOpenBehaviorPopup selectItemAtIndex:finderBehavior];
+    selectClampedItem(_finderOpenBehaviorPopup, finderBehavior);
 
     // Target playlist picker is currently disabled — see BACKLOG.md.
     // The config value is still respected by the override; just no UI to edit it.
@@ -711,7 +722,7 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
         }
     }
     if (hits.count == 0) return nil;
-    return [NSString stringWithFormat:@"⚠ Unknown field — did you mean: %@",
+    return [NSString stringWithFormat:@"Unknown field — did you mean: %@",
             [hits componentsJoinedByString:@", "]];
 }
 
@@ -734,7 +745,10 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
     }
     if (handle.is_empty()) return @"(no track to preview)";
 
-    auto script = simplaylist::TitleFormatHelper::compile([pattern UTF8String]);
+    // No fallback: compile() installs "%filename%" on a syntax error, so
+    // is_empty() was never true and a malformed pattern previewed as the
+    // track's filename, which looks like a legitimate result.
+    auto script = simplaylist::TitleFormatHelper::compileWithFallback([pattern UTF8String], nullptr);
     if (script.is_empty()) return @"(invalid pattern)";
 
     std::string result = simplaylist::TitleFormatHelper::format(handle, script);
@@ -744,21 +758,51 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
     NSString *trimmed = [str stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length == 0) return @"(empty — fields may be missing on this track)";
+
+    // A pattern such as $pad(x,1000000000) yields a huge string; the preview is
+    // a single-line label, so cap what we hand to AppKit. The range is expanded
+    // to whole composed characters so the cut never splits a surrogate pair.
+    static const NSUInteger kMaxPreviewChars = 200;
+    if (str.length > kMaxPreviewChars) {
+        NSRange safeRange = [str rangeOfComposedCharacterSequencesForRange:
+                             NSMakeRange(0, kMaxPreviewChars)];
+        str = [[str substringWithRange:safeRange] stringByAppendingString:@"..."];
+    }
     return str;
 }
 
-- (void)refreshPatternWarnings {
+// Warning lookup is pure string matching and stays live per keystroke; the
+// preview compiles AND RUNS the pattern against a real track on the main
+// thread, so per-field refreshes are debounced from controlTextDidChange:.
+static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
+
+- (void)refreshHeaderPatternPreview {
+    _headerPatternPreview.stringValue =
+        [SimPlaylistPreferencesController previewForPattern:_headerPatternField.stringValue];
+}
+
+- (void)refreshSubgroupPatternPreview {
+    _subgroupPatternPreview.stringValue =
+        [SimPlaylistPreferencesController previewForPattern:_subgroupPatternField.stringValue];
+}
+
+- (void)refreshHeaderPatternWarning {
     NSString *headerWarn = [SimPlaylistPreferencesController warningForPattern:_headerPatternField.stringValue];
     _headerPatternWarning.stringValue = headerWarn ?: @"";
     _headerPatternWarning.hidden = (headerWarn == nil);
-    _headerPatternPreview.stringValue =
-        [SimPlaylistPreferencesController previewForPattern:_headerPatternField.stringValue];
+}
 
+- (void)refreshSubgroupPatternWarning {
     NSString *subWarn = [SimPlaylistPreferencesController warningForPattern:_subgroupPatternField.stringValue];
     _subgroupPatternWarning.stringValue = subWarn ?: @"";
     _subgroupPatternWarning.hidden = (subWarn == nil);
-    _subgroupPatternPreview.stringValue =
-        [SimPlaylistPreferencesController previewForPattern:_subgroupPatternField.stringValue];
+}
+
+- (void)refreshPatternWarnings {
+    [self refreshHeaderPatternWarning];
+    [self refreshHeaderPatternPreview];
+    [self refreshSubgroupPatternWarning];
+    [self refreshSubgroupPatternPreview];
 }
 
 - (void)presetChanged:(id)sender {
@@ -798,13 +842,32 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
 #pragma mark - NSTextFieldDelegate
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
+    // Cancel the debounced save first: otherwise tabbing out of a field saves
+    // here and again when the pending perform fires, posting
+    // SimPlaylistSettingsChanged twice = two full rebuilds per panel.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveAndNotify) object:nil];
     [self saveAndNotify];
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification {
-    // Live warnings update immediately so the user gets feedback as they type
-    if (notification.object == _headerPatternField || notification.object == _subgroupPatternField) {
-        [self refreshPatternWarnings];
+    // Live warnings update immediately so the user gets feedback as they type;
+    // only the edited field's preview is (re)scheduled.
+    if (notification.object == _headerPatternField) {
+        [self refreshHeaderPatternWarning];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                 selector:@selector(refreshHeaderPatternPreview)
+                                                   object:nil];
+        [self performSelector:@selector(refreshHeaderPatternPreview)
+                   withObject:nil
+                   afterDelay:kPreviewDebounceSeconds];
+    } else if (notification.object == _subgroupPatternField) {
+        [self refreshSubgroupPatternWarning];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                 selector:@selector(refreshSubgroupPatternPreview)
+                                                   object:nil];
+        [self performSelector:@selector(refreshSubgroupPatternPreview)
+                   withObject:nil
+                   afterDelay:kPreviewDebounceSeconds];
     }
     // Debounce save/notify to avoid rebuilding on every keystroke
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveAndNotify) object:nil];

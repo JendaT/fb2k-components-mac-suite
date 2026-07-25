@@ -279,6 +279,58 @@ int main(void) {
         CHECK_EQ(row, 4, "clamped row");
     }
 
+    // --- Multi-row deltas in grouped mode (Page/Home/End use these) ---
+    // The delta is in DISPLAY ROWS, not playlist indices, and the landing row
+    // may be a header/subgroup/padding row that has to be skipped.
+    {
+        g_context = "moveFocus-multi-row-down";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:0 extendFromAnchor:NO];  // track 0 = row 1
+        NSInteger row = [sel moveFocusBy:5 extendSelection:NO];
+        // row 1 + 5 = row 6 = subgroup @4, skipped forward to row 7 = track 4
+        CHECK_EQ(sel.focusIndex, 4, "lands past the subgroup row");
+        CHECK_EQ(row, 7, "scroll row is track 4's row");
+    }
+    {
+        g_context = "moveFocus-multi-row-up";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:4 extendFromAnchor:NO];  // track 4 = row 7
+        NSInteger row = [sel moveFocusBy:-2 extendSelection:NO];
+        // row 7 - 2 = row 5 = header G1, skipped backward to row 4 = track 3
+        CHECK_EQ(sel.focusIndex, 3, "lands before the group header row");
+        CHECK_EQ(row, 4, "scroll row is track 3's row");
+    }
+    {
+        g_context = "moveFocus-home";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:11 extendFromAnchor:NO];  // track 11 = row 17
+        NSInteger row = [sel moveFocusBy:-20 extendSelection:NO];
+        // Clamps to row 0 (header G0), then searches forward to row 1
+        CHECK_EQ(sel.focusIndex, 0, "Home-sized delta reaches the first track");
+        CHECK_EQ(row, 1, "scroll row is the first track's row");
+        checkSelection(sel, singleSet(0), "selection follows focus to the top");
+    }
+    {
+        g_context = "moveFocus-end";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:0 extendFromAnchor:NO];  // track 0 = row 1
+        NSInteger row = [sel moveFocusBy:20 extendSelection:NO];
+        // Clamps to row 19 (trailing padding), then searches back to row 17
+        CHECK_EQ(sel.focusIndex, 11, "End-sized delta reaches the last track");
+        CHECK_EQ(row, 17, "scroll row is the last track's row");
+        checkSelection(sel, singleSet(11), "selection follows focus to the bottom");
+    }
+    {
+        g_context = "moveFocus-multi-row-extend";
+        PlaylistSelectionModel *sel = makeSelection(layout);
+        [sel selectPlaylistIndex:8 extendFromAnchor:NO];  // track 8 = row 12
+        [sel moveFocusBy:-5 extendSelection:YES];
+        // row 12 - 5 = row 7 = track 4
+        checkSelection(sel, rangeSet(4, 8), "shift + multi-row up extends to the landing track");
+        CHECK_EQ(sel.anchorIndex, 8, "anchor preserved across a multi-row move");
+        CHECK_EQ(sel.focusIndex, 4, "focus at the landing track");
+    }
+
     TEST_MAIN_END();
 
     }

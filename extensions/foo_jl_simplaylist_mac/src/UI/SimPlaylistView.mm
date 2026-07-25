@@ -6,6 +6,7 @@
 //
 
 #import "SimPlaylistView.h"
+#import "../Core/AlbumArtCache.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
 #import "../Core/PlaylistLayoutModel.h"
@@ -151,7 +152,11 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)commonInit {
     _layout = [[PlaylistLayoutModel alloc] init];
     _selection = [[PlaylistSelectionModel alloc] initWithLayout:_layout];
-    _columns = [ColumnDefinition defaultColumns];
+    // Empty placeholder: the controller assigns the real columns immediately
+    // after init. Calling +defaultColumns here made a view construction read
+    // config, enumerate SDK column providers and potentially WRITE config, all
+    // for a value discarded a moment later.
+    _columns = @[];
     // Alias the selection model's stable set: drawing code, drag handlers and
     // the controller all read/mutate this instance directly.
     _selectedIndices = _selection.selectedIndices;
@@ -587,7 +592,7 @@ static NSString *formatGroupDuration(double seconds) {
     // STEP 1: Fill group column background FIRST (before any content)
     // This ensures header text drawn later won't be covered
     if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
-        [self fillGroupColumnBackgroundInRect:dirtyRect];
+        [self fillGroupColumnBackgroundInRect:dirtyRect firstRow:firstRow lastRow:lastRow];
     }
 
     // STEP 2: Draw only visible rows (typically ~30 rows)
@@ -932,9 +937,17 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger bracketDepth = 0;  // [] depth
 
     // Copy the UTF-16 units out once - one characterAtIndex: message per unit
-    // adds up in the per-cell draw path.
-    std::vector<unichar> chars(length);
-    [text getCharacters:chars.data() range:NSMakeRange(0, length)];
+    // adds up in the per-cell draw path. Cell values are short, so keep the
+    // common case on the stack: the heap buffer is only for outliers.
+    constexpr NSUInteger kStackChars = 256;
+    unichar stackChars[kStackChars];
+    std::vector<unichar> heapChars;
+    unichar *chars = stackChars;
+    if (length > kStackChars) {
+        heapChars.resize(length);
+        chars = heapChars.data();
+    }
+    [text getCharacters:chars range:NSMakeRange(0, length)];
 
     // Apply the dim color per contiguous run, not per character - each
     // addAttribute: call splits/merges attribute runs, and this is in the
@@ -1116,8 +1129,13 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     }
 }
 
-// Fill group column background (called BEFORE drawing row content)
-- (void)fillGroupColumnBackgroundInRect:(NSRect)dirtyRect {
+// Fill group column background (called BEFORE drawing row content).
+// firstRow/lastRow come from the caller, which already derived them from the
+// same dirtyRect: re-deriving them here cost two more rowAtPoint: probes (each
+// a nested binary search) per draw.
+- (void)fillGroupColumnBackgroundInRect:(NSRect)dirtyRect
+                               firstRow:(NSInteger)firstRow
+                                lastRow:(NSInteger)lastRow {
     // Skip background fill for glass mode - let the effect show through
     if (_glassBackground) return;
     if (_layout.groupStarts.count == 0) return;
@@ -1128,13 +1146,9 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     // Styles 0, 2, 3: Fill entire column
 
     if (_layout.headerDisplayStyle == 1) {
-        // Style 1: Fill only the track areas (below each header row)
-        NSInteger firstRow = [self rowAtPoint:NSMakePoint(0, NSMinY(visibleRect))];
-        NSInteger lastRow = [self rowAtPoint:NSMakePoint(0, NSMaxY(visibleRect))];
-        if (firstRow < 0) firstRow = 0;
-        NSInteger totalRows = [self rowCount];
-        if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
-
+        // Style 1: Fill only the track areas (below each header row). Every
+        // fill is intersected with dirtyRect, so the dirtyRect-derived row
+        // range covers exactly the same pixels the visibleRect range did.
         NSInteger firstGroupIndex = [self groupIndexForRow:firstRow];
         NSInteger lastGroupIndex = [self groupIndexForRow:lastRow];
 
@@ -1270,23 +1284,15 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 #pragma mark - Group Column (Album Art)
 
 - (void)drawAlbumArtPlaceholderInRect:(NSRect)rect {
-    // Background
-    [[NSColor colorWithWhite:0.15 alpha:1.0] setFill];
-    NSRectFill(rect);
-
-    // Music note symbol
-    NSString *musicNote = @"\u266B";
-    CGFloat fontSize = MIN(rect.size.width, rect.size.height) * 0.4;
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:fontSize weight:NSFontWeightLight],
-        NSForegroundColorAttributeName: [NSColor colorWithWhite:0.4 alpha:1.0]
-    };
-    NSSize textSize = [musicNote sizeWithAttributes:attrs];
-    NSPoint point = NSMakePoint(
-        rect.origin.x + (rect.size.width - textSize.width) / 2,
-        rect.origin.y + (rect.size.height - textSize.height) / 2
-    );
-    [musicNote drawAtPoint:point withAttributes:attrs];
+    // Pre-rendered once by AlbumArtCache. Building the font, the attributes
+    // dictionary and laying out the glyph here ran a full Core Text pass per
+    // artless group per frame.
+    [[AlbumArtCache placeholderImage] drawInRect:rect
+                                        fromRect:NSZeroRect
+                                       operation:NSCompositingOperationSourceOver
+                                        fraction:1.0
+                                  respectFlipped:YES
+                                           hints:nil];
 }
 
 #pragma mark - Selection Management (state math in PlaylistSelectionModel)
@@ -1352,6 +1358,17 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
     if (index < -1 || index >= _layout.itemCount) return;
     _selection.focusIndex = index;
     [self setNeedsDisplay:YES];
+}
+
+// sourcePlaylistIndex changes exactly when the panel switches playlists. The
+// shift-selection anchor belongs to the playlist it was set in: carried across
+// a switch it makes the next shift-click extend from an index in the previous
+// playlist (and a following Delete remove that whole range).
+- (void)setSourcePlaylistIndex:(NSInteger)index {
+    if (_sourcePlaylistIndex != index) {
+        _selection.anchorIndex = -1;
+    }
+    _sourcePlaylistIndex = index;
 }
 
 // selectedIndices: the getter is synthesized and returns the ivar, which
@@ -1758,12 +1775,17 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
             [self moveFocusBy:[self visibleRowCount] extendSelection:hasShift];
             break;
 
+        // moveFocusBy: takes a delta in DISPLAY ROWS, not playlist indices. A
+        // whole-list delta clamps to the first/last row and then skips back to
+        // the nearest track, which is what Home/End mean. Deriving the delta
+        // from focusIndex instead undershoots in grouped playlists, where a
+        // track's row is always past its index by the headers above it.
         case NSHomeFunctionKey:
-            [self moveFocusBy:-(_selection.focusIndex + 1) extendSelection:hasShift];
+            [self moveFocusBy:-[self rowCount] extendSelection:hasShift];
             break;
 
         case NSEndFunctionKey:
-            [self moveFocusBy:([self rowCount] - _selection.focusIndex) extendSelection:hasShift];
+            [self moveFocusBy:[self rowCount] extendSelection:hasShift];
             break;
 
         case ' ':  // Space - toggle play/pause (consistent with foobar2000 convention)

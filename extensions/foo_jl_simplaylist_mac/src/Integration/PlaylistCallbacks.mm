@@ -39,7 +39,17 @@ static void dispatchToControllers(void (^perController)(SimPlaylistController *)
     if (!hasControllers()) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         for (SimPlaylistController *c in copyControllers()) {
-            perController(c);
+            // The SDK raises C++ exceptions. Escaping this block they would
+            // unwind into libdispatch frames that are not exception-transparent
+            // and terminate the host; one failing panel must not do that, nor
+            // stop the remaining panels from being notified.
+            try {
+                perController(c);
+            } catch (const std::exception &e) {
+                FB2K_console_formatter() << "[SimPlaylist] Callback handler failed: " << e.what();
+            } catch (...) {
+                FB2K_console_formatter() << "[SimPlaylist] Callback handler failed";
+            }
         }
     });
 }
@@ -244,22 +254,31 @@ static void runPlayingPlaylistGuardCheck() {
     // not touch the playback/playlist SDK state when the feature is disabled.
     if (!simplaylist_config::getConfigBool(simplaylist_config::kKeepPlayingPlaylist,
                                            simplaylist_config::kDefaultKeepPlayingPlaylist)) return;
-    auto pm = playlist_manager::get();
-    t_size itemPlaylist = SIZE_MAX, itemIndex = SIZE_MAX;
-    if (!pm->get_playing_item_location(&itemPlaylist, &itemIndex)) return;
-    t_size playingPlaylist = pm->get_playing_playlist();
-    if (playingPlaylist == itemPlaylist) return;
-    if (itemPlaylist >= pm->get_playlist_count()) return;
+    // Reached from an NSTimer block and from a main-queue block, neither of
+    // which is exception-transparent: an escaping SDK exception would terminate
+    // the host instead of skipping one check.
+    try {
+        auto pm = playlist_manager::get();
+        t_size itemPlaylist = SIZE_MAX, itemIndex = SIZE_MAX;
+        if (!pm->get_playing_item_location(&itemPlaylist, &itemIndex)) return;
+        t_size playingPlaylist = pm->get_playing_playlist();
+        if (playingPlaylist == itemPlaylist) return;
+        if (itemPlaylist >= pm->get_playlist_count()) return;
 
-    pfc::string8 thief = "<none>";
-    if (playingPlaylist < pm->get_playlist_count()) {
-        pm->playlist_get_name(playingPlaylist, thief);
+        pfc::string8 thief = "<none>";
+        if (playingPlaylist < pm->get_playlist_count()) {
+            pm->playlist_get_name(playingPlaylist, thief);
+        }
+        pm->set_playing_playlist(itemPlaylist);
+        pfc::string8 restored;
+        pm->playlist_get_name(itemPlaylist, restored);
+        FB2K_console_formatter() << "[SimPlaylist] Kept playback in \"" << restored
+                                 << "\" (playing playlist was redirected to \"" << thief << "\")";
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] Playing-playlist guard check failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] Playing-playlist guard check failed";
     }
-    pm->set_playing_playlist(itemPlaylist);
-    pfc::string8 restored;
-    pm->playlist_get_name(itemPlaylist, restored);
-    FB2K_console_formatter() << "[SimPlaylist] Kept playback in \"" << restored
-                             << "\" (playing playlist was redirected to \"" << thief << "\")";
 }
 
 static void schedulePlayingPlaylistGuardCheck() {
@@ -326,7 +345,15 @@ void SimPlaylistCallbackManager::onShutdown() {
     // Save group cache for all registered controllers before shutdown.
     // Must run on main thread (accesses UI state), and we're already on main in on_quit.
     for (SimPlaylistController *c in copyControllers()) {
-        [c saveGroupCacheForCurrentPlaylist];
+        // Runs during on_quit; a throw here would abort the host's shutdown and
+        // cost every remaining panel its cache.
+        try {
+            [c saveGroupCacheForCurrentPlaylist];
+        } catch (const std::exception &e) {
+            FB2K_console_formatter() << "[SimPlaylist] Group cache save on shutdown failed: " << e.what();
+        } catch (...) {
+            FB2K_console_formatter() << "[SimPlaylist] Group cache save on shutdown failed";
+        }
     }
 }
 

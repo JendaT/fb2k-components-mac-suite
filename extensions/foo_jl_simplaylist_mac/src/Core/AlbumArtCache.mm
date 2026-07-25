@@ -140,14 +140,16 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
 // caller's back, which is why this is a plain dictionary and not an NSCache
 // (a surprise eviction would blank art that is currently on screen).
 // Must be called on main thread (imageStore/imageKeyOrder are main-thread-only).
-- (void)storeImage:(NSImage *)image forKey:(NSString *)key {
+// Returns NO when the image was rejected: the caller must then blacklist the key,
+// or the next draw pass finds it neither cached nor known-bad and decodes it again.
+- (BOOL)storeImage:(NSImage *)image forKey:(NSString *)key {
     dispatch_assert_queue(dispatch_get_main_queue());
     if (_imageStore[key]) {
         // Already stored — a re-store counts as a fresh insertion, so move the
         // key to the end of the eviction order (plain cache hits do not).
         [_imageKeyOrder removeObject:key];
         [_imageKeyOrder addObject:key];
-        return;
+        return YES;
     }
 
     NSUInteger bytes = EstimatedImageBytes(image);
@@ -155,7 +157,7 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
     // One image big enough to need a quarter of the budget would evict most of
     // the cache to make room for itself. Unreachable while loads are downscaled
     // to 512 px (~1 MB); this keeps that an assumption, not a load-bearing one.
-    if (bytes > _maxImageBytes / 4) return;
+    if (bytes > _maxImageBytes / 4) return NO;
 
     // Work out how many of the oldest entries have to go for both budgets to
     // fit, then remove them in one pass so the order array is compacted once.
@@ -188,6 +190,7 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
     _imageBytes[key] = @(bytes);
     [_imageKeyOrder addObject:key];
     _imageStoreBytes += bytes;
+    return YES;
 }
 
 - (void)loadImageForKey:(NSString *)key
@@ -439,9 +442,10 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
             NSArray *completions = [strongSelf->_pendingCompletions[keyCopy] copy];
             [strongSelf->_pendingCompletions removeObjectForKey:keyCopy];
 
-            if (image) {
-                [strongSelf storeImage:image forKey:keyCopy];
-            } else {
+            // A rejected image (too large for the byte budget) must be blacklisted
+            // like a missing one, or every redraw re-decodes it.
+            BOOL stored = image && [strongSelf storeImage:image forKey:keyCopy];
+            if (!stored) {
                 // Mark this key as having no image to prevent repeated load attempts
                 if (![strongSelf->_noImageKeys containsObject:keyCopy]) {
                     if (strongSelf->_noImageKeys.count >= kMaxNoImageKeySetSize) {
@@ -537,7 +541,7 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
 
     [_pendingLock lock];
 
-    NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+    NSMutableSet<NSString *> *staleKeys = [NSMutableSet set];
     for (NSString *key in _noImageKeys) {
         if ([key containsString:posixPrefix] ||
                 (macVolumePrefix && [key hasPrefix:macVolumePrefix])) {
@@ -546,8 +550,17 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
     }
 
     if (staleKeys.count > 0) {
-        [_noImageKeys minusSet:[NSSet setWithArray:staleKeys]];
-        [_noImageKeyOrder removeObjectsInArray:staleKeys];
+        [_noImageKeys minusSet:staleKeys];
+        // One filtered pass instead of removeObjectsInArray:, which is O(n*m)
+        // under the lock on the main thread.
+        NSMutableArray<NSString *> *keptOrder =
+            [NSMutableArray arrayWithCapacity:_noImageKeyOrder.count];
+        for (NSString *key in _noImageKeyOrder) {
+            if (![staleKeys containsObject:key]) {
+                [keptOrder addObject:key];
+            }
+        }
+        [_noImageKeyOrder setArray:keptOrder];
         FB2K_console_formatter() << "[SimPlaylist] Volume mounted at "
             << mountPath.UTF8String << " — cleared " << (int)staleKeys.count
             << " stale noImageKey(s); cover art will be retried.";
