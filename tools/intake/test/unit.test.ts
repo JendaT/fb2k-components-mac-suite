@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, incomeFor, loadConfig, loadIncome } from "../src/config.ts";
 import { parseDirName } from "../src/naming.ts";
 import { parseFilename } from "../src/tags.ts";
-import { DISC_DIR_RE, discNumberFromDirName, isJunkFile, normAlbum, normKey } from "../src/util.ts";
+import { DISC_DIR_RE, discNumberFromDirName, isJunkFile, mapLimit, normAlbum, normKey } from "../src/util.ts";
 
 test("naming: full grammars score 1.0", () => {
   const a = parseDirName("Aes Dana [2012] Pollen (Ultimae Records; inre042)");
@@ -92,4 +92,30 @@ test("income: relative paths resolve against rules dir; longest match wins", () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("mapLimit: order preserved, concurrency bounded, rejections propagate", async () => {
+  const order: number[] = [];
+  let inFlight = 0;
+  let peak = 0;
+  const out = await mapLimit([10, 3, 7, 1, 5, 2], 2, async (ms, i) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await Bun.sleep(ms);
+    inFlight--;
+    order.push(i);
+    return `${i}:${ms}`;
+  });
+  // Results follow the input, not completion order.
+  expect(out).toEqual(["0:10", "1:3", "2:7", "3:1", "4:5", "5:2"]);
+  expect(order).not.toEqual([0, 1, 2, 3, 4, 5]); // work really did interleave
+  expect(peak).toBeLessThanOrEqual(2);
+
+  expect(await mapLimit([], 4, async () => 1)).toEqual([]);
+  expect(
+    mapLimit([1, 2], 2, async (n) => {
+      if (n === 2) throw new Error("boom");
+      return n;
+    }),
+  ).rejects.toThrow("boom");
 });

@@ -10,6 +10,36 @@ export const LOSSLESS_EXTS = new Set(["flac", "wav", "aiff", "aif", "ape", "wv",
 const JUNK_FILES = new Set([".ds_store", "thumbs.db", "desktop.ini"]);
 const JUNK_DIRS = new Set(["@eadir", ".appledouble", "__macosx"]);
 
+/** Files in flight for per-file I/O (tag snapshots, hashing, verification). */
+export const IO_CONCURRENCY = 8;
+
+/**
+ * Map with bounded concurrency, preserving input order in the result. The
+ * per-file loops (read tags, hash, verify a placed copy) awaited one file at a
+ * time, which leaves the device queue empty on a release of any size. Order is
+ * preserved so output — sidecars, goldens, error messages — is unaffected.
+ *
+ * If `fn` rejects, the returned promise rejects like the sequential loop did;
+ * tasks already in flight still run to completion.
+ */
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 export function isJunkFile(name: string): boolean {
   const lower = name.toLowerCase();
   return JUNK_FILES.has(lower) || name.startsWith("._");

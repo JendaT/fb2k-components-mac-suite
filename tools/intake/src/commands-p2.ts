@@ -27,9 +27,37 @@ export interface RootRef {
   sidecar: Sidecar;
 }
 
+const SIDECAR_ID_RE = /^itk_[0-9a-f]{8}$/;
+
+/**
+ * One pass over the income tree collecting the sidecars whose id was asked for.
+ * Previously each id ref triggered its own full walk, parsing every sidecar in
+ * income again — so `approve --batch` of N ids did N walks. A ref list may
+ * legitimately name several ids in the same dir (virtual roots), hence a list
+ * per id rather than a single entry.
+ */
+function indexById(ids: Set<string>): Map<string, RootRef[]> {
+  const index = new Map<string, RootRef[]>();
+  for (const inc of loadIncome()) {
+    if (!existsSync(inc.path)) continue;
+    for (const e of walkDirs(inc.path)) {
+      for (const n of readdirSync(e.path).filter(isSidecarName)) {
+        const sc = readSidecar(join(e.path, n));
+        if (!sc || !ids.has(sc.id)) continue;
+        const list = index.get(sc.id) ?? [];
+        list.push({ dir: e.path, sidecarPath: join(e.path, n), sidecar: sc });
+        index.set(sc.id, list);
+      }
+    }
+  }
+  return index;
+}
+
 /** Resolve root refs: an existing directory (all sidecars directly in it) or a sidecar id. */
 export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
   const out: RootRef[] = [];
+  const wantedIds = new Set(refs.filter((r) => SIDECAR_ID_RE.test(r)));
+  const byId = wantedIds.size > 0 ? indexById(wantedIds) : new Map<string, RootRef[]>();
   for (const ref of refs) {
     if (existsSync(ref) && statSync(ref).isDirectory()) {
       const dir = resolve(ref);
@@ -43,21 +71,10 @@ export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
         if (sc) out.push({ dir, sidecarPath: join(dir, n), sidecar: sc });
         else errors.push({ code: "E_PARSE", msg: "unreadable sidecar", path: join(dir, n) });
       }
-    } else if (/^itk_[0-9a-f]{8}$/.test(ref)) {
-      let found = false;
-      for (const inc of loadIncome()) {
-        if (!existsSync(inc.path)) continue;
-        for (const e of walkDirs(inc.path)) {
-          for (const n of readdirSync(e.path).filter(isSidecarName)) {
-            const sc = readSidecar(join(e.path, n));
-            if (sc?.id === ref) {
-              out.push({ dir: e.path, sidecarPath: join(e.path, n), sidecar: sc });
-              found = true;
-            }
-          }
-        }
-      }
-      if (!found) errors.push({ code: "E_NOT_FOUND", msg: `no sidecar with id ${ref}`, path: null });
+    } else if (SIDECAR_ID_RE.test(ref)) {
+      const hits = byId.get(ref) ?? [];
+      if (hits.length === 0) errors.push({ code: "E_NOT_FOUND", msg: `no sidecar with id ${ref}`, path: null });
+      out.push(...hits);
     } else {
       errors.push({ code: "E_NOT_FOUND", msg: `not a directory or sidecar id: ${ref}`, path: null });
     }

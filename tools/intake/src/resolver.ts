@@ -11,10 +11,7 @@ import type {
   Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Tier,
 } from "./types.ts";
 import { RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
-import {
-  DISC_DIR_RE, discNumberFromDirName, ext, isoLocal, makeId, normAlbum, normKey,
-  round2, walkDirs, type DirEntry,
-} from "./util.ts";
+import { DISC_DIR_RE, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, makeId, mapLimit, normAlbum, normKey, round2, walkDirs, type DirEntry } from "./util.ts";
 
 export interface ResolveContext {
   config: ResolverConfig;
@@ -331,12 +328,10 @@ export class Resolver {
     let candidates: Candidate[] = [];
     for (const e of entries) {
       if (e.audioFiles.length === 0) continue;
-      const files: CandFile[] = [];
-      for (const name of e.audioFiles) {
+      const files: CandFile[] = await mapLimit(e.audioFiles, IO_CONCURRENCY, async (name) => {
         const abs = join(e.path, name);
-        const snap = await readSnapshot(abs);
-        files.push({ rel: name, abs, snap, hash: "", hashIssues: [], shadow: false });
-      }
+        return { rel: name, abs, snap: await readSnapshot(abs), hash: "", hashIssues: [], shadow: false };
+      });
       candidates.push({ dir: e.path, files, artifactNames: [...e.otherFiles], discs: null });
     }
 
@@ -397,12 +392,12 @@ export class Resolver {
       // Emit-time hashing: only candidates that actually produce a sidecar are
       // read in full (deferred from pass 1). Merged-parent candidates carry the
       // disc children's files, so this covers them too.
-      for (const f of c.files) {
-        if (f.hash) continue;
-        const h = await audioHash(f.abs);
-        f.hash = h.hash;
-        f.hashIssues = h.issues;
-      }
+      const unhashed = c.files.filter((f) => !f.hash);
+      const hashes = await mapLimit(unhashed, IO_CONCURRENCY, (f) => audioHash(f.abs));
+      unhashed.forEach((f, i) => {
+        f.hash = hashes[i]!.hash;
+        f.hashIssues = hashes[i]!.issues;
+      });
       markShadows(c.files);
       const emit = (opts: Parameters<Resolver["buildSidecar"]>[0]) => roots.push(this.buildSidecar(opts));
 

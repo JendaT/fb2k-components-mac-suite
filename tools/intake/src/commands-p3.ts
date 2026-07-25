@@ -17,7 +17,7 @@ import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
 import type { JsonError } from "./types.ts";
-import { isJunkFile, isSidecarName, isoLocal, sha1Hex, walkDirs } from "./util.ts";
+import { IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, mapLimit, sha1Hex, walkDirs } from "./util.ts";
 
 const CLI_VERSION = "0.1.0";
 
@@ -191,14 +191,20 @@ function planFiles(root: RootRef): PlacePlan {
   return plan;
 }
 
+/**
+ * Every file's hash must match the sidecar (doc 03 execute step 3, and gc's
+ * pre-deletion re-verification). Hashing runs concurrently but the reported
+ * failure is still the first one in file order, so messages stay deterministic;
+ * a failing tree is hashed in full rather than short-circuiting, which costs
+ * I/O only in the exceptional case.
+ */
 async function verifyTree(base: string, audio: { to: string; hash: string }[]): Promise<string | null> {
-  for (const a of audio) {
+  const results = await mapLimit(audio, IO_CONCURRENCY, async (a) => {
     const p = join(base, a.to);
     if (!existsSync(p)) return `missing: ${a.to}`;
-    const h = await audioHash(p);
-    if (h.hash !== a.hash) return `hash mismatch: ${a.to}`;
-  }
-  return null;
+    return (await audioHash(p)).hash !== a.hash ? `hash mismatch: ${a.to}` : null;
+  });
+  return results.find((r) => r !== null) ?? null;
 }
 
 function fsyncFile(path: string): void {
