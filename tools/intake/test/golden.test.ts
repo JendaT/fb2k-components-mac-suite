@@ -63,6 +63,27 @@ test("sidecar contents match golden expectations exactly", () => {
   }
 });
 
+test("FLAC with unset STREAMINFO MD5: fsha1 fallback + flac_md5_unset issue", () => {
+  const key = "todo/Bluetech [2011] Cosmic Dubwise/.intake.json";
+  const doc = new Map(collectSidecars(corpus.income)).get(key);
+  expect(doc).toBeDefined();
+  const files = doc!.files as { path: string; audio_hash: string }[];
+  const hashOf = (p: string) => files.find((f) => f.path.startsWith(p))!.audio_hash;
+
+  // Unset signature -> whole-file SHA1 fallback; resolve never repairs the file
+  // (doc 01; whether execute repairs it is CR-001.4, open).
+  expect(hashOf("01")).toStartWith("fsha1:");
+  expect(hashOf("02")).toStartWith("fsha1:");
+  // Same release, signature intact -> normal algorithm.
+  expect(hashOf("03")).toStartWith("flacmd5:");
+
+  // The issue is recorded once for the root, not once per affected file.
+  expect((doc!.quality as { issues: string[] }).issues).toEqual(["flac_md5_unset"]);
+  // A missing signature is a metadata defect, not a quality downgrade.
+  expect((doc!.quality as { tier_eligible: string }).tier_eligible).toBe("hq");
+  expect(doc!.status).toBe("resolved");
+});
+
 test("junk files are never referenced by any sidecar", () => {
   for (const [, doc] of collectSidecars(corpus.income)) {
     for (const f of (doc.files as { path: string }[]) ?? []) {

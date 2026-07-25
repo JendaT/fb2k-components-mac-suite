@@ -55,8 +55,15 @@ root, so unattended auto-proposing effectively requires network identify.
 ```bash
 bun test                               # golden + property + unit suites
 bun run scripts/gen-fixtures.ts        # regenerate fixture corpus (ffmpeg)
+bun run scripts/gen-fixtures.ts --only=todo/Foo   # add/refresh one fixture in place
 bun run scripts/bless-golden.ts        # re-bless golden expectations
 ```
+
+`--only=<relpath prefix>` skips the wipe and generates just the matching
+fixtures, so previously committed audio bytes — and the goldens keyed to their
+hashes — stay byte-identical. A partial run does not advance the tone-frequency
+counter, so fixtures added this way must pass an explicit `freq` (enforced) to
+stay reproducible in a later full run.
 
 The fixture corpus (`fixtures/income/`) is fully synthetic — sine-tone audio,
 public artist/label names as test literals only, no personal data. Tests copy
@@ -64,7 +71,14 @@ it to a temp dir; the committed tree never receives sidecars. Junk files
 (`.DS_Store`, `._*`, `Thumbs.db`) are injected by the test helper because the
 repo `.gitignore` excludes those names. Archive fixtures cover zip only
 (`unzip` ships with macOS); rar/7z go through `7z` when available, else the
-scan reports `E_ARCHIVE_TOOL`.
+scan reports `E_ARCHIVE_TOOL` — that surface is covered in
+`test/archive.test.ts` by re-running the CLI with `PATH` stripped, since
+`Bun.which()` reads the environment at process start.
+
+One fixture (`todo/Bluetech [2011] Cosmic Dubwise`) carries a zeroed FLAC
+STREAMINFO MD5 on two of three files, so the `fsha1:` fallback and the
+`flac_md5_unset` quality issue are covered end-to-end alongside the normal
+`flacmd5:` path.
 
 Re-blessing goldens: run only after hand-verifying resolver output; the
 golden file is the reviewed source of truth. Regenerating fixtures changes

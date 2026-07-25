@@ -4,11 +4,29 @@
 // No personal data: all names are public artist/label strings used as test
 // literals only.
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const FIXTURES = join(import.meta.dir, "..", "fixtures");
 const INCOME = join(FIXTURES, "income");
+
+/**
+ * `--only=<relpath prefix>`: generate just the matching fixtures into the
+ * existing corpus instead of wiping and regenerating everything. Used when
+ * ADDING a fixture, so the already-committed audio bytes — and the goldens
+ * keyed to their hashes — stay byte-identical.
+ *
+ * A partial run does not advance the tone-frequency counter, so anything
+ * generated under `--only` must pass an explicit `freq` to stay reproducible
+ * in a later full run. genAudio enforces that.
+ */
+const ONLY = process.argv.slice(2).find((a) => a.startsWith("--only="))?.slice("--only=".length) ?? null;
+
+function wanted(absPath: string): boolean {
+  if (ONLY === null) return true;
+  const rel = absPath.startsWith(INCOME + "/") ? absPath.slice(INCOME.length + 1) : absPath;
+  return rel.startsWith(ONLY);
+}
 
 let freq = 180;
 const nextFreq = () => (freq += 37);
@@ -22,12 +40,20 @@ async function run(args: string[], cwd?: string): Promise<void> {
 
 type Codec = "flac" | "flac24" | "mp3-320" | "mp3-128" | "ogg" | "wav" | "aiff";
 
-async function genAudio(path: string, codec: Codec, tags: Record<string, string | number> | null): Promise<void> {
+async function genAudio(
+  path: string,
+  codec: Codec,
+  tags: Record<string, string | number> | null,
+  opts?: { freq?: number },
+): Promise<void> {
+  if (!wanted(path)) return;
+  if (ONLY !== null && opts?.freq === undefined)
+    throw new Error(`--only requires an explicit freq (counter tones are not reproducible partially): ${path}`);
   mkdirSync(dirname(path), { recursive: true });
   const rate = codec === "flac24" ? 96000 : 44100;
   const args = [
     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-    "-f", "lavfi", "-i", `sine=frequency=${nextFreq()}:duration=0.3:sample_rate=${rate}`,
+    "-f", "lavfi", "-i", `sine=frequency=${opts?.freq ?? nextFreq()}:duration=0.3:sample_rate=${rate}`,
   ];
   if (tags === null) args.push("-map_metadata", "-1", "-fflags", "+bitexact");
   else for (const [k, v] of Object.entries(tags)) args.push("-metadata", `${k}=${v}`);
@@ -44,7 +70,21 @@ async function genAudio(path: string, codec: Codec, tags: Record<string, string 
   await run(args);
 }
 
+/**
+ * Zero the STREAMINFO MD5 signature, simulating an encoder that left it unset.
+ * Layout: "fLaC" (4 bytes) + metadata block header (4) + STREAMINFO (34), whose
+ * final 16 bytes are the MD5 — i.e. file offsets [26, 42).
+ */
+function zeroFlacMd5(path: string): void {
+  const buf = readFileSync(path);
+  if (buf.subarray(0, 4).toString("latin1") !== "fLaC") throw new Error(`not a FLAC file: ${path}`);
+  if ((buf[4]! & 0x7f) !== 0) throw new Error(`first metadata block is not STREAMINFO: ${path}`);
+  buf.fill(0, 26, 42);
+  writeFileSync(path, buf);
+}
+
 async function genCover(dir: string): Promise<void> {
+  if (!wanted(join(dir, "cover.jpg"))) return;
   mkdirSync(dir, { recursive: true });
   await run([
     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -87,7 +127,7 @@ async function genAlbum(spec: AlbumSpec): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  rmSync(INCOME, { recursive: true, force: true });
+  if (ONLY === null) rmSync(INCOME, { recursive: true, force: true });
 
   // ---- downloads (web) ----------------------------------------------------
   await genAlbum({
@@ -109,13 +149,19 @@ async function main(): Promise<void> {
     codec: "flac", albumartist: "Carbon Based Lifeforms", album: "Derelicts", date: "2017",
     tracks: ["Accede", "Clouds", "Path of Least Resistance"],
   });
-  await run(["zip", "-q", "-r", join(INCOME, "downloads", `${cblDir}.zip`), cblDir], zipStage);
-  rmSync(zipStage, { recursive: true });
+  const zipPath = join(INCOME, "downloads", `${cblDir}.zip`);
+  if (wanted(zipPath)) {
+    await run(["zip", "-q", "-r", zipPath, cblDir], zipStage);
+    rmSync(zipStage, { recursive: true, force: true });
+  }
 
   // ISO stub: flagged needs_review, never unpacked.
-  const isoBytes = new Uint8Array(4096);
-  for (let i = 0; i < isoBytes.length; i++) isoBytes[i] = (i * 7) & 0xff;
-  writeFileSync(join(INCOME, "downloads", "Ambient Collection (1997).iso"), isoBytes);
+  const isoPath = join(INCOME, "downloads", "Ambient Collection (1997).iso");
+  if (wanted(isoPath)) {
+    const isoBytes = new Uint8Array(4096);
+    for (let i = 0; i < isoBytes.length; i++) isoBytes[i] = (i * 7) & 0xff;
+    writeFileSync(isoPath, isoBytes);
+  }
 
   // ---- slsk (soulseek) ----------------------------------------------------
   // Flat dump: two interleaved albums plus one stray single in one dir.
@@ -209,12 +255,30 @@ async function main(): Promise<void> {
     tracks: ["Condemned", "Sentenced", "Released"],
   });
 
+  // FLAC with unset STREAMINFO MD5 — rippers/encoders that skip the signature.
+  // audio_hash must fall back to `fsha1:` and the root must carry a
+  // `flac_md5_unset` quality issue. Two of the three files are unset so one
+  // root exercises both the fallback and the normal `flacmd5:` path.
+  const bluetech = "todo/Bluetech [2011] Cosmic Dubwise";
+  for (const [i, title] of ["Rainmaker", "Prima Materia", "Dawn Chorus"].entries()) {
+    const file = join(INCOME, bluetech, `${String(i + 1).padStart(2, "0")} - ${title}.flac`);
+    await genAudio(
+      file, "flac",
+      { album_artist: "Bluetech", artist: "Bluetech", album: "Cosmic Dubwise", title, track: i + 1, date: "2011" },
+      { freq: 1000 + i * 37 },
+    );
+    if (i < 2 && wanted(file)) zeroFlacMd5(file);
+  }
+
   // NAS thumbnail dir junk (committable; .DS_Store/._*/Thumbs.db junk is
   // injected by the test helper instead, since the repo .gitignore excludes
   // those names).
   const eaDir = join(INCOME, "slsk", "Solar Fields", "@eaDir");
-  mkdirSync(eaDir, { recursive: true });
-  writeFileSync(join(eaDir, "SYNO_THUMB.jpg"), new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+  const thumb = join(eaDir, "SYNO_THUMB.jpg");
+  if (wanted(thumb)) {
+    mkdirSync(eaDir, { recursive: true });
+    writeFileSync(thumb, new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+  }
 
   console.log("fixture corpus generated at", INCOME);
 }

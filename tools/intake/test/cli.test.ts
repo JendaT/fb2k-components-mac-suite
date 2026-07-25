@@ -66,7 +66,7 @@ test("scan + status --json round trip with doc 03 summary shape", () => {
   const env = JSON.parse(status.stdout);
   expect(env.ok).toBe(true);
   expect(Array.isArray(env.data)).toBe(true);
-  expect(env.data.length).toBe(19);
+  expect(env.data.length).toBe(20);
   for (const s of env.data) {
     expect(Object.keys(s).sort()).toEqual(["cluster", "id", "needs_review", "placed", "proposal", "root_path", "status"]);
     expect(s.id).toMatch(/^itk_[0-9a-f]{8}$/);

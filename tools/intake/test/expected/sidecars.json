@@ -1319,6 +1319,107 @@
       }
     ]
   },
+  "todo/Bluetech [2011] Cosmic Dubwise/.intake.json": {
+    "schema": 1,
+    "id": "itk_0f1f193f",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01 - Rainmaker.flac",
+        "audio_hash": "fsha1:8853f71afd45077740995dbaf596ff522ec6a6b6",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Bluetech",
+          "artist": "Bluetech",
+          "album": "Cosmic Dubwise",
+          "title": "Rainmaker",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "02 - Prima Materia.flac",
+        "audio_hash": "fsha1:6a129e1688a2fc38dc2832237172a60adb943c03",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Bluetech",
+          "artist": "Bluetech",
+          "album": "Cosmic Dubwise",
+          "title": "Prima Materia",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "03 - Dawn Chorus.flac",
+        "audio_hash": "flacmd5:babe9ff0cf2e6c9340acdde9653df0d5",
+        "codec": "flac",
+        "lossless": true,
+        "sample_rate": 44100,
+        "bit_depth": 16,
+        "bitrate": null,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Bluetech",
+          "artist": "Bluetech",
+          "album": "Cosmic Dubwise",
+          "title": "Dawn Chorus",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2011"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Bluetech",
+      "album": "Cosmic Dubwise",
+      "confidence": 0.81,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.75,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "flac_md5_unset"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@0.1.0"
+      }
+    ]
+  },
   "todo/Hilyard [2019] Division Cycle/.intake.json": {
     "schema": 1,
     "id": "itk_baf945ab",
