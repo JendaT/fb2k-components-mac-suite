@@ -279,6 +279,9 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
 
     const tmp = join(dirname(target), `.intake-tmp-${sc.id}`);
     const issues: string[] = [];
+    // The rename in step 4 is the commit point: after it the release IS in the
+    // library, so a later failure must never be treated as "did not happen".
+    let committed = false;
     try {
       // 1+2. Copy into a temp dir on the target volume, tag the copies, fsync.
       rmSync(tmp, { recursive: true, force: true });
@@ -302,9 +305,10 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
       const bad = await verifyTree(tmp, plan.audio);
       if (bad) throw new Error(`verify failed: ${bad}`);
 
-      // 4. Atomic rename into place.
+      // 4. Atomic rename into place — the commit point.
       mkdirSync(dirname(target), { recursive: true });
       renameSync(tmp, target);
+      committed = true;
 
       // 5. Journal + genre-map counts + sidecar flip.
       const seq = nextSeq(cfg.journal_path);
@@ -327,10 +331,24 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         skipped_shadows: plan.skippedShadows, issues,
       });
     } catch (e) {
-      rmSync(tmp, { recursive: true, force: true });
-      sc.status = "approved";
-      writeSidecarWithEvent(root, "execute_failed", false);
-      errors.push({ code: "E_VERIFY", msg: String(e instanceof Error ? e.message : e), path: root.dir });
+      const msg = String(e instanceof Error ? e.message : e);
+      if (committed) {
+        // Past the commit point (journal append, genre-map write or the sidecar
+        // flip failed). The release is in the library, so the target is left
+        // alone and the sidecar stays `placing` — exactly the state
+        // `execute --resume` is built to finish. Reverting to `approved` here
+        // would strand a placed release behind E_TARGET_EXISTS forever.
+        errors.push({
+          code: "E_VERIFY",
+          msg: `placed at ${target} but bookkeeping failed (${msg}); rerun with --resume`,
+          path: root.dir,
+        });
+      } else {
+        rmSync(tmp, { recursive: true, force: true });
+        sc.status = "approved";
+        writeSidecarWithEvent(root, "execute_failed", false);
+        errors.push({ code: "E_VERIFY", msg, path: root.dir });
+      }
     }
   }
   return { data, errors, exitCode: exitFor(errors, data) };
