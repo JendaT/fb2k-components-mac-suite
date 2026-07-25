@@ -14,7 +14,7 @@ import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.t
 import type { TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
-import { loadGenreMap, recordPlacement, saveGenreMap } from "./rules.ts";
+import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
 import type { JsonError } from "./types.ts";
 import { isJunkFile, isSidecarName, isoLocal, sha1Hex, walkDirs } from "./util.ts";
@@ -227,6 +227,11 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
 
   const batch = "b" + sha1Hex(isoLocal() + ":" + process.pid).slice(0, 10);
   const data: unknown[] = [];
+  // Read the genre map at most once per command (it was re-read and re-parsed
+  // for every placed root); still saved per placement, so a crash mid-batch
+  // cannot lose the counts of releases already in the library.
+  const rdir = rulesDir();
+  let genre: GenreMap | null = null;
 
   for (const root of roots) {
     const sc = root.sidecar;
@@ -301,10 +306,9 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         seq, ts: isoLocal(), event: "placed", sidecar_id: sc.id,
         audio_hashes: plan.audio.map((a) => a.hash), target_path: target, cli_version: CLI_VERSION,
       });
-      const rdir = rulesDir();
       const artist = sc.identification?.artist ?? sc.cluster.albumartist;
       if (rdir && artist && sc.proposal) {
-        const genre = loadGenreMap(rdir);
+        genre ??= loadGenreMap(rdir);
         recordPlacement(genre, artist, sc.proposal.target_collection);
         saveGenreMap(rdir, genre);
       }

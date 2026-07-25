@@ -99,23 +99,43 @@ export function appendOverride(rulesDir: string, ev: OverrideEvent): void {
 
 /** Record user feedback: increment artist's count for a collection. */
 export function recordFeedback(map: GenreMap, artist: string, collection: string): void {
-  const existing = Object.keys(map.feedback).find((a) => normKey(a) === normKey(artist)) ?? artist;
+  const existing = findKey(map.feedback, artist) ?? artist;
   const counts = map.feedback[existing] ?? {};
   counts[collection] = (counts[collection] ?? 0) + 1;
   map.feedback[existing] = counts;
+  keyIndex.delete(map.feedback);
 }
 
 /** Record an executed placement: increment the artist's real release count. */
 export function recordPlacement(map: GenreMap, artist: string, collection: string): void {
-  const existing = Object.keys(map.artists).find((a) => normKey(a) === normKey(artist)) ?? artist;
+  const existing = findKey(map.artists, artist) ?? artist;
   const counts = map.artists[existing] ?? {};
   counts[collection] = (counts[collection] ?? 0) + 1;
   map.artists[existing] = counts;
+  keyIndex.delete(map.artists);
 }
+
+/**
+ * Normalized-key index per map object. `assign` calls findKey up to ~8 times
+ * per release (artists, feedback, aliases, labels, styles, plus one per similar
+ * artist), and a linear scan over a real genre map made that O(artists) each
+ * time. Keys only ever get ADDED to these objects, by recordPlacement /
+ * recordFeedback, and both drop their entry here — so the index cannot go
+ * stale. Anything that removes or renames keys must do the same.
+ */
+const keyIndex = new WeakMap<object, Map<string, string>>();
 
 /** Case/diacritic-insensitive lookup helper for map keys. */
 export function findKey<T>(obj: Record<string, T>, name: string): string | null {
-  const want = normKey(name);
-  for (const k of Object.keys(obj)) if (normKey(k) === want) return k;
-  return null;
+  let index = keyIndex.get(obj);
+  if (!index) {
+    index = new Map<string, string>();
+    // First key wins, matching the previous scan order (Object.keys order).
+    for (const k of Object.keys(obj)) {
+      const nk = normKey(k);
+      if (!index.has(nk)) index.set(nk, k);
+    }
+    keyIndex.set(obj, index);
+  }
+  return index.get(normKey(name)) ?? null;
 }
