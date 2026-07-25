@@ -7,24 +7,21 @@ import { readSidecar, summarize, writeRoot, type SidecarSummary } from "./sideca
 import type { IncomeFolder, JsonError, Sidecar } from "./types.ts";
 import { ARCHIVE_EXTS, ext, isSidecarName, walkDirs } from "./util.ts";
 
-export interface CommandResult {
-  data: unknown;
+/**
+ * `data` is the JSON envelope's payload (doc 03). It is generic so each command
+ * can state its own row shape — consumers (printHuman, tests, and any future
+ * in-process caller) were casting `unknown` back into the shape the command
+ * had just built, which no compiler could check. The default keeps callers that
+ * only care about errors/exitCode working unchanged.
+ */
+export interface CommandResult<T = unknown> {
+  data: T;
   errors: JsonError[];
   exitCode: 0 | 1 | 2;
 }
 
-export interface CommonOpts {
-  json: boolean;
-  dryRun: boolean;
-  force: boolean;
-  filters: Record<string, string>;
-}
-
-function fail(code: string, msg: string, path: string | null = null): CommandResult {
-  return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
-}
-
-interface WrittenRoot {
+/** One release resolved and (unless --dry-run) written during scan/resolve. */
+export interface WrittenRoot {
   id: string;
   root_path: string;
   sidecar_path: string;
@@ -36,6 +33,33 @@ interface WrittenRoot {
   singles: boolean;
   albumartist: string | null;
   album: string | null;
+}
+
+export interface ResolveData {
+  target: string;
+  dry_run: boolean;
+  written: WrittenRoot[];
+  kept: string[];
+}
+
+export interface ScanBlock {
+  income: string | null;
+  path: string;
+  dry_run: boolean;
+  archives: { archive: string; target: string; action: UnpackResult["action"] }[];
+  written: WrittenRoot[];
+  kept: string[];
+}
+
+export interface CommonOpts {
+  json: boolean;
+  dryRun: boolean;
+  force: boolean;
+  filters: Record<string, string>;
+}
+
+function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
+  return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
 async function resolveInto(
@@ -72,7 +96,7 @@ async function resolveInto(
   return { written, kept };
 }
 
-export async function cmdResolve(args: string[], opts: CommonOpts): Promise<CommandResult> {
+export async function cmdResolve(args: string[], opts: CommonOpts): Promise<CommandResult<ResolveData | null>> {
   const targetArg = args[0];
   if (!targetArg) return fail("E_BAD_ARGS", "usage: intake resolve <path> [--force]");
   const target = resolve(targetArg);
@@ -96,7 +120,7 @@ function findArchives(root: string): string[] {
   return out.sort();
 }
 
-export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean }): Promise<CommandResult> {
+export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean }): Promise<CommandResult<ScanBlock[] | null>> {
   const income = loadIncome();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
@@ -113,7 +137,7 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
   }
 
   const errors: JsonError[] = [];
-  const data: unknown[] = [];
+  const data: ScanBlock[] = [];
   for (const inc of targets) {
     if (!existsSync(inc.path)) {
       errors.push({ code: "E_NOT_FOUND", msg: `income path missing: ${inc.name}`, path: inc.path });
@@ -158,7 +182,7 @@ function sidecarField(s: Sidecar, dir: string, key: string): string {
   }
 }
 
-export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult {
+export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<SidecarSummary[] | null> {
   const income = loadIncome();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
@@ -191,6 +215,6 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult {
   return { data, errors, exitCode: errors.length === 0 ? 0 : 1 };
 }
 
-export function cmdVersion(): CommandResult {
+export function cmdVersion(): CommandResult<{ cli: string; schema: number; engine: string }> {
   return { data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
 }

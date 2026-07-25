@@ -79,3 +79,32 @@ test("scan + status --json round trip with doc 03 summary shape", () => {
   const tierFiltered = JSON.parse(run(["status", "--json", "--filter", "tier=reject", "--filter", "virtual=false"]).stdout);
   expect(tierFiltered.data.length).toBe(1); // Oldskool 128kbps
 });
+
+test("human output renders scan blocks, status rows and the dry-run note", () => {
+  // Sidecars already exist by now, so a plain scan reports kept roots.
+  const scan = run(["scan", "--all"]);
+  expect(scan.code).toBe(0);
+  expect(scan.stdout).toContain("income: downloads");
+  expect(scan.stdout).toMatch(/archive (unpacked|already_unpacked): .*\.zip/);
+  expect(scan.stdout).toMatch(/kept: .*Aes Dana/);
+
+  // --force --dry-run re-resolves everything and prints written rows, without
+  // touching the tree.
+  const forced = run(["scan", "--all", "--force", "--dry-run"]);
+  expect(forced.code).toBe(0);
+  expect(forced.stdout).toMatch(/resolved 0\.\d+ (hq|uhq).*Aes Dana — Pollen/);
+  expect(forced.stdout).toMatch(/\[(virtual|single|needs_review)[^\]]*\]/);
+  expect(forced.stdout).toContain("(dry run: nothing written)");
+
+  const status = run(["status"]);
+  expect(status.code).toBe(0);
+  expect(status.stdout).toMatch(/itk_[0-9a-f]{8}  resolved/);
+  expect(status.stdout.trim().endsWith("20 sidecar(s)")).toBe(true);
+
+  const resolveDry = run(["resolve", join(corpus.income, "todo"), "--force", "--dry-run"]);
+  expect(resolveDry.code).toBe(0);
+  expect(resolveDry.stdout).toContain("(dry run: nothing written)");
+  expect(resolveDry.stdout).not.toContain("income:"); // resolve blocks carry no income line
+
+  expect(run(["status", "--filter", "status=nonesuch"]).stdout.trim()).toBe("0 sidecar(s)");
+});

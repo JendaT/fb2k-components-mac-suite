@@ -21,7 +21,7 @@ import { IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, mapLimit, sha1Hex,
 
 const CLI_VERSION = "0.1.0";
 
-function fail(code: string, msg: string, path: string | null = null): CommandResult {
+function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
@@ -69,13 +69,52 @@ function exitFor(errors: JsonError[], data: unknown[]): 0 | 1 | 2 {
   return errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
 }
 
+/** Row shapes for the P3 command payloads (doc 03 `--json` data). */
+export interface ProposeRow {
+  id: string;
+  root_path: string;
+  status?: "proposed";
+  target_path?: string;
+  confidence?: number;
+  skipped?: "needs_review";
+}
+
+export interface ApproveRow {
+  id: string;
+  root_path: string;
+  status: "approved";
+}
+
+export interface ExecuteRow {
+  id: string;
+  root_path: string;
+  target_path?: string;
+  journal_seq?: number;
+  files?: number;
+  artifacts?: number;
+  skipped_shadows?: number;
+  issues?: string[];
+  dry_run?: true;
+  resumed?: "completed" | "reverted_to_approved";
+}
+
+export interface GcRow {
+  id: string;
+  root_path: string;
+  action?: "delete" | "relocate_dj";
+  dj_dest?: string | null;
+  files?: number;
+  skipped?: "too_young";
+  dry_run?: true;
+}
+
 // ---- propose ------------------------------------------------------------------
 
 export interface ProposeOpts extends CommonOpts {
   allResolved: boolean;
 }
 
-export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps = {}): Promise<CommandResult> {
+export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps = {}): Promise<CommandResult<ProposeRow[] | null>> {
   const errors: JsonError[] = [];
   let roots: RootRef[];
   if (opts.allResolved) {
@@ -89,7 +128,7 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
   }
   if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
 
-  const data: unknown[] = [];
+  const data: ProposeRow[] = [];
   for (const root of roots) {
     if (root.sidecar.status !== "resolved") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot propose from status ${root.sidecar.status}`, path: root.dir });
@@ -133,7 +172,7 @@ export interface ApproveOpts extends CommonOpts {
   batch: string | null;
 }
 
-export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult {
+export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<ApproveRow[] | null> {
   const refs = [...args];
   if (opts.batch) {
     if (!existsSync(opts.batch)) return fail("E_NOT_FOUND", "batch file not found", opts.batch);
@@ -143,7 +182,7 @@ export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult {
 
   const errors: JsonError[] = [];
   const roots = rootsFromRefs(refs, errors);
-  const data: unknown[] = [];
+  const data: ApproveRow[] = [];
   for (const root of roots) {
     if (root.sidecar.status !== "proposed") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot approve from status ${root.sidecar.status}`, path: root.dir });
@@ -218,7 +257,7 @@ function fsyncFile(path: string): void {
   }
 }
 
-export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<CommandResult> {
+export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<CommandResult<ExecuteRow[] | null>> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
@@ -234,7 +273,7 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
   if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
 
   const batch = "b" + sha1Hex(isoLocal() + ":" + process.pid).slice(0, 10);
-  const data: unknown[] = [];
+  const data: ExecuteRow[] = [];
   // Read the genre map at most once per command (it was re-read and re-parsed
   // for every placed root); still saved per placement, so a crash mid-batch
   // cannot lose the counts of releases already in the library.
@@ -357,7 +396,7 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
 }
 
 /** Crash recovery: placing -> placed (target verifies) or back to approved. */
-async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts): Promise<unknown> {
+async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts): Promise<ExecuteRow> {
   const sc = root.sidecar;
   const target = sc.proposal?.target_path ?? null;
   const plan = planFiles(root);
@@ -389,7 +428,7 @@ export interface GcOpts extends CommonOpts {
   relocateDj: boolean;
 }
 
-export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult> {
+export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult<GcRow[] | null>> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
@@ -397,7 +436,7 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
   const roots = (args.length > 0 ? rootsFromRefs(args, errors) : allRoots(errors)).filter(
     (r) => r.sidecar.status === "placed",
   );
-  const data: unknown[] = [];
+  const data: GcRow[] = [];
 
   for (const root of roots) {
     const sc = root.sidecar;

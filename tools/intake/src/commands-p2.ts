@@ -17,7 +17,7 @@ import type { JsonError, Proposal, Sidecar } from "./types.ts";
 import { RESOLVER_VERSION } from "./types.ts";
 import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
 
-function fail(code: string, msg: string, path: string | null = null): CommandResult {
+function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
@@ -87,6 +87,31 @@ export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: bool
   if (!dryRun) writeFileSync(root.sidecarPath, serializeSidecar(root.sidecar));
 }
 
+/** Row shapes for the P2 command payloads (doc 03 `--json` data). */
+export interface IdentifyRow {
+  id: string;
+  root_path: string;
+  kept: boolean;
+  status: string;
+  artist?: string | null;
+  album?: string | null;
+  needs_review?: boolean;
+  issues?: string[];
+}
+
+export interface AssignRow {
+  id: string;
+  root_path: string;
+  kept: boolean;
+  target_collection: string;
+  confidence?: number;
+  margin?: number;
+  target_path?: string | null;
+  assigned_by?: "user" | "engine";
+  short_circuited?: boolean;
+  needs_review?: boolean;
+}
+
 // ---- identify ---------------------------------------------------------------
 
 /**
@@ -109,11 +134,11 @@ export async function identifyRoots(
   roots: RootRef[],
   opts: CommonOpts,
   deps: P2Deps = {},
-): Promise<{ data: unknown[]; errors: JsonError[] }> {
+): Promise<{ data: IdentifyRow[]; errors: JsonError[] }> {
   const errors: JsonError[] = [];
   const providers = deps.providers ?? buildProviders();
   const cfg = loadAssignConfig();
-  const data: unknown[] = [];
+  const data: IdentifyRow[] = [];
   for (const root of roots) {
     if (root.sidecar.identification && !opts.force) {
       data.push({ id: root.sidecar.id, root_path: root.dir, kept: true, status: root.sidecar.identification.status });
@@ -142,7 +167,7 @@ export async function identifyRoots(
   return { data, errors };
 }
 
-export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps = {}): Promise<CommandResult> {
+export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps = {}): Promise<CommandResult<IdentifyRow[] | null>> {
   if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake identify <root...>");
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
@@ -180,7 +205,7 @@ export async function assignRoots(
   opts: AssignOpts,
   rdir: string,
   deps: P2Deps = {},
-): Promise<{ data: unknown[]; errors: JsonError[] }> {
+): Promise<{ data: AssignRow[]; errors: JsonError[] }> {
   const errors: JsonError[] = [];
   const genre = loadGenreMap(rdir);
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
@@ -190,7 +215,7 @@ export async function assignRoots(
     aliases: providers.discogs ? (name) => providers.discogs!.artistAliases(name) : null,
   };
 
-  const data: unknown[] = [];
+  const data: AssignRow[] = [];
   let genreDirty = false;
   for (const root of roots) {
     const input = assignInput(root);
@@ -271,7 +296,7 @@ export async function assignRoots(
   return { data, errors };
 }
 
-export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps = {}): Promise<CommandResult> {
+export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps = {}): Promise<CommandResult<AssignRow[] | null>> {
   if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake assign <root...> [--collection <name>] [--by user|engine]");
   const rdir = rulesDir();
   if (!rdir) return fail("E_NO_RULES", "rules dir not found (INTAKE_RULES_DIR or ~/.config/intake/config.toml)");

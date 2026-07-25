@@ -2,7 +2,11 @@
 // intake CLI entry. Command surface and conventions per
 // docs/intake/intake-03-contract-spec.md; scan/resolve/status per doc 01.
 
-import { cmdResolve, cmdScan, cmdStatus, cmdVersion, type CommandResult, type CommonOpts } from "./commands.ts";
+import {
+  cmdResolve, cmdScan, cmdStatus, cmdVersion,
+  type CommandResult, type CommonOpts, type ResolveData, type ScanBlock,
+} from "./commands.ts";
+import type { SidecarSummary } from "./sidecar.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
 import { cmdApprove, cmdExecute, cmdGc, cmdPropose } from "./commands-p3.ts";
 import type { TreeSpec } from "./bootstrap.ts";
@@ -101,35 +105,46 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
   return { cmd, args, opts };
 }
 
+function printStatus(rows: SidecarSummary[]): void {
+  for (const s of rows) {
+    const flags = s.needs_review ? " [needs_review]" : "";
+    console.log(
+      `${s.id}  ${s.status}${flags}  ${s.cluster.albumartist ?? "?"} — ${s.cluster.album ?? "?"}  (${s.root_path})`,
+    );
+  }
+  console.log(`${rows.length} sidecar(s)`);
+}
+
+function printBlocks(blocks: (ScanBlock | ResolveData)[]): void {
+  for (const b of blocks) {
+    if ("income" in b && b.income) console.log(`income: ${b.income} (${b.path})`);
+    if ("archives" in b) {
+      for (const a of b.archives) console.log(`  archive ${a.action}: ${a.archive}`);
+    }
+    for (const w of b.written) {
+      const marks = [
+        w.virtual ? "virtual" : null,
+        w.singles ? "single" : null,
+        w.needs_review ? "needs_review" : null,
+      ].filter(Boolean).join(",");
+      console.log(
+        `  ${w.status} ${w.confidence} ${w.tier_eligible}${marks ? ` [${marks}]` : ""}  ` +
+        `${w.albumartist ?? "?"} — ${w.album ?? "?"}  (${w.sidecar_path})`,
+      );
+    }
+    for (const k of b.kept) console.log(`  kept: ${k}`);
+    if (b.dry_run) console.log("  (dry run: nothing written)");
+  }
+}
+
 function printHuman(cmd: string, result: CommandResult): void {
   const { data, errors } = result;
   if (cmd === "status" && Array.isArray(data)) {
-    for (const s of data as Array<Record<string, unknown>>) {
-      const c = s.cluster as { albumartist: string | null; album: string | null };
-      const flags = s.needs_review ? " [needs_review]" : "";
-      console.log(`${s.id}  ${s.status}${flags}  ${c.albumartist ?? "?"} — ${c.album ?? "?"}  (${s.root_path})`);
-    }
-    console.log(`${(data as unknown[]).length} sidecar(s)`);
-  } else if ((cmd === "resolve" || cmd === "scan") && data != null) {
-    const blocks = cmd === "scan" ? (data as Array<Record<string, unknown>>) : [data as Record<string, unknown>];
-    for (const b of blocks) {
-      if (b.income) console.log(`income: ${b.income} (${b.path})`);
-      for (const a of (b.archives as Array<Record<string, unknown>>) ?? [])
-        console.log(`  archive ${a.action}: ${a.archive}`);
-      for (const w of (b.written as Array<Record<string, unknown>>) ?? []) {
-        const marks = [
-          w.virtual ? "virtual" : null,
-          w.singles ? "single" : null,
-          w.needs_review ? "needs_review" : null,
-        ].filter(Boolean).join(",");
-        console.log(
-          `  ${w.status} ${w.confidence} ${w.tier_eligible}${marks ? ` [${marks}]` : ""}  ` +
-          `${w.albumartist ?? "?"} — ${w.album ?? "?"}  (${w.sidecar_path})`,
-        );
-      }
-      for (const k of (b.kept as string[]) ?? []) console.log(`  kept: ${k}`);
-      if (b.dry_run) console.log("  (dry run: nothing written)");
-    }
+    printStatus(data as SidecarSummary[]);
+  } else if (cmd === "scan" && Array.isArray(data)) {
+    printBlocks(data as ScanBlock[]);
+  } else if (cmd === "resolve" && data != null) {
+    printBlocks([data as ResolveData]);
   } else if (data != null) {
     console.log(JSON.stringify(data, null, 2));
   }
