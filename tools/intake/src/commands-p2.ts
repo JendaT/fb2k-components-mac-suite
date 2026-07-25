@@ -7,7 +7,7 @@ import { bootstrapTrees, type TreeSpec } from "./bootstrap.ts";
 import type { CommandResult, CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
 import { identifyRoot } from "./identify.ts";
-import { buildProviders } from "./providers.ts";
+import { buildProviders, type Providers } from "./providers.ts";
 import {
   appendOverride, loadGenreMap, loadLabelMap, loadStyleMap, recordFeedback,
   saveGenreMap, saveLabelMap,
@@ -89,13 +89,29 @@ export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: bool
 
 // ---- identify ---------------------------------------------------------------
 
-export async function cmdIdentify(args: string[], opts: CommonOpts): Promise<CommandResult> {
-  if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake identify <root...>");
-  const errors: JsonError[] = [];
-  const roots = rootsFromRefs(args, errors);
-  if (roots.length === 0) return { data: [], errors, exitCode: 2 };
+/**
+ * Engine dependencies a caller may substitute. Commands default to
+ * `buildProviders()` (env-configured HTTP + subprocess shim); tests and
+ * `propose` pass their own, so nothing below the command layer needs env vars.
+ */
+export interface P2Deps {
+  providers?: Providers;
+}
 
-  const providers = buildProviders();
+/**
+ * Identify an already-resolved RootRef list in place. Split out of cmdIdentify
+ * so `propose` can drive it on the RootRef it already holds instead of
+ * re-resolving by id and re-reading the sidecar from disk — a round-trip that
+ * silently made `propose --dry-run` a no-op, since the sub-command had written
+ * nothing for it to read back.
+ */
+export async function identifyRoots(
+  roots: RootRef[],
+  opts: CommonOpts,
+  deps: P2Deps = {},
+): Promise<{ data: unknown[]; errors: JsonError[] }> {
+  const errors: JsonError[] = [];
+  const providers = deps.providers ?? buildProviders();
   const cfg = loadAssignConfig();
   const data: unknown[] = [];
   for (const root of roots) {
@@ -123,7 +139,17 @@ export async function cmdIdentify(args: string[], opts: CommonOpts): Promise<Com
       issues: outcome.issues,
     });
   }
-  return { data, errors, exitCode: errors.length === 0 ? 0 : 1 };
+  return { data, errors };
+}
+
+export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps = {}): Promise<CommandResult> {
+  if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake identify <root...>");
+  const refErrors: JsonError[] = [];
+  const roots = rootsFromRefs(args, refErrors);
+  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
+  const { data, errors } = await identifyRoots(roots, opts, deps);
+  const all = [...refErrors, ...errors];
+  return { data, errors: all, exitCode: all.length === 0 ? 0 : 1 };
 }
 
 // ---- assign -----------------------------------------------------------------
@@ -148,20 +174,17 @@ function assignInput(root: RootRef): AssignInput {
   };
 }
 
-export async function cmdAssign(args: string[], opts: AssignOpts): Promise<CommandResult> {
-  if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake assign <root...> [--collection <name>] [--by user|engine]");
-  const rdir = rulesDir();
-  if (!rdir) return fail("E_NO_RULES", "rules dir not found (INTAKE_RULES_DIR or ~/.config/intake/config.toml)");
-  if (opts.collection && opts.by === "engine")
-    return fail("E_BAD_ARGS", "--collection implies --by user");
-
+/** Assign an already-resolved RootRef list in place (see identifyRoots). */
+export async function assignRoots(
+  roots: RootRef[],
+  opts: AssignOpts,
+  rdir: string,
+  deps: P2Deps = {},
+): Promise<{ data: unknown[]; errors: JsonError[] }> {
   const errors: JsonError[] = [];
-  const roots = rootsFromRefs(args, errors);
-  if (roots.length === 0) return { data: [], errors, exitCode: 2 };
-
   const genre = loadGenreMap(rdir);
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
-  const providers = buildProviders();
+  const providers = deps.providers ?? buildProviders();
   const assignProviders: AssignProviders = {
     similar: providers.similar,
     aliases: providers.discogs ? (name) => providers.discogs!.artistAliases(name) : null,
@@ -245,8 +268,23 @@ export async function cmdAssign(args: string[], opts: AssignOpts): Promise<Comma
     });
   }
   if (genreDirty && !opts.dryRun) saveGenreMap(rdir, genre);
-  const exitCode = errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
-  return { data, errors, exitCode };
+  return { data, errors };
+}
+
+export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps = {}): Promise<CommandResult> {
+  if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake assign <root...> [--collection <name>] [--by user|engine]");
+  const rdir = rulesDir();
+  if (!rdir) return fail("E_NO_RULES", "rules dir not found (INTAKE_RULES_DIR or ~/.config/intake/config.toml)");
+  if (opts.collection && opts.by === "engine")
+    return fail("E_BAD_ARGS", "--collection implies --by user");
+
+  const refErrors: JsonError[] = [];
+  const roots = rootsFromRefs(args, refErrors);
+  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
+
+  const { data, errors } = await assignRoots(roots, opts, rdir, deps);
+  const all = [...refErrors, ...errors];
+  return { data, errors: all, exitCode: all.length === 0 ? 0 : data.length > 0 ? 1 : 2 };
 }
 
 // ---- collections -------------------------------------------------------------

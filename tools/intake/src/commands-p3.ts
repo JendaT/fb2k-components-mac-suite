@@ -9,7 +9,7 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHash } from "./audioHash.ts";
 import type { CommandResult, CommonOpts } from "./commands.ts";
-import { cmdAssign, cmdIdentify, rootsFromRefs, writeSidecarWithEvent, type RootRef } from "./commands-p2.ts";
+import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
 import type { TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
@@ -75,7 +75,7 @@ export interface ProposeOpts extends CommonOpts {
   allResolved: boolean;
 }
 
-export async function cmdPropose(args: string[], opts: ProposeOpts): Promise<CommandResult> {
+export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps = {}): Promise<CommandResult> {
   const errors: JsonError[] = [];
   let roots: RootRef[];
   if (opts.allResolved) {
@@ -96,13 +96,15 @@ export async function cmdPropose(args: string[], opts: ProposeOpts): Promise<Com
       continue;
     }
     // propose = identify + assign + naming (doc 03); run whichever is missing.
+    // Driven on this RootRef, so the results are visible even under --dry-run,
+    // where nothing is written to read back. Sub-stage errors stay internal:
+    // the outcome is reported as E_NO_TARGET below, as before.
     if (!root.sidecar.identification || !root.sidecar.proposal) {
-      if (!root.sidecar.identification) await cmdIdentify([root.sidecar.id], opts);
-      if (!root.sidecar.proposal) {
-        await cmdAssign([root.sidecar.id], { ...opts, collection: null, by: null });
+      const rdir = rulesDir();
+      if (!root.sidecar.identification) await identifyRoots([root], opts, deps);
+      if (!root.sidecar.proposal && rdir) {
+        await assignRoots([root], { ...opts, collection: null, by: null }, rdir, deps);
       }
-      const reread = readSidecar(root.sidecarPath);
-      if (reread) root.sidecar = reread;
     }
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
