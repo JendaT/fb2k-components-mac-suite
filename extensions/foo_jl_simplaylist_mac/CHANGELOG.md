@@ -5,6 +5,16 @@ All notable changes to SimPlaylist will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **Home key did nothing useful in grouped playlists**: Home jumped to an arbitrary point mid-list instead of the first track. The focus-movement API works in display rows, but Home computed its distance from the playlist index, which ignores every group header, subgroup header and padding row above the current track. End was wrong in the same way and only appeared to work because an over-large jump clamps to the end.
+- **Album art could pin the CPU indefinitely**: an image too large to cache was neither stored nor remembered as unusable, so every redraw decoded it again on up to four background threads for as long as its album was on screen.
+- **Invalid grouping patterns previewed as a filename**: the preferences preview reported a plausible-looking wrong answer instead of flagging the pattern as invalid.
+- **Preset settings could stop saving silently**: if the stored preset index pointed past the end of the preset list, the preferences page showed the first preset with empty pattern fields and quietly discarded every later edit.
+- **Typing a grouping pattern was sluggish**: each keystroke compiled and ran the half-typed pattern for both fields on the main thread. It is now debounced and only the edited field refreshes.
+- **Editing a pattern rebuilt the playlist twice**: leaving the field saved once immediately and once from a pending timer.
+- **Column headers hidden behind the album-art strip stayed interactive**: when scrolled horizontally, an invisible column could still be clicked, dragged and resized.
+- **Custom column edits could be reverted**: the custom-columns page kept a stale copy of the list and wrote it back over newer changes; it now reloads each time it appears.
+- Shift-click after switching playlists no longer extends the selection from the previous playlist's anchor.
+- Several places where a foobar2000 error would have closed the whole app rather than skipping a frame are now contained, and a corrupt layout cache entry can no longer crash on startup through a field the previous release's guard missed.
 - **Drop indicator landed below the cursor**: Dragging into a grouped playlist placed the insertion line up to ~150 px below the pointer, and the drop landed where the line was drawn. Drop positions were scored against a uniform row height that ignored taller group headers, so the error grew with every header above the cursor. Positions are now scored against real layout geometry and only candidates near the cursor are examined, which also removes a full-playlist scan on every mouse-move during a drag.
 - **Delete/Backspace with an empty selection hung the app**: The removal path looped ~2^63 times when nothing was selected.
 - **Group detection interfered across panels**: With two or more SimPlaylist panels open, one panel rebuilding its playlist cancelled another's in-progress group detection, leaving that panel with partial groups and an unsaved group cache. The cancellation counter is now per panel.

@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Fixed
+- Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
+- An album cover too large to cache was re-decoded on every redraw, on up to four threads, for as long as it was on screen
+- Invalid grouping patterns previewed as the track's filename instead of reporting themselves as invalid
+- An out-of-range stored preset index left the preferences page showing blank pattern fields and silently discarding every edit
+- Typing a grouping pattern compiled and ran it on the main thread on every keystroke; leaving the field rebuilt the playlist twice
+- Column headers scrolled behind the album-art strip remained clickable, draggable and resizable
+- Custom column edits could be reverted by a stale copy held by the preferences page
+- Shift-click after a playlist switch extended the selection from the previous playlist's anchor
 - Drop indicator appeared up to ~150 px below the cursor when dragging into grouped playlists, and the drop landed at the indicator — drop positions were scored against uniform row heights that ignored taller group headers
 - Delete/Backspace with an empty selection hung the app
 - With multiple SimPlaylist panels open, one panel's rebuild cancelled another's in-progress group detection
