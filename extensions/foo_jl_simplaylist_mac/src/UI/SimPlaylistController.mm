@@ -2329,6 +2329,15 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     reloadItem.target = self;
     [menu addItem:reloadItem];
 
+    // "Remove" - deletes the selected tracks from the playlist, matching the
+    // native playlist UI and foobar2000's "Edit / Selection / Remove" command.
+    NSMenuItem *removeItem = [[NSMenuItem alloc] initWithTitle:@"Remove"
+                                                       action:@selector(removeSelectedTracksClicked:)
+                                                keyEquivalent:@""];
+    removeItem.target = self;
+    [menu addItem:removeItem];
+
+    // Show progress for any active reload operations
     _reloadOperations.erase(
         std::remove_if(_reloadOperations.begin(), _reloadOperations.end(),
             [](const ReloadOperation& op) { return op.completed; }),
@@ -2508,6 +2517,10 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     });
 }
 
+- (void)removeSelectedTracksClicked:(NSMenuItem *)sender {
+    [self removeSelectedTracks];
+}
+
 - (void)reloadInfoClicked:(NSMenuItem *)sender {
     if (_contextMenuHandles.get_count() == 0) return;
 
@@ -2554,11 +2567,39 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 }
 
 - (void)playlistViewDidRequestRemoveSelection:(SimPlaylistView *)view {
-    // Empty selection: nothing to remove. Without this guard, lastIndex below
-    // returns NSNotFound and the focus-recalculation loop runs ~2^63 times,
-    // freezing the app.
-    if (view.selectedIndices.count == 0) return;
+    [self removeSelectedTracks];
+}
 
+// Remove the currently selected tracks from the active playlist. Shared by the
+// context-menu "Remove" item and the Delete key. Removal is performed directly
+// against the playlist (reliable across UI ports); we also commit the view
+// selection to the core first so foobar2000's own "Edit / Selection / Remove"
+// command and its shortcut operate on exactly the same tracks when invoked.
+- (void)removeSelectedTracks {
+    SimPlaylistView *view = _playlistView;
+    // Empty selection: nothing to remove. Without this guard, lastIndex in
+    // removeSelectedTracksFromView: returns NSNotFound and the focus-recalculation
+    // loop runs ~2^63 times, freezing the app.
+    if (!view || view.selectedIndices.count == 0) return;
+
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = pm->get_active_playlist();
+    if (activePlaylist == SIZE_MAX) return;
+
+    // Keep the core's active-playlist selection in sync with what's highlighted
+    // here (the view normally syncs asynchronously) so the native
+    // "Edit / Selection / Remove" command targets the same tracks.
+    t_size itemCount = pm->playlist_get_item_count(activePlaylist);
+    __block bit_array_bittable selMask(itemCount);
+    [view.selectedIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx < itemCount) selMask.set((t_size)idx, true);
+    }];
+    pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+
+    [self removeSelectedTracksFromView:view];
+}
+
+- (void)removeSelectedTracksFromView:(SimPlaylistView *)view {
     auto pm = playlist_manager::get();
     t_size activePlaylist = pm->get_active_playlist();
 
