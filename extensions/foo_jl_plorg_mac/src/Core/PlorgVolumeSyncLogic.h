@@ -21,7 +21,9 @@ extern NSString * const PlorgMacVolumePrefix;
 
 typedef NS_ENUM(NSInteger, FpliteLineResult) {
     FpliteLineNotVolume,   // empty or does not start with mac-volume://
-    FpliteLineMalformed,   // has the prefix but no plausible UUID segment
+    FpliteLineMalformed,   // has the prefix but no plausible UUID segment,
+                           // or an unsafe sample path (empty, absolute, or
+                           // containing a ".." component)
     FpliteLineParsed,
 };
 
@@ -54,7 +56,10 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 // --- fplite content scanning ---
 
 // Parse one .fplite line. On FpliteLineParsed, outUUID is the uppercase UUID
-// and outSamplePath the path portion after "mac-volume://UUID/".
+// and outSamplePath the path portion after "mac-volume://UUID/". The sample
+// path is joined onto mounted volume roots for existence probes, so it must
+// be a non-empty relative path with no ".." components; anything else is
+// FpliteLineMalformed.
 + (FpliteLineResult)parseFpliteLine:(NSString *)line
                                uuid:(NSString * _Nullable * _Nullable)outUUID
                          samplePath:(NSString * _Nullable * _Nullable)outSamplePath;
@@ -70,15 +75,25 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 // --- UUID remapping (content-level) ---
 
 // Replace mac-volume:// UUIDs in raw .fplite data, preserving a UTF-8 BOM.
-// Returns the new data, or nil when nothing changed or the data is not UTF-8.
+// Returns the new data, or nil when nothing changed, the data is not UTF-8,
+// or any source/target UUID fails isValidVolumeUUID:.
 + (nullable NSData *)remappedFpliteData:(NSData *)rawData
                               fromUUIDs:(NSSet<NSString *> *)sourceUUIDs
                                  toUUID:(NSString *)targetUUID;
 
 // --- Repair planning ---
 
+// Canonicalize a volume path for use as / lookup into the liveUUIDsByPath
+// dictionary: standardized, single trailing slash stripped, Unicode precomposed.
+// Callers holding a raw registry path must normalize before looking it up.
++ (NSString *)normalizedVolumePath:(NSString *)path;
+
 // Group live UUIDs by canonical path (resolvedPath, falling back to
-// originalPath). Registry format per UUID: { @"originalPath": NSString,
+// originalPath). Keys are normalized volume paths (standardized, single
+// trailing slash stripped, Unicode precomposed); the planning/migration
+// lookups below apply the same normalization, so trailing-slash or
+// decomposed-Unicode registry variants still match.
+// Registry format per UUID: { @"originalPath": NSString,
 // @"resolvedPath": NSString?, @"isLive": NSNumber(BOOL) }
 + (NSDictionary<NSString *, NSArray<NSString *> *> *)liveUUIDsByPathFromRegistry:
     (NSDictionary<NSString *, NSDictionary *> *)foobarVolumes;
@@ -138,6 +153,9 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 // copy under the rewritten name (INSERT OR IGNORE; both tables have a unique
 // primary key on the name/filename column), then DELETE the source rows in
 // the same transaction so dead-UUID copies do not accumulate across remounts.
+// Each DELETE only removes rows the REPLACE actually rewrote: LIKE is ASCII
+// case-insensitive but REPLACE is case-sensitive, so a row whose stored UUID
+// case differs from the remap key is left untouched instead of destroyed.
 // Index tables not passing isValidMetadbIndexTableName: are skipped.
 + (NSString *)metadbMigrationSQLForRemapActions:(NSDictionary<NSString *, NSString *> *)remapActions
                                     indexTables:(NSArray<NSString *> *)indexTables;

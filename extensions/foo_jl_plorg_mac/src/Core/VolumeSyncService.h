@@ -19,22 +19,13 @@ extern NSString * const kVolumeSyncBackupPrefix;
 // Maximum backup directories to retain
 extern NSInteger const kVolumeSyncMaxBackups;
 
+// JSON key in plorg_volume_uuids.json holding the auto-sync enabled flag
+extern NSString * const kVolumeSyncAutoSyncEnabledKey;
+
+// Main-thread-only: mutates unsynchronized state and posts notifications synchronously.
 @interface VolumeSyncService : NSObject
 
 + (instancetype)shared;
-
-// --- Volume Discovery ---
-
-// Enumerate mounted network volumes, return share_name -> current_UUID
-// Uses getmntinfo() filtered to smbfs/nfs/afpfs, then DiskArbitration for UUID
-- (NSDictionary<NSString *, NSString *> *)discoverShareToUUIDMapping;
-
-// Extract share name from statfs f_mntfromname
-// e.g., "//user@192.168.1.10/music.hq" -> "music.hq"
-+ (nullable NSString *)shareNameFromMountSource:(const char *)mntfromname;
-
-// Get volume UUID via DiskArbitration framework
-- (nullable NSString *)volumeUUIDForMountPath:(NSString *)path;
 
 // --- fplite Scanning ---
 
@@ -114,7 +105,6 @@ extern NSInteger const kVolumeSyncMaxBackups;
 // --- Deferred Logging ---
 
 // Buffer log messages when FB2K_console_formatter may not be available
-@property (nonatomic, strong, readonly) NSMutableArray<NSString *> *deferredLogMessages;
 - (void)flushDeferredLogsToConsole;
 
 @end

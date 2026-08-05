@@ -21,8 +21,7 @@
 
 #pragma mark - Serialization
 
-+ (NSString *)nodeToYaml:(TreeNode *)node indent:(NSInteger)indent {
-    NSMutableString *yaml = [NSMutableString string];
++ (void)appendNode:(TreeNode *)node indent:(NSInteger)indent toYaml:(NSMutableString *)yaml {
     NSString *indentStr = [@"" stringByPaddingToLength:indent withString:@"  " startingAtIndex:0];
 
     if (node.isFolder) {
@@ -33,14 +32,12 @@
         if (node.children.count > 0) {
             [yaml appendFormat:@"%@  items:\n", indentStr];
             for (TreeNode *child in node.children) {
-                [yaml appendString:[self nodeToYaml:child indent:indent + 2]];
+                [self appendNode:child indent:indent + 2 toYaml:yaml];
             }
         }
     } else {
         [yaml appendFormat:@"%@- playlist: \"%@\"\n", indentStr, [self escapeString:node.name]];
     }
-
-    return yaml;
 }
 
 + (NSString *)yamlForTree:(NSArray<TreeNode *> *)rootNodes nodeFormat:(NSString *)nodeFormat {
@@ -51,7 +48,7 @@
     if (rootNodes.count > 0) {
         [yaml appendString:@"tree:\n"];
         for (TreeNode *node in rootNodes) {
-            [yaml appendString:[self nodeToYaml:node indent:1]];
+            [self appendNode:node indent:1 toYaml:yaml];
         }
     } else {
         [yaml appendString:@"tree: []\n"];
@@ -93,7 +90,7 @@
         if ([line hasPrefix:@"node_format:"]) {
             NSString *value = [line substringFromIndex:12];
             value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-            if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
+            if (value.length >= 2 && [value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
                 value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
             }
             if (outFormat) *outFormat = [self unescapeString:value];
@@ -184,6 +181,7 @@
         }
 
         NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (line.length == 0) continue;
 
         if ([line hasPrefix:@"tree:"]) {
             inTree = YES;
@@ -243,7 +241,7 @@
     NSString *value = [line substringFromIndex:range.location + range.length];
     value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 
-    if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
+    if (value.length >= 2 && [value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
         value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
         return [self unescapeString:value];
     }

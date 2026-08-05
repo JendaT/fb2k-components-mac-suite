@@ -139,6 +139,7 @@
     self.nodeFormatField.placeholderString = @"%node_name%";
     self.nodeFormatField.target = self;
     self.nodeFormatField.action = @selector(settingsChanged:);
+    self.nodeFormatField.cell.sendsActionOnEndEditing = YES;
     self.nodeFormatField.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.nodeFormatField];
     [NSLayoutConstraint activateConstraints:@[
@@ -216,10 +217,10 @@
 
 - (void)loadSettings {
     // Load settings from config
-    BOOL singleClick = plorg_config::getConfigBool(plorg_config::kSingleClickActivate, false);
-    BOOL doubleClickPlay = plorg_config::getConfigBool(plorg_config::kDoubleClickPlay, true);
-    BOOL autoReveal = plorg_config::getConfigBool(plorg_config::kAutoRevealPlaying, true);
-    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, true);
+    BOOL singleClick = plorg_config::getConfigBool(plorg_config::kSingleClickActivate, plorg_config::kDefaultSingleClickActivate);
+    BOOL doubleClickPlay = plorg_config::getConfigBool(plorg_config::kDoubleClickPlay, plorg_config::kDefaultDoubleClickPlay);
+    BOOL autoReveal = plorg_config::getConfigBool(plorg_config::kAutoRevealPlaying, plorg_config::kDefaultAutoRevealPlaying);
+    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, plorg_config::kDefaultShowIcons);
     BOOL showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, plorg_config::kDefaultShowTreeLines);
     BOOL transparentBackground = plorg_config::getConfigBool(plorg_config::kTransparentBackground, plorg_config::kDefaultTransparentBackground);
     BOOL pathEncodedNames = plorg_config::getConfigBool(plorg_config::kPathEncodedNames, plorg_config::kDefaultPathEncodedNames);
@@ -280,16 +281,19 @@
 }
 
 - (void)resetToDefaults:(id)sender {
-    self.singleClickActivateCheckbox.state = NSControlStateValueOff;
-    self.doubleClickPlayCheckbox.state = NSControlStateValueOn;
-    self.autoRevealPlayingCheckbox.state = NSControlStateValueOn;
-    self.showIconsCheckbox.state = NSControlStateValueOn;
-    self.showTreeLinesCheckbox.state = NSControlStateValueOn;
-    self.transparentBackgroundCheckbox.state = NSControlStateValueOn;
-    self.checkCorruptedOnStartupCheckbox.state = NSControlStateValueOff;
-    self.autoVolumeSyncCheckbox.state = NSControlStateValueOn;
-    self.autoRestartAfterSyncCheckbox.state = NSControlStateValueOff;
-    self.volumeSelfHealCheckbox.state = NSControlStateValueOn;
+    auto stateFor = [](bool defaultValue) {
+        return defaultValue ? NSControlStateValueOn : NSControlStateValueOff;
+    };
+    self.singleClickActivateCheckbox.state = stateFor(plorg_config::kDefaultSingleClickActivate);
+    self.doubleClickPlayCheckbox.state = stateFor(plorg_config::kDefaultDoubleClickPlay);
+    self.autoRevealPlayingCheckbox.state = stateFor(plorg_config::kDefaultAutoRevealPlaying);
+    self.showIconsCheckbox.state = stateFor(plorg_config::kDefaultShowIcons);
+    self.showTreeLinesCheckbox.state = stateFor(plorg_config::kDefaultShowTreeLines);
+    self.transparentBackgroundCheckbox.state = stateFor(plorg_config::kDefaultTransparentBackground);
+    self.checkCorruptedOnStartupCheckbox.state = stateFor(plorg_config::kDefaultCheckCorruptedOnStartup);
+    self.autoVolumeSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoVolumeSync);
+    self.autoRestartAfterSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoRestartAfterVolumeSync);
+    self.volumeSelfHealCheckbox.state = stateFor(plorg_config::kDefaultVolumeSelfHeal);
     self.nodeFormatField.stringValue = @"%node_name%";
     [self saveSettings];
 

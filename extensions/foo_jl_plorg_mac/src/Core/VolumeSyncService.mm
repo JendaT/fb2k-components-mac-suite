@@ -21,6 +21,16 @@
 
 NSString * const kVolumeSyncBackupPrefix = @"backup_volume_sync_";
 NSInteger const kVolumeSyncMaxBackups = 5;
+NSString * const kVolumeSyncAutoSyncEnabledKey = @"__auto_sync_enabled";
+
+static const int kSQLiteBusyTimeoutMillis = 1000;
+static const int64_t kVolumeChangeDebounceSeconds = 3;
+static const int64_t kSelfHealDeferralSeconds = 2;
+static const int64_t kSelfHealVerifyDelaySeconds = 2;
+static const int64_t kSelfHealVerifyRetryDelaySeconds = 5;
+static const NSInteger kSelfHealVerifyRetries = 3;
+static const int kMigratorRelaunchAbortWaitSeconds = 120;
+static const int kRelauncherMigrationWaitSeconds = 900;
 
 // Staged migration SQL for a given fb2k pid. Shared knowledge between the
 // migrator (creates it, deletes it when done) and the relauncher (waits for
@@ -31,11 +41,14 @@ static NSString *stagedMigrationSQLPathForPID(pid_t pid) {
 }
 
 @interface VolumeSyncService ()
-@property (nonatomic, strong, readwrite) NSMutableArray<NSString *> *deferredLogMessages;
+@property (nonatomic, strong) NSMutableArray<NSString *> *deferredLogMessages;
 @property (nonatomic, strong) dispatch_source_t volumeMonitorSource;
 @property (nonatomic, strong) NSString *playlistsDir; // cached for runtime monitor
 @property (nonatomic, copy) dispatch_block_t pendingVolumeCheck; // coalesces monitor bursts
 @property (nonatomic, strong) NSMutableSet<NSString *> *selfHealAttemptedPaths; // once per path per session
+
+// Get volume UUID via DiskArbitration framework
+- (nullable NSString *)volumeUUIDForMountPath:(NSString *)path;
 
 - (void)selfHealResolutionCompletedForPaths:(NSArray<NSString *> *)paths
                               resolvedCount:(NSUInteger)resolvedCount
@@ -93,15 +106,6 @@ public:
 
 #pragma mark - Volume Discovery
 
-- (NSDictionary<NSString *, NSString *> *)discoverShareToUUIDMapping {
-    NSDictionary *info = [self discoverShareInfo];
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-    for (NSString *shareName in info) {
-        result[shareName] = info[shareName][@"uuid"];
-    }
-    return result;
-}
-
 // Internal: returns share -> @{ @"uuid": NSString, @"mountPath": NSString }
 - (NSDictionary<NSString *, NSDictionary *> *)discoverShareInfo {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
@@ -121,7 +125,7 @@ public:
         }
 
         NSString *mountPath = [NSString stringWithUTF8String:mounts[i].f_mntonname];
-        NSString *shareName = [VolumeSyncService shareNameFromMountSource:mounts[i].f_mntfromname];
+        NSString *shareName = [PlorgVolumeSyncLogic shareNameFromMountSource:mounts[i].f_mntfromname];
         if (!shareName || shareName.length == 0) continue;
 
         NSString *uuid = [self volumeUUIDForMountPath:mountPath];
@@ -137,10 +141,6 @@ public:
     }
 
     return result;
-}
-
-+ (NSString *)shareNameFromMountSource:(const char *)mntfromname {
-    return [PlorgVolumeSyncLogic shareNameFromMountSource:mntfromname];
 }
 
 - (NSString *)volumeUUIDForMountPath:(NSString *)path {
@@ -185,7 +185,13 @@ public:
 #pragma mark - fplite Scanning
 
 - (NSDictionary<NSString *, NSNumber *> *)scanFpliteFileForUUIDs:(NSString *)path {
-    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    NSError *readError = nil;
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&readError];
+    if (!content) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Failed to read %@: %@",
+            path, readError.localizedDescription]];
+    }
     return [PlorgVolumeSyncLogic scanFpliteContentForUUIDs:content];
 }
 
@@ -215,6 +221,7 @@ public:
                              forFiles:(NSSet<NSString *> *)filePaths
                                 error:(NSError **)error {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.dateFormat = @"yyyy-MM-dd_HHmmss";
     NSString *timestamp = [formatter stringFromDate:[NSDate date]];
 
@@ -243,8 +250,14 @@ public:
 
 - (void)pruneOldBackupsInDirectory:(NSString *)playlistsDir {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:nil];
-    if (!contents) return;
+    NSError *listError = nil;
+    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:&listError];
+    if (!contents) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Failed to list %@ for backup pruning: %@",
+            playlistsDir, listError.localizedDescription]];
+        return;
+    }
 
     NSMutableArray<NSString *> *backupDirs = [NSMutableArray array];
     for (NSString *item in contents) {
@@ -255,12 +268,10 @@ public:
 
     if ((NSInteger)backupDirs.count <= kVolumeSyncMaxBackups) return;
 
+    // Directory names embed a zero-padded yyyy-MM-dd_HHmmss timestamp, so
+    // lexicographic order is chronological order.
     [backupDirs sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        NSDictionary *aAttrs = [fm attributesOfItemAtPath:a error:nil];
-        NSDictionary *bAttrs = [fm attributesOfItemAtPath:b error:nil];
-        NSDate *aDate = aAttrs[NSFileModificationDate] ?: [NSDate distantPast];
-        NSDate *bDate = bAttrs[NSFileModificationDate] ?: [NSDate distantPast];
-        return [aDate compare:bDate];
+        return [a.lastPathComponent compare:b.lastPathComponent];
     }];
 
     NSInteger toRemove = (NSInteger)backupDirs.count - kVolumeSyncMaxBackups;
@@ -346,12 +357,16 @@ public:
 
     // 4. For each UUID found in .fplite, decide whether it needs remapping.
     __weak typeof(self) weakSelf = self;
+    BOOL (^fileExists)(NSString *) = ^BOOL(NSString *path) {
+        return [[NSFileManager defaultManager] fileExistsAtPath:path];
+    };
+    BOOL (^isMounted)(NSString *) = ^BOOL(NSString *path) {
+        return [self isCurrentlyMountedPath:path];
+    };
     NSDictionary *remapActions = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:foobarVolumes
         fpliteIndex:fpliteIndex
         liveUUIDsByPath:liveUUIDsByPath
-        fileExists:^BOOL(NSString *path) {
-            return [[NSFileManager defaultManager] fileExistsAtPath:path];
-        }
+        fileExists:fileExists
         log:^(NSString *message) {
             [weakSelf deferLog:message];
         }];
@@ -375,9 +390,7 @@ public:
             NSArray<NSString *> *mountedPaths =
                 [PlorgVolumeSyncLogic mountedRegistryPathsForUnresolvedUUIDs:unresolved
                                                                registry:foobarVolumes
-                                                              isMounted:^BOOL(NSString *path) {
-                    return [self isCurrentlyMountedPath:path];
-                }];
+                                                              isMounted:isMounted];
             if (mountedPaths.count > 0) {
                 [self deferLog:[NSString stringWithFormat:
                     @"[Plorg VolumeSync] %lu stale .fplite UUID(s); %@ IS mounted but "
@@ -391,12 +404,8 @@ public:
                 NSArray *candidates = [PlorgVolumeSyncLogic selfHealCandidatesForUnresolvedUUIDs:unresolved
                     registry:foobarVolumes
                     fpliteIndex:fpliteIndex
-                    isMounted:^BOOL(NSString *path) {
-                        return [self isCurrentlyMountedPath:path];
-                    }
-                    fileExists:^BOOL(NSString *path) {
-                        return [[NSFileManager defaultManager] fileExistsAtPath:path];
-                    }];
+                    isMounted:isMounted
+                    fileExists:fileExists];
                 [self scheduleSelfHealForCandidates:candidates];
             } else {
                 [self deferLog:[NSString stringWithFormat:
@@ -459,7 +468,7 @@ public:
         if (db) sqlite3_close(db);
         return result;
     }
-    sqlite3_busy_timeout(db, 1000);
+    sqlite3_busy_timeout(db, kSQLiteBusyTimeoutMillis);
 
     // UUID -> row count in metadb.
     NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary dictionary];
@@ -518,7 +527,7 @@ public:
         if (db) sqlite3_close(db);
         return @{};
     }
-    sqlite3_busy_timeout(db, 1000); // play nicely with running foobar
+    sqlite3_busy_timeout(db, kSQLiteBusyTimeoutMillis); // play nicely with running foobar
 
     NSMutableDictionary<NSString *, NSMutableDictionary *> *registry = [NSMutableDictionary dictionary];
 
@@ -607,12 +616,12 @@ public:
 - (void)persistDiagnosticSnapshot:(NSDictionary *)foobarVolumes
                      remapActions:(NSDictionary *)remapActions
                   liveUUIDsByPath:(NSDictionary *)liveUUIDsByPath {
-    NSMutableDictionary *snapshot = [[self loadPersistedMapping] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSDictionary *previous = [self loadPersistedMapping];
+    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
 
-    // Strip any old per-share keys (everything not starting with __)
-    NSArray *keys = [snapshot.allKeys copy];
-    for (NSString *k in keys) {
-        if (![k hasPrefix:@"__"]) [snapshot removeObjectForKey:k];
+    id autoSyncEnabled = previous[kVolumeSyncAutoSyncEnabledKey];
+    if ([autoSyncEnabled isKindOfClass:[NSNumber class]]) {
+        snapshot[kVolumeSyncAutoSyncEnabledKey] = autoSyncEnabled;
     }
 
     NSMutableDictionary *paths = [NSMutableDictionary dictionary];
@@ -634,6 +643,7 @@ public:
     snapshot[@"last_remap_actions"] = remapActions ?: @{};
 
     NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     fmt.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZ";
     snapshot[@"last_run"] = [fmt stringFromDate:[NSDate date]];
 
@@ -646,15 +656,27 @@ public:
     NSMutableDictionary<NSString *, NSMutableDictionary *> *index = [NSMutableDictionary dictionary];
 
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:nil];
-    if (!contents) return index;
+    NSError *listError = nil;
+    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:&listError];
+    if (!contents) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Failed to list %@ for .fplite indexing: %@",
+            playlistsDir, listError.localizedDescription]];
+        return index;
+    }
 
     for (NSString *item in contents) {
         if (![item hasSuffix:@".fplite"]) continue;
         NSString *fullPath = [playlistsDir stringByAppendingPathComponent:item];
 
+        NSError *readError = nil;
         NSString *content = [NSString stringWithContentsOfFile:fullPath
-                                                      encoding:NSUTF8StringEncoding error:nil];
+                                                      encoding:NSUTF8StringEncoding error:&readError];
+        if (!content) {
+            [self deferLog:[NSString stringWithFormat:
+                @"[Plorg VolumeSync] Failed to read %@: %@",
+                fullPath, readError.localizedDescription]];
+        }
         [PlorgVolumeSyncLogic indexFpliteContent:content into:index];
     }
 
@@ -667,8 +689,14 @@ public:
                         remapActions:(NSMutableDictionary *)remapActions {
     // Collect all fplite files
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:nil];
-    if (!contents) return;
+    NSError *listError = nil;
+    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:&listError];
+    if (!contents) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Failed to list %@ for stale UUID scan: %@",
+            playlistsDir, listError.localizedDescription]];
+        return;
+    }
 
     NSMutableDictionary *allFpliteUUIDs = [NSMutableDictionary dictionary]; // UUID -> total count
 
@@ -711,8 +739,14 @@ public:
 - (NSDictionary *)applyRemapping:(NSDictionary *)remapActions
                      inDirectory:(NSString *)playlistsDir {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:nil];
-    if (!contents) return @{};
+    NSError *listError = nil;
+    NSArray *contents = [fm contentsOfDirectoryAtPath:playlistsDir error:&listError];
+    if (!contents) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Failed to list %@ for remapping: %@",
+            playlistsDir, listError.localizedDescription]];
+        return @{};
+    }
 
     // Collect affected files
     NSMutableSet<NSString *> *affectedFiles = [NSMutableSet set];
@@ -817,8 +851,8 @@ public:
         });
         strongSelf.pendingVolumeCheck = check;
 
-        // Wait 3 seconds for the mount to fully settle before scanning.
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+        // Wait kVolumeChangeDebounceSeconds for the mount to fully settle before scanning.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kVolumeChangeDebounceSeconds * NSEC_PER_SEC),
             dispatch_get_main_queue(), check);
     });
 
@@ -886,7 +920,7 @@ public:
         [paths componentsJoinedByString:@", "]]];
 
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kSelfHealDeferralSeconds * NSEC_PER_SEC),
         dispatch_get_main_queue(), ^{
         [weakSelf attemptSelfHealForCandidates:fresh];
     });
@@ -909,23 +943,34 @@ public:
 // Feed real file paths through the core's location machinery. Bookmark
 // creation goes through foobar2000 itself, which owns config.sqlite; plorg
 // stays read-only on that database (hard rule).
+// Lifetimes: filePtrs holds raw const char* into notify->m_files, so the fed
+// strings must live in the notify object, not in locals. The notify (and thus
+// m_files) is kept alive by the service reference process_locations_async
+// holds until on_completion/on_aborted, which arrive on the main thread.
 - (void)mintBookmarkForFiles:(NSArray<NSString *> *)files
                   mountPaths:(NSArray<NSString *> *)mountPaths
                      isFinal:(BOOL)isFinal {
-    auto notify = fb2k::service_new<PlorgSelfHealNotify>();
-    notify->m_isFinal = isFinal;
-    for (NSString *p in mountPaths) notify->m_mountPaths.push_back(p.UTF8String);
-    for (NSString *f in files) notify->m_files.push_back(f.UTF8String);
+    try {
+        auto notify = fb2k::service_new<PlorgSelfHealNotify>();
+        notify->m_isFinal = isFinal;
+        for (NSString *p in mountPaths) notify->m_mountPaths.push_back(p.UTF8String);
+        for (NSString *f in files) notify->m_files.push_back(f.UTF8String);
 
-    pfc::list_t<const char *> filePtrs;
-    for (const auto &f : notify->m_files) filePtrs.add_item(f.c_str());
+        pfc::list_t<const char *> filePtrs;
+        for (const auto &f : notify->m_files) filePtrs.add_item(f.c_str());
 
-    playlist_incoming_item_filter_v2::get()->process_locations_async(
-        filePtrs,
-        playlist_incoming_item_filter_v2::op_flag_no_filter |
-        playlist_incoming_item_filter_v2::op_flag_delay_ui,
-        nullptr, nullptr, nullptr,
-        notify);
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            filePtrs,
+            playlist_incoming_item_filter_v2::op_flag_no_filter |
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
+            nullptr, nullptr, nullptr,
+            notify);
+    } catch (const std::exception &e) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Self-heal mint failed: %s", e.what()]];
+    } catch (...) {
+        [self deferLog:@"[Plorg VolumeSync] Self-heal mint failed: core services unavailable."];
+    }
 }
 
 - (void)selfHealResolutionCompletedForPaths:(NSArray<NSString *> *)paths
@@ -937,9 +982,9 @@ public:
     // The core may persist the new volume bookmark to config.sqlite with a
     // small lag after resolution; verify with retries before concluding.
     __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kSelfHealVerifyDelaySeconds * NSEC_PER_SEC),
         dispatch_get_main_queue(), ^{
-        [weakSelf verifySelfHealForPaths:paths remainingRetries:3 isFinal:isFinal];
+        [weakSelf verifySelfHealForPaths:paths remainingRetries:kSelfHealVerifyRetries isFinal:isFinal];
     });
 }
 
@@ -952,14 +997,15 @@ public:
     NSMutableArray<NSString *> *healed = [NSMutableArray array];
     NSMutableArray<NSString *> *pending = [NSMutableArray array];
     for (NSString *path in paths) {
-        if ([liveByPath[path] count] > 0) [healed addObject:path];
+        NSString *key = [PlorgVolumeSyncLogic normalizedVolumePath:path];
+        if ([liveByPath[key] count] > 0) [healed addObject:path];
         else [pending addObject:path];
     }
 
     if (pending.count > 0 && retries > 0) {
         [self flushDeferredLogsToConsole];
         __weak typeof(self) weakSelf = self;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC),
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kSelfHealVerifyRetryDelaySeconds * NSEC_PER_SEC),
             dispatch_get_main_queue(), ^{
             [weakSelf verifySelfHealForPaths:paths remainingRetries:retries - 1 isFinal:isFinal];
         });
@@ -1114,7 +1160,7 @@ public:
     sqlite3 *db = NULL;
     if (sqlite3_open_v2([dbPath fileSystemRepresentation], &db,
             SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) == SQLITE_OK) {
-        sqlite3_busy_timeout(db, 1000);
+        sqlite3_busy_timeout(db, kSQLiteBusyTimeoutMillis);
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(db,
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -1167,13 +1213,14 @@ public:
     //  4. feeds the staged SQL to sqlite3 (transactional, .bail on);
     //  5. removes the staged SQL, which releases the waiting relauncher.
     NSString *script = [NSString stringWithFormat:
+        @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"
         @"DB='%@'; SQL='%@'; LOG='%@'; BK=\"$DB.plorg-pre-migration\"\n"
         @"while kill -0 %d 2>/dev/null; do sleep 0.5; done\n"
         @"sleep 1\n"
         @"t=0\n"
         @"while /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; do\n"
         @"  t=$((t+1))\n"
-        @"  if [ \"$t\" -ge 120 ]; then\n"
+        @"  if [ \"$t\" -ge %d ]; then\n"
         @"    echo \"[Plorg VolumeSync] Migration SKIPPED: foobar2000 was relaunched before it could run. It will be rescheduled on next repair.\" > \"$LOG\"\n"
         @"    rm -f \"$SQL\"\n"
         @"    exit 0\n"
@@ -1194,11 +1241,14 @@ public:
         @"rc=$?\n"
         @"echo \"[Plorg VolumeSync] Metadb migration finished (exit $rc) at $(date)\" >> \"$LOG\"\n"
         @"rm -f \"$SQL\"\n",
-        dbPath, sqlPath, logPath, pid];
+        dbPath, sqlPath, logPath, pid, kMigratorRelaunchAbortWaitSeconds];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
     task.arguments = @[@"-c", script];
+    task.standardInput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
     @try {
         [task launch];
         [self deferLog:[NSString stringWithFormat:
@@ -1229,16 +1279,20 @@ public:
     pid_t pid = getpid();
     NSString *sqlPath = stagedMigrationSQLPathForPID(pid);
     NSString *script = [NSString stringWithFormat:
+        @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"
         @"while kill -0 %d 2>/dev/null; do sleep 0.1; done\n"
         @"sleep 0.3\n"
         @"t=0\n"
-        @"while [ -e '%@' ] && [ \"$t\" -lt 900 ]; do sleep 1; t=$((t+1)); done\n"
+        @"while [ -e '%@' ] && [ \"$t\" -lt %d ]; do sleep 1; t=$((t+1)); done\n"
         @"/usr/bin/open '%@'\n",
-        pid, sqlPath, appPath];
+        pid, sqlPath, kRelauncherMigrationWaitSeconds, appPath];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
     task.arguments = @[@"-c", script];
+    task.standardInput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
 
     @try {
         [task launch];

@@ -78,14 +78,14 @@ do_build() {
         esac
     done
 
-    cd "$PROJECT_DIR"
+    cd "$PROJECT_DIR" || { print_error "Cannot enter project directory: $PROJECT_DIR"; return 1; }
 
     print_status "Building $PROJECT_NAME ($BUILD_CONFIG)"
 
     # Regenerate Xcode project if requested or if it doesn't exist
     if [ "$regenerate" = true ] || [ ! -d "$PROJECT_NAME.xcodeproj" ]; then
         print_status "Generating Xcode project..."
-        ruby Scripts/generate_xcode_project.rb
+        ruby Scripts/generate_xcode_project.rb || { print_error "Project generation failed"; return 1; }
     fi
 
     # Clean if requested
@@ -95,7 +95,7 @@ do_build() {
     fi
 
     # Ensure build directory exists
-    mkdir -p "$BUILD_DIR"
+    mkdir -p "$BUILD_DIR" || { print_error "Cannot create build directory: $BUILD_DIR"; return 1; }
 
     # Build with xcodebuild
     # SYMROOT forces output to local build/ instead of DerivedData
@@ -114,7 +114,7 @@ do_build() {
     set -e
 
     # Show filtered build progress
-    grep -E "^(Compile|Ld|Create|Touch|warning:)" "$build_log" || true
+    grep -E "^(Compile|Ld|Create|Touch)|warning:" "$build_log" || true
 
     # Check xcodebuild exit code first (don't rely on stale output directory)
     if [ $build_exit -ne 0 ]; then
@@ -274,6 +274,10 @@ parse_install_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --config)
+                if [ "$2" != "Debug" ] && [ "$2" != "Release" ]; then
+                    print_error "Invalid --config value: $2 (must be Debug or Release)"
+                    return 1
+                fi
                 BUILD_CONFIG="$2"
                 shift 2
                 ;;

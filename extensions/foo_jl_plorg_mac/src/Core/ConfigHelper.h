@@ -89,7 +89,10 @@ inline NSString* getConfigString(const char* key, const char* defaultVal) {
 
         fb2k::stringRef value = store->getConfigString(fullKey.c_str());
         if (value.is_valid() && value->length() > 0) {
-            return [NSString stringWithUTF8String:value->c_str()];
+            NSString *result = [NSString stringWithUTF8String:value->c_str()];
+            if (result) {
+                return result;
+            }
         }
         return defaultVal ? [NSString stringWithUTF8String:defaultVal] : @"";
     } catch (...) {
@@ -125,13 +128,9 @@ inline NSString* getConfigFilePath() {
 }
 
 inline NSString* loadTreeFromFile() {
-    NSString *path = getConfigFilePath();
-    NSError *error = nil;
-    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&error];
-    if (error) {
-        return nil;
-    }
-    return content;
+    return [NSString stringWithContentsOfFile:getConfigFilePath()
+                                     encoding:NSUTF8StringEncoding
+                                        error:NULL];
 }
 
 inline BOOL saveTreeToFile(NSString* yaml) {

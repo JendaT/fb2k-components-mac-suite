@@ -92,6 +92,59 @@ int main(void) {
         CHECK([PlorgTreeOps findFolderForComponents:@[] inRoots:roots] == nil, "empty components -> nil");
     }
 
+    // --- duplicate sibling folders fold during resolution ---
+    {
+        g_context = "duplicate-siblings";
+        TreeNode *a1 = [TreeNode folderWithName:@"A"];
+        [a1 addChild:[TreeNode playlistWithName:@"First"]];
+        TreeNode *a2 = [TreeNode folderWithName:@"A"];
+        [a2 addChild:[TreeNode playlistWithName:@"Second"]];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:a1, a2, nil];
+
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"A", @"First"]) inRoots:roots] != nil,
+              "playlist under first duplicate found");
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"A", @"Second"]) inRoots:roots] != nil,
+              "playlist under second duplicate found");
+        CHECK(a1.children.count == 2, "children folded into first folder");
+        CHECK(a2.children.count == 0, "duplicate folder emptied");
+    }
+
+    // --- nested duplicate folders fold recursively ---
+    {
+        g_context = "duplicate-nested";
+        TreeNode *a1 = [TreeNode folderWithName:@"A"];
+        TreeNode *sub1 = [TreeNode folderWithName:@"Sub"];
+        [sub1 addChild:[TreeNode playlistWithName:@"P1"]];
+        [a1 addChild:sub1];
+        TreeNode *a2 = [TreeNode folderWithName:@"A"];
+        TreeNode *sub2 = [TreeNode folderWithName:@"Sub"];
+        [sub2 addChild:[TreeNode playlistWithName:@"P2"]];
+        [a2 addChild:sub2];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:a1, a2, nil];
+
+        CHECK([PlorgTreeOps findFolderForComponents:(@[@"A", @"Sub"]) inRoots:roots] == sub1,
+              "nested duplicate resolves to first Sub");
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"A", @"Sub", @"P1"]) inRoots:roots] != nil,
+              "first nested playlist found");
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"A", @"Sub", @"P2"]) inRoots:roots] != nil,
+              "second nested playlist found");
+    }
+
+    // --- same-named folder and playlist are not merged ---
+    {
+        g_context = "duplicate-mixed-type";
+        TreeNode *bFolder = [TreeNode folderWithName:@"B"];
+        [bFolder addChild:[TreeNode playlistWithName:@"Inner"]];
+        TreeNode *bPlaylist = [TreeNode playlistWithName:@"B"];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:bFolder, bPlaylist, nil];
+
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"B", @"Inner"]) inRoots:roots] != nil,
+              "folder path still resolves");
+        CHECK([PlorgTreeOps findPlaylistForComponents:@[@"B"] inRoots:roots] == bPlaylist,
+              "root playlist with folder's name still found");
+        CHECK(bFolder.children.count == 1 && !bPlaylist.isFolder, "folder and playlist not merged");
+    }
+
     // --- mergeNodes: new folder subtree counts fully ---
     {
         g_context = "merge-new-folder";

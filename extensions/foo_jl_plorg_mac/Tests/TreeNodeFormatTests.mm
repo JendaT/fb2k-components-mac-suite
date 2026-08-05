@@ -131,6 +131,20 @@ int main(void) {
         // Nested/sequential $if: the engine iterates (capped at 10 rewrites)
         CHECK_EQ([pl formattedNameWithFormat:@"$if(x,a,b)$if(,c,d)" playlistItemCount:0], @"ad",
                  "two sequential $if calls both resolve");
+        CHECK_EQ([pl formattedNameWithFormat:@"$if(oops)$if(x,yes,no)" playlistItemCount:0], @"$if(oops)yes",
+                 "malformed $if does not block a later well-formed $if");
+        CHECK_EQ([pl formattedNameWithFormat:@"$if(x,yes $if(broken" playlistItemCount:0], @"$if(x,yes $if(broken",
+                 "two unclosed $ifs left as-is");
+    }
+
+    // --- Nested $if in the condition argument ---
+    {
+        g_context = "if-nested-condition";
+        TreeNode *pl = [TreeNode playlistWithName:@"P"];
+        CHECK_EQ([pl formattedNameWithFormat:@"$if($if(x,y,),a,b)" playlistItemCount:0], @"a",
+                 "truthy nested condition takes true branch");
+        CHECK_EQ([pl formattedNameWithFormat:@"$if($if(,y,),a,b)" playlistItemCount:0], @"b",
+                 "falsy nested condition takes false branch");
     }
 
     // --- Dictionary round trip (legacy JSON configStore migration path) ---

@@ -27,8 +27,8 @@ public:
 
             // Check enabled state from JSON mapping file
             NSDictionary *mapping = [svc loadPersistedMapping];
-            if (mapping[@"__auto_sync_enabled"] &&
-                ![mapping[@"__auto_sync_enabled"] boolValue]) {
+            if (mapping[kVolumeSyncAutoSyncEnabledKey] &&
+                ![mapping[kVolumeSyncAutoSyncEnabledKey] boolValue]) {
                 return;
             }
 
@@ -49,7 +49,7 @@ public:
                 plorg_config::kAutoVolumeSync, plorg_config::kDefaultAutoVolumeSync);
             NSMutableDictionary *m = [[svc loadPersistedMapping] mutableCopy]
                 ?: [NSMutableDictionary dictionary];
-            m[@"__auto_sync_enabled"] = @(enabled);
+            m[kVolumeSyncAutoSyncEnabledKey] = @(enabled);
             [svc persistMapping:m];
 
             // Start runtime /Volumes monitor

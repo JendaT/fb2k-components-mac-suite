@@ -70,6 +70,7 @@ public:
             pfc::string8 name;
             if (pm->playlist_get_name(p_new, name)) {
                 NSString *foobarName = [NSString stringWithUTF8String:name.c_str()];
+                if (!foobarName) return;
 
                 NSUInteger generation = [TreeModel shared].migrationGeneration;
                 dispatch_async(dispatch_get_main_queue(), ^{

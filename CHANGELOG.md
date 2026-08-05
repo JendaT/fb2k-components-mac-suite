@@ -274,6 +274,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Strict volume-UUID validation and SQL escaping in the metadb migration builder
 - Migrator index-table discovery no longer matches the `metadb_indexes` metadata table (SQL `LIKE` `_` wildcard bug); GLOB + strict shape validation
 - Restart no longer races the metadb migration: relauncher waits for the migration to finish before reopening foobar2000 (was: "database is locked" + interrupted migration)
+- Three-pass code review hardening: malformed-input crash fixes (FTH/DBPL/YAML parsers), path-traversal rejection in `.fplite` sample paths, manual remap target-UUID validation, read-only opens for Vox/Strawberry import databases, backup-before-delete for corrupted-playlist removal, locale-pinned backup timestamps, corrected delete-folder dialog text, build script no longer masks project-generation failures
+- Fourth review pass: metadb migration no longer deletes lower-case-UUID rows instead of migrating them (case-insensitive LIKE vs case-sensitive REPLACE); registry volume paths normalized so trailing-slash/Unicode variants match; Vox-import and SimPlaylist-drag crash fixes; Repair Volume UUIDs window no longer leaks or dead-locks its UI on title-bar close or backup failure; dead public API removed and main-thread contracts documented
 
 ### [1.4.0] - 2026-02-14
 

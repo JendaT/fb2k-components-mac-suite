@@ -11,10 +11,6 @@
 #import <DiskArbitration/DiskArbitration.h>
 #include <sys/mount.h>
 
-#pragma mark - Error Domain
-
-NSErrorDomain const UUIDRemappingErrorDomain = @"com.foobar2000.plorg.uuidremapping";
-
 #pragma mark - Constants
 
 static const NSUInteger kMaxBackupDirectories = 5;
@@ -56,55 +52,9 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
 @end
 
-#pragma mark - MountPointGroup Implementation
-
-@implementation MountPointGroup
-
-- (instancetype)initWithMountPointName:(NSString *)name
-                           uuidEntries:(NSArray<VolumeUUIDEntry *> *)entries {
-    self = [super init];
-    if (self) {
-        _mountPointName = [name copy];
-        _uuidEntries = [entries copy];
-
-        for (VolumeUUIDEntry *entry in entries) {
-            if (entry.isActive) {
-                _activeEntry = entry;
-                break;
-            }
-        }
-    }
-    return self;
-}
-
-- (NSArray<VolumeUUIDEntry *> *)orphanedEntries {
-    NSMutableArray *orphaned = [NSMutableArray array];
-    for (VolumeUUIDEntry *entry in self.uuidEntries) {
-        if (!entry.isActive) {
-            [orphaned addObject:entry];
-        }
-    }
-    return orphaned;
-}
-
-- (NSUInteger)totalEntryCount {
-    NSUInteger total = 0;
-    for (VolumeUUIDEntry *entry in self.uuidEntries) {
-        total += entry.entryCount;
-    }
-    return total;
-}
-
-@end
-
-#pragma mark - RemappingAction Implementation
-
-@implementation RemappingAction
-@end
-
 #pragma mark - Private Interface
 
-@interface UUIDRemappingWindowController () <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate>
+@interface UUIDRemappingWindowController () <NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSWindowDelegate>
 
 // UI Elements
 @property (nonatomic, strong) NSProgressIndicator *progressBar;
@@ -134,11 +84,14 @@ static const NSUInteger kMaxBackupDirectories = 5;
 @property (nonatomic, strong) NSMutableSet<NSString *> *selectedUUIDs;
 @property (nonatomic, strong) NSDictionary<NSString *, NSString *> *activeVolumeUUIDs;
 @property (nonatomic, strong) NSDictionary<NSString *, NSString *> *playlistFileUUIDToName;  // Maps file UUID to display name
+@property (nonatomic, strong) NSDictionary<NSString *, NSString *> *uuidSamplePaths;  // Maps volume UUID to first validated sample path from scan
 @property (nonatomic, assign) BOOL useSinglePlaylist;
 
 // Scanning state
 @property (nonatomic, assign) BOOL isScanning;
 @property (nonatomic, assign) BOOL shouldStop;
+@property (nonatomic, assign) BOOL isApplying;
+@property (nonatomic, assign) BOOL didNotifyDelegate;
 @property (nonatomic, assign) NSInteger scannedCount;
 @property (nonatomic, assign) NSInteger totalCount;
 @property (nonatomic, assign) NSInteger malformedCount;
@@ -160,6 +113,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
     self = [super initWithWindow:window];
     if (self) {
+        window.delegate = self;
         _allUUIDEntries = [NSMutableArray array];
         _displayedUUIDEntries = [NSMutableArray array];
         _selectedUUIDs = [NSMutableSet set];
@@ -553,6 +507,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
     [self.allUUIDEntries removeAllObjects];
     [self.displayedUUIDEntries removeAllObjects];
     [self.selectedUUIDs removeAllObjects];
+    self.uuidSamplePaths = @{};
 
     // Get active volume UUIDs
     self.activeVolumeUUIDs = [self discoverMountedVolumeUUIDs];
@@ -566,16 +521,28 @@ static const NSUInteger kMaxBackupDirectories = 5;
 }
 
 - (void)cancel:(id)sender {
-    if (self.isScanning) {
-        self.shouldStop = YES;
-    }
+    self.shouldStop = YES;
+    BOOL shouldNotify = !self.didNotifyDelegate;
+    self.didNotifyDelegate = YES;
     [self.window close];
-    [self.delegate uuidRemappingDidCancel:self];
+    if (shouldNotify) {
+        [self.delegate uuidRemappingDidCancel:self];
+    }
 }
 
 - (void)applyRemapping:(id)sender {
     NSString *targetUUID = [self.targetUUIDField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (targetUUID.length == 0 || self.selectedUUIDs.count == 0) {
+    if (self.selectedUUIDs.count == 0) {
+        return;
+    }
+
+    if (![PlorgVolumeSyncLogic isValidVolumeUUID:targetUUID]) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = NSLocalizedString(@"Invalid target UUID", @"Error title");
+        alert.informativeText = NSLocalizedString(@"The target UUID must have the form XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX.", @"Error message");
+        alert.alertStyle = NSAlertStyleWarning;
+        [alert addButtonWithTitle:NSLocalizedString(@"OK", @"OK button")];
+        [alert runModal];
         return;
     }
 
@@ -662,59 +629,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
 /// Get a sample file path (relative to volume root) for a given UUID from playlists
 - (NSString *)getSamplePathForUUID:(NSString *)uuid {
-    // Scan a playlist file to find a path for this UUID
-    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, uuid];
-    NSUInteger prefixLen = searchPrefix.length;
-
-    for (VolumeUUIDEntry *entry in self.allUUIDEntries) {
-        if (![entry.uuid isEqualToString:uuid]) continue;
-
-        // Read one of the affected playlists
-        for (NSString *playlistPath in entry.affectedPlaylistPaths) {
-            NSString *content = [NSString stringWithContentsOfFile:playlistPath
-                                                          encoding:NSUTF8StringEncoding
-                                                             error:nil];
-            if (!content) continue;
-
-            NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-            for (NSString *line in lines) {
-                if ([line hasPrefix:searchPrefix]) {
-                    // Extract the path after the UUID
-                    // Format: mac-volume://UUID/path/to/file.ext
-                    return [line substringFromIndex:prefixLen];
-                }
-            }
-        }
-    }
-
-    return nil;
-}
-
-/// Get a sample file path during scan phase (before allUUIDEntries is built)
-- (NSString *)getSamplePathForUUID:(NSString *)uuid fromData:(NSDictionary *)uuidData {
-    NSDictionary *data = uuidData[uuid];
-    if (!data) return nil;
-
-    NSSet *playlists = data[@"playlists"];
-    NSString *searchPrefix = [NSString stringWithFormat:@"%@%@/", PlorgMacVolumePrefix, uuid];
-    NSUInteger prefixLen = searchPrefix.length;
-
-    for (NSString *playlistPath in playlists) {
-        NSString *content = [NSString stringWithContentsOfFile:playlistPath
-                                                      encoding:NSUTF8StringEncoding
-                                                         error:nil];
-        if (!content) continue;
-
-        NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-        for (NSString *line in lines) {
-            if ([[line uppercaseString] hasPrefix:[searchPrefix uppercaseString]]) {
-                // Extract the path after the UUID
-                return [line substringFromIndex:prefixLen];
-            }
-        }
-    }
-
-    return nil;
+    return self.uuidSamplePaths[uuid];
 }
 
 - (NSDictionary<NSString *, NSString *> *)discoverMountedVolumeUUIDs {
@@ -758,7 +673,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
         if (colonRange.location != NSNotFound && colonRange.location > 0) {
             NSString *fileUUID = [line substringToIndex:colonRange.location];
             NSString *name = [line substringFromIndex:colonRange.location + 1];
-            if (fileUUID.length > 0 && name.length > 0) {
+            if ([PlorgVolumeSyncLogic isValidVolumeUUID:fileUUID] && name.length > 0) {
                 result[[fileUUID uppercaseString]] = name;
             }
         }
@@ -816,20 +731,31 @@ static const NSUInteger kMaxBackupDirectories = 5;
     for (NSString *fplitePath in fpliteFiles) {
         if (self.shouldStop) break;
 
-        // Get playlist display name from index.txt mapping
-        playlistPathToName[fplitePath] = [self playlistNameFromPath:fplitePath];
+        @autoreleasepool {
+            // Get playlist display name from index.txt mapping
+            playlistPathToName[fplitePath] = [self playlistNameFromPath:fplitePath];
 
-        [self scanFpliteFile:fplitePath intoData:uuidData];
-        self.scannedCount++;
+            [self scanFpliteFile:fplitePath intoData:uuidData];
+            self.scannedCount++;
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            if (!strongSelf) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) return;
 
-            CGFloat progress = strongSelf.totalCount > 0 ?
-                (CGFloat)strongSelf.scannedCount / strongSelf.totalCount * 100 : 0;
-            strongSelf.progressBar.doubleValue = progress;
-        });
+                CGFloat progress = strongSelf.totalCount > 0 ?
+                    (CGFloat)strongSelf.scannedCount / strongSelf.totalCount * 100 : 0;
+                strongSelf.progressBar.doubleValue = progress;
+            });
+        }
+    }
+
+    // Capture the first validated sample path per UUID for later lookups
+    NSMutableDictionary<NSString *, NSString *> *samplePaths = [NSMutableDictionary dictionary];
+    for (NSString *uuid in uuidData) {
+        NSString *samplePath = uuidData[uuid][@"samplePath"];
+        if (samplePath) {
+            samplePaths[uuid] = samplePath;
+        }
     }
 
     // Build VolumeUUIDEntry objects
@@ -853,7 +779,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
         }
 
         // Try file-existence check
-        NSString *samplePath = [self getSamplePathForUUID:uuid fromData:uuidData];
+        NSString *samplePath = uuidData[uuid][@"samplePath"];
         if (!samplePath) continue;
 
         NSFileManager *fm = [NSFileManager defaultManager];
@@ -965,6 +891,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
         strongSelf.scanButton.title = NSLocalizedString(@"Rescan", @"Rescan button");
 
         // Store all entries and filter for current scope
+        strongSelf.uuidSamplePaths = samplePaths;
         [strongSelf.allUUIDEntries setArray:entries];
         [strongSelf filterEntriesForCurrentScope];
         [strongSelf.tableView reloadData];
@@ -998,7 +925,8 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
     for (NSString *line in lines) {
         NSString *uuid = nil;
-        FpliteLineResult parsed = [PlorgVolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:NULL];
+        NSString *samplePath = nil;
+        FpliteLineResult parsed = [PlorgVolumeSyncLogic parseFpliteLine:line uuid:&uuid samplePath:&samplePath];
         if (parsed == FpliteLineNotVolume) continue;
         if (parsed == FpliteLineMalformed) {
             self.malformedCount++;
@@ -1008,6 +936,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
         if (!uuidData[uuid]) {
             uuidData[uuid] = [@{
                 @"count": @1,
+                @"samplePath": samplePath,
                 @"playlists": [NSMutableSet setWithObject:path],
                 @"perPlaylist": [NSMutableDictionary dictionaryWithObject:@1 forKey:path]
             } mutableCopy];
@@ -1028,7 +957,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
 - (void)updateApplyButtonState {
     NSString *targetUUID = [self.targetUUIDField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    BOOL hasTarget = targetUUID.length > 0 && [targetUUID containsString:@"-"];
+    BOOL hasTarget = [PlorgVolumeSyncLogic isValidVolumeUUID:targetUUID];
     BOOL hasSelection = self.selectedUUIDs.count > 0;
 
     // Don't allow remapping to a UUID that's also selected for remapping
@@ -1040,8 +969,15 @@ static const NSUInteger kMaxBackupDirectories = 5;
 #pragma mark - Remapping
 
 - (void)performRemappingWithTargetUUID:(NSString *)targetUUID {
+    self.isApplying = YES;
     self.applyButton.enabled = NO;
     self.scanButton.enabled = NO;
+    self.tableView.enabled = NO;
+
+    NSSet<NSString *> *selectedUUIDsSnapshot = [self.selectedUUIDs copy];
+    NSArray<VolumeUUIDEntry *> *uuidEntriesSnapshot = [self.allUUIDEntries copy];
+    BOOL useSinglePlaylist = self.useSinglePlaylist;
+    NSString *singlePlaylistPath = [self.singlePlaylistPath copy];
 
     __weak typeof(self) weakSelf = self;
 
@@ -1052,13 +988,13 @@ static const NSUInteger kMaxBackupDirectories = 5;
         // Collect affected playlists based on scope
         NSMutableSet<NSString *> *playlistsToProcess = [NSMutableSet set];
 
-        if (strongSelf.useSinglePlaylist && strongSelf.singlePlaylistPath) {
+        if (useSinglePlaylist && singlePlaylistPath) {
             // Single playlist mode - only process this one
-            [playlistsToProcess addObject:strongSelf.singlePlaylistPath];
+            [playlistsToProcess addObject:singlePlaylistPath];
         } else {
             // All playlists mode - process all affected
-            for (VolumeUUIDEntry *entry in strongSelf.allUUIDEntries) {
-                if ([strongSelf.selectedUUIDs containsObject:entry.uuid]) {
+            for (VolumeUUIDEntry *entry in uuidEntriesSnapshot) {
+                if ([selectedUUIDsSnapshot containsObject:entry.uuid]) {
                     [playlistsToProcess unionSet:entry.affectedPlaylistPaths];
                 }
             }
@@ -1069,7 +1005,38 @@ static const NSUInteger kMaxBackupDirectories = 5;
         NSString *backupDir = [strongSelf createBackupForPlaylists:playlistsToProcess error:&backupError];
         if (!backupDir) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [strongSelf.delegate uuidRemappingDidFail:strongSelf error:backupError];
+                strongSelf.isApplying = NO;
+                strongSelf.scanButton.enabled = YES;
+                strongSelf.tableView.enabled = YES;
+                [strongSelf updateApplyButtonState];
+
+                NSError *failError = backupError;
+                if (!failError) {
+                    failError = [NSError errorWithDomain:NSCocoaErrorDomain
+                                                    code:NSFileWriteUnknownError
+                                                userInfo:@{NSLocalizedDescriptionKey:
+                                                    NSLocalizedString(@"Failed to create backup directory", @"Backup error")}];
+                }
+
+                if ([strongSelf.delegate respondsToSelector:@selector(uuidRemappingDidFail:error:)]) {
+                    strongSelf.didNotifyDelegate = YES;
+                    [strongSelf.window close];
+                    [strongSelf.delegate uuidRemappingDidFail:strongSelf error:failError];
+                } else {
+                    NSAlert *alert = [[NSAlert alloc] init];
+                    alert.messageText = NSLocalizedString(@"UUID Remapping Failed", @"Alert title");
+                    alert.informativeText = failError.localizedDescription;
+                    alert.alertStyle = NSAlertStyleCritical;
+                    [alert addButtonWithTitle:NSLocalizedString(@"OK", @"OK button")];
+                    [alert runModal];
+
+                    BOOL shouldNotify = !strongSelf.didNotifyDelegate;
+                    strongSelf.didNotifyDelegate = YES;
+                    [strongSelf.window close];
+                    if (shouldNotify) {
+                        [strongSelf.delegate uuidRemappingDidCancel:strongSelf];
+                    }
+                }
             });
             return;
         }
@@ -1081,6 +1048,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
         for (NSString *playlistPath in playlistsToProcess) {
             NSError *error = nil;
             BOOL changed = [strongSelf remapUUIDsInPlaylist:playlistPath
+                                                fromUUIDs:selectedUUIDsSnapshot
                                                targetUUID:targetUUID
                                                     error:&error];
 
@@ -1095,7 +1063,10 @@ static const NSUInteger kMaxBackupDirectories = 5;
         [strongSelf pruneOldBackups];
 
         dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf.isApplying = NO;
             strongSelf.scanButton.enabled = YES;
+            strongSelf.tableView.enabled = YES;
+            strongSelf.didNotifyDelegate = YES;
             [strongSelf.delegate uuidRemappingDidComplete:strongSelf
                                              changedFiles:changedFiles
                                                    errors:errors];
@@ -1133,6 +1104,7 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
 - (NSString *)createBackupForPlaylists:(NSSet<NSString *> *)playlists error:(NSError **)error {
     NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
     formatter.dateFormat = @"yyyy-MM-dd_HHmmss";
     NSString *timestamp = [formatter stringFromDate:[NSDate date]];
 
@@ -1158,13 +1130,13 @@ static const NSUInteger kMaxBackupDirectories = 5;
     return backupDir;
 }
 
-- (BOOL)remapUUIDsInPlaylist:(NSString *)path targetUUID:(NSString *)targetUUID error:(NSError **)error {
+- (BOOL)remapUUIDsInPlaylist:(NSString *)path fromUUIDs:(NSSet<NSString *> *)fromUUIDs targetUUID:(NSString *)targetUUID error:(NSError **)error {
     NSData *rawData = [NSData dataWithContentsOfFile:path options:0 error:error];
     if (!rawData) return NO;
 
     // Shared BOM-preserving remap (PlorgVolumeSyncLogic); nil means nothing changed
     NSData *newData = [PlorgVolumeSyncLogic remappedFpliteData:rawData
-                                                fromUUIDs:self.selectedUUIDs
+                                                fromUUIDs:fromUUIDs
                                                    toUUID:targetUUID];
     if (!newData) return NO;
 
@@ -1188,12 +1160,10 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
     if (backupDirs.count <= kMaxBackupDirectories) return;
 
+    // Directory names embed a zero-padded timestamp (backup_uuid_remap_yyyy-MM-dd_HHmmss),
+    // so lexicographic order is chronological order
     [backupDirs sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        NSDictionary *aAttrs = [fm attributesOfItemAtPath:a error:nil];
-        NSDictionary *bAttrs = [fm attributesOfItemAtPath:b error:nil];
-        NSDate *aDate = aAttrs[NSFileModificationDate] ?: [NSDate distantPast];
-        NSDate *bDate = bAttrs[NSFileModificationDate] ?: [NSDate distantPast];
-        return [aDate compare:bDate];
+        return [a.lastPathComponent compare:b.lastPathComponent];
     }];
 
     NSUInteger toRemove = backupDirs.count - kMaxBackupDirectories;
@@ -1302,6 +1272,11 @@ static const NSUInteger kMaxBackupDirectories = 5;
 
     VolumeUUIDEntry *entry = self.displayedUUIDEntries[row];
 
+    if (self.isApplying) {
+        sender.state = [self.selectedUUIDs containsObject:entry.uuid] ? NSControlStateValueOn : NSControlStateValueOff;
+        return;
+    }
+
     if (sender.state == NSControlStateValueOn) {
         [self.selectedUUIDs addObject:entry.uuid];
     } else {
@@ -1309,6 +1284,15 @@ static const NSUInteger kMaxBackupDirectories = 5;
     }
 
     [self updateApplyButtonState];
+}
+
+#pragma mark - NSWindowDelegate
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if (self.didNotifyDelegate) return;
+    self.didNotifyDelegate = YES;
+    self.shouldStop = YES;
+    [self.delegate uuidRemappingDidCancel:self];
 }
 
 @end

@@ -45,10 +45,27 @@ All notable changes to Playlist Organizer will be documented in this file.
 - Strict volume-UUID validation (8-4-4-4-12 hex) at all parse boundaries, plus escaping in the generated metadb migration SQL (defense in depth against malformed `.fplite`/config content).
 - **Migrator index-table discovery matched the wrong table**: `LIKE 'metadb_index_%'` treats `_` as a single-character wildcard, so it matched the `metadb_indexes` metadata table (columns `name/synced/retention`) and generated an `INSERT ... (key, filename)` that fails to parse. Discovery now uses `GLOB` (literal `_`) plus a strict shape validator (`metadb_index_` + `8_4_4_4_12` hex GUID) enforced both at discovery and inside the SQL builder; covered by unit tests.
 - **Restart no longer races the metadb migration**: the relauncher and the migrator both waited only for the old foobar process to exit, so a "Restart Now" reopened foobar2000 while the migration was writing metadb ("database is locked", interrupted migration - the 2026-07-11 incident trigger). The relauncher now waits for the staged migration to complete (bounded at 15 minutes) before reopening the app.
+- **Review hardening** (three-pass code review, 2026-07-17):
+  - FTH theme parser no longer reads out of bounds on files shorter than 4 bytes; DBPL import no longer silently drops all entries following a malformed length field.
+  - Tree YAML parser no longer throws on a truncated quoted value (a bare `"`); a successful config read is no longer misread as a failure (which could fall through to a default tree that overwrites `foo_plorg.yaml`).
+  - `.fplite` sample paths that are empty, absolute, or contain `..` components are rejected at the parse boundary (blocks path traversal via crafted playlist content); the manual remap tool validates the target UUID before rewriting and derives sample paths from the same validated parser instead of raw substring extraction.
+  - Vox and Strawberry import databases are opened read-only (previously opened read-write on other applications' live databases).
+  - Corrupted-playlist removal backs files up to `backup_corrupted_<timestamp>` before deleting; the known-bad playlist list is no longer clobbered when its file exists but cannot be read.
+  - Backup timestamp formatters pinned to en_US_POSIX so backup pruning order is locale-independent; manual remap snapshots its selection before background apply and disables the table during the rewrite.
+  - Delete-folder dialog now describes actual behavior (playlists move to the parent folder; deletion from foobar2000 only with the recursive checkbox).
+  - Build tooling: project-generation failures abort the build instead of silently building a stale project; clang warnings are no longer filtered out of build output; test binaries compile in parallel; `metadb_cleanup.sh` enforces the running-foobar guard when `PLORG_FB2K_DIR` points at the live profile and warns when the registry snapshot is unreadable.
+- **Review hardening, round 4** (2026-07-25):
+  - Metadb cache migration no longer risks deleting rows instead of migrating them: the generated SQL used a case-insensitive `LIKE` to select rows but a case-sensitive `REPLACE` to rewrite them, so a metadb row storing a lower-case volume UUID was matched, left unchanged by the copy, then deleted. Each `DELETE` is now guarded to remove only rows the copy step actually rewrote.
+  - Orphan-cache migration and remap planning now normalize registry volume paths (trailing slash, Unicode form), so a live volume recorded as `/Volumes/music` and a stale one recorded as `/Volumes/music/` are recognized as the same volume instead of silently skipping the migration.
+  - Vox import no longer crashes on a playlist whose name is invalid UTF-8 (the undecodable name previously reached the SDK as a NULL pointer); the SimPlaylist drag payload is type-checked before use (a malformed cross-process payload could crash on drop).
+  - Repair Volume UUIDs window: closing it with the title-bar button now cancels cleanly (previously leaked the controller and left its background scan running); a backup failure re-enables the window instead of leaving it a dead, disabled shell; re-opening the tool reuses the existing window.
+  - Corrupted-playlist props database backup/delete now includes `-wal`/`-shm` siblings; `metadb_cleanup.sh` prints restore guidance if the cleanup itself fails and resists a firmlink-aliased `PLORG_FB2K_DIR` bypass of the running-foobar guard.
+  - Strawberry import preview no longer loads a database for a sheet that is never shown; folder checkboxes track the model rather than cell-reuse state; a leftover diagnostic timestamp formatter is pinned to en_US_POSIX.
+  - Removed dead public API and unused exported types from `VolumeSyncService.h`, `TreeModel.h`, `PlaylistOrganizerController.h`, and `UUIDRemappingWindowController.h`; documented the main-thread-only contract on the stateful services.
 
 ### Documentation
-- `docs/research/volume-uuid-instability-deep-research.md` — deep research on macOS volume identity, foobar's storage, and prior incident history.
-- Updated `docs/VOLUME_UUID_ISSUE.md`.
+- `../../docs/research/volume-uuid-instability-deep-research.md` — deep research on macOS volume identity, foobar's storage, and prior incident history.
+- Updated `../../docs/VOLUME_UUID_ISSUE.md`.
 
 ## [1.4.0] - 2026-02-14
 

@@ -28,6 +28,7 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
     TreeModelChangeTypeMove         // Node moved
 };
 
+// Main-thread-only singleton: mutates unsynchronized state and posts change notifications on the main queue
 @interface TreeModel : NSObject
 
 // Singleton - all organizer panels share the same tree
@@ -47,7 +48,6 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 
 // Search
 - (nullable TreeNode *)findPlaylistWithName:(NSString *)name;
-- (nullable TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;
 - (nullable TreeNode *)findFolderAtPath:(NSString *)path;
 
 // Path-encoded foobar2000 names
@@ -75,14 +75,6 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 - (void)loadFromConfig;
 - (void)saveToConfig;
 - (NSString *)toYaml;  // Export tree as YAML
-- (NSInteger)importFromYaml:(NSString *)yaml;  // Import/merge YAML into tree, returns count
-
-// Expanded state
-- (NSSet<NSString *> *)expandedFolderPaths;
-- (void)setExpandedFolderPaths:(NSSet<NSString *> *)paths;
-
-// Default tree (for first run)
-- (void)createDefaultTree;
 
 @end
 

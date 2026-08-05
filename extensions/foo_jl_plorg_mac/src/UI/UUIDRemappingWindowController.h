@@ -12,18 +12,6 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-#pragma mark - Error Domain
-
-extern NSErrorDomain const UUIDRemappingErrorDomain;
-
-typedef NS_ERROR_ENUM(UUIDRemappingErrorDomain, UUIDRemappingErrorCode) {
-    UUIDRemappingErrorBackupFailed = 1,
-    UUIDRemappingErrorFileWriteFailed = 2,
-    UUIDRemappingErrorFileLocked = 3,
-    UUIDRemappingErrorVolumeUnmounted = 4,
-    UUIDRemappingErrorNoPlaylistsFound = 5,
-};
-
 #pragma mark - Data Structures
 
 /// Represents a single UUID and its usage statistics
@@ -48,34 +36,6 @@ typedef NS_ERROR_ENUM(UUIDRemappingErrorDomain, UUIDRemappingErrorCode) {
 
 @end
 
-/// Represents a discovered mount point with its UUIDs
-@interface MountPointGroup : NSObject
-
-@property (nonatomic, copy, readonly) NSString *mountPointName;
-@property (nonatomic, strong, readonly) NSArray<VolumeUUIDEntry *> *uuidEntries;
-@property (nonatomic, strong, readonly, nullable) VolumeUUIDEntry *activeEntry;
-
-- (instancetype)initWithMountPointName:(NSString *)name
-                           uuidEntries:(NSArray<VolumeUUIDEntry *> *)entries;
-
-/// Returns all orphaned (non-active) UUID entries
-- (NSArray<VolumeUUIDEntry *> *)orphanedEntries;
-
-/// Total entry count across all UUIDs
-- (NSUInteger)totalEntryCount;
-
-@end
-
-/// User's remapping decision for a mount point
-@interface RemappingAction : NSObject
-
-@property (nonatomic, strong) MountPointGroup *group;
-@property (nonatomic, copy) NSString *targetUUID;
-@property (nonatomic, copy, nullable) NSString *updatedMountPointName;
-@property (nonatomic, strong) NSSet<NSString *> *sourceUUIDs;
-
-@end
-
 #pragma mark - Delegate Protocol
 
 @class UUIDRemappingWindowController;
@@ -85,7 +45,7 @@ typedef NS_ERROR_ENUM(UUIDRemappingErrorDomain, UUIDRemappingErrorCode) {
 /// Called on main thread when remapping completes (with or without errors).
 /// @param controller The window controller
 /// @param changedFiles Full paths to successfully modified playlist files
-/// @param errors Array of NSError for files that failed (empty if all succeeded)
+/// @param errors Array of Cocoa file-system NSErrors for files that failed (empty if all succeeded)
 /// @note Unlike PathMappingWindowDelegate, this includes errors parameter because
 ///       UUID remapping has more failure modes (volume unmount, file locks, etc.)
 - (void)uuidRemappingDidComplete:(UUIDRemappingWindowController *)controller
@@ -98,6 +58,7 @@ typedef NS_ERROR_ENUM(UUIDRemappingErrorDomain, UUIDRemappingErrorCode) {
 @optional
 
 /// Called on main thread for critical failures (backup creation failed, etc.)
+/// The error is a Cocoa file-system error from the failed operation.
 /// If not implemented, controller shows alert and calls didCancel.
 - (void)uuidRemappingDidFail:(UUIDRemappingWindowController *)controller
                        error:(NSError *)error;
@@ -108,7 +69,7 @@ typedef NS_ERROR_ENUM(UUIDRemappingErrorDomain, UUIDRemappingErrorCode) {
 
 @interface UUIDRemappingWindowController : NSWindowController
 
-@property (nonatomic, weak) id<UUIDRemappingWindowDelegate> delegate;
+@property (nonatomic, weak, nullable) id<UUIDRemappingWindowDelegate> delegate;
 
 /// Begins asynchronous scanning of all playlist files at the specified directory.
 /// Returns immediately. Shows window and displays progress.

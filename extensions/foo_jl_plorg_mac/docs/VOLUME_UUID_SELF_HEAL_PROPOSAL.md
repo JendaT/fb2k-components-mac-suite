@@ -3,7 +3,7 @@
 Status: **IMPLEMENTED 2026-07-11** (1.5.0 unreleased) — see the implementation
 notes at the end. Field verification of step 2's load-bearing assumption is
 still pending.
-Date: 2026-07-11. Context: `docs/VOLUME_UUID_ISSUE.md`, investigation of the
+Date: 2026-07-11. Context: `../../../docs/VOLUME_UUID_ISSUE.md`, investigation of the
 2026-07-11 `CFA535CA-…` playback failure.
 
 ## 2026-07-11 addendum: probe results narrow the design space

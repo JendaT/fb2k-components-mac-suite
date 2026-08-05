@@ -20,9 +20,36 @@
     return nil;
 }
 
+// Same-named sibling folders (e.g. from an imported tree) mask each other under
+// first-match resolution. Fold each duplicate's children into the first
+// occurrence and empty the duplicate; the surrounding arrays are not mutated.
++ (void)foldDuplicateSiblingFolders:(NSArray<TreeNode *> *)nodes {
+    NSMutableDictionary<NSString *, TreeNode *> *firstFolders = [NSMutableDictionary dictionary];
+    for (TreeNode *node in nodes) {
+        if (!node.isFolder) continue;
+        TreeNode *survivor = firstFolders[node.name];
+        if (!survivor) {
+            firstFolders[node.name] = node;
+            continue;
+        }
+        NSArray<TreeNode *> *moved = [node.children copy];
+        [node.children removeAllObjects];
+        for (TreeNode *child in moved) {
+            [survivor addChild:child];
+        }
+    }
+    for (TreeNode *folder in firstFolders.allValues) {
+        if (folder.children.count > 0) {
+            [self foldDuplicateSiblingFolders:folder.children];
+        }
+    }
+}
+
 + (TreeNode *)findPlaylistForComponents:(NSArray<NSString *> *)components
                                 inRoots:(NSArray<TreeNode *> *)roots {
     if (components.count == 0) return nil;
+
+    [self foldDuplicateSiblingFolders:roots];
 
     NSArray<TreeNode *> *currentLevel = roots;
     for (NSUInteger i = 0; i < components.count - 1; i++) {
@@ -52,6 +79,8 @@
                               inRoots:(NSArray<TreeNode *> *)roots {
     if (components.count == 0) return nil;
 
+    [self foldDuplicateSiblingFolders:roots];
+
     NSArray<TreeNode *> *currentLevel = roots;
     TreeNode *resolved = nil;
 
@@ -75,6 +104,8 @@
              intoParent:(TreeNode *)parent
                   roots:(NSMutableArray<TreeNode *> *)roots {
     NSInteger count = 0;
+
+    [self foldDuplicateSiblingFolders:parent ? parent.children : roots];
 
     for (TreeNode *node in nodes) {
         if (node.isFolder) {

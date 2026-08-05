@@ -28,9 +28,12 @@
 set -euo pipefail
 
 # PLORG_FB2K_DIR: test-only override of the foobar2000 data directory. When
-# set, the running-foobar2000 guard is skipped too, because fb2k only ever
-# uses ~/Library/foobar2000-v2 - an overridden directory is never its live DB.
-FB2K_DIR="${PLORG_FB2K_DIR:-$HOME/Library/foobar2000-v2}"
+# set to a directory other than the real default, the running-foobar2000
+# guard is skipped too, because fb2k only ever uses ~/Library/foobar2000-v2 -
+# a different directory is never its live DB. An override that resolves to
+# the default still enforces the guard.
+FB2K_DEFAULT_DIR="$HOME/Library/foobar2000-v2"
+FB2K_DIR="${PLORG_FB2K_DIR:-$FB2K_DEFAULT_DIR}"
 DB="$FB2K_DIR/metadb.sqlite"
 PLAYLISTS_DIR="$FB2K_DIR/playlists-v2.0"
 JSON="$FB2K_DIR/plorg_volume_uuids.json"
@@ -48,12 +51,40 @@ for arg in "$@"; do
     esac
 done
 
+# Volume-URL scheme prefix in fb2k mac paths. Source of truth for this
+# standalone script; substring offsets are derived as ${#SCHEME}.
+SCHEME="mac-volume://"
+
 UUID_RE='^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$'
 INDEX_TABLE_RE='^metadb_index_[0-9A-Fa-f]{8}(_[0-9A-Fa-f]{4}){3}_[0-9A-Fa-f]{12}$'
 
 [ -f "$DB" ] || { echo "ERROR: $DB not found" >&2; exit 1; }
 
-if [ "$DRY_RUN" -eq 0 ] && [ -z "${PLORG_FB2K_DIR:-}" ] && /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; then
+# Canonicalize a path for comparison; falls back to the raw path when it
+# does not exist or cannot be resolved.
+canonical_path() { /usr/bin/readlink -f "$1" 2>/dev/null || echo "$1"; }
+
+# True when both arguments name the same directory. Compares device+inode,
+# which catches APFS firmlink aliases (e.g. /System/Volumes/Data$HOME/...)
+# that readlink -f does not fold; falls back to canonical-path comparison
+# when either stat fails (path missing or unreadable).
+same_dir() {
+    local a b
+    a="$(/usr/bin/stat -f '%d:%i' "$1" 2>/dev/null)" || a=""
+    b="$(/usr/bin/stat -f '%d:%i' "$2" 2>/dev/null)" || b=""
+    if [ -n "$a" ] && [ -n "$b" ]; then
+        [ "$a" = "$b" ]
+    else
+        [ "$(canonical_path "$1")" = "$(canonical_path "$2")" ]
+    fi
+}
+
+OVERRIDE_IS_DEFAULT=1
+if [ -n "${PLORG_FB2K_DIR:-}" ] && ! same_dir "$FB2K_DIR" "$FB2K_DEFAULT_DIR"; then
+    OVERRIDE_IS_DEFAULT=0
+fi
+
+if [ "$DRY_RUN" -eq 0 ] && [ "$OVERRIDE_IS_DEFAULT" -eq 1 ] && /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; then
     echo "ERROR: foobar2000 is running. Quit it first (or use --dry-run for a read-only analysis)." >&2
     exit 1
 fi
@@ -65,36 +96,40 @@ declare -a KEEP=()
 # 1. UUIDs referenced by any current .fplite playlist
 if [ -d "$PLAYLISTS_DIR" ]; then
     while IFS= read -r u; do
-        KEEP+=("$(echo "$u" | tr '[:lower:]' '[:upper:]')")
-    done < <(grep -aohE 'mac-volume://[0-9A-Fa-f-]{36}' "$PLAYLISTS_DIR"/*.fplite 2>/dev/null \
-             | sed 's|mac-volume://||' | sort -u)
+        KEEP+=("$u")
+    done < <(grep -aohE "${SCHEME}[0-9A-Fa-f-]{36}" "$PLAYLISTS_DIR"/*.fplite 2>/dev/null \
+             | sed "s|$SCHEME||" | sort -u | tr '[:lower:]' '[:upper:]')
 fi
 
 # 2. Live UUIDs from plorg's last registry snapshot
 if [ -f "$JSON" ]; then
     if command -v python3 >/dev/null 2>&1; then
         while IFS= read -r u; do
-            KEEP+=("$(echo "$u" | tr '[:lower:]' '[:upper:]')")
-        done < <(python3 -c "
+            KEEP+=("$u")
+        done < <(python3 -c '
 import json, sys
 try:
-    d = json.load(open('$JSON'))
-except Exception:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("WARNING: could not parse %s: %s" % (sys.argv[1], e), file=sys.stderr)
+    print("         Keep-set will rely on playlist references only.", file=sys.stderr)
     sys.exit(0)
-for entry in d.get('paths', {}).values():
-    for u in entry.get('live_uuids', []):
+for entry in d.get("paths", {}).values():
+    for u in entry.get("live_uuids", []):
         print(u)
-")
+' "$JSON" | tr '[:lower:]' '[:upper:]')
     else
         echo "WARNING: python3 not found; cannot read live UUIDs from $JSON." >&2
         echo "         Keep-set will rely on playlist references only." >&2
     fi
 fi
 
-# Dedup + validate before anything is interpolated into SQL
+# Dedup + validate before anything is interpolated into SQL; KEEP_SET
+# mirrors KEEP_VALID for O(1) membership tests during analysis.
 declare -a KEEP_VALID=()
+declare -A KEEP_SET=()
 for u in $(printf '%s\n' "${KEEP[@]:-}" | sort -u); do
-    [[ "$u" =~ $UUID_RE ]] && KEEP_VALID+=("$u")
+    [[ "$u" =~ $UUID_RE ]] && { KEEP_VALID+=("$u"); KEEP_SET["$u"]=1; }
 done
 
 if [ "${#KEEP_VALID[@]}" -eq 0 ]; then
@@ -112,25 +147,20 @@ echo
 SQLITE_RO=(/usr/bin/sqlite3 -cmd ".timeout 30000" "file:$DB?mode=ro")
 
 echo "Analyzing $DB (this scans the whole table; may take a minute)..."
-DIST="$("${SQLITE_RO[@]}" "SELECT substr(name, instr(name, 'mac-volume://')+13, 36), COUNT(*)
-    FROM metadb WHERE name LIKE '%mac-volume://%'
-    GROUP BY 1 ORDER BY 2 DESC;")"
+DIST="$("${SQLITE_RO[@]}" "SELECT substr(name, instr(name, '$SCHEME')+${#SCHEME}, 36), COUNT(*)
+    FROM metadb WHERE name LIKE '%$SCHEME%'
+    GROUP BY 1 ORDER BY 2 DESC;" | tr '[:lower:]' '[:upper:]')"
 
 declare -a DEAD=()
 TOTAL_DELETE=0
 echo "Volume UUIDs in metadb:"
 while IFS='|' read -r uuid count; do
     [ -n "$uuid" ] || continue
-    uuid="$(echo "$uuid" | tr '[:lower:]' '[:upper:]')"
     if ! [[ "$uuid" =~ $UUID_RE ]]; then
         echo "  $uuid ($count rows) - malformed, skipped"
         continue
     fi
-    keep=0
-    for k in "${KEEP_VALID[@]}"; do
-        [ "$k" = "$uuid" ] && keep=1 && break
-    done
-    if [ "$keep" -eq 1 ]; then
+    if [ -n "${KEEP_SET[$uuid]:-}" ]; then
         echo "  $uuid ($count rows) - KEEP (referenced/live)"
     else
         echo "  $uuid ($count rows) - DELETE (dead, unreferenced)"
@@ -192,7 +222,7 @@ fi
 
 # --- Build and run the cleanup SQL -------------------------------------------
 
-SQL="$(mktemp /tmp/plorg_metadb_cleanup_XXXXXX.sql)"
+SQL="$(mktemp /tmp/plorg_metadb_cleanup_sql.XXXXXX)"
 trap 'rm -f "$SQL"' EXIT
 
 {
@@ -200,7 +230,7 @@ trap 'rm -f "$SQL"' EXIT
     echo ".timeout 10000"
     echo "BEGIN IMMEDIATE;"
     for u in "${DEAD[@]}"; do
-        echo "DELETE FROM metadb WHERE name LIKE '%mac-volume://$u/%';"
+        echo "DELETE FROM metadb WHERE name LIKE '%$SCHEME$u/%';"
     done
 
     # Index tables: (key INTEGER, filename TEXT UNIQUE PRIMARY KEY). GLOB
@@ -209,7 +239,7 @@ trap 'rm -f "$SQL"' EXIT
     while IFS= read -r t; do
         [[ "$t" =~ $INDEX_TABLE_RE ]] || continue
         for u in "${DEAD[@]}"; do
-            echo "DELETE FROM \"$t\" WHERE filename LIKE '%mac-volume://$u/%';"
+            echo "DELETE FROM \"$t\" WHERE filename LIKE '%$SCHEME$u/%';"
         done
         # GC blob rows whose key is no longer referenced by any filename
         echo "DELETE FROM \"${t}_data\" WHERE key NOT IN (SELECT key FROM \"$t\");"
@@ -221,7 +251,20 @@ trap 'rm -f "$SQL"' EXIT
 } > "$SQL"
 
 echo "Deleting dead rows and vacuuming (VACUUM rewrites the whole DB; expect several minutes)..."
-/usr/bin/sqlite3 "$DB" < "$SQL"
+if ! /usr/bin/sqlite3 "$DB" < "$SQL"; then
+    echo "ERROR: cleanup SQL run failed (disk full during VACUUM, lock, or I/O error)." >&2
+    STATE="$(/usr/bin/sqlite3 -cmd '.timeout 10000' "$DB" 'PRAGMA quick_check;' 2>&1 || true)"
+    echo "  DB state (quick_check): $STATE" >&2
+    echo "  Deletes are all-or-nothing; a failure before COMMIT is rolled back, and" >&2
+    echo "  an aborted VACUUM leaves the original data intact." >&2
+    if [ "$NO_BACKUP" -eq 0 ]; then
+        echo "  Backup: $BK" >&2
+        echo "  Restore: cp '$BK' '$DB' (and the -wal/-shm siblings if present)" >&2
+    else
+        echo "  No backup was taken (--no-backup); verify with: sqlite3 '$DB' 'PRAGMA quick_check;'" >&2
+    fi
+    exit 1
+fi
 
 # --- Verify -------------------------------------------------------------------
 

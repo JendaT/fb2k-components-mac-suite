@@ -72,10 +72,16 @@ uuid_shared_lib_ref = generate_uuid
 uuid_pfc_lib = generate_uuid
 uuid_pfc_lib_ref = generate_uuid
 
-# Collect source files
+# Collect source files (glob relative to the component root, not the caller's cwd)
+Dir.chdir(File.expand_path('..', __dir__))
+
 core_files = Dir.glob("src/Core/*.{cpp,h,mm}").map { |f| File.basename(f) }
 ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
+
+if (core_files + ui_files + integration_files).empty?
+  abort "Error: no source files found under #{Dir.pwd}/src - refusing to generate an empty project"
+end
 
 # Generate UUIDs for all source files
 file_uuids = {}

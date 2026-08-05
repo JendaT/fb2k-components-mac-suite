@@ -112,6 +112,10 @@ int main(void) {
         CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"nas:/export/media"],
                  @"media", "NFS last component");
         CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:"//hostonly"] == nil, "no share part -> nil");
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"//host/"],
+                 @"", "SMB trailing slash -> empty share name");
+        CHECK_EQ([PlorgVolumeSyncLogic shareNameFromMountSource:"nas:/"],
+                 @"/", "NFS bare root export -> '/'");
         CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:"/dev/disk1s1"] == nil, "local device -> nil");
         CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:NULL] == nil, "NULL -> nil");
         CHECK([PlorgVolumeSyncLogic shareNameFromMountSource:""] == nil, "empty -> nil");
@@ -149,6 +153,34 @@ int main(void) {
               == FpliteLineMalformed, "no dash -> malformed");
         CHECK([PlorgVolumeSyncLogic parseFpliteLine:@"mac-volume://noslashatall" uuid:NULL samplePath:NULL]
               == FpliteLineMalformed, "no slash -> malformed");
+
+        // Sample paths that could escape the mount root are rejected
+        NSString *traversal = [NSString stringWithFormat:@"mac-volume://%@/../../etc/passwd", kDead];
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:traversal uuid:NULL samplePath:NULL]
+              == FpliteLineMalformed, "leading .. traversal -> malformed");
+        NSString *embedded = [NSString stringWithFormat:@"mac-volume://%@/Artist/../../../etc/passwd", kDead];
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:embedded uuid:NULL samplePath:NULL]
+              == FpliteLineMalformed, "embedded .. component -> malformed");
+        NSString *absolute = [NSString stringWithFormat:@"mac-volume://%@//etc/passwd", kDead];
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:absolute uuid:NULL samplePath:NULL]
+              == FpliteLineMalformed, "absolute sample path -> malformed");
+        NSString *emptyPath = [NSString stringWithFormat:@"mac-volume://%@/", kDead];
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:emptyPath uuid:NULL samplePath:NULL]
+              == FpliteLineMalformed, "empty sample path -> malformed");
+
+        // A legitimate file whose name merely starts with ".." still parses
+        uuid = nil; sample = nil;
+        NSString *dotDotName = [NSString stringWithFormat:@"mac-volume://%@/Artist/..track.flac", kDead];
+        CHECK([PlorgVolumeSyncLogic parseFpliteLine:dotDotName uuid:&uuid samplePath:&sample]
+              == FpliteLineParsed, "..-prefixed filename parses");
+        CHECK_EQ(sample, @"Artist/..track.flac", "..-prefixed filename kept as sample path");
+
+        // Traversal lines contribute neither UUIDs nor sample paths downstream
+        NSMutableDictionary *tIdx = [NSMutableDictionary dictionary];
+        [PlorgVolumeSyncLogic indexFpliteContent:traversal into:tIdx];
+        CHECK(tIdx.count == 0, "traversal line not indexed");
+        [PlorgVolumeSyncLogic indexFpliteContent:absolute into:tIdx];
+        CHECK(tIdx.count == 0, "absolute-path line not indexed");
     }
 
     // --- scanFpliteContentForUUIDs / indexFpliteContent ---
@@ -209,11 +241,31 @@ int main(void) {
                                         fromUUIDs:[NSSet setWithObject:kOther]
                                            toUUID:kLive] == nil, "no match -> nil");
 
+        // Uppercase UUID in .fplite, lowercase source in the action -> still remapped
+        NSString *upperBody = [NSString stringWithFormat:@"mac-volume://%@/a.flac\n", kDead];
+        NSData *upperData = [upperBody dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *outLower = [PlorgVolumeSyncLogic remappedFpliteData:upperData
+                                                      fromUUIDs:[NSSet setWithObject:[kDead lowercaseString]]
+                                                         toUUID:kLive];
+        CHECK(outLower != nil, "lowercase action matches uppercase fplite UUID");
+        NSString *outLowerStr = [[NSString alloc] initWithData:outLower encoding:NSUTF8StringEncoding];
+        CHECK(([outLowerStr containsString:[NSString stringWithFormat:@"mac-volume://%@/a.flac", kLive]]),
+              "uppercase fplite UUID replaced with target");
+        CHECK(![outLowerStr containsString:kDead], "no uppercase dead UUID remains");
+
         // Invalid UTF-8 -> nil
         const uint8_t junk[] = {0xFF, 0xFE, 0x00, 0xD8};
         CHECK([PlorgVolumeSyncLogic remappedFpliteData:[NSData dataWithBytes:junk length:4]
                                         fromUUIDs:[NSSet setWithObject:kDead]
                                            toUUID:kLive] == nil, "non-UTF-8 -> nil");
+
+        // Invalid UUIDs -> nil (in-sink validation, not caller trust)
+        CHECK([PlorgVolumeSyncLogic remappedFpliteData:plain
+                                        fromUUIDs:[NSSet setWithObject:kDead]
+                                           toUUID:@"not-a-uuid"] == nil, "invalid target UUID -> nil");
+        CHECK([PlorgVolumeSyncLogic remappedFpliteData:plain
+                                        fromUUIDs:[NSSet setWithObject:@"not-a-uuid"]
+                                           toUUID:kLive] == nil, "invalid source UUID -> nil");
     }
 
     // --- liveUUIDsByPathFromRegistry ---
@@ -228,6 +280,43 @@ int main(void) {
         NSDictionary *byPath = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:registry];
         CHECK(byPath.count == 1, "only pathed live UUIDs grouped");
         CHECK_EQ(byPath[@"/Volumes/music"], @[kLive], "live UUID grouped under path");
+    }
+
+    // --- path normalization (M18 regression) ---
+    // A live entry keyed "/Volumes/music" and a dead entry keyed
+    // "/Volumes/music/" (trailing slash) must still match, otherwise remap
+    // and orphan-cache migration are silently skipped.
+    {
+        g_context = "path-normalization";
+        NSDictionary *registry = @{
+            kLive: @{ @"originalPath": @"/Volumes/music", @"resolvedPath": @"/Volumes/music",
+                      @"isLive": @YES },
+            kDead: @{ @"originalPath": @"/Volumes/music/", @"isLive": @NO },
+        };
+        NSDictionary *byPath = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:registry];
+        CHECK_EQ(byPath[@"/Volumes/music"], @[kLive], "live UUID keyed without trailing slash");
+
+        // Trailing-slash live key is normalized when the dictionary is built
+        NSDictionary *slashedLiveReg = @{
+            kLive: @{ @"originalPath": @"/Volumes/music/", @"resolvedPath": @"/Volumes/music/",
+                      @"isLive": @YES },
+        };
+        NSDictionary *slashedByPath = [PlorgVolumeSyncLogic liveUUIDsByPathFromRegistry:slashedLiveReg];
+        CHECK_EQ(slashedByPath[@"/Volumes/music"], @[kLive],
+                 "trailing-slash live path normalized at build time");
+
+        NSDictionary *plan = [PlorgVolumeSyncLogic planRemapActionsWithRegistry:registry
+            fpliteIndex:@{ kDead: @{ @"count": @1, @"samplePath": @"a.flac" } }
+            liveUUIDsByPath:byPath
+            fileExists:^BOOL(NSString *p) { return NO; }
+            log:nil];
+        CHECK_EQ(plan, @{ kDead: kLive }, "trailing-slash dead originalPath still remapped");
+
+        NSDictionary *m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @500, kLive: @10 }
+                                                                     registry:registry
+                                                              liveUUIDsByPath:byPath
+                                                                          log:nil];
+        CHECK_EQ(m, @{ kDead: kLive }, "trailing-slash dead originalPath still migrates orphan cache");
     }
 
     // --- planRemapActions ---
@@ -409,6 +498,13 @@ int main(void) {
                                                             log:nil];
         CHECK(m.count == 0, "dead cache with fewer rows skipped");
 
+        // Equal counts -> skip (migration requires strictly more dead rows)
+        m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kDead: @500, kLive: @500 }
+                                                       registry:registry
+                                                liveUUIDsByPath:byPath
+                                                            log:nil];
+        CHECK(m.count == 0, "equal row counts skipped");
+
         // Unknown to foobar -> skip
         m = [PlorgVolumeSyncLogic orphanCacheMigrationsWithRowCounts:@{ kOther: @500 }
                                                        registry:registry
@@ -493,6 +589,85 @@ int main(void) {
         NSString *emptySql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{} indexTables:@[]];
         CHECK_EQ(emptySql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
                  "no actions -> empty transaction");
+
+        // Two remap actions in one call: both dead UUIDs get copy+delete pairs
+        NSString *twoSql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:
+                                @{ kDead: kLive, kOther: kLive } indexTables:@[]];
+        CHECK(([twoSql containsString:
+            [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kDead, kLive]]),
+            "first dead UUID copied");
+        CHECK(([twoSql containsString:
+            [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
+            "first dead UUID source rows deleted");
+        CHECK(([twoSql containsString:
+            [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kOther, kLive]]),
+            "second dead UUID copied");
+        CHECK(([twoSql containsString:
+            [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kOther]]),
+            "second dead UUID source rows deleted");
+        NSRange deadInsertPos = [twoSql rangeOfString:
+            [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kDead, kLive]];
+        NSRange deadDeletePos = [twoSql rangeOfString:
+            [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kDead]];
+        CHECK(deadInsertPos.location != NSNotFound && deadDeletePos.location != NSNotFound &&
+              deadInsertPos.location < deadDeletePos.location, "first dead UUID copy precedes delete");
+        NSRange otherInsertPos = [twoSql rangeOfString:
+            [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kOther, kLive]];
+        NSRange otherDeletePos = [twoSql rangeOfString:
+            [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kOther]];
+        CHECK(otherInsertPos.location != NSNotFound && otherDeletePos.location != NSNotFound &&
+              otherInsertPos.location < otherDeletePos.location, "second dead UUID copy precedes delete");
+    }
+
+    // --- migration-sql DELETE guard (H1 regression) ---
+    // LIKE is ASCII case-insensitive but REPLACE is case-sensitive: a row
+    // storing a lowercase UUID matches the LIKE, the copy is a no-op, and an
+    // unguarded DELETE would destroy the row instead of migrating it. Every
+    // generated DELETE must therefore only remove rows the REPLACE rewrote.
+    {
+        g_context = "migration-sql-delete-guard";
+        NSString *idxTable = @"metadb_index_C653739F_14B3_4EF2_819B_A3E2883230AE";
+        NSString *sql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:
+                            @{ kDead: kLive, kOther: kLive } indexTables:@[idxTable]];
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:
+                @"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%' "
+                @"AND REPLACE(name, 'mac-volume://%@', 'mac-volume://%@') <> name;",
+                kDead, kDead, kLive]]),
+            "metadb DELETE guarded by REPLACE <> name (first dead UUID)");
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:
+                @"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%' "
+                @"AND REPLACE(name, 'mac-volume://%@', 'mac-volume://%@') <> name;",
+                kOther, kOther, kLive]]),
+            "metadb DELETE guarded by REPLACE <> name (second dead UUID)");
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:
+                @"DELETE FROM \"%@\" WHERE filename LIKE '%%mac-volume://%@/%%' "
+                @"AND REPLACE(filename, 'mac-volume://%@', 'mac-volume://%@') <> filename;",
+                idxTable, kDead, kDead, kLive]]),
+            "index table DELETE guarded by REPLACE <> filename (first dead UUID)");
+        CHECK(([sql containsString:
+            [NSString stringWithFormat:
+                @"DELETE FROM \"%@\" WHERE filename LIKE '%%mac-volume://%@/%%' "
+                @"AND REPLACE(filename, 'mac-volume://%@', 'mac-volume://%@') <> filename;",
+                idxTable, kOther, kOther, kLive]]),
+            "index table DELETE guarded by REPLACE <> filename (second dead UUID)");
+
+        // No unguarded DELETE may remain anywhere in the script
+        NSUInteger unguarded = 0;
+        NSScanner *scanner = [NSScanner scannerWithString:sql];
+        scanner.charactersToBeSkipped = nil;
+        while (!scanner.isAtEnd) {
+            NSString *line = nil;
+            [scanner scanUpToString:@"\n" intoString:&line];
+            [scanner scanString:@"\n" intoString:NULL];
+            if ([line hasPrefix:@"DELETE "] && ![line containsString:@"<> name"] &&
+                ![line containsString:@"<> filename"]) {
+                unguarded++;
+            }
+        }
+        CHECK(unguarded == 0, "every DELETE statement carries a REPLACE guard");
     }
 
     // --- selfHealCandidates ---

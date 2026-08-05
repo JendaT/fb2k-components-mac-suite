@@ -19,6 +19,8 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
 @interface TreeModel ()
 @property (nonatomic, strong) NSMutableArray<TreeNode *> *mutableRootNodes;
+- (nullable TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;
+- (void)createDefaultTree;
 @end
 
 @implementation TreeModel
@@ -576,19 +578,6 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
     return [PlorgTreeYamlCodec yamlForTree:self.mutableRootNodes nodeFormat:self.nodeFormat];
 }
 
-- (NSInteger)importFromYaml:(NSString *)yaml {
-    if (!yaml || yaml.length == 0) return 0;
-
-    NSArray<TreeNode *> *parsedRoots = [PlorgTreeYamlCodec parseNodeList:yaml];
-
-    // Merge parsed nodes into current tree
-    NSInteger imported = [PlorgTreeOps mergeNodes:parsedRoots intoParent:nil roots:self.mutableRootNodes];
-    [self saveToConfig];
-    [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
-
-    return imported;
-}
-
 - (BOOL)parseYaml:(NSString *)yaml {
     NSArray<TreeNode *> *rootNodes = nil;
     NSString *nodeFormat = nil;
@@ -676,36 +665,6 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         plorg_config::saveTreeToFile(yaml);
     } @catch (NSException *exception) {
         NSLog(@"[Plorg] Exception saving config: %@", exception);
-    }
-}
-
-#pragma mark - Expanded State
-
-- (NSSet<NSString *> *)expandedFolderPaths {
-    NSMutableSet *paths = [NSMutableSet set];
-    [self collectExpandedPaths:paths fromNodes:self.mutableRootNodes];
-    return paths;
-}
-
-- (void)collectExpandedPaths:(NSMutableSet *)paths fromNodes:(NSArray<TreeNode *> *)nodes {
-    for (TreeNode *node in nodes) {
-        if (node.isFolder && node.isExpanded) {
-            [paths addObject:node.path];
-            [self collectExpandedPaths:paths fromNodes:node.children];
-        }
-    }
-}
-
-- (void)setExpandedFolderPaths:(NSSet<NSString *> *)paths {
-    [self applyExpandedPaths:paths toNodes:self.mutableRootNodes];
-}
-
-- (void)applyExpandedPaths:(NSSet<NSString *> *)paths toNodes:(NSArray<TreeNode *> *)nodes {
-    for (TreeNode *node in nodes) {
-        if (node.isFolder) {
-            node.isExpanded = [paths containsObject:node.path];
-            [self applyExpandedPaths:paths toNodes:node.children];
-        }
     }
 }
 

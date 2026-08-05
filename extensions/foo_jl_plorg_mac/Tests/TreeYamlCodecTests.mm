@@ -136,6 +136,22 @@ int main(void) {
         CHECK_EQ([PlorgTreeYamlCodec parseNodeList:@"no tree section"], @[], "no tree section -> empty");
     }
 
+    // --- Whitespace-only line between siblings ---
+    {
+        g_context = "whitespace-line";
+        NSString *yaml = @"tree:\n"
+                          "  - folder: \"F\"\n"
+                          "    items:\n"
+                          "      - playlist: \"A\"\n"
+                          " \n"
+                          "      - playlist: \"B\"\n";
+        NSArray<TreeNode *> *parsed = [PlorgTreeYamlCodec parseNodeList:yaml];
+        TreeNode *f = [TreeNode folderWithName:@"F"];
+        [f addChild:[TreeNode playlistWithName:@"A"]];
+        [f addChild:[TreeNode playlistWithName:@"B"]];
+        CHECK(treesEqual(@[f], parsed), "whitespace-only line does not re-parent following nodes");
+    }
+
     // --- Deep nesting round trip ---
     {
         g_context = "deep-nesting";
@@ -174,6 +190,33 @@ int main(void) {
         BOOL ok = [PlorgTreeYamlCodec parseConfigYaml:@"# c\n\ntree:\n  - playlist: \"P\"\n"
                                        rootNodes:&r nodeFormat:&f];
         CHECK(ok && r.count == 1, "comments/blank lines skipped");
+    }
+
+    // --- Bare-quote and empty-quoted values ---
+    {
+        g_context = "bare-quote";
+        CHECK_EQ([PlorgTreeYamlCodec extractQuotedValue:@"- playlist: \"" afterPrefix:@"- playlist:"],
+                 @"\"", "lone quote treated as unquoted value");
+        CHECK_EQ([PlorgTreeYamlCodec extractQuotedValue:@"- playlist: \"\"" afterPrefix:@"- playlist:"],
+                 @"", "empty quoted value -> empty string");
+
+        NSArray<TreeNode *> *r = nil;
+        NSString *f = nil;
+        BOOL ok = [PlorgTreeYamlCodec parseConfigYaml:@"tree:\n  - playlist: \"\n"
+                                            rootNodes:&r nodeFormat:&f];
+        CHECK(ok && r.count == 1, "lone-quote playlist line does not crash");
+        CHECK_EQ(r.firstObject.name, @"\"", "lone-quote playlist keeps raw name");
+
+        ok = [PlorgTreeYamlCodec parseConfigYaml:@"node_format: \"\ntree:\n  - playlist: \"P\"\n"
+                                       rootNodes:&r nodeFormat:&f];
+        CHECK(ok && r.count == 1, "lone-quote node_format does not crash");
+        CHECK_EQ(f, @"\"", "lone-quote node_format kept raw");
+
+        ok = [PlorgTreeYamlCodec parseConfigYaml:@"node_format: \"\"\ntree:\n  - playlist: \"\"\n"
+                                       rootNodes:&r nodeFormat:&f];
+        CHECK(ok && r.count == 1, "empty quoted values parse");
+        CHECK_EQ(f, @"", "empty quoted node_format -> empty string");
+        CHECK_EQ(r.firstObject.name, @"", "empty quoted playlist name -> empty string");
     }
 
     }

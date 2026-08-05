@@ -134,8 +134,20 @@ static NSString *sqlIdentifier(NSString *value) {
     }
     NSString *uuid = [rawUUID uppercaseString];
 
+    // The sample path is later joined onto mounted volume roots and probed on
+    // disk, so it must be a non-empty relative path with no ".." components.
+    // Components are checked (not substrings) so a file named "..foo" passes.
+    NSString *samplePath = [afterPrefix substringFromIndex:firstSlash.location + 1];
+    if (samplePath.length == 0 || [samplePath hasPrefix:@"/"]) {
+        return FpliteLineMalformed;
+    }
+    if ([samplePath rangeOfString:@".."].location != NSNotFound &&
+        [samplePath.pathComponents containsObject:@".."]) {
+        return FpliteLineMalformed;
+    }
+
     if (outUUID) *outUUID = uuid;
-    if (outSamplePath) *outSamplePath = [afterPrefix substringFromIndex:firstSlash.location + 1];
+    if (outSamplePath) *outSamplePath = samplePath;
     return FpliteLineParsed;
 }
 
@@ -183,6 +195,11 @@ static NSString *sqlIdentifier(NSString *value) {
 + (NSData *)remappedFpliteData:(NSData *)rawData
                      fromUUIDs:(NSSet<NSString *> *)sourceUUIDs
                         toUUID:(NSString *)targetUUID {
+    if (![self isValidVolumeUUID:targetUUID]) return nil;
+    for (NSString *sourceUUID in sourceUUIDs) {
+        if (![self isValidVolumeUUID:sourceUUID]) return nil;
+    }
+
     // Check for UTF-8 BOM (EF BB BF)
     BOOL hasBOM = NO;
     const uint8_t bom[] = {0xEF, 0xBB, 0xBF};
@@ -224,6 +241,22 @@ static NSString *sqlIdentifier(NSString *value) {
 
 #pragma mark - Repair Planning
 
+// Canonical form for volume-path dictionary keys: standardized, single
+// trailing slash stripped (but "/" stays "/"), Unicode precomposed. Must be
+// applied both when building liveUUIDsByPath and at every lookup of it.
+static NSString *normalizeVolumePath(NSString *path) {
+    return [PlorgVolumeSyncLogic normalizedVolumePath:path];
+}
+
++ (NSString *)normalizedVolumePath:(NSString *)path {
+    if (path.length == 0) return path;
+    NSString *normalized = [[path stringByStandardizingPath] precomposedStringWithCanonicalMapping];
+    if (normalized.length > 1 && [normalized hasSuffix:@"/"]) {
+        normalized = [normalized substringToIndex:normalized.length - 1];
+    }
+    return normalized;
+}
+
 + (NSDictionary<NSString *, NSArray<NSString *> *> *)liveUUIDsByPathFromRegistry:
     (NSDictionary<NSString *, NSDictionary *> *)foobarVolumes {
     // A UUID is "live" iff its bookmark resolved to an existing path. Multiple
@@ -235,7 +268,7 @@ static NSString *sqlIdentifier(NSString *value) {
         NSDictionary *info = foobarVolumes[uuid];
         if (![info[@"isLive"] boolValue]) continue;
 
-        NSString *key = info[@"resolvedPath"] ?: info[@"originalPath"];
+        NSString *key = normalizeVolumePath(info[@"resolvedPath"] ?: info[@"originalPath"]);
         if (!key) continue;
 
         NSMutableArray *list = liveUUIDsByPath[key];
@@ -270,7 +303,7 @@ static NSString *sqlIdentifier(NSString *value) {
         NSString *targetPath = nil;
 
         if (info && info[@"originalPath"]) {
-            NSArray *candidates = liveUUIDsByPath[info[@"originalPath"]];
+            NSArray *candidates = liveUUIDsByPath[normalizeVolumePath(info[@"originalPath"])];
             if (candidates.count > 0) {
                 targetUUID = candidates.firstObject;
                 targetPath = info[@"originalPath"];
@@ -381,8 +414,13 @@ static NSString *sqlIdentifier(NSString *value) {
         NSString *originalPath = info[@"originalPath"];
         if (!originalPath) continue;
 
-        NSArray *liveCandidates = liveUUIDsByPath[originalPath];
-        if (liveCandidates.count == 0) continue;
+        NSArray *liveCandidates = liveUUIDsByPath[normalizeVolumePath(originalPath)];
+        if (liveCandidates.count == 0) {
+            if (log) log([NSString stringWithFormat:
+                @"[Plorg VolumeSync] Orphan cache: %@ has no live replacement (originalPath: %@); skipping.",
+                uuid, originalPath]);
+            continue;
+        }
 
         NSString *target = liveCandidates.firstObject;
         NSUInteger deadRows = rowCounts[uuid].unsignedIntegerValue;
@@ -425,9 +463,9 @@ static NSString *sqlIdentifier(NSString *value) {
         // malformed value must never reach the migrator.
         if (![self isValidVolumeUUID:deadUUID] || ![self isValidVolumeUUID:liveUUID]) continue;
 
-        NSString *fromTok = sqlQuote([NSString stringWithFormat:@"mac-volume://%@", deadUUID]);
-        NSString *toTok = sqlQuote([NSString stringWithFormat:@"mac-volume://%@", liveUUID]);
-        NSString *likePattern = sqlQuote([NSString stringWithFormat:@"%%mac-volume://%@/%%", deadUUID]);
+        NSString *fromTok = sqlQuote([NSString stringWithFormat:@"%@%@", PlorgMacVolumePrefix, deadUUID]);
+        NSString *toTok = sqlQuote([NSString stringWithFormat:@"%@%@", PlorgMacVolumePrefix, liveUUID]);
+        NSString *likePattern = sqlQuote([NSString stringWithFormat:@"%%%@%@/%%", PlorgMacVolumePrefix, deadUUID]);
 
         // Main metadb rows: copy under a new name with the UUID rewritten,
         // then delete the dead-UUID sources. metadb.name is a unique primary
@@ -441,7 +479,10 @@ static NSString *sqlIdentifier(NSString *value) {
             @"SELECT REPLACE(name, '%@', '%@'), info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial "
             @"FROM metadb WHERE name LIKE '%@';\n",
             fromTok, toTok, likePattern];
-        [sql appendFormat:@"DELETE FROM metadb WHERE name LIKE '%@';\n", likePattern];
+        [sql appendFormat:
+            @"DELETE FROM metadb WHERE name LIKE '%@' "
+            @"AND REPLACE(name, '%@', '%@') <> name;\n",
+            likePattern, fromTok, toTok];
 
         // Library / component index tables (key INTEGER, filename TEXT UNIQUE
         // PRIMARY KEY). The *_data blob siblings are keyed by `key`, which the
@@ -452,8 +493,10 @@ static NSString *sqlIdentifier(NSString *value) {
                 @"SELECT key, REPLACE(filename, '%@', '%@') "
                 @"FROM \"%@\" WHERE filename LIKE '%@';\n",
                 sqlIdentifier(table), fromTok, toTok, sqlIdentifier(table), likePattern];
-            [sql appendFormat:@"DELETE FROM \"%@\" WHERE filename LIKE '%@';\n",
-                sqlIdentifier(table), likePattern];
+            [sql appendFormat:
+                @"DELETE FROM \"%@\" WHERE filename LIKE '%@' "
+                @"AND REPLACE(filename, '%@', '%@') <> filename;\n",
+                sqlIdentifier(table), likePattern, fromTok, toTok];
         }
     }
     [sql appendString:@"COMMIT;\n"];
