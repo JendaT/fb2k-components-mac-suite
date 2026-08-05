@@ -10,6 +10,7 @@
 #include "../Core/CloudErrors.h"
 #include "../Core/TrackInfo.h"
 #include "../Core/URLUtils.h"
+#include "../Core/YtDlpParser.h"
 #include <string>
 #include <optional>
 #include <atomic>
@@ -30,15 +31,7 @@ struct YtDlpResult {
     std::optional<TrackInfo> trackInfo;
 };
 
-// Track info from search results
-struct YtDlpTrackInfo {
-    std::string title;
-    std::string uploader;
-    std::string webpageUrl;
-    std::string trackId;
-    std::string thumbnailUrl;  // Artwork URL (typically "large" size - 100x100)
-    double duration = 0.0;
-};
+// YtDlpTrackInfo (search entry) is defined in Core/YtDlpParser.h
 
 // Result of search operation
 struct YtDlpSearchResult {
@@ -122,15 +115,6 @@ private:
         std::atomic<bool>* abortFlag,
         int timeoutSeconds
     );
-
-    // Parse JSON output from yt-dlp
-    std::optional<TrackInfo> parseMetadataJSON(const std::string& json, const std::string& originalURL);
-
-    // Parse search JSON output from yt-dlp
-    std::vector<YtDlpTrackInfo> parseSearchJSON(const std::string& json);
-
-    // Map yt-dlp error output to error code
-    JLCloudError parseErrorOutput(const std::string& errorOutput);
 
     // Security check for path
     bool isValidYtDlpBinary(const std::string& path);

@@ -3,9 +3,31 @@
 #import "../Core/CloudConfig.h"
 #import "../Core/CloudErrors.h"
 #import "../Core/MetadataCache.h"
+#import "../Core/TrackTagMapper.h"
 #import "../Services/StreamResolver.h"
 
 namespace cloud_streamer {
+
+// Apply mapper-produced fields to a file_info. The mapping itself lives in the
+// SDK-free TrackTagMapper (unit-tested); this is the thin SDK translation.
+static void applyFields(file_info& p_info, const std::vector<FileInfoField>& fields) {
+    for (const auto& f : fields) {
+        switch (f.op) {
+            case FileInfoField::Op::MetaSet:
+                p_info.meta_set(f.key.c_str(), f.value.c_str());
+                break;
+            case FileInfoField::Op::MetaAdd:
+                p_info.meta_add(f.key.c_str(), f.value.c_str());
+                break;
+            case FileInfoField::Op::InfoSet:
+                p_info.info_set(f.key.c_str(), f.value.c_str());
+                break;
+            case FileInfoField::Op::Length:
+                p_info.set_length(f.length);
+                break;
+        }
+    }
+}
 
 // GUIDs for this input
 // {7A1B2C3D-4E5F-6A7B-8C9D-0E1F2A3B4C5D}
@@ -150,49 +172,7 @@ void CloudInputDecoder::get_info(t_uint32 p_subsong, file_info& p_info, abort_ca
 
     // Overlay our metadata if available
     if (m_trackInfo.has_value()) {
-        const TrackInfo& info = m_trackInfo.value();
-
-        if (!info.title.empty()) {
-            p_info.meta_set("TITLE", info.title.c_str());
-        }
-        if (!info.artist.empty()) {
-            p_info.meta_set("ARTIST", info.artist.c_str());
-        }
-        if (!info.album.empty()) {
-            p_info.meta_set("ALBUM", info.album.c_str());
-        }
-        if (!info.uploader.empty()) {
-            p_info.meta_set("UPLOADER", info.uploader.c_str());
-        }
-        if (!info.description.empty()) {
-            p_info.meta_set("COMMENT", info.description.c_str());
-        }
-        if (!info.uploadDate.empty()) {
-            p_info.meta_set("DATE", info.uploadDate.c_str());
-        }
-        if (info.duration > 0) {
-            p_info.set_length(info.duration);
-        }
-
-        // Add tags
-        for (const auto& tag : info.tags) {
-            p_info.meta_add("GENRE", tag.c_str());
-        }
-
-        // Service info
-        const char* serviceName = info.service == CloudService::Mixcloud ? "Mixcloud" : "SoundCloud";
-        p_info.info_set("CLOUD_SERVICE", serviceName);
-        if (!info.webURL.empty()) {
-            p_info.info_set("URL", info.webURL.c_str());
-        }
-
-        // Add embedded CUE sheet for chapter navigation
-        std::string cueSheet = info.generateCueSheet();
-        if (!cueSheet.empty()) {
-            p_info.meta_set("CUESHEET", cueSheet.c_str());
-            logDebug("CloudInputDecoder: Generated CUE sheet with " +
-                     std::to_string(info.chapters.size()) + " chapters");
-        }
+        applyFields(p_info, TrackTagMapper::map(m_trackInfo.value()));
     }
 }
 
@@ -296,59 +276,16 @@ void CloudInfoReader::open(const char* p_path) {
 }
 
 void CloudInfoReader::get_info(t_uint32 p_subsong, file_info& p_info, abort_callback& p_abort) {
-    // Use cached metadata if available
+    // Use cached metadata if available; otherwise synthesize from the URL.
+    // Both run through the same TrackTagMapper rules.
     if (m_cachedInfo.has_value()) {
-        const TrackInfo& info = m_cachedInfo.value();
-
-        if (!info.title.empty()) {
-            p_info.meta_set("TITLE", info.title.c_str());
-        }
-        if (!info.artist.empty()) {
-            p_info.meta_set("ARTIST", info.artist.c_str());
-        }
-        if (!info.album.empty()) {
-            p_info.meta_set("ALBUM", info.album.c_str());
-        }
-        if (!info.uploader.empty()) {
-            p_info.meta_set("UPLOADER", info.uploader.c_str());
-        }
-        if (info.duration > 0) {
-            p_info.set_length(info.duration);
-        }
-
-        const char* serviceName = info.service == CloudService::Mixcloud ? "Mixcloud" : "SoundCloud";
-        p_info.info_set("CLOUD_SERVICE", serviceName);
-
-        // Add embedded CUE sheet for chapter navigation
-        std::string cueSheet = info.generateCueSheet();
-        if (!cueSheet.empty()) {
-            p_info.meta_set("CUESHEET", cueSheet.c_str());
-        }
+        applyFields(p_info, TrackTagMapper::map(m_cachedInfo.value()));
         return;
     }
 
-    // No cached info - generate basic info from URL
-    ParsedCloudURL parsed = URLUtils::parseURL(m_internalURL);
+    applyFields(p_info, TrackTagMapper::map(TrackTagMapper::synthesizeFromURL(m_internalURL)));
 
-    // Generate title from slug (replace dashes with spaces)
-    if (!parsed.slug.empty()) {
-        std::string title = parsed.slug;
-        for (char& c : title) {
-            if (c == '-' || c == '_') c = ' ';
-        }
-        p_info.meta_set("TITLE", title.c_str());
-    }
-
-    // Use username as artist
-    if (!parsed.username.empty()) {
-        p_info.meta_set("ARTIST", parsed.username.c_str());
-    }
-
-    // Set service info
-    const char* serviceName = parsed.service == CloudService::Mixcloud ? "Mixcloud" : "SoundCloud";
-    p_info.info_set("CLOUD_SERVICE", serviceName);
-
-    // Duration unknown without resolving
+    // Duration is unknown until the stream is resolved.
     p_info.set_length(0);
 }
 

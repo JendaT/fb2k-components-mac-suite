@@ -9,8 +9,68 @@
 #import "../Core/CloudTrack.h"
 #import "../Services/CloudSearchService.h"
 #include "../Core/ThumbnailCache.h"
+#include "../Core/MetadataCache.h"
 #include "../../shared/UIStyles.h"
 #include "../fb2k_sdk.h"
+
+// NSTableView subclass that consolidates drag items into a single NSDraggingItem
+// to prevent cursor offset. Without this, NSTableView creates one NSDraggingItem
+// per row with stacked Y-offsets, displacing the drag image from the cursor.
+@interface CloudBrowserTableView : NSTableView
+@end
+
+@implementation CloudBrowserTableView
+
+- (NSDraggingSession*)beginDraggingSessionWithItems:(NSArray<NSDraggingItem*>*)items
+                                              event:(NSEvent*)event
+                                             source:(id<NSDraggingSource>)source {
+    // Consolidate all pasteboard writers from the original items into one NSDraggingItem
+    NSPasteboardItem* consolidated = [[NSPasteboardItem alloc] init];
+    for (NSDraggingItem* item in items) {
+        id writer = item.item;
+        if ([writer isKindOfClass:[NSPasteboardItem class]]) {
+            NSPasteboardItem* pbItem = (NSPasteboardItem*)writer;
+            for (NSString* type in pbItem.types) {
+                NSData* data = [pbItem dataForType:type];
+                if (data) {
+                    [consolidated setData:data forType:type];
+                }
+            }
+        }
+    }
+
+    NSDraggingItem* singleItem = [[NSDraggingItem alloc] initWithPasteboardWriter:consolidated];
+
+    // Position drag image at cursor
+    NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
+    NSInteger row = [self rowAtPoint:location];
+    NSRect rowRect = row >= 0 ? [self rectOfRow:row] : NSMakeRect(location.x - 100, location.y - 15, 200, 30);
+
+    singleItem.draggingFrame = rowRect;
+    singleItem.imageComponentsProvider = ^NSArray<NSDraggingImageComponent*>* {
+        NSDraggingImageComponent* component = [[NSDraggingImageComponent alloc]
+                                                initWithKey:NSDraggingImageComponentIconKey];
+        // Snapshot the row as drag image
+        NSImage* dragImage = [[NSImage alloc] initWithSize:rowRect.size];
+        [dragImage lockFocus];
+        if (row >= 0) {
+            NSView* rowView = [self rowViewAtRow:row makeIfNecessary:NO];
+            if (rowView) {
+                NSBitmapImageRep* rep = [rowView bitmapImageRepForCachingDisplayInRect:rowView.bounds];
+                [rowView cacheDisplayInRect:rowView.bounds toBitmapImageRep:rep];
+                [rep drawInRect:NSMakeRect(0, 0, rowRect.size.width, rowRect.size.height)];
+            }
+        }
+        [dragImage unlockFocus];
+        component.contents = dragImage;
+        component.frame = NSMakeRect(0, 0, rowRect.size.width, rowRect.size.height);
+        return @[component];
+    };
+
+    return [super beginDraggingSessionWithItems:@[singleItem] event:event source:source];
+}
+
+@end
 
 // Column identifiers
 static NSString* const kColumnArtwork = @"artwork";
@@ -176,8 +236,8 @@ static NSString* const kSelectedServiceKey = @"CloudBrowserSelectedService";
     _scrollView.drawsBackground = NO;
     [self.view addSubview:_scrollView];
 
-    // Table view
-    _tableView = [[NSTableView alloc] initWithFrame:NSZeroRect];
+    // Table view (using subclass to fix drag cursor offset)
+    _tableView = [[CloudBrowserTableView alloc] initWithFrame:NSZeroRect];
     _tableView.dataSource = self;
     _tableView.delegate = self;
     _tableView.rowHeight = kRowHeight;
@@ -458,6 +518,9 @@ public:
 
 - (void)addTrackToPlaylist:(CloudTrack*)track startPlayback:(BOOL)play {
     @autoreleasepool {
+        // Pre-cache metadata so CloudInfoReader finds it immediately
+        [self cacheMetadataForTrack:track];
+
         // Get the internal URL for the track
         NSString* url = track.internalURL.length > 0 ? track.internalURL : track.webURL;
         if (url.length == 0) {
@@ -629,6 +692,51 @@ public:
     // Update UI based on selection if needed
 }
 
+#pragma mark - Metadata Pre-caching
+
+// Pre-populate MetadataCache from a CloudTrack so that CloudInfoReader and
+// CloudAlbumArt find metadata immediately when foobar2000 processes the URL.
+- (void)cacheMetadataForTrack:(CloudTrack*)track {
+    NSString* urlString = track.internalURL.length > 0 ? track.internalURL : track.webURL;
+    if (urlString.length == 0) return;
+
+    std::string key([urlString UTF8String]);
+
+    // Skip if already cached
+    if (cloud_streamer::MetadataCache::shared().get(key).has_value()) return;
+
+    cloud_streamer::TrackInfo info;
+    info.internalURL = key;
+    if (track.webURL.length > 0) {
+        info.webURL = std::string([track.webURL UTF8String]);
+    }
+    if (track.title.length > 0) {
+        info.title = std::string([track.title UTF8String]);
+    }
+    if (track.artist.length > 0) {
+        info.artist = std::string([track.artist UTF8String]);
+    }
+    info.duration = track.duration;
+    if (track.thumbnailURL.length > 0) {
+        info.thumbnailURL = std::string([track.thumbnailURL UTF8String]);
+    }
+
+    // Determine service from URL
+    info.service = cloud_streamer::URLUtils::getService(key);
+
+    cloud_streamer::MetadataCache::shared().set(key, info);
+
+    // Also kick off a thumbnail download so the disk cache has the image
+    // before foobar2000 asks the album art extractor for it. This is a no-op
+    // if already cached (search results that scrolled into view).
+    if (!info.thumbnailURL.empty()) {
+        cloud_streamer::ThumbnailCache::shared().fetch(info.thumbnailURL,
+            [](const cloud_streamer::ThumbnailResult&) {
+                // Fire-and-forget; result is on disk for CloudAlbumArt to read.
+            });
+    }
+}
+
 #pragma mark - Drag Support
 
 - (id<NSPasteboardWriting>)tableView:(NSTableView*)tableView pasteboardWriterForRow:(NSInteger)row {
@@ -640,6 +748,9 @@ public:
     }
 
     CloudTrack* track = _results[row];
+
+    // Pre-cache metadata so CloudInfoReader finds it immediately on drop
+    [self cacheMetadataForTrack:track];
 
     // Use internal URL (soundcloud://, mixcloud://) for drag-drop so foobar2000
     // routes it to our input decoder. Fall back to web URL if internal not set.

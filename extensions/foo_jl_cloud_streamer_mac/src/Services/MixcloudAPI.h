@@ -9,6 +9,7 @@
 #pragma once
 
 #import <Foundation/Foundation.h>
+#include "../Core/MixcloudParser.h"
 #include <string>
 #include <vector>
 #include <atomic>
@@ -16,40 +17,8 @@
 
 namespace cloud_streamer {
 
-// Search result track info
-struct MixcloudTrackInfo {
-    std::string name;
-    std::string slug;
-    std::string username;
-    std::string displayName;
-    std::string thumbnailURL;
-    double duration;  // seconds
-
-    // Computed properties
-    std::string webURL() const {
-        return "https://www.mixcloud.com/" + username + "/" + slug + "/";
-    }
-
-    std::string internalURL() const {
-        return "mixcloud://" + username + "/" + slug;
-    }
-};
-
-// Tracklist section (individual track in a mix)
-struct MixcloudSection {
-    double startSeconds;
-    std::string songName;
-    std::string artistName;
-};
-
-// Tracklist result
-struct MixcloudTracklistResult {
-    bool success;
-    std::string errorMessage;
-    std::string cloudcastName;     // Name of the mix
-    std::string uploaderName;      // Display name of uploader
-    std::vector<MixcloudSection> sections;
-};
+// MixcloudTrackInfo, MixcloudSection, and MixcloudTracklistResult are
+// defined in Core/MixcloudParser.h
 
 // Search result
 struct MixcloudSearchResult {
@@ -88,12 +57,6 @@ private:
     ~MixcloudAPI() = default;
     MixcloudAPI(const MixcloudAPI&) = delete;
     MixcloudAPI& operator=(const MixcloudAPI&) = delete;
-
-    // Build GraphQL search query
-    std::string buildSearchQuery(const std::string& term, int maxResults);
-
-    // Parse search response JSON
-    std::optional<std::vector<MixcloudTrackInfo>> parseSearchResponse(NSData* data);
 
     static constexpr const char* kGraphQLEndpoint = "https://app.mixcloud.com/graphql";
     static constexpr const char* kUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
