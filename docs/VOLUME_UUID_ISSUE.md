@@ -76,4 +76,3 @@ sed -i '' 's/OLD-UUID/CURRENT-UUID/g' playlist-XXX.fplite
 ```
 
 Requires foobar2000 restart to reload the modified playlists.
-Automatic startup and runtime UUID synchronization. See [deep research](research/volume-uuid-instability-deep-research.md) for comprehensive analysis covering macOS internals, foobar SDK, industry solutions, and design patterns.
