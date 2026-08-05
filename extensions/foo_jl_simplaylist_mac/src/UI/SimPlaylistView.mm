@@ -19,6 +19,7 @@
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+NSPasteboardType const TidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
 
 // Decoration RGBA (0xRRGGBBAA from jl_decorator_api) to NSColor; 0 = nil.
 static NSColor *colorFromRGBA(uint32_t rgba) {
@@ -218,6 +219,7 @@ static NSString *formatGroupDuration(double seconds) {
     // Register for drag & drop
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
+        TidalBrowserPasteboardType,
         NSPasteboardTypeFileURL,
         NSPasteboardTypeURL,    // Web URLs (e.g., from Cloud Browser)
         NSPasteboardTypeString  // Plain text URLs as fallback
