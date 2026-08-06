@@ -318,6 +318,50 @@ public:
 
 static simplaylist_playing_playlist_guard* g_playing_playlist_guard = nullptr;
 
+// Watches the *set* of playlists rather than their contents.
+//
+// Almost every piece of per-playlist state the controller keeps —
+// _currentPlaylistIndex, the _scrollAnchorIndices dictionary, the pending
+// centre target — is keyed by a raw t_size playlist index, and those indices
+// shift whenever a playlist is created above the current one, removed, or the
+// tab order is rearranged. Nothing observed any of those three events, so the
+// indices simply went stale: saveGroupCacheForPlaylist: resolved the wrong
+// name and wrote the current view's group boundaries and scroll anchor under
+// *another playlist's* config key, and the mutating delegates operated on
+// whichever playlist had inherited the old index.
+//
+// on_playlist_created fires for creation, on_playlists_removed for deletion
+// (after the fact, which is what makes surviving indices meaningful) and
+// on_playlists_reorder for drag-reordered tabs.
+class simplaylist_playlist_set_callback : public playlist_callback_impl_base {
+public:
+    simplaylist_playlist_set_callback() : playlist_callback_impl_base(
+        flag_on_playlist_created |
+        flag_on_playlists_reorder |
+        flag_on_playlists_removed
+    ) {}
+
+    void on_playlist_created(t_size p_index, const char* p_name, t_size p_name_len) override {
+        SimPlaylistCallbackManager::instance().onPlaylistSetChanged();
+    }
+
+    void on_playlists_reorder(const t_size* p_order, t_size p_count) override {
+        SimPlaylistCallbackManager::instance().onPlaylistSetChanged();
+    }
+
+    void on_playlists_removed(const bit_array& p_mask, t_size p_old_count, t_size p_new_count) override {
+        SimPlaylistCallbackManager::instance().onPlaylistSetChanged();
+    }
+};
+
+static simplaylist_playlist_set_callback* g_playlist_set_callback = nullptr;
+
+void SimPlaylistCallbackManager::onPlaylistSetChanged() {
+    dispatchToControllers(^(SimPlaylistController *c) {
+        [c handlePlaylistSetChanged];
+    });
+}
+
 void SimPlaylistCallbackManager::initCallbacks() {
     if (!g_playlist_callback) {
         g_playlist_callback = new simplaylist_playlist_callback();
@@ -327,6 +371,9 @@ void SimPlaylistCallbackManager::initCallbacks() {
     }
     if (!g_playing_playlist_guard) {
         g_playing_playlist_guard = new simplaylist_playing_playlist_guard();
+    }
+    if (!g_playlist_set_callback) {
+        g_playlist_set_callback = new simplaylist_playlist_set_callback();
     }
     g_playingGuardActive = true;
     if (!g_playingGuardTimer) {
@@ -364,6 +411,8 @@ void SimPlaylistCallbackManager::shutdownCallbacks() {
     g_playingGuardTimer = nil;
     delete g_playing_playlist_guard;
     g_playing_playlist_guard = nullptr;
+    delete g_playlist_set_callback;
+    g_playlist_set_callback = nullptr;
     delete g_playlist_callback;
     g_playlist_callback = nullptr;
     delete g_metadb_callback;

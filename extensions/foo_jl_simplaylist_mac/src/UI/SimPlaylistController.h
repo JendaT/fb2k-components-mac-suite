@@ -24,6 +24,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles;
 - (void)handleItemsRemoved:(NSInteger)newCount;
 - (void)handleItemsReordered;
+// A playlist was created, removed or the tab order rearranged, so every raw
+// playlist index this controller caches may now point at a different playlist.
+- (void)handlePlaylistSetChanged;
 - (void)handleSelectionChanged;
 - (void)handleFocusChanged:(NSInteger)from to:(NSInteger)to;
 - (void)handleItemsModified;

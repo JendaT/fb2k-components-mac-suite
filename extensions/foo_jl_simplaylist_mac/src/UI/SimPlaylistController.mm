@@ -2022,6 +2022,69 @@ static BOOL validCachedStringArray(NSArray *arr) {
     [self refreshSelectionTracking];
 }
 
+// A playlist was created, removed, or the tab order was rearranged.
+//
+// Every raw t_size index this controller holds may now refer to a different
+// playlist: creating one above the current playlist shifts it up, removing one
+// shifts it down, and a reorder can move it anywhere. Until this handler
+// existed none of those three events was observed at all, so the indices simply
+// went stale and the next save wrote the current view's group boundaries and
+// scroll anchor under whichever playlist had inherited the old index.
+//
+// Runs on the main queue after the SDK has finished mutating, so
+// get_active_playlist() is authoritative here.
+- (void)handlePlaylistSetChanged {
+    auto pm = playlist_manager::get();
+    t_size active = pm->get_active_playlist();
+
+    // The viewport still shows the current playlist's rows whatever happened to
+    // the indices, so capture its position before discarding the old keys.
+    NSDictionary *liveAnchor = nil;
+    if (_currentPlaylistIndex >= 0 && _scrollPositionEstablished && !_playlistView.isDragging) {
+        liveAnchor = [self captureScrollAnchor];
+    }
+
+    // Everything below is keyed by an index that may no longer mean what it
+    // did. Dropping the lot is safe: anchors for other playlists are persisted
+    // separately under sanitised playlist *names*, and are re-seeded from there
+    // on the next switch-in. Keeping them would restore one playlist's scroll
+    // position onto another.
+    [_scrollAnchorIndices removeAllObjects];
+    _scrollRestorePlaylistIndex = -1;
+    _pendingCenterPlaylist = -1;
+    _pendingCenterIndex = -1;
+
+    if (active == SIZE_MAX) {
+        _currentPlaylistIndex = -1;
+        _playlistView.sourcePlaylistIndex = -1;
+        return;
+    }
+
+    _currentPlaylistIndex = (NSInteger)active;
+    _playlistView.sourcePlaylistIndex = active;  // drag validation
+    if (liveAnchor) {
+        _scrollAnchorIndices[@(_currentPlaylistIndex)] = liveAnchor;
+    }
+}
+
+// Resolve the playlist a user action should act on.
+//
+// _currentPlaylistIndex is a cached raw index, refreshed on playlist switch and
+// by -handlePlaylistSetChanged above. A user action arrives from AppKit rather
+// than the SDK, so it can still land in the window between the playlist set
+// changing and this controller being told. Every mutating delegate resolves
+// through here and does nothing when the cache and the live active playlist
+// disagree: the rows on screen belong to the old playlist, so applying the
+// action to whichever playlist inherited the index would mutate the wrong
+// tracks. A rebuild is already on its way in that case.
+- (BOOL)resolveActivePlaylist:(t_size *)outPlaylist {
+    if (_currentPlaylistIndex < 0) return NO;
+    t_size active = playlist_manager::get()->get_active_playlist();
+    if (active == SIZE_MAX || (NSInteger)active != _currentPlaylistIndex) return NO;
+    if (outPlaylist) *outPlaylist = active;
+    return YES;
+}
+
 - (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles {
     // Detect Finder-open replacement pattern before doing the standard rebuild.
     if (base == 0 && count > 0 && _activePlaylistJustCleared && !_internalModification) {
@@ -2231,10 +2294,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view didDoubleClickRow:(NSInteger)row {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     // Get playlist index using the view's row mapping
     NSInteger playlistIndex = [view playlistIndexForRow:row];
@@ -2279,10 +2342,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view requestContextMenuForRows:(NSIndexSet *)playlistIndices atPoint:(NSPoint)point {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
     // Collect indices to array first (can't modify C++ objects in blocks)
@@ -2768,10 +2831,11 @@ static BOOL isRemotePath(const char *path) {
 }
 
 - (NSImage *)playlistView:(SimPlaylistView *)view albumArtForGroupAtPlaylistIndex:(NSInteger)playlistIndex {
-    if (playlistIndex < 0 || _currentPlaylistIndex < 0) return nil;
+    if (playlistIndex < 0) return nil;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return nil;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     metadb_handle_ptr handle;
     if (!pm->playlist_get_item_handle(handle, activePlaylist, (t_size)playlistIndex)) {
@@ -2832,9 +2896,10 @@ static BOOL isRemotePath(const char *path) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view didRequestQueueTracks:(NSIndexSet *)playlistIndices {
-    if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
+    if (playlistIndices.count == 0) return;
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
     auto pm = playlist_manager::get();
-    t_size playlist = (t_size)_currentPlaylistIndex;
     // The view selection can be stale relative to the playlist - skip
     // out-of-range indices, matching the other selection consumers.
     t_size itemCount = pm->playlist_get_item_count(playlist);
@@ -3224,10 +3289,10 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 }
 
 - (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRowIndices toRow:(NSInteger)destinationRow operation:(NSDragOperation)operation {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     BOOL isDuplicate = (operation == NSDragOperationCopy);
 
     // Check if playlist is locked
@@ -3325,9 +3390,12 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row {
     if (_currentPlaylistIndex < 0) return;
     if (urls.count == 0) return;
+    // Previously unguarded: a -1 _currentPlaylistIndex cast straight to t_size
+    // became SIZE_MAX and was handed to the SDK as a playlist number.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     // Check if playlist is locked
     if (pm->playlist_lock_is_present(activePlaylist)) {
@@ -3381,10 +3449,10 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 }
 
 - (NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices {
-    if (_currentPlaylistIndex < 0) return nil;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return nil;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
     NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:indices.count];
@@ -3409,9 +3477,11 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row operation:(NSDragOperation)operation {
     if (_currentPlaylistIndex < 0) return;
     if (paths.count == 0) return;
+    // Previously unguarded, same SIZE_MAX hazard as the URL drop above.
+    t_size destPlaylist;
+    if (![self resolveActivePlaylist:&destPlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size destPlaylist = (t_size)_currentPlaylistIndex;
     BOOL isMove = (operation == NSDragOperationMove);
 
     // Check if destination playlist is locked for add
