@@ -241,13 +241,21 @@
     return @"";
 }
 
+// Mirror image of -subgroupPattern: both address subgroups[0] and nothing else.
+//
+// The empty case used to assign @[], discarding the whole array. A preset whose
+// JSON defines two or more subgroups therefore lost all of them the first time
+// the single-line preferences field was cleared, and since the UI only ever
+// surfaces subgroup 0 the user could not see the others existed, let alone that
+// they had gone. Clearing element 0's pattern instead is what the getter's
+// contract implies, loses nothing, and still reads back as "" — consumers gate
+// on `subgroupPattern.length > 0`, so an empty element 0 disables subgrouping
+// exactly as an empty array did.
 - (void)setSubgroupPattern:(NSString *)pattern {
-    if (pattern.length == 0) {
-        self.subgroups = @[];
-    } else if (self.subgroups.count > 0) {
+    if (self.subgroups.count > 0) {
         SubgroupDefinition *sub = self.subgroups[0];
-        sub.pattern = pattern;
-    } else {
+        sub.pattern = pattern ?: @"";
+    } else if (pattern.length > 0) {
         self.subgroups = @[[SubgroupDefinition subgroupWithPattern:pattern displayType:GroupDisplayTypeText]];
     }
 }

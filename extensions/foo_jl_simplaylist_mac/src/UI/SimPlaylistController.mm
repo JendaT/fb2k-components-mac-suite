@@ -1515,10 +1515,28 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 // GROUP CACHE PERSISTENCE
 // =============================================================================
 
-// Build the preset hash string for cache validation: "headerPattern|subgroupPattern"
+// Build the preset hash string for cache validation:
+// "headerPattern|subgroupPattern|showFirstSubgroup|hideSingleSubgroup"
+//
+// The two flags belong in the key because the persisted subgroupStarts /
+// subgroupHeaders arrays are a function of them, not just of the patterns:
+// SubgroupDetector is constructed with showFirstSubgroup, and hideSingleSubgroup
+// suppresses emission for groups with one subgroup. Toggling either used to
+// leave both the hash and the item count unchanged, so the stale cache was
+// accepted and a layout built under the old flag was displayed until background
+// validation re-applied — the exact path whose comments describe historic
+// scroll-anchor corruption. Extending the string invalidates every existing
+// cache entry once, which is the intended effect.
 static NSString *presetHashForPreset(GroupPreset *preset) {
     NSString *sub = [preset subgroupPattern] ?: @"";
-    return [NSString stringWithFormat:@"%@|%@", preset.headerPattern, sub];
+    bool showFirst = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowFirstSubgroupHeader,
+        simplaylist_config::kDefaultShowFirstSubgroupHeader);
+    bool hideSingle = simplaylist_config::getConfigBool(
+        simplaylist_config::kHideSingleSubgroup,
+        simplaylist_config::kDefaultHideSingleSubgroup);
+    return [NSString stringWithFormat:@"%@|%@|%d|%d",
+            preset.headerPattern, sub, showFirst ? 1 : 0, hideSingle ? 1 : 0];
 }
 
 // Maximum group count for caching. configStore is designed for small config
