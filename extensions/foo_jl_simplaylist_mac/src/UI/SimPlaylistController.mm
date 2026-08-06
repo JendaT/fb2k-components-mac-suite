@@ -272,8 +272,7 @@ struct ReloadOperation {
 - (instancetype)init {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
-        _columns = [ColumnDefinition defaultColumns];
-        [self recompileColumnScripts];
+        [self reloadColumnsFromConfig];
         _groupPresets = [GroupPreset defaultPresets];
         _activePresetIndex = 0;
         _currentPlaylistIndex = -1;
@@ -539,13 +538,12 @@ struct ReloadOperation {
 // definition and silently deleted it. Refreshing here breaks that chain at the
 // first link.
 //
-// +defaultColumns is the same accessor init uses: it reads kColumns, drops
-// columns whose custom definition no longer exists, and applies the Playing
-// migration — so a deleted custom column also disappears from the header here
-// rather than at the next restart.
+// -reloadColumnsFromConfig is the same path init takes: it reads kColumns,
+// drops columns whose custom definition no longer exists, and applies the
+// Playing migration — so a deleted custom column also disappears from the
+// header here rather than at the next restart.
 - (void)handleColumnsChanged:(NSNotification *)notification {
-    _columns = [ColumnDefinition defaultColumns];
-    [self recompileColumnScripts];
+    [self reloadColumnsFromConfig];
 
     _headerBar.columns = _columns;
     _playlistView.columns = _columns;
@@ -2999,13 +2997,26 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
 // Single writer for the persisted column layout. An empty serialization must
 // never reach setConfigString: writing "" is the DELETE idiom (ConfigHelper.h),
 // so a failed serialize would wipe the user's columns back to the defaults.
+// Every write of the visible column layout goes through the store's single
+// entry point, which refuses to persist a failed serialisation — storing the
+// empty string would delete the layout rather than save it.
 - (void)persistColumns {
-    NSString *columnsJSON = [ColumnDefinition columnsToJSON:_columns];
-    if (columnsJSON.length == 0) {
-        FB2K_console_formatter() << "[SimPlaylist] Column layout not saved: serialization failed";
-        return;
+    [ColumnDefinition persistVisibleColumns:_columns reason:"panel column layout"];
+}
+
+// Read the visible layout from config into _columns, applying whatever repairs
+// the store reports and writing them back exactly once.
+//
+// The store used to persist those repairs itself, from inside a getter, which
+// left kColumns with four writers and no owner. The controller holds the live
+// layout, so the decision to save belongs here.
+- (void)reloadColumnsFromConfig {
+    BOOL needsPersist = NO;
+    _columns = [ColumnDefinition loadVisibleColumnsNeedingPersist:&needsPersist];
+    [self recompileColumnScripts];
+    if (needsPersist) {
+        [self persistColumns];
     }
-    simplaylist_config::setConfigString(simplaylist_config::kColumns, columnsJSON.UTF8String);
 }
 
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didFinishResizingColumn:(NSInteger)columnIndex {

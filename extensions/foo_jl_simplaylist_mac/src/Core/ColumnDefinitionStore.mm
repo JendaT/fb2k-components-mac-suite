@@ -13,7 +13,7 @@
 // columnsToJSON: returns nil when serialisation fails, and ConfigHelper
 // documents that storing "" is the config store's DELETE idiom — so an
 // unguarded write of a failure value would silently wipe the user's columns and
-// let +defaultColumns quietly take over. A nil string would additionally hand
+// let the compiled-in defaults quietly take over. A nil string would additionally hand
 // UTF8String == NULL to the SDK. An empty custom-column list legitimately
 // serialises to a non-empty document ({"columns": []}), so an empty or nil
 // string here always means failure, never "nothing to save".
@@ -30,7 +30,16 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
 
 #pragma mark - Visible layout
 
-+ (NSArray<ColumnDefinition *> *)defaultColumns {
++ (void)persistVisibleColumns:(NSArray<ColumnDefinition *> *)columns
+                       reason:(const char *)reason {
+    persistColumnsJSON(simplaylist_config::kColumns,
+                       [self columnsToJSON:columns],
+                       reason);
+}
+
++ (NSArray<ColumnDefinition *> *)loadVisibleColumnsNeedingPersist:(nullable BOOL *)outNeedsPersist {
+    if (outNeedsPersist) *outNeedsPersist = NO;
+
     // First try to load from saved config
     std::string savedJSON = simplaylist_config::getConfigString(
         simplaylist_config::kColumns, "");
@@ -51,18 +60,14 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
                 [self columnsByMigratingLegacyPlayingPattern:repaired];
             if (migrated) repaired = migrated;
 
-            if (orphansRemoved > 0 || migrated) {
-                persistColumnsJSON(simplaylist_config::kColumns,
-                                   [self columnsToJSON:repaired],
-                                   "orphan cleanup / Playing migration");
-                if (orphansRemoved > 0) {
-                    FB2K_console_formatter() << "[SimPlaylist] Removed "
-                        << orphansRemoved << " orphaned custom column(s)";
-                }
-                if (migrated) {
-                    FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
-                }
+            if (orphansRemoved > 0) {
+                FB2K_console_formatter() << "[SimPlaylist] Removed "
+                    << orphansRemoved << " orphaned custom column(s)";
             }
+            if (migrated) {
+                FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
+            }
+            if (outNeedsPersist) *outNeedsPersist = (orphansRemoved > 0 || migrated != nil);
 
             return repaired;
         }
@@ -111,9 +116,15 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
 #pragma mark - SDK providers
 
 + (NSArray<ColumnDefinition *> *)columnsFromSDKProviders {
+    return [self columnsFromSDKProvidersComplete:NULL];
+}
+
++ (NSArray<ColumnDefinition *> *)columnsFromSDKProvidersComplete:(nullable BOOL *)outComplete {
     // Returns columns from SDK playlistColumnProvider services
     // (e.g., playback statistics: Play Count, First/Last Played, Date Added, Rating)
     // Note: foobar's Custom Playlist Columns are stored in binary cfg_var blob - not accessible
+
+    if (outComplete) *outComplete = YES;
 
     NSMutableArray<ColumnDefinition *> *columns = [NSMutableArray array];
     NSMutableSet<NSString *> *seenNames = [NSMutableSet set];
@@ -159,12 +170,15 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
             }
         }
     } @catch (NSException *exception) {
+        if (outComplete) *outComplete = NO;
         FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: "
                                  << (exception.reason.UTF8String ?: "unknown");
     }
     } catch (const std::exception &e) {
+        if (outComplete) *outComplete = NO;
         FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: " << e.what();
     } catch (...) {
+        if (outComplete) *outComplete = NO;
         FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: unknown exception";
     }
 
@@ -211,12 +225,24 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
 
 + (NSArray<ColumnDefinition *> *)removeOrphanedColumns:(NSArray<ColumnDefinition *> *)columns {
     // Build set of all known column names (templates + SDK providers + custom definitions)
-    NSMutableSet<NSString *> *knownNames = [NSMutableSet set];
+    BOOL sdkComplete = YES;
+    NSArray<ColumnDefinition *> *sdkColumns = [self columnsFromSDKProvidersComplete:&sdkComplete];
 
+    // A throw partway through provider enumeration yields a partial list, and
+    // every column belonging to a provider past the throw would then look like
+    // an orphan. Orphan removal is permanent, so bail out entirely rather than
+    // delete a user's columns on the strength of an incomplete answer.
+    if (!sdkComplete) {
+        FB2K_console_formatter()
+            << "[SimPlaylist] Skipping orphaned-column cleanup: provider enumeration was incomplete";
+        return columns;
+    }
+
+    NSMutableSet<NSString *> *knownNames = [NSMutableSet set];
     for (ColumnDefinition *col in [self availableColumnTemplates]) {
         [knownNames addObject:col.name];
     }
-    for (ColumnDefinition *col in [self columnsFromSDKProviders]) {
+    for (ColumnDefinition *col in sdkColumns) {
         [knownNames addObject:col.name];
     }
     for (ColumnDefinition *col in [self customColumns]) {
@@ -248,9 +274,7 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
         return;
     }
 
-    persistColumnsJSON(simplaylist_config::kColumns,
-                       [self columnsToJSON:updated],
-                       "custom column rename");
+    [self persistVisibleColumns:updated reason:"custom column rename"];
 }
 
 @end

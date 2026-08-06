@@ -60,7 +60,7 @@ typedef NS_ENUM(NSInteger, ColumnAlignment) {
 // config-free; the SDK-provided columns are appended by the Store category.
 + (NSArray<ColumnDefinition *> *)availableColumnTemplates;
 
-// Config-backed and SDK-backed accessors (+defaultColumns, +customColumns,
+// Config-backed and SDK-backed accessors (the layout loader, +customColumns,
 // +columnsFromSDKProviders, +removeOrphanedColumns:, the rename sync and the
 // custom-column mutators) live in ColumnDefinitionStore.h, so this file stays
 // free of the foobar2000 SDK and can be unit-tested standalone.
