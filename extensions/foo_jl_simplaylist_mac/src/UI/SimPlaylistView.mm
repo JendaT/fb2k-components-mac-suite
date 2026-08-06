@@ -9,6 +9,7 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/PlaylistLayoutModel.h"
 #import "../Core/PlaylistSelectionModel.h"
 #import "../Core/DecorationStore.h"
@@ -17,7 +18,6 @@
 #include <unistd.h>
 #include <vector>
 
-NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
 NSPasteboardType const TidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
 // foobar2000 native drag types (album list): one [path, subsong] pair, or an array of them.
@@ -257,17 +257,20 @@ static NSString *formatGroupDuration(double seconds) {
         NSPasteboardTypeString  // Plain text URLs as fallback
     ]];
 
-    // Register for settings changes
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleSettingsChanged:)
-                                                 name:SimPlaylistSettingsChangedNotification
-                                               object:nil];
-
-    // Register for lightweight redraw requests
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleRedrawNeeded:)
-                                                 name:@"SimPlaylistRedrawNeeded"
-                                               object:nil];
+    // Deliberately NOT a notification observer. The view used to register for
+    // SettingsChanged/RedrawNeeded itself, alongside the controller, and the
+    // controller's handler then computed group padding from rowHeight and
+    // headerDisplayStyle — two values this view owns and re-reads. That only
+    // worked because the view is constructed (and so registered) before the
+    // controller, and NSNotificationCenter happens to deliver in registration
+    // order: undocumented, unasserted, and load-bearing for exactly the Display
+    // Size and Header Style preferences that exist to change geometry.
+    //
+    // The controller owns this view and is its only constructor, so it now
+    // calls -reloadSettings explicitly at the top of both handlers. The
+    // ordering is a program statement rather than a delivery-order accident,
+    // and -reloadSettings (which ends in -reloadData) runs once per change
+    // instead of twice.
 }
 
 // The draw path queries two optional delegate methods per row / per group, so
@@ -329,16 +332,6 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-- (void)handleSettingsChanged:(NSNotification *)notification {
-    [self reloadSettings];
-}
-
-- (void)handleRedrawNeeded:(NSNotification *)notification {
-    // Lightweight redraw - just reload visual settings and redraw
-    [self reloadSettings];
-    [self setNeedsDisplay:YES];
 }
 
 - (void)reloadSettings {

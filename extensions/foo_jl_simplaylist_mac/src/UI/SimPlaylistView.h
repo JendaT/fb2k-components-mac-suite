@@ -16,9 +16,6 @@ NS_ASSUME_NONNULL_BEGIN
 @class GroupDecoration;
 @protocol SimPlaylistViewDelegate;
 
-// Settings changed notification
-extern NSString *const SimPlaylistSettingsChangedNotification;
-
 // Pasteboard type for internal drag & drop
 extern NSPasteboardType const SimPlaylistPasteboardType;
 

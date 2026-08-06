@@ -12,6 +12,7 @@
 #import "../Core/GroupPreset.h"
 #import "../Core/TitleFormatHelper.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
 #import "../Core/SubgroupDetector.h"
@@ -367,16 +368,27 @@ struct ReloadOperation {
                                                object:_scrollView];
     _scrollView.postsFrameChangedNotifications = YES;
 
-    // Observe settings changes from preferences
+    // Observe settings changes from preferences. The controller is the sole
+    // observer for the whole panel: it drives [_playlistView reloadSettings]
+    // explicitly rather than letting the view register alongside it and relying
+    // on notification delivery order (see the note in SimPlaylistView.mm).
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleSettingsChanged:)
-                                                 name:@"SimPlaylistSettingsChanged"
+                                                 name:SimPlaylistSettingsChangedNotification
                                                object:nil];
 
     // Observe lightweight redraw requests (for settings that don't affect grouping)
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleRedrawNeeded:)
-                                                 name:@"SimPlaylistRedrawNeeded"
+                                                 name:SimPlaylistRedrawNeededNotification
+                                               object:nil];
+
+    // Observe custom-column catalogue changes (add / remove / rename). Until
+    // this existed the editor posted to nobody, so a new or renamed column was
+    // invisible until foobar2000 restarted.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleColumnsChanged:)
+                                                 name:SimPlaylistColumnsChangedNotification
                                                object:nil];
 
     // Row decorator providers (intake doc 04 Part A): enumerate once at panel
@@ -422,6 +434,13 @@ struct ReloadOperation {
 }
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
+    // First, so the rest of this method sees current geometry. rowHeight and
+    // headerDisplayStyle live on the view and feed the group padding computed
+    // below; reading them before the view has re-read config yields padding for
+    // the OLD Display Size / Header Style, which is what made those two
+    // preferences depend on notification delivery order.
+    [_playlistView reloadSettings];
+
     // Save current scroll position before rebuilding
     NSDictionary *savedAnchor = [self captureScrollAnchor];
 
@@ -506,7 +525,39 @@ struct ReloadOperation {
     [_headerBar setNeedsDisplay:YES];
 }
 
+// The custom-column catalogue changed: a column was added, removed or renamed
+// in the Custom Columns preferences page.
+//
+// Re-reading the visible layout from config is what makes the change take
+// effect, and it must happen before anything else writes kColumns back. The
+// editor's rename path rewrites kColumns via syncCustomColumnRenameFrom:to:,
+// but live panels went on holding the pre-rename ColumnDefinition objects; the
+// next column resize then persisted that stale array straight over the rename,
+// and on the following launch orphan cleanup found a visible column matching no
+// definition and silently deleted it. Refreshing here breaks that chain at the
+// first link.
+//
+// +defaultColumns is the same accessor init uses: it reads kColumns, drops
+// columns whose custom definition no longer exists, and applies the Playing
+// migration — so a deleted custom column also disappears from the header here
+// rather than at the next restart.
+- (void)handleColumnsChanged:(NSNotification *)notification {
+    _columns = [ColumnDefinition defaultColumns];
+    [self recompileColumnScripts];
+
+    _headerBar.columns = _columns;
+    _playlistView.columns = _columns;
+    [_headerBar setNeedsDisplay:YES];
+    // Cached strings are keyed by column position; the set just changed.
+    [_playlistView clearFormattedValuesCache];
+    [_playlistView setNeedsDisplay:YES];
+}
+
 - (void)handleRedrawNeeded:(NSNotification *)notification {
+    // Keep the view's own config-derived state current first, for the same
+    // reason as in -handleSettingsChanged:.
+    [_playlistView reloadSettings];
+
     // Lightweight redraw for settings that don't affect grouping (e.g., dim parentheses, now playing shading)
     // Re-read group duration setting in case it just toggled, then refresh the durations array.
     _playlistView.showGroupDuration = simplaylist_config::getConfigBool(

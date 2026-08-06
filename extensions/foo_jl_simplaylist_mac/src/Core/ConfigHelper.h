@@ -15,9 +15,15 @@ namespace simplaylist_config {
 // Config key prefix
 static const char* const kPrefix = "foo_simplaylist_mac.";
 
-// Group configuration keys
+// Group configuration keys.
+//
+// kGroupPresets holds the preset list AND the active index, in its "active_index"
+// field. A separate "active_preset_index" key used to shadow the latter: only
+// the preferences page wrote and read it, while the playlist panel took the
+// index from the JSON, so switching preset updated the mirror and changed
+// nothing visible. The key is retired — stale values may still sit in existing
+// config stores, where they are simply ignored.
 static const char* const kGroupPresets = "group_presets";
-static const char* const kActivePresetIndex = "active_preset_index";
 
 // Column configuration keys
 static const char* const kColumns = "columns";

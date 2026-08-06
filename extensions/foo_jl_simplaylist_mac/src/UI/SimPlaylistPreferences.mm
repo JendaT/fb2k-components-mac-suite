@@ -7,6 +7,7 @@
 
 #import "SimPlaylistPreferences.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/GroupPreset.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/TitleFormatHelper.h"
@@ -510,8 +511,9 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
 - (void)loadSettings {
     // Load presets
     _presets = [GroupPreset defaultPresets];
-    _currentPresetIndex = simplaylist_config::getConfigInt(
-        simplaylist_config::kActivePresetIndex, 0);
+    // Same source as the playlist panel reads, so the popup always shows the
+    // preset that is actually in effect.
+    _currentPresetIndex = [GroupPreset defaultActivePresetIndex];
     // Clamp: an out-of-range persisted index left the popup on item 0 with
     // blank fields while every later saveAndNotify no-opped, so typed patterns
     // were silently lost.
@@ -805,38 +807,58 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     [self refreshSubgroupPatternPreview];
 }
 
+// Copy the visible pattern fields into the preset they were typed for. Split
+// out of -saveAndNotify so -presetChanged: can flush an in-flight edit into the
+// OUTGOING preset before _currentPresetIndex moves.
+- (void)commitFieldsToPresetAtIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)_presets.count) return;
+    GroupPreset *preset = _presets[index];
+    preset.headerPattern = _headerPatternField.stringValue;
+    preset.subgroupPattern = _subgroupPatternField.stringValue;
+}
+
+// Persist the preset list — including which one is active — and tell the panels.
+// kGroupPresets is the single source of truth for both; there is no separate
+// active-index key (see +[GroupPreset defaultActivePresetIndex]).
+- (void)persistPresetsAndNotify {
+    NSString *json = [GroupPreset presetsToJSON:_presets activeIndex:_currentPresetIndex];
+    // nil on a serialization failure: writing anything here would replace the
+    // user's presets, and an empty string is the config store's delete idiom.
+    if (json) {
+        simplaylist_config::setConfigString(simplaylist_config::kGroupPresets, json.UTF8String);
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
+                                                        object:nil];
+}
+
 - (void)presetChanged:(id)sender {
     NSInteger index = _presetPopup.indexOfSelectedItem;
-    if (index >= 0 && index < (NSInteger)_presets.count) {
-        _currentPresetIndex = index;
-        [self updateFieldsForPreset:_presets[index]];
+    if (index < 0 || index >= (NSInteger)_presets.count) return;
+    if (index == _currentPresetIndex) return;  // re-selecting the same item
 
-        // Save selection
-        simplaylist_config::setConfigInt(simplaylist_config::kActivePresetIndex, index);
+    // A pending debounced save belongs to the preset that is on its way out.
+    // Cancel it before the index moves — once -updateFieldsForPreset: below
+    // repopulates the fields, a late firing would write the incoming preset's
+    // own values back over itself and post a second, pointless rebuild — then
+    // flush it by hand against the outgoing index.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(saveAndNotify)
+                                               object:nil];
+    [self commitFieldsToPresetAtIndex:_currentPresetIndex];
 
-        // Notify views to refresh
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
-                                                            object:nil];
-    }
+    _currentPresetIndex = index;
+    [self updateFieldsForPreset:_presets[index]];
+
+    // This is the fix for "switching preset does nothing": the selection used
+    // to be written to a key the playlist panel never read, so nothing changed
+    // until an unrelated field edit happened to rewrite kGroupPresets.
+    [self persistPresetsAndNotify];
 }
 
 - (void)saveAndNotify {
-    // Update the current preset from fields
-    if (_currentPresetIndex >= 0 && _currentPresetIndex < (NSInteger)_presets.count) {
-        GroupPreset *preset = _presets[_currentPresetIndex];
-        preset.headerPattern = _headerPatternField.stringValue;
-        preset.subgroupPattern = _subgroupPatternField.stringValue;
-
-        // Save presets with correct active index
-        NSString *json = [GroupPreset presetsToJSON:_presets activeIndex:_currentPresetIndex];
-        if (json) {
-            simplaylist_config::setConfigString(simplaylist_config::kGroupPresets, json.UTF8String);
-        }
-
-        // Notify views to refresh
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
-                                                            object:nil];
-    }
+    if (_currentPresetIndex < 0 || _currentPresetIndex >= (NSInteger)_presets.count) return;
+    [self commitFieldsToPresetAtIndex:_currentPresetIndex];
+    [self persistPresetsAndNotify];
 }
 
 #pragma mark - NSTextFieldDelegate
@@ -891,7 +913,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     }
 
     // Notify views to refresh
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -900,7 +922,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigInt(simplaylist_config::kHeaderDisplayStyle, style);
 
     // Notify views to refresh
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -909,7 +931,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kNowPlayingShading, enabled);
 
     // Only needs redraw, not full rebuild
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
                                                         object:nil];
 }
 
@@ -918,7 +940,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kShowFirstSubgroupHeader, enabled);
 
     // Notify views to refresh
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -927,7 +949,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kHideSingleSubgroup, enabled);
 
     // Notify views to refresh (needs full rebuild to filter subgroups)
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -936,7 +958,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kDimParentheses, enabled);
 
     // Only needs redraw, not full rebuild
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
                                                         object:nil];
 }
 
@@ -945,7 +967,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kShowGroupDuration, enabled);
 
     // Controller's redraw handler will re-read the flag and recompute durations
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
                                                         object:nil];
 }
 
@@ -954,7 +976,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigInt(simplaylist_config::kDisplaySize, size);
 
     // Needs full rebuild because row height changes
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -963,7 +985,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigInt(simplaylist_config::kColumnHeaderSize, size);
 
     // Needs full rebuild because header height changes
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -972,7 +994,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigInt(simplaylist_config::kHeaderAccentColor, accent);
 
     // Needs redraw for header color change
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -981,7 +1003,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigInt(simplaylist_config::kGroupHeaderSpacing, spacing);
 
     // Needs settings reload for spacing change
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -990,7 +1012,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kGlassBackground, enabled);
 
     // Needs full rebuild - container view type changes
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistSettingsChanged"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
                                                         object:nil];
 }
 
@@ -999,7 +1021,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     simplaylist_config::setConfigBool(simplaylist_config::kDebugRendering, enabled);
 
     // Only needs redraw, not full rebuild
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded"
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
                                                         object:nil];
 }
 
@@ -1065,7 +1087,7 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 - (void)queueDisplayStyleChanged:(id)sender {
     int64_t style = [_queueDisplayStylePopup indexOfSelectedItem];
     simplaylist_config::setConfigInt(simplaylist_config::kQueueDisplayStyle, style);
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification object:nil];
 }
 
 - (void)finderOpenBehaviorChanged:(id)sender {

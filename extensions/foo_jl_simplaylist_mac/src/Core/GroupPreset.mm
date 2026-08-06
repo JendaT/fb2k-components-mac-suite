@@ -85,6 +85,15 @@
     return @[basic];
 }
 
++ (NSInteger)defaultActivePresetIndex {
+    std::string savedJSON = simplaylist_config::getConfigString(
+        simplaylist_config::kGroupPresets, "");
+    if (savedJSON.empty()) return 0;
+    // nil on invalid UTF-8 in a corrupt store; activeIndexFromJSON: guards it.
+    NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
+    return [self activeIndexFromJSON:jsonString];
+}
+
 + (NSInteger)activeIndexFromJSON:(NSString *)jsonString {
     if (!jsonString || jsonString.length == 0) return 0;
 
