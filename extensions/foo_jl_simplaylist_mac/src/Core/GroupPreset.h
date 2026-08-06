@@ -62,19 +62,8 @@ typedef NS_ENUM(NSInteger, GroupDisplayType) {
 // Get currently active preset index from JSON
 + (NSInteger)activeIndexFromJSON:(NSString *)jsonString;
 
-// Default presets
-+ (NSArray<GroupPreset *> *)defaultPresets;
-
-// Active preset index, read from the same persisted JSON as +defaultPresets.
-//
-// The index belongs to that JSON's "active_index" field and nowhere else. It
-// used to be mirrored into a separate `active_preset_index` config key that
-// only the preferences page wrote and read, while the playlist panel took the
-// index from the JSON — so switching preset in preferences updated the mirror,
-// left the JSON untouched, and the panel went on grouping by the old preset
-// until some later edit happened to rewrite the JSON. Returns 0 when nothing
-// is persisted or the stored value is unusable.
-+ (NSInteger)defaultActivePresetIndex;
+// Config-backed accessors (+defaultPresets, +defaultActivePresetIndex) live in
+// GroupPresetStore.h so this file stays free of the foobar2000 SDK.
 
 // Convert display type from/to string
 + (GroupDisplayType)displayTypeFromString:(NSString *)str;

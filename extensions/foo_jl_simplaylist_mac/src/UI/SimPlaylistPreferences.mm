@@ -9,6 +9,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/SimPlaylistNotifications.h"
 #import "../Core/GroupPreset.h"
+#import "../Core/GroupPresetStore.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/TitleFormatHelper.h"
 #import "../fb2k_sdk.h"

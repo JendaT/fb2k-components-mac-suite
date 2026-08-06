@@ -9,6 +9,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/SimPlaylistNotifications.h"
 #import "../Core/ColumnDefinition.h"
+#import "../Core/ColumnDefinitionStore.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 
