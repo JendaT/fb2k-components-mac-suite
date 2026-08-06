@@ -97,13 +97,13 @@ static NSArray<NSNumber *> *numbers(NSInteger count, NSInteger (^value)(NSIntege
     return a;
 }
 
-// Build the model, run both cache rebuilds, then re-wrap every array input —
-// including the two caches the rebuilds produce, which are assigned internally
-// as plain arrays and would otherwise go uncounted.
+// Build the model with every array input — including cumulativePaddingCache,
+// which rebuildPaddingCache produces internally as a plain array and which
+// would otherwise go uncounted — wrapped in the counting subclass.
 //
-// Wrapping happens AFTER the rebuilds on purpose: rebuildPaddingCache and
-// rebuildSubgroupRowCache are legitimately O(groups), and counting them would
-// swamp the per-query budgets this test exists to check.
+// The rebuilds themselves are never measured: they are legitimately O(groups),
+// worstProbes zeroes the counter before each sample, and the model is left
+// fully built here so no query pays for a rebuild that belongs to setup.
 static PlaylistLayoutModel *makeModel(NSInteger headerDisplayStyle) {
     PlaylistLayoutModel *m = [[PlaylistLayoutModel alloc] init];
     m.itemCount = kItems;
@@ -134,13 +134,18 @@ static PlaylistLayoutModel *makeModel(NSInteger headerDisplayStyle) {
     m.subgroupCountPerGroup = subPerGroup;
 
     [m rebuildPaddingCache];
-    [m rebuildSubgroupRowCache];
 
     m.groupStarts = [ProbeCountingArray wrap:m.groupStarts];
     m.groupPaddingRows = [ProbeCountingArray wrap:m.groupPaddingRows];
     m.subgroupStarts = [ProbeCountingArray wrap:m.subgroupStarts];
     m.subgroupCountPerGroup = [ProbeCountingArray wrap:m.subgroupCountPerGroup];
     m.cumulativePaddingCache = [ProbeCountingArray wrap:m.cumulativePaddingCache];
+
+    // Last, and after the wrapping: assigning any of the arrays above drops the
+    // model's derived caches, and a query that had to rebuild one would be
+    // charged for a whole O(groups) pass that belongs to setup, not to the
+    // query. Leaving the model fully built is also what a real panel does.
+    [m rebuildSubgroupRowCache];
 
     return m;
 }
@@ -186,8 +191,14 @@ int main(void) {
         CHECK_EQ(m.itemCount, kItems, "item count");
         CHECK(m.subgroupStarts.count > kGroups, "subgroups outnumber groups");
 
+        // Prove the wrapping actually took, or every budget below passes for
+        // the wrong reason. rowForPlaylistIndex: is the probe that has to be
+        // used here: most of the others are now O(1) against a precomputed
+        // vector and legitimately register zero.
         g_probes = 0;
-        (void)[m playlistIndexForRow:m.rowCount / 2];
+        for (NSInteger idx = 0; idx < kItems; idx += 9973) {
+            (void)[m rowForPlaylistIndex:idx];
+        }
         CHECK(g_probes > 0, "counting arrays survived the model's copy properties");
 
         // The mapping must still be correct — a fast wrong answer is no use.
@@ -197,18 +208,30 @@ int main(void) {
         }
     }
 
-    // Budgets sit roughly 40% above the current measured worst case and orders
-    // of magnitude below anything linear, so ordinary refactoring has room
-    // while an O(N) rewrite cannot slip through: a linear groupIndexForRow:
-    // alone costs 20000 probes against a 400 budget, and it sits inside
-    // rowAtPoint:'s own search, which would then cost several hundred thousand.
+    // Budgets sit far above the measured worst case and far below both a linear
+    // rewrite and the pre-optimisation cost, so they catch a regression in
+    // either direction without flaking.
     //
-    // rowAtPoint: is expensive in absolute terms because it nests three
-    // searches: a binary search over rows, each probe calling yOffsetForRow:,
-    // which calls groupIndexForRow:, whose every probe calls rowForGroupHeader:
-    // and thus a fourth search over subgroupStarts. That is the cost the
-    // O(1) rowForGroupHeader: work is aimed at; this budget records where it
-    // started so the improvement is a number rather than a claim.
+    // Measured now, against what the same query cost when rowForGroupHeader:
+    // still binary-searched subgroupStarts on every call:
+    //
+    //   query                  before   now   budget
+    //   playlistIndexForRow:      290     2       50
+    //   rowForPlaylistIndex:       48    48      200
+    //   groupIndexForRow:         270     0       50
+    //   rowForGroupHeader:         18     0        8
+    //   yOffsetForRow:            288     0       50
+    //   rowAtPoint:             10338     0      200
+    //
+    // The zeros are real: those paths now read a precomputed vector and touch
+    // no NSArray at all. rowAtPoint: fell furthest because it nested four
+    // searches — a binary search over rows, each probe calling yOffsetForRow:,
+    // which called groupIndexForRow:, whose every probe called
+    // rowForGroupHeader: and thus a search over subgroupStarts.
+    //
+    // rowForPlaylistIndex: is unchanged by design: it runs its own search over
+    // groupStarts and calls subgroupCountBeforePlaylistIndex: directly, neither
+    // of which goes through rowForGroupHeader:.
     {
         g_context = "budget-style-0";
         PlaylistLayoutModel *m = makeModel(0);
@@ -217,7 +240,7 @@ int main(void) {
         checkBudget("playlistIndexForRow:",
                     worstProbes(64, ^(NSInteger s) {
                         (void)[m playlistIndexForRow:(rows - 1) * s / 63];
-                    }), 400);
+                    }), 50);
 
         checkBudget("rowForPlaylistIndex:",
                     worstProbes(64, ^(NSInteger s) {
@@ -227,23 +250,23 @@ int main(void) {
         checkBudget("groupIndexForRow:",
                     worstProbes(64, ^(NSInteger s) {
                         (void)[m groupIndexForRow:(rows - 1) * s / 63];
-                    }), 400);
+                    }), 50);
 
         checkBudget("rowForGroupHeader:",
                     worstProbes(64, ^(NSInteger s) {
                         (void)[m rowForGroupHeader:(kGroups - 1) * s / 63];
-                    }), 100);
+                    }), 8);
 
         checkBudget("rowAtPoint:",
                     worstProbes(64, ^(NSInteger s) {
                         CGFloat maxY = [m totalContentHeightCached];
                         (void)[m rowAtPoint:NSMakePoint(0, maxY * s / 63)];
-                    }), 12000);
+                    }), 200);
 
         checkBudget("yOffsetForRow:",
                     worstProbes(64, ^(NSInteger s) {
                         (void)[m yOffsetForRow:(rows - 1) * s / 63];
-                    }), 400);
+                    }), 50);
     }
 
     // Header style 3 takes the other branch of rowForGroupHeader:, which every
@@ -257,7 +280,7 @@ int main(void) {
         checkBudget("playlistIndexForRow:",
                     worstProbes(64, ^(NSInteger s) {
                         (void)[m playlistIndexForRow:(rows - 1) * s / 63];
-                    }), 400);
+                    }), 50);
 
         checkBudget("rowForPlaylistIndex:",
                     worstProbes(64, ^(NSInteger s) {
@@ -268,7 +291,7 @@ int main(void) {
                     worstProbes(64, ^(NSInteger s) {
                         CGFloat maxY = [m totalContentHeightCached];
                         (void)[m rowAtPoint:NSMakePoint(0, maxY * s / 63)];
-                    }), 12000);
+                    }), 200);
     }
 
     }

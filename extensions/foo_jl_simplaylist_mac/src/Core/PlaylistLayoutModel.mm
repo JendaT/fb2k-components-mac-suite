@@ -8,7 +8,25 @@
 
 #import "PlaylistLayoutModel.h"
 
-@implementation PlaylistLayoutModel
+#include <vector>
+
+@implementation PlaylistLayoutModel {
+    // Header row per group, so -rowForGroupHeader: is O(1) instead of a binary
+    // search over subgroupStarts.
+    //
+    // That method sits under -groupIndexForRow:, which calls it on every probe
+    // of its own binary search, which -rowAtPoint: in turn calls on every probe
+    // of *its* search. The nesting made an apparently O(log g) lookup cost
+    // O(log rows . log g . log s) with two Objective-C message sends and an
+    // NSNumber unbox per innermost step.
+    //
+    // Built lazily and dropped by every setter that feeds it, so it cannot go
+    // stale — the alternative, building it inside rebuildSubgroupRowCache,
+    // would be silently wrong for any caller that sets headerDisplayStyle
+    // afterwards, and rebuildSubgroupRowCache itself depends on this value.
+    std::vector<NSInteger> _groupHeaderRows;
+    BOOL _groupHeaderRowsValid;
+}
 
 - (instancetype)init {
     self = [super init];
@@ -30,9 +48,73 @@
     return self;
 }
 
+#pragma mark - Group header row cache
+
+// Every input -rowForGroupHeader: reads. Overriding the setters keeps the
+// cache honest without asking callers to remember an invalidation step.
+- (void)setGroupStarts:(NSArray<NSNumber *> *)groupStarts {
+    _groupStarts = [groupStarts copy];
+    _groupHeaderRowsValid = NO;
+}
+
+- (void)setSubgroupStarts:(NSArray<NSNumber *> *)subgroupStarts {
+    _subgroupStarts = [subgroupStarts copy];
+    _groupHeaderRowsValid = NO;
+}
+
+- (void)setGroupPaddingRows:(NSArray<NSNumber *> *)groupPaddingRows {
+    _groupPaddingRows = [groupPaddingRows copy];
+    _groupHeaderRowsValid = NO;
+}
+
+- (void)setCumulativePaddingCache:(NSArray<NSNumber *> *)cumulativePaddingCache {
+    _cumulativePaddingCache = [cumulativePaddingCache copy];
+    _groupHeaderRowsValid = NO;
+}
+
+- (void)setHeaderDisplayStyle:(NSInteger)headerDisplayStyle {
+    _headerDisplayStyle = headerDisplayStyle;
+    _groupHeaderRowsValid = NO;
+}
+
+// One linear pass, O(groups + subgroups), replacing a binary search per group.
+//
+// groupStarts and subgroupStarts are both strictly increasing (a documented
+// precondition), so a single advancing cursor over subgroupStarts yields
+// exactly what -subgroupCountBeforePlaylistIndex: would compute for each group
+// start, without searching for it.
+- (void)rebuildGroupHeaderRows {
+    const NSInteger groupCount = (NSInteger)_groupStarts.count;
+    _groupHeaderRows.assign((size_t)groupCount, 0);
+
+    const NSInteger subgroupCount = (NSInteger)_subgroupStarts.count;
+    NSInteger subgroupsBefore = 0;
+
+    for (NSInteger g = 0; g < groupCount; g++) {
+        const NSInteger groupStart = [_groupStarts[g] integerValue];
+
+        // Number of subgroups starting strictly before this group start.
+        while (subgroupsBefore < subgroupCount &&
+               [_subgroupStarts[subgroupsBefore] integerValue] < groupStart) {
+            subgroupsBefore++;
+        }
+
+        const NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:g];
+        _groupHeaderRows[(size_t)g] = (_headerDisplayStyle == 3)
+            ? groupStart + subgroupsBefore + cumulativePadding
+            : groupStart + g + subgroupsBefore + cumulativePadding;
+    }
+
+    _groupHeaderRowsValid = YES;
+}
+
 #pragma mark - Cache rebuilds
 
 - (void)rebuildPaddingCache {
+    // Assigns _cumulativePaddingCache through the ivar, bypassing the setter
+    // that would otherwise drop the group-header rows derived from it.
+    _groupHeaderRowsValid = NO;
+
     if (_groupPaddingRows.count == 0) {
         _totalPaddingRowsCached = 0;
         _cumulativePaddingCache = @[];
@@ -52,6 +134,15 @@
 }
 
 - (void)rebuildSubgroupRowCache {
+    // Build the group-header rows here rather than leaving it to the first
+    // query, so the O(groups + subgroups) pass is paid once at a defined point
+    // alongside the other rebuilds instead of landing on whichever draw or
+    // hit-test happens to come first. -rowForGroupHeader: still builds lazily
+    // if an input changes after this runs; that path is the safety net, not the
+    // normal one. Safe to do first: -rowForSubgroupAtPlaylistIndex: below runs
+    // its own search and does not call -rowForGroupHeader:.
+    [self rebuildGroupHeaderRows];
+
     if (_subgroupStarts.count == 0) {
         _subgroupRowSet = [NSIndexSet indexSet];
         _subgroupRowToIndex = @{};
@@ -129,16 +220,8 @@
 
 - (NSInteger)rowForGroupHeader:(NSInteger)groupIndex {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return -1;
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-
-    NSInteger subgroupsBeforeGroup = [self subgroupCountBeforePlaylistIndex:groupStart];
-
-    if (_headerDisplayStyle == 3) {
-        return groupStart + subgroupsBeforeGroup + cumulativePadding;
-    } else {
-        return groupStart + groupIndex + subgroupsBeforeGroup + cumulativePadding;
-    }
+    if (!_groupHeaderRowsValid) [self rebuildGroupHeaderRows];
+    return _groupHeaderRows[(size_t)groupIndex];
 }
 
 - (BOOL)isRowGroupHeader:(NSInteger)row {
