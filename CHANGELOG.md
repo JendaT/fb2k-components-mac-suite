@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
 - Dropped files whose path contained a space could fail with "Access denied" (scheme-less file URL was imported percent-encoded)
+- Switching grouping preset did nothing until an unrelated pattern field was edited
+- Adding, removing or renaming a custom column had no effect until foobar2000 restarted
+- A renamed custom column was reverted by the next column resize, then deleted as an orphan on the following launch
+- A partial failure enumerating another component's columns deleted every column past the failure from the saved layout
+- Deleting or reordering playlists made the panel save scroll positions and group caches under another playlist's name, and could apply a drag reorder to the wrong playlist
+- Clearing the subgroup pattern discarded every subgroup beyond the first, invisibly
+- Toggling either subgroup option reused the layout cached under the old setting
+- Cover art reporting an implausible resolution bypassed the cache size limit
 - Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
 - An album cover too large to cache was re-decoded on every redraw, on up to four threads, for as long as it was on screen
 - Invalid grouping patterns previewed as the track's filename instead of reporting themselves as invalid
@@ -45,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Assorted crash guards and correctness fixes from a multi-pass code review
 
 #### Changed
+- Row hit-testing in large grouped playlists no longer nests four searches: group header rows are precomputed, taking a 200k-track/20k-group query from 10,338 array probes to none, with a probe-budget test enforcing it
+- Setting changes reach the panel in a defined order instead of depending on which observer the notification centre happened to call first
+- The saved column layout has a single writer; four places wrote it before, one of them from inside a read accessor
+- `ColumnDefinition` and `GroupPreset` split into pure model/codec plus config-backed store, adding 249 unit checks over the JSON codecs, corrupt-config handling and both silent data migrations
 - Removed ~1,100 lines of unreferenced legacy rendering code (node/boundary drawing, disabled flat mode, `GroupNode`/`GroupBoundary`)
 - Unified the group-data application sequence that was duplicated across five call sites and had drifted between copies
 

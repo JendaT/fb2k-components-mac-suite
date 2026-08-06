@@ -458,7 +458,13 @@ static NSString *formatGroupDuration(double seconds) {
     return [_layout rowCount];
 }
 
-#pragma mark - Row Mapping (O(log g) using binary search) — forwards to PlaylistLayoutModel
+// Row mapping — forwards to PlaylistLayoutModel, which precomputes each group's
+// header row and binary-searches the group and subgroup arrays for the rest.
+// The banner here used to claim a flat O(log g), which was wrong: before the
+// header rows were precomputed these queries nested up to four searches. See
+// the note on _groupHeaderRows in PlaylistLayoutModel.mm, and the measured
+// probe counts in Tests/RowMappingBudgetTests.mm.
+#pragma mark - Row Mapping
 
 - (NSInteger)groupIndexForRow:(NSInteger)row {
     return [_layout groupIndexForRow:row];
