@@ -12,6 +12,7 @@
 #import "../Core/WaveformData.h"
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
+#include "../Core/WaveformGeometry.h"
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -379,7 +380,7 @@ static const int kAnalysisMaxRetries = 1;
 
                     // Redraw once the cursor moves at least a quarter pixel
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
-                    double threshold = (viewWidth > 1.0) ? (0.25 / viewWidth) : 0.001;
+                    double threshold = waveseek::positionRedrawThreshold(viewWidth);
 
                     // Animated cursor effects need continuous redraw to stay smooth
                     BOOL animatedEffect = NO;

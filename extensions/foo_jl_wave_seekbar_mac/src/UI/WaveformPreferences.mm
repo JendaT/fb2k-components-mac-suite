@@ -10,6 +10,8 @@
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
 #include "../Core/WaveformService.h"
+#include "../Core/WaveformColorMap.h"
+#include "../Core/GradientBandTable.h"
 #import "../../../../shared/PreferencesCommon.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
@@ -289,18 +291,9 @@
     // Waveform style
     [_waveformStylePopup selectItemAtIndex:getConfigInt(kKeyWaveformStyle, kDefaultWaveformStyle)];
 
-    // Gradient bands - map value to popup index
+    // Gradient bands - map value to popup index (see GradientBandTable.h)
     int64_t bands = getConfigInt(kKeyGradientBands, kDefaultGradientBands);
-    NSInteger bandsIndex = 3;  // Default to 8 (index 3)
-    if (bands == 0) bandsIndex = 0;
-    else if (bands == 2) bandsIndex = 1;
-    else if (bands == 4) bandsIndex = 2;
-    else if (bands == 8) bandsIndex = 3;
-    else if (bands == 12) bandsIndex = 4;
-    else if (bands == 16) bandsIndex = 5;
-    else if (bands == 24) bandsIndex = 6;
-    else if (bands == 32) bandsIndex = 7;
-    [_gradientBandsPopup selectItemAtIndex:bandsIndex];
+    [_gradientBandsPopup selectItemAtIndex:waveseek::gradientBandIndexForValue(static_cast<int>(bands))];
 
     // Checkboxes
     _shadePlayedCheckbox.state = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -331,22 +324,16 @@
 }
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
-    return [NSColor colorWithRed:((argb >> 16) & 0xFF) / 255.0
-                           green:((argb >> 8) & 0xFF) / 255.0
-                            blue:(argb & 0xFF) / 255.0
-                           alpha:((argb >> 24) & 0xFF) / 255.0];
+    waveseek::Rgba color = waveseek::rgbaFromArgb(argb);
+    return [NSColor colorWithRed:color.r green:color.g blue:color.b alpha:color.a];
 }
 
 - (uint32_t)argbFromColor:(NSColor *)color {
     NSColor *rgbColor = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!rgbColor) return 0xFF000000;
 
-    uint32_t a = static_cast<uint32_t>(rgbColor.alphaComponent * 255) & 0xFF;
-    uint32_t r = static_cast<uint32_t>(rgbColor.redComponent * 255) & 0xFF;
-    uint32_t g = static_cast<uint32_t>(rgbColor.greenComponent * 255) & 0xFF;
-    uint32_t b = static_cast<uint32_t>(rgbColor.blueComponent * 255) & 0xFF;
-
-    return (a << 24) | (r << 16) | (g << 8) | b;
+    return waveseek::argbFromRgba({rgbColor.redComponent, rgbColor.greenComponent,
+                                   rgbColor.blueComponent, rgbColor.alphaComponent});
 }
 
 - (void)updateCacheStatus {
@@ -384,11 +371,10 @@
 
 - (void)gradientBandsChanged:(id)sender {
     using namespace waveform_config;
-    // Map popup index to actual value
-    int values[] = {0, 2, 4, 8, 12, 16, 24, 32};
-    NSInteger index = [_gradientBandsPopup indexOfSelectedItem];
-    if (index >= 0 && index < 8) {
-        setConfigInt(kKeyGradientBands, values[index]);
+    // Map popup index to actual value (see GradientBandTable.h)
+    int index = static_cast<int>([_gradientBandsPopup indexOfSelectedItem]);
+    if (waveseek::isValidGradientBandIndex(index)) {
+        setConfigInt(kKeyGradientBands, waveseek::gradientBandValueForIndex(index));
         [self notifySettingsChanged];
     }
 }

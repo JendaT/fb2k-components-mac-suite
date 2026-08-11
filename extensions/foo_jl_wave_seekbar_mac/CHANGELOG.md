@@ -7,10 +7,21 @@ All notable changes to Waveform Seekbar will be documented in this file.
 ### Changed
 - **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s.
 
+### Fixed
+- Colors could drift one step darker each time preferences were saved and reloaded (ARGB conversion truncated instead of rounding)
+- `WaveformData` position accessors invoked undefined behaviour on a negative or NaN position; the index is now clamped before the cast
+
 ### Technical
 - Segments run on the foobar2000 CPU thread pool and seek by absolute sample position, so the result matches a sequential scan exactly; remote, non-seekable and expensive-seek inputs stay sequential, and a segment failure (including a mid-stream sample rate change) falls back to one sequential pass.
 - Buckets split the track proportionally; the old fixed bucket size dropped up to 2047 trailing samples.
 - Bucket min/max/RMS computed with vDSP; RMS accumulates in double instead of float.
+- Peak binning extracted from the decode loop into `PeakBinner`, so the min/max/RMS math is unit-tested without a decoder or the SDK
+- Render geometry and colour ramps extracted into `WaveformGeometry` and `WaveformColorMap`; the four near-duplicate drawing paths in the view collapse to two helpers and `drawRect` only emits Core Graphics calls
+- Gradient-band choices now come from one table (`GradientBandTable`) instead of an if/else ladder and a parallel array that could drift apart
+- ARGB conversion deduplicated between the view and preferences
+- Cache eviction, expiry and key arithmetic extracted into `CachePolicy`, separated from the SQLite statements
+- Banded rendering computes each bucket's peak once per trace instead of once per band
+- Unit tests (`Tests/`, run by `Scripts/run_tests.sh` under ASan+UBSan) gate the build; ~1s, no SDK or Xcode needed
 
 ## [1.2.0] - 2026-07-02
 

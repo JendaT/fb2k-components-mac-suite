@@ -10,6 +10,8 @@
 #include "../Core/WaveformData.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
+#include "../Core/WaveformColorMap.h"
+#include "../Core/WaveformGeometry.h"
 #include <cmath>
 
 @interface WaveformSeekbarView () {
@@ -147,15 +149,12 @@
     }
 
     // Convert ARGB to NSColor
-    _waveformColor = [NSColor colorWithRed:((waveARGB >> 16) & 0xFF) / 255.0
-                                     green:((waveARGB >> 8) & 0xFF) / 255.0
-                                      blue:(waveARGB & 0xFF) / 255.0
-                                     alpha:((waveARGB >> 24) & 0xFF) / 255.0];
+    waveseek::Rgba wave = waveseek::rgbaFromArgb(waveARGB);
+    waveseek::Rgba background = waveseek::rgbaFromArgb(bgARGB);
 
-    _backgroundColor = [NSColor colorWithRed:((bgARGB >> 16) & 0xFF) / 255.0
-                                       green:((bgARGB >> 8) & 0xFF) / 255.0
-                                        blue:(bgARGB & 0xFF) / 255.0
-                                       alpha:((bgARGB >> 24) & 0xFF) / 255.0];
+    _waveformColor = [NSColor colorWithRed:wave.r green:wave.g blue:wave.b alpha:wave.a];
+    _backgroundColor = [NSColor colorWithRed:background.r green:background.g
+                                        blue:background.b alpha:background.a];
 }
 
 #pragma mark - Drawing
@@ -210,333 +209,167 @@
     [text drawAtPoint:point withAttributes:_placeholderAttributes];
 }
 
-// Helper: Get color for heat map based on amplitude (0-1)
-// Blue (cold/quiet) → Cyan → Green → Yellow → Red (hot/loud)
-- (void)getHeatMapColorForAmplitude:(CGFloat)amplitude r:(CGFloat*)r g:(CGFloat*)g b:(CGFloat*)b {
-    // Clamp to 0-1
-    amplitude = MAX(0.0, MIN(1.0, amplitude));
+#pragma mark - Waveform Rendering
 
-    if (amplitude < 0.25) {
-        // Blue to Cyan (0.0 - 0.25)
-        CGFloat t = amplitude / 0.25;
-        *r = 0.0;
-        *g = t;
-        *b = 1.0;
-    } else if (amplitude < 0.5) {
-        // Cyan to Green (0.25 - 0.5)
-        CGFloat t = (amplitude - 0.25) / 0.25;
-        *r = 0.0;
-        *g = 1.0;
-        *b = 1.0 - t;
-    } else if (amplitude < 0.75) {
-        // Green to Yellow (0.5 - 0.75)
-        CGFloat t = (amplitude - 0.5) / 0.25;
-        *r = t;
-        *g = 1.0;
-        *b = 0.0;
-    } else {
-        // Yellow to Red (0.75 - 1.0)
-        CGFloat t = (amplitude - 0.75) / 0.25;
-        *r = 1.0;
-        *g = 1.0 - t;
-        *b = 0.0;
-    }
+// Peak deflection drawn for one bucket of a single channel.
+static double channelPeak(const WaveformData *waveform, uint32_t channel, size_t bucket) {
+    return waveseek::peakAmplitude(waveform->min[channel][bucket], waveform->max[channel][bucket]);
 }
 
-// Helper: Get rainbow color for position (0-1)
-- (void)getRainbowColorForPosition:(CGFloat)position r:(CGFloat*)r g:(CGFloat*)g b:(CGFloat*)b {
-    // HSV to RGB with hue cycling through rainbow
-    CGFloat hue = fmod(position, 1.0);
-    CGFloat saturation = 1.0;
-    CGFloat value = 1.0;
-
-    int hi = (int)(hue * 6.0) % 6;
-    CGFloat f = hue * 6.0 - (int)(hue * 6.0);
-    CGFloat p = value * (1.0 - saturation);
-    CGFloat q = value * (1.0 - f * saturation);
-    CGFloat t = value * (1.0 - (1.0 - f) * saturation);
-
-    switch (hi) {
-        case 0: *r = value; *g = t; *b = p; break;
-        case 1: *r = q; *g = value; *b = p; break;
-        case 2: *r = p; *g = value; *b = t; break;
-        case 3: *r = p; *g = q; *b = value; break;
-        case 4: *r = t; *g = p; *b = value; break;
-        default: *r = value; *g = p; *b = q; break;
+// Peak deflection for the collapsed mono trace. The per-bucket colour styles
+// fold with the stereo envelope while solid folds with the average; the two
+// disagree on wide-stereo material, and WaveformGeometry.h spells out why
+// both survive.
+static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t bucket, bool useAverage) {
+    if (channels < 2) {
+        return channelPeak(waveform, 0, bucket);
     }
+
+    waveseek::MinMax folded = useAverage
+        ? waveseek::monoDownmixAverage(waveform->min[0][bucket], waveform->max[0][bucket],
+                                       waveform->min[1][bucket], waveform->max[1][bucket])
+        : waveseek::monoDownmixEnvelope(waveform->min[0][bucket], waveform->max[0][bucket],
+                                        waveform->min[1][bucket], waveform->max[1][bucket]);
+    return waveseek::peakAmplitude(folded.min, folded.max);
 }
 
 - (void)drawWaveformInContext:(CGContextRef)context bounds:(CGRect)bounds {
     const WaveformData* waveform = self.waveformData;
     if (!waveform || !waveform->isValid()) return;
 
-    uint32_t channels = waveform->channelCount;
-    bool isStereo = (channels == 2 && self.displayMode == WaveformDisplayModeStereo);
-
+    bool isStereo = (waveform->channelCount == 2 && self.displayMode == WaveformDisplayModeStereo);
     CGFloat viewWidth = bounds.size.width;
     CGFloat viewHeight = bounds.size.height;
-    CGFloat padding = 4.0;
 
-    // Get base color components (used for Solid style)
+    waveseek::ChannelLayout upper = isStereo ? waveseek::stereoLeftLayout(viewHeight)
+                                             : waveseek::monoLayout(viewHeight);
+
+    // Heat map and rainbow colour each bucket individually; solid uses the
+    // configured colour, optionally split into fading bands.
+    if (self.waveformStyle != WaveformRenderStyleSolid) {
+        if (isStereo) {
+            waveseek::ChannelLayout lower = waveseek::stereoRightLayout(viewHeight);
+            [self drawColoredTraceInContext:context layout:upper viewWidth:viewWidth channel:0];
+            [self drawColoredTraceInContext:context layout:lower viewWidth:viewWidth channel:1];
+        } else {
+            [self drawColoredTraceInContext:context layout:upper viewWidth:viewWidth channel:-1];
+        }
+        return;
+    }
+
     NSColor *baseColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!baseColor) baseColor = self.waveformColor;
+    int bands = waveseek::clampGradientBands(self.gradientBands);
 
-    CGFloat baseR = baseColor.redComponent;
-    CGFloat baseG = baseColor.greenComponent;
-    CGFloat baseB = baseColor.blueComponent;
-
-    // For Heat map and Rainbow, we draw per-bucket with individual colors
-    // For Solid, we use gradient bands for the fade effect
-    bool usePerBucketColor = (self.waveformStyle != WaveformRenderStyleSolid);
-
-    if (usePerBucketColor) {
-        // Heat map or Rainbow: draw each bucket with its own color
-        CGContextSetLineWidth(context, 1.0);
-
-        if (isStereo) {
-            CGFloat quarterHeight = viewHeight / 4.0;
-            CGFloat channelAmplitude = quarterHeight - padding;
-            CGFloat leftCenterY = viewHeight * 0.75;
-            CGFloat rightCenterY = viewHeight * 0.25;
-
-            for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                CGFloat position = static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT;
-
-                // Left channel
-                CGFloat peakL = std::max(std::abs(waveform->min[0][i]), std::abs(waveform->max[0][i]));
-                CGFloat rL, gL, bL;
-                if (self.waveformStyle == WaveformRenderStyleHeatMap) {
-                    [self getHeatMapColorForAmplitude:peakL r:&rL g:&gL b:&bL];
-                } else {
-                    [self getRainbowColorForPosition:position r:&rL g:&gL b:&bL];
-                }
-                CGContextSetRGBStrokeColor(context, rL, gL, bL, 1.0);
-                CGContextBeginPath(context);
-                CGContextMoveToPoint(context, x, leftCenterY - peakL * channelAmplitude);
-                CGContextAddLineToPoint(context, x, leftCenterY + peakL * channelAmplitude);
-                CGContextStrokePath(context);
-
-                // Right channel
-                CGFloat peakR = std::max(std::abs(waveform->min[1][i]), std::abs(waveform->max[1][i]));
-                CGFloat rR, gR, bR;
-                if (self.waveformStyle == WaveformRenderStyleHeatMap) {
-                    [self getHeatMapColorForAmplitude:peakR r:&rR g:&gR b:&bR];
-                } else {
-                    [self getRainbowColorForPosition:position r:&rR g:&gR b:&bR];
-                }
-                CGContextSetRGBStrokeColor(context, rR, gR, bR, 1.0);
-                CGContextBeginPath(context);
-                CGContextMoveToPoint(context, x, rightCenterY - peakR * channelAmplitude);
-                CGContextAddLineToPoint(context, x, rightCenterY + peakR * channelAmplitude);
-                CGContextStrokePath(context);
-            }
-        } else {
-            // Mono
-            CGFloat midY = viewHeight / 2.0;
-            CGFloat amplitude = (viewHeight / 2.0) - padding;
-
-            for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                CGFloat position = static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT;
-
-                CGFloat minVal, maxVal;
-                if (channels == 1) {
-                    minVal = waveform->min[0][i];
-                    maxVal = waveform->max[0][i];
-                } else {
-                    minVal = std::min(waveform->min[0][i], waveform->min[1][i]);
-                    maxVal = std::max(waveform->max[0][i], waveform->max[1][i]);
-                }
-                CGFloat peakVal = std::max(std::abs(minVal), std::abs(maxVal));
-
-                CGFloat r, g, b;
-                if (self.waveformStyle == WaveformRenderStyleHeatMap) {
-                    [self getHeatMapColorForAmplitude:peakVal r:&r g:&g b:&b];
-                } else {
-                    [self getRainbowColorForPosition:position r:&r g:&g b:&b];
-                }
-                CGContextSetRGBStrokeColor(context, r, g, b, 1.0);
-                CGContextBeginPath(context);
-                CGContextMoveToPoint(context, x, midY - peakVal * amplitude);
-                CGContextAddLineToPoint(context, x, midY + peakVal * amplitude);
-                CGContextStrokePath(context);
-            }
-        }
+    if (isStereo) {
+        waveseek::ChannelLayout lower = waveseek::stereoRightLayout(viewHeight);
+        [self drawSolidTraceInContext:context layout:upper viewWidth:viewWidth
+                              channel:0 bands:bands color:baseColor];
+        [self drawSolidTraceInContext:context layout:lower viewWidth:viewWidth
+                              channel:1 bands:bands color:baseColor];
     } else {
-        // Solid style: use gradient bands for fade effect (original implementation)
-        int gradientBands = MIN(32, self.gradientBands);  // Clamp to max 32
-        CGFloat r = baseR, g = baseG, b = baseB;
+        [self drawSolidTraceInContext:context layout:upper viewWidth:viewWidth
+                              channel:-1 bands:bands color:baseColor];
+    }
+}
 
-        // If 0 bands, draw simple solid waveform without gradient
-        if (gradientBands <= 0) {
-            CGContextSetRGBStrokeColor(context, r, g, b, 1.0);
-            CGContextSetLineWidth(context, 1.0);
+// Peak per bucket for one trace, computed once up front: the banded path
+// reads each bucket once per band, and recomputing the fold every time was
+// the bulk of its work. channel >= 0 selects that channel, -1 the mono
+// downmix.
+- (void)fillPeaks:(float *)peaks channel:(int)channel useAverageDownmix:(BOOL)useAverage {
+    const WaveformData *waveform = self.waveformData;
+    uint32_t channels = waveform->channelCount;
 
-            if (isStereo) {
-                CGFloat quarterHeight = viewHeight / 4.0;
-                CGFloat channelAmplitude = quarterHeight - padding;
-                CGFloat leftCenterY = viewHeight * 0.75;
-                CGFloat rightCenterY = viewHeight * 0.25;
+    for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
+        double peak = (channel >= 0)
+            ? channelPeak(waveform, static_cast<uint32_t>(channel), i)
+            : monoPeak(waveform, channels, i, useAverage);
+        peaks[i] = static_cast<float>(peak);
+    }
+}
 
-                CGContextBeginPath(context);
-                for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                    CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                    CGFloat peakL = std::max(std::abs(waveform->min[0][i]), std::abs(waveform->max[0][i]));
-                    CGFloat peakR = std::max(std::abs(waveform->min[1][i]), std::abs(waveform->max[1][i]));
+// One stroke per bucket, since every bucket carries its own colour.
+- (void)drawColoredTraceInContext:(CGContextRef)context
+                           layout:(waveseek::ChannelLayout)layout
+                        viewWidth:(CGFloat)viewWidth
+                          channel:(int)channel {
+    float peaks[WaveformData::BUCKET_COUNT];
+    [self fillPeaks:peaks channel:channel useAverageDownmix:NO];
 
-                    CGContextMoveToPoint(context, x, leftCenterY - peakL * channelAmplitude);
-                    CGContextAddLineToPoint(context, x, leftCenterY + peakL * channelAmplitude);
-                    CGContextMoveToPoint(context, x, rightCenterY - peakR * channelAmplitude);
-                    CGContextAddLineToPoint(context, x, rightCenterY + peakR * channelAmplitude);
-                }
-                CGContextStrokePath(context);
-            } else {
-                CGFloat midY = viewHeight / 2.0;
-                CGFloat amplitude = (viewHeight / 2.0) - padding;
+    BOOL isHeatMap = (self.waveformStyle == WaveformRenderStyleHeatMap);
+    CGContextSetLineWidth(context, 1.0);
 
-                CGContextBeginPath(context);
-                for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                    CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                    CGFloat minVal, maxVal;
-                    if (channels == 1) {
-                        minVal = waveform->min[0][i];
-                        maxVal = waveform->max[0][i];
-                    } else {
-                        minVal = (waveform->min[0][i] + waveform->min[1][i]) * 0.5f;
-                        maxVal = (waveform->max[0][i] + waveform->max[1][i]) * 0.5f;
-                    }
-                    CGFloat peakVal = std::max(std::abs(minVal), std::abs(maxVal));
+    for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
+        CGFloat x = waveseek::bucketX(i, WaveformData::BUCKET_COUNT, viewWidth);
+        CGFloat peak = peaks[i];
 
-                    CGContextMoveToPoint(context, x, midY - peakVal * amplitude);
-                    CGContextAddLineToPoint(context, x, midY + peakVal * amplitude);
-                }
-                CGContextStrokePath(context);
-            }
-            return;
+        waveseek::Rgb color = isHeatMap
+            ? waveseek::heatMapColor(peak)
+            : waveseek::rainbowColor(waveseek::bucketPosition(i, WaveformData::BUCKET_COUNT));
+
+        CGContextSetRGBStrokeColor(context, color.r, color.g, color.b, 1.0);
+        CGContextBeginPath(context);
+        CGContextMoveToPoint(context, x, layout.centerY - peak * layout.amplitude);
+        CGContextAddLineToPoint(context, x, layout.centerY + peak * layout.amplitude);
+        CGContextStrokePath(context);
+    }
+}
+
+// A single colour: either a flat trace, or stacked translucent bands that
+// fade as they move away from the baseline.
+- (void)drawSolidTraceInContext:(CGContextRef)context
+                         layout:(waveseek::ChannelLayout)layout
+                      viewWidth:(CGFloat)viewWidth
+                        channel:(int)channel
+                          bands:(int)bands
+                          color:(NSColor *)color {
+    float peaks[WaveformData::BUCKET_COUNT];
+    [self fillPeaks:peaks channel:channel useAverageDownmix:YES];
+
+    CGFloat r = color.redComponent;
+    CGFloat g = color.greenComponent;
+    CGFloat b = color.blueComponent;
+    CGContextSetLineWidth(context, 1.0);
+
+    if (bands <= 0) {
+        CGContextSetRGBStrokeColor(context, r, g, b, 1.0);
+        CGContextBeginPath(context);
+        for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
+            CGFloat x = waveseek::bucketX(i, WaveformData::BUCKET_COUNT, viewWidth);
+            CGFloat peak = peaks[i];
+            CGContextMoveToPoint(context, x, layout.centerY - peak * layout.amplitude);
+            CGContextAddLineToPoint(context, x, layout.centerY + peak * layout.amplitude);
         }
+        CGContextStrokePath(context);
+        return;
+    }
 
-        // Gradient bands rendering (gradientBands >= 2)
+    for (int band = 0; band < bands; band++) {
+        waveseek::BandRange range = waveseek::bandRange(band, bands);
+        CGContextSetRGBStrokeColor(context, r, g, b, waveseek::bandAlpha(band, bands));
+        CGContextBeginPath(context);
 
-        if (isStereo) {
-            CGFloat quarterHeight = viewHeight / 4.0;
-            CGFloat channelAmplitude = quarterHeight - padding;
+        for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
+            CGFloat peak = peaks[i];
+            if (peak <= range.start) continue;  // this bucket never reaches the band
 
-            // Left channel (top half)
-            CGFloat leftCenterY = viewHeight * 0.75;
-            for (int band = 0; band < gradientBands; band++) {
-                CGFloat bandStart = (CGFloat)band / gradientBands;
-                CGFloat bandEnd = (CGFloat)(band + 1) / gradientBands;
-                CGFloat alpha = 1.0 - (bandStart * 0.6);
+            CGFloat x = waveseek::bucketX(i, WaveformData::BUCKET_COUNT, viewWidth);
+            CGFloat inner = range.start * layout.amplitude;
+            CGFloat outer = std::min<CGFloat>(peak, range.end) * layout.amplitude;
 
-                CGContextSetRGBStrokeColor(context, r, g, b, alpha);
-                CGContextSetLineWidth(context, 1.0);
-                CGContextBeginPath(context);
-
-                for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                    CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                    CGFloat peakVal = std::max(std::abs(waveform->min[0][i]), std::abs(waveform->max[0][i]));
-
-                    if (peakVal > bandStart) {
-                        CGFloat drawPeak = std::min(peakVal, bandEnd);
-                        CGFloat y1Top = leftCenterY + bandStart * channelAmplitude;
-                        CGFloat y2Top = leftCenterY + drawPeak * channelAmplitude;
-                        CGFloat y1Bot = leftCenterY - bandStart * channelAmplitude;
-                        CGFloat y2Bot = leftCenterY - drawPeak * channelAmplitude;
-
-                        CGContextMoveToPoint(context, x, y1Top);
-                        CGContextAddLineToPoint(context, x, y2Top);
-                        CGContextMoveToPoint(context, x, y1Bot);
-                        CGContextAddLineToPoint(context, x, y2Bot);
-                    }
-                }
-                CGContextStrokePath(context);
-            }
-
-            // Right channel (bottom half)
-            CGFloat rightCenterY = viewHeight * 0.25;
-            for (int band = 0; band < gradientBands; band++) {
-                CGFloat bandStart = (CGFloat)band / gradientBands;
-                CGFloat bandEnd = (CGFloat)(band + 1) / gradientBands;
-                CGFloat alpha = 1.0 - (bandStart * 0.6);
-
-                CGContextSetRGBStrokeColor(context, r, g, b, alpha);
-                CGContextSetLineWidth(context, 1.0);
-                CGContextBeginPath(context);
-
-                for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                    CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-                    CGFloat peakVal = std::max(std::abs(waveform->min[1][i]), std::abs(waveform->max[1][i]));
-
-                    if (peakVal > bandStart) {
-                        CGFloat drawPeak = std::min(peakVal, bandEnd);
-                        CGFloat y1Top = rightCenterY + bandStart * channelAmplitude;
-                        CGFloat y2Top = rightCenterY + drawPeak * channelAmplitude;
-                        CGFloat y1Bot = rightCenterY - bandStart * channelAmplitude;
-                        CGFloat y2Bot = rightCenterY - drawPeak * channelAmplitude;
-
-                        CGContextMoveToPoint(context, x, y1Top);
-                        CGContextAddLineToPoint(context, x, y2Top);
-                        CGContextMoveToPoint(context, x, y1Bot);
-                        CGContextAddLineToPoint(context, x, y2Bot);
-                    }
-                }
-                CGContextStrokePath(context);
-            }
-        } else {
-            // Mono with gradient bands
-            CGFloat midY = viewHeight / 2.0;
-            CGFloat amplitude = (viewHeight / 2.0) - padding;
-
-            for (int band = 0; band < gradientBands; band++) {
-                CGFloat bandStart = (CGFloat)band / gradientBands;
-                CGFloat bandEnd = (CGFloat)(band + 1) / gradientBands;
-                CGFloat alpha = 1.0 - (bandStart * 0.6);
-
-                CGContextSetRGBStrokeColor(context, r, g, b, alpha);
-                CGContextSetLineWidth(context, 1.0);
-                CGContextBeginPath(context);
-
-                for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
-                    CGFloat x = (static_cast<CGFloat>(i) / WaveformData::BUCKET_COUNT) * viewWidth;
-
-                    CGFloat minVal, maxVal;
-                    if (channels == 1) {
-                        minVal = waveform->min[0][i];
-                        maxVal = waveform->max[0][i];
-                    } else {
-                        minVal = (waveform->min[0][i] + waveform->min[1][i]) * 0.5f;
-                        maxVal = (waveform->max[0][i] + waveform->max[1][i]) * 0.5f;
-                    }
-
-                    CGFloat peakVal = std::max(std::abs(minVal), std::abs(maxVal));
-
-                    if (peakVal > bandStart) {
-                        CGFloat drawPeak = std::min(peakVal, bandEnd);
-                        CGFloat y1Top = midY - bandStart * amplitude;
-                        CGFloat y2Top = midY - drawPeak * amplitude;
-                        CGFloat y1Bot = midY + bandStart * amplitude;
-                        CGFloat y2Bot = midY + drawPeak * amplitude;
-
-                        CGContextMoveToPoint(context, x, y1Top);
-                        CGContextAddLineToPoint(context, x, y2Top);
-                        CGContextMoveToPoint(context, x, y1Bot);
-                        CGContextAddLineToPoint(context, x, y2Bot);
-                    }
-                }
-                CGContextStrokePath(context);
-            }
+            CGContextMoveToPoint(context, x, layout.centerY + inner);
+            CGContextAddLineToPoint(context, x, layout.centerY + outer);
+            CGContextMoveToPoint(context, x, layout.centerY - inner);
+            CGContextAddLineToPoint(context, x, layout.centerY - outer);
         }
+        CGContextStrokePath(context);
     }
 }
 
 // Get animation frequency: uses BPM if sync enabled, otherwise returns default
 - (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
-    if (self.bpmSync && self.trackBpm > 0) {
-        // Convert BPM to Hz: BPM / 60 = beats per second
-        return self.trackBpm / 60.0;
-    }
-    return defaultHz;
+    return waveseek::animationFrequency(self.bpmSync, self.trackBpm, defaultHz);
 }
 
 - (void)drawPlayedOverlayInContext:(CGContextRef)context bounds:(CGRect)bounds {
@@ -609,7 +442,7 @@
 // Effect 1: Gradient - Fade at the edge
 - (void)drawGradientEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                         playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    CGFloat fadeWidth = MIN(bounds.size.width * 0.02, 10.0);
+    CGFloat fadeWidth = waveseek::cursorFadeWidth(bounds.size.width);
 
     CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
     if (!colorSpace) return;
@@ -651,8 +484,7 @@
 
     // Pulsing glow at cursor
     CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
-    CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
+    CGFloat pulse = waveseek::oscillator(time, [self animationFrequencyWithDefault:1.0]);
     CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
 
     CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
@@ -733,8 +565,7 @@
                      playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Breathing opacity for the entire played area
     CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat freq = [self animationFrequencyWithDefault:1.5] * 2.0 * M_PI;  // Default 1.5Hz
-    CGFloat breath = 0.5 + 0.5 * sin(time * freq);
+    CGFloat breath = waveseek::oscillator(time, [self animationFrequencyWithDefault:1.5]);
 
     // Modulate dimOpacity: ranges from dimOpacity*0.3 to dimOpacity*1.0
     CGFloat pulsingOpacity = dimOpacity * (0.3 + breath * 0.7);
@@ -799,8 +630,7 @@
     if (!waveDeviceColor) return;
 
     for (int i = 0; i < bandCount; i++) {
-        CGFloat phase = time * baseFreq * 2.0 * M_PI + i * 0.8;  // Different phase per band
-        CGFloat shimmer = 0.5 + 0.5 * sin(phase);
+        CGFloat shimmer = waveseek::oscillator(time, baseFreq, i * 0.8);  // Different phase per band
         CGFloat bandAlpha = shimmer * 0.3;  // 0-0.3 alpha
 
         CGFloat bandX = playedWidth - shimmerWidth + (i * shimmerWidth / bandCount);
@@ -855,10 +685,8 @@
     if (self.trackDuration <= 0.0) return;
 
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
-    CGFloat normalizedPosition = location.x / self.bounds.size.width;
-    normalizedPosition = MAX(0.0, MIN(1.0, normalizedPosition));
-
-    double seekTime = normalizedPosition * self.trackDuration;
+    double normalizedPosition = waveseek::normalizedPositionForX(location.x, self.bounds.size.width);
+    double seekTime = waveseek::seekTimeForPosition(normalizedPosition, self.trackDuration);
 
     // Seek via SDK - must be on main thread
     if ([NSThread isMainThread]) {
@@ -902,23 +730,19 @@
 }
 
 - (BOOL)accessibilityPerformIncrement {
-    // Seek forward 5 seconds
-    if (self.trackDuration > 0) {
-        double newPosition = MIN(1.0, self.playbackPosition + (5.0 / self.trackDuration));
-        [self performSeekToTime:newPosition * self.trackDuration];
-        return YES;
-    }
-    return NO;
+    return [self nudgePlaybackBySeconds:5.0];
 }
 
 - (BOOL)accessibilityPerformDecrement {
-    // Seek backward 5 seconds
-    if (self.trackDuration > 0) {
-        double newPosition = MAX(0.0, self.playbackPosition - (5.0 / self.trackDuration));
-        [self performSeekToTime:newPosition * self.trackDuration];
-        return YES;
-    }
-    return NO;
+    return [self nudgePlaybackBySeconds:-5.0];
+}
+
+- (BOOL)nudgePlaybackBySeconds:(double)seconds {
+    if (self.trackDuration <= 0) return NO;
+
+    double newPosition = waveseek::nudgedPosition(self.playbackPosition, self.trackDuration, seconds);
+    [self performSeekToTime:waveseek::seekTimeForPosition(newPosition, self.trackDuration)];
+    return YES;
 }
 
 @end

@@ -47,25 +47,30 @@ size_t WaveformData::memorySize() const {
     return size;
 }
 
+// Position to bucket index. Clamps before the cast: converting a negative
+// double to size_t is undefined behaviour, and a NaN position would land
+// anywhere, so neither can be allowed to reach the subscript.
+static size_t bucketIndexForPosition(double normalizedPosition) {
+    if (!(normalizedPosition > 0.0)) return 0;  // also catches NaN
+    if (normalizedPosition >= 1.0) return WaveformData::BUCKET_COUNT - 1;
+
+    size_t index = static_cast<size_t>(normalizedPosition * (WaveformData::BUCKET_COUNT - 1));
+    return std::min(index, WaveformData::BUCKET_COUNT - 1);
+}
+
 float WaveformData::getMinAt(uint32_t channel, double normalizedPosition) const {
     if (channel >= channelCount || min[channel].empty()) return 0.0f;
-    size_t index = static_cast<size_t>(normalizedPosition * (BUCKET_COUNT - 1));
-    index = std::min(index, BUCKET_COUNT - 1);
-    return min[channel][index];
+    return min[channel][bucketIndexForPosition(normalizedPosition)];
 }
 
 float WaveformData::getMaxAt(uint32_t channel, double normalizedPosition) const {
     if (channel >= channelCount || max[channel].empty()) return 0.0f;
-    size_t index = static_cast<size_t>(normalizedPosition * (BUCKET_COUNT - 1));
-    index = std::min(index, BUCKET_COUNT - 1);
-    return max[channel][index];
+    return max[channel][bucketIndexForPosition(normalizedPosition)];
 }
 
 float WaveformData::getRmsAt(uint32_t channel, double normalizedPosition) const {
     if (channel >= channelCount || rms[channel].empty()) return 0.0f;
-    size_t index = static_cast<size_t>(normalizedPosition * (BUCKET_COUNT - 1));
-    index = std::min(index, BUCKET_COUNT - 1);
-    return rms[channel][index];
+    return rms[channel][bucketIndexForPosition(normalizedPosition)];
 }
 
 // Little-endian serialization helpers

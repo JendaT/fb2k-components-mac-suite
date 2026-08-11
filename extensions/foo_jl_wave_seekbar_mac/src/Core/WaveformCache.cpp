@@ -6,6 +6,7 @@
 //
 
 #include "WaveformCache.h"
+#include "CachePolicy.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/stat.h>
 #include <ctime>
@@ -175,9 +176,10 @@ std::string WaveformCache::generateCacheKey(const metadb_handle_ptr& track) cons
     t_filestats stats = track->get_filestats();
 
     // Create hash input
-    pfc::string_formatter keyInput;
-    keyInput << path.c_str() << "|" << subsong << "|"
-             << stats.m_size << "|" << stats.m_timestamp;
+    std::string keyInput = waveseek::cacheKeyInput(
+        path.c_str(), subsong,
+        static_cast<int64_t>(stats.m_size),
+        static_cast<int64_t>(stats.m_timestamp));
 
     // SHA-256 hash
     unsigned char hash[CC_SHA256_DIGEST_LENGTH];
@@ -350,7 +352,8 @@ size_t WaveformCache::pruneOldEntries(int maxAgeDays) {
         return 0;
     }
 
-    sqlite3_int64 cutoff = static_cast<sqlite3_int64>(std::time(nullptr)) - (static_cast<sqlite3_int64>(maxAgeDays) * 24 * 60 * 60);
+    sqlite3_int64 cutoff = waveseek::pruneCutoffTimestamp(
+        static_cast<int64_t>(std::time(nullptr)), maxAgeDays);
 
     sqlite3_reset(m_stmtPrune);
     sqlite3_bind_int64(m_stmtPrune, 1, cutoff);
@@ -380,13 +383,10 @@ size_t WaveformCache::enforceSizeLimit(size_t maxSizeMB) {
         sqlite3_finalize(stmt);
     }
 
-    sqlite3_int64 maxSizeBytes = static_cast<sqlite3_int64>(maxSizeMB) * 1024 * 1024;
+    sqlite3_int64 maxSizeBytes = waveseek::bytesFromMegabytes(static_cast<int64_t>(maxSizeMB));
     if (currentSize <= maxSizeBytes) {
         return 0;
     }
-
-    // Calculate excess and delete oldest entries in a single batch
-    sqlite3_int64 excess = currentSize - maxSizeBytes;
 
     const char* batchDeleteSql = R"(
         DELETE FROM waveforms WHERE cache_key IN (
@@ -404,11 +404,9 @@ size_t WaveformCache::enforceSizeLimit(size_t maxSizeMB) {
         sqlite3_finalize(stmt);
     }
 
-    if (entryCount == 0) return 0;
-
-    // Delete proportionally: (excess / total) * count, plus a margin
-    sqlite3_int64 deleteCount = (excess * entryCount) / currentSize + 1;
-    deleteCount = std::min(deleteCount, entryCount);
+    // Delete proportionally: see waveseek::evictionCount
+    sqlite3_int64 deleteCount = waveseek::evictionCount(currentSize, maxSizeBytes, entryCount);
+    if (deleteCount == 0) return 0;
 
     stmt = nullptr;
     if (sqlite3_prepare_v2(m_db, batchDeleteSql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -451,7 +449,7 @@ WaveformCache::CacheStats WaveformCache::getStats() const {
         if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
             sqlite3_int64 oldest = sqlite3_column_int64(stmt, 0);
             sqlite3_int64 now = static_cast<sqlite3_int64>(std::time(nullptr));
-            stats.oldestAccessDays = static_cast<double>(now - oldest) / (24.0 * 60.0 * 60.0);
+            stats.oldestAccessDays = waveseek::daysSince(now, oldest);
         }
         sqlite3_finalize(stmt);
     }
