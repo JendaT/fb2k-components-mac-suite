@@ -46,7 +46,7 @@ static PlaybackDecision play(PlaybackTracker &t, int from, int to) {
 int main(void) {
     const int64_t kStart = 1751000000;
 
-    // --- Normal play: now-playing at 3s, scrobble at 50%, start timestamp ---
+    // --- Normal play: now-playing at 3s, scrobble deferred to the boundary ---
     {
         g_context = "normal-play";
         PlaybackTracker t;
@@ -62,38 +62,91 @@ int main(void) {
         d = t.onTime(4.0);
         CHECK(!d.sendNowPlaying, "now-playing sent only once");
 
-        d = play(t, 4, 99);
-        CHECK(!d.scrobble, "not yet at 50% (99s < 100s)");
-        d = t.onTime(100.0);
-        CHECK(d.scrobble, "scrobbles at 50%");
+        d = play(t, 4, 200);
+        CHECK(!d.scrobble, "never scrobbles mid-playback, even well past 50%");
+        CHECK(!t.scrobbled(), "nothing submitted while the track is still playing");
+
+        d = t.onStop(false);
+        CHECK(d.scrobble, "the earned scrobble lands at the stop boundary");
         CHECK(d.timestamp == kStart, "stamped with track START time");
         CHECK(t.scrobbled(), "state records scrobble");
+    }
 
-        d = play(t, 100, 200);
-        CHECK(!d.scrobble, "never scrobbles twice while playing");
+    // --- Eligibility threshold: 50% of duration, measured at the boundary ---
+    {
+        g_context = "fifty-percent-threshold";
+        PlaybackTracker below;
+        below.beginTrack(true, 200.0, true, kStart);
+        play(below, 0, 99);
+        CHECK(!below.onStop(false).scrobble, "99s of a 200s track does not qualify");
+
+        PlaybackTracker at;
+        at.beginTrack(true, 200.0, true, kStart);
+        play(at, 0, 100);
+        CHECK(at.onStop(false).scrobble, "100s of a 200s track qualifies");
     }
 
     // --- Long track: 4-minute cap instead of 50% ---
     {
         g_context = "four-minute-cap";
-        PlaybackTracker t;
-        t.beginTrack(true, 1200.0, true, kStart);  // 20 min track
-        PlaybackDecision d = play(t, 0, 239);
-        CHECK(!d.scrobble, "not at 239s");
-        d = t.onTime(240.0);
-        CHECK(d.scrobble, "scrobbles at 240s cap");
+        PlaybackTracker below;
+        below.beginTrack(true, 1200.0, true, kStart);  // 20 min track
+        play(below, 0, 239);
+        CHECK(!below.onStop(false).scrobble, "not at 239s");
+
+        PlaybackTracker at;
+        at.beginTrack(true, 1200.0, true, kStart);
+        play(at, 0, 240);
+        CHECK(at.onStop(false).scrobble, "qualifies at the 240s cap");
     }
 
-    // --- Stop after qualifying: no double scrobble ---
+    // --- Stop after qualifying: submitted exactly once, tracking ends ---
     {
-        g_context = "stop-after-scrobble";
+        g_context = "stop-after-qualifying";
         PlaybackTracker t;
         t.beginTrack(true, 100.0, true, kStart);
         PlaybackDecision d = play(t, 0, 60);
-        CHECK(d.scrobble, "scrobbled mid-play");
+        CHECK(!d.scrobble, "nothing submitted while playing");
         d = t.onStop(false);
-        CHECK(!d.scrobble, "stop must not queue the track again");
+        CHECK(d.scrobble, "stop submits it");
         CHECK(!t.hasTrack(), "tracking ends on stop");
+        d = t.onStop(false);
+        CHECK(!d.scrobble, "a second stop must not queue the track again");
+    }
+
+    // --- Pause is a boundary: eligible track is submitted, exactly once ---
+    {
+        g_context = "pause-finalizes";
+        PlaybackTracker t;
+        t.beginTrack(true, 100.0, true, kStart);
+        play(t, 0, 60);
+        PlaybackDecision d = t.onPause(true);
+        CHECK(d.scrobble, "pause submits the earned scrobble");
+        CHECK(d.timestamp == kStart, "with the track's start time");
+
+        d = t.onPause(false);
+        CHECK(!d.scrobble, "resume submits nothing");
+        d = play(t, 60, 100);
+        CHECK(!d.scrobble, "and nothing more accumulates into a second scrobble");
+        d = t.onStop(false);
+        CHECK(!d.scrobble, "stop must not queue the track a second time");
+    }
+
+    // --- Pause before qualifying: nothing submitted, tracking continues ---
+    {
+        g_context = "pause-early";
+        PlaybackTracker t;
+        t.beginTrack(true, 200.0, true, kStart);
+        play(t, 0, 30);
+        PlaybackDecision d = t.onPause(true);
+        CHECK(!d.scrobble, "30s of a 200s track does not scrobble on pause");
+        d = t.onPause(false);
+        CHECK(!d.scrobble, "nor on resume");
+
+        play(t, 30, 100);
+        d = t.onStop(false);
+        CHECK(d.scrobble, "listening resumed and still earned the scrobble");
+        CHECK(d.timestamp == kStart, "stamped with the original start time");
     }
 
     // --- Stop before qualifying threshold: no scrobble ---
@@ -106,19 +159,29 @@ int main(void) {
         CHECK(!d.scrobble, "30s of a 200s track does not scrobble");
     }
 
-    // --- Stop finalizes a qualified-but-unscrobbled track ---
-    // (mid-play scrobble was suppressed while metadata was invalid)
+    // --- Validity is judged at the boundary, not while playing ---
     {
         g_context = "stop-finalizes";
         PlaybackTracker t;
         t.beginTrack(true, 100.0, true, kStart);
-        t.onTrackEdited(100.0, false);
+        t.onTrackEdited(100.0, false);      // metadata went invalid mid-play
         play(t, 0, 80);
-        CHECK(!t.scrobbled(), "suppressed while invalid");
-        t.onTrackEdited(100.0, true);
+        CHECK(!t.scrobbled(), "nothing submitted while playing");
+        t.onTrackEdited(100.0, true);       // metadata fixed before the boundary
         PlaybackDecision d = t.onStop(false);
         CHECK(d.scrobble, "stop finalizes the earned scrobble");
         CHECK(d.timestamp == kStart, "with the track's start time");
+    }
+
+    // --- Still invalid at the boundary: dropped ---
+    {
+        g_context = "stop-invalid";
+        PlaybackTracker t;
+        t.beginTrack(true, 100.0, true, kStart);
+        t.onTrackEdited(100.0, false);
+        play(t, 0, 80);
+        PlaybackDecision d = t.onStop(false);
+        CHECK(!d.scrobble, "invalid metadata is not scrobbled at the boundary");
     }
 
     // --- Track-switch: previous unqualified track is dropped ---
@@ -134,18 +197,18 @@ int main(void) {
         CHECK(!d.scrobble, "previous track had not earned a scrobble");
     }
 
-    // --- Track-switch: previous qualified-but-unscrobbled track finalizes ---
-    // (can happen when stop lands between qualification and the next tick;
-    //  reproduce by disabling mid-play scrobble via a validity flip)
+    // --- Track-switch: previous qualified track finalizes at the new track ---
+    // (the real fb2k sequence: stop(starting_another) then new_track)
     {
         g_context = "switch-finalizes";
         PlaybackTracker t;
         t.beginTrack(true, 100.0, true, kStart);
-        t.onTrackEdited(100.0, false);      // invalid: mid-play scrobble suppressed
         play(t, 0, 80);
-        CHECK(!t.scrobbled(), "invalid track did not scrobble mid-play");
-        t.onTrackEdited(100.0, true);       // metadata fixed
-        PlaybackDecision d = t.beginTrack(true, 180.0, true, kStart + 81);
+        CHECK(!t.scrobbled(), "not submitted while the track was playing");
+
+        PlaybackDecision d = t.onStop(true);
+        CHECK(!d.scrobble, "starting-another stop defers to beginTrack");
+        d = t.beginTrack(true, 180.0, true, kStart + 81);
         CHECK(d.scrobble, "previous track finalized on switch");
         CHECK(d.timestamp == kStart, "finalized with PREVIOUS track's start time");
     }
@@ -158,7 +221,6 @@ int main(void) {
         play(t, 0, 10);                     // 10s listened
         t.onSeek(150.0);                    // jump forward
         PlaybackDecision d = t.onTime(151.0);
-        CHECK(!d.scrobble, "position 151s but only 11s listened");
         CHECK(t.accumulatedTime() > 10.9 && t.accumulatedTime() < 11.1,
               "seek preserved accumulated time and resynced position");
 
@@ -186,7 +248,7 @@ int main(void) {
             t.onSeek(0.0);
             t.onTime(1.0);
         }
-        CHECK(t.scrobbled(), "80s of real listening across seeks qualifies");
+        CHECK(t.onStop(false).scrobble, "80s of real listening across seeks qualifies");
         // (40 * 2s = 80s accumulated >= 50s required; seeks themselves added 0)
     }
 
@@ -209,13 +271,17 @@ int main(void) {
 
     // --- Paused playback: no ticks arrive, nothing accumulates ---
     {
-        g_context = "pause";
+        g_context = "pause-accumulation";
         PlaybackTracker t;
         t.beginTrack(true, 100.0, true, kStart);
         play(t, 0, 10);
-        // (pause: no onTime calls) ... resume produces a tick with delta 0-1s
-        PlaybackDecision d = t.onTime(11.0);
-        CHECK(!d.scrobble, "resume tick is normal progression");
+        t.onPause(true);
+        // (paused: no onTime calls at all)
+        CHECK(t.accumulatedTime() > 9.9 && t.accumulatedTime() < 10.1,
+              "a pause of any length accumulates nothing");
+        t.onPause(false);
+        // resume produces a tick with delta 0-1s
+        t.onTime(11.0);
         CHECK(t.accumulatedTime() > 10.9 && t.accumulatedTime() < 11.1,
               "accumulation continues seamlessly after pause");
     }
