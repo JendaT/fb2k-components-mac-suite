@@ -62,29 +62,34 @@ public:
         if (items.get_count() > 0) {
             auto pm = playlist_manager::get();
             if (m_playlistIndex < pm->get_playlist_count()) {
-                // Sort by (album artist, album, tracknumber-as-integer, path fallback).
-                // Track number is parsed as an integer so ordering is 1, 2 ... 12, 13.
-                // Path is a tiebreaker for tracks with no track number metadata.
+                // Sort by (album artist, album, discnumber-as-integer, tracknumber-as-integer,
+                // path fallback). Disc and track numbers are parsed as integers so ordering is
+                // 1, 2 ... 12, 13; disc precedes track so multi-disc albums do not interleave.
+                // A missing disc/track number parses to 0 (sorts first); path is the tiebreaker.
                 metadb_handle_list itemsCopy(items);
                 t_size count = itemsCopy.get_count();
 
                 auto albumArtistScript = simplaylist::TitleFormatHelper::compileWithCache("%album artist%");
                 auto albumScript       = simplaylist::TitleFormatHelper::compileWithCache("%album%");
+                auto discNumScript     = simplaylist::TitleFormatHelper::compileWithCache("%discnumber%");
                 auto trackNumScript    = simplaylist::TitleFormatHelper::compileWithCache("%tracknumber%");
                 auto pathScript        = simplaylist::TitleFormatHelper::compileWithCache("%path_sort%");
 
                 // Build sort keys once per track to avoid repeated formatting
-                using SortKey = std::tuple<std::string, std::string, int, std::string>;
+                using SortKey = std::tuple<std::string, std::string, int, int, std::string>;
                 std::vector<SortKey> keys;
                 keys.reserve(count);
                 for (t_size i = 0; i < count; i++) {
                     auto h = itemsCopy.get_item(i);
                     std::string albumArtist = simplaylist::TitleFormatHelper::format(h, albumArtistScript);
                     std::string album       = simplaylist::TitleFormatHelper::format(h, albumScript);
+                    std::string discStr     = simplaylist::TitleFormatHelper::format(h, discNumScript);
                     std::string trackStr    = simplaylist::TitleFormatHelper::format(h, trackNumScript);
                     std::string path        = simplaylist::TitleFormatHelper::format(h, pathScript);
+                    // atoi returns 0 for the "?" that titleformat emits when the field is absent
+                    int discNum  = discStr.empty() ? 0 : std::atoi(discStr.c_str());
                     int trackNum = trackStr.empty() ? 0 : std::atoi(trackStr.c_str());
-                    keys.emplace_back(std::move(albumArtist), std::move(album), trackNum, std::move(path));
+                    keys.emplace_back(std::move(albumArtist), std::move(album), discNum, trackNum, std::move(path));
                 }
 
                 // Sort indices by key; stable_sort preserves original order for equal keys

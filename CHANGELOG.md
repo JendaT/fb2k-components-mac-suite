@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
 - Dropped files whose path contained a space could fail with "Access denied" (scheme-less file URL was imported percent-encoded)
+- Multi-disc albums dropped from the Tidal browser no longer interleave their discs (import sort now orders by disc number before track number)
 - Switching grouping preset did nothing until an unrelated pattern field was edited
 - Adding, removing or renaming a custom column had no effect until foobar2000 restarted
 - A renamed custom column was reverted by the next column resize, then deleted as an orphan on the following launch
