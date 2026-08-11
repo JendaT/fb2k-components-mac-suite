@@ -4,41 +4,51 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-11
+
+A bug-fix release. Five separate ways of silently losing your settings, two
+ways of hanging the app, and the drag indicator that landed in the wrong
+place.
+
 ### Fixed
-- **File drops with a space in the path failed with "Access denied"**: A file URL without a `file://` scheme was treated as a web URL and passed to foobar2000 still percent-encoded.
-- **Drops from the album list did nothing**: The album list drags foobar2000's own `com.foobar2000.location` (one track) and `com.foobar2000.locations` (several) types, and multi-track drags carry nothing else. Both are now accepted and inserted in album list order with their exact subsongs.
-- **Multi-disc albums dropped from the Tidal browser interleaved their discs**: the Tidal import sort ordered by track number only, so disc 1 track 1, disc 2 track 1, disc 1 track 2... Disc number now sorts before track number (missing disc numbers sort first, single-disc albums unaffected).
-- **Switching grouping preset did nothing**: Picking a different preset in preferences appeared to have no effect until you happened to edit a pattern field. The selection was saved to a setting the playlist panel never read, while the panel took the active preset from a different place that only a field edit rewrote.
-- **Custom column changes needed a restart**: Adding, removing or renaming a custom column had no visible effect until foobar2000 was restarted, because the editor announced the change to nobody.
-- **A renamed custom column could disappear for good**: After a rename, panels kept showing the old column; resizing any column then wrote the stale layout back over the rename, and the next launch deleted the mismatched column as an orphan.
-- **Columns could be deleted permanently after a startup hiccup**: If enumerating another component's columns failed partway, every column past the failure looked unrecognised and was removed from your layout. Cleanup is now skipped entirely when that list is incomplete.
-- **Deleting or reordering playlists corrupted saved positions**: Removing a playlist, or dragging tabs into a new order, left the panel's internal playlist references pointing at the wrong playlist — so scroll positions and group caches were saved under another playlist's name, and a drag reorder could modify the wrong playlist. Playlist creation, removal and reordering are now tracked.
-- **Clearing the subgroup pattern discarded extra subgroups**: A preset defining more than one subgroup lost all of them the first time the subgroup field was cleared, with nothing on screen to show they had existed.
-- **Toggling subgroup options showed a stale layout**: The two subgroup checkboxes changed what was cached but not the key it was cached under, so the previous layout was reused until a background pass corrected it.
-- **Cover art with unusual metadata bypassed the size limit**: An image reporting an implausible resolution could skip downscaling and be kept at full size.
-- **Home key did nothing useful in grouped playlists**: Home jumped to an arbitrary point mid-list instead of the first track. The focus-movement API works in display rows, but Home computed its distance from the playlist index, which ignores every group header, subgroup header and padding row above the current track. End was wrong in the same way and only appeared to work because an over-large jump clamps to the end.
-- **Album art could pin the CPU indefinitely**: an image too large to cache was neither stored nor remembered as unusable, so every redraw decoded it again on up to four background threads for as long as its album was on screen.
-- **Invalid grouping patterns previewed as a filename**: the preferences preview reported a plausible-looking wrong answer instead of flagging the pattern as invalid.
-- **Preset settings could stop saving silently**: if the stored preset index pointed past the end of the preset list, the preferences page showed the first preset with empty pattern fields and quietly discarded every later edit.
-- **Typing a grouping pattern was sluggish**: each keystroke compiled and ran the half-typed pattern for both fields on the main thread. It is now debounced and only the edited field refreshes.
-- **Editing a pattern rebuilt the playlist twice**: leaving the field saved once immediately and once from a pending timer.
-- **Column headers hidden behind the album-art strip stayed interactive**: when scrolled horizontally, an invisible column could still be clicked, dragged and resized.
-- **Custom column edits could be reverted**: the custom-columns page kept a stale copy of the list and wrote it back over newer changes; it now reloads each time it appears.
+
+**No longer loses your settings**
+- Renaming a custom column stuck. Previously the rename was undone by the next column resize, and the column itself was deleted on the following launch.
+- A hiccup while another component registered its columns no longer wipes columns from your layout.
+- Clearing the subgroup pattern no longer discards the other subgroups a preset defines.
+- Preferences no longer silently discards everything you type when the stored preset index has gone out of range.
+- Deleting or reordering playlists no longer saves scroll positions and group data under a *different* playlist's name, and a drag reorder can no longer modify the wrong playlist.
+
+**No longer hangs or eats memory**
+- Pressing Delete or Backspace with nothing selected hung foobar2000. Fixed.
+- A cover too large to cache was re-decoded on every redraw, across four threads, for as long as its album was on screen. Fixed.
+- Album art is now capped by memory (256 MB) as well as image count; it could previously reach about a gigabyte.
+
+**Grouping and preferences actually apply**
+- Switching grouping preset works. It previously appeared to do nothing until you edited a pattern field.
+- Adding, removing or renaming a custom column shows up immediately instead of after a restart.
+- Toggling either subgroup option redraws with the new setting instead of reusing the old layout.
+- Typing a grouping pattern is no longer sluggish, and leaving the field rebuilds the playlist once rather than twice.
+- An invalid pattern is now reported as invalid, instead of previewing a track filename as though it had worked.
+
+**Dragging, keys and selection**
+- **Drops from the album list**: Tracks dragged from the album list are now accepted, in album list order with their exact subsongs.
+- **File drops with spaces in the path**: No longer fail with "Access denied"; scheme-less file URLs are imported as local paths.
+- The drop indicator follows the cursor. In grouped playlists it sat up to 150 px too low, and the drop landed where the line was drawn.
+- Home and End jump to the first and last track. Home previously landed at an arbitrary point mid-list.
+- Multi-disc albums dropped from the Tidal browser keep their discs together instead of interleaving them.
 - Shift-click after switching playlists no longer extends the selection from the previous playlist's anchor.
-- Several places where a foobar2000 error would have closed the whole app rather than skipping a frame are now contained, and a corrupt layout cache entry can no longer crash on startup through a field the previous release's guard missed.
-- **Drop indicator landed below the cursor**: Dragging into a grouped playlist placed the insertion line up to ~150 px below the pointer, and the drop landed where the line was drawn. Drop positions were scored against a uniform row height that ignored taller group headers, so the error grew with every header above the cursor. Positions are now scored against real layout geometry and only candidates near the cursor are examined, which also removes a full-playlist scan on every mouse-move during a drag.
-- **Delete/Backspace with an empty selection hung the app**: The removal path looped ~2^63 times when nothing was selected.
-- **Group detection interfered across panels**: With two or more SimPlaylist panels open, one panel rebuilding its playlist cancelled another's in-progress group detection, leaving that panel with partial groups and an unsaved group cache. The cancellation counter is now per panel.
-- **Album art cache could grow to ~1 GB**: The cache was bounded by image count only. It is now also bounded by decoded size (256 MB default), evicting oldest-first on insert. Eviction still never happens behind the drawing code's back, so on-screen art cannot blank out.
-- Assorted crash guards and correctness fixes from a multi-pass code review (nil handling on tag-derived text, bounds and lifetime checks, error-path cleanups).
+- Two panels open no longer interfere: one rebuilding its playlist used to cancel the other's grouping, leaving it half-grouped.
+- Column headers hidden behind the album-art strip are no longer clickable, draggable or resizable.
+
+Plus assorted crash guards from a multi-pass code review: nil handling on
+tag-derived text, bounds and lifetime checks, and error paths where a
+foobar2000 failure would have closed the app rather than skipping a frame.
 
 ### Changed
-- **Scrolling and hit-testing are cheaper in large grouped playlists**: Working out which row is under the pointer used to run four nested searches per query. Each group's header row is now precomputed, which removes them: on a 200,000-track, 20,000-group playlist that query went from 10,338 array probes to none. A test now enforces the limit so it cannot creep back.
-- **Preference changes reach the panel in a defined order**: The panel and its view both listened for setting changes independently, and correct geometry depended on which happened to be told first — undocumented, and load-bearing for exactly the Display Size and Header Style settings that exist to change geometry.
-- **Column layout has a single writer**: Four separate places wrote the saved column layout, one of them from inside a routine whose job was to read it. All writes now go through one path that refuses to save a failed serialisation, which the config store would otherwise treat as "delete".
-- **Dead code removal**: Deleted the unused legacy rendering pipeline (node-based and boundary-based drawing, the disabled flat-mode path) and the `GroupNode`/`GroupBoundary` classes, which nothing referenced — about 1,100 lines. No behavior change; the sparse model is the only path and was already the only one running.
-- **Group-data application unified**: The "apply detected groups to the view" sequence was copied at five call sites, each repeating an order-dependent ritual with a warning comment, and had already drifted between copies. It is now a single method, with the intentional per-site differences (last group's end index, whether the frame is resized) as parameters. The four empty-reset blocks collapsed into one method likewise.
-- Drag start no longer allocates per-file Objective-C objects for tracks it then discards when checking which selected files still exist on disk.
+- **Scrolling and hit-testing are much cheaper in large grouped playlists.** Finding the row under the pointer ran four nested searches; each group's header row is now precomputed. On a 200,000-track, 20,000-group playlist that query went from 10,338 array lookups to none.
+- Internal cleanup with no behaviour change: about 1,100 lines of unreferenced legacy rendering code removed, five copies of the group-application sequence merged into one, the column layout given a single writer, and settings changes given a defined order instead of depending on which listener was notified first.
+- Test coverage grew from roughly 104,000 to 108,000 assertions, including new suites for the column and preset data formats and a performance guard on the row mapping.
 
 ## [1.5.1] - 2026-07-07
 

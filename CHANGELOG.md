@@ -27,39 +27,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
+### [1.5.2] - 2026-08-11
+
+Bug-fix release: five ways of silently losing settings, two ways of hanging
+the app, and the misplaced drag indicator.
+
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
 - Dropped files whose path contained a space could fail with "Access denied" (scheme-less file URL was imported percent-encoded)
-- Multi-disc albums dropped from the Tidal browser no longer interleave their discs (import sort now orders by disc number before track number)
-- Switching grouping preset did nothing until an unrelated pattern field was edited
-- Adding, removing or renaming a custom column had no effect until foobar2000 restarted
-- A renamed custom column was reverted by the next column resize, then deleted as an orphan on the following launch
-- A partial failure enumerating another component's columns deleted every column past the failure from the saved layout
-- Deleting or reordering playlists made the panel save scroll positions and group caches under another playlist's name, and could apply a drag reorder to the wrong playlist
-- Clearing the subgroup pattern discarded every subgroup beyond the first, invisibly
-- Toggling either subgroup option reused the layout cached under the old setting
-- Cover art reporting an implausible resolution bypassed the cache size limit
-- Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
-- An album cover too large to cache was re-decoded on every redraw, on up to four threads, for as long as it was on screen
-- Invalid grouping patterns previewed as the track's filename instead of reporting themselves as invalid
-- An out-of-range stored preset index left the preferences page showing blank pattern fields and silently discarding every edit
-- Typing a grouping pattern compiled and ran it on the main thread on every keystroke; leaving the field rebuilt the playlist twice
-- Column headers scrolled behind the album-art strip remained clickable, draggable and resizable
-- Custom column edits could be reverted by a stale copy held by the preferences page
-- Shift-click after a playlist switch extended the selection from the previous playlist's anchor
-- Drop indicator appeared up to ~150 px below the cursor when dragging into grouped playlists, and the drop landed at the indicator — drop positions were scored against uniform row heights that ignored taller group headers
+- Renaming a custom column no longer gets undone by the next column resize and then deleted on the following launch
+- A hiccup registering another component's columns no longer wipes columns from the saved layout
+- Clearing the subgroup pattern no longer discards the other subgroups a preset defines
+- Preferences no longer silently discards edits when the stored preset index is out of range
+- Deleting or reordering playlists no longer saves scroll positions and group data under another playlist's name, or applies a drag reorder to the wrong playlist
 - Delete/Backspace with an empty selection hung the app
-- With multiple SimPlaylist panels open, one panel's rebuild cancelled another's in-progress group detection
-- Album art cache is now bounded by decoded size (256 MB) as well as image count, which previously allowed ~1 GB resident
-- Assorted crash guards and correctness fixes from a multi-pass code review
+- An oversized cover was re-decoded on every redraw across four threads for as long as it was on screen
+- Album art is capped by memory (256 MB) as well as image count; it could previously reach ~1 GB
+- Switching grouping preset did nothing until an unrelated pattern field was edited
+- Custom column changes required a restart
+- Toggling either subgroup option reused the layout cached under the old setting
+- Typing a grouping pattern was sluggish; leaving the field rebuilt the playlist twice
+- An invalid pattern previewed a track filename instead of being reported as invalid
+- Drop indicator sat up to 150 px below the cursor in grouped playlists, and the drop landed where the line was drawn
+- Home/End jumped to an arbitrary point mid-list in grouped playlists
+- Multi-disc albums dropped from the Tidal browser interleaved their discs
+- Shift-click after a playlist switch extended from the previous playlist's anchor
+- Two open panels interfered: one rebuilding cancelled the other's grouping
+- Column headers hidden behind the album-art strip stayed clickable and resizable
+- Assorted crash guards from a multi-pass code review
 
 #### Changed
-- Row hit-testing in large grouped playlists no longer nests four searches: group header rows are precomputed, taking a 200k-track/20k-group query from 10,338 array probes to none, with a probe-budget test enforcing it
-- Setting changes reach the panel in a defined order instead of depending on which observer the notification centre happened to call first
-- The saved column layout has a single writer; four places wrote it before, one of them from inside a read accessor
-- `ColumnDefinition` and `GroupPreset` split into pure model/codec plus config-backed store, adding 249 unit checks over the JSON codecs, corrupt-config handling and both silent data migrations
-- Removed ~1,100 lines of unreferenced legacy rendering code (node/boundary drawing, disabled flat mode, `GroupNode`/`GroupBoundary`)
-- Unified the group-data application sequence that was duplicated across five call sites and had drifted between copies
+- Row hit-testing in large grouped playlists no longer nests four searches: group header rows are precomputed, taking a 200k-track/20k-group query from 10,338 array lookups to none, with a probe-budget test enforcing it
+- Internal cleanup, no behaviour change: ~1,100 lines of legacy rendering code removed, five copies of the group-application sequence merged, the column layout given a single writer, settings changes given a defined order
+- Test coverage grew from ~104,000 to ~108,000 assertions, adding suites for the column and preset data formats
 
 ### [1.5.1] - 2026-07-07
 
