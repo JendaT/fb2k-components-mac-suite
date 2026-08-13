@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Preferences page titles now match foobar2000's built-in style (non-bold)
 - Unified copyright notices across all extensions
+- Generated Xcode projects link SDK libraries from `build/$(CONFIGURATION)` instead of always `build/Release`, so `--debug` builds link the Debug SDK
+
+### Fixed
+- `./Scripts/build.sh --debug` failed to link for every component with `Undefined symbols: pfc::myassert`: Debug objects define `DEBUG=1` (enabling `PFC_ASSERT`) but linked the Release SDK libraries, which compile assertions out. Building the SDK in Debug is now documented as a prerequisite for debug builds
 
 ---
 

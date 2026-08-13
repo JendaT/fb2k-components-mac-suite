@@ -206,6 +206,28 @@ xcodebuild -project $SDK/foobar2000/foobar2000_component_client/foobar2000_compo
 
 This only needs to be done once (or when the SDK version changes).
 
+**If you intend to build components with `--debug`, build the SDK in Debug
+too** — the same five projects, `-configuration Debug`:
+
+```bash
+for p in pfc/pfc.xcodeproj \
+         foobar2000/SDK/foobar2000_SDK.xcodeproj \
+         foobar2000/shared/shared.xcodeproj \
+         foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj \
+         foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj; do
+    xcodebuild -project "$SDK/$p" -configuration Debug || break
+done
+```
+
+Debug component builds cannot link the Release SDK libraries. A component's
+Debug configuration defines `DEBUG=1`, which makes the SDK's `PFC_DEBUG` 1
+and turns `PFC_ASSERT` into a call to `pfc::myassert` — a function the
+Release-built `libpfc-Mac.a` does not contain, because it compiled the
+assertions out. The generated projects therefore point their library search
+paths at `build/$(CONFIGURATION)`, so each configuration links the matching
+SDK build. Skipping this step gives
+`Undefined symbols: pfc::myassert` at link time.
+
 ### 2. Build a component
 
 ```bash

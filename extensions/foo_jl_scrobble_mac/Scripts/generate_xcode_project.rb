@@ -560,11 +560,11 @@ pbxproj_content += <<~PBXPROJ
 					"$(PROJECT_DIR)/#{SDK_PATH}/pfc",
 				);
 				LIBRARY_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/SDK/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/helpers/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/foobar2000_component_client/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/shared/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/Release",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/SDK/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/helpers/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/foobar2000_component_client/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/shared/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/$(CONFIGURATION)",
 				);
 			};
 			name = Debug;
@@ -593,11 +593,11 @@ pbxproj_content += <<~PBXPROJ
 					"$(PROJECT_DIR)/#{SDK_PATH}/pfc",
 				);
 				LIBRARY_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/SDK/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/helpers/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/foobar2000_component_client/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/shared/build/Release",
-					"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/Release",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/SDK/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/helpers/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/foobar2000_component_client/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/foobar2000/shared/build/$(CONFIGURATION)",
+					"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/$(CONFIGURATION)",
 				);
 			};
 			name = Release;
