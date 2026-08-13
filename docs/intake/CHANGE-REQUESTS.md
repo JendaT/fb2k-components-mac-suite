@@ -276,3 +276,259 @@ frozen.
   field-for-field (`src/sidecar.ts:52–74`), `version` returns
   `{cli, schema, engine}`, and the envelope/exit-code conventions are
   implemented as specced. No other deviations known.
+
+---
+
+## CR-002 — doc 03 gaps found while implementing P4 Part A and drafting Part B
+
+**Filed:** 2026-08-13
+**From:** extension worker (`feature/intake-extension`, HEAD `a28cae3`)
+**Against:** `docs/intake/intake-03-contract-spec.md` (draft v1, 2026-07-11)
+**Spec basis:** main@a28cae3 (doc 03 unchanged since 3d146d7; amendment 001 only)
+**Status:** open
+**Supersedes:** `docs/intake/CR-EXT-001-doc03.md` (filed 2026-07-25 as a
+standalone file, before this register existed; never triaged). Re-filed here
+in register form, with three items revised against the CLI that has since
+landed on main.
+
+Four items. None affected P4 Part A — the decorator API is generic and
+contract-free, and it is merged. **CR-002.1 and CR-002.3 block Part B**
+(`foo_jl_intake_mac`): the component cannot write its `status --json` parser
+or its version gate without them. CR-002.2 is a design request with a working
+but uglier fallback. CR-002.4 duplicates CR-001.5 from the tools worker and
+should be resolved once, for both.
+
+Severity uses the same scale as CR-001: **A** = the contract as written
+cannot be satisfied or describes something unreachable; **B** = contract is
+silent and a consumer must pick a behavior; **C** = editorial.
+
+---
+
+### CR-002.1 — `status --json`: envelope or bare array? (severity A)
+
+**Contract says.** Doc 03 "JSON conventions" states both, one bullet apart:
+
+> - Envelope: `{ "ok": bool, "data": …, "errors": [{code, msg, path}] }`.
+> - `status --json` returns an array of sidecar summaries: `{id, root_path, …}`.
+
+"Returns an array" reads as a bare top-level `[…]`; the envelope bullet reads
+as `{ok, data: […], errors: []}`. Both cannot hold.
+
+**Implementation is.** Settled, and in the envelope's favour: `src/cli.ts:202`
+builds `{ok, data, errors}` for every command and `:203` prints it whenever
+`--json` is set. The unwrapped `JSON.stringify(data, …)` at `:149` is inside
+`printHuman()`, i.e. the non-`--json` path only. No command emits a bare
+array under `--json`.
+
+**Why it matters.** Only the doc is ambiguous now, but it is the doc the next
+consumer reads. Guessing wrong is a silent integration failure: the component
+would parse `[]` from an envelope, see zero intake rows, and render an empty
+non-erroring state.
+
+*Correction to the superseded filing:* it warned this might be a breaking
+change for the tools worker. It is not — the CLI already does exactly what is
+requested. This is doc-only, zero code impact, and should be the cheapest of
+the four to close.
+
+**Requested change.** Replace the first bullets of "JSON conventions" with:
+
+> - **Envelope (universal).** Every `--json` invocation emits exactly one
+>   JSON object on stdout: `{ "ok": bool, "data": …, "errors": [{code, msg,
+>   path}] }`. The per-command shapes below describe the `data` member only.
+>   No command emits a bare array, string, or number at top level.
+> - `ok` is `true` iff the exit code is 0. On exit 1 (partial) `ok` is
+>   `false`, `data` carries the successful subset, and `errors[]` is
+>   non-empty. On exit 2 (error) `data` is `null` and `errors[]` is
+>   non-empty. `errors[]` is `[]` whenever `ok` is `true`.
+> - `status --json` → `data` is an array of sidecar summaries: `{…}`.
+
+The `ok` ↔ exit-code sentence is a second, smaller gap in the same section:
+doc 03 gives exit codes (`0 ok / 1 partial / 2 error`) and an `ok` field but
+never relates them, and never says what `data` holds on failure. Worth
+closing in the same edit; the CLI's behaviour at `cli.ts:202` already matches
+the wording above.
+
+**Impact.** Doc only. No CLI change, no schema change.
+
+---
+
+### CR-002.2 — add `proposal.ranked` to the status summary (severity B)
+
+**Contract says.** `proposal:{target_collection, confidence}`.
+
+**Implementation is.** Exactly that — `SidecarSummary` in
+`src/sidecar.ts:52–74` exposes `target_collection` and `confidence` and
+nothing else. The ranked candidate list exists upstream (the `assign` engine
+produces ranked folders; overview decision 5) and is kept in the sidecar, but
+it does not reach the contract surface.
+
+**Why it matters.** Two specified consumers need ranked alternates and
+neither can get them from the contract:
+
+- Doc 04 Part B, context actions: "**Assign to \<top alternates\>** — the top
+  ranked alternates from the sidecar as individual flat actions (max 4)".
+  The ranking is needed at menu-build time, on the main thread, for the
+  current selection.
+- Doc 05 step 7: suggestion UI backed by the shared `assign` ranking.
+
+Without the field, both must open and parse `.intake.json` directly. Doc 03's
+boundary principle permits reading sidecars, so this is not a violation — the
+cost is structural: the sidecar's internal layout becomes a second,
+*unversioned* integration surface owned by docs 01/02, alongside the
+versioned one in doc 03. The schema gate then guards only half of what the
+component actually depends on. One field keeps the whole dependency inside
+the versioned contract.
+
+**Requested change.** `proposal:{target_collection, confidence, ranked:[{collection, confidence}]}`, plus:
+
+> - `proposal.ranked` is the assignment engine's ordered candidate list, best
+>   first, truncated to the top 5. Present when the sidecar has a proposal
+>   (status `proposed` or later); omitted or `[]` otherwise.
+> - `ranked[0]` is the engine's best candidate. For engine-chosen proposals
+>   `target_collection == ranked[0].collection`. After `intake assign --by
+>   user`, `target_collection` is the user's choice and MAY be absent from
+>   `ranked`, which retains engine order.
+> - `confidence` is a float in `[0,1]`, as elsewhere in this document.
+
+Truncation at 5 is a proposal, not a requirement (doc 04 shows at most 4
+alternates plus the chosen target). "All candidates above a floor" is equally
+fine as long as ordering is guaranteed.
+
+**Impact.** Schema minor — but see CR-002.3: with `schema` currently an
+integer there is no minor to bump, which is the reason those two items should
+be decided together. Serialization of an existing value; no new computation
+on the CLI side. If rejected, the component parses sidecars for the ranking
+and doc 04 Part B gains an explicit note that it depends on the doc 01/02
+sidecar layout — the coupling should then be acknowledged in both docs rather
+than left implicit.
+
+---
+
+### CR-002.3 — the version gate has no version to check against (severity A)
+
+**Contract says.** "`intake version   # {cli, schema, engine} versions`" and:
+
+> Version gate: component calls `intake version` at init; refuses decoration
+> (logs, stays inert) if `schema` major ≠ supported.
+
+**Implementation is.** `cmdVersion` (`src/commands.ts:218–219`) returns
+`{cli: "0.1.0", schema: 1, engine: "0.1.0"}` — `cli` and `engine` are semver
+strings, **`schema` is an integer** (`SCHEMA_VERSION = 1`, `src/types.ts:4`),
+and the same integer is written into each sidecar (`resolver.ts:283,463`).
+
+**Why it matters.** The gate is unimplementable from the doc alone: no schema
+version value appears anywhere in the doc set, so there is no constant for
+the component to compile in as "supported", and the doc never says what
+`schema` covers or what type the three fields are. The implementation has
+since answered the type question — but in a way the superseded filing got
+wrong, so this item is revised rather than repeated.
+
+*Correction to the superseded filing:* it proposed all three fields be semver
+strings with major/minor rules. That conflicts with what shipped. An integer
+`schema` is defensible and simpler — with one consequence that needs a
+decision, below.
+
+**The consequence.** An integer version cannot express an additive change.
+If CR-002.2 is accepted, `ranked` appears while `schema` stays `1` (it is
+additive, so bumping to `2` would wrongly lock out every existing consumer).
+A component built against "schema 1 with `ranked`" then cannot distinguish an
+older schema-1 CLI without it. Three ways out, overseer's call:
+
+- **A — keep the integer, make optionality the rule.** State that within a
+  schema version, fields may be *added*, and consumers MUST treat unknown
+  fields as ignorable and newly-specified fields as optional (feature-detect,
+  never assume presence). Zero code change. The component feature-detects
+  `ranked`. Simplest, and my recommendation.
+- **B — `schema` becomes `major.minor`** (string `"1.1"` or a
+  `{major, minor}` pair). Additive → minor bump; breaking → major. Precise,
+  and the gate stays a major comparison. Costs a CLI change and a sidecar
+  field type change, which is itself breaking.
+- **C — capability list**, e.g. `version` also returns
+  `features: ["proposal.ranked", …]`. Most flexible, most machinery; not
+  worth it at this size.
+
+**Requested change.** Add a Versioning section to doc 03 recording whichever
+option is chosen, and in all cases pin the current value:
+
+> - `intake version --json` → `data: {cli, schema, engine}`. `cli` and
+>   `engine` are semver strings (`engine` MAY be `null` when the beets shim
+>   is absent); **`schema` is an integer**, currently **1**.
+> - `schema` versions this document's JSON surface: the sidecar schema plus
+>   the `--json` `data` shapes specified here. It is bumped by the overseer
+>   in the amendment that makes a breaking change — removal, rename, type
+>   change, or semantic change. Additive fields do NOT bump it [option A].
+> - Consumers support one fixed `schema` value, MUST ignore unknown fields,
+>   MUST treat any field not present in the version they were built against
+>   as optional, and MUST refuse to operate on a different value. The
+>   component's supported schema for P4 is **1**.
+
+**Impact.** Doc only under option A. Option B is a CLI + sidecar change and
+would itself be breaking.
+
+---
+
+### CR-002.4 — `E_NO_CLI` is host-synthesized, and timeouts have no code (severity A)
+
+**Duplicate of CR-001.5** (tools worker), from the other side of the boundary.
+Resolve once; the two filings agree.
+
+**Contract says.** "CLI unavailable / rules repo missing / journal
+unreachable → distinct error codes (`E_NO_CLI`, `E_NO_RULES`,
+`E_NO_JOURNAL`)" — one list, implying all three arrive the same way, in the
+envelope's `errors[]`.
+
+**Implementation is.** `E_NO_CLI` is emitted by nobody, deliberately. The
+tools worker's CR-001.5 lists the 13 codes the CLI actually emits and states
+it plainly: "the CLI cannot report its own absence, so that code belongs to
+the component." Both workers reached this independently.
+
+**Why it matters.** `E_NO_CLI` describes a condition in which no CLI process
+exists to write an envelope, so a CLI-emitted `E_NO_CLI` is unreachable by
+construction. Left as written, each consumer invents its own spelling for the
+same condition and the tools worker cannot tell whether it is expected to
+emit the code. Second gap: doc 04 sets a 10 s per-command budget (execute
+excepted — it runs detached), and a timeout is a *different* condition from
+"no CLI" (the binary exists and started) with no code at all.
+
+**Requested change.** Replace "Error surfaces" with:
+
+> Error codes are of two kinds.
+>
+> **CLI-emitted**, in the envelope's `errors[]`: `E_NO_RULES`,
+> `E_NO_JOURNAL`, and the other codes the CLI defines. The vocabulary is
+> **open** — consumers MUST render unrecognised codes generically from
+> `msg`/`path` rather than failing. (Per CR-001.5(b); the current inventory
+> stays discoverable in docs 01/02 without being frozen into this contract.)
+>
+> **Host-synthesized**, produced by a consumer when no envelope can exist:
+> `E_NO_CLI` (binary not found, not executable, spawn failed, or stdout is
+> not a parseable envelope) and `E_CLI_TIMEOUT` (no exit within the
+> consumer's budget; the component uses 10 s, `execute` excepted). The CLI
+> MUST NOT emit these two; they are reserved.
+>
+> On any of these a consumer renders an inert state with an explanatory
+> tooltip, logs, and never blocks playback UI.
+
+**One decision needed.** Whether "CLI ran but stdout is unparseable" belongs
+under `E_NO_CLI` (folded in above — a CLI that cannot be understood is
+functionally absent) or deserves its own `E_BAD_OUTPUT`. No preference; the
+component needs the answer only to pick a tooltip string.
+
+**Impact.** Doc only. Adds two reserved names and a MUST-NOT-emit rule; no
+CLI change (this documents what already happens), no schema change.
+
+---
+
+### Informational (no request)
+
+- **Support for CR-001.1 (`intake reject`).** As the consumer that would use
+  it: doc 04 already specifies the rendering (grey strike, `✕`, doc 04 line
+  70) for a state no actor can currently reach, which is the one lifecycle
+  edge the component can draw and never trigger. The proposed semantics read
+  correctly from this side. One detail worth pinning in the same edit if it
+  is accepted: whether `rejected` roots stay visible to `status --json` — the
+  component needs them listed to render the strike, so they must not be
+  filtered out of the default inventory.
+- **P4 Part A is merged** (main@a28cae3 contains it). The decorator API in
+  `shared/jl_decorator_api.h` is generic and has no dependency on this
+  contract; nothing in CR-002 affects it. All four items are about Part B.
