@@ -48,3 +48,7 @@
 // Tidal Integration
 #define TIDAL_VERSION "0.3.1"
 #define TIDAL_VERSION_INT 031
+
+// Intake (music intake pipeline — SimPlaylist decorator provider)
+#define INTAKE_VERSION "0.1.0"
+#define INTAKE_VERSION_INT 010

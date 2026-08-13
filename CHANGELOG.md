@@ -648,3 +648,18 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 
 #### Added
 - Initial public release: browser, search, library, playlists, sync, ISRC matching, album art
+
+---
+
+## Intake
+
+### [Unreleased]
+
+#### Added
+- Component scaffold: builds, registers, installs as `foo_jl_intake.component` (0.1.0)
+- `IntakeDecoratorProvider` — the intake system's `jl_row_decorator_provider` (doc 04 Part B), first real consumer of the Part A extension point; thread-safe, non-blocking, multi-callback
+- `IntakeRootIndex` — playlist path to sidecar root matching (longest-match, path-boundary-safe, no filesystem access)
+
+#### Notes
+- Renders nothing yet: no state source. Installing adds only an empty gutter to SimPlaylist
+- State acquisition and context menu are blocked on doc 03 change requests CR-002.1/.2/.3
