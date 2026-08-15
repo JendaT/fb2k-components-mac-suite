@@ -333,6 +333,74 @@ public:
     }
 };
 
+// Async import for files dropped from Finder onto a playlist node.
+// The target is resolved by name at completion rather than captured as an index,
+// because the import runs asynchronously and playlists can be created, removed
+// or reordered while it is in flight.
+class PlorgFileDropNotify : public process_locations_notify {
+public:
+    std::string m_playlistName;
+    pfc::string_list_impl m_paths;
+
+    PlorgFileDropNotify(const char* playlistName) : m_playlistName(playlistName) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() == 0) {
+            FB2K_console_formatter() << "[Plorg] Drop contained no playable tracks for playlist: "
+                                      << m_playlistName.c_str();
+            return;
+        }
+
+        auto pm = playlist_manager::get();
+        t_size target = pm->find_playlist(m_playlistName.c_str(), pfc_infinite);
+        if (target == pfc_infinite) {
+            FB2K_console_formatter() << "[Plorg] Drop target playlist no longer exists: "
+                                      << m_playlistName.c_str();
+            return;
+        }
+
+        // Append to the end, selecting the newly added tracks
+        t_size insertAt = pm->playlist_get_item_count(target);
+        pm->playlist_insert_items(target, insertAt, items, pfc::bit_array_true());
+
+        FB2K_console_formatter() << "[Plorg] Added " << items.get_count()
+                                  << " dropped tracks to playlist: " << m_playlistName.c_str();
+
+        // Refresh the node's track count in any open organizer view
+        NSString *name = [NSString stringWithUTF8String:m_playlistName.c_str()];
+        if (name) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"PlorgPlaylistContentsChanged"
+                                  object:nil
+                                userInfo:@{@"foobarName": name}];
+            });
+        }
+    }
+
+    void on_aborted() override {
+        FB2K_console_formatter() << "[Plorg] Drop import aborted for playlist: " << m_playlistName.c_str();
+    }
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        // Honour the user's incoming-item filter settings (sorting, type masks);
+        // delay_ui keeps the progress dialog hidden for small drops.
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
+
 // Simple async import for Strawberry/m3u - shows error dialogs for missing files
 static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistName, NSArray<NSString*>* paths) {
     if (paths.count == 0) return;
@@ -482,7 +550,7 @@ static NSString *leafNameForNode(TreeNode *node) {
     [self.outlineView registerForDraggedTypes:@[
         PlorgNodePasteboardType,       // Internal drag
         SimPlaylistPasteboardType,     // SimPlaylist tracks
-        NSPasteboardTypeFileURL        // Finder files (hover-expand only until Phase 4)
+        NSPasteboardTypeFileURL        // Finder files (append to a playlist)
     ]];
     self.outlineView.draggingDestinationFeedbackStyle = NSTableViewDraggingDestinationFeedbackStyleSourceList;
 
@@ -555,6 +623,12 @@ static NSString *leafNameForNode(TreeNode *node) {
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleCheckCorruptedRequest:)
                                                  name:@"PlorgCheckCorruptedPlaylists"
+                                               object:nil];
+
+    // Register for track-count refreshes after an async file drop import
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playlistContentsDidChange:)
+                                                 name:@"PlorgPlaylistContentsChanged"
                                                object:nil];
 
     // Check for corrupted playlists on startup if enabled
@@ -630,6 +704,20 @@ static NSString *leafNameForNode(TreeNode *node) {
                                            columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
             }
         }
+    }
+}
+
+- (void)playlistContentsDidChange:(NSNotification *)notification {
+    NSString *foobarName = notification.userInfo[@"foobarName"];
+    if (foobarName.length == 0) return;
+
+    TreeNode *node = [self.treeModel findPlaylistForFoobarName:foobarName];
+    if (!node) return;
+
+    NSInteger row = [self.outlineView rowForItem:node];
+    if (row >= 0) {
+        [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                   columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
     }
 }
 
@@ -1549,7 +1637,7 @@ static NSString *leafNameForNode(TreeNode *node) {
         return NSDragOperationNone;
     }
 
-    // Handle file drops - HOVER WORKS, DROP DISABLED UNTIL PHASE 4
+    // Handle file drops from Finder
     if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         // Fallback: set drag flag if draggingEntered wasn't called
         if (!_hasDragSource) {
@@ -1559,8 +1647,12 @@ static NSString *leafNameForNode(TreeNode *node) {
         if (targetNode != _dragHoveredNode) {
             [self startHoverTimerForNode:targetNode];
         }
-        // Phase 4: Enable drop by returning NSDragOperationCopy for playlists
-        return NSDragOperationNone;  // Don't show valid drop cursor until implemented
+
+        // Files append to the end of a playlist; folders only hover-expand
+        if (targetNode && targetNode.nodeType == TreeNodeTypePlaylist) {
+            return NSDragOperationCopy;
+        }
+        return NSDragOperationNone;
     }
 
     // Handle internal plorg node drops (existing behavior)
@@ -1592,7 +1684,57 @@ static NSString *leafNameForNode(TreeNode *node) {
         return [self handleInternalDrop:info targetNode:targetNode index:index];
     }
 
+    if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
+        return [self handleFileDrop:info targetNode:targetNode];
+    }
+
     return NO;
+}
+
+- (BOOL)handleFileDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode {
+    if (!targetNode || targetNode.nodeType != TreeNodeTypePlaylist) {
+        return NO;
+    }
+
+    NSPasteboard *pasteboard = info.draggingPasteboard;
+    NSArray<NSURL *> *urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                                                       options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+    if (urls.count == 0) {
+        return NO;
+    }
+
+    NSString *targetFoobarName = [self.treeModel foobarNameForNode:targetNode];
+    if (targetFoobarName.length == 0) {
+        return NO;
+    }
+
+    @try {
+        // The playlist must already exist in foobar2000 for the import to land
+        auto pm = playlist_manager::get();
+        if (pm->find_playlist([targetFoobarName UTF8String], pfc_infinite) == pfc_infinite) {
+            FB2K_console_formatter() << "[Plorg] Drop target has no foobar2000 playlist: "
+                                      << [targetFoobarName UTF8String];
+            return NO;
+        }
+
+        auto notify = fb2k::service_new<PlorgFileDropNotify>([targetFoobarName UTF8String]);
+        for (NSURL *url in urls) {
+            if (url.isFileURL && url.path.length > 0) {
+                notify->m_paths.add_item([url.path UTF8String]);
+            }
+        }
+
+        if (notify->m_paths.get_count() == 0) {
+            return NO;
+        }
+
+        // Import runs asynchronously; tracks are appended in on_completion
+        notify->startImport();
+        return YES;
+    } @catch (...) {
+        FB2K_console_formatter() << "[Plorg] Failed to handle file drop";
+        return NO;
+    }
 }
 
 - (BOOL)handleSimPlaylistDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode {
