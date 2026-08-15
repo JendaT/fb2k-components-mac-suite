@@ -89,13 +89,15 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
 
     // Scan asynchronously
     m_scanner.scanAsync(track, [this, track, callback](std::optional<WaveformData> result, const char* error) {
-        // Check if this is still the pending track
+        // Clear the pending slot if this result is the one it was waiting for.
+        // The result is delivered either way: listeners filter by track themselves,
+        // and dropping it here used to strand the UI in its "analyzing" state
+        // forever when the pending track was replaced mid-scan (layout reload).
         {
             std::lock_guard<std::mutex> lock(m_pendingMutex);
-            if (!m_pendingTrack.is_valid() || m_pendingTrack->get_location() != track->get_location()) {
-                return;  // Track changed, ignore result
+            if (m_pendingTrack.is_valid() && m_pendingTrack->get_location() == track->get_location()) {
+                m_pendingTrack.release();
             }
-            m_pendingTrack.release();
         }
 
         if (result) {
