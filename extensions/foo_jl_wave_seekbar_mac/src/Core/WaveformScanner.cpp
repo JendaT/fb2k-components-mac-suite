@@ -26,10 +26,15 @@ bool WaveformScanner::isScanning() const {
 }
 
 void WaveformScanner::cancel() {
-    if (m_scanning.load()) {
-        m_cancelRequested.store(true);
-        m_abort.abort();
+    std::lock_guard<std::mutex> lock(m_abortMutex);
+    if (m_currentAbort) {
+        m_currentAbort->abort();
+        m_currentAbort.reset();
     }
+    // Bump the generation so the aborted scan stays silent instead of reporting
+    // a failure for a request nobody is waiting on any more.
+    ++m_generation;
+    m_scanning.store(false);
 }
 
 void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCallback callback) {
@@ -42,13 +47,16 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
         return;
     }
 
-    // Cancel any existing scan
+    // Cancel any existing scan, then hand this one its own abort object
     cancel();
 
-    // Reset state with new generation
-    uint64_t gen = ++m_generation;
-    m_cancelRequested.store(false);
-    m_abort.reset();
+    auto abort = std::make_shared<abort_callback_impl>();
+    uint64_t gen;
+    {
+        std::lock_guard<std::mutex> lock(m_abortMutex);
+        m_currentAbort = abort;
+        gen = ++m_generation;
+    }
     m_scanning.store(true);
 
     // Capture track path for the block
@@ -57,40 +65,53 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
 
     // Dispatch to background queue
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Check if this scan is still current
-        if (m_generation.load() != gen) return;
-
         std::optional<WaveformData> result;
         const char* error = nullptr;
+        bool aborted = false;
 
-        try {
-            // Re-obtain handle on background thread
-            metadb_handle_ptr handle;
-            metadb::get()->handle_create(handle, make_playable_location(path.c_str(), subsong));
+        // Skip the decode if a newer scan already superseded this one, but still
+        // fall through to the bookkeeping below so m_scanning cannot stick on.
+        if (m_generation.load() == gen) {
+            try {
+                // Re-obtain handle on background thread
+                metadb_handle_ptr handle;
+                metadb::get()->handle_create(handle, make_playable_location(path.c_str(), subsong));
 
-            if (handle.is_valid()) {
-                result = performScan(handle, m_abort);
-                if (!result && !m_cancelRequested.load()) {
-                    error = "Scan failed";
+                if (handle.is_valid()) {
+                    result = performScan(handle, *abort);
+                    if (!result) {
+                        error = "Scan failed";
+                    }
+                } else {
+                    error = "Could not create track handle";
                 }
-            } else {
-                error = "Could not create track handle";
+            } catch (const exception_aborted&) {
+                // Cancelled - not an error
+                aborted = true;
+            } catch (const std::exception& e) {
+                pfc::string_formatter msg;
+                msg << "Scan exception: " << e.what();
+                console::error(msg.c_str());
+                error = "Scan exception";
+            } catch (...) {
+                error = "Unknown scan error";
             }
-        } catch (const exception_aborted&) {
-            // Cancelled - not an error
-        } catch (const std::exception& e) {
-            pfc::string_formatter msg;
-            msg << "Scan exception: " << e.what();
-            console::error(msg.c_str());
-            error = "Scan exception";
-        } catch (...) {
-            error = "Unknown scan error";
         }
 
-        m_scanning.store(false);
+        // Only the scan that still owns m_currentAbort clears the running state;
+        // a superseded scan must not report the newer one as finished.
+        {
+            std::lock_guard<std::mutex> lock(m_abortMutex);
+            if (m_currentAbort == abort) {
+                m_currentAbort.reset();
+                m_scanning.store(false);
+            }
+        }
+
+        if (aborted) return;
 
         // Callback on main thread only if this generation is still current
-        if (callback && m_generation.load() == gen && !m_cancelRequested.load()) {
+        if (callback && m_generation.load() == gen) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 callback(result, error);
             });
