@@ -30,14 +30,26 @@ static const int64_t kSelfHealVerifyDelaySeconds = 2;
 static const int64_t kSelfHealVerifyRetryDelaySeconds = 5;
 static const NSInteger kSelfHealVerifyRetries = 3;
 static const int kMigratorRelaunchAbortWaitSeconds = 120;
-static const int kRelauncherMigrationWaitSeconds = 900;
 
-// Staged migration SQL for a given fb2k pid. Shared knowledge between the
-// migrator (creates it, deletes it when done) and the relauncher (waits for
-// it to disappear before reopening foobar2000, so the migration never runs
-// concurrently with a fresh fb2k session holding metadb write locks).
+// Staged migration SQL for a given fb2k pid: written before quit, consumed by
+// the migrator after quit, removed when it is done.
 static NSString *stagedMigrationSQLPathForPID(pid_t pid) {
     return [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.sql", pid];
+}
+
+// "Reopen foobar2000 when the migration is finished" request. Written by
+// relaunchApp when a migration is staged; the migrator consumes it as its very
+// last act. Ordering is guaranteed because one process does both - the app can
+// never reopen while sqlite3 still holds metadb.
+//
+// This replaced a handshake where the relauncher polled for the staged SQL file
+// to disappear. File existence is not a lock: the file also vanishes when the
+// migrator aborts, when a second migrator finishes first (leaving the first
+// still writing), and the poll had a 15-minute bound after which it reopened
+// foobar2000 regardless - all of which surfaced as "metadb is corrupted" on
+// restart, because fb2k opened the database mid-write.
+static NSString *relaunchMarkerPathForPID(pid_t pid) {
+    return [NSString stringWithFormat:@"/tmp/plorg_metadb_relaunch_%d.marker", pid];
 }
 
 @interface VolumeSyncService ()
@@ -46,6 +58,7 @@ static NSString *stagedMigrationSQLPathForPID(pid_t pid) {
 @property (nonatomic, strong) NSString *playlistsDir; // cached for runtime monitor
 @property (nonatomic, copy) dispatch_block_t pendingVolumeCheck; // coalesces monitor bursts
 @property (nonatomic, strong) NSMutableSet<NSString *> *selfHealAttemptedPaths; // once per path per session
+@property (nonatomic, assign) BOOL migratorSpawned; // at most one migrator per fb2k process
 
 // Get volume UUID via DiskArbitration framework
 - (nullable NSString *)volumeUUIDForMountPath:(NSString *)path;
@@ -1187,11 +1200,7 @@ public:
     sql = [@".bail on\n" stringByAppendingString:sql];
 
     // Stage the SQL in /tmp; the helper script feeds it to sqlite3 after foobar
-    // exits and deletes it when done. The relauncher (relaunchApp) waits for
-    // this file to disappear before reopening foobar2000, so the migration and
-    // a fresh fb2k session never contend for metadb write locks (the
-    // 2026-07-11 incident: concurrent relaunch caused "database is locked"
-    // and an interrupted migration).
+    // exits and deletes it when done.
     pid_t pid = getpid();
     NSString *sqlPath = stagedMigrationSQLPathForPID(pid);
     NSError *writeErr = nil;
@@ -1202,8 +1211,25 @@ public:
         return;
     }
 
+    // At most one migrator per fb2k process. Repair runs on every startup and
+    // every /Volumes event, and the orphan-cache heuristic re-detects the same
+    // dead UUIDs until the migration actually runs - so without this guard each
+    // pass spawned another migrator, all sharing this one staged SQL path. Two
+    // were observed live on 2026-08-05, concurrently copying the same backup
+    // file. Later passes only refresh the staged SQL, which the waiting script
+    // reads after quit, so the newest plan still wins.
+    if (self.migratorSpawned) {
+        [self deferLog:[NSString stringWithFormat:
+            @"[Plorg VolumeSync] Migration plan updated (%lu UUID remap%@); "
+            "the already-scheduled migrator will pick it up at quit.",
+            (unsigned long)remapActions.count, remapActions.count == 1 ? @"" : @"s"]];
+        return;
+    }
+
     NSString *logPath = [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.log", pid];
-    // The helper script, in order:
+    NSString *markerPath = relaunchMarkerPathForPID(pid);
+    NSString *appPath = [[NSBundle mainBundle] bundlePath] ?: @"";
+    // This script owns the entire post-quit sequence, in order:
     //  1. waits for this fb2k process to exit;
     //  2. aborts if another foobar2000 is already running (user relaunched
     //     manually before the migration could start) - never write to metadb
@@ -1211,10 +1237,18 @@ public:
     //  3. best-effort backup: one rotating copy next to the DB when disk
     //     space allows (DB + WAL/SHM siblings);
     //  4. feeds the staged SQL to sqlite3 (transactional, .bail on);
-    //  5. removes the staged SQL, which releases the waiting relauncher.
+    //  5. verifies with quick_check, restoring the backup if it fails;
+    //  6. VACUUMs, because the copy-then-delete migration frees pages inside
+    //     the file that SQLite never returns to the filesystem - without this
+    //     the DB parks at ~2.7x the size it needs, forever;
+    //  7. drops the now-redundant backup (the DB has been verified good);
+    //  8. reopens foobar2000 if relaunchApp asked for it.
+    // Steps 4-8 in one process is what guarantees fb2k cannot reopen while
+    // sqlite3 still holds metadb - see relaunchMarkerPathForPID.
     NSString *script = [NSString stringWithFormat:
         @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"
-        @"DB='%@'; SQL='%@'; LOG='%@'; BK=\"$DB.plorg-pre-migration\"\n"
+        @"DB='%@'; SQL='%@'; LOG='%@'; MARK='%@'; BK=\"$DB.plorg-pre-migration\"\n"
+        @"relaunch() { [ -e \"$MARK\" ] || return 0; rm -f \"$MARK\"; if [ -n '%@' ]; then /usr/bin/open '%@'; fi; return 0; }\n"
         @"while kill -0 %d 2>/dev/null; do sleep 0.5; done\n"
         @"sleep 1\n"
         @"t=0\n"
@@ -1222,14 +1256,14 @@ public:
         @"  t=$((t+1))\n"
         @"  if [ \"$t\" -ge %d ]; then\n"
         @"    echo \"[Plorg VolumeSync] Migration SKIPPED: foobar2000 was relaunched before it could run. It will be rescheduled on next repair.\" > \"$LOG\"\n"
-        @"    rm -f \"$SQL\"\n"
+        @"    rm -f \"$SQL\" \"$MARK\"\n"
         @"    exit 0\n"
         @"  fi\n"
         @"  sleep 1\n"
         @"done\n"
         @"dbsize=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
-        @"avail_kb=$(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}')\n"
-        @"if [ \"$((avail_kb * 1024))\" -gt \"$((dbsize + dbsize / 10))\" ]; then\n"
+        @"avail=$(( $(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}') * 1024 ))\n"
+        @"if [ \"$avail\" -gt \"$((dbsize + dbsize / 10))\" ]; then\n"
         @"  /bin/cp -f \"$DB\" \"$BK\" && echo \"[Plorg VolumeSync] metadb backed up to $BK\" > \"$LOG\"\n"
         @"  for ext in -wal -shm; do\n"
         @"    if [ -f \"$DB$ext\" ]; then /bin/cp -f \"$DB$ext\" \"$BK$ext\"; else rm -f \"$BK$ext\"; fi\n"
@@ -1240,8 +1274,31 @@ public:
         @"/usr/bin/sqlite3 \"$DB\" < \"$SQL\" >> \"$LOG\" 2>&1\n"
         @"rc=$?\n"
         @"echo \"[Plorg VolumeSync] Metadb migration finished (exit $rc) at $(date)\" >> \"$LOG\"\n"
-        @"rm -f \"$SQL\"\n",
-        dbPath, sqlPath, logPath, pid, kMigratorRelaunchAbortWaitSeconds];
+        @"if [ \"$rc\" -eq 0 ]; then\n"
+        @"  chk=$(/usr/bin/sqlite3 \"$DB\" 'PRAGMA quick_check;' 2>&1 | /usr/bin/head -1)\n"
+        @"  echo \"[Plorg VolumeSync] Integrity after migration: $chk\" >> \"$LOG\"\n"
+        @"  if [ \"$chk\" = \"ok\" ]; then\n"
+        @"    before=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
+        @"    avail=$(( $(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}') * 1024 ))\n"
+        @"    if [ \"$avail\" -gt \"$before\" ]; then\n"
+        @"      if /usr/bin/sqlite3 \"$DB\" 'VACUUM;' >> \"$LOG\" 2>&1; then\n"
+        @"        after=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
+        @"        echo \"[Plorg VolumeSync] VACUUM reclaimed $(( (before - after) / 1048576 )) MB\" >> \"$LOG\"\n"
+        @"      fi\n"
+        @"    else\n"
+        @"      echo \"[Plorg VolumeSync] VACUUM skipped: not enough free disk space\" >> \"$LOG\"\n"
+        @"    fi\n"
+        @"    rm -f \"$BK\" \"$BK-wal\" \"$BK-shm\"\n"
+        @"  elif [ -f \"$BK\" ]; then\n"
+        @"    /bin/cp -f \"$BK\" \"$DB\" && echo \"[Plorg VolumeSync] Integrity check FAILED - restored the pre-migration backup; it is kept at $BK\" >> \"$LOG\"\n"
+        @"  else\n"
+        @"    echo \"[Plorg VolumeSync] Integrity check FAILED and no backup was made (disk space)\" >> \"$LOG\"\n"
+        @"  fi\n"
+        @"fi\n"
+        @"rm -f \"$SQL\"\n"
+        @"relaunch\n",
+        dbPath, sqlPath, logPath, markerPath, appPath, appPath,
+        pid, kMigratorRelaunchAbortWaitSeconds];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
@@ -1251,10 +1308,12 @@ public:
     task.standardError = [NSFileHandle fileHandleWithNullDevice];
     @try {
         [task launch];
+        self.migratorSpawned = YES;
         [self deferLog:[NSString stringWithFormat:
             @"[Plorg VolumeSync] Spawned metadb migrator (%lu UUID remap%@). "
-            @"It runs after foobar quits (backup first, transactional); a restart "
-            @"via the repair prompt waits for it to finish. Log: %@",
+            @"It runs after foobar quits: backup, transactional migration, "
+            @"integrity check, VACUUM, then reopens foobar2000 if the repair "
+            @"prompt asked for a restart. Log: %@",
             (unsigned long)remapActions.count,
             remapActions.count == 1 ? @"" : @"s",
             logPath]];
@@ -1271,21 +1330,42 @@ public:
         return;
     }
 
-    // Wait for this process to exit, then - if a metadb migration was staged -
-    // for the migrator to finish (it deletes the staged SQL when done; bounded
-    // wait so a wedged migration cannot block the relaunch forever). Reopening
-    // foobar2000 while the migration writes metadb caused the 2026-07-11
-    // "database is locked" incident.
     pid_t pid = getpid();
-    NSString *sqlPath = stagedMigrationSQLPathForPID(pid);
+
+    // If a migration is staged, the migrator reopens foobar2000 itself as its
+    // last act - we only leave the request. One process doing migrate-then-open
+    // is what makes the ordering airtight; the previous design had this process
+    // poll for the staged SQL file to disappear and then open the app, which
+    // reopened fb2k mid-write whenever the file vanished for any reason other
+    // than "migration completed" (abort path, a second migrator finishing
+    // first, or the 15-minute bound elapsing). That is what surfaced as
+    // "metadb is corrupted" on restart.
+    if (self.migratorSpawned) {
+        NSString *markerPath = relaunchMarkerPathForPID(pid);
+        if ([[NSFileManager defaultManager] createFileAtPath:markerPath
+                                                    contents:[NSData data]
+                                                  attributes:nil]) {
+            FB2K_console_formatter() << "[Plorg VolumeSync] Restart requested; foobar2000 "
+                "will reopen automatically once the metadb migration finishes.";
+            [self flushDeferredLogsToConsole];
+            [[NSApplication sharedApplication] terminate:nil];
+            return;
+        }
+        // Could not leave the request - fall through to the simple relauncher
+        // rather than quitting with no way back. It waits for this process to
+        // exit; the migrator's own abort guard keeps it from writing metadb
+        // while the new session is alive.
+        FB2K_console_formatter() << "[Plorg VolumeSync] Could not stage the restart request; "
+            "reopening directly (the migration will be rescheduled if it is skipped).";
+    }
+
+    // No migration staged: nothing to order against, just wait for exit.
     NSString *script = [NSString stringWithFormat:
         @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"
         @"while kill -0 %d 2>/dev/null; do sleep 0.1; done\n"
         @"sleep 0.3\n"
-        @"t=0\n"
-        @"while [ -e '%@' ] && [ \"$t\" -lt %d ]; do sleep 1; t=$((t+1)); done\n"
         @"/usr/bin/open '%@'\n",
-        pid, sqlPath, kRelauncherMigrationWaitSeconds, appPath];
+        pid, appPath];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
