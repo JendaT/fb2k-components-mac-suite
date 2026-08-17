@@ -488,19 +488,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Queue Manager
 
-### [Unreleased]
+### [1.2.0] - 2026-08-17
 
 #### Added
-- Multi-row drag reorder (previously only the first selected row moved)
-
-#### Changed
-- Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with unit tests gating every build
-- Column metadata consolidated into a single source of truth; dead QueueHeaderView removed; real component GUIDs and corrected metadata
+- Multi-row drag reorder — moves the whole selection as a block (previously only the first row moved)
 
 #### Fixed
-- Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
-- Code review cleanups: duration formatting UB on malformed track lengths, duplicated title-format error handling, orphan sentinel consistency, selection recolor efficiency
-- Reorder debounce flag never suppressed callbacks (redundant double reload per reorder); reorder now exception-safe with stale items re-added as orphans; SimPlaylist drops validate the source playlist index
+- Double refresh and doubled selection reset on every reorder (suppression flag was checked after it had been cleared)
+- View froze permanently if a queue rebuild failed partway
+- Tracks lost on reorder when the source playlist had changed — now re-added by handle
+- Malformed drops referencing a nonexistent playlist are rejected instead of reaching the SDK
+- Malformed track lengths (NaN/infinite/oversized) show `--:--` instead of garbage
+- Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`
+
+#### Changed
+- Column metadata consolidated into a single source of truth; dead QueueHeaderView removed from the binary
+- Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with 3300+ unit test checks gating every build
 
 ### [1.1.2] - 2026-02-09
 

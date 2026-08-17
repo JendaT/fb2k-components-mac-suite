@@ -1,36 +1,35 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-08-17
 
 ### Added
 
-- **Multi-row drag reorder**: dragging a multi-row selection now moves all selected rows as a contiguous block (previously only the first row moved, silently); `QueueReorderPlanner` generalized to multi-source moves with an exhaustive test sweep
-
-### Fixed (review follow-ups)
-
-- **Reorder debounce**: `isReorderingInProgress` was checked in a deferred block that always ran after the flag was cleared, so it never suppressed anything and every reorder triggered a redundant second full reload; the check now runs synchronously when the SDK callback arrives on the main thread
-- **Reorder failure safety**: if an SDK call throws mid flush-and-readd, the flag is reset and the view reloaded instead of freezing updates permanently; queue items whose playlist reference went stale are re-added as orphans instead of pointing at wrong tracks
-- **Drop validation**: SimPlaylist drops now reject payloads referencing a nonexistent playlist (forged pasteboard data or playlist deleted mid-drag)
-
-### Changed
-
-- **Testable Core extraction**: Pure logic moved into SDK-free Core units with standalone unit tests that gate every build (same pattern as SimPlaylist)
-  - `QueueReorderPlanner`: drag-reorder move planning extracted from QueueManagerController (also removes a leftover dead loop in the drop handler)
-  - `QueueFormatting`: duration and status bar text formatting extracted from QueueOperations and the controller
-  - `QueueDropParser`: SimPlaylist drag payload decoding/validation extracted from the controller; malformed payloads are now rejected up front
+- **Multi-row drag reorder**: dragging a multi-row selection moves all selected rows as a contiguous block, preserving their relative order. Previously only the first row moved, silently.
 
 ### Fixed
 
-- **Build**: Component failed to compile after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; QueueRowView now uses `selectedBackgroundColor()` like SimPlaylist
-- **Code review cleanups**: duration formatting now rejects NaN/infinite/overflow track lengths (was undefined behavior); title-format error handling deduplicated into `queue_ops::formatItem`; orphan sentinel uses named constants; selection recoloring only visits instantiated rows; queue callback dispatch skips work when no views are registered; dead `setupKeyboardHandling` removed; magic numbers named
+- **Double refresh on every reorder**: the reorder suppression flag was checked after it had already been cleared, so it never suppressed anything and each drag rebuilt the whole view twice (visible flicker, selection reset twice)
+- **Frozen view after a failed reorder**: if the queue rebuild failed partway, updates stayed suppressed permanently and the view stopped tracking the queue; the reorder path is now failure-safe
+- **Tracks lost on reorder after playlist edits**: queue entries whose source playlist reference went stale are re-added by handle instead of pointing at the wrong track
+- **Rejected malformed drops**: drops carrying a nonexistent playlist reference (stale drag, or data from another app) are now rejected instead of being passed to the SDK
+- **Duration display**: tracks reporting a malformed length (NaN, infinite, or absurdly large) show `--:--` instead of garbage; this was undefined behavior
+- **Build**: restored compilation after shared `UIStyles.h` dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
 
-- **Column metadata**: `queue_config::kAvailableColumns` is now the single source of truth for column identifiers, titles, widths, and title formats; controller and item wrapper read from it instead of hardcoding copies
-- **Component identity**: placeholder GUIDs replaced with real UUIDs (saved layouts re-match the element by name), component URL corrected, description no longer advertises unimplemented configurable columns
-- **Removed**: dead `QueueHeaderView` class (controller uses native `NSTableHeaderView` since 1.1.2); queue-rebuild and playlist lookups moved from the controller into `queue_ops`
+### Changed
+
+- **Column metadata consolidated**: `queue_config::kAvailableColumns` is the single source of truth for column identifiers, titles, widths, and title formats; the controller and item wrapper read from it instead of keeping their own copies
+- **Removed dead code**: the unused `QueueHeaderView` class (superseded by the native header in 1.1.2) no longer ships in the binary
+- **Component description** no longer advertises configurable columns, which are not implemented yet
 
 ### Technical
 
-- New `Tests/` suite (3300+ checks) compiled standalone with clang, run by `Scripts/run_tests.sh` as a gating phase in `Scripts/build.sh`
+- **Testable Core extraction** (same pattern as SimPlaylist): pure logic moved into SDK-free units that compile and test standalone
+  - `QueueReorderPlanner` — drag-reorder move planning, generalized to multi-row moves
+  - `QueueFormatting` — duration and status bar text
+  - `QueueDropParser` — SimPlaylist drag payload decoding and validation
+- New `Tests/` suite (3300+ checks, including an exhaustive reorder sweep against a naive simulation) compiled with bare clang by `Scripts/run_tests.sh`, gating every build via `Scripts/build.sh`
+- Queue rebuild and playlist lookups moved out of the controller into `queue_ops`; internal cleanups (orphan sentinel constants, selection recoloring limited to instantiated rows, no-op callback dispatch skipped, named constants)
+- Component and preferences GUIDs are documented as frozen — foobar2000 resolves saved layouts by element GUID
 
 ## [1.1.2] - 2026-02-09
 
