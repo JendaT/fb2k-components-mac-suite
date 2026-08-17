@@ -280,7 +280,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Three-pass code review hardening: malformed-input crash fixes (FTH/DBPL/YAML parsers), path-traversal rejection in `.fplite` sample paths, manual remap target-UUID validation, read-only opens for Vox/Strawberry import databases, backup-before-delete for corrupted-playlist removal, locale-pinned backup timestamps, corrected delete-folder dialog text, build script no longer masks project-generation failures
 - Fourth review pass: metadb migration no longer deletes lower-case-UUID rows instead of migrating them (case-insensitive LIKE vs case-sensitive REPLACE); registry volume paths normalized so trailing-slash/Unicode variants match; Vox-import and SimPlaylist-drag crash fixes; Repair Volume UUIDs window no longer leaks or dead-locks its UI on title-bar close or backup failure; dead public API removed and main-thread contracts documented
 
-### [1.4.0] - 2026-02-14
+### [1.4.0] - developed 2026-02-14, never published (ships in 1.5.0)
 
 #### Added
 - FTH Theme Import: import playlist tree structure and tracks from old Windows foo_plorg theme files, with Windows-to-macOS path mapping

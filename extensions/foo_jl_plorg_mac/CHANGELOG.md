@@ -10,9 +10,9 @@ playlists silently stops resolving, so tracks show up as missing. 1.5.0 repairs
 that automatically, and moves foobar2000's cached metadata across with it so
 the library does not have to re-scan.
 
-**This release also includes everything from 1.4.0** - FTH theme import and
-corrupted-playlist detection - which was documented but never published. See
-the 1.4.0 section below for those features.
+Coming from 1.3.0? This release also carries the work that was developed as
+1.4.0 in February 2026 but never published - FTH theme import and
+corrupted-playlist detection - listed under "Also in this release" below.
 
 ### Added
 - **Automatic Volume UUID Sync**: Headless service that auto-repairs stale `mac-volume://` UUIDs in network-share playlists caused by SMB / Tailscale remounts assigning fresh ephemeral UUIDs.
@@ -68,6 +68,20 @@ the 1.4.0 section below for those features.
   - Delete-folder dialog now describes what actually happens (playlists move to the parent folder; they are only deleted from foobar2000 if you tick the recursive option).
   - Build tooling: a failed project regeneration now aborts the build instead of silently packaging a stale one, and compiler warnings are no longer filtered out of the build log.
 
+### Also in this release
+Developed as 1.4.0 (February 2026) and never published separately, so it ships here:
+
+- **FTH Theme Import**: import your playlist tree and tracks from an old Windows foo_plorg theme file.
+  - Reconstructs the folder hierarchy from the theme's tree markers and imports the tracks from the accompanying `.fplite` files.
+  - Windows-to-macOS path mapping with configurable drive-letter mappings; handles relative Windows paths, UNC paths and `file://` URLs, and tolerates malformed percent-encoding.
+  - Skips trees that would duplicate what you already have, and reports how many tracks were found vs missing.
+- **Corrupted Playlist Detection**: finds playlists foobar2000 cannot load and removes them safely.
+  - Detects missing, empty, unreadable and wrong-format (Windows-path) `.fplite` files.
+  - A crash-marker system identifies playlists that crash foobar2000 from inside the SDK, remembers them across sessions, and skips reading their track counts so startup survives.
+  - Removal works on the files directly, avoiding the SDK call that crashes on exactly these playlists.
+  - Preference: "Check for corrupted playlists on startup", plus a "Check Now" button.
+- Fixed alongside those: a crash when a tree node had no name, a blank panel after a failed import, and startup crashes caused by reading track counts of known-bad playlists.
+
 ### Known limitations
 - **Self-heal's automatic bookmark minting is still unproven in the field.** Whether resolving a file through the core is enough to make foobar2000 persist a bookmark is answered explicitly in the console on the next remount; if it turns out not to work, the one-click "Choose File…" prompt covers it.
 - **A share mounted twice under different server addresses still yields two volumes.** macOS mounts `//host/music` and `//192.168.x.x/music` as separate volumes (`/Volumes/music` and `/Volumes/music-1`), and foobar2000 caches metadata separately for each. Plorg records only the mount point, so it cannot tell them apart. Avoid mounting the same share under two addresses at once.
@@ -75,30 +89,6 @@ the 1.4.0 section below for those features.
 ### Documentation
 - `../../docs/research/volume-uuid-instability-deep-research.md` — deep research on macOS volume identity, foobar's storage, and prior incident history.
 - Updated `../../docs/VOLUME_UUID_ISSUE.md`.
-
-## [1.4.0] - 2026-02-14
-
-### Added
-- **FTH Theme Import**: Import playlist tree structure and tracks from old Windows foo_plorg theme files
-  - Parses tree markers from .fth theme files to reconstruct folder hierarchy
-  - Imports tracks from .fplite files with automatic path conversion
-  - Windows-to-macOS path mapping with configurable drive letter mappings
-  - Handles relative Windows paths, UNC paths, and file:// URLs
-  - Lenient percent-encoding decoder for malformed URLs
-  - Duplicate tree detection to avoid importing redundant data
-  - Import summary report with found/missing track statistics
-- **Corrupted Playlist Detection**: Detect and safely remove corrupted playlists
-  - File-based checks: missing .fplite, empty content, unreadable content, invalid format (Windows paths)
-  - Crash marker system: automatically identifies playlists that cause SDK-level crashes
-  - Known bad playlist tracking persisted across sessions
-  - Safe filesystem-based removal (bypasses SDK to avoid crash-on-remove)
-  - Preference: "Check for corrupted playlists on startup"
-  - "Check Now" button in preferences for on-demand scanning
-
-### Fixed
-- Nil safety in path encoding prevents crash when tree nodes have nil names
-- Import exception handling now properly resets view state (no more blank view on failure)
-- Playlist item count access skipped for known-bad playlists to prevent startup crashes
 
 ## [1.3.2] - 2025-01-15
 
