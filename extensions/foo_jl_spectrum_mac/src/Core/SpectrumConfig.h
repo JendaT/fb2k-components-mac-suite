@@ -36,18 +36,20 @@ constexpr int      kDefaultBarCount   = 48;      // Number of frequency bars
 constexpr int      kDefaultFftSize    = 4096;    // FFT window (power of 2)
 constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleLog;
-constexpr int      kDefaultMinHz      = 40;      // Lowest displayed frequency
-constexpr int      kDefaultMaxHz      = 18000;   // Highest displayed frequency
+constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
+constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 20;      // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 60;      // Temporal smoothing 0-100 (higher = smoother)
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
+constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
+constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
 constexpr bool     kDefaultGlassBackground = false;
 
 // dB window that maps to the 0..1 bar height. Shared by the analyzer (scaling)
 // and the view (dB guide placement) so the guides line up with the bars.
-constexpr float    kDisplayFloorDb = -70.0f;     // maps to bar height 0
-constexpr float    kDisplayCeilDb  = -6.0f;      // maps to bar height 1
+constexpr float    kDisplayFloorDb = -80.0f;     // maps to bar height 0
+constexpr float    kDisplayCeilDb  = 0.0f;       // maps to bar height 1
 
 // Default colors (ARGB)
 constexpr uint32_t kDefaultBarColorLight = 0xFF2E7DD1;  // Blue
@@ -67,6 +69,8 @@ static const char* const kKeyGapPercent     = "gap_percent";
 static const char* const kKeySmoothing      = "smoothing";
 static const char* const kKeyPeakHold       = "peak_hold";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
+static const char* const kKeyShowFreqAxis   = "show_freq_axis";
+static const char* const kKeyShadowFill     = "shadow_fill";
 static const char* const kKeyGlassBackground = "glass_background";
 static const char* const kKeyBarColorLight  = "bar_color_light";
 static const char* const kKeyBgColorLight   = "bg_color_light";
