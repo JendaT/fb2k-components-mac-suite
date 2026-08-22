@@ -84,7 +84,8 @@ module Fb2kVersions
     "cloud_streamer" => "CLOUD_STREAMER_VERSION",
     "cloud" => "CLOUD_STREAMER_VERSION",
     "tidal" => "TIDAL_VERSION",
-    "playback_controls" => "PLAYBACK_CONTROLS_VERSION"
+    "playback_controls" => "PLAYBACK_CONTROLS_VERSION",
+    "spectrum" => "SPECTRUM_VERSION"
   }
 
   # Parse version.h and extract versions

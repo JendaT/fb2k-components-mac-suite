@@ -1,0 +1,30 @@
+//
+//  Prefix.pch
+//  foo_jl_spectrum_mac
+//
+//  Precompiled header for macOS build
+//
+
+#pragma once
+
+// Enable legacy cfg_var API for compatibility with Windows code
+#define FOOBAR2000_HAVE_CFG_VAR_LEGACY 1
+
+// foobar2000 SDK
+#include <foobar2000/SDK/foobar2000.h>
+
+// Standard library
+#include <string>
+#include <vector>
+#include <cmath>
+#include <memory>
+#include <atomic>
+#include <algorithm>
+#include <cstdint>
+
+// macOS/Cocoa (when included from .mm files)
+#ifdef __OBJC__
+#import <Cocoa/Cocoa.h>
+#import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
+#endif

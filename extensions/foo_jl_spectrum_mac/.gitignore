@@ -1,0 +1,32 @@
+# Xcode
+build/
+DerivedData/
+*.xcworkspace
+xcuserdata/
+*.xccheckout
+*.xcodeproj/
+
+# Build artifacts
+*.component
+*.o
+*.a
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Xcode project user data
+*.xcuserstate
+*.xcuserdata
+*.xcscmblueprint
+*.xcscheme
+
+# Backup files
+*~
+*.bak
