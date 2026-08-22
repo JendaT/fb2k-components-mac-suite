@@ -27,7 +27,9 @@
     NSSlider      *_smoothingSlider;
     NSTextField   *_smoothingLabel;
     NSButton      *_peakHoldCheckbox;
+    NSButton      *_shadowFillCheckbox;
     NSButton      *_dbGuidesCheckbox;
+    NSButton      *_freqAxisCheckbox;
     NSButton      *_glassCheckbox;
     NSColorWell   *_barColorLightWell;
     NSColorWell   *_bgColorLightWell;
@@ -45,7 +47,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 500)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 560)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -71,7 +73,7 @@
 
     [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
     _barCountPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
-    for (NSNumber *n in @[@16, @24, @32, @48, @64, @96, @128]) {
+    for (NSNumber *n in @[@16, @24, @32, @48, @64, @96, @128, @192, @256]) {
         [_barCountPopup addItemWithTitle:n.stringValue];
     }
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
@@ -144,9 +146,19 @@
     [self.view addSubview:_peakHoldCheckbox];
     y += 26;
 
+    _shadowFillCheckbox = [self checkbox:@"Shadow fill" at:NSMakePoint(labelX + 10, y)];
+    _shadowFillCheckbox.toolTip = @"Dim, slow-decaying fill behind bars for depth";
+    [self.view addSubview:_shadowFillCheckbox];
+    y += 26;
+
     _dbGuidesCheckbox = [self checkbox:@"Show dB scale" at:NSMakePoint(labelX + 10, y)];
     _dbGuidesCheckbox.toolTip = @"Draw decibel guide lines and labels on the right edge";
     [self.view addSubview:_dbGuidesCheckbox];
+    y += 26;
+
+    _freqAxisCheckbox = [self checkbox:@"Show frequency axis" at:NSMakePoint(labelX + 10, y)];
+    _freqAxisCheckbox.toolTip = @"Draw frequency gridlines and labels along the bottom";
+    [self.view addSubview:_freqAxisCheckbox];
     y += 26;
 
     _glassCheckbox = [self checkbox:@"Glass background" at:NSMakePoint(labelX + 10, y)];
@@ -240,7 +252,9 @@
     _gapLabel.stringValue = [NSString stringWithFormat:@"%d%%", gap];
 
     _peakHoldCheckbox.state = getConfigBool(kKeyPeakHold, kDefaultPeakHold) ? NSControlStateValueOn : NSControlStateValueOff;
+    _shadowFillCheckbox.state = getConfigBool(kKeyShadowFill, kDefaultShadowFill) ? NSControlStateValueOn : NSControlStateValueOff;
     _dbGuidesCheckbox.state = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides) ? NSControlStateValueOn : NSControlStateValueOff;
+    _freqAxisCheckbox.state = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
     _barColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight)];
@@ -325,8 +339,12 @@
     using namespace spectrum_config;
     if (sender == _peakHoldCheckbox) {
         setConfigBool(kKeyPeakHold, _peakHoldCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _shadowFillCheckbox) {
+        setConfigBool(kKeyShadowFill, _shadowFillCheckbox.state == NSControlStateValueOn);
     } else if (sender == _dbGuidesCheckbox) {
         setConfigBool(kKeyShowDbGuides, _dbGuidesCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _freqAxisCheckbox) {
+        setConfigBool(kKeyShowFreqAxis, _freqAxisCheckbox.state == NSControlStateValueOn);
     } else if (sender == _glassCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassCheckbox.state == NSControlStateValueOn);
     }
