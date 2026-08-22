@@ -61,6 +61,10 @@
     _gapPercent    = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
     _minHz         = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHz         = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    // Same clamps as SpectrumAnalyzer::configure(), so fractionForHz: cannot
+    // divide by zero or take log10 of a non-positive bound.
+    if (_minHz < 10) _minHz = 10;
+    if (_maxHz <= _minHz + 100) _maxHz = _minHz + 100;
     _logScale      = getConfigInt(kKeyFreqScale, kDefaultFreqScale) == FreqScaleLog;
     _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
     _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);

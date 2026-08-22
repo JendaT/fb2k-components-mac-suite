@@ -155,7 +155,8 @@ bool SpectrumAnalyzer::tick() {
             int lo = _binLo[i];
             int hi = _binHi[i];
             if (hi >= binCount) hi = binCount - 1;
-            if (lo > hi) { /* keep previous target of 0 */ }
+            // If the clamp leaves lo > hi, the band loop runs zero times and
+            // the bar decays toward a zero target.
 
             // Peak magnitude across the band (peak reads punchier than average).
             float mag = 0.0f;

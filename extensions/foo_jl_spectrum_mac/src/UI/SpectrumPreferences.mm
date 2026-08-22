@@ -336,10 +336,10 @@
 
     [self selectPopup:_barCountPopup value:(int)getConfigInt(kKeyBarCount, kDefaultBarCount)];
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
-    [_freqScalePopup selectItemAtIndex:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
-    [_barStylePopup selectItemAtIndex:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
-    [_drawModePopup selectItemAtIndex:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
-    [_orientationPopup selectItemAtIndex:getConfigInt(kKeyOrientation, kDefaultOrientation)];
+    [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
+    [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
+    [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
+    [self selectIndexPopup:_orientationPopup index:getConfigInt(kKeyOrientation, kDefaultOrientation)];
 
     _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -394,6 +394,13 @@
 - (void)selectPopup:(NSPopUpButton *)popup value:(int)value {
     NSInteger idx = [popup indexOfItemWithTitle:[@(value) stringValue]];
     if (idx >= 0) [popup selectItemAtIndex:idx];
+}
+
+// Config values index these popups directly; an out-of-range value from a
+// corrupted config store would raise NSRangeException, so clamp first.
+- (void)selectIndexPopup:(NSPopUpButton *)popup index:(NSInteger)idx {
+    if (idx < 0 || idx >= popup.numberOfItems) idx = 0;
+    [popup selectItemAtIndex:idx];
 }
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
