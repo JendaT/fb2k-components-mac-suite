@@ -22,6 +22,12 @@ public:
         int    smoothing  = 60;      // 0-100, higher = smoother
         bool   logScale   = true;
         bool   peakHold    = true;
+
+        // Fall dynamics (concrete per-frame rates; the UI maps friendly 0-100
+        // sliders to these). Each layer should fall slower than the one below.
+        float  shadowFall    = 0.012f;   // shadow band linear fall per frame
+        float  peakGravity   = 0.0009f;  // peak line acceleration per frame
+        int    peakHoldFrames = 24;      // frames a peak holds before falling
     };
 
     SpectrumAnalyzer();
@@ -61,10 +67,11 @@ private:
     std::vector<int> _binLo;   // inclusive
     std::vector<int> _binHi;   // inclusive
 
-    std::vector<float> _bars;
-    std::vector<float> _shadow;   // slow-decaying fill behind bars
-    std::vector<float> _peaks;
+    std::vector<float> _bars;     // fast: instantaneous level
+    std::vector<float> _shadow;   // medium: falls slower than the bar
+    std::vector<float> _peaks;    // slowest: holds, then eases down
     std::vector<float> _peakVel;  // downward velocity per peak cap
+    std::vector<int>   _peakHold; // frames remaining before a peak starts falling
 
     bool _bandsDirty = true;
     bool _active = false;

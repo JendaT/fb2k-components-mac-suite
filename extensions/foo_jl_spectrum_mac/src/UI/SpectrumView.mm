@@ -144,8 +144,12 @@ static NSColor *colorFromARGB(uint32_t argb) {
     const CGFloat barW = slot - gap;
 
     NSColor *base = [self barColor];
-    NSColor *shadowColor = [base blendedColorWithFraction:0.62 ofColor:[self bgColor]];
-    NSColor *capColor = [base blendedColorWithFraction:0.4 ofColor:[NSColor whiteColor]];
+    const BOOL dark = fb2k_ui::isDarkMode();
+    // Shadow band: a muted grey-blue so it reads distinctly above the bar.
+    NSColor *shadowColor = [base blendedColorWithFraction:0.6 ofColor:[NSColor grayColor]];
+    // Peak line: high-contrast against the background in either theme.
+    NSColor *capColor = dark ? [base blendedColorWithFraction:0.7 ofColor:[NSColor whiteColor]]
+                             : [base blendedColorWithFraction:0.5 ofColor:[NSColor blackColor]];
 
     for (NSInteger i = 0; i < n; ++i) {
         CGFloat x = (CGFloat)i * slot + gap * 0.5;

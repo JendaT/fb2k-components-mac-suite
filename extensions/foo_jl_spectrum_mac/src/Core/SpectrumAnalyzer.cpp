@@ -44,12 +44,16 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     if (_settings.maxHz <= _settings.minHz + 100) _settings.maxHz = _settings.minHz + 100;
     if (_settings.smoothing < 0)   _settings.smoothing = 0;
     if (_settings.smoothing > 100) _settings.smoothing = 100;
+    if (_settings.shadowFall < 0.0005f) _settings.shadowFall = 0.0005f;
+    if (_settings.peakGravity < 0.00005f) _settings.peakGravity = 0.00005f;
+    if (_settings.peakHoldFrames < 0) _settings.peakHoldFrames = 0;
 
     const size_t n = static_cast<size_t>(_settings.barCount);
     _bars.assign(n, 0.0f);
     _shadow.assign(n, 0.0f);
     _peaks.assign(n, 0.0f);
     _peakVel.assign(n, 0.0f);
+    _peakHold.assign(n, 0);
     _bandsDirty = true;  // bin ranges depend on sample rate, computed lazily
 }
 
@@ -178,28 +182,39 @@ bool SpectrumAnalyzer::tick() {
         }
     }
 
+    // Three timescales, each rising instantly to the bar and falling slower
+    // than the layer beneath it: bar (fast) < shadow (medium) < peak (slowest).
+    const float kShadowFall  = _settings.shadowFall;
+    const int   kPeakHold    = _settings.peakHoldFrames;
+    const float kPeakGravity = _settings.peakGravity;
+
     bool anyActive = false;
     for (int i = 0; i < bars; ++i) {
-        // Slow-decaying shadow fill: jumps up with the bar, eases down slower.
-        if (_bars[i] >= _shadow[i]) {
-            _shadow[i] = _bars[i];
+        const float b = _bars[i];
+
+        // Shadow band: instant rise, steady medium fall.
+        if (b >= _shadow[i]) {
+            _shadow[i] = b;
         } else {
-            _shadow[i] *= 0.90f;
-            if (_shadow[i] < _bars[i]) _shadow[i] = _bars[i];
+            _shadow[i] -= kShadowFall;
+            if (_shadow[i] < b) _shadow[i] = b;
         }
 
-        // Falling peak caps with gravity.
-        if (_bars[i] > _peaks[i]) {
-            _peaks[i] = _bars[i];
+        // Peak line: instant rise, brief hold, then slow accelerating fall.
+        if (b >= _peaks[i]) {
+            _peaks[i] = b;
+            _peakHold[i] = kPeakHold;
             _peakVel[i] = 0.0f;
+        } else if (_peakHold[i] > 0) {
+            _peakHold[i]--;
         } else {
-            _peakVel[i] += 0.010f;              // gravity per frame
+            _peakVel[i] += kPeakGravity;
             _peaks[i] -= _peakVel[i];
-            if (_peaks[i] < _bars[i]) { _peaks[i] = _bars[i]; _peakVel[i] = 0.0f; }
+            if (_peaks[i] < b) { _peaks[i] = b; _peakVel[i] = 0.0f; }
             if (_peaks[i] < 0.0f) _peaks[i] = 0.0f;
         }
 
-        if (_bars[i] > 0.0f || _peaks[i] > 0.0f || _shadow[i] > 0.0f) anyActive = true;
+        if (b > 0.0f || _shadow[i] > 0.0f || _peaks[i] > 0.0f) anyActive = true;
     }
 
     _active = anyActive;
@@ -216,5 +231,6 @@ void SpectrumAnalyzer::suspend() {
     std::fill(_shadow.begin(), _shadow.end(), 0.0f);
     std::fill(_peaks.begin(), _peaks.end(), 0.0f);
     std::fill(_peakVel.begin(), _peakVel.end(), 0.0f);
+    std::fill(_peakHold.begin(), _peakHold.end(), 0);
     _active = false;
 }
