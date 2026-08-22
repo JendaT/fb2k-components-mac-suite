@@ -254,6 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > Not yet end-to-end verified. Committed for tracking and ongoing test.
 
 #### Added
+- Drop files or folders from Finder onto a playlist node to append them, routed through foobar2000's own incoming-file handling (thanks @Scannou, #36)
 - **Automatic Volume UUID Sync**: headless service that auto-repairs stale `mac-volume://` UUIDs in `.fplite` playlists caused by SMB / Tailscale remounts assigning fresh ephemeral UUIDs
 - Bookmark-based discovery via foobar's `config.sqlite` (handles SMB shares where macOS UUID APIs return null)
 - Startup hook (`initquit::on_init`) plus runtime `/Volumes` VNODE monitor for mid-session mount changes
