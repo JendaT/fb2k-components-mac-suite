@@ -41,6 +41,9 @@ public:
     // Current normalized bar magnitudes (0..1), one per bar.
     const std::vector<float>& bars() const { return _bars; }
 
+    // Slow-decaying dim fill behind the bars (0..1) for the "shadow" depth look.
+    const std::vector<float>& shadow() const { return _shadow; }
+
     // Current normalized peak-cap positions (0..1), one per bar.
     const std::vector<float>& peaks() const { return _peaks; }
 
@@ -59,6 +62,7 @@ private:
     std::vector<int> _binHi;   // inclusive
 
     std::vector<float> _bars;
+    std::vector<float> _shadow;   // slow-decaying fill behind bars
     std::vector<float> _peaks;
     std::vector<float> _peakVel;  // downward velocity per peak cap
 

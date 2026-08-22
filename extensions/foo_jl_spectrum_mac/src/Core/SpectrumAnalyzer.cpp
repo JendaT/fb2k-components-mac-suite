@@ -47,6 +47,7 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
 
     const size_t n = static_cast<size_t>(_settings.barCount);
     _bars.assign(n, 0.0f);
+    _shadow.assign(n, 0.0f);
     _peaks.assign(n, 0.0f);
     _peakVel.assign(n, 0.0f);
     _bandsDirty = true;  // bin ranges depend on sample rate, computed lazily
@@ -177,9 +178,17 @@ bool SpectrumAnalyzer::tick() {
         }
     }
 
-    // Falling peak caps with gravity.
     bool anyActive = false;
     for (int i = 0; i < bars; ++i) {
+        // Slow-decaying shadow fill: jumps up with the bar, eases down slower.
+        if (_bars[i] >= _shadow[i]) {
+            _shadow[i] = _bars[i];
+        } else {
+            _shadow[i] *= 0.90f;
+            if (_shadow[i] < _bars[i]) _shadow[i] = _bars[i];
+        }
+
+        // Falling peak caps with gravity.
         if (_bars[i] > _peaks[i]) {
             _peaks[i] = _bars[i];
             _peakVel[i] = 0.0f;
@@ -189,7 +198,8 @@ bool SpectrumAnalyzer::tick() {
             if (_peaks[i] < _bars[i]) { _peaks[i] = _bars[i]; _peakVel[i] = 0.0f; }
             if (_peaks[i] < 0.0f) _peaks[i] = 0.0f;
         }
-        if (_bars[i] > 0.0f || _peaks[i] > 0.0f) anyActive = true;
+
+        if (_bars[i] > 0.0f || _peaks[i] > 0.0f || _shadow[i] > 0.0f) anyActive = true;
     }
 
     _active = anyActive;
@@ -203,6 +213,7 @@ void SpectrumAnalyzer::suspend() {
     // stream returns no data for its first reads and would never warm up.)
     releaseStream();
     std::fill(_bars.begin(), _bars.end(), 0.0f);
+    std::fill(_shadow.begin(), _shadow.end(), 0.0f);
     std::fill(_peaks.begin(), _peaks.end(), 0.0f);
     std::fill(_peakVel.begin(), _peakVel.end(), 0.0f);
     _active = false;
