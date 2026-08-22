@@ -41,6 +41,10 @@
     NSColorWell   *_bgColorLightWell;
     NSColorWell   *_barColorDarkWell;
     NSColorWell   *_bgColorDarkWell;
+    NSSlider      *_gridOpacitySlider;
+    NSTextField   *_gridOpacityLabel;
+    NSColorWell   *_gridColorLightWell;
+    NSColorWell   *_gridColorDarkWell;
 }
 @end
 
@@ -53,7 +57,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 690)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 780)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -229,6 +233,29 @@
     _bgColorDarkWell = [self colorWellAt:NSMakePoint(controlX + 150, y)];
     [self.view addSubview:_bgColorDarkWell];
     y += 32;
+
+    // --- Grid section (dB scale + frequency axis) ---
+    NSTextField *gridHeader = JLCreateSectionHeader(@"Grid (dB scale & frequency axis)");
+    gridHeader.frame = NSMakeRect(labelX, y, 300, 17);
+    [self.view addSubview:gridHeader];
+    y += 22;
+
+    [self.view addSubview:[self label:@"Opacity:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _gridOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _gridOpacitySlider.minValue = 0; _gridOpacitySlider.maxValue = 100; _gridOpacitySlider.continuous = YES;
+    _gridOpacitySlider.target = self; _gridOpacitySlider.action = @selector(gridOpacityChanged:);
+    [self.view addSubview:_gridOpacitySlider];
+    _gridOpacityLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_gridOpacityLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Color (light):" at:NSMakePoint(labelX + 10, y + 3)]];
+    _gridColorLightWell = [self colorWellAt:NSMakePoint(controlX, y)];
+    [self.view addSubview:_gridColorLightWell];
+    [self.view addSubview:[self label:@"Color (dark):" at:NSMakePoint(controlX + 60, y + 3)]];
+    _gridColorDarkWell = [self colorWellAt:NSMakePoint(controlX + 150, y)];
+    [self.view addSubview:_gridColorDarkWell];
+    y += 32;
 }
 
 #pragma mark - Control factory helpers
@@ -315,6 +342,12 @@
     _bgColorLightWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight)];
     _barColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorDark, kDefaultBarColorDark)];
     _bgColorDarkWell.color   = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)];
+
+    int gridOpacity = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
+    _gridOpacitySlider.integerValue = gridOpacity;
+    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", gridOpacity];
+    _gridColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight)];
+    _gridColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark)];
 }
 
 - (void)selectPopup:(NSPopUpButton *)popup value:(int)value {
@@ -426,12 +459,21 @@
     [self notifyChanged];
 }
 
+- (void)gridOpacityChanged:(id)sender {
+    int v = (int)_gridOpacitySlider.integerValue;
+    spectrum_config::setConfigInt(spectrum_config::kKeyGridOpacity, v);
+    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+    [self notifyChanged];
+}
+
 - (void)colorChanged:(id)sender {
     using namespace spectrum_config;
     if (sender == _barColorLightWell)      setConfigInt(kKeyBarColorLight, [self argbFromColor:_barColorLightWell.color]);
     else if (sender == _bgColorLightWell)  setConfigInt(kKeyBgColorLight, [self argbFromColor:_bgColorLightWell.color]);
     else if (sender == _barColorDarkWell)  setConfigInt(kKeyBarColorDark, [self argbFromColor:_barColorDarkWell.color]);
     else if (sender == _bgColorDarkWell)   setConfigInt(kKeyBgColorDark, [self argbFromColor:_bgColorDarkWell.color]);
+    else if (sender == _gridColorLightWell) setConfigInt(kKeyGridColorLight, [self argbFromColor:_gridColorLightWell.color]);
+    else if (sender == _gridColorDarkWell)  setConfigInt(kKeyGridColorDark, [self argbFromColor:_gridColorDarkWell.color]);
     [self notifyChanged];
 }
 

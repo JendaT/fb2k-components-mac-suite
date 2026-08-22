@@ -47,6 +47,7 @@ constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
 constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
+constexpr int      kDefaultGridOpacity = 40;     // Grid line opacity 0-100
 constexpr bool     kDefaultGlassBackground = false;
 
 // dB window that maps to the 0..1 bar height. Shared by the analyzer (scaling)
@@ -59,6 +60,8 @@ constexpr uint32_t kDefaultBarColorLight = 0xFF2E7DD1;  // Blue
 constexpr uint32_t kDefaultBgColorLight  = 0xFFF2F2F2;  // Light gray
 constexpr uint32_t kDefaultBarColorDark  = 0xFF4DA3F0;  // Lighter blue
 constexpr uint32_t kDefaultBgColorDark   = 0xFF161616;  // Near-black
+constexpr uint32_t kDefaultGridColorLight = 0xFF808080; // Neutral gray
+constexpr uint32_t kDefaultGridColorDark  = 0xFF909090; // Neutral gray
 
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix     = "foo_jl_spectrum.";
@@ -77,6 +80,9 @@ static const char* const kKeyPeakHold       = "peak_hold";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
 static const char* const kKeyShowFreqAxis   = "show_freq_axis";
 static const char* const kKeyShadowFill     = "shadow_fill";
+static const char* const kKeyGridOpacity    = "grid_opacity";
+static const char* const kKeyGridColorLight = "grid_color_light";
+static const char* const kKeyGridColorDark  = "grid_color_dark";
 static const char* const kKeyGlassBackground = "glass_background";
 static const char* const kKeyBarColorLight  = "bar_color_light";
 static const char* const kKeyBgColorLight   = "bg_color_light";

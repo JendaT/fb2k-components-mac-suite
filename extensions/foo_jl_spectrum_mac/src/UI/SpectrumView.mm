@@ -24,11 +24,14 @@
     bool     _shadowFill;
     bool     _showDbGuides;
     bool     _showFreqAxis;
+    int      _gridOpacity;
     bool     _glass;
     uint32_t _barColorLight;
     uint32_t _bgColorLight;
     uint32_t _barColorDark;
     uint32_t _bgColorDark;
+    uint32_t _gridColorLight;
+    uint32_t _gridColorDark;
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -53,11 +56,14 @@
     _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
     _showDbGuides  = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
     _showFreqAxis  = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
+    _gridOpacity   = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
     _glass         = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     _barColorLight = (uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight);
     _bgColorLight  = (uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight);
     _barColorDark  = (uint32_t)getConfigInt(kKeyBarColorDark, kDefaultBarColorDark);
     _bgColorDark   = (uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark);
+    _gridColorLight = (uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight);
+    _gridColorDark  = (uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
     [self setNeedsDisplay:YES];
 }
 
@@ -87,6 +93,24 @@ static NSColor *colorFromARGB(uint32_t argb) {
 
 - (NSColor *)bgColor {
     return colorFromARGB(fb2k_ui::isDarkMode() ? _bgColorDark : _bgColorLight);
+}
+
+- (NSColor *)gridColor {
+    return colorFromARGB(fb2k_ui::isDarkMode() ? _gridColorDark : _gridColorLight);
+}
+
+- (NSColor *)gridLineColor {
+    CGFloat a = _gridOpacity / 100.0;
+    if (a < 0) a = 0; else if (a > 1) a = 1;
+    return [[self gridColor] colorWithAlphaComponent:a];
+}
+
+- (NSColor *)gridLabelColor {
+    // Labels track opacity directly so 0% hides the grid entirely. A gentle
+    // boost keeps them a touch more legible than the lines at low settings.
+    CGFloat a = _gridOpacity / 100.0;
+    if (a > 0.0) a = MIN(1.0, a * 1.4);
+    return [[self gridColor] colorWithAlphaComponent:a];
 }
 
 // Fraction 0..1 across the plot width for a given frequency, matching the
@@ -229,10 +253,10 @@ static NSColor *colorFromARGB(uint32_t argb) {
     if (range <= 0) return;
 
     const int step = 10;
-    NSColor *lineColor = [[NSColor separatorColor] colorWithAlphaComponent:0.5];
+    NSColor *lineColor = [self gridLineColor];
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightRegular],
-        NSForegroundColorAttributeName: [NSColor tertiaryLabelColor]
+        NSForegroundColorAttributeName: [self gridLabelColor]
     };
 
     CGContextSetLineWidth(ctx, 1.0);
@@ -258,10 +282,10 @@ static NSColor *colorFromARGB(uint32_t argb) {
                        plotBottom:(CGFloat)plotBottom
                        plotHeight:(CGFloat)plotH
                           context:(CGContextRef)ctx {
-    NSColor *lineColor = [[NSColor separatorColor] colorWithAlphaComponent:0.35];
+    NSColor *lineColor = [self gridLineColor];
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:8 weight:NSFontWeightRegular],
-        NSForegroundColorAttributeName: [NSColor tertiaryLabelColor]
+        NSForegroundColorAttributeName: [self gridLabelColor]
     };
 
     CGContextSetLineWidth(ctx, 1.0);
