@@ -7,6 +7,10 @@
 #include "../Core/SpectrumAnalyzer.h"
 #include "../Core/SpectrumConfig.h"
 #include <memory>
+#include <vector>
+#include <mutex>
+#include <atomic>
+#include <algorithm>
 
 @interface SpectrumController () {
     std::unique_ptr<SpectrumAnalyzer> _analyzer;
@@ -14,7 +18,42 @@
     NSVisualEffectView *_glassEffectView;
 }
 @property (nonatomic, readwrite) SpectrumView *spectrumView;
+- (void)shutdownForQuit;
 @end
+
+// Registry of live controllers so we can release visualisation streams before
+// the core tears down the vis backend at quit. Holding an open stream during
+// component shutdown triggers exception_service_not_found.
+namespace {
+    std::mutex g_controllersMutex;
+    std::vector<__weak SpectrumController*> g_controllers;
+    std::atomic<bool> g_shutdown{false};
+
+    void registerController(SpectrumController* c) {
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        g_controllers.push_back(c);
+    }
+    void unregisterController(SpectrumController* c) {
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        g_controllers.erase(std::remove_if(g_controllers.begin(), g_controllers.end(),
+            [c](__weak SpectrumController* w){ return w == nil || w == c; }),
+            g_controllers.end());
+    }
+}
+
+// Release streams and stop timers before the service system shuts down.
+class spectrum_initquit : public initquit {
+public:
+    void on_quit() override {
+        g_shutdown.store(true);
+        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        for (__weak SpectrumController* w : g_controllers) {
+            SpectrumController* c = w;
+            if (c) [c shutdownForQuit];
+        }
+    }
+};
+FB2K_SERVICE_FACTORY(spectrum_initquit);
 
 @implementation SpectrumController
 
@@ -59,6 +98,8 @@
                                                  name:spectrum_config::kSettingsChangedNotification
                                                object:nil];
 
+    registerController(self);
+
     // Start now as well: appearance callbacks are not guaranteed for a view
     // hosted inside the foobar2000 layout. tick guards on window visibility.
     [self startTimer];
@@ -75,8 +116,14 @@
     _analyzer->suspend();
 }
 
+- (void)shutdownForQuit {
+    [self stopTimer];
+    if (_analyzer) _analyzer->suspend();
+}
+
 - (void)dealloc {
     [self stopTimer];
+    unregisterController(self);
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -133,6 +180,7 @@
 
 - (void)startTimer {
     [self stopTimer];
+    if (g_shutdown.load()) return;
     __weak typeof(self) weakSelf = self;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
@@ -151,6 +199,7 @@
 
 - (void)tick {
     @autoreleasepool {
+        if (g_shutdown.load()) { [self stopTimer]; return; }
         if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
 
         bool live = _analyzer->tick();
