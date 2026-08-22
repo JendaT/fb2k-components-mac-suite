@@ -42,7 +42,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
     self = [super init];
     if (self) {
         _mutableRootNodes = [NSMutableArray array];
-        _nodeFormat = @"%node_name%";  // Default format
+        _nodeFormat = @(plorg_config::kDefaultNodeFormat);
     }
     return self;
 }
@@ -672,7 +672,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
 - (void)createDefaultTree {
     [self.mutableRootNodes removeAllObjects];
-    self.nodeFormat = @"%node_name%$if(%is_folder%, [%count%],)";
+    self.nodeFormat = @(plorg_config::kDefaultNodeFormat);
 
     // Import existing playlists from foobar2000
     @try {

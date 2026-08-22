@@ -33,19 +33,25 @@ static const char* const kAutoVolumeSync = "auto_volume_sync";                  
 static const char* const kAutoRestartAfterVolumeSync = "auto_restart_after_volume_sync"; // Prompt for restart after a UUID repair (opt-in)
 static const char* const kVolumeSelfHeal = "volume_self_heal";                   // Self-register mounted volumes that have no working bookmark
 
-// Default values
-static const char* const kDefaultNodeFormat = "%node_name%$if(%is_folder%,' ['%count%']',)";
+// Default values.
+//
+// The Network Volumes group defaults to OFF: automatic volume-UUID repair
+// rewrites playlist files and migrates foobar2000's metadata cache, which is
+// the right trade for someone whose library lives on an SMB share that
+// remounts, and unnecessary machinery for everyone else. Opt in from
+// Preferences > Playlist Organizer > Network Volumes.
+static const char* const kDefaultNodeFormat = "%node_name%";
 static const bool kDefaultSingleClickActivate = false;
 static const bool kDefaultDoubleClickPlay = true;
 static const bool kDefaultAutoRevealPlaying = true;
-static const bool kDefaultShowIcons = true;
-static const bool kDefaultShowTreeLines = true;
+static const bool kDefaultShowIcons = false;
+static const bool kDefaultShowTreeLines = false;
 static const bool kDefaultTransparentBackground = true;
-static const bool kDefaultPathEncodedNames = false;
+static const bool kDefaultPathEncodedNames = true;
 static const bool kDefaultCheckCorruptedOnStartup = false;
-static const bool kDefaultAutoVolumeSync = true;
+static const bool kDefaultAutoVolumeSync = false;
 static const bool kDefaultAutoRestartAfterVolumeSync = false;
-static const bool kDefaultVolumeSelfHeal = true;
+static const bool kDefaultVolumeSelfHeal = false;
 
 // Integer config
 inline int64_t getConfigInt(const char* key, int64_t defaultVal) {

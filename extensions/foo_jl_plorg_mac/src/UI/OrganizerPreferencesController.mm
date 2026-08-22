@@ -228,7 +228,7 @@
     BOOL autoVolumeSync = plorg_config::getConfigBool(plorg_config::kAutoVolumeSync, plorg_config::kDefaultAutoVolumeSync);
     BOOL autoRestartAfterSync = plorg_config::getConfigBool(plorg_config::kAutoRestartAfterVolumeSync, plorg_config::kDefaultAutoRestartAfterVolumeSync);
     BOOL volumeSelfHeal = plorg_config::getConfigBool(plorg_config::kVolumeSelfHeal, plorg_config::kDefaultVolumeSelfHeal);
-    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, "%node_name%");
+    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, plorg_config::kDefaultNodeFormat);
 
     self.singleClickActivateCheckbox.state = singleClick ? NSControlStateValueOn : NSControlStateValueOff;
     self.doubleClickPlayCheckbox.state = doubleClickPlay ? NSControlStateValueOn : NSControlStateValueOff;
@@ -294,7 +294,7 @@
     self.autoVolumeSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoVolumeSync);
     self.autoRestartAfterSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoRestartAfterVolumeSync);
     self.volumeSelfHealCheckbox.state = stateFor(plorg_config::kDefaultVolumeSelfHeal);
-    self.nodeFormatField.stringValue = @"%node_name%";
+    self.nodeFormatField.stringValue = @(plorg_config::kDefaultNodeFormat);
     [self saveSettings];
 
     // Handle path encoding separately (triggers migration if changing)
