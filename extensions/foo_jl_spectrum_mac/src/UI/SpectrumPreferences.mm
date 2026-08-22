@@ -26,6 +26,12 @@
     NSTextField   *_gapLabel;
     NSSlider      *_smoothingSlider;
     NSTextField   *_smoothingLabel;
+    NSSlider      *_shadowFallSlider;
+    NSTextField   *_shadowFallLabel;
+    NSSlider      *_peakFallSlider;
+    NSTextField   *_peakFallLabel;
+    NSSlider      *_peakHoldSlider;
+    NSTextField   *_peakHoldLabel;
     NSButton      *_peakHoldCheckbox;
     NSButton      *_shadowFillCheckbox;
     NSButton      *_dbGuidesCheckbox;
@@ -47,7 +53,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 560)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 690)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -116,6 +122,42 @@
     [self.view addSubview:_smoothingSlider];
     _smoothingLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_smoothingLabel];
+    y += 34;
+
+    // --- Dynamics section ---
+    NSTextField *dynamicsHeader = JLCreateSectionHeader(@"Dynamics");
+    dynamicsHeader.frame = NSMakeRect(labelX, y, 200, 17);
+    [self.view addSubview:dynamicsHeader];
+    y += 22;
+
+    [self.view addSubview:[self label:@"Shadow fall:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _shadowFallSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _shadowFallSlider.minValue = 0; _shadowFallSlider.maxValue = 100; _shadowFallSlider.continuous = YES;
+    _shadowFallSlider.target = self; _shadowFallSlider.action = @selector(shadowFallChanged:);
+    _shadowFallSlider.toolTip = @"How fast the shadow band falls (higher = faster)";
+    [self.view addSubview:_shadowFallSlider];
+    _shadowFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_shadowFallLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Peak fall:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _peakFallSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _peakFallSlider.minValue = 0; _peakFallSlider.maxValue = 100; _peakFallSlider.continuous = YES;
+    _peakFallSlider.target = self; _peakFallSlider.action = @selector(peakFallChanged:);
+    _peakFallSlider.toolTip = @"How fast the peak line falls after its hold (higher = faster)";
+    [self.view addSubview:_peakFallSlider];
+    _peakFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_peakFallLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Peak hold:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _peakHoldSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _peakHoldSlider.minValue = 0; _peakHoldSlider.maxValue = 2000; _peakHoldSlider.continuous = YES;
+    _peakHoldSlider.target = self; _peakHoldSlider.action = @selector(peakHoldMsChanged:);
+    _peakHoldSlider.toolTip = @"How long the peak line stays before it starts to fall";
+    [self.view addSubview:_peakHoldSlider];
+    _peakHoldLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_peakHoldLabel];
     y += 34;
 
     // --- Appearance section ---
@@ -247,6 +289,18 @@
     _smoothingSlider.integerValue = smoothing;
     _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d%%", smoothing];
 
+    int shadowFall = (int)getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
+    _shadowFallSlider.integerValue = shadowFall;
+    _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", shadowFall];
+
+    int peakFall = (int)getConfigInt(kKeyPeakFallSpeed, kDefaultPeakFallSpeed);
+    _peakFallSlider.integerValue = peakFall;
+    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", peakFall];
+
+    int peakHoldMs = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
+    _peakHoldSlider.integerValue = peakHoldMs;
+    _peakHoldLabel.stringValue = [NSString stringWithFormat:@"%dms", peakHoldMs];
+
     int gap = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
     _gapSlider.integerValue = gap;
     _gapLabel.stringValue = [NSString stringWithFormat:@"%d%%", gap];
@@ -325,6 +379,27 @@
     int v = (int)_smoothingSlider.integerValue;
     spectrum_config::setConfigInt(spectrum_config::kKeySmoothing, v);
     _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+    [self notifyChanged];
+}
+
+- (void)shadowFallChanged:(id)sender {
+    int v = (int)_shadowFallSlider.integerValue;
+    spectrum_config::setConfigInt(spectrum_config::kKeyShadowFallSpeed, v);
+    _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+    [self notifyChanged];
+}
+
+- (void)peakFallChanged:(id)sender {
+    int v = (int)_peakFallSlider.integerValue;
+    spectrum_config::setConfigInt(spectrum_config::kKeyPeakFallSpeed, v);
+    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+    [self notifyChanged];
+}
+
+- (void)peakHoldMsChanged:(id)sender {
+    int v = (int)_peakHoldSlider.integerValue;
+    spectrum_config::setConfigInt(spectrum_config::kKeyPeakHoldMs, v);
+    _peakHoldLabel.stringValue = [NSString stringWithFormat:@"%dms", v];
     [self notifyChanged];
 }
 

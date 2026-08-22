@@ -40,6 +40,9 @@ constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 20;      // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 60;      // Temporal smoothing 0-100 (higher = smoother)
+constexpr int      kDefaultShadowFallSpeed = 40; // Shadow band fall speed 0-100 (higher = faster)
+constexpr int      kDefaultPeakFallSpeed   = 30; // Peak line fall speed 0-100 (higher = faster)
+constexpr int      kDefaultPeakHoldMs      = 400;// Peak line hold time before it starts falling (ms)
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
@@ -67,6 +70,9 @@ static const char* const kKeyMinHz          = "min_hz";
 static const char* const kKeyMaxHz          = "max_hz";
 static const char* const kKeyGapPercent     = "gap_percent";
 static const char* const kKeySmoothing      = "smoothing";
+static const char* const kKeyShadowFallSpeed = "shadow_fall_speed";
+static const char* const kKeyPeakFallSpeed   = "peak_fall_speed";
+static const char* const kKeyPeakHoldMs      = "peak_hold_ms";
 static const char* const kKeyPeakHold       = "peak_hold";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
 static const char* const kKeyShowFreqAxis   = "show_freq_axis";

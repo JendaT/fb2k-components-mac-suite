@@ -92,6 +92,15 @@
     s.smoothing = (int)getConfigInt(kKeySmoothing, kDefaultSmoothing);
     s.logScale  = getConfigInt(kKeyFreqScale, kDefaultFreqScale) == FreqScaleLog;
     s.peakHold  = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
+
+    // Map friendly 0-100 sliders / ms to concrete per-frame rates (60fps timer).
+    double shadowSpeed = getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed) / 100.0;
+    double peakSpeed   = getConfigInt(kKeyPeakFallSpeed, kDefaultPeakFallSpeed) / 100.0;
+    int    peakHoldMs  = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
+    s.shadowFall     = (float)(0.001 + shadowSpeed * 0.0275);   // ~0.001 (slow) .. 0.0285 (fast)
+    s.peakGravity    = (float)(0.0001 + peakSpeed * 0.0027);    // ~0.0001 .. 0.0028
+    s.peakHoldFrames = (int)std::lround(peakHoldMs * 60.0 / 1000.0);
+
     _analyzer->configure(s);
 
     [self.spectrumView reloadSettings];
