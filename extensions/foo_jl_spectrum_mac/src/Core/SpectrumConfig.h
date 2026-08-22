@@ -31,11 +31,25 @@ enum FreqScale {
     FreqScaleLinear = 1     // Linear
 };
 
+// How the spectrum is drawn
+enum DrawMode {
+    DrawModeBars = 0,       // Discrete frequency bars
+    DrawModeCurve = 1       // Continuous filled curve across all frequencies
+};
+
+// Overall component orientation
+enum Orientation {
+    OrientationHorizontal = 0, // Frequency along X, magnitude grows up
+    OrientationVertical = 1    // Frequency along Y, magnitude grows sideways
+};
+
 // --- Defaults ---
 constexpr int      kDefaultBarCount   = 48;      // Number of frequency bars
 constexpr int      kDefaultFftSize    = 4096;    // FFT window (power of 2)
 constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleLog;
+constexpr int      kDefaultDrawMode   = DrawModeBars;
+constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 20;      // Gap between bars, % of slot width
@@ -70,6 +84,8 @@ static const char* const kKeyBarCount       = "bar_count";
 static const char* const kKeyFftSize        = "fft_size";
 static const char* const kKeyBarStyle       = "bar_style";
 static const char* const kKeyFreqScale      = "freq_scale";
+static const char* const kKeyDrawMode       = "draw_mode";
+static const char* const kKeyOrientation    = "orientation";
 static const char* const kKeyMinHz          = "min_hz";
 static const char* const kKeyMaxHz          = "max_hz";
 static const char* const kKeyGapPercent     = "gap_percent";

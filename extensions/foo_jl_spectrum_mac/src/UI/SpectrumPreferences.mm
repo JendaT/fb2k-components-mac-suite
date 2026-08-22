@@ -18,6 +18,8 @@
 
 @interface SpectrumPreferences () {
     NSPopUpButton *_themePopup;
+    NSPopUpButton *_drawModePopup;
+    NSPopUpButton *_orientationPopup;
     NSPopUpButton *_barCountPopup;
     NSPopUpButton *_fftSizePopup;
     NSPopUpButton *_barStylePopup;
@@ -59,7 +61,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 810)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 870)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -180,6 +182,22 @@
     _themePopup.target = self; _themePopup.action = @selector(themeChanged:);
     _themePopup.toolTip = @"Apply a color preset to bars, background, and grid";
     [self.view addSubview:_themePopup];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Draw mode:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _drawModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
+    [_drawModePopup addItemWithTitle:@"Bars"];
+    [_drawModePopup addItemWithTitle:@"Curve"];
+    _drawModePopup.target = self; _drawModePopup.action = @selector(drawModeChanged:);
+    [self.view addSubview:_drawModePopup];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Orientation:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _orientationPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
+    [_orientationPopup addItemWithTitle:@"Horizontal"];
+    [_orientationPopup addItemWithTitle:@"Vertical"];
+    _orientationPopup.target = self; _orientationPopup.action = @selector(orientationChanged:);
+    [self.view addSubview:_orientationPopup];
     y += 30;
 
     [self.view addSubview:[self label:@"Bar style:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -320,6 +338,8 @@
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
     [_freqScalePopup selectItemAtIndex:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
     [_barStylePopup selectItemAtIndex:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
+    [_drawModePopup selectItemAtIndex:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
+    [_orientationPopup selectItemAtIndex:getConfigInt(kKeyOrientation, kDefaultOrientation)];
 
     _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -416,6 +436,16 @@
 
 - (void)barStyleChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyBarStyle, _barStylePopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
+- (void)drawModeChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
+- (void)orientationChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyOrientation, _orientationPopup.indexOfSelectedItem);
     [self notifyChanged];
 }
 
