@@ -48,6 +48,7 @@ constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right e
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
 constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
 constexpr int      kDefaultGridOpacity = 40;     // Grid line opacity 0-100
+constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
 
 // dB window that maps to the 0..1 bar height. Shared by the analyzer (scaling)
@@ -83,6 +84,7 @@ static const char* const kKeyShadowFill     = "shadow_fill";
 static const char* const kKeyGridOpacity    = "grid_opacity";
 static const char* const kKeyGridColorLight = "grid_color_light";
 static const char* const kKeyGridColorDark  = "grid_color_dark";
+static const char* const kKeyTheme          = "color_theme";
 static const char* const kKeyGlassBackground = "glass_background";
 static const char* const kKeyBarColorLight  = "bar_color_light";
 static const char* const kKeyBgColorLight   = "bg_color_light";

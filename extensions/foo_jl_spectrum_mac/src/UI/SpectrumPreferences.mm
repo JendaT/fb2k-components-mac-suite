@@ -6,6 +6,7 @@
 #import "SpectrumPreferences.h"
 #include "../fb2k_sdk.h"
 #include "../Core/SpectrumConfig.h"
+#include "../Core/SpectrumThemes.h"
 #import "../../../../shared/PreferencesCommon.h"
 
 // Uniquely-named flipped view (avoids ObjC runtime clashes across components)
@@ -16,6 +17,7 @@
 @end
 
 @interface SpectrumPreferences () {
+    NSPopUpButton *_themePopup;
     NSPopUpButton *_barCountPopup;
     NSPopUpButton *_fftSizePopup;
     NSPopUpButton *_barStylePopup;
@@ -57,7 +59,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 780)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 810)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -169,6 +171,16 @@
     appearanceHeader.frame = NSMakeRect(labelX, y, 200, 17);
     [self.view addSubview:appearanceHeader];
     y += 22;
+
+    [self.view addSubview:[self label:@"Theme:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _themePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 160, 25)];
+    for (int i = 0; i < spectrum_config::kThemeCount; ++i) {
+        [_themePopup addItemWithTitle:[NSString stringWithUTF8String:spectrum_config::kThemes[i].name]];
+    }
+    _themePopup.target = self; _themePopup.action = @selector(themeChanged:);
+    _themePopup.toolTip = @"Apply a color preset to bars, background, and grid";
+    [self.view addSubview:_themePopup];
+    y += 30;
 
     [self.view addSubview:[self label:@"Bar style:" at:NSMakePoint(labelX + 10, y + 3)]];
     _barStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
@@ -338,14 +350,23 @@
     _freqAxisCheckbox.state = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
+    int gridOpacity = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
+    _gridOpacitySlider.integerValue = gridOpacity;
+    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", gridOpacity];
+
+    int theme = (int)getConfigInt(kKeyTheme, kDefaultTheme);
+    if (theme < 0 || theme >= kThemeCount) theme = 0;
+    [_themePopup selectItemAtIndex:theme];
+
+    [self reloadColorWells];
+}
+
+- (void)reloadColorWells {
+    using namespace spectrum_config;
     _barColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight)];
     _bgColorLightWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight)];
     _barColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorDark, kDefaultBarColorDark)];
     _bgColorDarkWell.color   = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)];
-
-    int gridOpacity = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
-    _gridOpacitySlider.integerValue = gridOpacity;
-    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", gridOpacity];
     _gridColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight)];
     _gridColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark)];
 }
@@ -459,6 +480,17 @@
     [self notifyChanged];
 }
 
+- (void)themeChanged:(id)sender {
+    using namespace spectrum_config;
+    NSInteger idx = _themePopup.indexOfSelectedItem;
+    setConfigInt(kKeyTheme, idx);
+    if (idx > 0) {
+        applyThemeToConfig((int)idx);
+        [self reloadColorWells];
+    }
+    [self notifyChanged];
+}
+
 - (void)gridOpacityChanged:(id)sender {
     int v = (int)_gridOpacitySlider.integerValue;
     spectrum_config::setConfigInt(spectrum_config::kKeyGridOpacity, v);
@@ -474,6 +506,9 @@
     else if (sender == _bgColorDarkWell)   setConfigInt(kKeyBgColorDark, [self argbFromColor:_bgColorDarkWell.color]);
     else if (sender == _gridColorLightWell) setConfigInt(kKeyGridColorLight, [self argbFromColor:_gridColorLightWell.color]);
     else if (sender == _gridColorDarkWell)  setConfigInt(kKeyGridColorDark, [self argbFromColor:_gridColorDarkWell.color]);
+    // A manual color edit means the palette no longer matches a preset.
+    setConfigInt(kKeyTheme, 0);
+    [_themePopup selectItemAtIndex:0];
     [self notifyChanged];
 }
 
