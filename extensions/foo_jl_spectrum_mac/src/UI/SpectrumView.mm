@@ -7,16 +7,23 @@
 #include "../Core/SpectrumConfig.h"
 #include "../../../../shared/UIStyles.h"
 #include <vector>
+#include <cmath>
 
 @implementation SpectrumView {
     std::vector<float> _bars;
+    std::vector<float> _shadow;
     std::vector<float> _peaks;
 
     // Cached settings (refreshed via reloadSettings)
     int      _barStyle;
     int      _gapPercent;
+    int      _minHz;
+    int      _maxHz;
+    bool     _logScale;
     bool     _peakHold;
+    bool     _shadowFill;
     bool     _showDbGuides;
+    bool     _showFreqAxis;
     bool     _glass;
     uint32_t _barColorLight;
     uint32_t _bgColorLight;
@@ -39,8 +46,13 @@
     using namespace spectrum_config;
     _barStyle      = (int)getConfigInt(kKeyBarStyle, kDefaultBarStyle);
     _gapPercent    = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
+    _minHz         = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
+    _maxHz         = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    _logScale      = getConfigInt(kKeyFreqScale, kDefaultFreqScale) == FreqScaleLog;
     _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
+    _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
     _showDbGuides  = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
+    _showFreqAxis  = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
     _glass         = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     _barColorLight = (uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight);
     _bgColorLight  = (uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight);
@@ -49,9 +61,13 @@
     [self setNeedsDisplay:YES];
 }
 
-- (void)setBarsData:(const float *)bars peaks:(const float *)peaks count:(NSInteger)count {
+- (void)setBarsData:(const float *)bars
+             shadow:(const float *)shadow
+              peaks:(const float *)peaks
+              count:(NSInteger)count {
     if (count < 0) count = 0;
     _bars.assign(bars, bars + count);
+    _shadow.assign(shadow, shadow + count);
     _peaks.assign(peaks, peaks + count);
     [self setNeedsDisplay:YES];
 }
@@ -73,6 +89,17 @@ static NSColor *colorFromARGB(uint32_t argb) {
     return colorFromARGB(fb2k_ui::isDarkMode() ? _bgColorDark : _bgColorLight);
 }
 
+// Fraction 0..1 across the plot width for a given frequency, matching the
+// analyzer's band mapping so gridlines line up with the bars.
+- (CGFloat)fractionForHz:(double)f {
+    if (_logScale) {
+        double lo = std::log10((double)_minHz);
+        double hi = std::log10((double)_maxHz);
+        return (CGFloat)((std::log10(f) - lo) / (hi - lo));
+    }
+    return (CGFloat)((f - _minHz) / (double)(_maxHz - _minHz));
+}
+
 #pragma mark - Drawing
 
 - (void)drawRect:(NSRect)dirtyRect {
@@ -80,6 +107,8 @@ static NSColor *colorFromARGB(uint32_t argb) {
 
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
     const CGRect bounds = self.bounds;
+    const CGFloat W = bounds.size.width;
+    const CGFloat H = bounds.size.height;
 
     // Background
     if (!_glass) {
@@ -93,16 +122,20 @@ static NSColor *colorFromARGB(uint32_t argb) {
         return;
     }
 
-    const CGFloat W = bounds.size.width;
-    const CGFloat H = bounds.size.height;
-    const CGFloat maxBarH = H - 2.0;
-
-    // Reserve a right margin for the dB scale when it fits.
+    // Reserve margins: right for the dB scale, bottom for frequency labels.
     const CGFloat dbMargin = 34.0;
-    const BOOL drawGuides = _showDbGuides && (W > dbMargin + 40.0);
-    const CGFloat plotW = drawGuides ? (W - dbMargin) : W;
+    const CGFloat freqMargin = 13.0;
+    const BOOL drawDb   = _showDbGuides && (W > dbMargin + 40.0);
+    const BOOL drawFreq = _showFreqAxis && (H > freqMargin + 30.0);
 
-    if (drawGuides) [self drawDbGuidesInRect:bounds plotWidth:plotW maxBarHeight:maxBarH context:ctx];
+    const CGFloat plotW = drawDb ? (W - dbMargin) : W;
+    const CGFloat plotBottom = drawFreq ? freqMargin : 0.0;
+    const CGFloat plotH = H - plotBottom - 2.0;
+    if (plotH <= 1.0) return;
+
+    // Grid behind the bars.
+    if (drawFreq) [self drawFreqAxisWithPlotWidth:plotW plotBottom:plotBottom plotHeight:plotH context:ctx];
+    if (drawDb)   [self drawDbGuidesWithPlotWidth:plotW plotBottom:plotBottom plotHeight:plotH context:ctx];
 
     const CGFloat slot = plotW / (CGFloat)n;
     CGFloat gap = slot * (_gapPercent / 100.0);
@@ -111,27 +144,37 @@ static NSColor *colorFromARGB(uint32_t argb) {
     const CGFloat barW = slot - gap;
 
     NSColor *base = [self barColor];
+    NSColor *shadowColor = [base blendedColorWithFraction:0.62 ofColor:[self bgColor]];
+    NSColor *capColor = [base blendedColorWithFraction:0.4 ofColor:[NSColor whiteColor]];
 
     for (NSInteger i = 0; i < n; ++i) {
-        CGFloat v = _bars[i];
-        if (v < 0) v = 0; else if (v > 1) v = 1;
-        CGFloat h = v * maxBarH;
         CGFloat x = (CGFloat)i * slot + gap * 0.5;
 
-        if (h >= 1.0) {
-            CGRect r = CGRectMake(x, 0, barW, h);
-            [self fillBar:r index:i count:n base:base value:v context:ctx];
+        CGFloat bv = _bars[i];  if (bv < 0) bv = 0; else if (bv > 1) bv = 1;
+        CGFloat barH = bv * plotH;
+
+        // Shadow fill (slow-decaying) behind the bright bar.
+        if (_shadowFill) {
+            CGFloat sv = _shadow[i]; if (sv < 0) sv = 0; else if (sv > 1) sv = 1;
+            CGFloat sh = sv * plotH;
+            if (sh > barH + 0.5) {
+                CGContextSetFillColorWithColor(ctx, shadowColor.CGColor);
+                CGContextFillRect(ctx, CGRectMake(x, plotBottom, barW, sh));
+            }
         }
 
-        // Peak cap
+        // Bright instantaneous bar.
+        if (barH >= 1.0) {
+            [self fillBar:CGRectMake(x, plotBottom, barW, barH) index:i count:n base:base context:ctx];
+        }
+
+        // Peak cap.
         if (_peakHold) {
-            CGFloat pv = _peaks[i];
-            if (pv < 0) pv = 0; else if (pv > 1) pv = 1;
+            CGFloat pv = _peaks[i]; if (pv < 0) pv = 0; else if (pv > 1) pv = 1;
             if (pv > 0.001) {
-                CGFloat py = pv * maxBarH;
-                CGRect cap = CGRectMake(x, py, barW, 2.0);
-                CGContextSetFillColorWithColor(ctx, [[base blendedColorWithFraction:0.4 ofColor:[NSColor whiteColor]] CGColor]);
-                CGContextFillRect(ctx, cap);
+                CGFloat py = plotBottom + pv * plotH;
+                CGContextSetFillColorWithColor(ctx, capColor.CGColor);
+                CGContextFillRect(ctx, CGRectMake(x, py, barW, 2.0));
             }
         }
     }
@@ -141,14 +184,14 @@ static NSColor *colorFromARGB(uint32_t argb) {
           index:(NSInteger)i
           count:(NSInteger)n
            base:(NSColor *)base
-          value:(CGFloat)v
         context:(CGContextRef)ctx {
     using namespace spectrum_config;
 
     if (_barStyle == BarStyleSpectrum) {
-        // Hue mapped across frequency: low = red/orange, high = violet.
-        CGFloat hue = 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);  // 0..0.75
-        NSColor *c = [NSColor colorWithHue:(0.66 - hue) < 0 ? 0 : (0.66 - hue)
+        // Hue mapped across frequency: low = blue, high = red.
+        CGFloat hue = 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);
+        CGFloat h = (0.66 - hue); if (h < 0) h = 0;
+        NSColor *c = [NSColor colorWithHue:h
                                saturation:0.85
                                brightness:fb2k_ui::isDarkMode() ? 1.0 : 0.9
                                     alpha:1.0];
@@ -161,8 +204,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
         NSColor *bottom = [base blendedColorWithFraction:0.55 ofColor:[NSColor blackColor]];
         NSColor *top = [base blendedColorWithFraction:0.25 ofColor:[NSColor whiteColor]];
         NSGradient *grad = [[NSGradient alloc] initWithStartingColor:bottom endingColor:top];
-        NSBezierPath *path = [NSBezierPath bezierPathWithRect:r];
-        [grad drawInBezierPath:path angle:90.0];
+        [grad drawInBezierPath:[NSBezierPath bezierPathWithRect:r] angle:90.0];
         return;
     }
 
@@ -171,16 +213,18 @@ static NSColor *colorFromARGB(uint32_t argb) {
     CGContextFillRect(ctx, r);
 }
 
-- (void)drawDbGuidesInRect:(CGRect)bounds
-                 plotWidth:(CGFloat)plotW
-              maxBarHeight:(CGFloat)maxBarH
-                   context:(CGContextRef)ctx {
+#pragma mark - Grids
+
+- (void)drawDbGuidesWithPlotWidth:(CGFloat)plotW
+                       plotBottom:(CGFloat)plotBottom
+                       plotHeight:(CGFloat)plotH
+                          context:(CGContextRef)ctx {
     const float floorDb = spectrum_config::kDisplayFloorDb;
     const float ceilDb  = spectrum_config::kDisplayCeilDb;
     const float range   = ceilDb - floorDb;
     if (range <= 0) return;
 
-    const int step = 10;  // dB between marks
+    const int step = 10;
     NSColor *lineColor = [[NSColor separatorColor] colorWithAlphaComponent:0.5];
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightRegular],
@@ -190,20 +234,64 @@ static NSColor *colorFromARGB(uint32_t argb) {
     CGContextSetLineWidth(ctx, 1.0);
     CGContextSetStrokeColorWithColor(ctx, lineColor.CGColor);
 
-    // Marks at each multiple of `step` inside (floor, ceil].
     int startDb = (int)(std::floor(ceilDb / step) * step);
     for (int db = startDb; db > (int)floorDb; db -= step) {
         CGFloat v = (db - floorDb) / range;
-        CGFloat y = std::round(v * maxBarH) + 0.5;  // crisp 1px line
+        CGFloat y = std::round(plotBottom + v * plotH) + 0.5;
 
         CGContextBeginPath(ctx);
         CGContextMoveToPoint(ctx, 0, y);
         CGContextAddLineToPoint(ctx, plotW, y);
         CGContextStrokePath(ctx);
 
-        NSString *label = [NSString stringWithFormat:@"%d", db];
+        NSString *label = [NSString stringWithFormat:@"%ddB", db];
         NSSize sz = [label sizeWithAttributes:attrs];
         [label drawAtPoint:NSMakePoint(plotW + 5, y - sz.height / 2) withAttributes:attrs];
+    }
+}
+
+- (void)drawFreqAxisWithPlotWidth:(CGFloat)plotW
+                       plotBottom:(CGFloat)plotBottom
+                       plotHeight:(CGFloat)plotH
+                          context:(CGContextRef)ctx {
+    NSColor *lineColor = [[NSColor separatorColor] colorWithAlphaComponent:0.35];
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:8 weight:NSFontWeightRegular],
+        NSForegroundColorAttributeName: [NSColor tertiaryLabelColor]
+    };
+
+    CGContextSetLineWidth(ctx, 1.0);
+    CGContextSetStrokeColorWithColor(ctx, lineColor.CGColor);
+
+    CGFloat lastLabelRight = -1000.0;
+
+    // Ticks at 1..9 x 10^e (10,20,..,90,100,..,900,1k,..,20k).
+    for (int e = 1; e <= 5; ++e) {
+        int decade = (int)std::pow(10.0, e);
+        for (int m = 1; m <= 9; ++m) {
+            double f = (double)m * decade;
+            if (f < _minHz) continue;
+            if (f > _maxHz) break;
+
+            CGFloat frac = [self fractionForHz:f];
+            if (frac < 0 || frac > 1) continue;
+            CGFloat x = std::round(frac * plotW) + 0.5;
+
+            CGContextBeginPath(ctx);
+            CGContextMoveToPoint(ctx, x, plotBottom);
+            CGContextAddLineToPoint(ctx, x, plotBottom + plotH);
+            CGContextStrokePath(ctx);
+
+            NSString *label = (f >= 1000.0)
+                ? [NSString stringWithFormat:@"%gkHz", f / 1000.0]
+                : [NSString stringWithFormat:@"%dHz", (int)f];
+            NSSize sz = [label sizeWithAttributes:attrs];
+            CGFloat lx = x - sz.width / 2;
+            if (lx > lastLabelRight + 4.0 && lx + sz.width < plotW) {
+                [label drawAtPoint:NSMakePoint(lx, (plotBottom - sz.height) / 2 + 1) withAttributes:attrs];
+                lastLabelRight = lx + sz.width;
+            }
+        }
     }
 }
 

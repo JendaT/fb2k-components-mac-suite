@@ -27,8 +27,12 @@ NS_ASSUME_NONNULL_BEGIN
 // Re-read display settings (colors, style, gap, peak hold) from config.
 - (void)reloadSettings;
 
-// Provide the latest bar magnitudes and peak positions (each 0..1) and redraw.
-- (void)setBarsData:(const float *)bars peaks:(const float *)peaks count:(NSInteger)count;
+// Provide the latest bar magnitudes, shadow fill, and peak positions
+// (each 0..1, `count` entries) and redraw.
+- (void)setBarsData:(const float *)bars
+             shadow:(const float *)shadow
+              peaks:(const float *)peaks
+              count:(NSInteger)count;
 
 @end
 

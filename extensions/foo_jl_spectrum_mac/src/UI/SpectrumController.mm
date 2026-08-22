@@ -150,8 +150,10 @@
         // Redraw while there is live audio or bars/peaks are still settling.
         if (live || _analyzer->isActive()) {
             const auto &bars = _analyzer->bars();
+            const auto &shadow = _analyzer->shadow();
             const auto &peaks = _analyzer->peaks();
             [self.spectrumView setBarsData:bars.data()
+                                    shadow:shadow.data()
                                      peaks:peaks.data()
                                      count:(NSInteger)bars.size()];
         }
