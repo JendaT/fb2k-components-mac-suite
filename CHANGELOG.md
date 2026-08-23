@@ -251,35 +251,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [1.5.0] - Unreleased
 
-> Not yet end-to-end verified. Committed for tracking and ongoing test.
-
 #### Added
-- Drop files or folders from Finder onto a playlist node to append them, routed through foobar2000's own incoming-file handling (thanks @Scannou, #36)
-- **Automatic Volume UUID Sync**: headless service that auto-repairs stale `mac-volume://` UUIDs in `.fplite` playlists caused by SMB / Tailscale remounts assigning fresh ephemeral UUIDs
-- Bookmark-based discovery via foobar's `config.sqlite` (handles SMB shares where macOS UUID APIs return null)
-- Startup hook (`initquit::on_init`) plus runtime `/Volumes` VNODE monitor for mid-session mount changes
-- Atomic `.fplite` rewrite with UTF-8 BOM preservation and timestamped backups (5 retained)
-- Opt-in auto-restart prompt with detached shell helper for clean relaunch
-- Background metadb cache migration: moves cached metadata rows from dead UUIDs into live ones across `metadb` and `metadb_index_*` tables (transactional, backup before writing, waits for exclusive DB access); also scans for orphan caches on each startup
-- **Volume self-heal**: when a volume is mounted but foobar2000 has no working bookmark for it, plorg resolves one real file through the core so it mints a fresh bookmark, then remaps stale playlists automatically; one-click registration prompt as fallback (preference, default on)
-- `Scripts/metadb_cleanup.sh`: offline tool to delete dead-UUID metadata copies and VACUUM the metadb (backup + integrity check; refuses to run while foobar2000 is running)
-- Documentation: `docs/research/volume-uuid-instability-deep-research.md`
+- **Automatic Volume UUID Sync**: Repairs stale `mac-volume://` UUIDs in playlists after SMB/Tailscale remounts. Off by default
+- **Volume self-heal**: Registers a mounted volume foobar2000 has no working bookmark for, then remaps the stale playlists. Off by default
+- **Metadb cache migration**: Moves cached metadata to the live UUID after foobar2000 quits; backed up, transactional, verified and compacted
+- **Finder file drop**: Drop files or folders onto a playlist node to append them (thanks @Scannou, #36)
+- **FTH Theme Import**: Imports tree and tracks from old Windows foo_plorg themes (developed as 1.4.0)
+- **Corrupted Playlist Detection**: Finds and safely removes playlists foobar2000 cannot load (developed as 1.4.0)
+- **`Scripts/metadb_cleanup.sh`**: Offline tool that reclaims metadb space from dead-UUID copies
 
 #### Changed
-- Testable-core refactor (simplaylist pattern): pure logic extracted into Foundation-only Core modules (`PathCodec`, `TreeYamlCodec`, `TreeOps`, `VolumeSyncLogic`) with standalone clang unit tests gating every build; deduplicates YAML parsing and fplite scan/remap loops across UI controllers
+- **Testable core**: Pure logic extracted into Foundation-only modules; 270 unit checks gate every build
+- **Network Volumes off by default**: Power-user feature; opt in from Preferences
 
 #### Fixed
-- Manual UUID remapping tool now preserves the UTF-8 BOM when rewriting `.fplite` files (shares the remap implementation with the automatic sync)
-- Volume sync outcome log reports the real result (stale-but-unrepairable vs genuinely all-live) and detects "mounted but unregistered in foobar2000" instead of advising to mount an already-mounted volume
-- `/Volumes` monitor coalesces event bursts into a single repair (previously up to 4 redundant registry scans per mount event storm)
-- Strict volume-UUID validation and SQL escaping in the metadb migration builder
-- Migrator index-table discovery no longer matches the `metadb_indexes` metadata table (SQL `LIKE` `_` wildcard bug); GLOB + strict shape validation
-- Restart no longer races the metadb migration: relauncher waits for the migration to finish before reopening foobar2000 (was: "database is locked" + interrupted migration)
-- Fixed "metadb is corrupted" on restart after the repair dialog: the relauncher used the staged SQL file's existence as a lock and reopened foobar2000 while the migration was still writing (also possible via the abort path, a second migrator, or the 15-minute bound). Migration and relaunch are now one process with strict ordering
-- Only one metadb migrator per session (two were observed running concurrently on 2026-08-05)
-- metadb no longer parks at ~2.7x its needed size: the migrator now VACUUMs after a verified migration, and removes the pre-migration backup that previously doubled disk usage permanently
-- Three-pass code review hardening: malformed-input crash fixes (FTH/DBPL/YAML parsers), path-traversal rejection in `.fplite` sample paths, manual remap target-UUID validation, read-only opens for Vox/Strawberry import databases, backup-before-delete for corrupted-playlist removal, locale-pinned backup timestamps, corrected delete-folder dialog text, build script no longer masks project-generation failures
-- Fourth review pass: metadb migration no longer deletes lower-case-UUID rows instead of migrating them (case-insensitive LIKE vs case-sensitive REPLACE); registry volume paths normalized so trailing-slash/Unicode variants match; Vox-import and SimPlaylist-drag crash fixes; Repair Volume UUIDs window no longer leaks or dead-locks its UI on title-bar close or backup failure; dead public API removed and main-thread contracts documented
+- **Restart after repair**: No longer reopens foobar2000 while the database is being written ("database is locked", "metadb is corrupted")
+- **Concurrent migrations**: Only one migration runs per session; two were observed running at once
+- **Database growth**: Migrations now compact the file, which previously kept its largest-ever size permanently
+- **Lower-case UUIDs**: Cached metadata could be deleted instead of migrated when a UUID was stored in lower case
+- **Config load failure**: No longer mistaken for an empty configuration, which could replace the saved folder tree
+- **Malformed input crashes**: FTH, DeaDBeeF, YAML, Vox and drag-payload parsers hardened
+- **Path traversal**: Crafted playlist paths can no longer escape their drive
+- **Import databases**: Vox and Strawberry libraries opened read-only
+- **Repair Volume UUIDs window**: Close cancels cleanly; backup failure re-enables it; reopening reuses the window
+- **Build tooling**: Failed project regeneration aborts the build; compiler warnings no longer filtered out
 
 ### [1.4.0] - developed 2026-02-14, never published (ships in 1.5.0)
 
