@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHash } from "./audioHash.ts";
-import type { CommandResult, CommonOpts } from "./commands.ts";
+import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
 import type { TierDef } from "./types.ts";
@@ -63,10 +63,6 @@ function allRoots(errors: JsonError[]): RootRef[] {
     }
   }
   return out;
-}
-
-function exitFor(errors: JsonError[], data: unknown[]): 0 | 1 | 2 {
-  return errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
 }
 
 /** Row shapes for the P3 command payloads (doc 03 `--json` data). */
@@ -126,7 +122,7 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake propose <root...>|--all-resolved");
     roots = rootsFromRefs(args, errors);
   }
-  if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
+  if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
   const data: ProposeRow[] = [];
   for (const root of roots) {
@@ -163,7 +159,7 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
       target_path: target, confidence: root.sidecar.proposal!.confidence,
     });
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
 }
 
 // ---- approve ------------------------------------------------------------------
@@ -192,7 +188,7 @@ export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<App
     writeSidecarWithEvent(root, "approved", opts.dryRun);
     data.push({ id: root.sidecar.id, root_path: root.dir, status: "approved" });
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
 }
 
 // ---- execute ------------------------------------------------------------------
@@ -270,7 +266,7 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake execute <root...>|--approved [--resume]");
     roots = rootsFromRefs(args, errors);
   }
-  if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
+  if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
   const batch = "b" + sha1Hex(isoLocal() + ":" + process.pid).slice(0, 10);
   const data: ExecuteRow[] = [];
@@ -392,7 +388,7 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
       }
     }
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
 }
 
 /** Crash recovery: placing -> placed (target verifies) or back to approved. */
@@ -515,5 +511,5 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
     writeSidecarWithEvent(root, event, false);
     data.push({ id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir });
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
 }

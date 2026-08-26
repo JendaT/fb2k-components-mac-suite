@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { assign, buildTargetPath, type AssignInput, type AssignProviders } from "./assign.ts";
 import { bootstrapTrees, type TreeSpec } from "./bootstrap.ts";
-import type { CommandResult, CommonOpts } from "./commands.ts";
+import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
 import { identifyRoot } from "./identify.ts";
 import { buildProviders, type Providers } from "./providers.ts";
@@ -171,7 +171,7 @@ export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps
   if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake identify <root...>");
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
-  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
+  if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
   const { data, errors } = await identifyRoots(roots, opts, deps);
   const all = [...refErrors, ...errors];
   return { data, errors: all, exitCode: all.length === 0 ? 0 : 1 };
@@ -305,11 +305,10 @@ export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps =
 
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
-  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
+  if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
 
   const { data, errors } = await assignRoots(roots, opts, rdir, deps);
-  const all = [...refErrors, ...errors];
-  return { data, errors: all, exitCode: all.length === 0 ? 0 : data.length > 0 ? 1 : 2 };
+  return finish(data, [...refErrors, ...errors]);
 }
 
 // ---- collections -------------------------------------------------------------

@@ -58,6 +58,18 @@ export interface CommonOpts {
   filters: Record<string, string>;
 }
 
+/**
+ * Doc 03 exit codes: 0 ok / 1 partial / 2 error. Keeps two envelope invariants
+ * the component relies on (CR-EXT-001 CR-1): `ok` is true iff the exit code is
+ * 0, and a command that produced nothing reports `data: null` rather than an
+ * empty collection — exit 2 previously emitted `null` from fail() but `[]` from
+ * the "nothing matched" paths, for no reason a consumer could predict.
+ */
+export function finish<T>(rows: T[], errors: JsonError[]): CommandResult<T[] | null> {
+  if (errors.length === 0) return { data: rows, errors, exitCode: 0 };
+  return rows.length > 0 ? { data: rows, errors, exitCode: 1 } : { data: null, errors, exitCode: 2 };
+}
+
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
@@ -162,8 +174,7 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
       kept,
     });
   }
-  const exitCode = errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
-  return { data, errors, exitCode };
+  return finish(data, errors);
 }
 
 function sidecarField(s: Sidecar, dir: string, key: string): string {
