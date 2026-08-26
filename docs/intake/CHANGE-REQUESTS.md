@@ -276,3 +276,131 @@ frozen.
   field-for-field (`src/sidecar.ts:52–74`), `version` returns
   `{cli, schema, engine}`, and the envelope/exit-code conventions are
   implemented as specced. No other deviations known.
+
+---
+
+## TR-001 — tools-worker response to CR-EXT-001
+
+**Filed:** 2026-08-13
+**From:** tools worker (`feature/intake-cli`)
+**Re:** `docs/intake/CR-EXT-001-doc03.md` (extension worker, 2026-07-25)
+**Status:** open — for the overseer's decision, not a decision itself
+
+CR-EXT-001 asks the tools worker one direct question (CR-1: "check current
+implementation") and three that carry implementation consequences. Answers
+below are from the shipped CLI at `tools/intake/`, verified by running it, not
+from reading the spec.
+
+Summary of positions: **CR-1 accept** (nothing to change — one correction to
+the proposed text, already implemented), **CR-2 accept** (cheap; four
+precision notes), **CR-3 accept-with-changes** (as written it conflicts with
+what `intake version` emits today, in two ways), **CR-4 accept** (no tools
+work; one preference offered).
+
+### On CR-1 — envelope vs. bare array
+
+**No bare arrays exist.** `src/cli.ts` wraps every `--json` invocation in
+`{ok, data, errors}` and prints exactly one line; `status --json` has always
+returned the array under `data`. The "if the tools worker has already shipped
+bare arrays" branch does not apply, and the sniff-the-first-byte fallback is
+unnecessary. Envelope-everywhere can be pinned at zero cost to this side.
+
+Two notes on the proposed replacement text:
+
+- *"`ok` is `true` iff the exit code is 0"* — holds today at every return
+  site. `ok` is computed as `errors.length === 0`, and every command's exit
+  code is 0 exactly when it has no errors. Safe to pin.
+- *"On exit 2 `data` is `null`"* — did **not** hold. `fail()` emitted `null`,
+  but the "nothing matched" paths emitted `[]` (`identify`/`assign`/`propose`/
+  `approve`/`execute`/`gc` with no resolvable refs, `scan` with every income
+  path missing). Same exit code, two payload types. This was a defect on our
+  side regardless of how doc 03 is worded, so it is **fixed** (commit
+  `04a9a1d`): a shared `finish()` now yields 0 + rows, 1 + subset, or 2 +
+  `null`. The proposed sentence can therefore stand as written.
+
+Suggested addition while this section is open, since it is what a consumer
+actually needs to detect "no envelope": **in `--json` mode the CLI writes
+exactly one JSON object to stdout and nothing else** — human-readable output
+is only produced without `--json`, and diagnostics go to stderr. A crash
+yields empty stdout with a non-zero exit, which CR-4's `E_NO_CLI` definition
+already covers.
+
+`test/envelope.test.ts` now pins all of the above across 11 invocations, so a
+future change cannot silently break the component's parser.
+
+### On CR-2 — `proposal.ranked` in the status summary
+
+Accept. The data exists and needs no recomputation; the summary is built by
+`summarize()` in `src/sidecar.ts` and this is one field. Four points of
+precision for the amendment text:
+
+1. **`score`, not `confidence`, is the stored name.** The sidecar holds
+   `ranked: [{collection, score, evidence:{artist_prior, label_prior,
+   similar_vote, style_hint}}]`. It is the same quantity on the same scale:
+   the proposal's top-level `confidence` *is* `ranked[0].score`, both floats
+   in `[0,1]` rounded to 2 decimals. Exposing it as `confidence` in the
+   summary is a rename, not a conversion — worth stating so nobody later
+   assumes two different numbers.
+2. **Ordering is deterministic**: score descending, ties broken by collection
+   name ascending. Guaranteeing "best first" in the spec is safe.
+3. **Membership**: `ranked` holds only collections with at least one piece of
+   evidence (artist prior, label prior, similar-artist vote, or style hint),
+   so it is normally short. Two shapes worth knowing: when the engine
+   short-circuits on a strong single-folder artist prior, `ranked` has exactly
+   one entry; when there is no evidence at all there is no proposal, so the
+   `proposal` member is `null` and the question does not arise.
+4. **After `assign --by user`**: if an engine proposal existed, `ranked`
+   retains engine order and the user's pick may be absent — exactly as the
+   proposed rule says. If the user assigned a release the engine could not
+   rank, `ranked` is `[{collection: <user's pick>, score: 1}]`. So `ranked` is
+   never empty when a proposal exists, and `alternates_shown` (already in the
+   sidecar) records whether there was more than one candidate.
+
+Truncation at 5 is fine. We will emit `min(5, n)` in stored order.
+
+### On CR-3 — schema version
+
+Accept the intent; the current text cannot be adopted verbatim because
+`intake version --json` today emits:
+
+```json
+{"ok":true,"data":{"cli":"0.1.0","schema":1,"engine":"0.1.0"},"errors":[]}
+```
+
+Two conflicts:
+
+1. **`schema` is an integer, not a semver string.** Adopting "all three are
+   semver strings, starting at 1.0.0" changes the type of a field doc 03
+   already specifies. It is the right change and now is the moment — no
+   consumer parses it yet — but it should be called out in the amendment as a
+   type change rather than a clarification, and it is a CLI change on our
+   side.
+2. **The sidecar carries its own `"schema": 1`** (integer, doc 01). If doc
+   03's `schema` becomes semver, the two must be related explicitly or they
+   will drift. Proposal: the sidecar's integer stays and is defined as *the
+   major*; `version.schema`'s major MUST equal it. Doc 01 is worker-owned and
+   we will state that there once the amendment lands.
+
+Also: `engine` is currently a hardcoded `"0.1.0"` and does not reflect whether
+the beets shim is actually present. CR-3's "`engine` MAY be `null` when the
+beets shim is absent" is the better contract; we will implement probe-based
+reporting with it. Note the shim remains **untested against a real beets
+install** — only against a fake shim in tests — so whatever `engine` reports
+is the adapter's version, not a verified backend.
+
+### On CR-4 — reserved host-synthesized codes
+
+Accept; no tools work. The CLI emits 13 codes and neither `E_NO_CLI` nor
+`E_CLI_TIMEOUT` is among them (full list in CR-001.5). The MUST-NOT-emit rule
+is now enforced mechanically by `test/envelope.test.ts`, which fails if either
+string appears as an emitted code anywhere in `src/`.
+
+On the open question — "CLI ran but stdout is unparseable": weak preference
+for folding it into `E_NO_CLI` rather than adding `E_BAD_OUTPUT`. A CLI whose
+output cannot be understood is functionally absent, the consumer's remedy is
+identical, and it keeps the reserved set at two.
+
+**Overlap:** CR-4 and our CR-001.5 are the same section from opposite sides —
+they want the two host codes named and fenced off, we want the CLI-emitted
+vocabulary declared open rather than frozen as a table. The two are
+compatible and would be cleanest resolved in one amendment.
