@@ -11,6 +11,7 @@ ways of hanging the app, and the drag indicator that landed in the wrong
 place.
 
 ### Fixed
+- **Compilation ordering**: Dropped Various Artists albums no longer scatter alphabetically by performer; an album whose tracks disagree about the album artist now sorts by disc and track alone (pure `Core/ImportSorter`, unit-tested).
 
 **No longer loses your settings**
 - Renaming a custom column stuck. Previously the rename was undone by the next column resize, and the column itself was deleted on the following launch.

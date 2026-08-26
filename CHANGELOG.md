@@ -35,6 +35,7 @@ the app, and the misplaced drag indicator.
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
 - Dropped files whose path contained a space could fail with "Access denied" (scheme-less file URL was imported percent-encoded)
+- Dropped Various Artists albums no longer scatter alphabetically by performer (compilations sort by disc/track when their album artists disagree)
 - Renaming a custom column no longer gets undone by the next column resize and then deleted on the following launch
 - A hiccup registering another component's columns no longer wipes columns from the saved layout
 - Clearing the subgroup pattern no longer discards the other subgroups a preset defines

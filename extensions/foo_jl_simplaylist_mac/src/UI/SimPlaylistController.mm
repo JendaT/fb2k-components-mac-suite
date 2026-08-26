@@ -17,6 +17,7 @@
 #import "../Core/SimPlaylistNotifications.h"
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
+#import "../Core/ImportSorter.h"
 #import "../Core/SubgroupDetector.h"
 #import "../Core/GroupBuilder.h"
 #import "../Core/DecorationStore.h"
@@ -62,10 +63,9 @@ public:
         if (items.get_count() > 0) {
             auto pm = playlist_manager::get();
             if (m_playlistIndex < pm->get_playlist_count()) {
-                // Sort by (album artist, album, discnumber-as-integer, tracknumber-as-integer,
-                // path fallback). Disc and track numbers are parsed as integers so ordering is
-                // 1, 2 ... 12, 13; disc precedes track so multi-disc albums do not interleave.
-                // A missing disc/track number parses to 0 (sorts first); path is the tiebreaker.
+                // Ordering lives in the pure simplaylist::planImportOrder so the
+                // compilation rule (see ImportSorter.h) is unit-tested; here we
+                // only format the titleformat fields it needs.
                 metadb_handle_list itemsCopy(items);
                 t_size count = itemsCopy.get_count();
 
@@ -75,29 +75,23 @@ public:
                 auto trackNumScript    = simplaylist::TitleFormatHelper::compileWithCache("%tracknumber%");
                 auto pathScript        = simplaylist::TitleFormatHelper::compileWithCache("%path_sort%");
 
-                // Build sort keys once per track to avoid repeated formatting
-                using SortKey = std::tuple<std::string, std::string, int, int, std::string>;
-                std::vector<SortKey> keys;
+                std::vector<simplaylist::ImportSortKey> keys;
                 keys.reserve(count);
                 for (t_size i = 0; i < count; i++) {
                     auto h = itemsCopy.get_item(i);
-                    std::string albumArtist = simplaylist::TitleFormatHelper::format(h, albumArtistScript);
-                    std::string album       = simplaylist::TitleFormatHelper::format(h, albumScript);
-                    std::string discStr     = simplaylist::TitleFormatHelper::format(h, discNumScript);
-                    std::string trackStr    = simplaylist::TitleFormatHelper::format(h, trackNumScript);
-                    std::string path        = simplaylist::TitleFormatHelper::format(h, pathScript);
-                    // atoi returns 0 for the "?" that titleformat emits when the field is absent
-                    int discNum  = discStr.empty() ? 0 : std::atoi(discStr.c_str());
-                    int trackNum = trackStr.empty() ? 0 : std::atoi(trackStr.c_str());
-                    keys.emplace_back(std::move(albumArtist), std::move(album), discNum, trackNum, std::move(path));
+                    simplaylist::ImportSortKey k;
+                    k.albumArtist = simplaylist::TitleFormatHelper::format(h, albumArtistScript);
+                    k.album       = simplaylist::TitleFormatHelper::format(h, albumScript);
+                    k.path        = simplaylist::TitleFormatHelper::format(h, pathScript);
+                    std::string discStr  = simplaylist::TitleFormatHelper::format(h, discNumScript);
+                    std::string trackStr = simplaylist::TitleFormatHelper::format(h, trackNumScript);
+                    // atoi yields 0 for the "?" titleformat emits when a field is absent
+                    k.disc  = discStr.empty()  ? 0 : std::atoi(discStr.c_str());
+                    k.track = trackStr.empty() ? 0 : std::atoi(trackStr.c_str());
+                    keys.push_back(std::move(k));
                 }
 
-                // Sort indices by key; stable_sort preserves original order for equal keys
-                std::vector<t_size> order(count);
-                std::iota(order.begin(), order.end(), 0);
-                std::stable_sort(order.begin(), order.end(), [&](t_size a, t_size b) {
-                    return keys[a] < keys[b];
-                });
+                std::vector<size_t> order = simplaylist::planImportOrder(keys);
 
                 metadb_handle_list sortedItems;
                 sortedItems.prealloc(count);
