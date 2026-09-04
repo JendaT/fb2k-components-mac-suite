@@ -40,6 +40,12 @@ typedef NS_ENUM(NSInteger, GroupDisplayType) {
 @property (nonatomic, copy) NSString *headerPattern;
 @property (nonatomic, assign) GroupDisplayType headerDisplayType;
 
+// Grouping key pattern — if non-empty, used for group boundary detection instead of headerPattern.
+// Allows the display header to differ from the key used to compare consecutive tracks.
+// Example: headerPattern shows "Artist – Album" but groupingPattern keys on "Album" only,
+// so a multi-artist album is kept as a single group.
+@property (nonatomic, copy) NSString *groupingPattern;
+
 // Group column (album art area) configuration
 @property (nonatomic, copy) NSString *groupColumnPattern;
 @property (nonatomic, assign) GroupDisplayType groupColumnDisplayType;
