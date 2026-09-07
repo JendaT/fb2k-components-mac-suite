@@ -4,11 +4,14 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
-## [1.5.2] - 2026-08-11
+## [1.6.0] - 2026-08-23
 
-A bug-fix release. Five separate ways of silently losing your settings, two
-ways of hanging the app, and the drag indicator that landed in the wrong
-place.
+Adds the Sort submenu, on top of a large bug-fix pass: five separate ways of
+silently losing your settings, two ways of hanging the app, and the drag
+indicator that landed in the wrong place.
+
+### Added
+- **Sort submenu in the right-click menu** (#20). The context menu now has a Sort submenu matching the built-in playlist view: Sort by..., Randomize, Reverse, and sort by album, artist, file path, title or track number. With two or more tracks selected it reads "Sort Selection" and sorts only those; otherwise it sorts the whole playlist. The entries come from foobar2000 itself rather than being reimplemented, so "Sort by..." opens the real sort dialog and any sort command another component registers appears here too.
 
 ### Fixed
 - **Compilation ordering**: Dropped Various Artists albums no longer scatter alphabetically by performer; an album whose tracks disagree about the album artist now sorts by disc and track alone (pure `Core/ImportSorter`, unit-tested).

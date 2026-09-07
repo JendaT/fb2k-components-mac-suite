@@ -209,6 +209,10 @@ struct ReloadOperation {
     contextmenu_manager::ptr _contextMenuManagerV1;
     // Store handles for custom menu actions (Reload Info)
     metadb_handle_list _contextMenuHandles;
+    // Sort submenu backing store: menu item tag -> (service, command index).
+    // The service_ptr must outlive the menu, since execute() is called after
+    // the menu has been built and dismissed.
+    std::vector<std::pair<mainmenu_commands::ptr, t_uint32>> _sortCommands;
     // Active reload operations for progress tracking
     std::vector<ReloadOperation> _reloadOperations;
     // Pre-compiled title format scripts for columns (rebuilt when columns change)
@@ -2419,6 +2423,8 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
         [self appendReloadSectionToMenu:menu];
 
+        [self appendSortSubmenuToMenu:menu selectedCount:handles.get_count()];
+
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
 
         // Decorator provider actions (e.g. intake propose/approve)
@@ -2440,6 +2446,9 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     [menu setAutoenablesItems:NO];
 
     [self appendReloadSectionToMenu:menu];
+
+    // _contextMenuHandles was set by the caller before falling back here.
+    [self appendSortSubmenuToMenu:menu selectedCount:_contextMenuHandles.get_count()];
 
     [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
 
@@ -2492,6 +2501,94 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
 // Append the custom "Focus Playing Now" navigation item at the very bottom of
 // the context menu (both the v2 and v1 menu builders call this last).
+#pragma mark - Sort submenu
+
+// Collect the sort commands foobar2000 registers under one main-menu group.
+//
+// The host registers its sort commands in two groups: edit_part2_sort acts on
+// the whole playlist, edit_part2_selection_sort on the selection. Proxying them
+// rather than reimplementing sorting means "Sort by..." opens the host's real
+// dialog, the entries match the built-in playlist view exactly, and any sort
+// command a third-party component adds shows up here too.
+//
+// Appends to _sortCommands, whose index becomes the menu item's tag.
+- (void)collectSortCommandsForGroup:(const GUID &)group into:(NSMenu *)submenu {
+    for (auto commands : mainmenu_commands::enumerate()) {
+        if (commands->get_parent() != group) continue;
+
+        const t_uint32 count = commands->get_command_count();
+        for (t_uint32 i = 0; i < count; i++) {
+            pfc::string8 text;
+            t_uint32 flags = 0;
+            // false means "do not display" — a keyboard-shortcut-only command.
+            if (!commands->get_display(i, text, flags)) continue;
+            // Hidden unless shift is held; the context menu has no such affordance.
+            if (flags & mainmenu_commands::flag_defaulthidden) continue;
+
+            NSString *title = [NSString stringWithUTF8String:text.c_str()];
+            if (title.length == 0) continue;  // nil on invalid UTF-8
+
+            NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                          action:@selector(sortCommandClicked:)
+                                                   keyEquivalent:@""];
+            item.target = self;
+            item.tag = (NSInteger)_sortCommands.size();
+            item.enabled = !(flags & mainmenu_commands::flag_disabled);
+            if (flags & (mainmenu_commands::flag_checked | mainmenu_commands::flag_radiochecked)) {
+                item.state = NSControlStateValueOn;
+            }
+            _sortCommands.emplace_back(commands, i);
+            [submenu addItem:item];
+        }
+    }
+}
+
+// Add the "Sort" submenu, mirroring the built-in playlist view's context menu
+// (GitHub issue #20).
+//
+// Which group to offer depends on what the click acted on: with two or more
+// tracks selected the user means "sort these", otherwise "sort the playlist".
+// Falls back to the whole-playlist group if the selection group turns out to be
+// empty, so an unpopulated group can never leave an empty submenu behind.
+- (void)appendSortSubmenuToMenu:(NSMenu *)menu selectedCount:(NSUInteger)selectedCount {
+    _sortCommands.clear();
+
+    NSMenu *submenu = [[NSMenu alloc] initWithTitle:@"Sort"];
+    [submenu setAutoenablesItems:NO];
+
+    BOOL sortingSelection = (selectedCount > 1);
+    if (sortingSelection) {
+        [self collectSortCommandsForGroup:mainmenu_groups::edit_part2_selection_sort into:submenu];
+        if (submenu.numberOfItems == 0) sortingSelection = NO;
+    }
+    if (!sortingSelection) {
+        [self collectSortCommandsForGroup:mainmenu_groups::edit_part2_sort into:submenu];
+    }
+
+    // Nothing registered — omit the submenu rather than show an empty one.
+    if (submenu.numberOfItems == 0) return;
+
+    // Name it for what it will actually do, so sorting a selection is never a
+    // surprise on a playlist the user cannot see all of.
+    NSMenuItem *sortItem = [[NSMenuItem alloc] initWithTitle:(sortingSelection ? @"Sort Selection" : @"Sort")
+                                                      action:nil
+                                               keyEquivalent:@""];
+    sortItem.submenu = submenu;
+    [menu addItem:sortItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+}
+
+- (void)sortCommandClicked:(NSMenuItem *)sender {
+    NSInteger tag = sender.tag;
+    if (tag < 0 || (size_t)tag >= _sortCommands.size()) return;
+
+    auto entry = _sortCommands[(size_t)tag];
+    runGuardedSDKAction("Sort command", ^{
+        // The callback parameter is reserved by the SDK and must be null.
+        entry.first->execute(entry.second, nullptr);
+    });
+}
+
 - (void)appendFocusPlayingNowItemToMenu:(NSMenu *)menu {
     [menu addItem:[NSMenuItem separatorItem]];
 

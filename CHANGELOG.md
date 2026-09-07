@@ -27,10 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
-### [1.5.2] - 2026-08-11
+### [1.6.0] - 2026-08-23
 
-Bug-fix release: five ways of silently losing settings, two ways of hanging
-the app, and the misplaced drag indicator.
+Adds the Sort submenu, plus a large bug-fix pass: five ways of silently losing
+settings, two ways of hanging the app, and the misplaced drag indicator.
+
+#### Added
+- Sort submenu in the right-click menu, matching the built-in playlist view — Sort by..., Randomize, Reverse and sort by album/artist/file path/title/track number, acting on the selection when two or more tracks are selected (#20). Entries are proxied from foobar2000's own sort commands, so the real Sort by... dialog and any component-registered sort command appear too.
 
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing

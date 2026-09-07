@@ -8,7 +8,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 
 | Extension | Description | Version | Docs |
 |-----------|-------------|---------|------|
-| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.2 | [📖](docs/simplaylist.md) |
+| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.0 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.3.0 | [📖](docs/spectrum.md) |
