@@ -17,13 +17,35 @@
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/UIStyles.h"
 
+static NSString* const kColumnIdQueueIndex = @"queue_index";
+static NSString* const kColumnIdArtistTitle = @"artist_title";
+static NSString* const kColumnIdDuration = @"duration";
+
 #include <algorithm>
 
-// Pasteboard type for internal drag & drop
 static NSPasteboardType const QueueItemPasteboardType = @"com.foobar2000.queue-manager.queue-item";
-
-// External pasteboard types we accept
 static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+
+static NSImage* sPlayingIcon = nil;
+static NSImage* sPausedIcon = nil;
+
+static void ensureStatusIcons() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSImageSymbolConfiguration *config = [NSImageSymbolConfiguration
+            configurationWithPointSize:10
+            weight:NSFontWeightMedium
+            scale:NSImageSymbolScaleSmall];
+
+        sPlayingIcon = [[NSImage imageWithSystemSymbolName:@"speaker.wave.2.fill"
+                                         accessibilityDescription:@"Playing"]
+                        imageWithSymbolConfiguration:config];
+
+        sPausedIcon = [[NSImage imageWithSystemSymbolName:@"pause.fill"
+                                        accessibilityDescription:@"Paused"]
+                       imageWithSymbolConfiguration:config];
+    });
+}
 
 // Notify class for async track URL import (adds to playlist + queues)
 class QueueDropNotify : public process_locations_notify {
@@ -42,7 +64,6 @@ public:
                 pm->playlist_undo_backup(m_playlistIndex);
                 pm->playlist_insert_items(m_playlistIndex, m_insertAt, items, pfc::bit_array_val(true));
 
-                // Queue each inserted item
                 for (t_size i = 0; i < items.get_count(); i++) {
                     pm->queue_add_item_playlist(m_playlistIndex, m_insertAt + i);
                 }
@@ -71,6 +92,21 @@ public:
 };
 
 @implementation QueueManagerController
+
+// Returns 1 if the first item in _queueItems is the prepended playing track, 0 otherwise
+- (NSUInteger)playingTrackPrependedCount {
+    if (_queueItems.count > 0 && _queueItems[0].isCurrentlyPlaying) {
+        metadb_handle_ptr playingTrack = QueueCallbackManager::instance().getCurrentPlayingTrack();
+        if (playingTrack.is_valid()) {
+            auto contents = queue_ops::getContentsVector();
+            for (size_t i = 0; i < contents.size(); i++) {
+                if (contents[i].m_handle == playingTrack) return 0;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
 
 #pragma mark - Lifecycle
 
@@ -167,11 +203,7 @@ public:
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-
-    // Register with callback manager
     QueueCallbackManager::instance().registerController(self);
-
-    // Initial load
     [self reloadQueueContents];
 }
 
@@ -247,29 +279,62 @@ public:
 #pragma mark - Data Loading
 
 - (void)reloadQueueContents {
-    // Fetch current queue from SDK
     auto contents = queue_ops::getContentsVector();
 
-    // Clear and rebuild wrappers
     [_queueItems removeAllObjects];
+
+    metadb_handle_ptr playingTrack = QueueCallbackManager::instance().getCurrentPlayingTrack();
+    bool isPaused = QueueCallbackManager::instance().isPaused();
+
+    // Check if the playing track is already in the SDK queue
+    bool playingTrackInQueue = false;
+    if (playingTrack.is_valid()) {
+        for (size_t i = 0; i < contents.size(); i++) {
+            if (contents[i].m_handle == playingTrack) {
+                playingTrackInQueue = true;
+                break;
+            }
+        }
+    }
+
+    // Prepend the currently playing track if it was removed from the SDK queue
+    if (playingTrack.is_valid() && !playingTrackInQueue) {
+        QueueItemWrapper* playingWrapper = [[QueueItemWrapper alloc] initWithHandle:playingTrack];
+        playingWrapper.isCurrentlyPlaying = YES;
+        playingWrapper.isPaused = isPaused;
+        [_queueItems addObject:playingWrapper];
+    }
 
     for (size_t i = 0; i < contents.size(); i++) {
         QueueItemWrapper* wrapper = [[QueueItemWrapper alloc]
                                      initWithQueueItem:contents[i]
                                      queueIndex:i];
+
+        if (playingTrack.is_valid() && contents[i].m_handle == playingTrack) {
+            wrapper.isCurrentlyPlaying = YES;
+            wrapper.isPaused = isPaused;
+        }
+
         [_queueItems addObject:wrapper];
     }
 
-    // Reload table
     [_tableView reloadData];
-
-    // Update status bar
     [self updateStatusBar];
 }
 
 - (void)updateStatusBar {
-    std::string text = queue_format::statusTextForCount(_queueItems.count);
-    _statusBar.stringValue = [NSString stringWithUTF8String:text.c_str()] ?: @"";
+    NSUInteger prependCount = [self playingTrackPrependedCount];
+    NSUInteger queueCount = _queueItems.count > prependCount ? _queueItems.count - prependCount : 0;
+    if (queueCount == 0 && prependCount == 0) {
+        _statusBar.stringValue = @"";
+    } else if (queueCount == 0) {
+        _statusBar.stringValue = @"Playing";
+    } else if (queueCount == 1) {
+        _statusBar.stringValue = @"1 item in queue";
+    } else {
+        _statusBar.stringValue = [NSString stringWithFormat:@"%lu items in queue",
+                                  (unsigned long)queueCount];
+    }
 }
 
 #pragma mark - Actions
@@ -278,16 +343,24 @@ public:
     NSIndexSet* selection = _tableView.selectedRowIndexes;
     if (selection.count == 0) return;
 
-    // Build list of indices to remove (in ascending order)
-    __block std::vector<size_t> indices;
+    // Determine if first item is the prepended playing track (not in SDK queue)
+    NSUInteger sdkOffset = [self playingTrackPrependedCount];
+
+    __block std::vector<size_t> sdkIndices;
     [selection enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL* stop) {
-        indices.push_back(idx);
+        if (idx >= sdkOffset) {
+            sdkIndices.push_back(idx - sdkOffset);
+        }
     }];
 
-    // Remove from queue via SDK
-    queue_ops::removeItems(indices);
+    if (!sdkIndices.empty()) {
+        queue_ops::removeItems(sdkIndices);
+    }
 
-    // Table will be reloaded by callback
+    // If only the playing item was selected, just reload to reflect current state
+    if (sdkIndices.empty()) {
+        [self reloadQueueContents];
+    }
 }
 
 - (void)playSelectedItem {
@@ -296,7 +369,13 @@ public:
 
     QueueItemWrapper* item = _queueItems[row];
 
-    // Build a t_playback_queue_item for playItem
+    if (item.isCurrentlyPlaying) {
+        // Already playing — toggle pause instead
+        auto pc = playback_control::get();
+        pc->pause(pc->is_playing() && !pc->is_paused());
+        return;
+    }
+
     t_playback_queue_item queueItem;
     queueItem.m_handle = [item handle];
     queueItem.m_playlist = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourcePlaylist;
@@ -413,23 +492,33 @@ public:
 
     if (targetRow < 0) targetRow = 0;
 
+    // The prepended playing track is not in the SDK queue and cannot be reordered.
+    // Adjust all UI row indices to SDK-space indices.
+    NSInteger sdkOffset = (NSInteger)[self playingTrackPrependedCount];
+
+    std::vector<size_t> sdkSourceRows;
+    for (size_t uiRow : sourceRows) {
+        if ((NSInteger)uiRow >= sdkOffset) {
+            sdkSourceRows.push_back(uiRow - (size_t)sdkOffset);
+        }
+    }
+    if (sdkSourceRows.empty()) return NO;
+
+    NSInteger sdkTarget = targetRow - sdkOffset;
+    if (sdkTarget < 0) sdkTarget = 0;
+
     auto contents = queue_ops::getContentsVector();
-    auto newOrder = queue_reorder::planMove(contents.size(), sourceRows, (size_t)targetRow);
+    auto newOrder = queue_reorder::planMove(contents.size(), sdkSourceRows, (size_t)sdkTarget);
     if (newOrder.empty()) {
-        // No-op drop (same position) or stale source rows
         return NO;
     }
 
-    // Rebuild the queue in the planned order (flush-and-readd; the SDK has
-    // no reorder primitive for the playback queue). The flag suppresses the
-    // per-mutation callbacks, which arrive synchronously on this thread —
-    // it must be reset and the view reloaded even if an SDK call throws
-    // mid-rebuild, otherwise updates stay suppressed forever.
     _isReorderingInProgress = YES;
     try {
         queue_ops::rebuildInOrder(contents, newOrder);
     } catch (...) {
         console::error("[Queue Manager] Queue rebuild failed mid-reorder");
+    }
     }
     _isReorderingInProgress = NO;
 
@@ -445,10 +534,33 @@ public:
 
     QueueDropRequest* request = [QueueDropRequest requestFromDragData:data];
     if (!request) {
-        console::error("[Queue Manager] Failed to decode SimPlaylist drag data");
-        return NO;
+        // Library drag (e.g. from AlbumViewVanced): indices are empty but paths are provided.
+        // QueueDropRequest returns nil for empty indices, so handle paths-only case here.
+        NSSet* classes = [NSSet setWithObjects:[NSDictionary class], [NSArray class],
+                          [NSNumber class], [NSString class], nil];
+        NSDictionary* dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes
+                                                                     fromData:data
+                                                                        error:nil];
+        NSArray<NSString*>* paths = dragData[@"paths"];
+        if (!paths || paths.count == 0) {
+            console::error("[Queue Manager] Failed to decode SimPlaylist drag data");
+            return NO;
+        }
+        try {
+            auto db = metadb::get();
+            auto pm = playlist_manager::get();
+            for (NSString* path in paths) {
+                auto handle = db->handle_create([path UTF8String], 0);
+                if (handle.is_valid()) {
+                    pm->queue_add_item(handle);
+                }
+            }
+        } catch (...) {
+            console::error("[Queue Manager] Error adding library paths to queue");
+            return NO;
+        }
+        return YES;
     }
-
     // Use the source playlist from the drag data, not the active playlist
     // This ensures correct behavior even if active playlist changes during drag
     size_t sourcePlaylist;
@@ -555,13 +667,15 @@ public:
     QueueItemWrapper* item = _queueItems[row];
     NSString* identifier = tableColumn.identifier;
 
-    // Get or create cell view - use NSTableCellView for proper centering
+    if ([identifier isEqualToString:kColumnIdQueueIndex]) {
+        return [self statusCellForItem:item row:row inTableView:tableView];
+    }
+
     NSTableCellView* cellView = [tableView makeViewWithIdentifier:identifier owner:self];
     if (!cellView) {
         cellView = [[NSTableCellView alloc] init];
         cellView.identifier = identifier;
 
-        // Create text field inside cell view
         NSTextField* textField = [[NSTextField alloc] init];
         textField.bordered = NO;
         textField.editable = NO;
@@ -573,7 +687,6 @@ public:
         [cellView addSubview:textField];
         cellView.textField = textField;
 
-        // Center vertically, fill horizontally with padding
         [NSLayoutConstraint activateConstraints:@[
             [textField.leadingAnchor constraintEqualToAnchor:cellView.leadingAnchor constant:fb2k_ui::kCellTextPadding],
             [textField.trailingAnchor constraintEqualToAnchor:cellView.trailingAnchor constant:-fb2k_ui::kCellTextPadding],
@@ -583,48 +696,129 @@ public:
 
     NSTextField* cell = cellView.textField;
 
-    // Set cell content based on column
-    if ([identifier isEqualToString:@(queue_config::kColumnQueueIndex)]) {
-        cell.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)(row + 1)];
-        cell.alignment = NSTextAlignmentRight;
-        cell.font = fb2k_ui::monospacedDigitFont();
-        cell.textColor = fb2k_ui::secondaryTextColor();
-    } else if ([identifier isEqualToString:@(queue_config::kColumnArtistTitle)]) {
+    if ([identifier isEqualToString:kColumnIdArtistTitle]) {
         cell.stringValue = item.cachedArtistTitle ?: @"";
         cell.alignment = NSTextAlignmentLeft;
         cell.font = fb2k_ui::rowFont();
-        cell.textColor = fb2k_ui::textColor();
-    } else if ([identifier isEqualToString:@(queue_config::kColumnDuration)]) {
+        cell.textColor = item.isCurrentlyPlaying ? [NSColor controlAccentColor] : fb2k_ui::textColor();
+    } else if ([identifier isEqualToString:kColumnIdDuration]) {
         cell.stringValue = item.cachedDuration ?: @"";
         cell.alignment = NSTextAlignmentRight;
         cell.font = fb2k_ui::monospacedDigitFont();
-        cell.textColor = fb2k_ui::textColor();
+        cell.textColor = item.isCurrentlyPlaying ? [NSColor controlAccentColor] : fb2k_ui::textColor();
+    }
+
+    return cellView;
+}
+
+- (NSView*)statusCellForItem:(QueueItemWrapper*)item row:(NSInteger)row inTableView:(NSTableView*)tableView {
+    ensureStatusIcons();
+
+    NSString* cellId = @"queue_status_cell";
+    NSTableCellView* cellView = [tableView makeViewWithIdentifier:cellId owner:self];
+
+    if (!cellView) {
+        cellView = [[NSTableCellView alloc] init];
+        cellView.identifier = cellId;
+
+        NSImageView* imageView = [[NSImageView alloc] init];
+        imageView.translatesAutoresizingMaskIntoConstraints = NO;
+        imageView.imageScaling = NSImageScaleProportionallyDown;
+        imageView.tag = 100;
+        [cellView addSubview:imageView];
+        cellView.imageView = imageView;
+
+        NSTextField* textField = [[NSTextField alloc] init];
+        textField.bordered = NO;
+        textField.editable = NO;
+        textField.selectable = NO;
+        textField.drawsBackground = NO;
+        textField.translatesAutoresizingMaskIntoConstraints = NO;
+        textField.tag = 101;
+        [cellView addSubview:textField];
+        cellView.textField = textField;
+
+        [NSLayoutConstraint activateConstraints:@[
+            [imageView.centerXAnchor constraintEqualToAnchor:cellView.centerXAnchor],
+            [imageView.centerYAnchor constraintEqualToAnchor:cellView.centerYAnchor],
+            [imageView.widthAnchor constraintEqualToConstant:16],
+            [imageView.heightAnchor constraintEqualToConstant:16],
+            [textField.trailingAnchor constraintEqualToAnchor:cellView.trailingAnchor constant:-fb2k_ui::kCellTextPadding],
+            [textField.centerYAnchor constraintEqualToAnchor:cellView.centerYAnchor],
+            [textField.leadingAnchor constraintEqualToAnchor:cellView.leadingAnchor constant:fb2k_ui::kCellTextPadding],
+        ]];
+    }
+
+    NSImageView* imageView = cellView.imageView;
+    NSTextField* textField = cellView.textField;
+
+    if (item.isCurrentlyPlaying) {
+        imageView.hidden = NO;
+        textField.hidden = YES;
+        imageView.image = item.isPaused ? sPausedIcon : sPlayingIcon;
+        imageView.contentTintColor = [NSColor controlAccentColor];
+    } else {
+        imageView.hidden = YES;
+        textField.hidden = NO;
+        textField.stringValue = [NSString stringWithFormat:@"%lu", (unsigned long)(row + 1)];
+        textField.alignment = NSTextAlignmentRight;
+        textField.font = fb2k_ui::monospacedDigitFont();
+        textField.textColor = fb2k_ui::secondaryTextColor();
     }
 
     return cellView;
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
-    // Update text colors based on selection state. Only instantiated row
-    // views need recoloring; enumerateAvailableRowViews skips the rest.
     [_tableView enumerateAvailableRowViewsUsingBlock:^(NSTableRowView* rowView, NSInteger row) {
         BOOL isSelected = rowView.selected;
-        NSColor* textColor = isSelected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
-        NSColor* secondaryColor = isSelected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor();
+        QueueItemWrapper* item = (row >= 0 && row < (NSInteger)self->_queueItems.count)
+            ? self->_queueItems[row] : nil;
 
-        // Update each column's text color
         for (NSInteger col = 0; col < (NSInteger)self->_tableView.numberOfColumns; col++) {
             NSTableCellView* cellView = [self->_tableView viewAtColumn:col row:row makeIfNecessary:NO];
-            if (cellView && cellView.textField) {
-                NSTableColumn* column = self->_tableView.tableColumns[col];
-                if ([column.identifier isEqualToString:@(queue_config::kColumnQueueIndex)]) {
-                    cellView.textField.textColor = secondaryColor;
+            if (!cellView) continue;
+
+            NSTableColumn* column = self->_tableView.tableColumns[col];
+
+            if ([column.identifier isEqualToString:kColumnIdQueueIndex]) {
+                if (item.isCurrentlyPlaying) {
+                    if (cellView.imageView)
+                        cellView.imageView.contentTintColor = isSelected ? fb2k_ui::selectedTextColor() : [NSColor controlAccentColor];
+                } else if (cellView.textField) {
+                    cellView.textField.textColor = isSelected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor();
+                }
+            } else if (cellView.textField) {
+                if (isSelected) {
+                    cellView.textField.textColor = fb2k_ui::selectedTextColor();
+                } else if (item.isCurrentlyPlaying) {
+                    cellView.textField.textColor = [NSColor controlAccentColor];
                 } else {
-                    cellView.textField.textColor = textColor;
+                    cellView.textField.textColor = fb2k_ui::textColor();
                 }
             }
         }
     }];
+}
+
+#pragma mark - Playback State
+
+- (void)handlePlaybackNewTrack {
+    [self reloadQueueContents];
+}
+
+- (void)handlePlaybackStop {
+    [self reloadQueueContents];
+}
+
+- (void)handlePlaybackPause:(BOOL)paused {
+    for (QueueItemWrapper* item in _queueItems) {
+        if (item.isCurrentlyPlaying) {
+            item.isPaused = paused;
+        }
+    }
+
+    [_tableView reloadData];
 }
 
 #pragma mark - Keyboard Handling
@@ -641,6 +835,8 @@ public:
         [self removeSelectedItems];
     } else if (key == NSCarriageReturnCharacter || key == NSEnterCharacter) {
         [self playSelectedItem];
+    } else if (key == ' ') {
+        playback_control::get()->toggle_pause();
     } else {
         [super keyDown:event];
     }

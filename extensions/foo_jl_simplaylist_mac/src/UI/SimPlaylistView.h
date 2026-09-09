@@ -100,6 +100,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 - (NSInteger)rowAtPoint:(NSPoint)point;
 - (NSRect)rectForRow:(NSInteger)row;
 - (CGFloat)yOffsetForRow:(NSInteger)row;
+- (CGFloat)pixelHeightForGroup:(NSInteger)groupIndex;
 
 // Row mapping for sparse groups (O(log g) operations)
 - (NSInteger)rowCount;  // Total display rows = tracks + headers + subgroups + padding
@@ -143,6 +144,12 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Called when user presses Q to queue selected tracks
 - (void)playlistView:(SimPlaylistView *)view didRequestQueueTracks:(NSIndexSet *)playlistIndices;
 
+// Called when user presses Q on a group header to queue all tracks in the album
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueGroupFrom:(NSInteger)firstPlaylistIndex count:(NSInteger)count;
+
+// Called when user presses Q to queue all selected playlist indices
+- (void)playlistView:(SimPlaylistView *)view didRequestQueueIndices:(NSIndexSet *)playlistIndices;
+
 // Called to request album art for a group (returns cached image or nil, triggers async load)
 - (nullable NSImage *)playlistView:(SimPlaylistView *)view albumArtForGroupAtPlaylistIndex:(NSInteger)playlistIndex;
 
@@ -165,6 +172,9 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Lazy column value formatting - called when drawing track rows with nil columnValues
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view columnValuesForPlaylistIndex:(NSInteger)playlistIndex;
+
+// Called when user clicks an inline rating cell. Rating 0 clears the value.
+- (void)playlistView:(SimPlaylistView *)view didRequestSetRating:(NSInteger)rating forPlaylistIndex:(NSInteger)playlistIndex;
 
 // Row decorator providers (only called when decorationsEnabled is YES).
 // Synchronous cache-only lookup for a visible row; nil = no decoration.

@@ -23,7 +23,7 @@ static const NSInteger kGroupColumn = -2;
 @property (nonatomic, assign) NSInteger hoveredColumn;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, strong, nullable) NSDictionary *headerTextAttrs;
-@property (nonatomic, assign) fb2k_ui::SizeVariant headerTextAttrsSize;
+@property (nonatomic, assign) CGFloat headerTextAttrsCachedHeight;
 @property (nonatomic, assign) BOOL resizeCursorShown;
 @end
 
@@ -171,30 +171,24 @@ static const NSInteger kGroupColumn = -2;
     [super drawRect:dirtyRect];
 
     CGFloat width = self.bounds.size.width;
-    CGFloat height = fb2k_ui::headerHeight(_headerSize);
+    CGFloat height = self.bounds.size.height;
 
-    // Background - use glass-aware colors (returns nil for full transparency, semi-opaque for accessibility)
-    NSColor *bgColor = _glassBackground
-        ? fb2k_ui::headerBackgroundColorForGlass(_accentMode)
-        : fb2k_ui::headerBackgroundColor(_accentMode);
-    if (bgColor) {
-        [bgColor setFill];
+    // Background
+    if (_glassBackground) {
+        // Glass: let NSVisualEffectView show through (draw nothing, or semi-opaque for accessibility)
+        if ([[NSWorkspace sharedWorkspace] accessibilityDisplayShouldReduceTransparency]) {
+            [[[NSColor windowBackgroundColor] colorWithAlphaComponent:0.8] setFill];
+            NSRectFill(self.bounds);
+        }
+    } else {
+        [fb2k_ui::headerBackgroundColor() setFill];
         NSRectFill(self.bounds);
-    }
-
-    // Top highlight line (subtle lighter edge like native headers)
-    NSColor *highlight = _glassBackground
-        ? fb2k_ui::headerTopHighlightColorForGlass(_accentMode)
-        : fb2k_ui::headerTopHighlightColor(_accentMode);
-    if (highlight) {
-        [highlight setFill];
-        NSRectFill(NSMakeRect(0, 0, width, 1));
     }
 
     // Group column area is empty (no header cell needed)
     // Just draw a subtle separator at the right edge
     if (_groupColumnWidth > 0) {
-        [fb2k_ui::headerDividerColor() setFill];
+        [fb2k_ui::separatorColor() setFill];
         NSRectFill(NSMakeRect(_groupColumnWidth - 1, 5, 1, height - 10));
     }
 
@@ -222,7 +216,7 @@ static const NSInteger kGroupColumn = -2;
             }
 
             // Draw column divider
-            [fb2k_ui::headerDividerColor() setFill];
+            [fb2k_ui::separatorColor() setFill];
             NSRectFill(NSMakeRect(x + col.width - 1, 5, 1, height - 10));
         }
 
@@ -232,7 +226,7 @@ static const NSInteger kGroupColumn = -2;
     // Draw drop indicator during drag
     if (_draggingColumn >= 0 && _dropTargetIndex >= 0) {
         CGFloat indicatorX = [self xOffsetForColumn:_dropTargetIndex];
-        [fb2k_ui::focusRingColor() setFill];
+        [[NSColor selectedContentBackgroundColor] setFill];
         NSRectFill(NSMakeRect(indicatorX - 1, 0, 3, height));
     }
 
@@ -243,19 +237,19 @@ static const NSInteger kGroupColumn = -2;
         NSRect dragRect = NSMakeRect(dragX, 0, dragCol.width, height);
 
         // Semi-transparent background
-        [[fb2k_ui::headerBackgroundColor(_accentMode) colorWithAlphaComponent:0.9] setFill];
+        [[fb2k_ui::headerBackgroundColor() colorWithAlphaComponent:0.9] setFill];
         NSRectFill(dragRect);
 
         [self drawHeaderCell:dragCol.name inRect:dragRect highlighted:YES];
 
         // Border
-        [fb2k_ui::focusRingColor() setStroke];
+        [[NSColor selectedContentBackgroundColor] setStroke];
         NSBezierPath *borderPath = [NSBezierPath bezierPathWithRect:NSInsetRect(dragRect, 0.5, 0.5)];
         [borderPath stroke];
     }
 
     // Bottom border (darker separator line)
-    [fb2k_ui::headerBottomBorderColor() setFill];
+    [fb2k_ui::separatorColor() setFill];
     NSRectFill(NSMakeRect(0, height - 1, width, 1));
 }
 
@@ -274,15 +268,15 @@ static const NSInteger kGroupColumn = -2;
     // once per column per frame, on a live resize/drag path. The stored colour
     // is a dynamic system colour, so appearance changes still resolve at draw
     // time without a rebuild.
-    if (!_headerTextAttrs || _headerTextAttrsSize != _headerSize) {
+    if (!_headerTextAttrs || _headerTextAttrsCachedHeight != _headerHeight) {
         NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
         style.lineBreakMode = NSLineBreakByTruncatingTail;
         _headerTextAttrs = @{
-            NSFontAttributeName: fb2k_ui::headerFont(_headerSize),
+            NSFontAttributeName: fb2k_ui::headerFont(),
             NSForegroundColorAttributeName: fb2k_ui::headerTextColor(),
             NSParagraphStyleAttributeName: style
         };
-        _headerTextAttrsSize = _headerSize;
+        _headerTextAttrsCachedHeight = _headerHeight;
     }
     NSDictionary *attrs = _headerTextAttrs;
 
@@ -487,7 +481,7 @@ static const NSInteger kGroupColumn = -2;
     // Group column resize handle
     if (_groupColumnWidth > 0) {
         NSRect groupHandleRect = NSMakeRect(_groupColumnWidth - fb2k_ui::kResizeHandleWidth / 2, 0,
-                                            fb2k_ui::kResizeHandleWidth, fb2k_ui::headerHeight(_headerSize));
+                                            fb2k_ui::kResizeHandleWidth, self.bounds.size.height);
         [self addCursorRect:groupHandleRect cursor:[NSCursor resizeLeftRightCursor]];
     }
 
@@ -496,7 +490,7 @@ static const NSInteger kGroupColumn = -2;
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
         NSRect handleRect = NSMakeRect(x + colWidth - fb2k_ui::kResizeHandleWidth / 2, 0,
-                                       fb2k_ui::kResizeHandleWidth, fb2k_ui::headerHeight(_headerSize));
+                                       fb2k_ui::kResizeHandleWidth, _headerHeight);
         // Mirrors the bound in resizeHandleAtX:: handles hidden behind the
         // album-art strip must not offer a resize cursor.
         if (NSMaxX(handleRect) >= _groupColumnWidth) {

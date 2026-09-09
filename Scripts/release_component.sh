@@ -23,6 +23,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Component name mapping (all use jl_ prefix)
 typeset -A COMPONENT_MAP=(
+    ["albumviewvanced"]="foo_jl_albumviewvanced_mac"
     ["effects_dsp"]="foo_jl_effects_dsp_mac"
     ["effects-dsp"]="foo_jl_effects_dsp_mac"
     ["simplaylist"]="foo_jl_simplaylist_mac"
@@ -48,6 +49,7 @@ typeset -A COMPONENT_MAP=(
 
 # Version constant mapping in shared/version.h
 typeset -A VERSION_MAP=(
+    ["albumviewvanced"]="ALBUMVIEWVANCED_VERSION"
     ["effects_dsp"]="EFFECTS_DSP_VERSION"
     ["effects-dsp"]="EFFECTS_DSP_VERSION"
     ["simplaylist"]="SIMPLAYLIST_VERSION"
@@ -73,6 +75,7 @@ typeset -A VERSION_MAP=(
 
 # Display names for release titles
 typeset -A DISPLAY_NAME_MAP=(
+    ["albumviewvanced"]="AlbumViewVanced"
     ["effects_dsp"]="Effects DSP"
     ["effects-dsp"]="Effects DSP"
     ["simplaylist"]="SimPlaylist"
@@ -108,6 +111,7 @@ show_help() {
     echo "  scrobble      - Last.fm Scrobbler"
     echo "  albumart      - Album Art (extended album art display)"
     echo "  queue_manager - Queue Manager (visual playback queue)"
+    echo "  albumviewvanced - AlbumViewVanced (album grid library browser)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"

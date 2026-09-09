@@ -24,6 +24,40 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
 
 @implementation ColumnDefinition
 
+static ColumnDefinition *CreateRatingColumn(void) {
+    ColumnDefinition *col = [ColumnDefinition columnWithName:@"Rating"
+                                                      pattern:@"%rating%"
+                                                        width:64
+                                                    alignment:ColumnAlignmentCenter];
+    col.clickable = YES;
+    return col;
+}
+
+static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition *> *columns) {
+    if (columns.count == 0) return columns;
+
+    for (ColumnDefinition *col in columns) {
+        if ([col.name caseInsensitiveCompare:@"Rating"] == NSOrderedSame ||
+            [col.pattern caseInsensitiveCompare:@"%rating%"] == NSOrderedSame ||
+            [col.pattern caseInsensitiveCompare:@"$meta(rating)"] == NSOrderedSame) {
+            col.clickable = YES;
+            if (col.width < 56) col.width = 64;
+            return columns;
+        }
+    }
+
+    NSMutableArray<ColumnDefinition *> *result = [columns mutableCopy];
+    NSUInteger insertIndex = result.count;
+    for (NSUInteger i = 0; i < result.count; i++) {
+        if ([result[i].name caseInsensitiveCompare:@"Duration"] == NSOrderedSame) {
+            insertIndex = i;
+            break;
+        }
+    }
+    [result insertObject:CreateRatingColumn() atIndex:insertIndex];
+    return result;
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -133,7 +167,7 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
                 }
             }
 
-            return migrating;
+            return EnsureRatingColumn(migrating);
         }
     }
 
@@ -143,7 +177,7 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
 
     NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
     if (columns.count > 0) {
-        return columns;
+        return EnsureRatingColumn(columns);
     }
 
     // Final fallback to hardcoded defaults
@@ -169,6 +203,8 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
                                    width:150
                                alignment:ColumnAlignmentLeft
                               autoResize:YES],
+
+        CreateRatingColumn(),
 
         [ColumnDefinition columnWithName:@"Duration"
                                  pattern:@"%length%"
@@ -268,8 +304,9 @@ static void persistColumnsJSON(const char *key, NSString *json, const char *what
         [ColumnDefinition columnWithName:@"File size"
                                  pattern:@"%filesize%"
                                    width:60
-                               alignment:ColumnAlignmentRight],
-        // Note: Play Count, First Played, Last Played, Date Added, Rating
+                                alignment:ColumnAlignmentRight],
+        CreateRatingColumn(),
+        // Note: Play Count, First Played, Last Played, and Date Added
         // are provided by SDK playlistColumnProvider, not hardcoded here
     ];
 }

@@ -25,13 +25,12 @@
 @property (nonatomic) BOOL isReorderingInProgress;
 @property (nonatomic) BOOL transparentBackground;
 
-// Reload queue contents from SDK
 - (void)reloadQueueContents;
-
-// Remove selected items from queue
 - (void)removeSelectedItems;
-
-// Play selected item (double-click action)
 - (void)playSelectedItem;
+
+- (void)handlePlaybackNewTrack;
+- (void)handlePlaybackStop;
+- (void)handlePlaybackPause:(BOOL)paused;
 
 @end

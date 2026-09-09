@@ -70,6 +70,7 @@ end
 module Fb2kVersions
   # Map component names to their version constant names
   VERSION_MAP = {
+    "albumviewvanced" => "ALBUMVIEWVANCED_VERSION",
     "effects_dsp" => "EFFECTS_DSP_VERSION",
     "simplaylist" => "SIMPLAYLIST_VERSION",
     "plorg" => "PLORG_VERSION",
@@ -81,6 +82,8 @@ module Fb2kVersions
     "biography" => "BIOGRAPHY_VERSION",
     "queue_manager" => "QUEUE_MANAGER_VERSION",
     "queue" => "QUEUE_MANAGER_VERSION",
+    "libvanced" => "LIBVANCED_VERSION",
+    "playvanced" => "PLAYVANCED_VERSION",
     "cloud_streamer" => "CLOUD_STREAMER_VERSION",
     "cloud" => "CLOUD_STREAMER_VERSION",
     "tidal" => "TIDAL_VERSION",

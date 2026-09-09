@@ -33,6 +33,18 @@
     return self;
 }
 
+- (instancetype)initWithHandle:(metadb_handle_ptr)handle {
+    self = [super init];
+    if (self) {
+        _handle = handle;
+        _queueIndex = 0;
+        _sourcePlaylist = NSNotFound;
+        _sourceItem = NSNotFound;
+        [self updateCachedValues];
+    }
+    return self;
+}
+
 - (void)dealloc {
     // metadb_handle_ptr destructor will handle release automatically
     // because it's a C++ member, its destructor is called when the ObjC object is deallocated

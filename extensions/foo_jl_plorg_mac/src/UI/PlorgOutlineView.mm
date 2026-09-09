@@ -6,6 +6,7 @@
 //
 
 #import "PlorgOutlineView.h"
+#include "../fb2k_sdk.h"
 
 @implementation PlorgOutlineView
 
@@ -41,6 +42,15 @@
     if ([delegate respondsToSelector:@selector(outlineView:draggingEnded:)]) {
         [delegate outlineView:self draggingEnded:sender];
     }
+}
+
+- (void)keyDown:(NSEvent *)event {
+    NSString *chars = event.charactersIgnoringModifiers;
+    if (chars.length > 0 && [chars characterAtIndex:0] == ' ') {
+        playback_control::get()->toggle_pause();
+        return;
+    }
+    [super keyDown:event];
 }
 
 @end

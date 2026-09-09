@@ -32,9 +32,16 @@
 // Cached duration string
 @property (nonatomic, strong) NSString* cachedDuration;
 
+// Playback state
+@property (nonatomic, assign) BOOL isCurrentlyPlaying;
+@property (nonatomic, assign) BOOL isPaused;
+
 // Initialize from SDK queue item
 - (instancetype)initWithQueueItem:(const t_playback_queue_item&)item
                        queueIndex:(NSUInteger)index;
+
+// Initialize from a raw handle (for the currently playing track not in SDK queue)
+- (instancetype)initWithHandle:(metadb_handle_ptr)handle;
 
 // Get the underlying handle (for SDK operations)
 - (metadb_handle_ptr)handle;
