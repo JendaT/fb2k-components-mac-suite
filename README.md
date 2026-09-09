@@ -8,15 +8,15 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 
 | Extension | Description | Version | Docs |
 |-----------|-------------|---------|------|
-| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.4.5 | [📖](docs/simplaylist.md) |
-| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.3.0 | [📖](docs/plorg.md) |
-| [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.1.0 | [📖](docs/waveform.md) |
+| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
+| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
+| [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
-| [Queue Manager](#queue-manager) | Visual playback queue management | 1.1.0 | [📖](docs/queuemanager.md) |
+| [Queue Manager](#queue-manager) | Visual playback queue management | 1.1.2 | [📖](docs/queuemanager.md) |
 | [AlbumViewVanced](#albumviewvanced) | Album grid library browser with cover art | 1.0.0 | [📖](extensions/foo_jl_albumviewvanced_mac/README.md) |
 | [LibVanced](#libvanced) | Hierarchical tree library browser | 1.0.0 | [📖](extensions/foo_jl_libvanced_mac/README.md) |
 | [PlayVanced](#playvanced) | Now Playing bar with transport controls | 1.0.0 | [📖](extensions/foo_jl_playvanced_mac/README.md) |
-| [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.3.0 | – |
+| [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
 ---

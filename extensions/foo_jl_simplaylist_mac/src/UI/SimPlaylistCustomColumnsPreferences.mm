@@ -104,6 +104,14 @@
     [self loadColumns];
 }
 
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    // kCustomColumns can change while this page exists (rename sync, another
+    // panel). Without a reload the next edit writes the stale array back over
+    // the newer state.
+    [self loadColumns];
+}
+
 - (void)loadColumns {
     _columns = [[ColumnDefinition customColumns] mutableCopy];
     if (!_columns) {
@@ -212,8 +220,15 @@
             popup.action = @selector(alignmentChanged:);
             [cellView addSubview:popup];
         }
-        NSPopUpButton *popup = cellView.subviews.firstObject;
-        [popup selectItemAtIndex:(NSInteger)col.alignment];
+        // Recycled cell views come back from makeViewWithIdentifier:; nothing
+        // guarantees the first subview is still the popup.
+        NSView *firstSubview = cellView.subviews.firstObject;
+        NSPopUpButton *popup = [firstSubview isKindOfClass:[NSPopUpButton class]]
+            ? (NSPopUpButton *)firstSubview : nil;
+        NSInteger alignmentItem = (NSInteger)col.alignment;
+        if (popup && alignmentItem >= 0 && alignmentItem < popup.numberOfItems) {
+            [popup selectItemAtIndex:alignmentItem];
+        }
         cellView.objectValue = @(row);
         return cellView;
     }
@@ -250,15 +265,14 @@
 #pragma mark - Cell Editing
 
 - (void)textFieldChanged:(NSTextField *)sender {
-    // Find the row from the cell view
-    NSTableCellView *cellView = (NSTableCellView *)sender.superview;
-    if (![cellView isKindOfClass:[NSTableCellView class]]) return;
-
-    NSInteger row = [cellView.objectValue integerValue];
+    // Resolve row/column at action time; the objectValue snapshot taken at
+    // cell creation goes stale when rows are added or removed, and
+    // columnForView: returns -1 for a detached view.
+    NSInteger row = [_tableView rowForView:sender];
     if (row < 0 || row >= (NSInteger)_columns.count) return;
 
-    // Determine which column based on the cell identifier
-    NSInteger column = [_tableView columnForView:cellView];
+    NSInteger column = [_tableView columnForView:sender];
+    if (column < 0) return;
     NSTableColumn *tableColumn = _tableView.tableColumns[column];
 
     if ([tableColumn.identifier isEqualToString:@"name"]) {
@@ -274,10 +288,8 @@
 }
 
 - (void)alignmentChanged:(NSPopUpButton *)sender {
-    NSTableCellView *cellView = (NSTableCellView *)sender.superview;
-    if (![cellView isKindOfClass:[NSTableCellView class]]) return;
-
-    NSInteger row = [cellView.objectValue integerValue];
+    // Same stale-identity concern as textFieldChanged: above.
+    NSInteger row = [_tableView rowForView:sender];
     if (row < 0 || row >= (NSInteger)_columns.count) return;
 
     _columns[row].alignment = (ColumnAlignment)sender.indexOfSelectedItem;

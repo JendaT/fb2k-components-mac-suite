@@ -210,6 +210,13 @@
 }
 
 - (void)loadFromStrawberryDatabase {
+    if (!self.window.sheetParent && !self.window.isVisible) {
+        return;
+    }
+
+    [self.rootItems removeAllObjects];
+    [self.allPlaylists removeAllObjects];
+
     NSString *dbPath = [@"~/Library/Application Support/Strawberry/Strawberry/strawberry.db" stringByExpandingTildeInPath];
 
     if (![[NSFileManager defaultManager] fileExistsAtPath:dbPath]) {
@@ -219,7 +226,9 @@
     }
 
     sqlite3 *db;
-    if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
+    // Read-only: this is another application's live database, and this handle only runs SELECTs
+    if (sqlite3_open_v2([dbPath fileSystemRepresentation], &db,
+                        SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) {
         self.statusLabel.stringValue = @"Failed to open database";
         self.importButton.enabled = NO;
         return;
@@ -250,10 +259,16 @@
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             int64_t playlistId = sqlite3_column_int64(stmt, 0);
             const char *namePtr = (const char *)sqlite3_column_text(stmt, 1);
-            if (!namePtr) continue;
+            if (!namePtr) {
+                FB2K_console_formatter() << "[Plorg] Strawberry import: skipping playlist rowid " << playlistId << " (missing name)";
+                continue;
+            }
 
             NSString *name = [NSString stringWithUTF8String:namePtr];
-            if (!name || name.length == 0) continue;
+            if (!name || name.length == 0) {
+                FB2K_console_formatter() << "[Plorg] Strawberry import: skipping playlist rowid " << playlistId << " (name failed to decode as UTF-8)";
+                continue;
+            }
 
             // Skip if playlist already exists in foobar2000
             if ([existingPlaylists containsObject:name]) {
@@ -293,6 +308,9 @@
                     }
                 }
                 sqlite3_finalize(trackStmt);
+            } else {
+                FB2K_console_formatter() << "[Plorg] Strawberry import: failed to read tracks for playlist \""
+                                         << [name UTF8String] << "\": " << sqlite3_errmsg(db);
             }
 
             item.trackCount = item.trackPaths.count;
@@ -301,14 +319,22 @@
             [self.allPlaylists addObject:item];
 
             // Add to tree structure
-            if (path.length > 0) {
-                StrawberryPreviewFolder *parentFolder = [self getOrCreateFolderPath:path folders:folders];
+            StrawberryPreviewFolder *parentFolder = path.length > 0 ?
+                [self getOrCreateFolderPath:path folders:folders] : nil;
+            if (parentFolder) {
                 [parentFolder.children addObject:item];
             } else {
                 [self.rootItems addObject:item];
             }
         }
         sqlite3_finalize(stmt);
+    } else {
+        FB2K_console_formatter() << "[Plorg] Strawberry import: failed to query playlists: " << sqlite3_errmsg(db);
+        sqlite3_close(db);
+        [self.outlineView reloadData];
+        self.statusLabel.stringValue = @"Failed to read Strawberry database";
+        self.importButton.enabled = NO;
+        return;
     }
 
     sqlite3_close(db);
@@ -437,8 +463,9 @@
 
     if ([item isKindOfClass:[StrawberryPreviewFolder class]]) {
         StrawberryPreviewFolder *folder = item;
-        BOOL newState = checkbox.state == NSControlStateValueOn;
+        BOOL newState = ![folder allItemsSelected];
         [folder setAllSelected:newState];
+        checkbox.state = newState ? NSControlStateValueOn : NSControlStateValueOff;
     } else if ([item isKindOfClass:[StrawberryPlaylistItem class]]) {
         StrawberryPlaylistItem *playlist = item;
         playlist.isSelected = checkbox.state == NSControlStateValueOn;
@@ -495,13 +522,14 @@
         if (isFolder) {
             StrawberryPreviewFolder *folder = item;
             if ([folder allItemsSelected]) {
+                checkbox.allowsMixedState = NO;
                 checkbox.state = NSControlStateValueOn;
             } else if ([folder hasSelectedItems]) {
-                checkbox.state = NSControlStateValueMixed;
                 checkbox.allowsMixedState = YES;
+                checkbox.state = NSControlStateValueMixed;
             } else {
-                checkbox.state = NSControlStateValueOff;
                 checkbox.allowsMixedState = NO;
+                checkbox.state = NSControlStateValueOff;
             }
         } else {
             checkbox.allowsMixedState = NO;

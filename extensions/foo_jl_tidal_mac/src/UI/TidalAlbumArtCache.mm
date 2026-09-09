@@ -1,0 +1,247 @@
+//
+//  TidalAlbumArtCache.mm
+//  foo_jl_tidal_mac
+//
+//  Async album art loading and caching for Tidal covers
+//
+
+#import "TidalAlbumArtCache.h"
+#import "../Core/TidalConfig.h"
+
+static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/images";
+
+@interface JLTidalAlbumArtCache ()
+@property (nonatomic, strong) NSCache<NSString *, NSImage *> *imageCache;
+@property (nonatomic, strong) NSMutableSet<NSString *> *loadingKeys;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *pendingCompletions;
+@property (nonatomic, strong) NSURLSession *urlSession;
+@property (nonatomic, strong) dispatch_queue_t syncQueue;
+@end
+
+@implementation JLTidalAlbumArtCache
+
++ (instancetype)shared {
+    static JLTidalAlbumArtCache *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[JLTidalAlbumArtCache alloc] init];
+    });
+    return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _imageCache = [[NSCache alloc] init];
+        _imageCache.totalCostLimit = 50 * 1024 * 1024; // 50MB based on decompressed size
+        _imageCache.countLimit = 500; // Hard cap on number of cached images
+        _loadingKeys = [NSMutableSet set];
+        _pendingCompletions = [NSMutableDictionary dictionary];
+        _maxCacheSize = 50 * 1024 * 1024;
+        _syncQueue = dispatch_queue_create("com.foobar2000.tidal.artcache", DISPATCH_QUEUE_SERIAL);
+
+        // Use ephemeral config to avoid double-caching in NSURLCache
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+        config.timeoutIntervalForRequest = 15;
+        config.timeoutIntervalForResource = 30;
+        config.HTTPMaximumConnectionsPerHost = 4; // Limit concurrent downloads
+        _urlSession = [NSURLSession sessionWithConfiguration:config];
+    }
+    return self;
+}
+
+- (void)setMaxCacheSize:(NSUInteger)maxCacheSize {
+    _maxCacheSize = maxCacheSize;
+    _imageCache.totalCostLimit = maxCacheSize;
+}
+
+#pragma mark - Public API
+
+- (void)loadImageForCoverID:(NSString *)coverID
+                       size:(NSInteger)size
+                 completion:(void (^)(NSImage * _Nullable image))completion {
+    if (!coverID.length) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil);
+            });
+        }
+        return;
+    }
+
+    NSString *cacheKey = [self cacheKeyForCoverID:coverID size:size];
+
+    // Atomically check cache and loading state under syncQueue to avoid TOCTOU
+    __block BOOL shouldStartLoad = NO;
+    __block NSImage *cached = nil;
+    dispatch_sync(self.syncQueue, ^{
+        cached = [self.imageCache objectForKey:cacheKey];
+        if (cached) return;
+
+        if ([self.loadingKeys containsObject:cacheKey]) {
+            // Already loading - add to pending completions
+            if (completion) {
+                NSMutableArray *pending = self.pendingCompletions[cacheKey];
+                if (!pending) {
+                    pending = [NSMutableArray array];
+                    self.pendingCompletions[cacheKey] = pending;
+                }
+                [pending addObject:[completion copy]];
+            }
+            return;
+        }
+        [self.loadingKeys addObject:cacheKey];
+        shouldStartLoad = YES;
+    });
+
+    if (cached) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(cached);
+            });
+        }
+        return;
+    }
+
+    if (!shouldStartLoad) return;
+
+    // Start loading
+    NSURL *url = [[self class] coverURLForCoverID:coverID size:size];
+    if (!url) {
+        dispatch_sync(self.syncQueue, ^{
+            [self.loadingKeys removeObject:cacheKey];
+        });
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil);
+            });
+        }
+        return;
+    }
+
+    tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: loading %@", url.absoluteString] UTF8String]);
+
+    NSURLSessionDataTask *task = [self.urlSession dataTaskWithURL:url
+                                                completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        @autoreleasepool {
+            NSImage *image = nil;
+
+            if (error) {
+                tidal::logDebug([[NSString stringWithFormat:@"AlbumArtCache: download error: %@", error.localizedDescription] UTF8String]);
+            } else if (data) {
+                NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+                if (httpResponse.statusCode == 200) {
+                    image = [[NSImage alloc] initWithData:data];
+                    if (image) {
+                        // Use decompressed pixel size as cost (not compressed data size)
+                        NSSize pixelSize = image.size;
+                        NSUInteger cost = (NSUInteger)(pixelSize.width * pixelSize.height * 4);
+                        if (cost == 0) cost = data.length;
+                        [self.imageCache setObject:image forKey:cacheKey cost:cost];
+                    }
+                }
+            }
+
+            // Get pending completions
+            __block NSArray *completions = nil;
+            dispatch_sync(self.syncQueue, ^{
+                [self.loadingKeys removeObject:cacheKey];
+                completions = [self.pendingCompletions[cacheKey] copy];
+                [self.pendingCompletions removeObjectForKey:cacheKey];
+            });
+
+            // Call all completions on main thread
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) {
+                    completion(image);
+                }
+                for (void (^pending)(NSImage *) in completions) {
+                    pending(image);
+                }
+            });
+        }
+    }];
+
+    [task resume];
+}
+
+- (nullable NSImage *)cachedImageForCoverID:(NSString *)coverID size:(NSInteger)size {
+    if (!coverID.length) return nil;
+    NSString *cacheKey = [self cacheKeyForCoverID:coverID size:size];
+    return [self.imageCache objectForKey:cacheKey];
+}
+
+- (BOOL)isLoadingCoverID:(NSString *)coverID size:(NSInteger)size {
+    if (!coverID.length) return NO;
+    NSString *cacheKey = [self cacheKeyForCoverID:coverID size:size];
+    __block BOOL loading = NO;
+    dispatch_sync(self.syncQueue, ^{
+        loading = [self.loadingKeys containsObject:cacheKey];
+    });
+    return loading;
+}
+
+- (void)clearCache {
+    [self.imageCache removeAllObjects];
+    dispatch_sync(self.syncQueue, ^{
+        [self.loadingKeys removeAllObjects];
+        [self.pendingCompletions removeAllObjects];
+    });
+}
+
+#pragma mark - URL Construction
+
++ (BOOL)isValidCoverID:(NSString *)coverID {
+    if (!coverID.length) return NO;
+    static NSCharacterSet *invalidChars = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
+        [allowed addCharactersInString:@"-"];
+        invalidChars = [allowed invertedSet];
+    });
+    return [coverID rangeOfCharacterFromSet:invalidChars].location == NSNotFound;
+}
+
++ (NSURL *)coverURLForCoverID:(NSString *)coverID size:(NSInteger)size {
+    // Validate cover ID contains only hex digits and hyphens
+    if (![self isValidCoverID:coverID]) {
+        tidal::logDebug([[NSString stringWithFormat:@"Invalid cover ID rejected: %@", coverID] UTF8String]);
+        return nil;
+    }
+
+    // Tidal cover IDs use hyphens but URL path uses slashes
+    // e.g., "abc123-def456-ghi789" -> "abc123/def456/ghi789"
+    NSString *pathID = [coverID stringByReplacingOccurrencesOfString:@"-" withString:@"/"];
+
+    // Normalize size to Tidal supported sizes
+    NSInteger normalizedSize = [self normalizeSize:size];
+
+    NSString *urlString = [NSString stringWithFormat:@"%@/%@/%ldx%ld.jpg",
+                           kTidalImageBaseURL,
+                           pathID,
+                           (long)normalizedSize,
+                           (long)normalizedSize];
+
+    return [NSURL URLWithString:urlString];
+}
+
++ (NSInteger)normalizeSize:(NSInteger)size {
+    // Tidal supports: 80, 160, 320, 640, 750, 1080, 1280
+    if (size <= 80) return 80;
+    if (size <= 160) return 160;
+    if (size <= 320) return 320;
+    if (size <= 640) return 640;
+    if (size <= 750) return 750;
+    if (size <= 1080) return 1080;
+    return 1280;
+}
+
+#pragma mark - Private
+
+- (NSString *)cacheKeyForCoverID:(NSString *)coverID size:(NSInteger)size {
+    NSInteger normalizedSize = [[self class] normalizeSize:size];
+    return [NSString stringWithFormat:@"%@_%ld", coverID, (long)normalizedSize];
+}
+
+@end

@@ -23,6 +23,18 @@ public:
         return tf;
     }
 
+    // Compile with an explicit fallback (nullptr = no fallback: an invalid
+    // pattern yields an empty script). Single funnel for all compilation so
+    // no call site touches the SDK compiler directly.
+    static titleformat_object::ptr compileWithFallback(const char* pattern, const char* fallback) {
+        titleformat_object::ptr tf;
+        titleformat_compiler::get()->compile_safe_ex(tf, pattern, fallback);
+        return tf;
+    }
+
+    // Upper bound on distinct compiled patterns kept alive by the cache.
+    static constexpr size_t kMaxCachedScripts = 100;
+
     // Compile with caching (patterns are often reused)
     static titleformat_object::ptr compileWithCache(const std::string& pattern) {
         std::lock_guard<std::mutex> lock(s_cacheMutex);
@@ -32,9 +44,10 @@ public:
             return it->second;
         }
 
-        // Evict all if cache grows too large (prevents unbounded memory growth)
-        if (s_cache.size() >= 100) {
-            s_cache.clear();
+        // Evict one entry if the cache grows too large (prevents unbounded
+        // memory growth without discarding every cached compilation)
+        if (s_cache.size() >= kMaxCachedScripts) {
+            s_cache.erase(s_cache.begin());
         }
 
         titleformat_object::ptr tf = compile(pattern.c_str());

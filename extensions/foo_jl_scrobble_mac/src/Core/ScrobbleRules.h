@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ctime>
 
 namespace ScrobbleRules {
 
@@ -50,11 +51,15 @@ inline bool isEligibleForNowPlaying(double playedTime) {
     return playedTime >= kNowPlayingThreshold;
 }
 
-/// Validate timestamp is within reasonable bounds
-inline bool isValidTimestamp(int64_t timestamp) {
-    int64_t now = static_cast<int64_t>(time(nullptr));
+/// Validate timestamp is within reasonable bounds relative to a given "now"
+inline bool isValidTimestamp(int64_t timestamp, int64_t now) {
     // Allow 60 seconds into future (clock skew), not before Last.fm existed
     return timestamp >= kLastFmEpoch && timestamp <= now + 60;
+}
+
+/// Validate timestamp against the current wall clock
+inline bool isValidTimestamp(int64_t timestamp) {
+    return isValidTimestamp(timestamp, static_cast<int64_t>(time(nullptr)));
 }
 
 /// Check if track is long enough to be scrobbled

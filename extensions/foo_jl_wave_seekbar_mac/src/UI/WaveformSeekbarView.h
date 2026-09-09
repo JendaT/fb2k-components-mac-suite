@@ -24,6 +24,7 @@ typedef struct WaveformData WaveformData;
 @protocol WaveformSeekbarViewDelegate <NSObject>
 @optional
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point;
+- (void)waveformSeekbarView:(WaveformSeekbarView *)view requestsSeekToTime:(double)time;
 @end
 
 typedef NS_ENUM(NSInteger, WaveformDisplayMode) {
@@ -60,6 +61,7 @@ typedef NS_ENUM(NSInteger, WaveformRenderStyle) {
 @property (nonatomic, assign) WaveformRenderStyle waveformStyle;
 @property (nonatomic, assign) int gradientBands;  // 2-32, only applies to Solid style
 @property (nonatomic, assign) BOOL bpmSync;       // Sync cursor animations to BPM
+@property (nonatomic, assign) BOOL glassBackground;  // Skip background fill so blur behind shows through
 @property (nonatomic, assign) double trackBpm;    // Current track's BPM (0 if unknown)
 
 // Playback state

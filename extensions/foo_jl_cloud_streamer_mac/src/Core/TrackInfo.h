@@ -123,7 +123,7 @@ struct TrackInfo {
         // Generate TRACK entries
         int trackNum = 1;
         for (const auto& chapter : chapters) {
-            cue += "  TRACK " + (trackNum < 10 ? "0" : "") + std::to_string(trackNum) + " AUDIO\n";
+            cue += std::string("  TRACK ") + (trackNum < 10 ? "0" : "") + std::to_string(trackNum) + " AUDIO\n";
 
             if (!chapter.title.empty()) {
                 cue += "    TITLE \"" + escapeQuotes(chapter.title) + "\"\n";
@@ -138,7 +138,7 @@ struct TrackInfo {
             int seconds = totalSeconds % 60;
             int frames = static_cast<int>((chapter.startTime - totalSeconds) * 75);
 
-            cue += "    INDEX 01 " +
+            cue += std::string("    INDEX 01 ") +
                    (minutes < 10 ? "0" : "") + std::to_string(minutes) + ":" +
                    (seconds < 10 ? "0" : "") + std::to_string(seconds) + ":" +
                    (frames < 10 ? "0" : "") + std::to_string(frames) + "\n";

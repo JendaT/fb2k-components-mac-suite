@@ -42,6 +42,7 @@ uuid_core_group = generate_uuid
 uuid_services_group = generate_uuid
 uuid_ui_group = generate_uuid
 uuid_integration_group = generate_uuid
+uuid_shared_components_group = generate_uuid
 uuid_resources_group = generate_uuid
 
 # Framework references
@@ -49,6 +50,8 @@ uuid_cocoa_framework = generate_uuid
 uuid_cocoa_framework_ref = generate_uuid
 uuid_quartz_framework = generate_uuid
 uuid_quartz_framework_ref = generate_uuid
+uuid_network_framework = generate_uuid
+uuid_network_framework_ref = generate_uuid
 uuid_security_framework = generate_uuid
 uuid_security_framework_ref = generate_uuid
 uuid_sqlite_lib = generate_uuid
@@ -77,6 +80,10 @@ services_files = Dir.glob("src/Services/*.{cpp,h,mm}").map { |f| File.basename(f
 ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
 
+# Collect shared component files (reusable UI components)
+# These are accessible via src/shared -> ../../shared symlink
+shared_component_files = Dir.glob("src/shared/*.{cpp,h,mm}").map { |f| File.basename(f) }
+
 # Collect resource files (XIB, etc.)
 resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
 
@@ -84,7 +91,7 @@ resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
 file_uuids = {}
 file_ref_uuids = {}
 
-[core_files, services_files, ui_files, integration_files].flatten.each do |file|
+[core_files, services_files, ui_files, integration_files, shared_component_files].flatten.each do |file|
   file_uuids[file] = generate_uuid
   file_ref_uuids[file] = generate_uuid
 end
@@ -103,6 +110,7 @@ puts "  Core files: #{core_files.join(', ')}"
 puts "  Services files: #{services_files.join(', ')}"
 puts "  UI files: #{ui_files.join(', ')}"
 puts "  Integration files: #{integration_files.join(', ')}"
+puts "  Shared components: #{shared_component_files.join(', ')}"
 puts "  Resource files: #{resource_files.join(', ')}"
 
 # Create the .xcodeproj bundle
@@ -122,7 +130,7 @@ pbxproj_content = <<~PBXPROJ
 PBXPROJ
 
 # Add build file entries for source files
-[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files], ['shared', shared_component_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')  # Don't compile headers
     pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Sources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
@@ -137,6 +145,7 @@ end
 # Add frameworks
 pbxproj_content += "\t\t#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_cocoa_framework_ref} /* Cocoa.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_quartz_framework_ref} /* QuartzCore.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_network_framework} /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_network_framework_ref} /* Network.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework} /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_security_framework_ref} /* Security.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_sqlite_lib_ref} /* libsqlite3.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib} /* libcompression.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_compression_lib_ref} /* libcompression.tbd */; };\n"
@@ -172,6 +181,21 @@ PBXPROJ
   end
 end
 
+# Add file references for shared component files
+shared_component_files.each do |file|
+  file_type = if file.end_with?('.h')
+    'sourcecode.c.h'
+  elsif file.end_with?('.mm')
+    'sourcecode.cpp.objcpp'
+  elsif file.end_with?('.cpp')
+    'sourcecode.cpp.cpp'
+  else
+    'text'
+  end
+
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = #{file}; sourceTree = \"<group>\"; };\n"
+end
+
 # Add XIB file references
 resource_files.each do |file|
   pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = #{file}; sourceTree = \"<group>\"; };\n"
@@ -186,6 +210,7 @@ pbxproj_content += "\t\t#{uuid_infoplist} /* Info.plist */ = {isa = PBXFileRefer
 # Add framework references
 pbxproj_content += "\t\t#{uuid_cocoa_framework_ref} /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework_ref} /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };\n"
+pbxproj_content += "\t\t#{uuid_network_framework_ref} /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework_ref} /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib_ref} /* libcompression.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libcompression.tbd; path = usr/lib/libcompression.tbd; sourceTree = SDKROOT; };\n"
@@ -208,6 +233,7 @@ pbxproj_content += <<~PBXPROJ
 			files = (
 				#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */,
 				#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */,
+				#{uuid_network_framework} /* Network.framework in Frameworks */,
 				#{uuid_security_framework} /* Security.framework in Frameworks */,
 				#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */,
 				#{uuid_compression_lib} /* libcompression.tbd in Frameworks */,
@@ -240,6 +266,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_services_group} /* Services */,
 				#{uuid_ui_group} /* UI */,
 				#{uuid_integration_group} /* Integration */,
+				#{uuid_shared_components_group} /* shared */,
 			);
 			path = src;
 			sourceTree = "<group>";
@@ -300,6 +327,20 @@ pbxproj_content += <<~PBXPROJ
 			path = Integration;
 			sourceTree = "<group>";
 		};
+		#{uuid_shared_components_group} /* shared */ = {
+			isa = PBXGroup;
+			children = (
+PBXPROJ
+
+shared_component_files.each do |file|
+  pbxproj_content += "\t\t\t\t#{file_ref_uuids[file]} /* #{file} */,\n"
+end
+
+pbxproj_content += <<~PBXPROJ
+			);
+			path = shared;
+			sourceTree = "<group>";
+		};
 		#{uuid_resources_group} /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -320,6 +361,7 @@ pbxproj_content += <<~PBXPROJ
 			children = (
 				#{uuid_cocoa_framework_ref} /* Cocoa.framework */,
 				#{uuid_quartz_framework_ref} /* QuartzCore.framework */,
+				#{uuid_network_framework_ref} /* Network.framework */,
 				#{uuid_security_framework_ref} /* Security.framework */,
 				#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */,
 				#{uuid_compression_lib_ref} /* libcompression.tbd */,
@@ -419,7 +461,7 @@ pbxproj_content += <<~PBXPROJ
 PBXPROJ
 
 # Add all source files (not headers) to sources build phase
-[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['Services', services_files], ['UI', ui_files], ['Integration', integration_files], ['shared', shared_component_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')
     pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"

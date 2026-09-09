@@ -53,6 +53,14 @@ head -200 "$(ls -t ~/Library/Logs/DiagnosticReports/foobar2000-*.ips | head -1)"
 
 ## Common Issues
 
+### Generated Xcode Project "Damaged" / Parse Error
+
+**Symptoms:** `xcodebuild: error: Unable to read project ... damaged and cannot be opened due to a parse error` right after `--regenerate`.
+
+**Cause:** `Scripts/generate_xcode_project.rb` emits file paths into project.pbxproj. Unquoted OpenStep plist tokens only allow alphanumerics and `_$/:.-`; a source file with any other character in its name (e.g. `TrackMetadata+FB2K.h` — the `+`) breaks parsing unless the path is quoted.
+
+**Solution:** Emit quoted paths: `path = "#{file}";` (fixed in the albumart generator 2026-07-09; check other components' generators when adding files with special characters).
+
 ### foobar2000 Won't Start / Hangs on Launch
 
 **Symptoms:** App opens but shows no window, or beach balls indefinitely.

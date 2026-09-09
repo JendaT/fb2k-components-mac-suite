@@ -8,14 +8,19 @@
 #import "LastFmClient.h"
 #import "LastFmClient+Private.h"
 #import "LastFmConstants.h"
+#import "LastFmRequestBuilder.h"
+#import "LastFmResponseParser.h"
 #import "../Core/ScrobbleTrack.h"
 #import "../Core/TopAlbum.h"
 #import "../Core/RecentTrack.h"
 #import "../Core/ScrobbleConfig.h"
-#import "../Core/MD5.h"
+#import "../Core/StreakWalker.h"
 
-// Discovery state implementation
-@implementation LastFmStreakDiscoveryState
+// Discovery state implementation; the pure walk lives in the walker
+@implementation LastFmStreakDiscoveryState {
+@public
+    scrobble::StreakWalker walker;
+}
 @end
 
 @interface LastFmClient ()
@@ -43,46 +48,10 @@
         config.timeoutIntervalForResource = LastFm::kRequestTimeout * 2;
         _urlSession = [NSURLSession sessionWithConfiguration:config];
         _activeDiscoveries = [NSMutableDictionary dictionary];
-        _artistImageCache = [NSMutableDictionary dictionary];
+        _artistImageCache = [[NSCache alloc] init];
+        _artistImageCache.countLimit = 200;
     }
     return self;
-}
-
-#pragma mark - Request Signing
-
-- (NSString*)signatureForParameters:(NSDictionary<NSString*, NSString*>*)params {
-    // Sort keys alphabetically, excluding "format" and "callback"
-    NSMutableArray* sortedKeys = [[params.allKeys sortedArrayUsingSelector:@selector(compare:)] mutableCopy];
-    [sortedKeys removeObject:@"format"];
-    [sortedKeys removeObject:@"callback"];
-
-    // Build signature base: key1value1key2value2...secret
-    NSMutableString* signatureBase = [NSMutableString string];
-    for (NSString* key in sortedKeys) {
-        [signatureBase appendString:key];
-        [signatureBase appendString:params[key]];
-    }
-    [signatureBase appendString:@(LastFm::kApiSecret)];
-
-    // Return MD5 hash
-    return MD5Hash(signatureBase);
-}
-
-#pragma mark - URL Building
-
-- (NSString*)urlEncode:(NSString*)string {
-    return [string stringByAddingPercentEncodingWithAllowedCharacters:
-            [NSCharacterSet URLQueryAllowedCharacterSet]];
-}
-
-- (NSString*)buildPostBody:(NSDictionary<NSString*, NSString*>*)params {
-    NSMutableArray* pairs = [NSMutableArray array];
-    for (NSString* key in params) {
-        NSString* encodedKey = [self urlEncode:key];
-        NSString* encodedValue = [self urlEncode:params[key]];
-        [pairs addObject:[NSString stringWithFormat:@"%@=%@", encodedKey, encodedValue]];
-    }
-    return [pairs componentsJoinedByString:@"&"];
 }
 
 #pragma mark - Request Execution
@@ -96,14 +65,16 @@
     params[@"format"] = @"json";
 
     // Add signature
-    NSString* signature = [self signatureForParameters:params];
+    NSString* signature = [LastFmRequestBuilder signatureForParameters:params
+                                                                secret:@(LastFm::kApiSecret)];
     params[@"api_sig"] = signature;
 
     // Build POST request
     NSURL* url = [NSURL URLWithString:@(LastFm::kBaseUrl)];
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"POST";
-    request.HTTPBody = [[self buildPostBody:params] dataUsingEncoding:NSUTF8StringEncoding];
+    request.HTTPBody = [[LastFmRequestBuilder postBodyFromParameters:params]
+                           dataUsingEncoding:NSUTF8StringEncoding];
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
     [request setValue:@"foo_scrobble_mac/1.0" forHTTPHeaderField:@"User-Agent"];
 
@@ -217,8 +188,8 @@
             return;
         }
 
-        NSString* token = response[@"token"];
-        if ([token isKindOfClass:[NSString class]] && token.length > 0) {
+        NSString* token = [LastFmResponseParser tokenFromResponse:response];
+        if (token) {
             completion(token, nil);
         } else {
             completion(nil, LastFmMakeError(LastFmErrorOperationFailed, @"No token in response"));
@@ -252,7 +223,7 @@
     NSString* urlString = [NSString stringWithFormat:@"%s?api_key=%s&token=%@",
                            LastFm::kAuthUrl,
                            LastFm::kApiKey,
-                           [self urlEncode:token]];
+                           [LastFmRequestBuilder urlEncode:token]];
     return [NSURL URLWithString:urlString];
 }
 
@@ -280,9 +251,7 @@
             return;
         }
 
-        NSDictionary* user = response[@"user"];
-        NSString* name = user[@"name"];
-        completion(YES, name, nil);
+        completion(YES, [LastFmResponseParser usernameFromUserInfoResponse:response], nil);
     }];
 }
 
@@ -303,29 +272,9 @@
             return;
         }
 
-        NSDictionary* user = response[@"user"];
-        NSString* name = user[@"name"];
-
-        // Get profile image URL - Last.fm returns array of images in different sizes
-        // We want "large" (174x174) or "extralarge" (300x300)
-        NSURL* imageURL = nil;
-        NSArray* images = user[@"image"];
-        if ([images isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* img in images) {
-                NSString* size = img[@"size"];
-                NSString* urlStr = img[@"#text"];
-                if ([size isEqualToString:@"large"] || [size isEqualToString:@"extralarge"]) {
-                    if (urlStr.length > 0) {
-                        imageURL = [NSURL URLWithString:urlStr];
-                        if ([size isEqualToString:@"extralarge"]) {
-                            break;  // Prefer extralarge
-                        }
-                    }
-                }
-            }
-        }
-
-        completion(name, imageURL, nil);
+        completion([LastFmResponseParser usernameFromUserInfoResponse:response],
+                   [LastFmResponseParser userImageURLFromUserInfoResponse:response],
+                   nil);
     }];
 }
 
@@ -363,7 +312,7 @@
 
     // Check cache first (using lowercase key for case-insensitive matching)
     NSString *cacheKey = [artistName lowercaseString];
-    id cached = _artistImageCache[cacheKey];
+    id cached = [_artistImageCache objectForKey:cacheKey];
     if (cached) {
         if ([cached isKindOfClass:[NSURL class]]) {
             completion((NSURL*)cached, nil);
@@ -382,7 +331,7 @@
     NSURL *url = [NSURL URLWithString:urlString];
 
     if (!url) {
-        _artistImageCache[cacheKey] = [NSNull null];
+        [_artistImageCache setObject:[NSNull null] forKey:cacheKey];
         completion(nil, nil);
         return;
     }
@@ -403,7 +352,7 @@
 
         NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
         if (!html) {
-            self->_artistImageCache[cacheKey] = [NSNull null];
+            [self->_artistImageCache setObject:[NSNull null] forKey:cacheKey];
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(nil, nil);
             });
@@ -414,23 +363,28 @@
         // Pattern: class="header-new-background-image"... style="background-image: url(https://...)"
         NSURL *imageURL = nil;
 
-        // Try multiple patterns since Last.fm HTML structure may vary
-        NSArray *patterns = @[
-            // Pattern 1: header-new-background-image with inline style
-            @"header-new-background-image[^>]*style=\"[^\"]*background-image:\\s*url\\(([^)]+)\\)",
-            // Pattern 2: og:image meta tag
-            @"<meta[^>]+property=\"og:image\"[^>]+content=\"([^\"]+)\"",
-            @"<meta[^>]+content=\"([^\"]+)\"[^>]+property=\"og:image\"",
-            // Pattern 3: Any lastfm image URL in avatar format (artist photos section)
-            @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/avatar[^\"]+)\"",
-            // Pattern 4: ar0 sized images (full artist images)
-            @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/ar0/[^\"]+)\""
-        ];
-
-        for (NSString *pattern in patterns) {
-            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:pattern
+        // Pre-compiled regex patterns (compiled once, reused)
+        static NSArray<NSRegularExpression*> *regexPatterns = nil;
+        static dispatch_once_t regexOnce;
+        dispatch_once(&regexOnce, ^{
+            NSArray *patternStrings = @[
+                @"header-new-background-image[^>]*style=\"[^\"]*background-image:\\s*url\\(([^)]+)\\)",
+                @"<meta[^>]+property=\"og:image\"[^>]+content=\"([^\"]+)\"",
+                @"<meta[^>]+content=\"([^\"]+)\"[^>]+property=\"og:image\"",
+                @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/avatar[^\"]+)\"",
+                @"\"(https://lastfm\\.freetls\\.fastly\\.net/i/u/ar0/[^\"]+)\""
+            ];
+            NSMutableArray *compiled = [NSMutableArray arrayWithCapacity:patternStrings.count];
+            for (NSString *p in patternStrings) {
+                NSRegularExpression *r = [NSRegularExpression regularExpressionWithPattern:p
                                                                                    options:NSRegularExpressionCaseInsensitive
                                                                                      error:nil];
+                if (r) [compiled addObject:r];
+            }
+            regexPatterns = [compiled copy];
+        });
+
+        for (NSRegularExpression *regex in regexPatterns) {
             NSTextCheckingResult *match = [regex firstMatchInString:html options:0 range:NSMakeRange(0, html.length)];
             if (match && match.numberOfRanges > 1) {
                 NSString *urlStr = [html substringWithRange:[match rangeAtIndex:1]];
@@ -458,9 +412,9 @@
 
         // Cache the result (or NSNull if not found)
         if (imageURL) {
-            self->_artistImageCache[cacheKey] = imageURL;
+            [self->_artistImageCache setObject:imageURL forKey:cacheKey];
         } else {
-            self->_artistImageCache[cacheKey] = [NSNull null];
+            [self->_artistImageCache setObject:[NSNull null] forKey:cacheKey];
             NSLog(@"[LastFmClient] No artist image found for '%@'", artistName);
         }
 
@@ -484,24 +438,8 @@
         return;
     }
 
-    NSMutableDictionary* params = [NSMutableDictionary dictionary];
-    params[@"method"] = @(LastFm::kMethodNowPlaying);
-    params[@"sk"] = _session.sessionKey;
-    params[@"artist"] = track.artist;
-    params[@"track"] = track.title;
-
-    if (track.album.length > 0) {
-        params[@"album"] = track.album;
-    }
-    if (track.albumArtist.length > 0) {
-        params[@"albumArtist"] = track.albumArtist;
-    }
-    if (track.duration > 0) {
-        params[@"duration"] = [NSString stringWithFormat:@"%ld", (long)track.duration];
-    }
-    if (track.trackNumber > 0) {
-        params[@"trackNumber"] = [NSString stringWithFormat:@"%ld", (long)track.trackNumber];
-    }
+    NSDictionary* params = [LastFmRequestBuilder nowPlayingParamsForTrack:track
+                                                               sessionKey:_session.sessionKey];
 
     [self executeSignedRequest:params completion:^(NSDictionary* response, NSError* error) {
         if (error) {
@@ -509,9 +447,7 @@
             return;
         }
 
-        // Check for nowplaying response
-        NSDictionary* nowplaying = response[@"nowplaying"];
-        completion(nowplaying != nil, nil);
+        completion([LastFmResponseParser nowPlayingConfirmedInResponse:response], nil);
     }];
 }
 
@@ -533,32 +469,8 @@
         batch = [tracks subarrayWithRange:NSMakeRange(0, LastFm::kMaxScrobblesPerBatch)];
     }
 
-    NSMutableDictionary* params = [NSMutableDictionary dictionary];
-    params[@"method"] = @(LastFm::kMethodScrobble);
-    params[@"sk"] = _session.sessionKey;
-
-    // Add indexed parameters for each track
-    for (NSUInteger i = 0; i < batch.count; i++) {
-        ScrobbleTrack* track = batch[i];
-        NSString* suffix = [NSString stringWithFormat:@"[%lu]", (unsigned long)i];
-
-        params[[@"artist" stringByAppendingString:suffix]] = track.artist;
-        params[[@"track" stringByAppendingString:suffix]] = track.title;
-        params[[@"timestamp" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%lld", track.timestamp];
-
-        if (track.album.length > 0) {
-            params[[@"album" stringByAppendingString:suffix]] = track.album;
-        }
-        if (track.albumArtist.length > 0) {
-            params[[@"albumArtist" stringByAppendingString:suffix]] = track.albumArtist;
-        }
-        if (track.duration > 0) {
-            params[[@"duration" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%ld", (long)track.duration];
-        }
-        if (track.trackNumber > 0) {
-            params[[@"trackNumber" stringByAppendingString:suffix]] = [NSString stringWithFormat:@"%ld", (long)track.trackNumber];
-        }
-    }
+    NSDictionary* params = [LastFmRequestBuilder scrobbleParamsForTracks:batch
+                                                              sessionKey:_session.sessionKey];
 
     [self executeSignedRequest:params completion:^(NSDictionary* response, NSError* error) {
         if (error) {
@@ -566,11 +478,9 @@
             return;
         }
 
-        // Parse scrobble response
-        NSDictionary* scrobbles = response[@"scrobbles"];
-        NSInteger accepted = [scrobbles[@"@attr"][@"accepted"] integerValue];
-        NSInteger ignored = [scrobbles[@"@attr"][@"ignored"] integerValue];
-
+        NSInteger accepted = 0;
+        NSInteger ignored = 0;
+        [LastFmResponseParser scrobbleResponse:response accepted:&accepted ignored:&ignored];
         completion(accepted, ignored, nil);
     }];
 }
@@ -600,20 +510,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* albums = [NSMutableArray array];
-        NSDictionary* topAlbums = response[@"topalbums"];
-        NSArray* albumArray = topAlbums[@"album"];
-
-        if ([albumArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* albumDict in albumArray) {
-                TopAlbum* album = [TopAlbum albumFromDictionary:albumDict];
-                if (album) {
-                    [albums addObject:album];
-                }
-            }
-        }
-
-        completion(albums, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"topalbums"
+                                                      itemKey:@"album"
+                                                    asArtists:NO], nil);
     }];
 }
 
@@ -640,22 +540,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* artists = [NSMutableArray array];
-        NSDictionary* topArtists = response[@"topartists"];
-        NSArray* artistArray = topArtists[@"artist"];
-
-        if ([artistArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* artistDict in artistArray) {
-                TopAlbum* item = [TopAlbum albumFromDictionary:artistDict];
-                if (item) {
-                    // For artists, set artist = name (the item IS the artist)
-                    item.artist = item.name;
-                    [artists addObject:item];
-                }
-            }
-        }
-
-        completion(artists, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"topartists"
+                                                      itemKey:@"artist"
+                                                    asArtists:YES], nil);
     }];
 }
 
@@ -682,20 +570,10 @@
             return;
         }
 
-        NSMutableArray<TopAlbum*>* tracks = [NSMutableArray array];
-        NSDictionary* topTracks = response[@"toptracks"];
-        NSArray* trackArray = topTracks[@"track"];
-
-        if ([trackArray isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* trackDict in trackArray) {
-                TopAlbum* item = [TopAlbum albumFromDictionary:trackDict];
-                if (item) {
-                    [tracks addObject:item];
-                }
-            }
-        }
-
-        completion(tracks, nil);
+        completion([LastFmResponseParser topItemsFromResponse:response
+                                                      rootKey:@"toptracks"
+                                                      itemKey:@"track"
+                                                    asArtists:NO], nil);
     }];
 }
 
@@ -723,11 +601,7 @@
         }
 
         // Total count is in the @attr pagination info
-        NSDictionary* recentTracks = response[@"recenttracks"];
-        NSDictionary* attr = recentTracks[@"@attr"];
-        NSInteger total = [attr[@"total"] integerValue];
-
-        completion(total, nil);
+        completion([LastFmResponseParser totalFromRecentTracksResponse:response], nil);
     }];
 }
 
@@ -752,17 +626,7 @@
             return;
         }
 
-        NSDictionary* albumInfo = response[@"album"];
-        if (![albumInfo isKindOfClass:[NSDictionary class]]) {
-            completion(nil, nil);
-            return;
-        }
-
-        // Extract image URL using the same helper
-        NSArray* images = albumInfo[@"image"];
-        NSURL* imageURL = [TopAlbum bestImageURLFromArray:images];
-
-        completion(imageURL, nil);
+        completion([LastFmResponseParser albumImageURLFromAlbumInfoResponse:response], nil);
     }];
 }
 
@@ -787,26 +651,11 @@
             return;
         }
 
-        NSDictionary* trackInfo = response[@"track"];
-        if (![trackInfo isKindOfClass:[NSDictionary class]]) {
-            completion(nil, nil, nil);
-            return;
-        }
-
-        // Extract album name
         NSString* albumName = nil;
-        NSDictionary* albumDict = trackInfo[@"album"];
-        if ([albumDict isKindOfClass:[NSDictionary class]]) {
-            albumName = albumDict[@"title"];
-            if (![albumName isKindOfClass:[NSString class]]) {
-                albumName = nil;
-            }
-        }
-
-        // Extract image URL (album image)
-        NSArray* images = albumDict[@"image"];
-        NSURL* imageURL = [TopAlbum bestImageURLFromArray:images];
-
+        NSURL* imageURL = nil;
+        [LastFmResponseParser trackInfoFromResponse:response
+                                          albumName:&albumName
+                                           imageURL:&imageURL];
         completion(albumName, imageURL, nil);
     }];
 }
@@ -868,24 +717,9 @@
             return;
         }
 
-        NSDictionary* recentTracks = response[@"recenttracks"];
-        NSDictionary* attr = recentTracks[@"@attr"];
-        NSInteger totalPages = [attr[@"totalPages"] integerValue];
-
-        // Parse tracks
-        NSMutableArray* tracks = [NSMutableArray array];
-        id trackData = recentTracks[@"track"];
-
-        if ([trackData isKindOfClass:[NSArray class]]) {
-            for (NSDictionary* trackDict in trackData) {
-                [tracks addObject:trackDict];
-            }
-        } else if ([trackData isKindOfClass:[NSDictionary class]]) {
-            // Single track is returned as object, not array
-            [tracks addObject:trackData];
-        }
-
-        completion(tracks, totalPages, nil);
+        completion([LastFmResponseParser recentTrackDictsFromResponse:response],
+                   [LastFmResponseParser totalPagesFromRecentTracksResponse:response],
+                   nil);
     }];
 }
 
@@ -908,13 +742,8 @@
             return;
         }
 
-        // Filter out "now playing" tracks (no timestamp)
-        NSArray* actualTracks = [tracks filteredArrayUsingPredicate:
-            [NSPredicate predicateWithBlock:^BOOL(NSDictionary* track, NSDictionary* bindings) {
-                return track[@"@attr"][@"nowplaying"] == nil;
-            }]];
-
-        completion(actualTracks.count > 0, nil);
+        // Ignore "now playing" entries (no timestamp)
+        completion([LastFmResponseParser containsActualScrobbles:tracks], nil);
     }];
 }
 
@@ -929,13 +758,8 @@
     state.username = username;
     state.token = token;
     state.cancelled = NO;
-    state.currentStreak = 0;
-    state.daysChecked = 0;
-    state.scrobbledToday = NO;
     state.useBatchStrategy = YES;  // Will be determined after sampling
     state.estimatedDailyRate = 0;
-    state.retryCount = 0;
-    state.currentBackoff = 0;
     state.progressBlock = progress;
     state.completionBlock = completion;
 
@@ -966,17 +790,12 @@
                 return;
             }
 
-            state.scrobbledToday = hasScrobbles;
-
             // If scrobbled today, streak includes today. Otherwise we start from yesterday.
-            if (hasScrobbles) {
-                state.currentStreak = 1;
-                state.daysChecked = 1;
-            }
+            state->walker.begin(hasScrobbles);
 
             // Report initial progress
             if (state.progressBlock) {
-                state.progressBlock(state.currentStreak, NO, state.daysChecked);
+                state.progressBlock(state->walker.currentStreak(), NO, state->walker.daysChecked());
             }
 
             // Schedule first discovery request with rate limiting
@@ -1001,15 +820,20 @@
     // Remove from active discoveries
     [_activeDiscoveries removeObjectForKey:state.token];
 
-    // Call completion with cancellation error
+    // Guard against double-fire: nil out the completion after first call
+    LastFmStreakCompletion completion = state.completionBlock;
+    state.completionBlock = nil;
+    state.progressBlock = nil;
+
+    if (!completion) return;
+
     NSError *cancelError = [NSError errorWithDomain:NSCocoaErrorDomain
                                                code:NSUserCancelledError
                                            userInfo:@{NSLocalizedDescriptionKey: @"Streak discovery cancelled"}];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (state.completionBlock) {
-            state.completionBlock(state.currentStreak, state.scrobbledToday, NO, [NSDate date], cancelError);
-        }
+        completion(state->walker.currentStreak(), state->walker.scrobbledToday(),
+                   NO, [NSDate date], cancelError);
     });
 }
 
@@ -1038,18 +862,13 @@
         return;
     }
 
-    // Calculate which day to check next
+    // The walker decides which day to check; this method only does I/O
     NSCalendar *calendar = [NSCalendar currentCalendar];
     NSDate *today = [NSDate date];
-    NSInteger daysBack = state.daysChecked;
-    if (!state.scrobbledToday && state.daysChecked == 0) {
-        // If no scrobbles today, start from yesterday
-        daysBack = 1;
-    } else {
-        daysBack = state.daysChecked;
-    }
-
-    NSDate *dayToCheck = [calendar dateByAddingUnit:NSCalendarUnitDay value:-daysBack toDate:today options:0];
+    NSDate *dayToCheck = [calendar dateByAddingUnit:NSCalendarUnitDay
+                                              value:-(NSInteger)state->walker.daysBack()
+                                             toDate:today
+                                            options:0];
 
     [self checkDayHasScrobbles:state.username date:dayToCheck completion:^(BOOL hasScrobbles, NSError* error) {
         if (state.cancelled) {
@@ -1058,43 +877,41 @@
         }
 
         if (error) {
-            // Handle error with retry logic
-            state.retryCount++;
-            if (state.retryCount >= 3) {
-                // Max retries reached - complete with partial results
-                [self completeStreakDiscovery:state complete:NO error:error];
+            switch (state->walker.onDayError()) {
+                case scrobble::StreakWalker::Action::Exhausted:
+                    // Max retries reached - complete with partial results
+                    [self completeStreakDiscovery:state complete:NO error:error];
+                    return;
+
+                default: {
+                    // Retry same day with exponential backoff (2s, 4s)
+                    NSTimeInterval backoff = state->walker.retryDelay();
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(backoff * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        [self continueStreakDiscovery:state];
+                    });
+                    return;
+                }
+            }
+        }
+
+        switch (state->walker.onDayResult(hasScrobbles)) {
+            case scrobble::StreakWalker::Action::CheckDay: {
+                // Day had scrobbles - streak extended, keep walking
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (state.progressBlock) {
+                        state.progressBlock(state->walker.currentStreak(), NO,
+                                            state->walker.daysChecked());
+                    }
+                });
+                [self scheduleNextRequest:state];
                 return;
             }
 
-            // Exponential backoff: 2s, 4s, 8s
-            NSTimeInterval backoff = pow(2, state.retryCount);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(backoff * NSEC_PER_SEC)),
-                           dispatch_get_main_queue(), ^{
-                [self continueStreakDiscovery:state];  // Retry same day
-            });
-            return;
-        }
-
-        // Reset retry count on success
-        state.retryCount = 0;
-        state.daysChecked++;
-
-        if (hasScrobbles) {
-            // Day had scrobbles - extend streak
-            state.currentStreak++;
-
-            // Report progress
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (state.progressBlock) {
-                    state.progressBlock(state.currentStreak, NO, state.daysChecked);
-                }
-            });
-
-            // Continue checking older days
-            [self scheduleNextRequest:state];
-        } else {
-            // Gap found - streak is complete
-            [self completeStreakDiscovery:state complete:YES error:nil];
+            default:
+                // Gap found - streak is complete
+                [self completeStreakDiscovery:state complete:YES error:nil];
+                return;
         }
     }];
 }
@@ -1110,12 +927,13 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         // Final progress callback
         if (state.progressBlock) {
-            state.progressBlock(state.currentStreak, YES, state.daysChecked);
+            state.progressBlock(state->walker.currentStreak(), YES, state->walker.daysChecked());
         }
 
         // Completion callback
         if (state.completionBlock) {
-            state.completionBlock(state.currentStreak, state.scrobbledToday, isComplete, calculatedAt, error);
+            state.completionBlock(state->walker.currentStreak(), state->walker.scrobbledToday(),
+                                  isComplete, calculatedAt, error);
         }
     });
 }
@@ -1123,11 +941,17 @@
 #pragma mark - Lifecycle
 
 - (void)cancelAllRequests {
+    // Cancel all active streak discoveries
+    for (NSUUID *token in [_activeDiscoveries allKeys]) {
+        [self cancelStreakDiscovery:token];
+    }
+
     [_urlSession invalidateAndCancel];
 
     // Recreate session
     NSURLSessionConfiguration* config = [NSURLSessionConfiguration defaultSessionConfiguration];
     config.timeoutIntervalForRequest = LastFm::kRequestTimeout;
+    config.timeoutIntervalForResource = LastFm::kRequestTimeout * 2;
     _urlSession = [NSURLSession sessionWithConfiguration:config];
 }
 

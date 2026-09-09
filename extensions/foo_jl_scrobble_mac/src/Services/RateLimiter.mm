@@ -12,21 +12,29 @@
     NSInteger _burstCapacity;
     double _availableTokens;
     CFAbsoluteTime _lastRefillTime;
+    RateLimiterClock _clock;
 }
 
 - (instancetype)initWithTokensPerSecond:(double)rate burstCapacity:(NSInteger)capacity {
+    return [self initWithTokensPerSecond:rate burstCapacity:capacity clock:nil];
+}
+
+- (instancetype)initWithTokensPerSecond:(double)rate
+                          burstCapacity:(NSInteger)capacity
+                                  clock:(RateLimiterClock)clock {
     self = [super init];
     if (self) {
         _tokensPerSecond = rate;
         _burstCapacity = capacity;
         _availableTokens = capacity;  // Start full
-        _lastRefillTime = CFAbsoluteTimeGetCurrent();
+        _clock = clock ?: ^{ return CFAbsoluteTimeGetCurrent(); };
+        _lastRefillTime = _clock();
     }
     return self;
 }
 
 - (void)refillTokens {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime now = _clock();
     CFAbsoluteTime elapsed = now - _lastRefillTime;
 
     if (elapsed > 0) {

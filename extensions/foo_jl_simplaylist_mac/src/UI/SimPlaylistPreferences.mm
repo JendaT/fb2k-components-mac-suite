@@ -9,6 +9,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/GroupPreset.h"
 #import "../Core/ColumnDefinition.h"
+#import "../Core/TitleFormatHelper.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 
@@ -23,6 +24,10 @@
 @property (nonatomic, strong) NSPopUpButton *presetPopup;
 @property (nonatomic, strong) NSTextField *headerPatternField;
 @property (nonatomic, strong) NSTextField *subgroupPatternField;
+@property (nonatomic, strong) NSTextField *headerPatternWarning;
+@property (nonatomic, strong) NSTextField *subgroupPatternWarning;
+@property (nonatomic, strong) NSTextField *headerPatternPreview;
+@property (nonatomic, strong) NSTextField *subgroupPatternPreview;
 @property (nonatomic, strong) NSSlider *albumArtSizeSlider;
 @property (nonatomic, strong) NSTextField *albumArtSizeLabel;
 @property (nonatomic, strong) NSPopUpButton *headerStylePopup;
@@ -39,17 +44,40 @@
 @property (nonatomic, strong) NSButton *debugRenderingCheckbox;
 @property (nonatomic, strong) NSButton *dragToFinderMoveCheckbox;
 @property (nonatomic, strong) NSButton *preserveQueueCheckbox;
+@property (nonatomic, strong) NSButton *keepPlayingPlaylistCheckbox;
+@property (nonatomic, strong) NSPopover *keepPlayingHelpPopover;
 @property (nonatomic, strong) NSPopUpButton *queueDisplayStylePopup;
+@property (nonatomic, strong) NSPopUpButton *finderOpenBehaviorPopup;
+@property (nonatomic, strong) NSPopUpButton *finderOpenTargetPopup;
+@property (nonatomic, assign) NSRect finderOpenTargetPopupFrame;
+@property (nonatomic, weak)   NSView *finderOpenTargetPopupParent;
 @property (nonatomic, strong) NSArray<GroupPreset *> *presets;
 @property (nonatomic, assign) NSInteger currentPresetIndex;
 @end
 
 @implementation SimPlaylistPreferencesController
 
+- (void)dealloc {
+    // performSelector:afterDelay: keeps a pending save or preview alive on the
+    // run loop; firing it after the page closes would touch dead fields.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+}
+
 - (void)loadView {
-    // Use flipped view so y=0 is at top
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 500, 755)];
-    self.view = container;
+    // Build the preferences inside a flipped container, then wrap it in a scroll view
+    // so users can scroll if their preferences window is shorter than the content.
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 960)];
+    container.autoresizingMask = 0;  // Fixed size so side-by-side layout stays intact
+
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 820, 600)];
+    scrollView.hasVerticalScroller = YES;
+    scrollView.hasHorizontalScroller = YES;
+    scrollView.autohidesScrollers = YES;
+    scrollView.borderType = NSNoBorder;
+    scrollView.drawsBackground = NO;
+    scrollView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;  // fill host's allocated area
+    scrollView.documentView = container;
+    self.view = scrollView;
 
     CGFloat y = 20;  // Start from top
     CGFloat labelWidth = 130;
@@ -123,6 +151,80 @@
                                                        action:@selector(hideSingleSubgroupChanged:)];
     _hideSingleSubgroupCheckbox.frame = NSMakeRect(boxMargin + labelWidth, groupingContentY, 280, 20);
     [groupingContent addSubview:_hideSingleSubgroupCheckbox];
+
+    // ==================== PATTERN HELP (side box) ====================
+    {
+        CGFloat helpX = leftMargin + 460 + 20;  // right of grouping box
+        CGFloat helpW = 320;
+        NSBox *helpBox = [[NSBox alloc] initWithFrame:NSMakeRect(helpX, groupingBoxY, helpW, 215)];
+        helpBox.title = @"Pattern Help";
+        helpBox.titlePosition = NSAtTop;
+        [container addSubview:helpBox];
+
+        NSView *helpContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, helpW - 20, 195)];
+        helpBox.contentView = helpContent;
+
+        CGFloat hy = 8;
+        CGFloat hMargin = 10;
+        CGFloat hW = helpW - 20 - 2 * hMargin;
+
+        // Header pattern section
+        NSTextField *hLabel = [NSTextField labelWithString:@"Header Pattern:"];
+        hLabel.frame = NSMakeRect(hMargin, hy, hW, 16);
+        hLabel.font = [NSFont boldSystemFontOfSize:11];
+        [helpContent addSubview:hLabel];
+        hy += 18;
+
+        _headerPatternWarning = [NSTextField wrappingLabelWithString:@""];
+        _headerPatternWarning.frame = NSMakeRect(hMargin, hy, hW, 28);
+        _headerPatternWarning.font = [NSFont systemFontOfSize:10];
+        _headerPatternWarning.textColor = [NSColor systemOrangeColor];
+        _headerPatternWarning.hidden = YES;
+        [helpContent addSubview:_headerPatternWarning];
+        hy += 32;
+
+        NSTextField *hPreviewLabel = [NSTextField labelWithString:@"Preview:"];
+        hPreviewLabel.frame = NSMakeRect(hMargin, hy, hW, 14);
+        hPreviewLabel.font = [NSFont systemFontOfSize:10];
+        hPreviewLabel.textColor = [NSColor secondaryLabelColor];
+        [helpContent addSubview:hPreviewLabel];
+        hy += 14;
+
+        _headerPatternPreview = [NSTextField wrappingLabelWithString:@""];
+        _headerPatternPreview.frame = NSMakeRect(hMargin, hy, hW, 28);
+        _headerPatternPreview.font = [NSFont systemFontOfSize:11];
+        _headerPatternPreview.textColor = [NSColor labelColor];
+        [helpContent addSubview:_headerPatternPreview];
+        hy += 32;
+
+        // Subgroup pattern section
+        NSTextField *sLabel = [NSTextField labelWithString:@"Subgroup Pattern:"];
+        sLabel.frame = NSMakeRect(hMargin, hy, hW, 16);
+        sLabel.font = [NSFont boldSystemFontOfSize:11];
+        [helpContent addSubview:sLabel];
+        hy += 18;
+
+        _subgroupPatternWarning = [NSTextField wrappingLabelWithString:@""];
+        _subgroupPatternWarning.frame = NSMakeRect(hMargin, hy, hW, 14);
+        _subgroupPatternWarning.font = [NSFont systemFontOfSize:10];
+        _subgroupPatternWarning.textColor = [NSColor systemOrangeColor];
+        _subgroupPatternWarning.hidden = YES;
+        [helpContent addSubview:_subgroupPatternWarning];
+        hy += 16;
+
+        NSTextField *sPreviewLabel = [NSTextField labelWithString:@"Preview:"];
+        sPreviewLabel.frame = NSMakeRect(hMargin, hy, hW, 14);
+        sPreviewLabel.font = [NSFont systemFontOfSize:10];
+        sPreviewLabel.textColor = [NSColor secondaryLabelColor];
+        [helpContent addSubview:sPreviewLabel];
+        hy += 14;
+
+        _subgroupPatternPreview = [NSTextField wrappingLabelWithString:@""];
+        _subgroupPatternPreview.frame = NSMakeRect(hMargin, hy, hW, 14);
+        _subgroupPatternPreview.font = [NSFont systemFontOfSize:11];
+        _subgroupPatternPreview.textColor = [NSColor labelColor];
+        [helpContent addSubview:_subgroupPatternPreview];
+    }
 
     y = groupingBoxY + 195;
 
@@ -286,12 +388,12 @@
     CGFloat behaviorBoxY = y;
     CGFloat behaviorContentY = 22;
 
-    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 100)];
+    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 230)];
     behaviorBox.title = @"Behavior";
     behaviorBox.titlePosition = NSAtTop;
     [container addSubview:behaviorBox];
 
-    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 70)];
+    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 200)];
     behaviorBox.contentView = behaviorContent;
 
     // Double-click preserves queue
@@ -301,6 +403,33 @@
     _preserveQueueCheckbox.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 20);
     [behaviorContent addSubview:_preserveQueueCheckbox];
     behaviorContentY += rowHeight + 4;
+
+    // Keep playback in its playlist while browsing the library
+    _keepPlayingPlaylistCheckbox = [NSButton checkboxWithTitle:@"Keep playback in its playlist"
+                                                        target:self
+                                                        action:@selector(keepPlayingPlaylistChanged:)];
+    [_keepPlayingPlaylistCheckbox sizeToFit];
+    NSRect keepPlayingFrame = _keepPlayingPlaylistCheckbox.frame;
+    keepPlayingFrame.origin = NSMakePoint(boxMargin + labelWidth, behaviorContentY);
+    _keepPlayingPlaylistCheckbox.frame = keepPlayingFrame;
+    [behaviorContent addSubview:_keepPlayingPlaylistCheckbox];
+
+    NSButton *keepPlayingHelpButton = [[NSButton alloc] initWithFrame:
+        NSMakeRect(NSMaxX(keepPlayingFrame) + 6, behaviorContentY - 1, 21, 21)];
+    keepPlayingHelpButton.bezelStyle = NSBezelStyleHelpButton;
+    keepPlayingHelpButton.title = @"";
+    keepPlayingHelpButton.target = self;
+    keepPlayingHelpButton.action = @selector(keepPlayingHelpClicked:);
+    [behaviorContent addSubview:keepPlayingHelpButton];
+    behaviorContentY += 18;
+
+    NSTextField *keepPlayingNote = [NSTextField labelWithString:@"Prevents library browsing (ReFacets) from changing which playlist continues playing when the current track ends"];
+    keepPlayingNote.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 28);
+    keepPlayingNote.font = [NSFont systemFontOfSize:10];
+    keepPlayingNote.textColor = [NSColor secondaryLabelColor];
+    keepPlayingNote.lineBreakMode = NSLineBreakByWordWrapping;
+    [behaviorContent addSubview:keepPlayingNote];
+    behaviorContentY += 32;
 
     // Queue column display style
     NSTextField *queueStyleLabel = [NSTextField labelWithString:@"Queue Column:"];
@@ -313,14 +442,51 @@
     _queueDisplayStylePopup.target = self;
     _queueDisplayStylePopup.action = @selector(queueDisplayStyleChanged:);
     [behaviorContent addSubview:_queueDisplayStylePopup];
+    behaviorContentY += rowHeight + 4;
 
-    y = behaviorBoxY + 120;
+    // Finder-open behavior
+    NSTextField *finderBehaviorLabel = [NSTextField labelWithString:@"Open from Finder:"];
+    finderBehaviorLabel.frame = NSMakeRect(boxMargin, behaviorContentY + 3, labelWidth, 20);
+    [behaviorContent addSubview:finderBehaviorLabel];
 
-    // Help text
-    NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, y, 460, 60)];
-    helpText.stringValue = @"Title Format Patterns:\n"
-        @"  %artist%, %album%, %title%, %tracknumber%, %date%, %length%\n"
-        @"  Use [...] for conditional display";
+    _finderOpenBehaviorPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, behaviorContentY, 220, 26) pullsDown:NO];
+    [_finderOpenBehaviorPopup addItemWithTitle:@"Replace active playlist (default)"];
+    [_finderOpenBehaviorPopup addItemWithTitle:@"Append to active playlist"];
+    [_finderOpenBehaviorPopup addItemWithTitle:@"Send to named playlist"];
+    _finderOpenBehaviorPopup.target = self;
+    _finderOpenBehaviorPopup.action = @selector(finderOpenBehaviorChanged:);
+    [behaviorContent addSubview:_finderOpenBehaviorPopup];
+    behaviorContentY += rowHeight + 4;
+
+    // Target playlist picker is currently disabled — see BACKLOG.md.
+    // "Send to named playlist" mode still works with the default playlist name
+    // (saved in kFinderOpenTargetPlaylist, default "Inbox"). Re-enable this
+    // section once the unresponsive-popup issue is resolved.
+    //
+    // NSTextField *finderTargetLabel = [NSTextField labelWithString:@"Target playlist:"];
+    // finderTargetLabel.frame = NSMakeRect(boxMargin, behaviorContentY + 3, labelWidth, 20);
+    // [behaviorContent addSubview:finderTargetLabel];
+    // _finderOpenTargetPopupFrame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 220, 26);
+    // _finderOpenTargetPopupParent = behaviorContent;
+
+    y = behaviorBoxY + 250;
+
+    // Help text — placed under the Pattern Help box on the right side
+    CGFloat helpTextX = leftMargin + 460 + 20;
+    CGFloat helpTextY = groupingBoxY + 215 + 8;  // below Pattern Help box
+    NSTextField *helpText = [[NSTextField alloc] initWithFrame:NSMakeRect(helpTextX, helpTextY, 320, 180)];
+    helpText.stringValue =
+        @"Title format patterns (note spaces in field names):\n"
+        @"  %artist%, %album artist%, %album%, %title%,\n"
+        @"  %tracknumber%, %date%, %length%, %discnumber%\n"
+        @"\n"
+        @"[ ... ] = conditional, hides if all fields inside are empty\n"
+        @"  e.g. [%album artist% - ][%album%] gives:\n"
+        @"     \"Beatles - Abbey Road\" with album artist\n"
+        @"     \"Abbey Road\" without album artist\n"
+        @"\n"
+        @"$if2(%a%,%b%) = use %a%, fall back to %b% if empty\n"
+        @"  e.g. $if2(%album artist%,%artist%)";
     helpText.editable = NO;
     helpText.bordered = NO;
     helpText.backgroundColor = [NSColor clearColor];
@@ -332,11 +498,26 @@
     [self loadSettings];
 }
 
+// Popup indices come from persisted config; an out-of-range value (corrupt or
+// hand-edited store) would raise NSRangeException on every prefs-page open.
+static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
+    if (popup.numberOfItems == 0) return;
+    if (index < 0) index = 0;
+    if (index >= popup.numberOfItems) index = popup.numberOfItems - 1;
+    [popup selectItemAtIndex:(NSInteger)index];
+}
+
 - (void)loadSettings {
     // Load presets
     _presets = [GroupPreset defaultPresets];
     _currentPresetIndex = simplaylist_config::getConfigInt(
         simplaylist_config::kActivePresetIndex, 0);
+    // Clamp: an out-of-range persisted index left the popup on item 0 with
+    // blank fields while every later saveAndNotify no-opped, so typed patterns
+    // were silently lost.
+    if (_currentPresetIndex < 0 || _currentPresetIndex >= (NSInteger)_presets.count) {
+        _currentPresetIndex = 0;
+    }
 
     [_presetPopup removeAllItems];
     for (GroupPreset *preset in _presets) {
@@ -359,7 +540,7 @@
     int64_t headerStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
-    [_headerStylePopup selectItemAtIndex:headerStyle];
+    selectClampedItem(_headerStylePopup, headerStyle);
 
     // Load now playing shading
     bool nowPlayingShading = simplaylist_config::getConfigBool(
@@ -395,25 +576,25 @@
     int64_t displaySize = simplaylist_config::getConfigInt(
         simplaylist_config::kDisplaySize,
         simplaylist_config::kDefaultDisplaySize);
-    [_displaySizePopup selectItemAtIndex:displaySize];
+    selectClampedItem(_displaySizePopup, displaySize);
 
     // Load header size (0=compact, 1=normal, 2=large)
     int64_t headerSize = simplaylist_config::getConfigInt(
         simplaylist_config::kColumnHeaderSize,
         simplaylist_config::kDefaultColumnHeaderSize);
-    [_headerSizePopup selectItemAtIndex:headerSize];
+    selectClampedItem(_headerSizePopup, headerSize);
 
     // Load header accent (0=none, 1=tinted)
     int64_t headerAccent = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderAccentColor,
         simplaylist_config::kDefaultHeaderAccentColor);
-    [_headerAccentPopup selectItemAtIndex:headerAccent];
+    selectClampedItem(_headerAccentPopup, headerAccent);
 
     // Load group header spacing (0=normal, 1=larger)
     int64_t groupHeaderSpacing = simplaylist_config::getConfigInt(
         simplaylist_config::kGroupHeaderSpacing,
         simplaylist_config::kDefaultGroupHeaderSpacing);
-    [_groupHeaderSpacingPopup selectItemAtIndex:groupHeaderSpacing];
+    selectClampedItem(_groupHeaderSpacingPopup, groupHeaderSpacing);
 
     // Load glass background
     bool glassBackground = simplaylist_config::getConfigBool(
@@ -439,15 +620,189 @@
         simplaylist_config::kDefaultDoubleClickPreservesQueue);
     _preserveQueueCheckbox.state = preserveQueue ? NSControlStateValueOn : NSControlStateValueOff;
 
+    bool keepPlayingPlaylist = simplaylist_config::getConfigBool(
+        simplaylist_config::kKeepPlayingPlaylist,
+        simplaylist_config::kDefaultKeepPlayingPlaylist);
+    _keepPlayingPlaylistCheckbox.state = keepPlayingPlaylist ? NSControlStateValueOn : NSControlStateValueOff;
+
     int64_t queueStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
         simplaylist_config::kDefaultQueueDisplayStyle);
-    [_queueDisplayStylePopup selectItemAtIndex:queueStyle];
+    selectClampedItem(_queueDisplayStylePopup, queueStyle);
+
+    // Load Finder-open behavior
+    int64_t finderBehavior = simplaylist_config::getConfigInt(
+        simplaylist_config::kFinderOpenBehavior,
+        simplaylist_config::kDefaultFinderOpenBehavior);
+    selectClampedItem(_finderOpenBehaviorPopup, finderBehavior);
+
+    // Target playlist picker is currently disabled — see BACKLOG.md.
+    // The config value is still respected by the override; just no UI to edit it.
+    // std::string finderTarget = simplaylist_config::getConfigString(
+    //     simplaylist_config::kFinderOpenTargetPlaylist,
+    //     simplaylist_config::kDefaultFinderOpenTargetPlaylist);
+    // [self rebuildPlaylistTargetPopupSelecting:[NSString stringWithUTF8String:finderTarget.c_str()]];
+
+    // Validate the loaded pattern fields once so warnings show for any saved typos.
+    [self refreshPatternWarnings];
+}
+
+// Build the Target playlist popup fresh from scratch. Avoids removeAllItems
+// pitfalls by always constructing a new NSPopUpButton with items inline.
+- (void)rebuildPlaylistTargetPopupSelecting:(NSString *)selectedName {
+    if (_finderOpenTargetPopup) {
+        [_finderOpenTargetPopup removeFromSuperview];
+        _finderOpenTargetPopup = nil;
+    }
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:_finderOpenTargetPopupFrame pullsDown:NO];
+    popup.target = self;
+    popup.action = @selector(finderOpenTargetChanged:);
+
+    auto pm = playlist_manager::get();
+    t_size count = pm->get_playlist_count();
+    pfc::string8 name;
+    BOOL foundSelected = NO;
+    for (t_size i = 0; i < count; i++) {
+        if (pm->playlist_get_name(i, name)) {
+            NSString *s = [NSString stringWithUTF8String:name.c_str()];
+            if (s.length == 0) continue;
+            [popup addItemWithTitle:s];
+            if ([s isEqualToString:selectedName]) foundSelected = YES;
+        }
+    }
+    // If saved name isn't an existing playlist, prepend so it's still selectable
+    // (it'll be created on demand when the override fires).
+    if (!foundSelected && selectedName.length > 0) {
+        [popup insertItemWithTitle:selectedName atIndex:0];
+    }
+    [popup selectItemWithTitle:selectedName];
+
+    [_finderOpenTargetPopupParent addSubview:popup];
+    _finderOpenTargetPopup = popup;
 }
 
 - (void)updateFieldsForPreset:(GroupPreset *)preset {
     _headerPatternField.stringValue = preset.headerPattern ?: @"";
     _subgroupPatternField.stringValue = preset.subgroupPattern ?: @"";
+    [self refreshPatternWarnings];
+}
+
+// Scan a title-format pattern for common typos that produce empty output.
+// Returns a warning string for display, or nil if no issues found.
+// We deliberately only flag KNOWN typos (not "unknown" fields), since custom
+// tags are valid in foobar2000 and we don't want false positives.
++ (NSString *)warningForPattern:(NSString *)pattern {
+    if (pattern.length == 0) return nil;
+    NSString *lower = pattern.lowercaseString;
+
+    // typo → correction (in lowercase; we match case-insensitive)
+    static NSDictionary<NSString *, NSString *> *typos = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        typos = @{
+            @"%albumartist%":   @"%album artist%",
+            @"%album_artist%":  @"%album artist%",
+            @"%albumartists%":  @"%album artist%",
+            @"%trackno%":       @"%tracknumber%",
+            @"%track_number%":  @"%tracknumber%",
+            @"%trackno.%":      @"%tracknumber%",
+            @"%discno%":        @"%discnumber%",
+            @"%disc_number%":   @"%discnumber%",
+            @"%discno.%":       @"%discnumber%",
+            @"%year%":          @"%date%",
+            @"%total_tracks%":  @"%totaltracks%",
+            @"%total_discs%":   @"%totaldiscs%",
+        };
+    });
+
+    NSMutableArray<NSString *> *hits = [NSMutableArray array];
+    for (NSString *typo in typos) {
+        if ([lower rangeOfString:typo].location != NSNotFound) {
+            [hits addObject:[NSString stringWithFormat:@"%@ → %@", typo, typos[typo]]];
+        }
+    }
+    if (hits.count == 0) return nil;
+    return [NSString stringWithFormat:@"Unknown field — did you mean: %@",
+            [hits componentsJoinedByString:@", "]];
+}
+
+// Resolve a pattern against a representative track from the active playlist —
+// prefers selected/focused item, falls back to first. This matches what the
+// user is likely looking at in the SimPlaylist panel.
++ (NSString *)previewForPattern:(NSString *)pattern {
+    if (pattern.length == 0) return @"";
+    auto pm = playlist_manager::get();
+    t_size active = pm->get_active_playlist();
+    if (active == SIZE_MAX) return @"(no active playlist)";
+    t_size itemCount = pm->playlist_get_item_count(active);
+    if (itemCount == 0) return @"(active playlist is empty)";
+
+    // Prefer focused item (what user last clicked/arrow-keyed to in SimPlaylist),
+    // fall back to first item.
+    metadb_handle_ptr handle;
+    if (!pm->playlist_get_focus_item_handle(handle, active) || handle.is_empty()) {
+        handle = pm->playlist_get_item_handle(active, 0);
+    }
+    if (handle.is_empty()) return @"(no track to preview)";
+
+    // No fallback: compile() installs "%filename%" on a syntax error, so
+    // is_empty() was never true and a malformed pattern previewed as the
+    // track's filename, which looks like a legitimate result.
+    auto script = simplaylist::TitleFormatHelper::compileWithFallback([pattern UTF8String], nullptr);
+    if (script.is_empty()) return @"(invalid pattern)";
+
+    std::string result = simplaylist::TitleFormatHelper::format(handle, script);
+    // nil on invalid UTF-8 (corrupt tags) — callers assign this to
+    // NSTextField.stringValue, which must never receive nil
+    NSString *str = [NSString stringWithUTF8String:result.c_str()] ?: @"";
+    NSString *trimmed = [str stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return @"(empty — fields may be missing on this track)";
+
+    // A pattern such as $pad(x,1000000000) yields a huge string; the preview is
+    // a single-line label, so cap what we hand to AppKit. The range is expanded
+    // to whole composed characters so the cut never splits a surrogate pair.
+    static const NSUInteger kMaxPreviewChars = 200;
+    if (str.length > kMaxPreviewChars) {
+        NSRange safeRange = [str rangeOfComposedCharacterSequencesForRange:
+                             NSMakeRange(0, kMaxPreviewChars)];
+        str = [[str substringWithRange:safeRange] stringByAppendingString:@"..."];
+    }
+    return str;
+}
+
+// Warning lookup is pure string matching and stays live per keystroke; the
+// preview compiles AND RUNS the pattern against a real track on the main
+// thread, so per-field refreshes are debounced from controlTextDidChange:.
+static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
+
+- (void)refreshHeaderPatternPreview {
+    _headerPatternPreview.stringValue =
+        [SimPlaylistPreferencesController previewForPattern:_headerPatternField.stringValue];
+}
+
+- (void)refreshSubgroupPatternPreview {
+    _subgroupPatternPreview.stringValue =
+        [SimPlaylistPreferencesController previewForPattern:_subgroupPatternField.stringValue];
+}
+
+- (void)refreshHeaderPatternWarning {
+    NSString *headerWarn = [SimPlaylistPreferencesController warningForPattern:_headerPatternField.stringValue];
+    _headerPatternWarning.stringValue = headerWarn ?: @"";
+    _headerPatternWarning.hidden = (headerWarn == nil);
+}
+
+- (void)refreshSubgroupPatternWarning {
+    NSString *subWarn = [SimPlaylistPreferencesController warningForPattern:_subgroupPatternField.stringValue];
+    _subgroupPatternWarning.stringValue = subWarn ?: @"";
+    _subgroupPatternWarning.hidden = (subWarn == nil);
+}
+
+- (void)refreshPatternWarnings {
+    [self refreshHeaderPatternWarning];
+    [self refreshHeaderPatternPreview];
+    [self refreshSubgroupPatternWarning];
+    [self refreshSubgroupPatternPreview];
 }
 
 - (void)presetChanged:(id)sender {
@@ -487,11 +842,34 @@
 #pragma mark - NSTextFieldDelegate
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
+    // Cancel the debounced save first: otherwise tabbing out of a field saves
+    // here and again when the pending perform fires, posting
+    // SimPlaylistSettingsChanged twice = two full rebuilds per panel.
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveAndNotify) object:nil];
     [self saveAndNotify];
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification {
-    // Debounce text changes to avoid rebuilding on every keystroke
+    // Live warnings update immediately so the user gets feedback as they type;
+    // only the edited field's preview is (re)scheduled.
+    if (notification.object == _headerPatternField) {
+        [self refreshHeaderPatternWarning];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                 selector:@selector(refreshHeaderPatternPreview)
+                                                   object:nil];
+        [self performSelector:@selector(refreshHeaderPatternPreview)
+                   withObject:nil
+                   afterDelay:kPreviewDebounceSeconds];
+    } else if (notification.object == _subgroupPatternField) {
+        [self refreshSubgroupPatternWarning];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                                 selector:@selector(refreshSubgroupPatternPreview)
+                                                   object:nil];
+        [self performSelector:@selector(refreshSubgroupPatternPreview)
+                   withObject:nil
+                   afterDelay:kPreviewDebounceSeconds];
+    }
+    // Debounce save/notify to avoid rebuilding on every keystroke
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveAndNotify) object:nil];
     [self performSelector:@selector(saveAndNotify) withObject:nil afterDelay:0.5];
 }
@@ -635,10 +1013,70 @@
     simplaylist_config::setConfigBool(simplaylist_config::kDoubleClickPreservesQueue, enabled);
 }
 
+- (void)keepPlayingPlaylistChanged:(id)sender {
+    bool enabled = (_keepPlayingPlaylistCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kKeepPlayingPlaylist, enabled);
+}
+
+- (void)keepPlayingHelpClicked:(NSButton *)sender {
+    if (self.keepPlayingHelpPopover.isShown) {
+        [self.keepPlayingHelpPopover close];
+        return;
+    }
+
+    NSString *text =
+        @"foobar2000 tracks two playlists independently: the one displayed in the UI "
+        @"(active playlist) and the one playback continues in when the current track "
+        @"ends (playing playlist).\n\n"
+        @"On the Mac, browsing the media library with ReFacets silently redirects the "
+        @"playing playlist to a hidden playlist mirroring your selection. Your track "
+        @"keeps playing, but the moment it ends, playback jumps to the first browsed "
+        @"track and abandons your playlist. No native setting prevents this.\n\n"
+        @"With this option on, SimPlaylist detects the redirect and points playback "
+        @"continuation back at the playlist the current track is playing from, so "
+        @"browsing the library never changes what plays next.\n\n"
+        @"Double-clicking a track in ReFacets still starts playback from the selection "
+        @"as usual, and the playback queue always takes priority either way. Each "
+        @"restore is logged to the foobar2000 console.";
+
+    NSFont *font = [NSFont systemFontOfSize:12];
+    CGFloat textWidth = 340;
+    NSRect textRect = [text boundingRectWithSize:NSMakeSize(textWidth, CGFLOAT_MAX)
+                                         options:NSStringDrawingUsesLineFragmentOrigin
+                                      attributes:@{NSFontAttributeName: font}];
+    CGFloat textHeight = ceil(textRect.size.height) + 4;
+
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, textWidth + 28, textHeight + 28)];
+    NSTextField *label = [NSTextField wrappingLabelWithString:text];
+    label.font = font;
+    label.frame = NSMakeRect(14, 14, textWidth, textHeight);
+    [content addSubview:label];
+
+    NSViewController *vc = [[NSViewController alloc] init];
+    vc.view = content;
+
+    NSPopover *popover = [[NSPopover alloc] init];
+    popover.contentViewController = vc;
+    popover.behavior = NSPopoverBehaviorTransient;
+    self.keepPlayingHelpPopover = popover;
+    [popover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
+}
+
 - (void)queueDisplayStyleChanged:(id)sender {
     int64_t style = [_queueDisplayStylePopup indexOfSelectedItem];
     simplaylist_config::setConfigInt(simplaylist_config::kQueueDisplayStyle, style);
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistRedrawNeeded" object:nil];
+}
+
+- (void)finderOpenBehaviorChanged:(id)sender {
+    int64_t behavior = [_finderOpenBehaviorPopup indexOfSelectedItem];
+    simplaylist_config::setConfigInt(simplaylist_config::kFinderOpenBehavior, behavior);
+}
+
+- (void)finderOpenTargetChanged:(id)sender {
+    NSString *value = _finderOpenTargetPopup.titleOfSelectedItem ?: @"";
+    simplaylist_config::setConfigString(simplaylist_config::kFinderOpenTargetPlaylist,
+                                        [value UTF8String]);
 }
 
 @end

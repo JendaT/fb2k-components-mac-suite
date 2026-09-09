@@ -12,6 +12,10 @@
 #import "../Core/QueueOperations.h"
 #import <Foundation/Foundation.h>
 
+// Rapid queue callbacks (e.g. the N+1 storm from a flush-and-readd reorder)
+// within this window coalesce into a single reload.
+static const NSTimeInterval kReloadCoalesceDelay = 0.05;
+
 QueueCallbackManager::QueueCallbackManager() {
     m_controllers = [NSPointerArray weakObjectsPointerArray];
 }
@@ -54,7 +58,20 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
         }
     }
 
-    dispatch_async(dispatch_get_main_queue(), ^{
+    // Nothing to notify: skip the main-queue dispatch entirely
+    if (controllersToNotify.count == 0) {
+        return;
+    }
+
+    // Coalesce rapid callbacks: cancel pending reload and schedule a new one.
+    //
+    // fb2k delivers this callback on the main thread — including
+    // synchronously from every queue mutation inside a controller's own
+    // flush-and-readd rebuild. The isReorderingInProgress check must
+    // therefore run HERE, not in a deferred block: by the time a
+    // dispatch_async block executes, the rebuild has finished and the flag
+    // is already cleared, so a deferred check can never suppress anything.
+    void (^notifyControllers)(void) = ^{
         for (QueueManagerController* controller in controllersToNotify) {
             if (controller.isReorderingInProgress) {
                 continue;
@@ -64,9 +81,15 @@ void QueueCallbackManager::onQueueChanged(playback_queue_callback::t_change_orig
                                                        object:nil];
             [controller performSelector:@selector(reloadQueueContents)
                              withObject:nil
-                             afterDelay:0.05];
+                             afterDelay:kReloadCoalesceDelay];
         }
-    });
+    };
+
+    if (NSThread.isMainThread) {
+        notifyControllers();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), notifyControllers);
+    }
 }
 
 #pragma mark - Playback Callbacks

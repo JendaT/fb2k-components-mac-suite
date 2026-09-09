@@ -156,6 +156,9 @@
 
         sqlite3_finalize(stmt);
     });
+
+    // PERF-6: Enforce cache size after writes
+    [self enforceMaxSize];
 }
 
 - (BiographyData *)fetchCachedBiographyForArtist:(NSString *)artistName {
@@ -170,7 +173,7 @@
             SELECT display_name, mbid, biography, biography_summary,
                    biography_source, language, image_url, image_source, image_type,
                    tags, similar_artists, genre, country, listeners, playcount,
-                   cached_at
+                   cached_at, last_accessed
             FROM artists
             WHERE artist_name = ?
         )SQL";
@@ -221,19 +224,59 @@
 
             result = [builder build];
 
-            // Update last accessed
-            [self touchArtist:artistName];
+            // ARCH-6: Inline touch SQL within existing dispatch_sync block
+            // PERF-10: Only update last_accessed if more than 1 hour stale
+            double lastAccessed = sqlite3_column_double(stmt, 16);
+            double now = [[NSDate date] timeIntervalSince1970];
+            if (now - lastAccessed > 3600) {
+                sqlite3_finalize(stmt);
+                stmt = NULL;
+
+                const char *touchSql = "UPDATE artists SET last_accessed = ? WHERE artist_name = ?";
+                sqlite3_stmt *touchStmt = NULL;
+                if (sqlite3_prepare_v2(self.db, touchSql, -1, &touchStmt, NULL) == SQLITE_OK) {
+                    sqlite3_bind_double(touchStmt, 1, now);
+                    sqlite3_bind_text(touchStmt, 2, [artistName.lowercaseString UTF8String], -1, SQLITE_TRANSIENT);
+                    sqlite3_step(touchStmt);
+                    sqlite3_finalize(touchStmt);
+                }
+            }
         }
 
-        sqlite3_finalize(stmt);
+        if (stmt) sqlite3_finalize(stmt);
     });
 
     return result;
 }
 
 - (BOOL)hasFreshCacheForArtist:(NSString *)artistName {
-    BiographyData *cached = [self fetchCachedBiographyForArtist:artistName];
-    return cached != nil && !cached.isStale;
+    if (!artistName) return NO;
+
+    __block BOOL isFresh = NO;
+
+    dispatch_sync(self.dbQueue, ^{
+        if (!self.db) return;
+
+        // PERF-5: Only read cached_at instead of full row
+        const char *sql = "SELECT cached_at FROM artists WHERE artist_name = ? LIMIT 1";
+        sqlite3_stmt *stmt = NULL;
+
+        if (sqlite3_prepare_v2(self.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+            return;
+        }
+
+        sqlite3_bind_text(stmt, 1, [artistName.lowercaseString UTF8String], -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            double cachedAt = sqlite3_column_double(stmt, 0);
+            NSTimeInterval age = [[NSDate date] timeIntervalSince1970] - cachedAt;
+            isFresh = age <= kBiographyCacheTTL;
+        }
+
+        sqlite3_finalize(stmt);
+    });
+
+    return isFresh;
 }
 
 - (void)clearCacheForArtist:(NSString *)artistName {
@@ -271,33 +314,45 @@
     dispatch_async(self.dbQueue, ^{
         if (!self.db) return;
 
-        // Simple LRU: delete oldest accessed entries until under limit
-        while ([self totalCacheSize] > kMaxCacheSizeBytes) {
+        // PERF-6/SEC-11: Use SQLite page_count * page_size for size check (no syscall),
+        // cap iterations, and VACUUM after deletions
+        NSUInteger iterations = 0;
+        static const NSUInteger kMaxIterations = 50;
+
+        while (iterations < kMaxIterations) {
+            // Get database size via SQLite internals
+            sqlite3_stmt *sizeStmt = NULL;
+            if (sqlite3_prepare_v2(self.db, "SELECT page_count * page_size FROM pragma_page_count, pragma_page_size", -1, &sizeStmt, NULL) != SQLITE_OK) {
+                break;
+            }
+
+            NSUInteger dbSize = 0;
+            if (sqlite3_step(sizeStmt) == SQLITE_ROW) {
+                dbSize = (NSUInteger)sqlite3_column_int64(sizeStmt, 0);
+            }
+            sqlite3_finalize(sizeStmt);
+
+            if (dbSize <= kMaxCacheSizeBytes) break;
+
             const char *sql = R"SQL(
                 DELETE FROM artists WHERE artist_name IN
                 (SELECT artist_name FROM artists ORDER BY last_accessed ASC LIMIT 10)
             )SQL";
 
             if (sqlite3_exec(self.db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-                break;  // Safety
+                break;
             }
+
+            iterations++;
+        }
+
+        if (iterations > 0) {
+            sqlite3_exec(self.db, "VACUUM", NULL, NULL, NULL);
         }
     });
 }
 
 #pragma mark - Helpers
-
-- (void)touchArtist:(NSString *)artistName {
-    const char *sql = "UPDATE artists SET last_accessed = ? WHERE artist_name = ?";
-    sqlite3_stmt *stmt = NULL;
-
-    if (sqlite3_prepare_v2(self.db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_double(stmt, 1, [[NSDate date] timeIntervalSince1970]);
-        sqlite3_bind_text(stmt, 2, [artistName.lowercaseString UTF8String], -1, SQLITE_TRANSIENT);
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-    }
-}
 
 - (NSString *)stringFromColumn:(int)col stmt:(sqlite3_stmt *)stmt {
     const char *text = (const char *)sqlite3_column_text(stmt, col);
@@ -317,7 +372,11 @@
 
     NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
     NSError *error = nil;
-    return [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+
+    // SEC-7: Validate type from cached JSON
+    if (![parsed isKindOfClass:[NSArray class]]) return nil;
+    return (NSArray *)parsed;
 }
 
 - (NSString *)serializeSimilarArtists:(NSArray<SimilarArtistRef *> *)artists {
@@ -342,15 +401,32 @@
 
     NSData *data = [json dataUsingEncoding:NSUTF8StringEncoding];
     NSError *error = nil;
-    NSArray *dicts = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
-    if (!dicts) return nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+
+    // SEC-7: Validate types from cached JSON
+    if (![parsed isKindOfClass:[NSArray class]]) return nil;
+    NSArray *dicts = (NSArray *)parsed;
 
     NSMutableArray *result = [NSMutableArray array];
-    for (NSDictionary *d in dicts) {
-        NSURL *thumbURL = d[@"thumbnailURL"] ? [NSURL URLWithString:d[@"thumbnailURL"]] : nil;
-        SimilarArtistRef *ref = [[SimilarArtistRef alloc] initWithName:d[@"name"]
+    for (id element in dicts) {
+        if (![element isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *d = (NSDictionary *)element;
+
+        NSString *name = d[@"name"];
+        if (![name isKindOfClass:[NSString class]] || name.length == 0) continue;
+
+        NSURL *thumbURL = nil;
+        NSString *thumbStr = d[@"thumbnailURL"];
+        if ([thumbStr isKindOfClass:[NSString class]] && thumbStr.length > 0) {
+            thumbURL = [NSURL URLWithString:thumbStr];
+        }
+
+        NSString *mbid = d[@"mbid"];
+        if (![mbid isKindOfClass:[NSString class]]) mbid = nil;
+
+        SimilarArtistRef *ref = [[SimilarArtistRef alloc] initWithName:name
                                                           thumbnailURL:thumbURL
-                                                         musicBrainzId:d[@"mbid"]];
+                                                         musicBrainzId:mbid];
         [result addObject:ref];
     }
     return [result copy];

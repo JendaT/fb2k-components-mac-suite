@@ -8,6 +8,20 @@
 #import "../fb2k_sdk.h"
 #import <foobar2000/SDK/playlistColumnProvider.h>
 
+// Guarded funnel for every persisted column-layout write.
+// columnsToJSON: returns @"" when serialisation fails, and ConfigHelper
+// documents that storing "" is the DELETE idiom - an unguarded write would
+// silently wipe the user's column layout. A nil string would additionally
+// hand UTF8String == NULL to the SDK.
+static void persistColumnsJSON(const char *key, NSString *json, const char *what) {
+    if (json.length == 0) {
+        FB2K_console_formatter() << "[SimPlaylist] Refusing to persist empty column JSON ("
+                                 << what << "); keeping the stored layout";
+        return;
+    }
+    simplaylist_config::setConfigString(key, json.UTF8String);
+}
+
 @implementation ColumnDefinition
 
 static ColumnDefinition *CreateRatingColumn(void) {
@@ -121,18 +135,39 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
         NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
         NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
         if (columns.count > 0) {
-            // Clean up any orphaned custom columns
+            // Clean up any orphaned custom columns. Cleanup must fall through to
+            // the migration below: returning early left a config that needed both
+            // migrating only on the next launch.
             NSArray<ColumnDefinition *> *cleaned = [self removeOrphanedColumns:columns];
-            if (cleaned.count != columns.count) {
-                // Some columns were removed - save the cleaned list
-                NSString *cleanedJSON = [self columnsToJSON:cleaned];
-                simplaylist_config::setConfigString(
-                    simplaylist_config::kColumns, cleanedJSON.UTF8String);
-                FB2K_console_formatter() << "[SimPlaylist] Removed "
-                    << (columns.count - cleaned.count) << " orphaned custom column(s)";
-                return EnsureRatingColumn(cleaned);
+            NSUInteger orphansRemoved = columns.count - cleaned.count;
+
+            // Migration: remove legacy ">" pattern from Playing columns now that the
+            // native ▶ drawing in SimPlaylistView handles the indicator.
+            // TODO: This migration for Playing column can be removed in future. Let's keep it until end of 2026.
+            BOOL migrated = NO;
+            NSMutableArray<ColumnDefinition *> *migrating = [cleaned mutableCopy];
+            for (ColumnDefinition *col in migrating) {
+                if ([col.name isEqualToString:@"Playing"] &&
+                    [col.pattern isEqualToString:@"$if(%isplaying%,>,)"]) {
+                    col.pattern = @"";
+                    migrated = YES;
+                }
             }
-            return EnsureRatingColumn(columns);
+
+            if (orphansRemoved > 0 || migrated) {
+                persistColumnsJSON(simplaylist_config::kColumns,
+                                   [self columnsToJSON:migrating],
+                                   "orphan cleanup / Playing migration");
+                if (orphansRemoved > 0) {
+                    FB2K_console_formatter() << "[SimPlaylist] Removed "
+                        << orphansRemoved << " orphaned custom column(s)";
+                }
+                if (migrated) {
+                    FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
+                }
+            }
+
+            return EnsureRatingColumn(migrating);
         }
     }
 
@@ -148,7 +183,7 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
     // Final fallback to hardcoded defaults
     return @[
         [ColumnDefinition columnWithName:@"Playing"
-                                 pattern:@"$if(%isplaying%,>,)"
+                                 pattern:@""
                                    width:24
                                alignment:ColumnAlignmentCenter],
 
@@ -249,7 +284,7 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
                                    width:40
                                alignment:ColumnAlignmentCenter],
         [ColumnDefinition columnWithName:@"Playing"
-                                 pattern:@"$if(%isplaying%,>,)"
+                                 pattern:@""
                                    width:24
                                alignment:ColumnAlignmentCenter],
         [ColumnDefinition columnWithName:@"File name"
@@ -284,6 +319,10 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
     NSMutableArray<ColumnDefinition *> *columns = [NSMutableArray array];
     NSMutableSet<NSString *> *seenNames = [NSMutableSet set];
 
+    // The SDK raises C++ exceptions (pfc::exception), which @catch (NSException *)
+    // cannot intercept; the outer C++ handlers mirror runGuardedSDKAction in
+    // SimPlaylistView.mm and ConfigHelper's accessors.
+    try {
     @try {
 
         // Enumerate all playlistColumnProvider services
@@ -321,7 +360,13 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
             }
         }
     } @catch (NSException *exception) {
-        // Ignore enumeration errors
+        FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: "
+                                 << (exception.reason.UTF8String ?: "unknown");
+    }
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] Column provider enumeration failed: unknown exception";
     }
 
     return columns;
@@ -344,11 +389,11 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
 }
 
 + (void)saveCustomColumns:(NSArray<ColumnDefinition *> *)columns {
-    NSString *json = [self columnsToJSON:columns];
-    simplaylist_config::setConfigString(
-        simplaylist_config::kCustomColumns,
-        json.UTF8String
-    );
+    // An empty custom-column list legitimately serialises to a non-empty JSON
+    // document ({"columns": []}), so an empty string here is always a failure.
+    persistColumnsJSON(simplaylist_config::kCustomColumns,
+                       [self columnsToJSON:columns],
+                       "custom columns");
 }
 
 + (void)addCustomColumn:(ColumnDefinition *)column {
@@ -429,9 +474,9 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
 
     // Save if any columns were renamed
     if (changed) {
-        NSString *updatedJSON = [self columnsToJSON:updated];
-        simplaylist_config::setConfigString(
-            simplaylist_config::kColumns, updatedJSON.UTF8String);
+        persistColumnsJSON(simplaylist_config::kColumns,
+                           [self columnsToJSON:updated],
+                           "custom column rename");
     }
 }
 
@@ -442,12 +487,20 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) {
+    if (!jsonData) {
+        // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
+        // would throw on nil data.
         return @[];
     }
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it would raise NSInvalidArgumentException on every panel construction.
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) {
+        return @[];
+    }
+    NSDictionary *json = root;
 
     NSArray *columnsArray = json[@"columns"];
     if (![columnsArray isKindOfClass:[NSArray class]]) {
@@ -466,7 +519,14 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
         NSNumber *autoResizeNum = colDict[@"auto_resize"];
         NSNumber *clickableNum = colDict[@"clickable"];
 
-        if (!name || !pattern) continue;
+        // Corrupted config can put non-strings/non-numbers here; wrong types
+        // crash later on isEqualToString:/doubleValue sends.
+        if (![name isKindOfClass:[NSString class]] ||
+            ![pattern isKindOfClass:[NSString class]]) continue;
+        if (widthNum && ![widthNum isKindOfClass:[NSNumber class]]) widthNum = nil;
+        if (alignmentStr && ![alignmentStr isKindOfClass:[NSString class]]) alignmentStr = nil;
+        if (autoResizeNum && ![autoResizeNum isKindOfClass:[NSNumber class]]) autoResizeNum = nil;
+        if (clickableNum && ![clickableNum isKindOfClass:[NSNumber class]]) clickableNum = nil;
 
         // Migration: "Track no" removed - use "#" instead (v1.1.7+)
         if ([name isEqualToString:@"Track no"]) {
@@ -476,7 +536,12 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
         ColumnDefinition *col = [[ColumnDefinition alloc] init];
         col.name = name;
         col.pattern = pattern;
-        col.width = widthNum ? [widthNum doubleValue] : 100;
+        // Persisted width may be NaN/Inf/non-positive; that would flow into
+        // NSRect math and hit-testing. Fall back to the default and cap.
+        // (No higher floor: stock columns legitimately persist widths of 24.)
+        double width = widthNum ? [widthNum doubleValue] : 100;
+        if (!isfinite(width) || width <= 0) width = 100;
+        col.width = MIN(10000.0, width);
         col.alignment = alignmentStr ? [self alignmentFromString:alignmentStr] : ColumnAlignmentLeft;
         col.autoResize = autoResizeNum ? [autoResizeNum boolValue] : NO;
         col.clickable = clickableNum ? [clickableNum boolValue] : NO;
@@ -492,8 +557,9 @@ static NSArray<ColumnDefinition *> *EnsureRatingColumn(NSArray<ColumnDefinition 
 
     for (ColumnDefinition *col in columns) {
         NSMutableDictionary *colDict = [NSMutableDictionary dictionary];
-        colDict[@"name"] = col.name;
-        colDict[@"pattern"] = col.pattern;
+        // nil field would crash the dictionary literal-style assignment
+        colDict[@"name"] = col.name ?: @"";
+        colDict[@"pattern"] = col.pattern ?: @"";
         colDict[@"width"] = @(col.width);
         colDict[@"alignment"] = [self stringFromAlignment:col.alignment];
         if (col.autoResize) {

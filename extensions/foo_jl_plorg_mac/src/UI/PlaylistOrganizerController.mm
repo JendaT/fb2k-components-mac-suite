@@ -9,6 +9,9 @@
 #import "StrawberryImportPreviewController.h"
 #import "../Core/TreeModel.h"
 #import "../Core/TreeNode.h"
+#import "../Core/PlorgTreeYamlCodec.h"
+#import "../Core/PlorgPathCodec.h"
+#import "../Core/PlorgVolumeSyncLogic.h"
 #import "../Core/ConfigHelper.h"
 #import <objc/runtime.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -30,7 +33,7 @@ static const NSTimeInterval kHoverExpandDelay = 1.0;
 
 @interface PlorgTreeLinesRowView : NSTableRowView
 @property (nonatomic, weak) NSOutlineView *outlineView;
-@property (nonatomic, strong) id item;
+@property (nonatomic, weak) id item;
 @end
 
 @implementation PlorgTreeLinesRowView
@@ -150,14 +153,154 @@ static const NSTimeInterval kHoverExpandDelay = 1.0;
 
 @end
 
-// Helper class for async track import - stores paths to keep them alive
-class PlorgTracksImportNotify : public process_locations_notify {
+// Import statistics tracker for summary report
+@interface PlorgImportStats : NSObject
+@property (nonatomic, assign) NSInteger totalPlaylists;
+@property (nonatomic, assign) NSInteger totalTracksQueued;
+@property (nonatomic, assign) NSInteger totalTracksFound;
+@property (nonatomic, assign) NSInteger totalTracksMissing;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *missingByPlaylist;
+@property (nonatomic, assign) NSInteger pendingImports;
+@property (nonatomic, assign) BOOL summaryShown;
++ (instancetype)shared;
+- (void)reset;
+- (void)showSummary;
+@end
+
+@implementation PlorgImportStats
++ (instancetype)shared {
+    static PlorgImportStats *instance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        instance = [[PlorgImportStats alloc] init];
+        instance.missingByPlaylist = [NSMutableDictionary dictionary];
+    });
+    return instance;
+}
+
+- (void)reset {
+    self.totalPlaylists = 0;
+    self.totalTracksQueued = 0;
+    self.totalTracksFound = 0;
+    self.totalTracksMissing = 0;
+    self.pendingImports = 0;
+    self.summaryShown = NO;
+    [self.missingByPlaylist removeAllObjects];
+}
+
+- (void)showSummary {
+    if (self.summaryShown) return;
+    self.summaryShown = YES;
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Build summary message
+        NSMutableString *summary = [NSMutableString string];
+        [summary appendFormat:@"Playlists processed: %ld\n", (long)self.totalPlaylists];
+        [summary appendFormat:@"Tracks added: %ld\n", (long)self.totalTracksQueued];
+        [summary appendFormat:@"Tracks found on disk: %ld\n", (long)self.totalTracksFound];
+        [summary appendFormat:@"Tracks missing: %ld\n", (long)self.totalTracksMissing];
+
+        if (self.totalTracksMissing > 0 && self.missingByPlaylist.count > 0) {
+            [summary appendString:@"\nPlaylists with missing tracks:\n"];
+            // Show top 10 playlists with most missing
+            NSArray *sorted = [self.missingByPlaylist keysSortedByValueUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
+                return [b compare:a]; // Descending
+            }];
+            NSInteger shown = 0;
+            for (NSString *name in sorted) {
+                if (shown >= 10) {
+                    [summary appendFormat:@"  ... and %ld more playlists\n", (long)(sorted.count - 10)];
+                    break;
+                }
+                [summary appendFormat:@"  %@: %@ missing\n", name, self.missingByPlaylist[name]];
+                shown++;
+            }
+            [summary appendString:@"\nMissing tracks are kept in playlists - use SimPlaylist to refresh metadata after fixing paths."];
+        }
+
+        FB2K_console_formatter() << "[Plorg] Import Summary:\n" << [summary UTF8String];
+
+        // Show alert
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = self.totalTracksMissing > 0 ? NSAlertStyleWarning : NSAlertStyleInformational;
+        alert.messageText = @"Import Complete";
+        alert.informativeText = summary;
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+    });
+}
+@end
+
+// Corrupted playlist info for diagnostic checks
+@interface PlorgCorruptedPlaylist : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, assign) t_size index;
+@property (nonatomic, copy) NSString *errorType;  // "missing_content", "empty_content", "sdk_error", "orphaned"
+@property (nonatomic, copy) NSString *uuid;       // Playlist UUID if available
+@property (nonatomic, weak) TreeNode *treeNode;   // For orphaned entries (tree node with no foobar2000 playlist)
+@end
+
+@implementation PlorgCorruptedPlaylist
+@end
+
+// Helper function to add tracks - creates handles directly to avoid error dialogs
+// Missing files remain in playlist as dead entries so user can see what's missing
+static void addTracksToPlaylistFiltered(t_size playlistIndex, const char* playlistName, NSArray<NSString*>* paths) {
+    if (paths.count == 0) return;
+
+    PlorgImportStats *stats = [PlorgImportStats shared];
+    stats.totalPlaylists++;
+    stats.totalTracksQueued += paths.count;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSInteger foundCount = 0;
+    NSInteger missingCount = 0;
+
+    // Create handles directly - this bypasses error dialogs
+    // Missing files will show as dead entries in the playlist
+    metadb_handle_list handles;
+    auto mdb = metadb::get();
+
+    for (NSString *path in paths) {
+        metadb_handle_ptr handle;
+        mdb->handle_create(handle, make_playable_location([path UTF8String], 0));
+
+        if (handle.is_valid()) {
+            handles.add_item(handle);
+            if ([fm fileExistsAtPath:path]) {
+                foundCount++;
+            } else {
+                missingCount++;
+            }
+        }
+    }
+
+    stats.totalTracksFound += foundCount;
+    stats.totalTracksMissing += missingCount;
+
+    if (missingCount > 0) {
+        NSString *name = [NSString stringWithUTF8String:playlistName];
+        stats.missingByPlaylist[name] = @(missingCount);
+        FB2K_console_formatter() << "[Plorg] Playlist \"" << playlistName << "\": "
+                                  << foundCount << " found, " << missingCount << " missing";
+    }
+
+    // Insert all handles directly into playlist
+    if (handles.get_count() > 0) {
+        auto pm = playlist_manager::get();
+        pm->playlist_insert_items(playlistIndex, 0, handles, pfc::bit_array_false());
+        FB2K_console_formatter() << "[Plorg] Added " << handles.get_count() << " tracks to playlist: " << playlistName;
+    }
+}
+
+// Simple async track import without statistics - for Strawberry/m3u imports
+class PlorgSimpleImportNotify : public process_locations_notify {
 public:
     t_size m_playlistIndex;
     std::string m_playlistName;
-    pfc::string_list_impl m_paths;  // Keeps paths alive during async operation
+    pfc::string_list_impl m_paths;
 
-    PlorgTracksImportNotify(t_size playlistIndex, const char* name)
+    PlorgSimpleImportNotify(t_size playlistIndex, const char* name)
         : m_playlistIndex(playlistIndex), m_playlistName(name) {}
 
     void on_completion(metadb_handle_list_cref items) override {
@@ -183,21 +326,87 @@ public:
         playlist_incoming_item_filter_v2::get()->process_locations_async(
             pathPtrs,
             playlist_incoming_item_filter_v2::op_flag_no_filter |
-            playlist_incoming_item_filter_v2::op_flag_delay_ui |
-            playlist_incoming_item_filter_v2::op_flag_background,
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
             nullptr, nullptr, nullptr,
             this
         );
     }
 };
 
-// Helper function to add tracks asynchronously
+// Async import for files dropped from Finder onto a playlist node.
+// The target is resolved by name at completion rather than captured as an index,
+// because the import runs asynchronously and playlists can be created, removed
+// or reordered while it is in flight.
+class PlorgFileDropNotify : public process_locations_notify {
+public:
+    std::string m_playlistName;
+    pfc::string_list_impl m_paths;
+
+    PlorgFileDropNotify(const char* playlistName) : m_playlistName(playlistName) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() == 0) {
+            FB2K_console_formatter() << "[Plorg] Drop contained no playable tracks for playlist: "
+                                      << m_playlistName.c_str();
+            return;
+        }
+
+        auto pm = playlist_manager::get();
+        t_size target = pm->find_playlist(m_playlistName.c_str(), pfc_infinite);
+        if (target == pfc_infinite) {
+            FB2K_console_formatter() << "[Plorg] Drop target playlist no longer exists: "
+                                      << m_playlistName.c_str();
+            return;
+        }
+
+        // Append to the end, selecting the newly added tracks
+        t_size insertAt = pm->playlist_get_item_count(target);
+        pm->playlist_insert_items(target, insertAt, items, pfc::bit_array_true());
+
+        FB2K_console_formatter() << "[Plorg] Added " << items.get_count()
+                                  << " dropped tracks to playlist: " << m_playlistName.c_str();
+
+        // Refresh the node's track count in any open organizer view
+        NSString *name = [NSString stringWithUTF8String:m_playlistName.c_str()];
+        if (name) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[NSNotificationCenter defaultCenter]
+                    postNotificationName:@"PlorgPlaylistContentsChanged"
+                                  object:nil
+                                userInfo:@{@"foobarName": name}];
+            });
+        }
+    }
+
+    void on_aborted() override {
+        FB2K_console_formatter() << "[Plorg] Drop import aborted for playlist: " << m_playlistName.c_str();
+    }
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        // Honour the user's incoming-item filter settings (sorting, type masks);
+        // delay_ui keeps the progress dialog hidden for small drops.
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
+
+// Simple async import for Strawberry/m3u - shows error dialogs for missing files
 static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistName, NSArray<NSString*>* paths) {
     if (paths.count == 0) return;
 
-    auto notify = fb2k::service_new<PlorgTracksImportNotify>(playlistIndex, playlistName);
+    auto notify = fb2k::service_new<PlorgSimpleImportNotify>(playlistIndex, playlistName);
 
-    // Copy paths into the notify object so they stay alive
     for (NSString* path in paths) {
         notify->m_paths.add_item([path UTF8String]);
     }
@@ -205,19 +414,64 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     notify->startImport();
 }
 
+// Helper to create unique playlist name - appends [1], [2], etc. if name exists
+static NSString* makeUniquePlaylistName(NSString* baseName) {
+    auto pm = playlist_manager::get();
 
-@interface PlaylistOrganizerController () <NSTextFieldDelegate, PathMappingWindowDelegate, StrawberryImportPreviewDelegate>
+    // Check if base name exists
+    t_size existing = pm->find_playlist([baseName UTF8String], pfc_infinite);
+    if (existing == pfc_infinite) {
+        return baseName; // Name is unique
+    }
+
+    // Name exists - find a unique suffix
+    for (int suffix = 1; suffix <= 100; suffix++) {
+        NSString *candidate = [NSString stringWithFormat:@"%@ [%d]", baseName, suffix];
+        existing = pm->find_playlist([candidate UTF8String], pfc_infinite);
+        if (existing == pfc_infinite) {
+            return candidate;
+        }
+    }
+
+    // Fallback with timestamp
+    return [NSString stringWithFormat:@"%@ [%ld]", baseName, (long)[[NSDate date] timeIntervalSince1970]];
+}
+
+
+@interface PlaylistOrganizerController () <NSTextFieldDelegate, PathMappingWindowDelegate, StrawberryImportPreviewDelegate, UUIDRemappingWindowDelegate>
 @property (nonatomic, strong) NSOutlineView *outlineView;
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) TreeModel *treeModel;
 @property (nonatomic, weak) TreeNode *editingNode;  // Node currently being edited inline
 @property (nonatomic, strong) PathMappingWindowController *pathMappingController;
 @property (nonatomic, strong) StrawberryImportPreviewController *strawberryPreviewController;
+@property (nonatomic, strong) UUIDRemappingWindowController *uuidRemappingController;
 @property (nonatomic, copy) NSString *pendingThemePath;
 @property (nonatomic, copy) NSString *pendingPlaylistsDir;
+@property (nonatomic, weak) TreeNode *pendingTargetFolder;  // Target folder for import operations
 @property (nonatomic, copy) NSString *activePlaylistName;  // Currently active playlist in foobar2000
 @property (nonatomic, assign) BOOL showTreeLines;  // Show Windows Explorer-style tree lines
 @property (nonatomic, assign) BOOL transparentBackground;  // Glass effect background
+@property (nonatomic, assign) BOOL isImporting;  // Suppress outline view callbacks during import
+
+// Actions
+- (void)reloadTree;
+- (void)expandAll;
+- (void)collapseAll;
+- (void)revealPlaylist:(NSString *)playlistName;
+
+// Context menu actions
+- (IBAction)createFolder:(id)sender;
+- (IBAction)createPlaylist:(id)sender;
+- (IBAction)renameItem:(id)sender;
+- (IBAction)deleteItem:(id)sender;
+- (IBAction)sortAscending:(id)sender;
+- (IBAction)sortDescending:(id)sender;
+
+// Corruption check
+- (NSArray *)checkForCorruptedPlaylists;
+- (void)removeCorruptedPlaylists:(NSArray *)playlists;
+- (void)showCorruptedPlaylistsDialog:(NSArray *)corrupted;
 @end
 
 @implementation PlaylistOrganizerController {
@@ -236,6 +490,23 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     // Save selection before drag to restore after drag ends
     NSIndexSet *_preDragSelection;
+}
+
+#pragma mark - Helpers
+
+/// Returns the leaf (display) name for a node, stripping any path-encoded prefix.
+/// Nodes may have stored names like "music.hq >> Ambient" from before the cleanup fix;
+/// this extracts just "Ambient" for display and editing purposes.
+static NSString *leafNameForNode(TreeNode *node) {
+    NSString *name = node.name;
+    if (node.isFolder) return name;
+    // Deliberately a lossy split: unlike PlorgPathCodec splitEncodedName:, this does
+    // not unescape doubled guillemets. It is a display heuristic for dirty names.
+    NSRange lastSep = [name rangeOfString:PlorgPathSeparator options:NSBackwardsSearch];
+    if (lastSep.location != NSNotFound) {
+        return [name substringFromIndex:lastSep.location + lastSep.length];
+    }
+    return name;
 }
 
 #pragma mark - Lifecycle
@@ -279,7 +550,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     [self.outlineView registerForDraggedTypes:@[
         PlorgNodePasteboardType,       // Internal drag
         SimPlaylistPasteboardType,     // SimPlaylist tracks
-        NSPasteboardTypeFileURL        // Finder files (hover-expand only until Phase 4)
+        NSPasteboardTypeFileURL        // Finder files (append to a playlist)
     ]];
     self.outlineView.draggingDestinationFeedbackStyle = NSTableViewDraggingDestinationFeedbackStyleSourceList;
 
@@ -348,6 +619,29 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                                                  name:@"PlorgActivePlaylistChanged"
                                                object:nil];
 
+    // Register for corruption check requests from preferences
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleCheckCorruptedRequest:)
+                                                 name:@"PlorgCheckCorruptedPlaylists"
+                                               object:nil];
+
+    // Register for track-count refreshes after an async file drop import
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(playlistContentsDidChange:)
+                                                 name:@"PlorgPlaylistContentsChanged"
+                                               object:nil];
+
+    // Check for corrupted playlists on startup if enabled
+    if (plorg_config::getConfigBool(plorg_config::kCheckCorruptedOnStartup,
+                                     plorg_config::kDefaultCheckCorruptedOnStartup)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSArray *corrupted = [weakSelf checkForCorruptedPlaylists];
+            if (corrupted.count > 0) {
+                [weakSelf showCorruptedPlaylistsDialog:corrupted];
+            }
+        });
+    }
+
     // Size columns after layout (delayed to ensure proper bounds)
     dispatch_async(dispatch_get_main_queue(), ^{
         [weakSelf.outlineView sizeLastColumnToFit];
@@ -367,24 +661,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
 - (void)selectActivePlaylist {
     if (!self.activePlaylistName) return;
-
-    TreeNode *node = [self.treeModel findPlaylistWithName:self.activePlaylistName];
-    if (!node) return;
-
-    // Expand parent folders to make it visible
-    TreeNode *parent = node.parent;
-    while (parent) {
-        parent.isExpanded = YES;
-        [self.outlineView expandItem:parent];
-        parent = parent.parent;
-    }
-
-    // Select and scroll to the playlist
-    NSInteger row = [self.outlineView rowForItem:node];
-    if (row >= 0) {
-        [self.outlineView selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
-        [self.outlineView scrollRowToVisible:row];
-    }
+    [self revealPlaylist:self.activePlaylistName];
 }
 
 - (void)refreshActivePlaylist {
@@ -404,13 +681,13 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)activePlaylistDidChange:(NSNotification *)notification {
-    NSString *newName = notification.userInfo[@"playlistName"];
-    if (![self.activePlaylistName isEqualToString:newName]) {
+    NSString *newFoobarName = notification.userInfo[@"foobarName"];
+    if (![self.activePlaylistName isEqualToString:newFoobarName]) {
         // Find old and new active playlist nodes to refresh only those rows
-        TreeNode *oldActiveNode = self.activePlaylistName ? [self.treeModel findPlaylistWithName:self.activePlaylistName] : nil;
-        TreeNode *newActiveNode = newName ? [self.treeModel findPlaylistWithName:newName] : nil;
+        TreeNode *oldActiveNode = self.activePlaylistName ? [self.treeModel findPlaylistForFoobarName:self.activePlaylistName] : nil;
+        TreeNode *newActiveNode = newFoobarName ? [self.treeModel findPlaylistForFoobarName:newFoobarName] : nil;
 
-        self.activePlaylistName = newName;
+        self.activePlaylistName = newFoobarName;
 
         // Refresh only the affected rows (preserves selection)
         if (oldActiveNode) {
@@ -427,6 +704,20 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                                            columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
             }
         }
+    }
+}
+
+- (void)playlistContentsDidChange:(NSNotification *)notification {
+    NSString *foobarName = notification.userInfo[@"foobarName"];
+    if (foobarName.length == 0) return;
+
+    TreeNode *node = [self.treeModel findPlaylistForFoobarName:foobarName];
+    if (!node) return;
+
+    NSInteger row = [self.outlineView rowForItem:node];
+    if (row >= 0) {
+        [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
+                                   columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
     }
 }
 
@@ -474,7 +765,27 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     [menu addItemWithTitle:@"Export Tree..." action:@selector(exportTree:) keyEquivalent:@""];
 
+    // Tools submenu
+    NSMenuItem *toolsItem = [[NSMenuItem alloc] initWithTitle:@"Tools" action:nil keyEquivalent:@""];
+    NSMenu *toolsMenu = [[NSMenu alloc] initWithTitle:@"Tools"];
+    [toolsMenu addItemWithTitle:@"Repair Volume UUIDs..." action:@selector(repairVolumeUUIDs:) keyEquivalent:@""];
+    toolsItem.submenu = toolsMenu;
+    [menu addItem:toolsItem];
+
     self.outlineView.menu = menu;
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+    // All context menu items are enabled except Rename/Delete,
+    // which require a selection
+    SEL action = menuItem.action;
+
+    // Rename and Delete require a selection
+    if (action == @selector(renameItem:) || action == @selector(deleteItem:)) {
+        return self.outlineView.selectedRow >= 0;
+    }
+
+    return YES;
 }
 
 #pragma mark - Actions
@@ -508,7 +819,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (void)revealPlaylist:(NSString *)playlistName {
-    TreeNode *node = [self.treeModel findPlaylistWithName:playlistName];
+    TreeNode *node = [self.treeModel findPlaylistForFoobarName:playlistName];
     if (!node) return;
 
     // Expand all parent folders
@@ -582,35 +893,11 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         insertAfterIndex = [self.treeModel.rootNodes indexOfObject:targetNode];
     }
 
-    // Create playlist in foobar2000 first
     @try {
         auto pm = playlist_manager::get();
-        pfc::string8 name = "New Playlist";
 
-        // Find unique name
-        int suffix = 1;
-        while (true) {
-            bool found = false;
-            t_size count = pm->get_playlist_count();
-            for (t_size i = 0; i < count; i++) {
-                pfc::string8 existingName;
-                pm->playlist_get_name(i, existingName);
-                if (existingName == name) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) break;
-            name.reset();
-            name << "New Playlist " << suffix++;
-        }
-
-        // Create the playlist in foobar2000
-        pm->create_playlist(name.c_str(), name.get_length(), pfc::infinite_size);
-
-        // Create node and add to target location (bypass playlist_callback adding to root)
-        NSString *playlistName = [NSString stringWithUTF8String:name.c_str()];
-        TreeNode *newPlaylist = [TreeNode playlistWithName:playlistName];
+        // Create node first and add to tree (to establish path for encoding)
+        TreeNode *newPlaylist = [TreeNode playlistWithName:@"New Playlist"];
 
         if (targetFolder) {
             if (insertAfterIndex >= 0) {
@@ -618,14 +905,31 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             } else {
                 [targetFolder addChild:newPlaylist];
             }
-            [self.outlineView expandItem:targetFolder];
-            [self.treeModel saveToConfig];
         } else if (insertAfterIndex >= 0) {
             [self.treeModel insertRootNode:newPlaylist atIndex:insertAfterIndex + 1];
         } else {
             [self.treeModel addRootNode:newPlaylist];
         }
 
+        // Find unique foobar2000 name (checks encoded name for collisions)
+        NSString *leafName = @"New Playlist";
+        int suffix = 1;
+        while (true) {
+            newPlaylist.name = leafName;
+            NSString *foobarName = [self.treeModel foobarNameForNode:newPlaylist];
+            if (pm->find_playlist([foobarName UTF8String], pfc_infinite) == pfc_infinite) break;
+            leafName = [NSString stringWithFormat:@"New Playlist %d", suffix++];
+        }
+
+        // Create the playlist in foobar2000 with the encoded name
+        NSString *foobarName = [self.treeModel foobarNameForNode:newPlaylist];
+        pfc::string8 nameStr([foobarName UTF8String]);
+        pm->create_playlist(nameStr.c_str(), nameStr.get_length(), pfc::infinite_size);
+
+        if (targetFolder) {
+            [self.outlineView expandItem:targetFolder];
+        }
+        [self.treeModel saveToConfig];
         [self.outlineView reloadData];
 
         // Start inline editing after a brief delay to let the view update
@@ -690,7 +994,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         if (node.isFolder) {
             alert.messageText = [NSString stringWithFormat:@"Delete folder \"%@\"?", node.name];
             if (node.children.count > 0) {
-                alert.informativeText = @"By default, playlists inside will be moved to root and deleted from foobar2000.";
+                alert.informativeText = @"The folder will be removed and playlists inside will be moved to the parent folder. Check \"Also delete all playlists inside folders\" to delete them from foobar2000.";
             } else {
                 alert.informativeText = @"The folder is empty.";
             }
@@ -781,15 +1085,13 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         auto pm = playlist_manager::get();
 
         if (!node.isFolder) {
-            // Find and delete this playlist
-            t_size count = pm->get_playlist_count();
-            for (t_size i = 0; i < count; i++) {
-                pfc::string8 name;
-                pm->playlist_get_name(i, name);
-                if ([node.name isEqualToString:[NSString stringWithUTF8String:name.c_str()]]) {
-                    pm->remove_playlist(i);
-                    FB2K_console_formatter() << "[Plorg] Deleted playlist: " << name.c_str();
-                    break;
+            // Find and delete this playlist using foobar name
+            NSString *foobarName = [self.treeModel foobarNameForNode:node];
+            if (foobarName) {
+                t_size index = pm->find_playlist([foobarName UTF8String], pfc_infinite);
+                if (index != pfc_infinite) {
+                    pm->remove_playlist(index);
+                    FB2K_console_formatter() << "[Plorg] Deleted playlist: " << [foobarName UTF8String];
                 }
             }
         } else if (recursive) {
@@ -856,13 +1158,21 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
 - (void)settingsDidChange:(NSNotification *)notification {
     // Reload tree lines setting
-    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, true);
+    self.showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, plorg_config::kDefaultShowTreeLines);
     [self.outlineView reloadData];
+}
+
+- (void)handleCheckCorruptedRequest:(NSNotification *)notification {
+    NSArray *corrupted = [self checkForCorruptedPlaylists];
+    [self showCorruptedPlaylistsDialog:corrupted];
 }
 
 #pragma mark - NSOutlineViewDataSource
 
 - (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(id)item {
+    // During import, tree is being modified - return 0 to prevent access to invalid nodes
+    if (self.isImporting) return 0;
+
     if (!item) {
         return self.treeModel.rootNodes.count;
     }
@@ -871,6 +1181,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)index ofItem:(id)item {
+    // During import, tree is being modified - return nil to prevent access to invalid nodes
+    if (self.isImporting) return nil;
+
     if (!item) {
         return self.treeModel.rootNodes[index];
     }
@@ -879,7 +1192,12 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item {
+    // During import, tree is being modified - return NO to prevent access to invalid nodes
+    if (self.isImporting) return NO;
+
+    if (!item) return NO;
     TreeNode *node = (TreeNode *)item;
+    if (![node isKindOfClass:[TreeNode class]]) return NO;
     return node.isFolder;
 }
 
@@ -892,6 +1210,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (NSTableRowView *)outlineView:(NSOutlineView *)outlineView rowViewForItem:(id)item {
+    // During import, tree is being modified - use default row view to prevent access to invalid nodes
+    if (self.isImporting) return nil;
+
     if (self.showTreeLines) {
         PlorgTreeLinesRowView *rowView = [[PlorgTreeLinesRowView alloc] init];
         rowView.outlineView = outlineView;
@@ -902,7 +1223,21 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (NSView *)outlineView:(NSOutlineView *)outlineView viewForTableColumn:(NSTableColumn *)tableColumn item:(id)item {
+    // During import, tree is being modified - return nil to prevent access to invalid nodes
+    if (self.isImporting) return nil;
+
+    // Safety: item could be nil during tree modifications
+    if (!item) return nil;
+
     TreeNode *node = (TreeNode *)item;
+    return [self createViewForNode:node tableColumn:tableColumn outlineView:outlineView];
+}
+
+- (NSView *)createViewForNode:(TreeNode *)node tableColumn:(NSTableColumn *)tableColumn outlineView:(NSOutlineView *)outlineView {
+    // Validate node before proceeding
+    if (!node || ![node isKindOfClass:[TreeNode class]]) {
+        return nil;
+    }
 
     // Count column - simple right-aligned text
     if ([tableColumn.identifier isEqualToString:@"CountColumn"]) {
@@ -931,13 +1266,13 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             ]];
         }
 
-        NSInteger count = node.isFolder ? node.childCount : [self getPlaylistItemCount:node.name];
+        NSInteger count = node.isFolder ? node.childCount : [self getPlaylistItemCount:[self.treeModel foobarNameForNode:node]];
         cellView.textField.stringValue = count > 0 ? [NSString stringWithFormat:@"%ld", (long)count] : @"";
         return cellView;
     }
 
     // Name column
-    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, true);
+    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, plorg_config::kDefaultShowIcons);
     NSString *cellId = showIcons ? @"IconCell" : @"TextCell";
     NSTableCellView *cellView = [outlineView makeViewWithIdentifier:cellId owner:self];
 
@@ -987,9 +1322,12 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     cellView.textField.delegate = self;
     objc_setAssociatedObject(cellView.textField, kTreeNodeKey, node, OBJC_ASSOCIATION_ASSIGN);
 
-    // Check if this is the active playlist
-    BOOL isActivePlaylist = !node.isFolder && self.activePlaylistName &&
-                            [node.name isEqualToString:self.activePlaylistName];
+    // Check if this is the active playlist (compare foobar2000 names)
+    BOOL isActivePlaylist = NO;
+    if (!node.isFolder && self.activePlaylistName) {
+        NSString *nodeFoobarName = [self.treeModel foobarNameForNode:node];
+        isActivePlaylist = nodeFoobarName && [nodeFoobarName isEqualToString:self.activePlaylistName];
+    }
 
     // Set icon if showing
     if (showIcons && cellView.imageView) {
@@ -1003,8 +1341,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         }
     }
 
-    // Set text with bold for active playlist
-    cellView.textField.stringValue = node.name;
+    cellView.textField.stringValue = leafNameForNode(node);
     if (isActivePlaylist) {
         cellView.textField.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     } else {
@@ -1025,8 +1362,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     if (node.isFolder) {
         count = node.childCount;
     } else {
-        // Get playlist track count from foobar2000
-        count = [self getPlaylistItemCount:node.name];
+        count = [self getPlaylistItemCount:[self.treeModel foobarNameForNode:node]];
     }
 
     // Use TreeNode's formatting method
@@ -1034,18 +1370,88 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (NSInteger)getPlaylistItemCount:(NSString *)playlistName {
+    // Bail early during import or if invalid name
+    if (self.isImporting) return 0;
+    if (!playlistName || playlistName.length == 0) return 0;
+
+    NSString *markerPath = [[self class] crashMarkerPath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    // If crash marker exists from previous run, don't access SDK at all
+    // This prevents re-crashing before the corruption check can run
+    if ([fm fileExistsAtPath:markerPath]) {
+        return 0;
+    }
+
+    // Also check if this playlist is in the known bad list
+    // (We need to look it up by name since we don't have UUID here)
+    static NSSet<NSString *> *knownBadNames = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Build name set from known bad UUIDs
+        NSString *playlistsDir = [@"~/Library/foobar2000-v2/playlists-v2.0" stringByExpandingTildeInPath];
+        NSString *indexPath = [playlistsDir stringByAppendingPathComponent:@"index.txt"];
+        NSSet *badUUIDs = [[self class] loadKnownBadPlaylists];
+
+        if (badUUIDs.count > 0) {
+            NSMutableSet *names = [NSMutableSet set];
+            NSString *indexContent = [NSString stringWithContentsOfFile:indexPath encoding:NSUTF8StringEncoding error:nil];
+            if (indexContent) {
+                if ([indexContent hasPrefix:@"\uFEFF"]) {
+                    indexContent = [indexContent substringFromIndex:1];
+                }
+                for (NSString *line in [indexContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+                    if (line.length == 0) continue;
+                    NSRange colonRange = [line rangeOfString:@":"];
+                    if (colonRange.location == 36) {
+                        NSString *uuid = [line substringToIndex:colonRange.location];
+                        NSString *name = [line substringFromIndex:colonRange.location + 1];
+                        if ([badUUIDs containsObject:uuid]) {
+                            [names addObject:name];
+                        }
+                    }
+                }
+            }
+            knownBadNames = names;
+        } else {
+            knownBadNames = [NSSet set];
+        }
+    });
+
+    if ([knownBadNames containsObject:playlistName]) {
+        return 0;
+    }
+
     @try {
         auto pm = playlist_manager::get();
-        t_size playlistCount = pm->get_playlist_count();
-        for (t_size i = 0; i < playlistCount; i++) {
-            pfc::string8 name;
-            pm->playlist_get_name(i, name);
-            if ([playlistName isEqualToString:[NSString stringWithUTF8String:name.c_str()]]) {
-                return (NSInteger)pm->playlist_get_item_count(i);
-            }
-        }
+        if (!pm.is_valid()) return 0;
+
+        const char *nameStr = [playlistName UTF8String];
+        if (!nameStr) return 0;
+
+        // Get count first to validate manager state
+        t_size totalCount = pm->get_playlist_count();
+        if (totalCount == 0) return 0;
+
+        t_size index = pm->find_playlist(nameStr, pfc_infinite);
+        if (index == pfc_infinite) return 0;
+        if (index >= totalCount) return 0;
+
+        // Write crash marker BEFORE the potentially crashing SDK call
+        // Format: name (we'll look up UUID during recovery from index.txt)
+        [playlistName writeToFile:markerPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+        // This is the call that can crash on corrupted playlists
+        t_size itemCount = pm->playlist_get_item_count(index);
+
+        // If we get here, access succeeded - remove the marker
+        [fm removeItemAtPath:markerPath error:nil];
+
+        return (NSInteger)itemCount;
     } @catch (...) {
-        // Silently fail
+        // Remove marker on caught exception (SIGSEGV won't be caught though)
+        [fm removeItemAtPath:markerPath error:nil];
+        FB2K_console_formatter() << "[Plorg] Warning: SDK call failed in getPlaylistItemCount";
     }
     return 0;
 }
@@ -1084,20 +1490,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     if (!node || node.isFolder) return;
 
     // Activate the playlist in foobar2000
-    @try {
-        auto pm = playlist_manager::get();
-        t_size count = pm->get_playlist_count();
-        for (t_size i = 0; i < count; i++) {
-            pfc::string8 name;
-            pm->playlist_get_name(i, name);
-            if (strcmp(name.c_str(), [node.name UTF8String]) == 0) {
-                pm->set_active_playlist(i);
-                break;
-            }
-        }
-    } @catch (...) {
-        FB2K_console_formatter() << "[Plorg] Failed to activate playlist";
-    }
+    [self activatePlaylistNamed:[self.treeModel foobarNameForNode:node]];
 }
 
 #pragma mark - Drag & Drop
@@ -1158,7 +1551,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         }
     } else if (node.nodeType == TreeNodeTypePlaylist) {
         // Activate playlist in foobar2000
-        [self activatePlaylistNamed:node.name];
+        [self activatePlaylistNamed:[self.treeModel foobarNameForNode:node]];
     }
 
     _dragHoveredNode = nil;  // Prevent re-trigger on same node
@@ -1217,10 +1610,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                 if (!error && [unarchivedObj isKindOfClass:[NSDictionary class]]) {
                     // New format: dictionary with indices key
                     NSDictionary *dragData = (NSDictionary *)unarchivedObj;
-                    _cachedDragRowIndices = dragData[@"indices"];
-                    // Can also get sourcePlaylist and paths if needed:
-                    // NSNumber *sourcePlaylist = dragData[@"sourcePlaylist"];
-                    // NSArray *paths = dragData[@"paths"];
+                    id indices = dragData[@"indices"];
+                    _cachedDragRowIndices = [indices isKindOfClass:[NSArray class]] ? indices : nil;
                 } else if (!error && [unarchivedObj isKindOfClass:[NSArray class]]) {
                     // Old format: plain array of indices
                     _cachedDragRowIndices = (NSArray *)unarchivedObj;
@@ -1246,7 +1637,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         return NSDragOperationNone;
     }
 
-    // Handle file drops - HOVER WORKS, DROP DISABLED UNTIL PHASE 4
+    // Handle file drops from Finder
     if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
         // Fallback: set drag flag if draggingEntered wasn't called
         if (!_hasDragSource) {
@@ -1256,8 +1647,12 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         if (targetNode != _dragHoveredNode) {
             [self startHoverTimerForNode:targetNode];
         }
-        // Phase 4: Enable drop by returning NSDragOperationCopy for playlists
-        return NSDragOperationNone;  // Don't show valid drop cursor until implemented
+
+        // Files append to the end of a playlist; folders only hover-expand
+        if (targetNode && targetNode.nodeType == TreeNodeTypePlaylist) {
+            return NSDragOperationCopy;
+        }
+        return NSDragOperationNone;
     }
 
     // Handle internal plorg node drops (existing behavior)
@@ -1289,7 +1684,57 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         return [self handleInternalDrop:info targetNode:targetNode index:index];
     }
 
+    if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
+        return [self handleFileDrop:info targetNode:targetNode];
+    }
+
     return NO;
+}
+
+- (BOOL)handleFileDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode {
+    if (!targetNode || targetNode.nodeType != TreeNodeTypePlaylist) {
+        return NO;
+    }
+
+    NSPasteboard *pasteboard = info.draggingPasteboard;
+    NSArray<NSURL *> *urls = [pasteboard readObjectsForClasses:@[[NSURL class]]
+                                                       options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
+    if (urls.count == 0) {
+        return NO;
+    }
+
+    NSString *targetFoobarName = [self.treeModel foobarNameForNode:targetNode];
+    if (targetFoobarName.length == 0) {
+        return NO;
+    }
+
+    @try {
+        // The playlist must already exist in foobar2000 for the import to land
+        auto pm = playlist_manager::get();
+        if (pm->find_playlist([targetFoobarName UTF8String], pfc_infinite) == pfc_infinite) {
+            FB2K_console_formatter() << "[Plorg] Drop target has no foobar2000 playlist: "
+                                      << [targetFoobarName UTF8String];
+            return NO;
+        }
+
+        auto notify = fb2k::service_new<PlorgFileDropNotify>([targetFoobarName UTF8String]);
+        for (NSURL *url in urls) {
+            if (url.isFileURL && url.path.length > 0) {
+                notify->m_paths.add_item([url.path UTF8String]);
+            }
+        }
+
+        if (notify->m_paths.get_count() == 0) {
+            return NO;
+        }
+
+        // Import runs asynchronously; tracks are appended in on_completion
+        notify->startImport();
+        return YES;
+    } @catch (...) {
+        FB2K_console_formatter() << "[Plorg] Failed to handle file drop";
+        return NO;
+    }
 }
 
 - (BOOL)handleSimPlaylistDrop:(id<NSDraggingInfo>)info targetNode:(TreeNode *)targetNode {
@@ -1313,7 +1758,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             return NO;
         }
         size_t sourcePlaylistIndex = _dragSourcePlaylistIndex;
-        size_t targetPlaylistIndex = pm->find_playlist([targetNode.name UTF8String], pfc_infinite);
+        NSString *targetFoobarName = [self.treeModel foobarNameForNode:targetNode];
+        size_t targetPlaylistIndex = targetFoobarName ? pm->find_playlist([targetFoobarName UTF8String], pfc_infinite) : pfc_infinite;
 
         if (targetPlaylistIndex == pfc_infinite) {
             return NO;
@@ -1328,6 +1774,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         pfc::bit_array_bittable selection(sourceItemCount);
         size_t validCount = 0;
         for (NSNumber *index in rowIndices) {
+            if (![index isKindOfClass:[NSNumber class]]) {
+                return NO;
+            }
             size_t idx = index.unsignedIntegerValue;
             if (idx < sourceItemCount) {
                 selection.set(idx, true);
@@ -1374,8 +1823,18 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     NSArray *paths = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSArray class] fromData:data error:nil];
     if (!paths || paths.count == 0) return NO;
 
+    BOOL encodingEnabled = plorg_config::getConfigBool(plorg_config::kPathEncodedNames,
+                                                        plorg_config::kDefaultPathEncodedNames);
+
     TreeNode *targetFolder = targetNode;  // nil means root
     NSInteger targetIndex = (index == NSOutlineViewDropOnItemIndex) ? 0 : index;
+
+    // Capture old foobar names before move (if encoding is ON)
+    NSMutableDictionary<NSValue *, NSString *> *oldNames = nil;
+    if (encodingEnabled) {
+        oldNames = [NSMutableDictionary dictionary];
+        self.treeModel.migrationGeneration++;
+    }
 
     // Find and move each dragged node
     for (NSString *path in paths) {
@@ -1396,8 +1855,26 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             if (isDescendant) continue;
         }
 
+        // Capture old names before move
+        if (encodingEnabled) {
+            if (node.isFolder) {
+                [self collectFoobarNames:node.children into:oldNames];
+            } else {
+                NSString *foobarName = [self.treeModel foobarNameForNode:node];
+                if (foobarName) {
+                    NSValue *key = [NSValue valueWithNonretainedObject:node];
+                    oldNames[key] = foobarName;
+                }
+            }
+        }
+
         [self.treeModel moveNode:node toParent:targetFolder atIndex:targetIndex];
         targetIndex++;  // Adjust for next item
+    }
+
+    // Rename foobar2000 playlists to match new paths
+    if (encodingEnabled && oldNames.count > 0) {
+        [self renameFoobarPlaylistsFromOldNames:oldNames];
     }
 
     [self.outlineView reloadData];
@@ -1466,7 +1943,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     self.editingNode = node;
     NSTableCellView *cellView = [self.outlineView viewAtColumn:0 row:row makeIfNecessary:NO];
     if (cellView && cellView.textField) {
-        cellView.textField.stringValue = node.name;
+        cellView.textField.stringValue = leafNameForNode(node);
         [cellView.textField becomeFirstResponder];
         // Select all text for easy replacement
         [cellView.textField selectText:nil];
@@ -1482,38 +1959,61 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     NSString *newName = [textField.stringValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
+    NSString *currentLeafName = leafNameForNode(node);
+
     // Validate name
     if (newName.length == 0) {
-        // Restore original name
-        textField.stringValue = node.name;
+        // Restore display name
+        textField.stringValue = currentLeafName;
         return;
     }
 
-    if ([newName isEqualToString:node.name]) {
-        // No change
+    if ([newName isEqualToString:currentLeafName]) {
+        // No change — but fix the stored name if it had a stale prefix
+        if (![currentLeafName isEqualToString:node.name]) {
+            node.name = currentLeafName;
+            [self.treeModel saveToConfig];
+        }
         self.editingNode = nil;
         return;
     }
 
-    NSString *oldName = node.name;
+    BOOL encodingEnabled = plorg_config::getConfigBool(plorg_config::kPathEncodedNames,
+                                                        plorg_config::kDefaultPathEncodedNames);
+
+    // Capture old foobar2000 names before changing node.name
+    NSString *oldFoobarName = nil;
+    NSMutableDictionary<NSValue *, NSString *> *oldDescendantNames = nil;
+
+    if (!node.isFolder) {
+        oldFoobarName = [self.treeModel foobarNameForNode:node];
+    } else if (encodingEnabled) {
+        // Folder rename: capture all descendant playlist foobar names
+        oldDescendantNames = [NSMutableDictionary dictionary];
+        [self collectFoobarNames:node.children into:oldDescendantNames];
+        self.treeModel.migrationGeneration++;
+    }
+
     node.name = newName;
 
     // If it's a playlist, rename in foobar2000 too
-    if (!node.isFolder) {
+    if (!node.isFolder && oldFoobarName) {
         @try {
             auto pm = playlist_manager::get();
-            t_size count = pm->get_playlist_count();
-            for (t_size i = 0; i < count; i++) {
-                pfc::string8 name;
-                pm->playlist_get_name(i, name);
-                if (strcmp(name.c_str(), [oldName UTF8String]) == 0) {
-                    pm->playlist_rename(i, [newName UTF8String], [newName lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
-                    break;
-                }
+            t_size index = pm->find_playlist([oldFoobarName UTF8String], pfc_infinite);
+            if (index != pfc_infinite) {
+                NSString *newFoobarName = [self.treeModel foobarNameForNode:node];
+                pfc::string8 newNameStr([newFoobarName UTF8String]);
+                pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
             }
         } @catch (...) {
             FB2K_console_formatter() << "[Plorg] Failed to rename playlist";
         }
+    }
+
+    // If it's a folder and encoding is ON, rename all descendant playlists
+    if (node.isFolder && encodingEnabled && oldDescendantNames.count > 0) {
+        [self renameFoobarPlaylistsFromOldNames:oldDescendantNames];
     }
 
     [self.treeModel saveToConfig];
@@ -1523,6 +2023,44 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 - (BOOL)control:(NSControl *)control textShouldEndEditing:(NSText *)fieldEditor {
     return YES;  // Always allow ending edit
 }
+
+#pragma mark - Path Encoding Helpers
+
+- (void)collectFoobarNames:(NSArray<TreeNode *> *)nodes into:(NSMutableDictionary<NSValue *, NSString *> *)dict {
+    for (TreeNode *node in nodes) {
+        if (node.isFolder) {
+            [self collectFoobarNames:node.children into:dict];
+        } else {
+            NSString *foobarName = [self.treeModel foobarNameForNode:node];
+            if (foobarName) {
+                NSValue *key = [NSValue valueWithNonretainedObject:node];
+                dict[key] = foobarName;
+            }
+        }
+    }
+}
+
+- (void)renameFoobarPlaylistsFromOldNames:(NSDictionary<NSValue *, NSString *> *)oldNames {
+    @try {
+        auto pm = playlist_manager::get();
+        for (NSValue *key in oldNames) {
+            TreeNode *node = [key nonretainedObjectValue];
+            NSString *oldFoobarName = oldNames[key];
+            NSString *newFoobarName = [self.treeModel foobarNameForNode:node];
+
+            if (!newFoobarName || [oldFoobarName isEqualToString:newFoobarName]) continue;
+
+            t_size index = pm->find_playlist([oldFoobarName UTF8String], pfc_infinite);
+            if (index == pfc_infinite) continue;
+
+            pfc::string8 newNameStr([newFoobarName UTF8String]);
+            pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
+        }
+    } @catch (...) {
+        FB2K_console_formatter() << "[Plorg] Failed to rename descendant playlists";
+    }
+}
+
 
 #pragma mark - Import/Export
 
@@ -1555,7 +2093,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             FB2K_console_formatter() << "[Plorg] YAML length: " << yaml.length << " chars";
 
             // Parse YAML into nodes
-            NSArray<TreeNode *> *parsedNodes = [strongSelf parseYamlToNodes:yaml];
+            NSArray<TreeNode *> *parsedNodes = [PlorgTreeYamlCodec parseNodeList:yaml];
             FB2K_console_formatter() << "[Plorg] Parsed " << parsedNodes.count << " root nodes from YAML";
 
             if (parsedNodes.count == 0) {
@@ -1595,7 +2133,6 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             }
 
             [strongSelf.treeModel saveToConfig];
-            [strongSelf.outlineView reloadData];
             [strongSelf reloadTree];
 
             FB2K_console_formatter() << "[Plorg] Imported " << imported << " items from YAML";
@@ -1605,94 +2142,6 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             FB2K_console_formatter() << "[Plorg] Failed to import from YAML (unknown error)";
         }
     }];
-}
-
-- (NSArray<TreeNode *> *)parseYamlToNodes:(NSString *)yaml {
-    if (!yaml || yaml.length == 0) return @[];
-
-    NSMutableArray<TreeNode *> *parsedRoots = [NSMutableArray array];
-    NSMutableArray<TreeNode *> *nodeStack = [NSMutableArray array];
-    NSMutableArray<NSNumber *> *indentStack = [NSMutableArray array];
-
-    NSArray *lines = [yaml componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
-    BOOL inTree = NO;
-
-    for (NSString *rawLine in lines) {
-        if (rawLine.length == 0 || [rawLine hasPrefix:@"#"]) continue;
-
-        NSInteger indent = 0;
-        while (indent < rawLine.length && [rawLine characterAtIndex:indent] == ' ') {
-            indent++;
-        }
-
-        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-        if ([line hasPrefix:@"tree:"]) {
-            inTree = YES;
-            continue;
-        }
-
-        if (!inTree) continue;
-
-        while (indentStack.count > 0 && indent <= indentStack.lastObject.integerValue) {
-            [nodeStack removeLastObject];
-            [indentStack removeLastObject];
-        }
-
-        TreeNode *newNode = nil;
-
-        if ([line hasPrefix:@"- folder:"]) {
-            NSString *name = [self extractQuotedYamlValue:line afterPrefix:@"- folder:"];
-            if (name) {
-                newNode = [TreeNode folderWithName:name];
-            }
-        } else if ([line hasPrefix:@"- playlist:"]) {
-            NSString *name = [self extractQuotedYamlValue:line afterPrefix:@"- playlist:"];
-            if (name) {
-                newNode = [TreeNode playlistWithName:name];
-            }
-        } else if ([line hasPrefix:@"expanded:"]) {
-            if (nodeStack.count > 0 && nodeStack.lastObject.isFolder) {
-                BOOL expanded = [line containsString:@"true"];
-                nodeStack.lastObject.isExpanded = expanded;
-            }
-            continue;
-        } else if ([line hasPrefix:@"items:"]) {
-            continue;
-        }
-
-        if (newNode) {
-            if (nodeStack.count > 0) {
-                [nodeStack.lastObject addChild:newNode];
-            } else {
-                [parsedRoots addObject:newNode];
-            }
-
-            if (newNode.isFolder) {
-                [nodeStack addObject:newNode];
-                [indentStack addObject:@(indent)];
-            }
-        }
-    }
-
-    return parsedRoots;
-}
-
-- (NSString *)extractQuotedYamlValue:(NSString *)line afterPrefix:(NSString *)prefix {
-    NSRange range = [line rangeOfString:prefix];
-    if (range.location == NSNotFound) return nil;
-
-    NSString *value = [line substringFromIndex:range.location + range.length];
-    value = [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-
-    if ([value hasPrefix:@"\""] && [value hasSuffix:@"\""]) {
-        value = [value substringWithRange:NSMakeRange(1, value.length - 2)];
-        // Unescape
-        value = [value stringByReplacingOccurrencesOfString:@"\\\"" withString:@"\""];
-        value = [value stringByReplacingOccurrencesOfString:@"\\\\" withString:@"\\"];
-    }
-
-    return value;
 }
 
 - (IBAction)importFromStrawberry:(id)sender {
@@ -1739,6 +2188,10 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 
     FB2K_console_formatter() << "[Plorg] Importing " << selectedPlaylists.count << " playlists from Strawberry...";
 
+    // Suppress outline view callbacks during import to prevent dangling pointer crashes
+    self.isImporting = YES;
+    [self.outlineView reloadData];
+
     NSMutableDictionary<NSString *, TreeNode *> *folders = [NSMutableDictionary dictionary];
     NSInteger imported = 0;
     NSInteger tracksQueued = 0;
@@ -1746,26 +2199,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     auto pm = playlist_manager::get();
 
     for (StrawberryPlaylistItem *item in selectedPlaylists) {
-        // Create foobar2000 playlist
-        t_size newPlaylistIndex = pfc_infinite;
-        @try {
-            newPlaylistIndex = pm->create_playlist([item.name UTF8String], pfc_infinite, pfc_infinite);
-        } @catch (...) {
-            FB2K_console_formatter() << "[Plorg] Failed to create playlist: " << [item.name UTF8String];
-            continue;
-        }
-
-        if (newPlaylistIndex == pfc_infinite) {
-            continue;
-        }
-
-        // Add tracks asynchronously using process_locations_async
-        if (item.trackPaths.count > 0) {
-            addTracksToPlaylistAsync(newPlaylistIndex, [item.name UTF8String], item.trackPaths);
-            tracksQueued += item.trackPaths.count;
-        }
-
-        // Add to plorg tree
+        // First add to plorg tree (to establish path for encoding)
         TreeNode *playlist = [TreeNode playlistWithName:item.name];
 
         if (item.uiPath.length > 0) {
@@ -1780,10 +2214,38 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                 [self.treeModel addRootNode:playlist];
             }
         }
+
+        // Now compute the foobar name (may be path-encoded)
+        NSString *foobarName = [self.treeModel foobarNameForNode:playlist];
+
+        // Create foobar2000 playlist with the (possibly encoded) name
+        t_size newPlaylistIndex = pfc_infinite;
+        @try {
+            newPlaylistIndex = pm->create_playlist([foobarName UTF8String], pfc_infinite, pfc_infinite);
+        } @catch (...) {
+            FB2K_console_formatter() << "[Plorg] Failed to create playlist: " << [foobarName UTF8String];
+            // Remove from tree since foobar2000 creation failed
+            [playlist.parent removeChild:playlist];
+            continue;
+        }
+
+        if (newPlaylistIndex == pfc_infinite) {
+            // Remove from tree since foobar2000 creation failed
+            [playlist.parent removeChild:playlist];
+            continue;
+        }
+
+        // Add tracks asynchronously using process_locations_async
+        if (item.trackPaths.count > 0) {
+            addTracksToPlaylistAsync(newPlaylistIndex, [foobarName UTF8String], item.trackPaths);
+            tracksQueued += item.trackPaths.count;
+        }
+
         imported++;
     }
 
-    [self.outlineView reloadData];
+    // Re-enable outline view callbacks
+    self.isImporting = NO;
     [self reloadTree];
     [self.treeModel saveToConfig];
 
@@ -1966,7 +2428,6 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         }
     }
 
-    [self.outlineView reloadData];
     [self reloadTree];
     [self.treeModel saveToConfig];
 
@@ -1991,6 +2452,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     FB2K_console_formatter() << "[Plorg] DBPL header says " << trackCount << " tracks";
 
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    BOOL loggedMalformed = NO;
 
     // Search for ":URI" pattern followed by path length and path
     // Format: 04 00 ':' 'U' 'R' 'I' LL LL '/' ...
@@ -2019,9 +2481,14 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                         [paths addObject:path];
                     }
                 }
+                // Skip past this :URI entry to avoid finding it again
+                pos = pathStart + pathLen - 1;
+            } else {
+                if (!loggedMalformed) {
+                    FB2K_console_formatter() << "[Plorg] Skipped malformed :URI entries in DBPL file: " << [dbplPath UTF8String];
+                    loggedMalformed = YES;
+                }
             }
-            // Skip past this :URI entry to avoid finding it again
-            pos = pathStart + pathLen - 1;
         }
     }
 
@@ -2057,7 +2524,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     }
 
     sqlite3 *db;
-    if (sqlite3_open([voxDbPath UTF8String], &db) != SQLITE_OK) {
+    if (sqlite3_open_v2([voxDbPath fileSystemRepresentation], &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) {
         FB2K_console_formatter() << "[Plorg] Failed to open Vox database";
         return;
     }
@@ -2082,6 +2549,10 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         if (!namePtr) continue;
 
         NSString *playlistName = [NSString stringWithUTF8String:namePtr];
+        if (!playlistName || playlistName.length == 0) {
+            FB2K_console_formatter() << "[Plorg] Vox import: skipping playlist " << playlistId << " (name failed to decode as UTF-8)";
+            continue;
+        }
 
         // Check if playlist already exists in foobar2000
         BOOL existsInFoobar = NO;
@@ -2147,7 +2618,6 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     sqlite3_finalize(stmt);
     sqlite3_close(db);
 
-    [self.outlineView reloadData];
     [self reloadTree];
     [self.treeModel saveToConfig];
 
@@ -2155,10 +2625,25 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 }
 
 - (IBAction)importFromOldPlorg:(id)sender {
+    // Check if a folder is selected/clicked - import into that folder
+    TreeNode *targetFolder = nil;
+    NSInteger clickedRow = self.outlineView.clickedRow;
+    NSInteger selectedRow = clickedRow >= 0 ? clickedRow : self.outlineView.selectedRow;
+    if (selectedRow >= 0) {
+        TreeNode *node = [self.outlineView itemAtRow:selectedRow];
+        if (node.isFolder) {
+            targetFolder = node;
+        }
+    }
+
     NSOpenPanel *openPanel = [NSOpenPanel openPanel];
     openPanel.allowedContentTypes = @[[UTType typeWithFilenameExtension:@"fth"]];
     openPanel.title = @"Import from Old foo_plorg";
-    openPanel.message = @"Select a Columns UI theme file (theme.fth) containing foo_plorg data";
+    if (targetFolder) {
+        openPanel.message = [NSString stringWithFormat:@"Select a theme.fth file. Contents will be imported into \"%@\".", targetFolder.name];
+    } else {
+        openPanel.message = @"Select a Columns UI theme file (theme.fth) containing foo_plorg data";
+    }
 
     // Try to find Wine foobar location as default
     NSString *winePath = [@"~/Applications/Wine10-slim/drive_c/Programs/foobar2000" stringByExpandingTildeInPath];
@@ -2177,9 +2662,10 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         FB2K_console_formatter() << "[Plorg] Selected theme file: " << [[openPanel.URL path] UTF8String];
         FB2K_console_formatter() << "[Plorg] Playlists directory: " << [playlistsDir UTF8String];
 
-        // Store paths for after mapping completes
+        // Store paths and target folder for after mapping completes
         strongSelf.pendingThemePath = [openPanel.URL path];
         strongSelf.pendingPlaylistsDir = playlistsDir;
+        strongSelf.pendingTargetFolder = targetFolder;
 
         // Show path mapping window
         strongSelf.pathMappingController = [[PathMappingWindowController alloc] init];
@@ -2196,10 +2682,17 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                  defaultMapping:(NSString *)defaultMapping {
     FB2K_console_formatter() << "[Plorg] Path mapping complete with " << mappings.count << " drive mappings";
 
+    // Reset import statistics before starting
+    [[PlorgImportStats shared] reset];
+
     @try {
         NSData *data = [NSData dataWithContentsOfFile:self.pendingThemePath];
         if (!data) {
             FB2K_console_formatter() << "[Plorg] Failed to read theme.fth file";
+            self.pathMappingController = nil;
+            self.pendingThemePath = nil;
+            self.pendingPlaylistsDir = nil;
+            self.pendingTargetFolder = nil;
             return;
         }
 
@@ -2208,19 +2701,30 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         NSInteger imported = [self parseOldPlorgFromTheme:data
                                              playlistsDir:self.pendingPlaylistsDir
                                                  mappings:mappings
-                                           defaultMapping:defaultMapping];
-        [self.outlineView reloadData];
+                                           defaultMapping:defaultMapping
+                                             targetFolder:self.pendingTargetFolder];
         [self reloadTree];
         [self.treeModel saveToConfig];
 
         FB2K_console_formatter() << "[Plorg] Imported " << imported << " items from old foo_plorg";
+    } @catch (NSException *exception) {
+        FB2K_console_formatter() << "[Plorg] Failed to import from old foo_plorg: " << [[exception reason] UTF8String];
+        // Reset flag and restore view state on error
+        self.isImporting = NO;
+        [self.treeModel saveToConfig];
+        [self reloadTree];
     } @catch (...) {
-        FB2K_console_formatter() << "[Plorg] Failed to import from old foo_plorg";
+        FB2K_console_formatter() << "[Plorg] Failed to import from old foo_plorg (unknown error)";
+        // Reset flag and restore view state on error
+        self.isImporting = NO;
+        [self.treeModel saveToConfig];
+        [self reloadTree];
     }
 
     self.pathMappingController = nil;
     self.pendingThemePath = nil;
     self.pendingPlaylistsDir = nil;
+    self.pendingTargetFolder = nil;
 }
 
 - (void)pathMappingDidCancel:(PathMappingWindowController *)controller {
@@ -2228,6 +2732,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     self.pathMappingController = nil;
     self.pendingThemePath = nil;
     self.pendingPlaylistsDir = nil;
+    self.pendingTargetFolder = nil;
 }
 
 // Legacy method for backward compatibility - uses default A: -> /Volumes/music mapping
@@ -2235,75 +2740,123 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
     return [self parseOldPlorgFromTheme:data
                            playlistsDir:playlistsDir
                                mappings:@{@"A:": @"/Volumes/music"}
-                         defaultMapping:@"/Volumes/music"];
+                         defaultMapping:@"/Volumes/music"
+                           targetFolder:nil];
 }
 
 - (NSInteger)parseOldPlorgFromTheme:(NSData *)data
                        playlistsDir:(NSString *)playlistsDir
                            mappings:(NSDictionary<NSString *, NSString *> *)mappings
-                     defaultMapping:(NSString *)defaultMapping {
+                     defaultMapping:(NSString *)defaultMapping
+                       targetFolder:(TreeNode *)targetFolder {
+    // Suppress outline view callbacks during import to prevent dangling pointer crashes
+    self.isImporting = YES;
+
+    // Clear outline view cache before modifying tree to prevent dangling pointers
+    [self.outlineView reloadData];
+
     // Load playlist index for UUID lookup
     NSMutableDictionary<NSString *, NSString *> *playlistIndex = [NSMutableDictionary dictionary];
     NSString *indexPath = [playlistsDir stringByAppendingPathComponent:@"index.txt"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:indexPath]) {
         NSString *indexContent = [NSString stringWithContentsOfFile:indexPath encoding:NSUTF8StringEncoding error:nil];
-        for (NSString *line in [indexContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        // Strip BOM if present
+        if (indexContent.length > 0 && [indexContent characterAtIndex:0] == 0xFEFF) {
+            indexContent = [indexContent substringFromIndex:1];
+        }
+        for (NSString *rawLine in [indexContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+            // Strip whitespace (handles CRLF line endings)
+            NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             NSRange colonRange = [line rangeOfString:@":"];
-            if (colonRange.location != NSNotFound) {
+            if (colonRange.location != NSNotFound && colonRange.location > 0) {
                 NSString *uuid = [line substringToIndex:colonRange.location];
                 NSString *name = [line substringFromIndex:colonRange.location + 1];
-                playlistIndex[name] = uuid;
+                if ([PlorgVolumeSyncLogic isValidVolumeUUID:uuid]) {
+                    playlistIndex[name] = uuid;
+                }
             }
         }
         FB2K_console_formatter() << "[Plorg] Loaded " << playlistIndex.count << " playlists from index.txt";
     }
 
-    // Extract plorg markers from binary theme data
-    NSString *content = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!content) {
-        content = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    }
-    if (!content) {
-        FB2K_console_formatter() << "[Plorg] Failed to decode theme file content";
-        return 0;
-    }
-
-    // Find plorg tree markers using regex
-    NSError *error = nil;
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"<[FP/][^<]*"
-                                                                           options:0 error:&error];
-    if (error) {
-        FB2K_console_formatter() << "[Plorg] Regex error";
-        return 0;
-    }
-
-    NSArray *matches = [regex matchesInString:content options:0 range:NSMakeRange(0, content.length)];
-    FB2K_console_formatter() << "[Plorg] Found " << matches.count << " potential markers in theme file";
-
+    // Extract plorg markers by scanning raw bytes
+    // This avoids encoding issues with binary theme file data
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    NSUInteger length = data.length;
     NSMutableArray<NSString *> *lines = [NSMutableArray array];
     NSString *firstFolderName = nil;
 
-    for (NSTextCheckingResult *match in matches) {
-        NSString *line = [content substringWithRange:match.range];
+    for (NSUInteger i = 0; i + 4 < length; i++) {
+        // Look for marker starts: <F>, <P>, </F>
+        if (bytes[i] != '<') continue;
 
-        // Track first folder to detect tree repetition
-        if ([line hasPrefix:@"<F>E-"] || [line hasPrefix:@"<F>N-"]) {
-            NSString *folderName = [line substringFromIndex:5];
-            if (!firstFolderName) {
-                firstFolderName = folderName;
-                FB2K_console_formatter() << "[Plorg] First folder: " << [folderName UTF8String];
-            } else if ([folderName isEqualToString:firstFolderName]) {
+        BOOL isMarker = NO;
+        if (bytes[i+1] == 'F' && bytes[i+2] == '>') {
+            isMarker = YES;  // <F>
+        } else if (bytes[i+1] == 'P' && bytes[i+2] == '>') {
+            isMarker = YES;  // <P>
+        } else if (bytes[i+1] == '/' && bytes[i+2] == 'F' && i+3 < length && bytes[i+3] == '>') {
+            isMarker = YES;  // </F>
+        }
+
+        if (!isMarker) continue;
+
+        // Find end of marker (next newline or next '<' or end of reasonable range)
+        NSUInteger markerStart = i;
+        NSUInteger markerEnd = i;
+        for (NSUInteger j = i; j < length && j < i + 500; j++) {
+            if (bytes[j] == '\n' || bytes[j] == '\r' || (j > i && bytes[j] == '<')) {
+                markerEnd = j;
                 break;
+            }
+            markerEnd = j + 1;
+        }
+
+        if (markerEnd > markerStart) {
+            // Decode this marker as UTF-8
+            NSData *markerData = [NSData dataWithBytes:bytes + markerStart length:markerEnd - markerStart];
+            NSString *line = [[NSString alloc] initWithData:markerData encoding:NSUTF8StringEncoding];
+            if (!line) {
+                // Fallback to Windows-1250 (Central European) for Czech text
+                line = [[NSString alloc] initWithData:markerData encoding:CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingWindowsLatin2)];
+            }
+            if (!line) {
+                // Last resort: Latin-1
+                line = [[NSString alloc] initWithData:markerData encoding:NSISOLatin1StringEncoding];
+            }
+
+            if (line) {
+                // Track first folder to detect tree repetition
+                if ([line hasPrefix:@"<F>E-"] || [line hasPrefix:@"<F>N-"]) {
+                    NSString *folderName = [line substringFromIndex:5];
+                    if (!firstFolderName) {
+                        firstFolderName = folderName;
+                        FB2K_console_formatter() << "[Plorg] First folder: " << [folderName UTF8String];
+                    } else if ([folderName isEqualToString:firstFolderName]) {
+                        // Found duplicate tree, stop here
+                        FB2K_console_formatter() << "[Plorg] Found duplicate tree at marker " << lines.count << ", stopping";
+                        break;
+                    }
+                }
+
+                [lines addObject:line];
             }
         }
 
-        [lines addObject:line];
+        // Skip past this marker for next iteration
+        i = markerEnd - 1;
     }
 
+    FB2K_console_formatter() << "[Plorg] Found " << lines.count << " tree markers in theme file";
+
     FB2K_console_formatter() << "[Plorg] Parsing " << lines.count << " tree markers";
+    if (targetFolder) {
+        FB2K_console_formatter() << "[Plorg] Importing into folder: " << [targetFolder.name UTF8String];
+    }
 
     // Parse the tree structure
-    NSMutableArray<TreeNode *> *stack = [NSMutableArray arrayWithObject:(id)[NSNull null]];
+    // Stack tracks current folder hierarchy - starts with target folder or NSNull sentinel
+    NSMutableArray<TreeNode *> *stack = [NSMutableArray arrayWithObject:targetFolder ?: (id)[NSNull null]];
     NSInteger imported = 0;
     NSInteger tracksImported = 0;
     auto pm = playlist_manager::get();
@@ -2318,18 +2871,36 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             folder.isExpanded = expanded;
 
             if (stack.count == 1) {
-                TreeNode *existing = nil;
-                for (TreeNode *node in self.treeModel.rootNodes) {
-                    if (node.isFolder && [node.name isEqualToString:name]) {
-                        existing = node;
-                        break;
+                // At root level - check where to add
+                if (targetFolder) {
+                    // Check if folder already exists in target
+                    TreeNode *existing = nil;
+                    for (TreeNode *node in targetFolder.children) {
+                        if (node.isFolder && [node.name isEqualToString:name]) {
+                            existing = node;
+                            break;
+                        }
                     }
+                    if (existing) {
+                        [stack addObject:existing];
+                        continue;
+                    }
+                    [targetFolder addChild:folder];
+                } else {
+                    // No target folder - add to root
+                    TreeNode *existing = nil;
+                    for (TreeNode *node in self.treeModel.rootNodes) {
+                        if (node.isFolder && [node.name isEqualToString:name]) {
+                            existing = node;
+                            break;
+                        }
+                    }
+                    if (existing) {
+                        [stack addObject:existing];
+                        continue;
+                    }
+                    [self.treeModel addRootNode:folder];
                 }
-                if (existing) {
-                    [stack addObject:existing];
-                    continue;
-                }
-                [self.treeModel addRootNode:folder];
             } else {
                 TreeNode *parent = stack.lastObject;
                 if (parent && parent != (id)[NSNull null]) {
@@ -2348,51 +2919,85 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             if (dashRange.location != NSNotFound) {
                 NSString *name = [rest substringFromIndex:dashRange.location + 1];
 
-                // Check if playlist already exists in foobar2000
-                BOOL existsInFoobar = NO;
-                t_size existingCount = pm->get_playlist_count();
-                for (t_size i = 0; i < existingCount; i++) {
-                    pfc::string8 existingName;
-                    pm->playlist_get_name(i, existingName);
-                    if ([name isEqualToString:[NSString stringWithUTF8String:existingName.c_str()]]) {
-                        existsInFoobar = YES;
-                        break;
-                    }
+                // Old foo_plorg themes store full path-encoded names (e.g., "folder >> leaf").
+                // Since we already build the folder hierarchy from <F> markers, extract just the leaf name.
+                NSRange lastSep = [name rangeOfString:PlorgPathSeparator options:NSBackwardsSearch];
+                if (lastSep.location != NSNotFound) {
+                    name = [name substringFromIndex:lastSep.location + lastSep.length];
                 }
 
-                if (!existsInFoobar) {
-                    // Try to import tracks from .fplite file
-                    NSString *uuid = playlistIndex[name];
-                    if (uuid) {
-                        NSString *fplitePath = [playlistsDir stringByAppendingPathComponent:
-                            [NSString stringWithFormat:@"playlist-%@.fplite", uuid]];
+                // First add TreeNode to tree (to establish path for encoding)
+                TreeNode *playlist = [TreeNode playlistWithName:name];
+                TreeNode *parentNode = nil;
 
-                        if ([[NSFileManager defaultManager] fileExistsAtPath:fplitePath]) {
-                            NSInteger trackCount = [self importPlaylistFromFplite:fplitePath
-                                                                             name:name
-                                                                         mappings:mappings
-                                                                   defaultMapping:defaultMapping];
-                            tracksImported += trackCount;
-                        }
+                if (stack.count == 1) {
+                    // At root level
+                    if (targetFolder) {
+                        [targetFolder addChild:playlist];
+                        parentNode = targetFolder;
                     } else {
-                        // No .fplite file, just create empty playlist
-                        pm->create_playlist([name UTF8String], pfc_infinite, pfc_infinite);
-                    }
-                }
-
-                // Add to tree if not already there
-                if (![self.treeModel findPlaylistWithName:name]) {
-                    TreeNode *playlist = [TreeNode playlistWithName:name];
-                    if (stack.count == 1) {
                         [self.treeModel addRootNode:playlist];
-                    } else {
-                        TreeNode *parent = stack.lastObject;
-                        if (parent && parent != (id)[NSNull null]) {
-                            [parent addChild:playlist];
-                        }
+                        // Root nodes don't have parent, but are in rootNodes array
                     }
-                    imported++;
+                } else {
+                    TreeNode *parent = stack.lastObject;
+                    if (parent && parent != (id)[NSNull null]) {
+                        [parent addChild:playlist];
+                        parentNode = parent;
+                    } else {
+                        // Fallback to root if stack is inconsistent
+                        [self.treeModel addRootNode:playlist];
+                    }
                 }
+
+                // Compute foobar name (may be path-encoded) and ensure uniqueness
+                NSString *foobarName = [self.treeModel foobarNameForNode:playlist];
+                NSString *uniqueFoobarName = makeUniquePlaylistName(foobarName);
+
+                // If we had to make name unique, update the tree node name
+                if (![uniqueFoobarName isEqualToString:foobarName]) {
+                    // Extract the suffix that was added
+                    NSString *suffix = [uniqueFoobarName substringFromIndex:foobarName.length];
+                    playlist.name = [name stringByAppendingString:suffix];
+                    foobarName = uniqueFoobarName;
+                    FB2K_console_formatter() << "[Plorg] Playlist \"" << [name UTF8String]
+                                              << "\" already exists, creating as \"" << [playlist.name UTF8String] << "\"";
+                }
+
+                // Create playlist in foobar2000 with the (possibly encoded) name
+                t_size newPlaylistIndex = pm->create_playlist([foobarName UTF8String], pfc_infinite, pfc_infinite);
+                if (newPlaylistIndex == pfc_infinite) {
+                    // Failed to create - remove from tree
+                    if (parentNode) {
+                        [parentNode removeChild:playlist];
+                    } else {
+                        [self.treeModel removeRootNode:playlist];
+                    }
+                    continue;
+                }
+
+                // Import tracks if .fplite file exists
+                NSString *uuid = playlistIndex[name];
+                if (uuid) {
+                    NSString *fplitePath = [playlistsDir stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"playlist-%@.fplite", uuid]];
+
+                    if ([[NSFileManager defaultManager] fileExistsAtPath:fplitePath]) {
+                        FB2K_console_formatter() << "[Plorg] Importing tracks for playlist: " << [name UTF8String];
+                        NSInteger trackCount = [self addTracksFromFplite:fplitePath
+                                                          playlistIndex:newPlaylistIndex
+                                                           playlistName:foobarName
+                                                               mappings:mappings
+                                                         defaultMapping:defaultMapping];
+                        tracksImported += trackCount;
+                    } else {
+                        FB2K_console_formatter() << "[Plorg] .fplite file not found for: " << [name UTF8String];
+                    }
+                } else {
+                    FB2K_console_formatter() << "[Plorg] No UUID in index for playlist: " << [name UTF8String];
+                }
+
+                imported++;
             }
         }
     }
@@ -2401,36 +3006,91 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
         FB2K_console_formatter() << "[Plorg] Also imported " << tracksImported << " tracks";
     }
 
+    // Re-enable outline view callbacks and reload
+    self.isImporting = NO;
+    [self.outlineView reloadData];
+
+    // Show summary dialog once after all playlists processed
+    [[PlorgImportStats shared] showSummary];
+
     return imported;
 }
 
-- (NSInteger)importPlaylistFromFplite:(NSString *)fplitePath
-                                 name:(NSString *)name
-                             mappings:(NSDictionary<NSString *, NSString *> *)mappings
-                       defaultMapping:(NSString *)defaultMapping {
+// Add tracks from .fplite file to an existing playlist
+- (NSInteger)addTracksFromFplite:(NSString *)fplitePath
+                   playlistIndex:(t_size)playlistIndex
+                    playlistName:(NSString *)playlistName
+                        mappings:(NSDictionary<NSString *, NSString *> *)mappings
+                  defaultMapping:(NSString *)defaultMapping {
     NSString *content = [NSString stringWithContentsOfFile:fplitePath encoding:NSUTF8StringEncoding error:nil];
     if (!content) return 0;
 
-    auto pm = playlist_manager::get();
-    t_size newPlaylistIndex = pm->create_playlist([name UTF8String], pfc_infinite, pfc_infinite);
-    if (newPlaylistIndex == pfc_infinite) return 0;
+    // Strip BOM if present
+    if (content.length > 0 && [content characterAtIndex:0] == 0xFEFF) {
+        content = [content substringFromIndex:1];
+    }
 
     NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
     NSMutableArray<NSString *> *trackPaths = [NSMutableArray array];
 
-    for (NSString *line in lines) {
+    for (NSString *rawLine in lines) {
+        // Strip any remaining \r characters (Windows CRLF handling)
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (line.length == 0) continue;
 
         NSString *path = line;
         // Convert file:// URL to path
         if ([path hasPrefix:@"file://"]) {
             path = [path substringFromIndex:7];
-            path = [path stringByRemovingPercentEncoding];
+            NSString *decoded = [path stringByRemovingPercentEncoding];
+            if (!decoded) {
+                // stringByRemovingPercentEncoding failed - try lenient decoding
+                // Escape any bare % that aren't valid percent sequences
+                NSMutableString *fixed = [NSMutableString stringWithCapacity:path.length];
+                NSUInteger len = path.length;
+                NSUInteger runStart = 0;
+                for (NSUInteger i = 0; i < len; i++) {
+                    if ([path characterAtIndex:i] != '%') continue;
+                    // Check if this is a valid %XX sequence
+                    BOOL validSequence = NO;
+                    if (i + 2 < len) {
+                        unichar h1 = [path characterAtIndex:i + 1];
+                        unichar h2 = [path characterAtIndex:i + 2];
+                        validSequence = (isxdigit(h1) && isxdigit(h2));
+                    }
+                    if (!validSequence) {
+                        if (i > runStart) {
+                            [fixed appendString:[path substringWithRange:NSMakeRange(runStart, i - runStart)]];
+                        }
+                        // Escape the bare % as %25
+                        [fixed appendString:@"%25"];
+                        runStart = i + 1;
+                    }
+                }
+                if (runStart < len) {
+                    [fixed appendString:[path substringWithRange:NSMakeRange(runStart, len - runStart)]];
+                }
+                decoded = [fixed stringByRemovingPercentEncoding];
+                if (decoded) {
+                    FB2K_console_formatter() << "[Plorg] Fixed malformed percent encoding in path";
+                }
+            }
+            path = decoded ?: path;
+        }
+
+        // Safety check - skip if path became nil somehow
+        if (!path || path.length == 0) continue;
+
+        // Skip already-valid macOS paths
+        if ([path hasPrefix:@"/"] || [path hasPrefix:PlorgMacVolumePrefix]) {
+            [trackPaths addObject:path];
+            continue;
         }
 
         // Convert Windows path to macOS path using mappings
         if (path.length > 2 && [path characterAtIndex:1] == ':') {
-            NSString *driveKey = [[path substringToIndex:2] uppercaseString]; // "A:", "C:", etc.
+            // Absolute Windows path with drive letter (C:\, A:\, etc.)
+            NSString *driveKey = [[path substringToIndex:2] uppercaseString];
             NSString *restOfPath = [[path substringFromIndex:2] stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
 
             // Look up drive mapping
@@ -2455,14 +3115,50 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
                     }
                 }
             }
+        } else if ([path hasPrefix:@"..\\"] || [path hasPrefix:@".\\"] || [path containsString:@"\\"]) {
+            // Relative Windows path or path with backslashes - try to salvage
+            // Convert backslashes to forward slashes
+            path = [path stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+
+            // Strip relative prefix (../, ./)
+            while ([path hasPrefix:@"../"]) {
+                path = [path substringFromIndex:3];
+            }
+            while ([path hasPrefix:@"./"]) {
+                path = [path substringFromIndex:2];
+            }
+
+            // Apply default mapping as base path
+            if (defaultMapping && defaultMapping.length > 0 && path.length > 0) {
+                // Try to find a meaningful path component to match against
+                // Common patterns: Downloads/music/..., music/..., etc.
+                if ([path hasPrefix:@"Downloads/"]) {
+                    path = [path substringFromIndex:10]; // Skip "Downloads/"
+                }
+                path = [defaultMapping stringByAppendingPathComponent:path];
+                FB2K_console_formatter() << "[Plorg] Converted relative path to: " << [path UTF8String];
+            } else {
+                // Can't map - skip this path
+                FB2K_console_formatter() << "[Plorg] Skipping unmappable relative path: " << [line UTF8String];
+                continue;
+            }
         }
 
-        [trackPaths addObject:path];
+        // Final safety check - reject any remaining paths with backslashes
+        if ([path containsString:@"\\"]) {
+            FB2K_console_formatter() << "[Plorg] Skipping invalid path with backslashes: " << [path UTF8String];
+            continue;
+        }
+
+        // Final nil check before adding to array
+        if (path) {
+            [trackPaths addObject:path];
+        }
     }
 
     if (trackPaths.count > 0) {
-        // Add tracks asynchronously using process_locations_async
-        addTracksToPlaylistAsync(newPlaylistIndex, [name UTF8String], trackPaths);
+        // Add tracks directly - missing files remain as dead entries
+        addTracksToPlaylistFiltered(playlistIndex, [playlistName UTF8String], trackPaths);
         return trackPaths.count;
     }
 
@@ -2472,6 +3168,10 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
 - (IBAction)importMissingPlaylists:(id)sender {
     // Import all playlists from foobar2000 that aren't already in the tree
     @try {
+        // Suppress outline view callbacks during import
+        self.isImporting = YES;
+        [self.outlineView reloadData];
+
         auto pm = playlist_manager::get();
         t_size count = pm->get_playlist_count();
         NSInteger imported = 0;
@@ -2480,6 +3180,9 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             pfc::string8 name;
             pm->playlist_get_name(i, name);
             NSString *playlistName = [NSString stringWithUTF8String:name.c_str()];
+            if (!playlistName || playlistName.length == 0) {
+                continue;
+            }
 
             // Check if already in tree
             if ([self.treeModel findPlaylistWithName:playlistName]) {
@@ -2492,6 +3195,8 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             imported++;
         }
 
+        // Re-enable outline view callbacks
+        self.isImporting = NO;
         [self.outlineView reloadData];
 
         if (imported > 0) {
@@ -2500,6 +3205,7 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             FB2K_console_formatter() << "[Plorg] No new playlists to import";
         }
     } @catch (...) {
+        self.isImporting = NO;  // Ensure flag is reset on error
         FB2K_console_formatter() << "[Plorg] Failed to import playlists";
     }
 }
@@ -2530,6 +3236,622 @@ static void addTracksToPlaylistAsync(t_size playlistIndex, const char* playlistN
             FB2K_console_formatter() << "[Plorg] Failed to export tree";
         }
     }];
+}
+
+#pragma mark - UUID Remapping
+
+- (IBAction)repairVolumeUUIDs:(id)sender {
+    // Get playlists directory from foobar2000 data directory
+    // Uses same path pattern as ConfigHelper.h
+    NSString *homeDir = NSHomeDirectory();
+    NSString *dataDir = [homeDir stringByAppendingPathComponent:@"Library/foobar2000-v2"];
+    NSString *playlistsDir = [dataDir stringByAppendingPathComponent:@"playlists-v2.0"];
+
+    if (![[NSFileManager defaultManager] fileExistsAtPath:playlistsDir]) {
+        FB2K_console_formatter() << "[Plorg] No playlists directory found at: " << [playlistsDir UTF8String];
+
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"No Playlists Found";
+        alert.informativeText = @"The playlists directory does not exist. Create some playlists first.";
+        alert.alertStyle = NSAlertStyleInformational;
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+        return;
+    }
+
+    // Get focused playlist node (if any)
+    NSString *singlePlaylistPath = nil;
+    NSString *singlePlaylistName = nil;
+    NSInteger clickedRow = self.outlineView.clickedRow;
+    NSInteger selectedRow = clickedRow >= 0 ? clickedRow : self.outlineView.selectedRow;
+
+    if (selectedRow >= 0) {
+        TreeNode *node = [self.outlineView itemAtRow:selectedRow];
+        if (node && !node.isFolder) {
+            singlePlaylistName = node.name;
+            // index.txt uses foobar2000 names (may be path-encoded), not tree leaf names
+            NSString *foobarName = [self.treeModel foobarNameForNode:node] ?: node.name;
+
+            // Look up file UUID from index.txt
+            NSString *indexPath = [playlistsDir stringByAppendingPathComponent:@"index.txt"];
+            NSString *indexContent = [NSString stringWithContentsOfFile:indexPath encoding:NSUTF8StringEncoding error:nil];
+            if (indexContent) {
+                for (NSString *line in [indexContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+                    NSRange colonRange = [line rangeOfString:@":"];
+                    if (colonRange.location != NSNotFound) {
+                        NSString *uuid = [line substringToIndex:colonRange.location];
+                        NSString *name = [line substringFromIndex:colonRange.location + 1];
+                        if ([name isEqualToString:foobarName] && [PlorgVolumeSyncLogic isValidVolumeUUID:uuid]) {
+                            singlePlaylistPath = [playlistsDir stringByAppendingPathComponent:
+                                [NSString stringWithFormat:@"playlist-%@.fplite", uuid]];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (self.uuidRemappingController) {
+        [self.uuidRemappingController showWindow:nil];
+        return;
+    }
+
+    self.uuidRemappingController = [[UUIDRemappingWindowController alloc] init];
+    self.uuidRemappingController.delegate = self;
+    [self.uuidRemappingController beginScanningWithPlaylistsDir:playlistsDir
+                                            singlePlaylistPath:singlePlaylistPath
+                                            singlePlaylistName:singlePlaylistName];
+}
+
+#pragma mark - UUIDRemappingWindowDelegate
+
+- (void)uuidRemappingDidComplete:(UUIDRemappingWindowController *)controller
+                    changedFiles:(NSArray<NSString *> *)changedFiles
+                          errors:(NSArray<NSError *> *)errors {
+    if (changedFiles.count > 0) {
+        FB2K_console_formatter() << "[Plorg] UUID remapping complete: " << changedFiles.count << " playlists updated";
+    }
+
+    if (errors.count > 0) {
+        FB2K_console_formatter() << "[Plorg] UUID remapping had " << errors.count << " errors";
+        for (NSError *error in errors) {
+            FB2K_console_formatter() << "[Plorg]   - " << [[error localizedDescription] UTF8String];
+        }
+    }
+
+    if (changedFiles.count == 0 && errors.count == 0) {
+        FB2K_console_formatter() << "[Plorg] UUID remapping: no changes needed";
+    }
+
+    self.uuidRemappingController = nil;
+}
+
+- (void)uuidRemappingDidCancel:(UUIDRemappingWindowController *)controller {
+    FB2K_console_formatter() << "[Plorg] UUID remapping cancelled";
+    self.uuidRemappingController = nil;
+}
+
+- (void)uuidRemappingDidFail:(UUIDRemappingWindowController *)controller
+                       error:(NSError *)error {
+    FB2K_console_formatter() << "[Plorg] UUID remapping failed: " << [[error localizedDescription] UTF8String];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"UUID Remapping Failed";
+    alert.informativeText = [error localizedDescription];
+    alert.alertStyle = NSAlertStyleCritical;
+    [alert addButtonWithTitle:@"OK"];
+    [alert runModal];
+
+    self.uuidRemappingController = nil;
+}
+
+#pragma mark - Corrupted Playlist Detection
+
+// Path to crash marker file - if foobar crashes while accessing a playlist,
+// this file will contain the UUID of the problematic playlist
++ (NSString *)crashMarkerPath {
+    return [@"~/Library/foobar2000-v2/plorg_crash_marker.txt" stringByExpandingTildeInPath];
+}
+
++ (NSString *)knownBadPlaylistsPath {
+    return [@"~/Library/foobar2000-v2/plorg_bad_playlists.txt" stringByExpandingTildeInPath];
+}
+
++ (NSSet<NSString *> *)knownBadPlaylistsFromContent:(NSString *)content {
+    NSMutableSet *uuids = [NSMutableSet set];
+    for (NSString *line in [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (trimmed.length == 36) {  // UUID length
+            [uuids addObject:trimmed];
+        }
+    }
+    return uuids;
+}
+
+// Load list of known bad playlist UUIDs (ones that caused crashes before)
++ (NSSet<NSString *> *)loadKnownBadPlaylists {
+    NSString *path = [self knownBadPlaylistsPath];
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    if (!content) return [NSSet set];
+    return [self knownBadPlaylistsFromContent:content];
+}
+
++ (void)addKnownBadPlaylist:(NSString *)uuid {
+    NSString *path = [self knownBadPlaylistsPath];
+    NSError *readError = nil;
+    NSString *existing = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&readError];
+    if (!existing && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        FB2K_console_formatter() << "[Plorg] Failed to read known bad playlists list, not adding "
+            << [uuid UTF8String] << ": " << [[readError localizedDescription] UTF8String];
+        return;
+    }
+    NSMutableSet *known = existing ? [[self knownBadPlaylistsFromContent:existing] mutableCopy] : [NSMutableSet set];
+    [known addObject:uuid];
+    NSString *content = [[known allObjects] componentsJoinedByString:@"\n"];
+    NSError *writeError = nil;
+    if (![content writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) {
+        FB2K_console_formatter() << "[Plorg] Failed to write known bad playlists list: "
+            << [[writeError localizedDescription] UTF8String];
+    }
+}
+
++ (void)removeKnownBadPlaylist:(NSString *)uuid {
+    NSMutableSet *known = [[self loadKnownBadPlaylists] mutableCopy];
+    [known removeObject:uuid];
+    NSString *path = [self knownBadPlaylistsPath];
+    if (known.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    } else {
+        NSString *content = [[known allObjects] componentsJoinedByString:@"\n"];
+        NSError *writeError = nil;
+        if (![content writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&writeError]) {
+            FB2K_console_formatter() << "[Plorg] Failed to write known bad playlists list: "
+                << [[writeError localizedDescription] UTF8String];
+        }
+    }
+}
+
+- (NSArray *)checkForCorruptedPlaylists {
+    NSMutableArray<PlorgCorruptedPlaylist *> *corrupted = [NSMutableArray array];
+
+    // Path to foobar2000 playlists directory
+    NSString *playlistsDir = [@"~/Library/foobar2000-v2/playlists-v2.0" stringByExpandingTildeInPath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    if (![fm fileExistsAtPath:playlistsDir]) {
+        FB2K_console_formatter() << "[Plorg] Playlists directory not found: " << [playlistsDir UTF8String];
+        return corrupted;
+    }
+
+    // Read index.txt first to get UUID-to-name mapping (needed for crash recovery)
+    NSString *infoPath = [playlistsDir stringByAppendingPathComponent:@"index.txt"];
+    NSMutableDictionary<NSString *, NSString *> *uuidToName = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSString *> *nameToUUID = [NSMutableDictionary dictionary];
+
+    if ([fm fileExistsAtPath:infoPath]) {
+        NSString *infoContent = [NSString stringWithContentsOfFile:infoPath encoding:NSUTF8StringEncoding error:nil];
+        if (infoContent) {
+            // Remove BOM if present (UTF-8 BOM is \uFEFF)
+            if ([infoContent hasPrefix:@"\uFEFF"]) {
+                infoContent = [infoContent substringFromIndex:1];
+            }
+            for (NSString *line in [infoContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+                if (line.length == 0) continue;
+                NSRange colonRange = [line rangeOfString:@":"];
+                if (colonRange.location != NSNotFound && colonRange.location == 36) {  // UUID is 36 chars
+                    NSString *uuid = [line substringToIndex:colonRange.location];
+                    NSString *name = [line substringFromIndex:colonRange.location + 1];
+                    if ([PlorgVolumeSyncLogic isValidVolumeUUID:uuid]) {
+                        uuidToName[uuid] = name;
+                        nameToUUID[name] = uuid;  // Reverse mapping for crash recovery
+                    }
+                }
+            }
+        }
+    } else {
+        FB2K_console_formatter() << "[Plorg] index.txt not found at: " << [infoPath UTF8String];
+    }
+
+    // Check for crash marker from previous run
+    NSString *markerPath = [[self class] crashMarkerPath];
+    if ([fm fileExistsAtPath:markerPath]) {
+        NSString *crashName = [[NSString stringWithContentsOfFile:markerPath encoding:NSUTF8StringEncoding error:nil]
+                               stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (crashName.length > 0) {
+            // Look up UUID from the name
+            NSString *crashUUID = nameToUUID[crashName];
+
+            FB2K_console_formatter() << "[Plorg] CRASH RECOVERY: Previous crash detected on playlist: "
+                << [crashName UTF8String];
+
+            if (crashUUID) {
+                FB2K_console_formatter() << "[Plorg] CRASH RECOVERY: UUID found: " << [crashUUID UTF8String];
+                // Add to known bad playlists
+                [[self class] addKnownBadPlaylist:crashUUID];
+
+                PlorgCorruptedPlaylist *item = [[PlorgCorruptedPlaylist alloc] init];
+                item.name = crashName;
+                item.uuid = crashUUID;
+                item.index = pfc_infinite;  // Don't try to find it
+                item.errorType = @"sdk_crash";
+                [corrupted addObject:item];
+            } else {
+                FB2K_console_formatter() << "[Plorg] CRASH RECOVERY: UUID not found in index.txt, playlist may have been removed";
+            }
+        }
+        // Clear the marker
+        [fm removeItemAtPath:markerPath error:nil];
+    }
+
+    // Load known bad playlists
+    NSSet<NSString *> *knownBad = [[self class] loadKnownBadPlaylists];
+
+    FB2K_console_formatter() << "[Plorg] Checking " << uuidToName.count << " playlists for corruption...";
+
+    // Check each playlist UUID
+    auto pm = playlist_manager::get();
+    t_size playlistCount = pm->get_playlist_count();
+
+    for (NSString *uuid in uuidToName) {
+        NSString *name = uuidToName[uuid];
+
+        // Check 0: Is this a known bad playlist from previous crash?
+        if ([knownBad containsObject:uuid]) {
+            FB2K_console_formatter() << "[Plorg] Skipping known bad playlist: " << [name UTF8String];
+            PlorgCorruptedPlaylist *item = [[PlorgCorruptedPlaylist alloc] init];
+            item.name = name;
+            item.uuid = uuid;
+            item.index = pfc_infinite;
+            item.errorType = @"known_bad";
+            [corrupted addObject:item];
+            continue;
+        }
+
+        NSString *fplitePath = [playlistsDir stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"playlist-%@.fplite", uuid]];
+        NSString *propsPath = [playlistsDir stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"playlist-%@-props.sqlite", uuid]];
+
+        NSString *errorType = nil;
+
+        // Check 1: Missing .fplite file
+        if (![fm fileExistsAtPath:fplitePath]) {
+            // But has props file - definitely corrupted
+            if ([fm fileExistsAtPath:propsPath]) {
+                errorType = @"missing_content";
+            } else {
+                // Both missing - playlist entry in info.txt but no files
+                errorType = @"missing_files";
+            }
+        } else {
+            // Check 2: Empty .fplite file
+            NSDictionary *attrs = [fm attributesOfItemAtPath:fplitePath error:nil];
+            unsigned long long fileSize = [attrs fileSize];
+            if (fileSize == 0) {
+                errorType = @"empty_content";
+            } else {
+                // Check 3: Thorough content validation - every line must be valid
+                // Valid lines: empty, or start with mac-volume:// or file://
+                // Invalid: Windows paths, relative paths, garbage, unparseable content
+                NSString *content = [NSString stringWithContentsOfFile:fplitePath
+                                                              encoding:NSUTF8StringEncoding
+                                                                 error:nil];
+                if (!content) {
+                    // Can't read as UTF-8 - likely binary garbage
+                    errorType = @"unreadable_content";
+                } else {
+                    // Strip BOM if present
+                    if ([content hasPrefix:@"\uFEFF"]) {
+                        content = [content substringFromIndex:1];
+                    }
+
+                    // Validate each line
+                    NSArray *lines = [content componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+                    for (NSString *line in lines) {
+                        NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                        if (trimmed.length == 0) continue;  // Empty lines OK
+
+                        // Valid schemes for macOS foobar2000
+                        BOOL validScheme = [trimmed hasPrefix:PlorgMacVolumePrefix] ||
+                                           [trimmed hasPrefix:@"file://"] ||
+                                           [trimmed hasPrefix:@"http://"] ||
+                                           [trimmed hasPrefix:@"https://"];
+
+                        if (!validScheme) {
+                            // Invalid content - log what we found for debugging
+                            NSString *preview = trimmed.length > 50 ?
+                                [trimmed substringToIndex:50] : trimmed;
+                            FB2K_console_formatter() << "[Plorg] Invalid line in " << [name UTF8String]
+                                << ": " << [preview UTF8String];
+                            errorType = @"invalid_format";
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (errorType) {
+            // Find the playlist index in foobar2000
+            t_size index = pfc_infinite;
+            for (t_size i = 0; i < playlistCount; i++) {
+                pfc::string8 fbName;
+                pm->playlist_get_name(i, fbName);
+                if ([name isEqualToString:[NSString stringWithUTF8String:fbName.c_str()]]) {
+                    index = i;
+                    break;
+                }
+            }
+
+            PlorgCorruptedPlaylist *item = [[PlorgCorruptedPlaylist alloc] init];
+            item.name = name;
+            item.uuid = uuid;
+            item.index = index;
+            item.errorType = errorType;
+            [corrupted addObject:item];
+
+            FB2K_console_formatter() << "[Plorg] Found corrupted playlist: " << [name UTF8String]
+                << " (" << [errorType UTF8String] << ")";
+        }
+    }
+
+    // Check for orphaned tree nodes (exist in plorg tree but not in foobar2000)
+    [self collectOrphanedPlaylistNodes:self.treeModel.rootNodes
+                       playlistManager:pm
+                                  into:corrupted];
+
+    FB2K_console_formatter() << "[Plorg] Corruption check complete: " << corrupted.count << " issues found";
+    return corrupted;
+}
+
+- (void)collectOrphanedPlaylistNodes:(NSArray<TreeNode *> *)nodes
+                     playlistManager:(playlist_manager::ptr)pm
+                                into:(NSMutableArray<PlorgCorruptedPlaylist *> *)results {
+    for (TreeNode *node in nodes) {
+        if (node.isFolder) {
+            [self collectOrphanedPlaylistNodes:node.children playlistManager:pm into:results];
+        } else {
+            NSString *foobarName = [self.treeModel foobarNameForNode:node];
+            if (!foobarName) continue;
+
+            t_size index = pm->find_playlist([foobarName UTF8String], pfc_infinite);
+            if (index == pfc_infinite) {
+                PlorgCorruptedPlaylist *item = [[PlorgCorruptedPlaylist alloc] init];
+                item.name = node.name;
+                item.uuid = nil;
+                item.index = pfc_infinite;
+                item.errorType = @"orphaned";
+                item.treeNode = node;
+                [results addObject:item];
+
+                FB2K_console_formatter() << "[Plorg] Found orphaned tree node: " << [node.name UTF8String]
+                    << " (foobar name: " << [foobarName UTF8String] << ")";
+            }
+        }
+    }
+}
+
+- (BOOL)backupCorruptedFile:(NSString *)filePath toDirectory:(NSString *)backupDir {
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSError *error = nil;
+
+    if (![fm fileExistsAtPath:backupDir]) {
+        if (![fm createDirectoryAtPath:backupDir withIntermediateDirectories:YES attributes:nil error:&error]) {
+            FB2K_console_formatter() << "[Plorg] Failed to create backup directory "
+                << [backupDir.lastPathComponent UTF8String] << ": " << [[error localizedDescription] UTF8String];
+            return NO;
+        }
+    }
+
+    NSString *backupPath = [backupDir stringByAppendingPathComponent:filePath.lastPathComponent];
+    if (![fm copyItemAtPath:filePath toPath:backupPath error:&error]) {
+        FB2K_console_formatter() << "[Plorg] Failed to backup "
+            << [filePath.lastPathComponent UTF8String] << ": " << [[error localizedDescription] UTF8String];
+        return NO;
+    }
+
+    FB2K_console_formatter() << "[Plorg] Backed up " << [filePath.lastPathComponent UTF8String]
+        << " to " << [backupDir.lastPathComponent UTF8String];
+    return YES;
+}
+
+- (void)removeCorruptedPlaylists:(NSArray *)playlists {
+    if (playlists.count == 0) return;
+
+    FB2K_console_formatter() << "[Plorg] Removing " << playlists.count << " corrupted/orphaned playlists...";
+
+    // Remove by deleting files directly - bypasses SDK which also crashes on corrupted playlists
+    NSString *playlistsDir = [@"~/Library/foobar2000-v2/playlists-v2.0" stringByExpandingTildeInPath];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableSet<NSString *> *uuidsToRemove = [NSMutableSet set];
+
+    // Backup deleted files to a timestamped directory (same convention as volume sync backups)
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.dateFormat = @"yyyy-MM-dd_HHmmss";
+    NSString *backupDir = [playlistsDir stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"backup_corrupted_%@", [formatter stringFromDate:[NSDate date]]]];
+
+    for (PlorgCorruptedPlaylist *item in playlists) {
+        if (item.uuid && [PlorgVolumeSyncLogic isValidVolumeUUID:item.uuid]) {
+            [uuidsToRemove addObject:item.uuid];
+
+            // Delete .fplite file
+            NSString *fplitePath = [playlistsDir stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"playlist-%@.fplite", item.uuid]];
+            if ([fm fileExistsAtPath:fplitePath]) {
+                if (![self backupCorruptedFile:fplitePath toDirectory:backupDir]) {
+                    FB2K_console_formatter() << "[Plorg] Skipping delete of "
+                        << [fplitePath.lastPathComponent UTF8String] << " (backup failed)";
+                } else {
+                    NSError *error = nil;
+                    if ([fm removeItemAtPath:fplitePath error:&error]) {
+                        FB2K_console_formatter() << "[Plorg] Deleted: " << [fplitePath.lastPathComponent UTF8String];
+                    } else {
+                        FB2K_console_formatter() << "[Plorg] Failed to delete .fplite: " << [[error localizedDescription] UTF8String];
+                    }
+                }
+            }
+
+            // Delete -props.sqlite file
+            NSString *propsPath = [playlistsDir stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"playlist-%@-props.sqlite", item.uuid]];
+            if ([fm fileExistsAtPath:propsPath]) {
+                if (![self backupCorruptedFile:propsPath toDirectory:backupDir]) {
+                    FB2K_console_formatter() << "[Plorg] Skipping delete of "
+                        << [propsPath.lastPathComponent UTF8String] << " (backup failed)";
+                } else {
+                    NSError *error = nil;
+                    if ([fm removeItemAtPath:propsPath error:&error]) {
+                        FB2K_console_formatter() << "[Plorg] Deleted: " << [propsPath.lastPathComponent UTF8String];
+                    } else {
+                        FB2K_console_formatter() << "[Plorg] Failed to delete props: " << [[error localizedDescription] UTF8String];
+                    }
+                }
+            }
+        } else if (item.uuid) {
+            FB2K_console_formatter() << "[Plorg] Skipping file deletion for playlist "
+                << [item.name UTF8String] << " (invalid UUID: " << [item.uuid UTF8String] << ")";
+        }
+
+        // Remove from plorg tree if present
+        // For orphaned entries, use the direct treeNode reference (name-based lookup may find the wrong node)
+        TreeNode *node = item.treeNode ?: [self.treeModel findPlaylistWithName:item.name];
+        if (node) {
+            if (node.parent) {
+                [node.parent removeChild:node];
+            } else {
+                [self.treeModel removeRootNode:node];
+            }
+        }
+
+        FB2K_console_formatter() << "[Plorg] Removed "
+            << ([item.errorType isEqualToString:@"orphaned"] ? "orphaned" : "corrupted")
+            << " playlist: " << [item.name UTF8String];
+    }
+
+    // Update index.txt to remove the deleted entries
+    if (uuidsToRemove.count > 0) {
+        NSString *indexPath = [playlistsDir stringByAppendingPathComponent:@"index.txt"];
+        NSString *indexContent = [NSString stringWithContentsOfFile:indexPath encoding:NSUTF8StringEncoding error:nil];
+        if (indexContent) {
+            // Remove BOM if present
+            if ([indexContent hasPrefix:@"\uFEFF"]) {
+                indexContent = [indexContent substringFromIndex:1];
+            }
+
+            NSMutableArray<NSString *> *newLines = [NSMutableArray array];
+            for (NSString *line in [indexContent componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+                if (line.length == 0) continue;
+                NSRange colonRange = [line rangeOfString:@":"];
+                if (colonRange.location == 36) {  // UUID is 36 chars
+                    NSString *uuid = [line substringToIndex:colonRange.location];
+                    if ([PlorgVolumeSyncLogic isValidVolumeUUID:uuid] && [uuidsToRemove containsObject:uuid]) {
+                        FB2K_console_formatter() << "[Plorg] Removed from index.txt: " << [uuid UTF8String];
+                        continue;  // Skip this line
+                    }
+                }
+                [newLines addObject:line];
+            }
+
+            // Write back with BOM
+            NSString *newContent = [@"\uFEFF" stringByAppendingString:[newLines componentsJoinedByString:@"\n"]];
+            NSError *error = nil;
+            if (![newContent writeToFile:indexPath atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+                FB2K_console_formatter() << "[Plorg] Failed to update index.txt: " << [[error localizedDescription] UTF8String];
+            }
+        }
+    }
+
+    // Clear removed playlists from known_bad list
+    for (PlorgCorruptedPlaylist *item in playlists) {
+        if (item.uuid) {
+            [[self class] removeKnownBadPlaylist:item.uuid];
+        }
+    }
+
+    [self.treeModel saveToConfig];
+    [self reloadTree];
+
+    FB2K_console_formatter() << "[Plorg] Removal complete. Restart foobar2000 to finalize changes.";
+}
+
+- (void)showCorruptedPlaylistsDialog:(NSArray *)corrupted {
+    if (corrupted.count == 0) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"No Issues Found";
+        alert.informativeText = @"All playlists appear to be valid. No corrupted or orphaned playlists detected.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+        return;
+    }
+
+    // Build the list of corrupted playlists
+    NSMutableString *details = [NSMutableString string];
+    for (PlorgCorruptedPlaylist *item in corrupted) {
+        NSString *errorDesc;
+        if ([item.errorType isEqualToString:@"missing_content"]) {
+            errorDesc = @"Missing content file (.fplite)";
+        } else if ([item.errorType isEqualToString:@"empty_content"]) {
+            errorDesc = @"Empty content file";
+        } else if ([item.errorType isEqualToString:@"missing_files"]) {
+            errorDesc = @"Missing playlist files";
+        } else if ([item.errorType isEqualToString:@"invalid_format"]) {
+            errorDesc = @"Invalid format (Windows paths from bad import)";
+        } else if ([item.errorType isEqualToString:@"unreadable_content"]) {
+            errorDesc = @"Unreadable content (binary or encoding error)";
+        } else if ([item.errorType isEqualToString:@"sdk_crash"]) {
+            errorDesc = @"Caused crash on previous run";
+        } else if ([item.errorType isEqualToString:@"known_bad"]) {
+            errorDesc = @"Previously caused crash";
+        } else if ([item.errorType isEqualToString:@"orphaned"]) {
+            errorDesc = @"Not found in foobar2000 (orphaned tree entry)";
+        } else {
+            errorDesc = item.errorType;
+        }
+        [details appendFormat:@"\n- %@ (%@)", item.name, errorDesc];
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = [NSString stringWithFormat:@"Found %lu Playlist Issue%@",
+        (unsigned long)corrupted.count, corrupted.count == 1 ? @"" : @"s"];
+    alert.informativeText = [NSString stringWithFormat:
+        @"The following playlists are corrupted or orphaned:%@\n\n"
+        @"Would you like to remove them?", details];
+    alert.alertStyle = NSAlertStyleWarning;
+    [alert addButtonWithTitle:@"Remove"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    NSModalResponse response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn) {
+        // Check if any non-orphaned playlists were removed (need restart for those)
+        BOOL hasFilesystemChanges = NO;
+        for (PlorgCorruptedPlaylist *item in corrupted) {
+            if (![item.errorType isEqualToString:@"orphaned"]) {
+                hasFilesystemChanges = YES;
+                break;
+            }
+        }
+
+        [self removeCorruptedPlaylists:corrupted];
+
+        NSAlert *confirmAlert = [[NSAlert alloc] init];
+        confirmAlert.messageText = @"Playlists Removed";
+        if (hasFilesystemChanges) {
+            confirmAlert.informativeText = [NSString stringWithFormat:
+                @"Removed %lu playlist%@.\n\n"
+                @"You MUST restart foobar2000 now for filesystem changes to take effect.",
+                (unsigned long)corrupted.count, corrupted.count == 1 ? @"" : @"s"];
+        } else {
+            confirmAlert.informativeText = [NSString stringWithFormat:
+                @"Removed %lu orphaned playlist%@ from the organizer tree.",
+                (unsigned long)corrupted.count, corrupted.count == 1 ? @"" : @"s"];
+        }
+        confirmAlert.alertStyle = hasFilesystemChanges ? NSAlertStyleWarning : NSAlertStyleInformational;
+        [confirmAlert addButtonWithTitle:@"OK"];
+        [confirmAlert runModal];
+    }
 }
 
 @end

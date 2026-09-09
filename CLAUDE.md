@@ -67,6 +67,12 @@ Two changelogs exist:
 
 **When updating a component's CHANGELOG, always also append the same entry to the global CHANGELOG** under the matching component section. Keep the global entries concise (skip Technical subsections).
 
+**Style:** Keep entries compact — one line per item, bold the feature/area name, then a short description. No multi-sentence explanations. Example:
+```
+- **Space key**: Now toggles play/pause instead of track selection; starts playback when stopped.
+- **Scroll rendering**: Tracks no longer appear blank when scrolling outside the initial viewport.
+```
+
 ## Backlog Management
 **At session start:** Check BACKLOG.md to see current state.
 

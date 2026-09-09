@@ -1,0 +1,13 @@
+# Fixture rules dir (INTAKE_RULES_DIR). Synthetic only — the real income.yaml
+# lives in the private music-rules repo. Relative paths resolve against this
+# directory.
+income:
+  - name: downloads
+    path: ../income/downloads
+    source_type: web
+  - name: slsk
+    path: ../income/slsk
+    source_type: soulseek
+  - name: todo
+    path: ../income/todo
+    source_type: manual

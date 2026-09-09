@@ -10,16 +10,17 @@
 #import "../Core/RecentTrack.h"
 #import <QuartzCore/QuartzCore.h>
 
+#import "../Core/WidgetLayoutMath.h"
+
 static const CGFloat kArrowWidth = 32.0;
 static const CGFloat kArrowChevronSize = 16.0;
-static const CGFloat kTrackRowHeight = 44.0;
 static const CGFloat kTrackArtSize = 36.0;
-static const CGFloat kMinAlbumSize = 64.0;
-static const CGFloat kMaxAlbumSize = 150.0;
-static const CGFloat kAlbumSpacing = 6.0;
+// Layout constants owned by WidgetLayoutMath.h (single source of truth)
+static const CGFloat kTrackRowHeight = WidgetLayout::kTrackRowHeight;
+static const CGFloat kAlbumSpacing = WidgetLayout::kAlbumSpacing;
 static const CGFloat kProfileHeight = 40.0;
-static const CGFloat kFooterHeight = 20.0;
-static const CGFloat kPadding = 8.0;
+static const CGFloat kFooterHeight = WidgetLayout::kFooterHeight;
+static const CGFloat kPadding = WidgetLayout::kPadding;
 static const NSTimeInterval kArrowFadeDuration = 0.15;
 
 @interface ScrobbleWidgetView ()
@@ -29,6 +30,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 @property (nonatomic, assign) CGFloat calculatedAlbumSize;
 @property (nonatomic, assign) NSInteger hoveredAlbumIndex;  // -1 if none
 @property (nonatomic, strong) NSMutableArray<NSValue *> *albumRects;  // Store album rects for hit testing
+@property (nonatomic, assign) NSRect profileImageRect;
 @property (nonatomic, assign) NSRect profileLinkRect;  // Last.fm link button rect
 @property (nonatomic, assign) BOOL isOverProfileLink;
 // Period/Type dropdown pill rects
@@ -283,32 +285,6 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     return YES;
 }
 
-#pragma mark - Layout Calculation
-
-- (CGFloat)calculateAlbumSizeForWidth:(CGFloat)availableWidth {
-    // Calculate optimal album size to show 4-6 albums per row
-    // Target: fit 5 albums ideally, but allow 4-6 based on width
-
-    // Try different album counts per row and pick the one closest to target size
-    CGFloat targetSize = 130.0;  // Preferred album size
-    CGFloat bestSize = kMinAlbumSize;
-
-    for (NSInteger albumsPerRow = 3; albumsPerRow <= 8; albumsPerRow++) {
-        CGFloat totalSpacing = kAlbumSpacing * (albumsPerRow - 1);
-        CGFloat size = (availableWidth - totalSpacing) / albumsPerRow;
-
-        // Clamp to min/max
-        size = MAX(kMinAlbumSize, MIN(kMaxAlbumSize, size));
-
-        // Pick the size closest to target that's within bounds
-        if (fabs(size - targetSize) < fabs(bestSize - targetSize)) {
-            bestSize = size;
-        }
-    }
-
-    return bestSize;
-}
-
 #pragma mark - Mouse Events
 
 - (void)mouseEntered:(NSEvent *)event {
@@ -515,8 +491,9 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         _contentScrollOffset -= delta * 20.0;  // Line-based scrolling
     }
 
-    // Clamp
-    _contentScrollOffset = MAX(0, MIN(_contentScrollOffset, maxOffset));
+    _contentScrollOffset = WidgetLayout::clampScrollOffset(_contentScrollOffset,
+                                                           _contentTotalHeight,
+                                                           _contentAreaRect.size.height);
 
     [self setNeedsDisplay:YES];
 }
@@ -779,59 +756,96 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     }
 }
 
-- (void)drawReadyState {
+// Compute every interactive rect and scroll metric WITHOUT drawing.
+// Both the draw pass and mouse hit-testing consume the results, so the
+// two can never disagree (previously rects were a side effect of draw*).
+- (void)computeGeometry {
     CGFloat contentWidth = self.bounds.size.width - (kPadding * 2);
-    CGFloat viewHeight = self.bounds.size.height;
-    CGFloat y = kPadding;
+    BOOL chartsMode = (_viewMode == ScrobbleWidgetViewModeCharts);
+
+    // Measure pill titles (the only AppKit-dependent input)
+    NSDictionary *titleAttrs = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor labelColor]
+    };
+    NSString *viewModeText = _viewModeTitle ?: @"Charts";
+    CGFloat viewModeW = [viewModeText sizeWithAttributes:titleAttrs].width;
+    CGFloat periodW = 0, typeW = 0, countW = 0;
+    if (chartsMode) {
+        periodW = [(_periodTitle ?: @"Weekly") sizeWithAttributes:titleAttrs].width;
+        typeW = [(_typeTitle ?: @"Albums") sizeWithAttributes:titleAttrs].width;
+    } else {
+        NSString *countText = [NSString stringWithFormat:@"Show: %ld", (long)_recentTrackCount];
+        countW = [countText sizeWithAttributes:titleAttrs].width;
+    }
+
+    WidgetLayout::HeaderGeometry header = WidgetLayout::headerGeometry(
+        kPadding, contentWidth, chartsMode, viewModeW, periodW, typeW, countW);
+
+    _profileImageRect = header.profileImageRect;
+    _profileLinkRect = header.linkButtonRect;
+    _reloadButtonRect = header.reloadButtonRect;
+    _viewModePillRect = header.viewModePillRect;
+    _periodPillRect = header.periodPillRect;
+    _typePillRect = header.typePillRect;
+    _trackCountPillRect = header.trackCountPillRect;
+
+    WidgetLayout::ContentMode mode;
+    NSInteger itemCount;
+    if (_viewMode == ScrobbleWidgetViewModeTracks) {
+        mode = WidgetLayout::ContentMode::TrackRows;
+        itemCount = (NSInteger)_recentTracks.count;
+    } else if (_displayStyle == ScrobbleDisplayStylePlayback2025) {
+        mode = WidgetLayout::ContentMode::Bubbles;
+        itemCount = (NSInteger)_topAlbums.count;
+    } else {
+        mode = WidgetLayout::ContentMode::Grid;
+        itemCount = (NSInteger)_topAlbums.count;
+    }
+
+    WidgetLayout::ContentGeometry content = WidgetLayout::contentGeometry(
+        self.bounds.size, header.headerEndY, mode, itemCount, _contentScrollOffset);
+
+    _contentAreaRect = content.contentAreaRect;
+    _contentTotalHeight = content.contentTotalHeight;
+    _contentScrollOffset = content.scrollOffset;
+    if (mode == WidgetLayout::ContentMode::Grid) {
+        _calculatedAlbumSize = content.albumSize;
+    }
+
+    NSMutableArray<NSValue *> *rects = [NSMutableArray arrayWithCapacity:content.itemRects.size()];
+    for (const NSRect &r : content.itemRects) {
+        [rects addObject:[NSValue valueWithRect:r]];
+    }
+    if (mode == WidgetLayout::ContentMode::TrackRows) {
+        _trackRowRects = rects;
+        [_albumRects removeAllObjects];
+    } else {
+        _albumRects = rects;
+        [_trackRowRects removeAllObjects];
+    }
+}
+
+- (void)drawReadyState {
+    [self computeGeometry];
+
+    CGFloat contentWidth = self.bounds.size.width - (kPadding * 2);
+    CGFloat footerY = self.bounds.size.height - kFooterHeight - kPadding;
 
     // Profile section (compact header) - shared across all display styles
-    CGFloat headerEndY = [self drawProfileSectionAtY:y width:contentWidth];
-
-    // Footer is sticky at bottom
-    CGFloat footerY = viewHeight - kFooterHeight - kPadding;
-
-    // Available space for content (between header and footer)
-    CGFloat contentStartY = headerEndY;
-    CGFloat contentEndY = footerY - kPadding;
-    CGFloat availableHeight = contentEndY - contentStartY;
-
-    // Store content area for arrow hit testing
-    _contentAreaRect = NSMakeRect(kPadding, contentStartY, contentWidth, availableHeight);
-
-    // Clamp scroll offset before drawing (content may have changed)
-    CGFloat maxOffset = MAX(0, _contentTotalHeight - availableHeight);
-    if (_contentScrollOffset > maxOffset) _contentScrollOffset = maxOffset;
-    if (_contentScrollOffset < 0) _contentScrollOffset = 0;
+    [self drawProfileSection];
 
     // Clip to content area so scrolled content doesn't overflow into header/footer
     [NSGraphicsContext saveGraphicsState];
     NSBezierPath *clipPath = [NSBezierPath bezierPathWithRect:_contentAreaRect];
     [clipPath addClip];
 
-    // Apply scroll offset: shift drawing origin upward
-    CGFloat scrolledStartY = contentStartY - _contentScrollOffset;
-
     if (_viewMode == ScrobbleWidgetViewModeTracks) {
-        // Recent tracks list
-        [self drawRecentTracksListAtY:scrolledStartY width:contentWidth];
+        [self drawRecentTracksList];
     } else if (_displayStyle == ScrobbleDisplayStylePlayback2025) {
-        // Bubble layout - no scrolling (fits in visible area)
-        _contentTotalHeight = 0;
-        CGFloat bubbleSize = MIN(contentWidth, availableHeight);
-        CGFloat bubbleStartY = contentStartY + (availableHeight - bubbleSize) / 2;
-        [self drawBubbleLayoutAtY:bubbleStartY width:contentWidth availableHeight:bubbleSize];
+        [self drawBubbleLayout];
     } else {
-        // Calculate album size based on available width
-        CGFloat oldAlbumSize = _calculatedAlbumSize;
-        _calculatedAlbumSize = [self calculateAlbumSizeForWidth:contentWidth];
-
-        if (fabs(oldAlbumSize - _calculatedAlbumSize) > 0.1) {
-            NSLog(@"[ScrobbleWidget] drawReadyState - bounds: %@, contentWidth: %.1f, albumSize: %.1f -> %.1f, maxAlbums: %ld",
-                  NSStringFromRect(self.bounds), contentWidth, oldAlbumSize, _calculatedAlbumSize, (long)_maxAlbums);
-        }
-
-        // Album grid (top-aligned)
-        [self drawAlbumGridAtY:scrolledStartY width:contentWidth];
+        [self drawAlbumGrid];
     }
 
     [NSGraphicsContext restoreGraphicsState];
@@ -845,20 +859,14 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     [self drawStatusFooterAtY:footerY width:contentWidth];
 }
 
-- (CGFloat)drawProfileSectionAtY:(CGFloat)y width:(CGFloat)width {
-    CGFloat profileSize = 28.0;
-    CGFloat spacing = 6.0;
-    CGFloat rowHeight = 28.0;
-
-    // Single header row: [Profile] [< Period >] [< Type >] [Link]
-    CGFloat x = kPadding;
-
+// Draws the header row using the rects computed by computeGeometry
+- (void)drawProfileSection {
     // Profile image (if available)
-    NSRect imageRect = NSMakeRect(x, y, profileSize, profileSize);
+    NSRect imageRect = _profileImageRect;
     if (_profileImage) {
         NSBezierPath *clipPath = [NSBezierPath bezierPathWithRoundedRect:imageRect
-                                                                 xRadius:profileSize / 2
-                                                                 yRadius:profileSize / 2];
+                                                                 xRadius:imageRect.size.width / 2
+                                                                 yRadius:imageRect.size.height / 2];
         [NSGraphicsContext saveGraphicsState];
         [clipPath addClip];
         [_profileImage drawInRect:imageRect
@@ -872,112 +880,43 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         NSBezierPath *circle = [NSBezierPath bezierPathWithOvalInRect:imageRect];
         [circle fill];
     }
-    x += profileSize + spacing;
 
-    // Reload and Link buttons on the far right
-    CGFloat buttonSize = 22.0;
-    CGFloat buttonGap = 2.0;
-
-    // Link button (rightmost)
-    _profileLinkRect = NSMakeRect(kPadding + width - buttonSize, y + (rowHeight - buttonSize) / 2,
-                                   buttonSize, buttonSize);
     NSColor *linkColor = _isOverProfileLink ? [NSColor controlAccentColor] : [NSColor secondaryLabelColor];
     [self drawExternalLinkIconInRect:_profileLinkRect color:linkColor];
 
-    // Reload button (left of link button)
-    _reloadButtonRect = NSMakeRect(_profileLinkRect.origin.x - buttonSize - buttonGap, y + (rowHeight - buttonSize) / 2,
-                                    buttonSize, buttonSize);
     NSColor *reloadColor = _isOverReloadButton ? [NSColor controlAccentColor] : [NSColor secondaryLabelColor];
     [self drawReloadIconInRect:_reloadButtonRect color:reloadColor];
 
-    // Calculate navigation area (between profile and buttons)
-    CGFloat navAreaStart = x;
-    CGFloat navAreaWidth = width - profileSize - spacing - (buttonSize * 2 + buttonGap) - spacing;
-    CGFloat navAreaCenterX = navAreaStart + navAreaWidth / 2;
-
-    // Measure text sizes for dropdown pills
     NSDictionary *titleAttrs = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
         NSForegroundColorAttributeName: [NSColor labelColor]
     };
     NSString *viewModeText = _viewModeTitle ?: @"Charts";
-    NSSize viewModeSize = [viewModeText sizeWithAttributes:titleAttrs];
-
-    CGFloat chevronWidth = 8.0, pillPadH = 8.0;
-    CGFloat pillGap = 4.0;
-    CGFloat pillHeight = 20.0;
-    CGFloat centerY = y + rowHeight / 2;
-
-    // Calculate pill widths - view mode pill is always visible
-    CGFloat viewModePillWidth = pillPadH + viewModeSize.width + 4 + chevronWidth + pillPadH;
-    CGFloat totalWidth = viewModePillWidth;
-
-    // Clear conditional pill rects
-    _periodPillRect = NSZeroRect;
-    _typePillRect = NSZeroRect;
-    _trackCountPillRect = NSZeroRect;
+    [self drawPill:viewModeText inRect:_viewModePillRect attrs:titleAttrs hovered:_isOverViewModePill];
 
     if (_viewMode == ScrobbleWidgetViewModeCharts) {
-        // Charts mode: [Charts v] [Weekly v] [Albums v]
-        NSString *periodText = _periodTitle ?: @"Weekly";
-        NSString *typeText = _typeTitle ?: @"Albums";
-        NSSize periodSize = [periodText sizeWithAttributes:titleAttrs];
-        NSSize typeSize = [typeText sizeWithAttributes:titleAttrs];
-        CGFloat periodPillWidth = pillPadH + periodSize.width + 4 + chevronWidth + pillPadH;
-        CGFloat typePillWidth = pillPadH + typeSize.width + 4 + chevronWidth + pillPadH;
-        totalWidth += pillGap + periodPillWidth + pillGap + typePillWidth;
-        CGFloat startX = navAreaCenterX - totalWidth / 2;
-
-        // Draw view mode pill
-        [self drawPill:viewModeText atX:startX centerY:centerY width:viewModePillWidth height:pillHeight
-                 attrs:titleAttrs chevronWidth:chevronWidth padH:pillPadH hovered:_isOverViewModePill
-              storeRect:&_viewModePillRect];
-
-        // Draw period pill
-        CGFloat periodStartX = startX + viewModePillWidth + pillGap;
-        [self drawPill:periodText atX:periodStartX centerY:centerY width:periodPillWidth height:pillHeight
-                 attrs:titleAttrs chevronWidth:chevronWidth padH:pillPadH hovered:_isOverPeriodPill
-              storeRect:&_periodPillRect];
-
-        // Draw type pill
-        CGFloat typeStartX = periodStartX + periodPillWidth + pillGap;
-        [self drawPill:typeText atX:typeStartX centerY:centerY width:typePillWidth height:pillHeight
-                 attrs:titleAttrs chevronWidth:chevronWidth padH:pillPadH hovered:_isOverTypePill
-              storeRect:&_typePillRect];
+        [self drawPill:(_periodTitle ?: @"Weekly") inRect:_periodPillRect
+                 attrs:titleAttrs hovered:_isOverPeriodPill];
+        [self drawPill:(_typeTitle ?: @"Albums") inRect:_typePillRect
+                 attrs:titleAttrs hovered:_isOverTypePill];
     } else {
-        // Tracks mode: [Tracks v] [Show: 10 v]
         NSString *countText = [NSString stringWithFormat:@"Show: %ld", (long)_recentTrackCount];
-        NSSize countSize = [countText sizeWithAttributes:titleAttrs];
-        CGFloat countPillWidth = pillPadH + countSize.width + 4 + chevronWidth + pillPadH;
-        totalWidth += pillGap + countPillWidth;
-        CGFloat startX = navAreaCenterX - totalWidth / 2;
-
-        // Draw view mode pill
-        [self drawPill:viewModeText atX:startX centerY:centerY width:viewModePillWidth height:pillHeight
-                 attrs:titleAttrs chevronWidth:chevronWidth padH:pillPadH hovered:_isOverViewModePill
-              storeRect:&_viewModePillRect];
-
-        // Draw track count pill
-        CGFloat countStartX = startX + viewModePillWidth + pillGap;
-        [self drawPill:countText atX:countStartX centerY:centerY width:countPillWidth height:pillHeight
-                 attrs:titleAttrs chevronWidth:chevronWidth padH:pillPadH hovered:_isOverTrackCountPill
-              storeRect:&_trackCountPillRect];
+        [self drawPill:countText inRect:_trackCountPillRect
+                 attrs:titleAttrs hovered:_isOverTrackCountPill];
     }
-
-    return y + rowHeight + spacing;
 }
 
-- (void)drawPill:(NSString *)text atX:(CGFloat)x centerY:(CGFloat)cy width:(CGFloat)w height:(CGFloat)h
-           attrs:(NSDictionary *)attrs chevronWidth:(CGFloat)chevW padH:(CGFloat)padH
-         hovered:(BOOL)hovered storeRect:(NSRect *)outRect {
-    NSRect pill = NSMakeRect(x, cy - h / 2, w, h);
-    if (outRect) *outRect = pill;
+- (void)drawPill:(NSString *)text inRect:(NSRect)pill attrs:(NSDictionary *)attrs hovered:(BOOL)hovered {
+    if (NSIsEmptyRect(pill)) return;
+
+    CGFloat h = pill.size.height;
+    CGFloat cy = NSMidY(pill);
     NSColor *bg = hovered ? [NSColor colorWithWhite:0.5 alpha:0.2] : [NSColor colorWithWhite:0.5 alpha:0.12];
     [bg setFill];
     [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:h/2 yRadius:h/2] fill];
 
     NSSize textSize = [text sizeWithAttributes:attrs];
-    CGFloat textX = x + padH;
+    CGFloat textX = pill.origin.x + WidgetLayout::kPillPadH;
     CGFloat textY = cy - textSize.height / 2;
     [text drawAtPoint:NSMakePoint(textX, textY) withAttributes:attrs];
     [self drawDropdownChevronAtX:textX + textSize.width + 4 centerY:cy hovered:hovered];
@@ -1078,51 +1017,18 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     [path stroke];
 }
 
-- (CGFloat)drawBubbleLayoutAtY:(CGFloat)y width:(CGFloat)width availableHeight:(CGFloat)availableHeight {
-    // Clear stored rects
-    [_albumRects removeAllObjects];
-
-    if (_topAlbums.count == 0) {
-        return y;
-    }
-
-    // Normalized circle positions (centerX, centerY, radius) in 0..1 space
-    struct CircleLayout { float centerX; float centerY; float radius; };
-    static const CircleLayout circles[10] = {
-        {0.7576f, 0.2424f, 0.2147f},  // circle 1
-        {0.5791f, 0.7355f, 0.1801f},  // circle 2
-        {0.2750f, 0.6504f, 0.1316f},  // circle 3
-        {0.1524f, 0.4207f, 0.1247f},  // circle 4
-        {0.2803f, 0.2312f, 0.0997f},  // circle 5
-        {0.4602f, 0.1589f, 0.0900f},  // circle 6
-        {0.4695f, 0.3374f, 0.0845f},  // circle 7
-        {0.5686f, 0.4725f, 0.0790f},  // circle 8
-        {0.4117f, 0.4902f, 0.0748f},  // circle 9
-        {0.3324f, 0.3817f, 0.0554f},  // circle 10
-    };
-
-    // Use a square area for the bubble layout (passed in, already computed for centering)
-    CGFloat areaSize = MIN(width, availableHeight);
-    if (areaSize < 100) areaSize = width;  // Fallback
-
-    CGFloat offsetX = kPadding + (width - areaSize) / 2;
-    CGFloat offsetY = y;
-
-    NSInteger count = MIN((NSInteger)_topAlbums.count, 10);
+// Draws the bubble layout at the rects computed by computeGeometry
+- (void)drawBubbleLayout {
+    NSInteger count = MIN((NSInteger)_topAlbums.count, (NSInteger)_albumRects.count);
 
     for (NSInteger i = 0; i < count; i++) {
         TopAlbum *album = _topAlbums[i];
-        const CircleLayout &layout = circles[i];
 
-        CGFloat cx = offsetX + layout.centerX * areaSize;
-        CGFloat cy = offsetY + layout.centerY * areaSize;
-        CGFloat r = layout.radius * areaSize;
-        CGFloat diameter = r * 2;
-
-        NSRect circleRect = NSMakeRect(cx - r, cy - r, diameter, diameter);
-
-        // Store rect for hit testing
-        [_albumRects addObject:[NSValue valueWithRect:circleRect]];
+        NSRect circleRect = [_albumRects[i] rectValue];
+        CGFloat r = circleRect.size.width / 2;
+        CGFloat cx = NSMidX(circleRect);
+        CGFloat cy = NSMidY(circleRect);
+        CGFloat diameter = circleRect.size.width;
 
         // Skip actual drawing during animation (layers handle visuals)
         if (_isAnimatingTransition) continue;
@@ -1173,42 +1079,18 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
         // Rank badge removed from bubbles - shown in tooltip instead
     }
-
-    return offsetY + areaSize + kAlbumSpacing;
 }
 
-- (CGFloat)drawAlbumGridAtY:(CGFloat)y width:(CGFloat)width {
-    // Clear stored rects
-    [_albumRects removeAllObjects];
-
-    if (_topAlbums.count == 0) {
-        _contentTotalHeight = 0;
-        return y;
-    }
-
+// Draws the album grid at the rects computed by computeGeometry
+- (void)drawAlbumGrid {
     CGFloat albumSize = _calculatedAlbumSize;
-    CGFloat spacing = kAlbumSpacing;
+    NSInteger count = MIN((NSInteger)_topAlbums.count, (NSInteger)_albumRects.count);
 
-    // Calculate how many albums fit per row
-    NSInteger albumsPerRow = (NSInteger)((width + spacing) / (albumSize + spacing));
-    if (albumsPerRow < 1) albumsPerRow = 1;
-
-    // Calculate total grid height for scrolling
-    NSInteger totalRows = (_topAlbums.count + albumsPerRow - 1) / albumsPerRow;
-    _contentTotalHeight = totalRows * albumSize + (totalRows - 1) * spacing;
-
-    // Center the grid
-    CGFloat totalGridWidth = albumsPerRow * albumSize + (albumsPerRow - 1) * spacing;
-    CGFloat startX = kPadding + (width - totalGridWidth) / 2;
-
-    CGFloat x = startX;
-    NSInteger col = 0;
-
-    for (TopAlbum *album in _topAlbums) {
-        NSRect albumRect = NSMakeRect(x, y, albumSize, albumSize);
-
-        // Store rect for hit testing
-        [_albumRects addObject:[NSValue valueWithRect:albumRect]];
+    for (NSInteger index = 0; index < count; index++) {
+        TopAlbum *album = _topAlbums[index];
+        NSRect albumRect = [_albumRects[index] rectValue];
+        CGFloat x = albumRect.origin.x;
+        CGFloat rowY = albumRect.origin.y;
 
         // Skip actual drawing during animation (layers handle visuals)
         if (!_isAnimatingTransition) {
@@ -1239,7 +1121,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
                     };
 
                     // Inset to avoid rank badge (top-left) and leave margins
-                    NSRect textRect = NSMakeRect(x + 4, y + 24, albumSize - 8, albumSize - 28);
+                    NSRect textRect = NSMakeRect(x + 4, rowY + 24, albumSize - 8, albumSize - 28);
                     [album.name drawInRect:textRect withAttributes:nameAttrs];
                 }
             }
@@ -1251,31 +1133,15 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
                 NSForegroundColorAttributeName: [NSColor whiteColor]
             };
             NSSize rankSize = [rank sizeWithAttributes:rankAttrs];
-            NSRect badgeRect = NSMakeRect(x + 2, y + 2, rankSize.width + 6, rankSize.height + 2);
+            NSRect badgeRect = NSMakeRect(x + 2, rowY + 2, rankSize.width + 6, rankSize.height + 2);
 
             [[NSColor colorWithWhite:0 alpha:0.6] setFill];
             NSBezierPath *badgePath = [NSBezierPath bezierPathWithRoundedRect:badgeRect xRadius:3 yRadius:3];
             [badgePath fill];
 
-            [rank drawAtPoint:NSMakePoint(x + 5, y + 3) withAttributes:rankAttrs];
-        }
-
-        col++;
-        if (col >= albumsPerRow) {
-            col = 0;
-            x = startX;
-            y += albumSize + spacing;
-        } else {
-            x += albumSize + spacing;
+            [rank drawAtPoint:NSMakePoint(x + 5, rowY + 3) withAttributes:rankAttrs];
         }
     }
-
-    // If we ended mid-row, move to next line
-    if (col > 0) {
-        y += albumSize + spacing;
-    }
-
-    return y;
 }
 
 - (void)drawImage:(NSImage *)image inRect:(NSRect)rect {
@@ -1283,21 +1149,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     if (imageSize.width <= 0 || imageSize.height <= 0) return;
 
     // Scale to fill (crop if needed)
-    CGFloat imageAspect = imageSize.width / imageSize.height;
-    CGFloat viewAspect = rect.size.width / rect.size.height;
-
-    NSRect sourceRect;
-    if (imageAspect > viewAspect) {
-        // Image is wider - crop sides
-        CGFloat newWidth = imageSize.height * viewAspect;
-        CGFloat x = (imageSize.width - newWidth) / 2;
-        sourceRect = NSMakeRect(x, 0, newWidth, imageSize.height);
-    } else {
-        // Image is taller - crop top/bottom
-        CGFloat newHeight = imageSize.width / viewAspect;
-        CGFloat y = (imageSize.height - newHeight) / 2;
-        sourceRect = NSMakeRect(0, y, imageSize.width, newHeight);
-    }
+    NSRect sourceRect = WidgetLayout::aspectFillSourceRect(imageSize, rect.size);
 
     [image drawInRect:rect
              fromRect:sourceRect
@@ -1319,59 +1171,32 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
     // If there's an error message in Ready state, show it instead of normal status
     if (_errorMessage.length > 0 && _state == ScrobbleWidgetStateReady) {
-        // Truncate long error messages
-        NSString *displayError = _errorMessage;
-        if (displayError.length > 60) {
-            displayError = [[displayError substringToIndex:57] stringByAppendingString:@"..."];
-        }
-
-        // Draw error with retry hint
-        NSString *errorText = [NSString stringWithFormat:@"%@ (click refresh)", displayError];
+        NSString *errorText = WidgetFooterErrorText(_errorMessage);
         NSRect errorRect = NSMakeRect(kPadding, y, width, 14);
         [errorText drawInRect:errorRect withAttributes:errorAttrs];
         return;
     }
 
-    // Build footer text per spec:
     // "15 day streak | 7 scrobbles today | 2 queued         Updated 14:32"
-    // "15 day streak (continue today) | 0 scrobbles today   Updated 14:32"
-    // "42+ day streak... | 5 scrobbles today                Updated 14:32"
-    // "7 scrobbles today                                    Updated 14:32"
-
-    NSMutableString *statusText = [NSMutableString string];
-
-    // Streak (shown first when >= 2 days)
-    if (_streakEnabled && _streakDays >= 2) {
-        if (_streakDiscoveryInProgress) {
-            [statusText appendFormat:@"%ld+ day streak...", (long)_streakDays];
-        } else if (_streakNeedsContinuation) {
-            [statusText appendFormat:@"%ld day streak (continue today)", (long)_streakDays];
-        } else {
-            [statusText appendFormat:@"%ld day streak", (long)_streakDays];
-        }
-        [statusText appendString:@" | "];
-    }
-
-    // Scrobbled today
-    if (_scrobbledToday >= 200) {
-        [statusText appendString:@"200+ scrobbles today"];
-    } else {
-        [statusText appendFormat:@"%ld scrobbles today", (long)_scrobbledToday];
-    }
-
-    // Queue status
-    if (_queueCount > 0) {
-        [statusText appendFormat:@" | %ld queued", (long)_queueCount];
-    }
+    NSString *statusText = WidgetFooterStatusText(_streakEnabled,
+                                                  _streakDays,
+                                                  _streakDiscoveryInProgress,
+                                                  _streakNeedsContinuation,
+                                                  _scrobbledToday,
+                                                  _queueCount);
 
     NSRect statusRect = NSMakeRect(kPadding, y, width, 14);
     [statusText drawInRect:statusRect withAttributes:statusAttrs];
 
     // Last updated timestamp (right-aligned)
     if (_lastUpdated) {
-        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-        formatter.timeStyle = NSDateFormatterShortStyle;
-        formatter.dateStyle = NSDateFormatterNoStyle;
+        static NSDateFormatter *formatter = nil;
+        static dispatch_once_t formatterOnce;
+        dispatch_once(&formatterOnce, ^{
+            formatter = [[NSDateFormatter alloc] init];
+            formatter.timeStyle = NSDateFormatterShortStyle;
+            formatter.dateStyle = NSDateFormatterNoStyle;
+        });
 
         NSString *timeText = [NSString stringWithFormat:@"Updated %@", [formatter stringFromDate:_lastUpdated]];
         NSSize timeSize = [timeText sizeWithAttributes:statusAttrs];
@@ -1436,14 +1261,11 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
 #pragma mark - Recent Tracks Drawing
 
-- (void)drawRecentTracksListAtY:(CGFloat)startY width:(CGFloat)width {
-    [_trackRowRects removeAllObjects];
-
-    // Calculate total content height for scrolling
-    _contentTotalHeight = _recentTracks.count * kTrackRowHeight;
+// Draws the recent-tracks rows at the rects computed by computeGeometry
+- (void)drawRecentTracksList {
+    CGFloat width = _contentAreaRect.size.width;
 
     if (!_recentTracks || _recentTracks.count == 0) {
-        _contentTotalHeight = 0;
         NSDictionary *attrs = @{
             NSFontAttributeName: [NSFont systemFontOfSize:12],
             NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
@@ -1451,7 +1273,7 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         NSString *text = @"No recent tracks";
         NSSize textSize = [text sizeWithAttributes:attrs];
         CGFloat textX = kPadding + (width - textSize.width) / 2;
-        CGFloat textY = startY + _contentAreaRect.size.height / 2 - textSize.height / 2;
+        CGFloat textY = NSMidY(_contentAreaRect) - textSize.height / 2;
         [text drawAtPoint:NSMakePoint(textX, textY) withAttributes:attrs];
         return;
     }
@@ -1473,7 +1295,6 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
         NSForegroundColorAttributeName: [NSColor controlAccentColor]
     };
 
-    CGFloat rowY = startY;
     CGFloat artPad = 4.0;
     CGFloat textGap = 8.0;
 
@@ -1485,17 +1306,15 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     NSMutableDictionary *artistAttrsWithTrunc = [artistAttrs mutableCopy];
     artistAttrsWithTrunc[NSParagraphStyleAttributeName] = truncStyle;
 
-    for (NSInteger i = 0; i < (NSInteger)_recentTracks.count; i++) {
+    NSInteger rowCount = MIN((NSInteger)_recentTracks.count, (NSInteger)_trackRowRects.count);
+    for (NSInteger i = 0; i < rowCount; i++) {
         RecentTrack *track = _recentTracks[i];
-        NSRect rowRect = NSMakeRect(kPadding, rowY, width, kTrackRowHeight);
-
-        // Store rect for hit testing (even if off-screen, index corresponds to track index)
-        [_trackRowRects addObject:[NSValue valueWithRect:rowRect]];
+        NSRect rowRect = [_trackRowRects[i] rectValue];
+        CGFloat rowY = rowRect.origin.y;
 
         // Skip drawing rows that are completely outside the visible clip rect
         if (rowY + kTrackRowHeight < _contentAreaRect.origin.y ||
             rowY > _contentAreaRect.origin.y + _contentAreaRect.size.height) {
-            rowY += kTrackRowHeight;
             continue;
         }
 
@@ -1697,17 +1516,22 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
     BOOL wasGrid = (_displayStyle == ScrobbleDisplayStyleDefault);
     CGFloat oldCornerRadius = wasGrid ? 4.0 : 1000.0;  // grid uses rounded rect, bubble uses circle
 
-    // Switch to new style and redraw to get new rects (but suppress actual drawing)
+    // Switch to new style and recompute geometry for the new rects --
+    // no forced draw needed, layout is independent of drawing
     _displayStyle = style;
     _isAnimatingTransition = YES;
-    [self display];  // Force synchronous draw to populate new _albumRects (items not drawn)
+    [self computeGeometry];
+    [self setNeedsDisplay:YES];  // redraw chrome under the animating layers
 
     NSArray<NSValue *> *newRects = [_albumRects copy];
     BOOL isGrid = (_displayStyle == ScrobbleDisplayStyleDefault);
     CGFloat newCornerRadius = isGrid ? 4.0 : 1000.0;
 
     NSInteger count = MIN((NSInteger)oldRects.count, (NSInteger)newRects.count);
-    if (count == 0) return;
+    if (count == 0) {
+        _isAnimatingTransition = NO;  // nothing to animate; don't suppress item drawing
+        return;
+    }
 
     NSTimeInterval duration = 0.4;
     CAMediaTimingFunction *timing = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
@@ -1793,6 +1617,9 @@ static const NSTimeInterval kArrowFadeDuration = 0.15;
 
 - (void)refreshDisplay {
     [self setNeedsDisplay:YES];
+    // Force immediate redraw - foobar2000's view hierarchy may not
+    // propagate setNeedsDisplay from embedded widget views.
+    [self displayIfNeeded];
 }
 
 #pragma mark - Scroll Reset

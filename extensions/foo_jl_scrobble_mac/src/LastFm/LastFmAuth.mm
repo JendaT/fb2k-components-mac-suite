@@ -27,6 +27,7 @@ static NSString* const kKeychainSessionAccount = @"lastfm_session";
 @property (nonatomic, strong, nullable) NSTimer* timeoutTimer;
 @property (nonatomic, copy, nullable) NSString* pendingToken;
 @property (nonatomic, copy, nullable) LastFmAuthCompletion pendingCompletion;
+@property (nonatomic, assign) BOOL isExchangeInFlight;
 @end
 
 @implementation LastFmAuth
@@ -154,18 +155,27 @@ static NSString* const kKeychainSessionAccount = @"lastfm_session";
         return;
     }
 
+    // Prevent overlapping exchange requests
+    if (_isExchangeInFlight) return;
+    _isExchangeInFlight = YES;
+
     self.state = LastFmAuthStateExchangingToken;
 
+    __weak typeof(self) weakSelf = self;
     [[LastFmClient shared] requestSessionWithToken:_pendingToken
                                         completion:^(LastFmSession* session, NSError* error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.isExchangeInFlight = NO;
+
+        if (!strongSelf.pendingToken) return;
+
         if (session) {
-            [self handleAuthSuccess:session];
+            [strongSelf handleAuthSuccess:session];
         } else if (error.code == LastFmErrorNotAuthorized) {
-            // Token not yet authorized - keep polling
-            self.state = LastFmAuthStateWaitingForApproval;
+            strongSelf.state = LastFmAuthStateWaitingForApproval;
         } else {
-            // Other error - fail
-            [self handleAuthError:error];
+            [strongSelf handleAuthError:error];
         }
     }];
 }
@@ -200,6 +210,12 @@ static NSString* const kKeychainSessionAccount = @"lastfm_session";
 }
 
 - (void)downloadProfileImage:(NSURL*)url {
+    // Validate URL scheme
+    NSString* scheme = url.scheme.lowercaseString;
+    if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) {
+        return;
+    }
+
     NSURLSessionDataTask* task = [[NSURLSession sharedSession] dataTaskWithURL:url
                                                              completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
         if (data && !error) {
@@ -207,7 +223,6 @@ static NSString* const kKeychainSessionAccount = @"lastfm_session";
             if (image) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     self.profileImage = image;
-                    // Notify observers that auth state changed (to trigger UI update)
                     [[NSNotificationCenter defaultCenter] postNotificationName:LastFmAuthStateDidChangeNotification
                                                                         object:self];
                 });

@@ -159,3 +159,62 @@ Updated `SimPlaylistController::rebuildFromPlaylist` to:
 - Header and subgroup nodes created based on titleformat patterns
 - Track indentation based on group depth
 - Ready for Phase 3 (album art) or Phase 4 (column headers)
+
+## 2026-07-11: Scroll-Fill Benchmark Baseline (P4 Part A gate)
+
+### Purpose
+P4 Part A (decorator provider API) acceptance gate: SimPlaylist rendering
+benchmarks must be unchanged with zero providers registered. This entry
+records the pre-change baseline.
+
+### Harness
+`Tests/ScrollFillBenchmark.mm` via `Scripts/run_benchmark.sh` (standalone
+clang, -O2, Foundation only). Simulates the drawSparseModelInRect /
+drawSparseRow query sequence against PlaylistLayoutModel while scrolling a
+5,000-track playlist (250 groups of 20, 63 subgroups, 0-2 padding rows per
+group) end to end, 66 px per frame, 7 passes, min/median reported.
+AppKit drawing is excluded (headless); this measures the model-side fill
+path the decorator integration hooks into.
+
+### Baseline (this machine, Release-equivalent -O2, 2026-07-11)
+Two runs, min-of-7-passes each:
+
+| Metric | Run 1 | Run 2 |
+|--------|-------|-------|
+| fill_pass_min_us | 1613137 | 1590470 |
+| fill_pass_median_us | 1628075 | 1633047 |
+| fill_frame_min_us | 864.95 | 852.80 |
+| fill_row_min_us | 23.424 | 23.095 |
+| reload_us | 20.5 | 21.4 |
+
+Run-to-run variance ~1.5%, pass-to-pass ~3%. Post-change comparison must be
+within this noise band with zero providers registered. Checksum 4419639474
+(must stay identical — guards against accidental behavior change).
+
+## 2026-07-11: P4 Part A Verification (zero-provider gate PASSED)
+
+Post-integration benchmark, same machine and harness as the baseline above.
+Zero-provider case (simulateFrame) is byte-identical code; a decorated-path
+case (steady-state DecorationStore lookups, 200/5000 rows decorated) was
+added alongside it.
+
+| Metric | Baseline r1 | Baseline r2 | Post r1 | Post r2 |
+|--------|------------|-------------|---------|---------|
+| fill_frame_min_us | 864.95 | 852.80 | 853.53 | 856.56 |
+| fill_row_min_us | 23.424 | 23.095 | 23.115 | 23.197 |
+| reload_us | 20.5 | 21.4 | 20.6 | 19.8 |
+
+Checksum 4419639474 identical across all runs. Post-change numbers sit
+inside the baseline noise band (~1.5%): gate PASSED. Decorated-path
+overhead measured at -0.27% / -1.50% (i.e. below noise; the per-row store
+lookup is two hash probes).
+
+Residual zero-provider cost not covered by the harness: one BOOL branch per
+drawRect (prepare skip), one per row (decoration fetch skip), one per group
+header (badge skip), and +0 pt gutter offsets. No allocations, no delegate
+calls, no cache work on the zero-provider path (verified by inspection;
+see drawSparseModelInRect / drawSparseRow guards).
+
+Unit tests: all suites pass incl. new DecorationStoreTests (29 checks).
+Release build: BUILD SUCCEEDED; dummy provider symbols absent from the
+release binary (nm check), present in debug.

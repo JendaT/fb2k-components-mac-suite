@@ -19,6 +19,7 @@ JL_COMPONENT_ABOUT(
     "Extended album art viewer for foobar2000 macOS\n\n"
     "Features:\n"
     "- Display front, back, disc, icon, and artist artwork\n"
+    "- Fetch missing artwork from online sources\n"
     "- Right-click context menu to switch artwork type\n"
     "- Navigation arrows on hover\n"
     "- Per-instance configuration\n"
@@ -52,15 +53,14 @@ namespace {
             }
         }
 
-        // Layout editor recognizes components by name - support all variations
+        // Layout editor recognizes components by name - use unique names to avoid clash with built-in
         bool match_name(const char* name) override {
             return strcmp(name, "Album Art (Extended)") == 0 ||
                    strcmp(name, "albumart_ext") == 0 ||
-                   strcmp(name, "album_art_ext") == 0 ||
-                   strcmp(name, "albumart-ext") == 0 ||
                    strcmp(name, "foo_jl_album_art") == 0 ||
                    strcmp(name, "jl_album_art") == 0 ||
-                   strcmp(name, "jl_albumart") == 0;
+                   strcmp(name, "jl_albumart") == 0 ||
+                   strcmp(name, "jl_albumart_ext") == 0;
         }
 
         fb2k::stringRef get_name() override {

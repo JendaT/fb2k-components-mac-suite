@@ -9,6 +9,7 @@
 #import "ScrobbleService.h"
 #import "ScrobbleCache.h"
 #import "RateLimiter.h"
+#import "ScrobblePolicy.h"
 #import "../Core/ScrobbleTrack.h"
 #import "../Core/ScrobbleConfig.h"
 #import "../Core/ScrobbleNotifications.h"
@@ -16,11 +17,6 @@
 #import "../LastFm/LastFmAuth.h"
 #import "../LastFm/LastFmErrors.h"
 #import "../LastFm/LastFmConstants.h"
-
-// Exponential backoff constants
-static const NSTimeInterval kInitialBackoff = 5.0;
-static const NSTimeInterval kMaxBackoff = 300.0;  // 5 minutes
-static const double kBackoffMultiplier = 2.0;
 
 @interface ScrobbleService ()
 @property (nonatomic, readwrite) ScrobbleServiceState state;
@@ -50,7 +46,7 @@ static const double kBackoffMultiplier = 2.0;
         _state = ScrobbleServiceStateUnauthenticated;
         _rateLimiter = [[RateLimiter alloc] initWithTokensPerSecond:LastFm::kTokensPerSecond
                                                       burstCapacity:LastFm::kBurstCapacity];
-        _currentBackoff = kInitialBackoff;
+        _currentBackoff = kScrobbleInitialBackoff;
         _consecutiveFailures = 0;
 
         // Observe auth state changes
@@ -200,7 +196,7 @@ static const double kBackoffMultiplier = 2.0;
 
     // Success
     _consecutiveFailures = 0;
-    _currentBackoff = kInitialBackoff;
+    _currentBackoff = kScrobbleInitialBackoff;
     _sessionScrobbleCount += accepted;
 
     // Mark as submitted
@@ -225,43 +221,40 @@ static const double kBackoffMultiplier = 2.0;
 - (void)handleScrobbleError:(NSError*)error tracks:(NSArray<ScrobbleTrack*>*)tracks {
     LastFmErrorCode code = (LastFmErrorCode)error.code;
 
-    // Check if we need to re-authenticate
-    if (LastFmErrorRequiresReauth(code)) {
-        [[LastFmAuth shared] signOut];
-        self.state = ScrobbleServiceStateUnauthenticated;
-        [[ScrobbleCache shared] requeueTracks:tracks];
-        return;
+    switch (ScrobbleActionForErrorCode(code)) {
+        case ScrobbleErrorActionReauth:
+            [[LastFmAuth shared] signOut];
+            self.state = ScrobbleServiceStateUnauthenticated;
+            [[ScrobbleCache shared] requeueTracks:tracks];
+            return;
+
+        case ScrobbleErrorActionSuspend:
+            self.state = ScrobbleServiceStateSuspended;
+            [[ScrobbleCache shared] requeueTracks:tracks];
+            return;
+
+        case ScrobbleErrorActionRetry:
+            _consecutiveFailures++;
+            [[ScrobbleCache shared] requeueTracks:tracks];
+
+            [self scheduleRetry:_currentBackoff];
+            _currentBackoff = ScrobbleNextBackoff(_currentBackoff);
+            return;
+
+        case ScrobbleErrorActionDrop:
+            [[ScrobbleCache shared] markTracksAsSubmitted:tracks];
+
+            [[NSNotificationCenter defaultCenter] postNotificationName:ScrobbleServiceDidFailNotification
+                                                                object:self
+                                                              userInfo:@{
+                                                                  @"error": error,
+                                                                  @"droppedCount": @(tracks.count)
+                                                              }];
+
+            self.state = ScrobbleServiceStateIdle;
+            [self processQueue];
+            return;
     }
-
-    // Check if API key is suspended
-    if (LastFmErrorShouldSuspend(code)) {
-        self.state = ScrobbleServiceStateSuspended;
-        [[ScrobbleCache shared] requeueTracks:tracks];
-        return;
-    }
-
-    // Retriable error - use exponential backoff
-    if (LastFmErrorIsRetriable(code)) {
-        _consecutiveFailures++;
-        [[ScrobbleCache shared] requeueTracks:tracks];
-
-        [self scheduleRetry:_currentBackoff];
-        _currentBackoff = MIN(_currentBackoff * kBackoffMultiplier, kMaxBackoff);
-        return;
-    }
-
-    // Non-retriable error - drop the tracks
-    [[ScrobbleCache shared] markTracksAsSubmitted:tracks];
-
-    [[NSNotificationCenter defaultCenter] postNotificationName:ScrobbleServiceDidFailNotification
-                                                        object:self
-                                                      userInfo:@{
-                                                          @"error": error,
-                                                          @"droppedCount": @(tracks.count)
-                                                      }];
-
-    self.state = ScrobbleServiceStateIdle;
-    [self processQueue];
 }
 
 - (void)scheduleRetry:(NSTimeInterval)delay {

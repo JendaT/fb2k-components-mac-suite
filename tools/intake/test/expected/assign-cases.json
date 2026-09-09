@@ -1,0 +1,25 @@
+{
+  "_comment": "Replay harness (doc 02 testing): synthetic already-placed releases stripped to identify-level metadata; assign must reproduce the collection. 'Koan' is a deliberate coin-flip (2/2 split in the fixture map) and is expected to miss under the deterministic tie-break — the gate is top-1 >= 0.90, not 1.0.",
+  "cases": [
+    { "artist": "Aes Dana", "label": "Ultimae Records", "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Solar Fields", "label": null, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "CBL", "label": "Ultimae Records", "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Magnus Birgersson", "label": null, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Ott", "label": null, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "E-Mantra", "label": "Iboga Records", "expect": "[Psytrance]" },
+    { "artist": "Hilyard", "label": null, "expect": "[Ambient]" },
+    { "artist": "Cell", "label": null, "expect": "[Ambient]" },
+    { "artist": "Sync24", "label": null, "expect": "[Downtempo & Electronica]" },
+    { "artist": "Bluetech", "label": "Aleph Zero", "expect": "[Downtempo & Electronica]" },
+    { "artist": "Vibrasphere", "label": null, "expect": "[Psytrance]" },
+    { "artist": "Hol Baumann", "label": "Ultimae Records", "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Miktek", "label": null, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Zero Cult", "label": null, "expect": "[Ambient]" },
+    { "artist": "Nadja & Vampillia", "label": null, "expect": "[Ambient]" },
+    { "artist": "Aes Dana & Miktek", "label": null, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Zymosis", "label": "Ultimae Records", "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Aural Method", "label": null, "similar": true, "expect": "[Psychill & Chillout & Psydub]" },
+    { "artist": "Somnia Project", "label": null, "styles": ["Ambient"], "expect": "[Ambient]" },
+    { "artist": "Koan", "label": null, "expect": "[Psychill & Chillout & Psydub]" }
+  ]
+}

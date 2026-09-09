@@ -84,11 +84,15 @@
 }
 
 - (NSString *)relativeTimeString {
+    return [self relativeTimeStringAtDate:[NSDate date]];
+}
+
+- (NSString *)relativeTimeStringAtDate:(NSDate *)now {
     if (self.isNowPlaying || !self.scrobbleDate) {
         return @"Now Playing";
     }
 
-    NSTimeInterval elapsed = -[self.scrobbleDate timeIntervalSinceNow];
+    NSTimeInterval elapsed = [now timeIntervalSinceDate:self.scrobbleDate];
     if (elapsed < 60) {
         return @"now";
     } else if (elapsed < 3600) {

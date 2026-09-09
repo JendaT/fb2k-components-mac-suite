@@ -7,6 +7,7 @@
 
 #import "ScrobbleStreakCache.h"
 #import "ScrobbleConfig.h"
+#import "StreakValidity.h"
 
 @interface ScrobbleStreakCache ()
 @property (nonatomic, strong, nullable, readwrite) NSUUID *discoveryToken;
@@ -50,41 +51,19 @@
 }
 
 - (NSDate *)currentMidnight {
-    NSCalendar *calendar = [NSCalendar currentCalendar];
-    return [calendar startOfDayForDate:[NSDate date]];
+    return ScrobbleLocalMidnight([NSDate date], [NSCalendar currentCalendar]);
 }
 
 #pragma mark - Cache Validity
 
 - (BOOL)isValid {
-    // All checks are O(1) operations, ordered for quick rejection
-
-    // 1. Must have been calculated
-    if (!_calculatedAt) {
-        return NO;
-    }
-
-    // 2. Check cache duration (date arithmetic)
-    NSTimeInterval cacheDuration = scrobble_config::getStreakCacheDuration();
-    NSTimeInterval age = [[NSDate date] timeIntervalSinceDate:_calculatedAt];
-    if (age > cacheDuration) {
-        return NO;
-    }
-
-    // 3. Check day rollover (date comparison)
-    NSDate *currentMidnight = [self currentMidnight];
-    if (!_todayMidnight || ![_todayMidnight isEqualToDate:currentMidnight]) {
-        return NO;
-    }
-
-    // 4. Check timezone change (string comparison on identifier)
-    NSTimeZone *currentTimezone = [NSTimeZone localTimeZone];
-    if (!_calculatedTimezone ||
-        ![_calculatedTimezone.name isEqualToString:currentTimezone.name]) {
-        return NO;
-    }
-
-    return YES;
+    return StreakCacheIsValid(_calculatedAt,
+                              [NSDate date],
+                              scrobble_config::getStreakCacheDuration(),
+                              _todayMidnight,
+                              [self currentMidnight],
+                              _calculatedTimezone.name,
+                              [NSTimeZone localTimeZone].name);
 }
 
 - (BOOL)needsMoreDiscovery {

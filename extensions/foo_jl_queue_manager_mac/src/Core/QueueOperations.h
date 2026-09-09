@@ -42,14 +42,29 @@ void addItemFromPlaylist(size_t playlist, size_t item);
 // Add orphan item (not associated with any playlist)
 void addOrphanItem(metadb_handle_ptr handle);
 
+// Flush the queue and re-add `contents` in the given order:
+// order[newPosition] = index into contents. Items whose playlist
+// reference went stale since contents was captured are re-added as
+// orphans so no track is dropped. Fires one SDK callback per mutation;
+// callers suppress reloads around this (see QueueManagerController).
+void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
+                    const std::vector<size_t>& order);
+
+// Playlist lookups (thin playlist_manager wrappers so UI code never
+// touches the SDK directly)
+size_t playlistCount();
+size_t activePlaylist();  // SIZE_MAX if none
+size_t playlistItemCount(size_t playlist);
+
 // Check if a queue item is still valid (playlist/item references are current)
 bool isItemValid(const t_playback_queue_item& item);
 
 // Check if item is an orphan (not from a playlist)
 bool isOrphanItem(const t_playback_queue_item& item);
 
-// Play a queue item (starts playback)
-// Returns true if playback was started successfully
+// Play a queue item: from its source playlist position when the item is
+// still valid, otherwise by starting playback so the queue is consumed.
+// Always returns true (kept for interface stability).
 bool playItem(const t_playback_queue_item& item);
 
 // Format a queue item for display using title format script

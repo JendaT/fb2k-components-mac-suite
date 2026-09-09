@@ -23,6 +23,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
+### [Unreleased]
+
+#### Fixed
+- Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
+- An album cover too large to cache was re-decoded on every redraw, on up to four threads, for as long as it was on screen
+- Invalid grouping patterns previewed as the track's filename instead of reporting themselves as invalid
+- An out-of-range stored preset index left the preferences page showing blank pattern fields and silently discarding every edit
+- Typing a grouping pattern compiled and ran it on the main thread on every keystroke; leaving the field rebuilt the playlist twice
+- Column headers scrolled behind the album-art strip remained clickable, draggable and resizable
+- Custom column edits could be reverted by a stale copy held by the preferences page
+- Shift-click after a playlist switch extended the selection from the previous playlist's anchor
+- Drop indicator appeared up to ~150 px below the cursor when dragging into grouped playlists, and the drop landed at the indicator — drop positions were scored against uniform row heights that ignored taller group headers
+- Delete/Backspace with an empty selection hung the app
+- With multiple SimPlaylist panels open, one panel's rebuild cancelled another's in-progress group detection
+- Album art cache is now bounded by decoded size (256 MB) as well as image count, which previously allowed ~1 GB resident
+- Assorted crash guards and correctness fixes from a multi-pass code review
+
+#### Changed
+- Removed ~1,100 lines of unreferenced legacy rendering code (node/boundary drawing, disabled flat mode, `GroupNode`/`GroupBoundary`)
+- Unified the group-data application sequence that was duplicated across five call sites and had drifted between copies
+
+### [1.5.1] - 2026-07-07
+
+#### Added
+- "Keep playback in its playlist" behavior option (default on) — prevents ReFacets library browsing from redirecting playback continuation; finishing a track no longer jumps playback to the browsed selection
+
+### [1.5.0] - 2026-07-02
+
+#### Added
+- "Focus Playing Now" context menu item — selects the playing track and scrolls it to the center of the view, switching playlists when needed
+- Cover art for tracks on external volumes with smarter companion-file matching (thanks @Scannou, #27)
+
+#### Fixed
+- Per-playlist scroll positions restore pixel-exactly across playlist switches and restarts (previously drifted by up to a full screen per round trip; ungrouped and very large playlists never saved their position at all)
+- Stale selections: external selection changes are no longer silently ignored after clicking an already-selected track
+- Playing column ">" no longer lingers on the previous track (thanks @Scannou, #28)
+- Metadata broadcast after playlist refresh/switch (thanks @Scannou, #25)
+- Cover art bleed-through between neighboring albums (thanks @Scannou, #23)
+
+#### Changed
+- Core playlist logic extracted into pure, unit-tested modules (~108k checks gating every build); codebase optimization and testability, no functional change intended
+
+### [1.4.6] - 2026-05-17
+
+#### Added
+- Cmd+Z / Cmd+Shift+Z undo/redo for playlist modifications
+- Finder open override (replace / append / send to named playlist)
+- Pattern Help side panel with live preview and typo warnings
+- Scrollable preferences page
+
+#### Fixed
+- Background metadata refresh: `?` rows now resolve immediately after foobar2000 reads tags
+- Default preset uses `$if2(%album artist%,%artist%)` fallback
+- Improved title-format help text with worked examples
+
 ### [1.4.5] - 2026-04-29
 
 #### Added
@@ -194,6 +249,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
+### [1.5.0] - Unreleased
+
+#### Added
+- **Automatic Volume UUID Sync**: Repairs stale `mac-volume://` UUIDs in playlists after SMB/Tailscale remounts. Off by default
+- **Volume self-heal**: Registers a mounted volume foobar2000 has no working bookmark for, then remaps the stale playlists. Off by default
+- **Metadb cache migration**: Moves cached metadata to the live UUID after foobar2000 quits; backed up, transactional, verified and compacted
+- **Finder file drop**: Drop files or folders onto a playlist node to append them (thanks @Scannou, #36)
+- **FTH Theme Import**: Imports tree and tracks from old Windows foo_plorg themes (developed as 1.4.0)
+- **Corrupted Playlist Detection**: Finds and safely removes playlists foobar2000 cannot load (developed as 1.4.0)
+- **`Scripts/metadb_cleanup.sh`**: Offline tool that reclaims metadb space from dead-UUID copies
+
+#### Changed
+- **Testable core**: Pure logic extracted into Foundation-only modules; 270 unit checks gate every build
+- **Network Volumes off by default**: Power-user feature; opt in from Preferences
+
+#### Fixed
+- **Restart after repair**: No longer reopens foobar2000 while the database is being written ("database is locked", "metadb is corrupted")
+- **Concurrent migrations**: Only one migration runs per session; two were observed running at once
+- **Database growth**: Migrations now compact the file, which previously kept its largest-ever size permanently
+- **Lower-case UUIDs**: Cached metadata could be deleted instead of migrated when a UUID was stored in lower case
+- **Config load failure**: No longer mistaken for an empty configuration, which could replace the saved folder tree
+- **Malformed input crashes**: FTH, DeaDBeeF, YAML, Vox and drag-payload parsers hardened
+- **Path traversal**: Crafted playlist paths can no longer escape their drive
+- **Import databases**: Vox and Strawberry libraries opened read-only
+- **Repair Volume UUIDs window**: Close cancels cleanly; backup failure re-enables it; reopening reuses the window
+- **Build tooling**: Failed project regeneration aborts the build; compiler warnings no longer filtered out
+
+### [1.4.0] - developed 2026-02-14, never published (ships in 1.5.0)
+
+#### Added
+- FTH Theme Import: import playlist tree structure and tracks from old Windows foo_plorg theme files, with Windows-to-macOS path mapping
+- Corrupted Playlist Detection: file-based corruption checks plus crash-marker system for SDK-level crashers; safe filesystem-based removal; preference and "Check Now" button
+
+#### Fixed
+- Nil safety in path encoding prevents crash on nil tree node names
+- Import exception handling resets view state on failure
+- Playlist item count access skipped for known-bad playlists to prevent startup crashes
+
+### [1.3.2] - 2026-01-15
+
+#### Added
+- Network Volume UUID Remapping tool: manual repair window for orphaned playlist entries; scans for `mac-volume://` references, detects current UUID for mounted volumes, backs up before applying
+
 ### [1.3.0] - 2026-01-03
 
 #### Added
@@ -226,6 +324,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Waveform Seekbar
 
+### [1.2.0] - 2026-07-02
+
+#### Added
+- Glass background option: translucent blur background, same effect as SimPlaylist; toggles live without restart
+- Background color wells support transparency; translucent background tints the glass blur
+- "Preferences..." context menu item opens the seekbar preferences page directly
+
+#### Fixed
+- Choppy playback cursor movement (redraw threshold now pixel-based, animated cursor effects redraw continuously)
+- Played-portion shading no longer paints the opaque background color over the glass blur
+- Stale waveform scans no longer overwrite the current track on rapid track changes
+- Cache store/lookup race and listener deadlock fixes
+
 ### [1.1.0] - 2025-12-29
 
 #### Added
@@ -247,6 +358,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Last.fm Scrobbler
+
+### [Unreleased]
+
+#### Changed
+- Core logic extracted into pure, unit-tested modules gating every build (playback state machine, Last.fm signing/parsing, error policy, queue/dedup, streak validity, streak discovery walk, widget layout math). No functional change intended.
+- Widget layout computed in a geometry pass shared by drawing and hit-testing (was a side effect of drawing)
+
+#### Fixed
+- Latent double-queue of an already-scrobbled track on playback stop
+- Streak inflated by one day when the user had not scrobbled today
+
+### [1.4.0] - 2026-05-17
+
+#### Added
+- Scrobble Queue table in preferences with multi-select delete
+
+#### Fixed
+- Scrobbles lost for artists with `&`, `=`, `+`, `#` in name — by [@Scannou](https://github.com/Scannou)
+- Album art not appearing until view switch
+- UI freeze during cache save
+- Nil pointer crashes in image loading
+- Double-scrobble on rapid track changes
+
+#### Changed
+- Async album art downloads with NSCache
+- Hardened auth flow, keychain storage, and notification observers
 
 ### [1.3.0] - 2026-02-13
 
@@ -296,6 +433,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Album Art
 
+### [1.1.0] - 2026-07-09
+
+#### Added
+- Fetch Missing Artwork: search Cover Art Archive, iTunes, Deezer, and TIDAL (optional) for album art via right-click
+- Lightbox preview with type filters and multi-type selection; save to album folder and/or embed into file tags
+- Unit test suite gating every build
+
+#### Fixed
+- Save-to-folder failed for track paths containing spaces
+- Restarted searches could complete with stale or missing results
+- Thumbnails could attach to the wrong results; footer clicks could open the wrong image
+- First search after startup could falsely report offline; offline state now actually disables the menu item
+- Track changes now cancel in-flight searches and clear stale results
+- "Save Selected" could silently save fewer images than claimed; lightbox window leaked on every presentation
+- Remembered "embed" preference was ignored for multi-image saves; remembered choices can now be reset from the context menu
+
 ### [1.0.2] - 2025-12-30
 
 #### Fixed
@@ -319,6 +472,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Queue Manager
+
+### [Unreleased]
+
+#### Added
+- Multi-row drag reorder (previously only the first selected row moved)
+
+#### Changed
+- Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with unit tests gating every build
+- Column metadata consolidated into a single source of truth; dead QueueHeaderView removed; real component GUIDs and corrected metadata
+
+#### Fixed
+- Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; selection now uses `selectedBackgroundColor()` like SimPlaylist
+- Code review cleanups: duration formatting UB on malformed track lengths, duplicated title-format error handling, orphan sentinel consistency, selection recolor efficiency
+- Reorder debounce flag never suppressed callbacks (redundant double reload per reorder); reorder now exception-safe with stale items re-added as orphans; SimPlaylist drops validate the source playlist index
 
 ### [1.1.2] - 2026-02-09
 
@@ -366,6 +533,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Biography
 
+### [1.1.0] - 2026-07-17
+
+#### Added
+- Artist image gallery (Fanart.tv, TheAudioDB, Deezer) with full-screen lightbox viewer
+- MusicBrainz MBID lookup when Last.fm returns none (unlocks Fanart.tv coverage)
+- Wikipedia biography fallback resolved via MusicBrainz -> Wikidata -> Wikipedia
+- Dual-layer artist image cache with request coalescing
+
+#### Changed
+- Testable-core refactor (SimPlaylist pattern): SDK-free Core logic with 9 unit test suites gating the build
+
+#### Fixed
+- Data race in the gallery coordinator's multi-source completion tracking
+- Fanart.tv client crash on malformed MusicBrainz IDs
+
 ### [1.0.0] - 2025-12-30
 
 #### Added
@@ -403,3 +585,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Customizable track info rows using titleformat expressions
 - Drag-to-reorder buttons in editing mode
 - Compact and normal display modes
+
+## Tidal Integration
+
+### [Unreleased]
+
+#### Added
+- Save to library (music.hq): personal playlist context-menu export of selected tidal:// tracks into a configured library root using the music.hq layout (genre collection / artist / `Artist [YYYY] Title`, with `[Releases]` and `[Compilations]` slots). Genre resolution: existing artist folder on disk > remembered choice > one-time picker. DASH FLAC remuxed losslessly to tagged `.flac` via ffmpeg; `cover.jpg` fetched per album; existing files skipped. Gated by the Preferences > Library folder setting (unset hides the feature)
+- DASH prefetch: the next track in the active playlist is resolved and its segments pre-assembled into an in-memory blob cache while the current track plays, so lossless/hi-res tracks open instantly instead of stalling ~3-4s on the segment download. Byte-capped (~320 MB), cleared on quit
+- Pure Core modules extracted from SDK/network code (testability refactor, no functional change): `ManifestParser`, `StreamResolutionPolicy`, `HTTPResponsePolicy`, `ResponseParser` (replacing 11 inline API-parsing loops), `SyncPlanner`, `BrowserLogic`, `DashCachePolicy`, `TidalLog`
+- Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+
+#### Fixed
+- Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
+- Debug-logging preference honored after restart (cache was only synced on toggle)
+- Static-destructor logging can no longer touch torn-down fb2k services
+- Pull sync no longer truncates playlists at 200 tracks (all sync fetches paginate to completeness); a failed remote fetch can no longer wipe a local playlist (excluded from the plan instead of diffing as empty)
+- fb2k playlist state read only on the main thread in sync previews; sync shared state serialized; request bursts bounded to 4 concurrent
+- Token refresh is single-flight (concurrent callers get the real result instead of a 1s sleep guess); sign-out during refresh can no longer resurrect a session
+- Two crash fixes (nil dictionary key in push-sync apply, std::string(NULL) in DASH 403 re-open) plus 58 review fixes: JSON type guards, album-art data cache, stale-response guards, leak fix, dedupe
+
+#### Security
+- tidal:// content IDs validated before use in authenticated API paths (blocks request forgery via crafted playlists); search/ISRC query values strictly encoded; path traversal guards on library export paths; request logs redacted to host+path; DASH manifest bomb hardening
+
+### [0.3.1] - 2026-06-17
+
+LOSSLESS FLAC playback now works for LOSSLESS subscribers by default. DASH segment parser rewritten against `python-tidal` semantics.
+
+#### Added
+- LOSSLESS FLAC by default for LOSSLESS subscribers (preference checkbox ticked by default; untick to fall back to 320kbps HIGH)
+- Raw MPD manifest XML logged when DASH is enabled, for easier diagnosis
+
+#### Fixed
+- Segment count derived from `<SegmentTimeline><S r="N"/>` elements (was: `mediaPresentationDuration / segmentDuration`, undercounted)
+- `media[$Number$=0]` treated as the init segment, no separate init download (was: separate init + media[1..N], producing malformed fMP4)
+- FLAC content type routed via `audio/x-flac` so fb2k picks the FLAC decoder (was: always `audio/mp4`)
+- DASH codec normalisation for `flac`, `mp4a.*`, `ec-3`, `ac-4`
+
+### [0.3.0] - 2026-05-17
+
+Fixes the long-standing "playback stops until restart" cascade and restores drag-drop to SimPlaylist + free column resizing. Adds token-state visibility, Year/Tracks columns in the album browser, and an experimental DASH toggle for true LOSSLESS.
+
+#### Added
+- Album browser: Year and Tracks columns
+- Preferences: token status line with expiry countdown and last-refresh outcome
+- Preferences: experimental DASH toggle for true LOSSLESS (off by default, untested)
+- Stream-open diagnostics and premature-EOF detection always logged
+
+#### Fixed
+- Playback cascade through the playlist on aborted preloads (decoder treated cancellations as track failures)
+- Tidal browser column can be resized freely in fb2k layouts
+- Drag-drop to SimPlaylist (URL emitted as NSPasteboardTypeURL)
+- Reconnect button no longer hangs on success path
+- Refresh-token rotation honoured; 401 auto-retry transparent
+
+#### Changed
+- Quality-fallback log is unambiguous about silent API downgrades
+- Refresh/token logs always visible regardless of debug-logging setting
+
+### [0.2.0] - 2026-02-13
+
+#### Added
+- Initial public release: browser, search, library, playlists, sync, ISRC matching, album art

@@ -2,6 +2,69 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Home key did nothing useful in grouped playlists**: Home jumped to an arbitrary point mid-list instead of the first track. The focus-movement API works in display rows, but Home computed its distance from the playlist index, which ignores every group header, subgroup header and padding row above the current track. End was wrong in the same way and only appeared to work because an over-large jump clamps to the end.
+- **Album art could pin the CPU indefinitely**: an image too large to cache was neither stored nor remembered as unusable, so every redraw decoded it again on up to four background threads for as long as its album was on screen.
+- **Invalid grouping patterns previewed as a filename**: the preferences preview reported a plausible-looking wrong answer instead of flagging the pattern as invalid.
+- **Preset settings could stop saving silently**: if the stored preset index pointed past the end of the preset list, the preferences page showed the first preset with empty pattern fields and quietly discarded every later edit.
+- **Typing a grouping pattern was sluggish**: each keystroke compiled and ran the half-typed pattern for both fields on the main thread. It is now debounced and only the edited field refreshes.
+- **Editing a pattern rebuilt the playlist twice**: leaving the field saved once immediately and once from a pending timer.
+- **Column headers hidden behind the album-art strip stayed interactive**: when scrolled horizontally, an invisible column could still be clicked, dragged and resized.
+- **Custom column edits could be reverted**: the custom-columns page kept a stale copy of the list and wrote it back over newer changes; it now reloads each time it appears.
+- Shift-click after switching playlists no longer extends the selection from the previous playlist's anchor.
+- Several places where a foobar2000 error would have closed the whole app rather than skipping a frame are now contained, and a corrupt layout cache entry can no longer crash on startup through a field the previous release's guard missed.
+- **Drop indicator landed below the cursor**: Dragging into a grouped playlist placed the insertion line up to ~150 px below the pointer, and the drop landed where the line was drawn. Drop positions were scored against a uniform row height that ignored taller group headers, so the error grew with every header above the cursor. Positions are now scored against real layout geometry and only candidates near the cursor are examined, which also removes a full-playlist scan on every mouse-move during a drag.
+- **Delete/Backspace with an empty selection hung the app**: The removal path looped ~2^63 times when nothing was selected.
+- **Group detection interfered across panels**: With two or more SimPlaylist panels open, one panel rebuilding its playlist cancelled another's in-progress group detection, leaving that panel with partial groups and an unsaved group cache. The cancellation counter is now per panel.
+- **Album art cache could grow to ~1 GB**: The cache was bounded by image count only. It is now also bounded by decoded size (256 MB default), evicting oldest-first on insert. Eviction still never happens behind the drawing code's back, so on-screen art cannot blank out.
+- Assorted crash guards and correctness fixes from a multi-pass code review (nil handling on tag-derived text, bounds and lifetime checks, error-path cleanups).
+
+### Changed
+- **Dead code removal**: Deleted the unused legacy rendering pipeline (node-based and boundary-based drawing, the disabled flat-mode path) and the `GroupNode`/`GroupBoundary` classes, which nothing referenced — about 1,100 lines. No behavior change; the sparse model is the only path and was already the only one running.
+- **Group-data application unified**: The "apply detected groups to the view" sequence was copied at five call sites, each repeating an order-dependent ritual with a warning comment, and had already drifted between copies. It is now a single method, with the intentional per-site differences (last group's end index, whether the frame is resized) as parameters. The four empty-reset blocks collapsed into one method likewise.
+- Drag start no longer allocates per-file Objective-C objects for tracks it then discards when checking which selected files still exist on disk.
+
+## [1.5.1] - 2026-07-07
+
+### Added
+- **Keep playback in its playlist**: New behavior option (default on) that stops library browsing from changing what plays next. foobar2000 for Mac redirects playback continuation to the browsed ReFacets selection, so finishing a track while browsing jumped playback to the first visible library track and abandoned your playlist. SimPlaylist now detects the redirect and points continuation back at the playlist the current track is playing from. Starting playback from ReFacets deliberately (double-click) still works as before.
+
+## [1.5.0] - 2026-07-02
+
+### Added
+- **Focus Playing Now**: New context menu item (at the bottom) that selects the currently playing track and scrolls it to the center of the view, switching to its playlist first when needed. Disabled while nothing is playing.
+- **Cover art from external volumes**: Album art now loads for tracks on external volumes, with smarter companion-file matching (by album/artist tags before conventional filenames). (thanks @Scannou, #27)
+
+### Fixed
+- **Per-playlist scroll position — full overhaul**: Every playlist now returns to exactly where you left it, pixel-for-pixel, when switching between playlists and across restarts. Previously the restore used minimal scrolling (the remembered track could land at the bottom edge, drifting the view by up to a full screen per switch), ungrouped playlists never saved their position at all, large playlists (over the group-cache limit) could be restored against a stale cached layout that walked the position down the playlist on every switch, and the final scroll before quitting was lost. Positions are now stored as (track, pixel offset) anchors per playlist, persisted independently of the group cache.
+- **Stable selections**: Selection changes from foobar2000 (including Focus Playing Now and other components) could be silently ignored after clicking an already-selected track, leaving stale highlights in the view. Selection callbacks now always sync from foobar2000.
+- **Playing column symbol**: Cached ">" indicator is cleared when a new track starts, so it no longer lingers on the previous track. (thanks @Scannou, #28)
+- **Metadata broadcast after playlist refresh/switch**: Tag updates arriving right after a refresh or switch are reflected correctly. (thanks @Scannou, #25)
+- **Cover art bleed-through**: A file-specific extractor prevents one album's embedded art from appearing on a neighboring group. (thanks @Scannou, #23)
+
+### Changed
+- **Codebase optimization and testability**: The core playlist logic (row geometry, selection math, drag-reorder planning, group detection) was extracted into pure, host-independent modules covered by a unit-test suite (~108k checks) that now gates every build. No functional change intended; verified by equivalence testing against the previous implementation.
+
+Thanks to @Scannou for the pull requests and the field reports that drove the scroll-position debugging in this release.
+
+## [1.4.6] - 2026-05-17
+
+### Added
+- **Cmd+Z / Cmd+Shift+Z**: Undo / redo the last playlist modification on the active playlist (useful for recovering after a Finder open replaces your playlist).
+- **Finder open override**: New preference to control what happens when files are opened from Finder. Options: replace active playlist (default), append to active playlist, or send to a named playlist (defaults to "Inbox").
+- **Pattern Help side panel**: Live preview and typo warnings for the Header / Subgroup title-format patterns. Preview resolves against the currently focused track in the active playlist. Catches common typos like `%albumartist%` (no space) → suggests `%album artist%`, `%year%` → `%date%`, etc.
+- **Default preset fallback**: `Artist - album / cover` preset now uses `$if2(%album artist%,%artist%)` so it works for tracks that only have an artist tag, not album artist.
+- **Scrollable preferences**: SimPlaylist preferences page now scrolls properly when the host window is shorter than the content.
+
+### Fixed
+- **Background metadata refresh**: When foobar2000 reads tags in the background (e.g., on first playback of a previously unanalyzed file), unresolved `?` rows now refresh immediately instead of requiring a playlist switch.
+- **Title-format help text**: Updated to include `%album artist%` (with space), `%discnumber%`, conditional `[...]` brackets, and `$if2()` fallback with worked examples.
+
+### Known issues
+- The "Send to named playlist" Finder-open mode is functional but the target playlist picker UI is currently disabled (the popup is unresponsive in the preferences). The default target name "Inbox" is used; advanced users can change it via `kFinderOpenTargetPlaylist` in the config. Re-enable tracked in BACKLOG.md.
+
 ## [1.4.5] - 2026-04-29
 
 ### Added

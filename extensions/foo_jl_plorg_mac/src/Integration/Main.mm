@@ -21,7 +21,10 @@ JL_COMPONENT_ABOUT(
     "- Hierarchical playlist organization with folders\n"
     "- Drag and drop reordering\n"
     "- Customizable node display formatting\n"
-    "- Automatic sync with playlist changes\n\n"
+    "- Automatic sync with playlist changes\n"
+    "- FTH theme import from Windows foo_plorg theme files\n"
+    "- Corrupted playlist detection and safe removal\n"
+    "- Automatic volume UUID sync for network-share playlists\n\n"
     "Based on foo_plorg by Holger Stenger."
 );
 

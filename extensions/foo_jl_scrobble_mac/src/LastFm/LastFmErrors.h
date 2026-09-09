@@ -39,7 +39,8 @@ typedef NS_ENUM(NSInteger, LastFmErrorCode) {
 // Check if error requires re-authentication
 inline bool LastFmErrorRequiresReauth(LastFmErrorCode code) {
     return code == LastFmErrorAuthenticationFailed ||
-           code == LastFmErrorInvalidSessionKey;
+           code == LastFmErrorInvalidSessionKey ||
+           code == LastFmErrorTokenExpired;
 }
 
 // Check if error is a temporary/retriable error

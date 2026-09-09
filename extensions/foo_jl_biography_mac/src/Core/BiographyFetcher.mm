@@ -9,7 +9,10 @@
 #import "BiographyData.h"
 #import "BiographyRequest.h"
 #import "BiographyCache.h"
+#import "LastFmParsing.h"
 #import "../API/LastFmBioClient.h"
+#import "../API/MusicBrainzClient.h"
+#import "../API/WikipediaBioClient.h"
 #import "../API/BiographyAPIConstants.h"
 
 NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetcher";
@@ -17,7 +20,7 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
 @interface BiographyFetcher ()
 
 @property (nonatomic, strong, readwrite) dispatch_queue_t fetchQueue;
-@property (nonatomic, strong, readwrite, nullable) BiographyRequest *currentRequest;
+@property (atomic, strong, readwrite, nullable) BiographyRequest *currentRequest;
 @property (nonatomic, strong) BiographyCache *cache;
 
 @end
@@ -36,7 +39,10 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _fetchQueue = dispatch_queue_create("com.foobar2000.biography.fetcher", DISPATCH_QUEUE_SERIAL);
+        // PERF-15: Explicit QoS to prevent priority inversion from audio callback threads
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        _fetchQueue = dispatch_queue_create("com.foobar2000.biography.fetcher", attr);
         _cache = [[BiographyCache alloc] init];
     }
     return self;
@@ -113,20 +119,93 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
             }
 
             // Parse response and build BiographyData
-            BiographyData *data = [self buildBiographyDataFromResponse:response
-                                                            artistName:artistName];
+            BiographyData *data = [LastFmParsing biographyDataFromArtistInfoResponse:response
+                                                                          artistName:artistName];
 
-            // Cache the result
-            [self.cache cacheBiography:data forArtist:artistName];
+            // Enrich: resolve a missing MBID via MusicBrainz (Fanart.tv needs it)
+            // and fall back to Wikipedia when Last.fm has no biography text
+            [self enrichBiographyData:data request:request completion:^(BiographyData *enriched) {
+                // Cache the result
+                [self.cache cacheBiography:enriched forArtist:artistName];
 
-            // Clear current request before completing
-            if (self.currentRequest == request) {
-                self.currentRequest = nil;
-            }
+                // Clear current request before completing
+                if (self.currentRequest == request) {
+                    self.currentRequest = nil;
+                }
 
-            [self completeWithData:data completion:completion];
+                [self completeWithData:enriched completion:completion];
+            }];
         }];
     });
+}
+
+#pragma mark - Enrichment (MusicBrainz + Wikipedia)
+
+- (void)enrichBiographyData:(BiographyData *)data
+                    request:(BiographyRequest *)request
+                 completion:(void (^)(BiographyData *))completion {
+
+    BOOL needsMbid = data.musicBrainzId.length == 0;
+    BOOL needsBio = !data.hasBiography;
+
+    if ((!needsMbid && !needsBio) || request.isCancelled) {
+        completion(data);
+        return;
+    }
+
+    if (needsMbid) {
+        [[MusicBrainzClient shared] lookupMBIDForArtist:data.artistName
+                                                  token:request
+                                             completion:^(NSString *mbid, NSError *error) {
+            BiographyData *current = data;
+            if (mbid.length > 0) {
+                NSLog(@"[Biography] MusicBrainz resolved MBID for %@", data.artistName);
+                BiographyDataBuilder *builder = [[BiographyDataBuilder alloc] initWithData:data];
+                builder.musicBrainzId = mbid;
+                current = [builder build];
+            }
+
+            if (needsBio && current.musicBrainzId.length > 0 && !request.isCancelled) {
+                [self fetchWikipediaBioForData:current request:request completion:completion];
+            } else {
+                completion(current);
+            }
+        }];
+        return;
+    }
+
+    // Has MBID already, only the biography is missing
+    [self fetchWikipediaBioForData:data request:request completion:completion];
+}
+
+- (void)fetchWikipediaBioForData:(BiographyData *)data
+                         request:(BiographyRequest *)request
+                      completion:(void (^)(BiographyData *))completion {
+
+    [[MusicBrainzClient shared] lookupWikidataQIDForMBID:data.musicBrainzId
+                                                   token:request
+                                              completion:^(NSString *qid, NSError *error) {
+        if (qid.length == 0 || request.isCancelled) {
+            completion(data);
+            return;
+        }
+
+        [[WikipediaBioClient shared] fetchBioForWikidataQID:qid
+                                                      token:request
+                                                 completion:^(NSString *bioText, NSError *bioError) {
+            if (bioText.length == 0) {
+                completion(data);
+                return;
+            }
+
+            NSLog(@"[Biography] Using Wikipedia biography for %@", data.artistName);
+            BiographyDataBuilder *builder = [[BiographyDataBuilder alloc] initWithData:data];
+            builder.biography = bioText;
+            builder.biographySource = BiographySourceWikipedia;
+            builder.language = @"en";
+            completion([builder build]);
+        }];
+    }];
 }
 
 - (void)cancelCurrentRequest {
@@ -136,92 +215,24 @@ NSString * const BiographyFetcherErrorDomain = @"com.foobar2000.biography.fetche
         self.currentRequest = nil;
     }
     [[LastFmBioClient shared] cancelAllRequests];
+    [[MusicBrainzClient shared] cancelAllRequests];
+    [[WikipediaBioClient shared] cancelAllRequests];
 }
 
 - (void)prefetchBiographyForArtist:(NSString *)artistName {
-    // Low priority prefetch - check cache first
+    // ARCH-12: Skip prefetch if a user-initiated fetch is in progress
+    if (self.isFetching) return;
+
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         BiographyData *cached = [self.cache fetchCachedBiographyForArtist:artistName];
         if (cached && !cached.isStale) {
-            return;  // Already cached
+            return;
         }
 
-        // Fetch in background with no completion
         [self fetchBiographyForArtist:artistName force:NO completion:^(BiographyData *data, NSError *error) {
             // Silent - just populates cache
         }];
     });
-}
-
-#pragma mark - Response Building
-
-- (BiographyData *)buildBiographyDataFromResponse:(NSDictionary *)response
-                                       artistName:(NSString *)artistName {
-
-    NSDictionary *parsed = [LastFmBioClient parseArtistInfoResponse:response];
-
-    BiographyDataBuilder *builder = [[BiographyDataBuilder alloc] initWithArtistName:artistName];
-
-    // Use corrected name if available
-    if (parsed[@"name"]) {
-        builder.artistName = parsed[@"name"];
-    }
-
-    builder.musicBrainzId = parsed[@"mbid"];
-    builder.biography = parsed[@"biography"];
-    builder.biographySummary = parsed[@"biographySummary"];
-    builder.biographySource = BiographySourceLastFm;
-    builder.language = @"en";
-
-    // Image URL (will need to be downloaded separately)
-    if (parsed[@"imageURL"]) {
-        builder.artistImageURL = parsed[@"imageURL"];
-        builder.imageSource = BiographySourceLastFm;
-        builder.imageType = BiographyImageTypeThumb;
-    }
-
-    // Tags
-    builder.tags = parsed[@"tags"];
-
-    // Stats
-    builder.listeners = [parsed[@"listeners"] unsignedIntegerValue];
-    builder.playcount = [parsed[@"playcount"] unsignedIntegerValue];
-
-    // Similar artists
-    NSArray *similarRaw = parsed[@"similarArtists"];
-    if (similarRaw.count > 0) {
-        NSMutableArray<SimilarArtistRef *> *similar = [NSMutableArray array];
-        for (NSDictionary *artistDict in similarRaw) {
-            NSString *name = artistDict[@"name"];
-            if (name.length > 0) {
-                NSURL *thumbURL = nil;
-                NSArray *images = artistDict[@"image"];
-                if ([images isKindOfClass:[NSArray class]]) {
-                    for (NSDictionary *img in images) {
-                        if ([img[@"size"] isEqualToString:@"medium"]) {
-                            NSString *urlStr = img[@"#text"];
-                            if (urlStr.length > 0) {
-                                thumbURL = [NSURL URLWithString:urlStr];
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                SimilarArtistRef *ref = [[SimilarArtistRef alloc] initWithName:name
-                                                                  thumbnailURL:thumbURL
-                                                                 musicBrainzId:artistDict[@"mbid"]];
-                [similar addObject:ref];
-            }
-        }
-        builder.similarArtists = [similar copy];
-    }
-
-    builder.fetchedAt = [NSDate date];
-    builder.isFromCache = NO;
-    builder.isStale = NO;
-
-    return [builder build];
 }
 
 #pragma mark - Completion Helpers

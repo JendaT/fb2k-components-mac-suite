@@ -102,6 +102,16 @@ Practical patterns for settings and UI updates (from foo_wave_seekbar_mac):
 - **Heat map / Rainbow coloring** - amplitude and position to color mapping
 - **Common pitfalls** - memory management, race conditions, dark mode
 
+### Tooling & Pipelines
+
+#### [14_INTAKE_SYSTEM_OVERVIEW.md](14_INTAKE_SYSTEM_OVERVIEW.md)
+Intake system overview and decision log (music ingest pipeline):
+- End-to-end flow: income folders -> intake CLI -> sidecar proposals -> SimPlaylist review -> execute
+- Document map and worker assignment (specs in `docs/intake/`)
+- Architecture decisions with rationale (CLI in `tools/intake/`, beets adapter, sidecar-first, copy + verified GC)
+- Private rules repo boundary (no personal data in this repo)
+- Phase plan P1-P6
+
 ---
 
 ## Prerequisites
@@ -140,6 +150,7 @@ The SDK should be located at:
 | **Audio Processing** | 06 | Decoder/DSP developers |
 | **Debugging** | 07 | All developers |
 | **Settings & UI** | 08 | UI component developers |
+| **Tooling & Pipelines** | 14 | Intake/tools developers |
 
 ## Reference Implementations
 
@@ -153,6 +164,10 @@ The SDK should be located at:
 - [Hydrogenaudio Development Wiki](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Development:Overview)
 
 ## Changelog
+
+### 2026-07-11
+- Created 14_INTAKE_SYSTEM_OVERVIEW.md - intake system overview and decision log
+  - Companion specs: docs/intake/intake-01..04 (resolver, assignment, contract, extension)
 
 ### 2025-12-22
 - Created 08_SETTINGS_AND_UI_PATTERNS.md - practical patterns from foo_wave_seekbar_mac

@@ -12,7 +12,6 @@
 #import "../UI/SimPlaylistView.h"
 #import "../UI/SimPlaylistController.h"
 #import "PlaylistCallbacks.h"
-#import "../../../../shared/JLConstraintDebugger.h"
 
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
@@ -26,7 +25,8 @@ JL_COMPONENT_ABOUT(
     "- Virtual scrolling for large playlists\n"
     "- Keyboard navigation\n"
     "- Now playing highlighting\n"
-    "- Drag & drop reordering"
+    "- Drag & drop reordering\n"
+    "- Keeps playback in its playlist while browsing the library"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_simplaylist.component");
@@ -75,18 +75,13 @@ namespace {
 }
 
 // Initialization handler
+namespace {
+
 class simplaylist_init : public initquit {
 public:
     void on_init() override {
         SimPlaylistCallbackManager::instance().initCallbacks();
         console::info("[SimPlaylist] Component initialized");
-
-        // Constraint debugger - uncomment to debug resize issues
-        // [JLConstraintDebugger enable];
-        // [JLConstraintDebugger setVerboseLogging:YES];
-        // dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        //     [JLConstraintDebugger dumpAllWindows];
-        // });
     }
 
     void on_quit() override {
@@ -96,3 +91,5 @@ public:
 };
 
 FB2K_SERVICE_FACTORY(simplaylist_init);
+
+}  // namespace

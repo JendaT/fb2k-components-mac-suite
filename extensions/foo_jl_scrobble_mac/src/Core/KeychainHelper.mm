@@ -27,19 +27,11 @@ static NSString * const kUsernameKey = @"foo_scrobble.username";
         (__bridge id)kSecAttrService: kServiceName,
         (__bridge id)kSecAttrAccount: username,
         (__bridge id)kSecValueData: [sessionKey dataUsingEncoding:NSUTF8StringEncoding],
-        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleWhenUnlocked,
     };
 
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
-
-    if (status == errSecSuccess) {
-        // Also store username in UserDefaults for easy retrieval
-        [[NSUserDefaults standardUserDefaults] setObject:username forKey:kUsernameKey];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        return YES;
-    }
-
-    return NO;
+    return status == errSecSuccess;
 }
 
 + (nullable NSString *)sessionKeyForUsername:(NSString *)username {
@@ -67,7 +59,8 @@ static NSString * const kUsernameKey = @"foo_scrobble.username";
 }
 
 + (nullable NSString *)storedUsername {
-    return [[NSUserDefaults standardUserDefaults] stringForKey:kUsernameKey];
+    // Username is now stored in Keychain via the generic savePassword/loadPassword API
+    return [self loadPassword:@"lastfm_username"];
 }
 
 + (BOOL)deleteCredentials {
@@ -78,11 +71,6 @@ static NSString * const kUsernameKey = @"foo_scrobble.username";
     };
 
     OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
-
-    // Also remove username from UserDefaults
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kUsernameKey];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-
     return status == errSecSuccess || status == errSecItemNotFound;
 }
 
@@ -101,7 +89,7 @@ static NSString * const kUsernameKey = @"foo_scrobble.username";
         (__bridge id)kSecAttrService: kServiceName,
         (__bridge id)kSecAttrAccount: account,
         (__bridge id)kSecValueData: [password dataUsingEncoding:NSUTF8StringEncoding],
-        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleWhenUnlocked,
     };
 
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);

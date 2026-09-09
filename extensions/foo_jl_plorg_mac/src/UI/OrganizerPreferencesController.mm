@@ -15,8 +15,13 @@
 @property (nonatomic, strong) NSButton *showIconsCheckbox;
 @property (nonatomic, strong) NSButton *showTreeLinesCheckbox;
 @property (nonatomic, strong) NSButton *transparentBackgroundCheckbox;
-@property (nonatomic, strong) NSButton *syncPlaylistsCheckbox;
+@property (nonatomic, strong) NSButton *pathEncodedNamesCheckbox;
 @property (nonatomic, strong) NSTextField *nodeFormatField;
+@property (nonatomic, strong) NSButton *checkCorruptedOnStartupCheckbox;
+@property (nonatomic, strong) NSButton *checkCorruptedNowButton;
+@property (nonatomic, strong) NSButton *autoVolumeSyncCheckbox;
+@property (nonatomic, strong) NSButton *autoRestartAfterSyncCheckbox;
+@property (nonatomic, strong) NSButton *volumeSelfHealCheckbox;
 @end
 
 @implementation OrganizerPreferencesController
@@ -31,7 +36,7 @@
     // Using manual frame positioning with y counting down will align content to bottom.
     // Solution: Use Auto Layout with constraints pinned to TOP of container.
 
-    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 555)];
 
     CGFloat leftMargin = 20;
     __block CGFloat currentY = 20;  // Start from top with padding
@@ -89,11 +94,17 @@
                                                           action:@selector(settingsChanged:)];
     addIndentedRow(self.autoRevealPlayingCheckbox, rowHeight);
 
-    // Sync playlists
-    self.syncPlaylistsCheckbox = [NSButton checkboxWithTitle:@"Sync with foobar2000 playlists"
-                                                      target:self
-                                                      action:@selector(settingsChanged:)];
-    addIndentedRow(self.syncPlaylistsCheckbox, rowHeight + sectionGap);
+    // Path-encoded names
+    self.pathEncodedNamesCheckbox = [NSButton checkboxWithTitle:@"Encode folder path in playlist names"
+                                                         target:self
+                                                         action:@selector(pathEncodedNamesChanged:)];
+    addIndentedRow(self.pathEncodedNamesCheckbox, rowHeight);
+
+    // Path encoding hint
+    NSTextField *pathHint = [NSTextField labelWithString:@"e.g., \"Rock \u00BB 80s \u00BB My Playlist\" in foobar2000"];
+    pathHint.font = [NSFont systemFontOfSize:10];
+    pathHint.textColor = [NSColor tertiaryLabelColor];
+    addIndentedRow(pathHint, rowHeight + sectionGap);
 
     // Appearance section
     NSTextField *appearanceLabel = [NSTextField labelWithString:@"Appearance:"];
@@ -128,6 +139,7 @@
     self.nodeFormatField.placeholderString = @"%node_name%";
     self.nodeFormatField.target = self;
     self.nodeFormatField.action = @selector(settingsChanged:);
+    self.nodeFormatField.cell.sendsActionOnEndEditing = YES;
     self.nodeFormatField.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:self.nodeFormatField];
     [NSLayoutConstraint activateConstraints:@[
@@ -142,6 +154,52 @@
     formatHint.font = [NSFont systemFontOfSize:10];
     formatHint.textColor = [NSColor tertiaryLabelColor];
     addIndentedRow(formatHint, rowHeight + sectionGap);
+
+    // Network Volumes section
+    currentY += sectionGap;
+    NSTextField *networkLabel = [NSTextField labelWithString:@"Network Volumes:"];
+    networkLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    networkLabel.textColor = [NSColor secondaryLabelColor];
+    addRow(networkLabel, rowHeight);
+
+    self.autoVolumeSyncCheckbox = [NSButton checkboxWithTitle:@"Auto-repair volume UUIDs on startup (network drives)"
+                                                       target:self
+                                                       action:@selector(settingsChanged:)];
+    addIndentedRow(self.autoVolumeSyncCheckbox, rowHeight);
+
+    self.autoRestartAfterSyncCheckbox = [NSButton checkboxWithTitle:@"Prompt to restart automatically when repairs are applied"
+                                                             target:self
+                                                             action:@selector(settingsChanged:)];
+    addIndentedRow(self.autoRestartAfterSyncCheckbox, rowHeight);
+
+    self.volumeSelfHealCheckbox = [NSButton checkboxWithTitle:@"Self-register mounted volumes that have no working bookmark"
+                                                       target:self
+                                                       action:@selector(settingsChanged:)];
+    addIndentedRow(self.volumeSelfHealCheckbox, rowHeight);
+
+    NSTextField *volumeSyncHint = [NSTextField labelWithString:@"Fixes playlists when SMB shares remount with a new UUID"];
+    volumeSyncHint.font = [NSFont systemFontOfSize:10];
+    volumeSyncHint.textColor = [NSColor tertiaryLabelColor];
+    addIndentedRow(volumeSyncHint, rowHeight + sectionGap);
+
+    // Diagnostics section
+    currentY += sectionGap;
+    NSTextField *diagnosticsLabel = [NSTextField labelWithString:@"Diagnostics:"];
+    diagnosticsLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    diagnosticsLabel.textColor = [NSColor secondaryLabelColor];
+    addRow(diagnosticsLabel, rowHeight);
+
+    // Check corrupted on startup
+    self.checkCorruptedOnStartupCheckbox = [NSButton checkboxWithTitle:@"Check for corrupted playlists on startup"
+                                                                target:self
+                                                                action:@selector(settingsChanged:)];
+    addIndentedRow(self.checkCorruptedOnStartupCheckbox, rowHeight);
+
+    // Check now button
+    self.checkCorruptedNowButton = [NSButton buttonWithTitle:@"Check Now..."
+                                                      target:self
+                                                      action:@selector(checkCorruptedNow:)];
+    addIndentedRow(self.checkCorruptedNowButton, rowHeight + sectionGap);
 
     // Reset button
     NSButton *resetButton = [NSButton buttonWithTitle:@"Reset to Defaults"
@@ -159,14 +217,18 @@
 
 - (void)loadSettings {
     // Load settings from config
-    BOOL singleClick = plorg_config::getConfigBool(plorg_config::kSingleClickActivate, false);
-    BOOL doubleClickPlay = plorg_config::getConfigBool(plorg_config::kDoubleClickPlay, true);
-    BOOL autoReveal = plorg_config::getConfigBool(plorg_config::kAutoRevealPlaying, true);
-    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, true);
+    BOOL singleClick = plorg_config::getConfigBool(plorg_config::kSingleClickActivate, plorg_config::kDefaultSingleClickActivate);
+    BOOL doubleClickPlay = plorg_config::getConfigBool(plorg_config::kDoubleClickPlay, plorg_config::kDefaultDoubleClickPlay);
+    BOOL autoReveal = plorg_config::getConfigBool(plorg_config::kAutoRevealPlaying, plorg_config::kDefaultAutoRevealPlaying);
+    BOOL showIcons = plorg_config::getConfigBool(plorg_config::kShowIcons, plorg_config::kDefaultShowIcons);
     BOOL showTreeLines = plorg_config::getConfigBool(plorg_config::kShowTreeLines, plorg_config::kDefaultShowTreeLines);
     BOOL transparentBackground = plorg_config::getConfigBool(plorg_config::kTransparentBackground, plorg_config::kDefaultTransparentBackground);
-    BOOL syncPlaylists = plorg_config::getConfigBool(plorg_config::kSyncPlaylists, plorg_config::kDefaultSyncPlaylists);
-    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, "%node_name%");
+    BOOL pathEncodedNames = plorg_config::getConfigBool(plorg_config::kPathEncodedNames, plorg_config::kDefaultPathEncodedNames);
+    BOOL checkCorruptedOnStartup = plorg_config::getConfigBool(plorg_config::kCheckCorruptedOnStartup, plorg_config::kDefaultCheckCorruptedOnStartup);
+    BOOL autoVolumeSync = plorg_config::getConfigBool(plorg_config::kAutoVolumeSync, plorg_config::kDefaultAutoVolumeSync);
+    BOOL autoRestartAfterSync = plorg_config::getConfigBool(plorg_config::kAutoRestartAfterVolumeSync, plorg_config::kDefaultAutoRestartAfterVolumeSync);
+    BOOL volumeSelfHeal = plorg_config::getConfigBool(plorg_config::kVolumeSelfHeal, plorg_config::kDefaultVolumeSelfHeal);
+    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, plorg_config::kDefaultNodeFormat);
 
     self.singleClickActivateCheckbox.state = singleClick ? NSControlStateValueOn : NSControlStateValueOff;
     self.doubleClickPlayCheckbox.state = doubleClickPlay ? NSControlStateValueOn : NSControlStateValueOff;
@@ -174,7 +236,11 @@
     self.showIconsCheckbox.state = showIcons ? NSControlStateValueOn : NSControlStateValueOff;
     self.showTreeLinesCheckbox.state = showTreeLines ? NSControlStateValueOn : NSControlStateValueOff;
     self.transparentBackgroundCheckbox.state = transparentBackground ? NSControlStateValueOn : NSControlStateValueOff;
-    self.syncPlaylistsCheckbox.state = syncPlaylists ? NSControlStateValueOn : NSControlStateValueOff;
+    self.pathEncodedNamesCheckbox.state = pathEncodedNames ? NSControlStateValueOn : NSControlStateValueOff;
+    self.checkCorruptedOnStartupCheckbox.state = checkCorruptedOnStartup ? NSControlStateValueOn : NSControlStateValueOff;
+    self.autoVolumeSyncCheckbox.state = autoVolumeSync ? NSControlStateValueOn : NSControlStateValueOff;
+    self.autoRestartAfterSyncCheckbox.state = autoRestartAfterSync ? NSControlStateValueOn : NSControlStateValueOff;
+    self.volumeSelfHealCheckbox.state = volumeSelfHeal ? NSControlStateValueOn : NSControlStateValueOff;
     self.nodeFormatField.stringValue = format ?: @"%node_name%";
 }
 
@@ -191,8 +257,14 @@
                                 self.showTreeLinesCheckbox.state == NSControlStateValueOn);
     plorg_config::setConfigBool(plorg_config::kTransparentBackground,
                                 self.transparentBackgroundCheckbox.state == NSControlStateValueOn);
-    plorg_config::setConfigBool(plorg_config::kSyncPlaylists,
-                                self.syncPlaylistsCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kCheckCorruptedOnStartup,
+                                self.checkCorruptedOnStartupCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kAutoVolumeSync,
+                                self.autoVolumeSyncCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kAutoRestartAfterVolumeSync,
+                                self.autoRestartAfterSyncCheckbox.state == NSControlStateValueOn);
+    plorg_config::setConfigBool(plorg_config::kVolumeSelfHeal,
+                                self.volumeSelfHealCheckbox.state == NSControlStateValueOn);
 
     NSString *format = self.nodeFormatField.stringValue;
     if (format.length > 0) {
@@ -209,15 +281,76 @@
 }
 
 - (void)resetToDefaults:(id)sender {
-    self.singleClickActivateCheckbox.state = NSControlStateValueOff;
-    self.doubleClickPlayCheckbox.state = NSControlStateValueOn;
-    self.autoRevealPlayingCheckbox.state = NSControlStateValueOn;
-    self.showIconsCheckbox.state = NSControlStateValueOn;
-    self.showTreeLinesCheckbox.state = NSControlStateValueOn;
-    self.transparentBackgroundCheckbox.state = NSControlStateValueOn;
-    self.syncPlaylistsCheckbox.state = NSControlStateValueOn;
-    self.nodeFormatField.stringValue = @"%node_name%";
+    auto stateFor = [](bool defaultValue) {
+        return defaultValue ? NSControlStateValueOn : NSControlStateValueOff;
+    };
+    self.singleClickActivateCheckbox.state = stateFor(plorg_config::kDefaultSingleClickActivate);
+    self.doubleClickPlayCheckbox.state = stateFor(plorg_config::kDefaultDoubleClickPlay);
+    self.autoRevealPlayingCheckbox.state = stateFor(plorg_config::kDefaultAutoRevealPlaying);
+    self.showIconsCheckbox.state = stateFor(plorg_config::kDefaultShowIcons);
+    self.showTreeLinesCheckbox.state = stateFor(plorg_config::kDefaultShowTreeLines);
+    self.transparentBackgroundCheckbox.state = stateFor(plorg_config::kDefaultTransparentBackground);
+    self.checkCorruptedOnStartupCheckbox.state = stateFor(plorg_config::kDefaultCheckCorruptedOnStartup);
+    self.autoVolumeSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoVolumeSync);
+    self.autoRestartAfterSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoRestartAfterVolumeSync);
+    self.volumeSelfHealCheckbox.state = stateFor(plorg_config::kDefaultVolumeSelfHeal);
+    self.nodeFormatField.stringValue = @(plorg_config::kDefaultNodeFormat);
     [self saveSettings];
+
+    // Handle path encoding separately (triggers migration if changing)
+    if (self.pathEncodedNamesCheckbox.state == NSControlStateValueOn) {
+        self.pathEncodedNamesCheckbox.state = NSControlStateValueOff;
+        [self pathEncodedNamesChanged:self.pathEncodedNamesCheckbox];
+    }
+}
+
+- (void)checkCorruptedNow:(id)sender {
+    // Post notification for PlaylistOrganizerController to handle
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"PlorgCheckCorruptedPlaylists" object:nil];
+}
+
+- (void)pathEncodedNamesChanged:(id)sender {
+    BOOL newState = (self.pathEncodedNamesCheckbox.state == NSControlStateValueOn);
+    BOOL currentState = plorg_config::getConfigBool(plorg_config::kPathEncodedNames,
+                                                     plorg_config::kDefaultPathEncodedNames);
+    if (newState == currentState) return;
+
+    TreeModel *model = [TreeModel shared];
+
+    if (newState) {
+        // Migrating ON: rename playlists to encoded names, then set config
+        [model migrateToPathEncodedNames];
+        plorg_config::setConfigBool(plorg_config::kPathEncodedNames, true);
+        FB2K_console_formatter() << "[Plorg] Path-encoded names enabled";
+    } else {
+        // Migrating OFF: check for collisions first
+        NSInteger collisions = [model countPathEncodingCollisions];
+        if (collisions > 0) {
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Name collisions detected";
+            alert.informativeText = [NSString stringWithFormat:
+                @"%ld playlists share the same name across different folders. "
+                @"Disabling path encoding will add suffixes to resolve conflicts.",
+                (long)collisions];
+            [alert addButtonWithTitle:@"Proceed"];
+            [alert addButtonWithTitle:@"Cancel"];
+
+            if ([alert runModal] != NSAlertFirstButtonReturn) {
+                // User cancelled - revert checkbox
+                self.pathEncodedNamesCheckbox.state = NSControlStateValueOn;
+                return;
+            }
+        }
+
+        // Rename playlists back to leaf names, then set config
+        [model migrateFromPathEncodedNames];
+        plorg_config::setConfigBool(plorg_config::kPathEncodedNames, false);
+        [model saveToConfig];  // Save any name changes from collision resolution
+        FB2K_console_formatter() << "[Plorg] Path-encoded names disabled";
+    }
+
+    // Notify that settings changed
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"PlorgSettingsChanged" object:nil];
 }
 
 @end

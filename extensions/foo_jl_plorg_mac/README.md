@@ -36,7 +36,7 @@ ruby Scripts/generate_xcode_project.rb
 
 Using script:
 ```bash
-./Scripts/build.sh Release
+./Scripts/build.sh --release
 ```
 
 Or open in Xcode:

@@ -6,18 +6,73 @@
 //
 
 #import "SimPlaylistView.h"
-#import "../Core/GroupNode.h"
-#import "../Core/GroupBoundary.h"
+#import "../Core/AlbumArtCache.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
-#import "../Core/AlbumArtCache.h"
+#import "../Core/PlaylistLayoutModel.h"
+#import "../Core/PlaylistSelectionModel.h"
+#import "../Core/DecorationStore.h"
 #import "../../../../shared/UIStyles.h"
+
+#include <unistd.h>
+#include <vector>
 
 NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
+NSPasteboardType const TidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
+
+// Decoration RGBA (0xRRGGBBAA from jl_decorator_api) to NSColor; 0 = nil.
+static NSColor *colorFromRGBA(uint32_t rgba) {
+    if (rgba == 0) return nil;
+    return [NSColor colorWithSRGBRed:((rgba >> 24) & 0xFF) / 255.0
+                               green:((rgba >> 16) & 0xFF) / 255.0
+                                blue:((rgba >> 8) & 0xFF) / 255.0
+                               alpha:(rgba & 0xFF) / 255.0];
+}
+
+// Gutter glyphs for jl_icon_id values (index-aligned with the enum in
+// jl_decorator_api.h; keep in sync when the enum grows).
+static NSString *glyphForIconId(uint32_t iconId) {
+    static NSString *const glyphs[] = {
+        @"",
+        @"○",  // circle open
+        @"◐",  // circle left half
+        @"◑",  // circle right half
+        @"●",  // circle filled
+        @"⚠",  // warning
+        @"✕",  // cross
+        @"✓",  // check
+        @"→",  // arrow
+    };
+    if (iconId >= sizeof(glyphs) / sizeof(glyphs[0])) return nil;
+    return glyphs[iconId].length > 0 ? glyphs[iconId] : nil;
+}
+
+// SDK failures surface as C++ exceptions, which @catch (NSException *) cannot
+// intercept and which AppKit's frames are not exception-transparent for — an
+// escaping exception terminates the process. Mirrors runGuardedSDKAction in
+// SimPlaylistController.mm; every SDK call made from an event handler needs it.
+static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void)) {
+    try {
+    @try {
+        block();
+    } @catch (NSException *exception) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: "
+                                 << (exception.reason.UTF8String ?: "unknown");
+    }
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] " << what << " failed: unknown exception";
+    }
+}
 
 // Format total seconds as M:SS or H:MM:SS for display in group headers
 static NSString *formatGroupDuration(double seconds) {
+    // Track lengths come from file metadata; NaN/inf/huge values would make
+    // the double->int cast below undefined behavior.
+    if (!isfinite(seconds) || seconds < 0) seconds = 0;
+    else if (seconds >= (double)INT_MAX) seconds = (double)INT_MAX - 1;
     int total = (int)(seconds + 0.5);
     if (total < 0) total = 0;
     int s = total % 60;
@@ -33,8 +88,8 @@ static NSString *formatGroupDuration(double seconds) {
 // NSURL's native writing is required for Finder to accept drops.
 // The custom type is needed for cross-playlist drops (Plorg, other SimPlaylist panels).
 @interface SimPlaylistDragItem : NSObject <NSPasteboardWriting>
-@property (nonatomic, strong) NSURL *fileURL;
-@property (nonatomic, strong) NSData *internalData;
+@property (nonatomic, copy) NSURL *fileURL;
+@property (nonatomic, copy) NSData *internalData;
 @end
 
 @implementation SimPlaylistDragItem
@@ -54,9 +109,6 @@ static NSString *formatGroupDuration(double seconds) {
 @end
 
 @interface SimPlaylistView ()
-@property (nonatomic, assign) NSInteger selectionAnchor;  // For shift-click selection
-@property (nonatomic, strong) NSTrackingArea *trackingArea;
-@property (nonatomic, assign) NSInteger hoveredRow;
 @property (nonatomic, assign) NSPoint dragStartPoint;
 @property (nonatomic, readwrite, assign) BOOL isDragging;
 @property (nonatomic, assign) BOOL suppressFocusRing;  // Suppress focus ring briefly after drag
@@ -68,8 +120,20 @@ static NSString *formatGroupDuration(double seconds) {
 // Performance: cached row y-offsets for O(1) lookup
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *rowYOffsets;
 @property (nonatomic, assign) CGFloat totalContentHeight;
+@property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
+// Pure geometry/index model — owns the row-mapping arithmetic. The view mirrors
+// its geometry ivars into this model (see the custom setters below) and forwards
+// all mapping queries to it. Extracted for unit-testing without an NSView/host.
+@property (nonatomic, strong) PlaylistLayoutModel *layout;
+// Pure selection state machine — owns selectedIndices/focus/anchor and the
+// multi-select math. The view's _selectedIndices ivar aliases its set.
+@property (nonatomic, strong) PlaylistSelectionModel *selection;
+// Optional-method availability of the delegate, resolved once in setDelegate:.
+// Both are queried per row / per group on every frame.
+@property (nonatomic, assign) BOOL delegateHasColumnValues;
+@property (nonatomic, assign) BOOL delegateHasAlbumArt;
 @end
 
 @implementation SimPlaylistView
@@ -93,12 +157,17 @@ static NSString *formatGroupDuration(double seconds) {
 }
 
 - (void)commonInit {
-    _columns = [ColumnDefinition defaultColumns];
-    _selectedIndices = [NSMutableIndexSet indexSet];
-    _focusIndex = -1;
+    _layout = [[PlaylistLayoutModel alloc] init];
+    _selection = [[PlaylistSelectionModel alloc] initWithLayout:_layout];
+    // Empty placeholder: the controller assigns the real columns immediately
+    // after init. Calling +defaultColumns here made a view construction read
+    // config, enumerate SDK column providers and potentially WRITE config, all
+    // for a value discarded a moment later.
+    _columns = @[];
+    // Alias the selection model's stable set: drawing code, drag handlers and
+    // the controller all read/mutate this instance directly.
+    _selectedIndices = _selection.selectedIndices;
     _playingIndex = -1;
-    _selectionAnchor = -1;
-    _hoveredRow = -1;
     _isDragging = NO;
     _dropTargetRow = -1;
     _pendingClickRow = -1;
@@ -106,42 +175,24 @@ static NSString *formatGroupDuration(double seconds) {
     _hoveredRatingColumnIndex = -1;
     _hoveredRatingValue = 0;
 
-    // SPARSE GROUP MODEL - efficient O(G) storage
-    _itemCount = 0;
-    _groupStarts = @[];
+    // SPARSE GROUP MODEL - lives on _layout (its init sets the empty defaults);
+    // the view's geometry properties are pure forwarders to it. Only the
+    // display-data arrays below stay as view ivars (the model has no use for
+    // them).
     _groupHeaders = @[];
     _groupArtKeys = @[];
-    _groupPaddingRows = @[];
-    _totalPaddingRowsCached = 0;
-    _cumulativePaddingCache = @[];
-    _subgroupStarts = @[];
-    _subgroupHeaders = @[];
-    _subgroupCountPerGroup = @[];
-    _subgroupRowSet = [NSIndexSet indexSet];
-    _subgroupRowToIndex = @{};
     _formattedValuesCache = [[NSCache alloc] init];
     _formattedValuesCache.countLimit = 1000;  // Cache ~1000 visible row values, auto-evicts oldest
 
-    // Legacy properties (keep for compatibility)
-    _nodes = @[];
-    _rowYOffsets = [NSMutableArray array];
-    _totalContentHeight = 0;
-    _totalItemCount = 0;
-    _groupBoundaries = [NSMutableArray array];
-    _groupsComplete = NO;
-    _groupsCalculatedUpTo = -1;
-    _flatModeEnabled = NO;
-    _flatModeTrackCount = 0;
-
-    // Default metrics
-    _rowHeight = simplaylist_config::kDefaultRowHeight;
+    // Default metrics (row/header metrics live on the layout model)
+    _layout.rowHeight = simplaylist_config::kDefaultRowHeight;
     _subgroupHeight = simplaylist_config::kDefaultSubgroupHeight;
     _groupColumnWidth = simplaylist_config::kDefaultGroupColumnWidth;
     _albumArtSize = simplaylist_config::kDefaultAlbumArtSize;
     _showNowPlayingShading = simplaylist_config::getConfigBool(
         simplaylist_config::kNowPlayingShading,
         simplaylist_config::kDefaultNowPlayingShading);
-    _headerDisplayStyle = simplaylist_config::getConfigInt(
+    _layout.headerDisplayStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
     _dimParentheses = simplaylist_config::getConfigBool(
@@ -160,12 +211,7 @@ static NSString *formatGroupDuration(double seconds) {
         simplaylist_config::kGroupHeaderSpacing,
         simplaylist_config::kDefaultGroupHeaderSpacing);
 
-    // Header height based on spacing: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
-    switch (_groupHeaderSpacing) {
-        case 0:  _headerHeight = _rowHeight; break;
-        case 2:  _headerHeight = _rowHeight + 12; break;
-        default: _headerHeight = _rowHeight + 6; break;
-    }
+    [self updateHeaderHeightForSpacing];
 
     // PERFORMANCE: Enable layer-backed async drawing
     self.wantsLayer = YES;
@@ -182,6 +228,7 @@ static NSString *formatGroupDuration(double seconds) {
     // Register for drag & drop
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
+        TidalBrowserPasteboardType,
         NSPasteboardTypeFileURL,
         NSPasteboardTypeURL,    // Web URLs (e.g., from Cloud Browser)
         NSPasteboardTypeString  // Plain text URLs as fallback
@@ -200,16 +247,62 @@ static NSString *formatGroupDuration(double seconds) {
                                                object:nil];
 }
 
-// Build cached y-offsets for O(1) row lookup
-- (void)rebuildRowOffsetCache {
-    [_rowYOffsets removeAllObjects];
-    CGFloat y = 0;
-    for (GroupNode *node in _nodes) {
-        [_rowYOffsets addObject:@(y)];
-        y += [self heightForNode:node];
-    }
-    _totalContentHeight = y;
+// The draw path queries two optional delegate methods per row / per group, so
+// resolve their availability once here instead of sending respondsToSelector:
+// on every frame.
+- (void)setDelegate:(id<SimPlaylistViewDelegate>)delegate {
+    _delegate = delegate;
+    _delegateHasColumnValues =
+        [delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)];
+    _delegateHasAlbumArt =
+        [delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)];
 }
+
+#pragma mark - Geometry properties (pure forwarders to the layout model)
+
+// The sparse-group geometry and row metrics have exactly one owner: the
+// PlaylistLayoutModel. Both accessors of each property are implemented, so no
+// ivar is synthesized — there is no second copy to fall out of sync, and any
+// leftover direct ivar reference fails to compile.
+
+- (NSInteger)itemCount { return _layout.itemCount; }
+- (void)setItemCount:(NSInteger)itemCount { _layout.itemCount = itemCount; }
+
+- (NSArray<NSNumber *> *)groupStarts { return _layout.groupStarts; }
+- (void)setGroupStarts:(NSArray<NSNumber *> *)groupStarts { _layout.groupStarts = groupStarts; }
+
+- (NSArray<NSNumber *> *)groupPaddingRows { return _layout.groupPaddingRows; }
+- (void)setGroupPaddingRows:(NSArray<NSNumber *> *)groupPaddingRows { _layout.groupPaddingRows = groupPaddingRows; }
+
+- (NSInteger)totalPaddingRowsCached { return _layout.totalPaddingRowsCached; }
+- (void)setTotalPaddingRowsCached:(NSInteger)totalPaddingRowsCached { _layout.totalPaddingRowsCached = totalPaddingRowsCached; }
+
+- (NSArray<NSNumber *> *)cumulativePaddingCache { return _layout.cumulativePaddingCache; }
+- (void)setCumulativePaddingCache:(NSArray<NSNumber *> *)cumulativePaddingCache { _layout.cumulativePaddingCache = cumulativePaddingCache; }
+
+- (NSArray<NSNumber *> *)subgroupStarts { return _layout.subgroupStarts; }
+- (void)setSubgroupStarts:(NSArray<NSNumber *> *)subgroupStarts { _layout.subgroupStarts = subgroupStarts; }
+
+- (NSArray<NSString *> *)subgroupHeaders { return _layout.subgroupHeaders; }
+- (void)setSubgroupHeaders:(NSArray<NSString *> *)subgroupHeaders { _layout.subgroupHeaders = subgroupHeaders; }
+
+- (NSArray<NSNumber *> *)subgroupCountPerGroup { return _layout.subgroupCountPerGroup; }
+- (void)setSubgroupCountPerGroup:(NSArray<NSNumber *> *)subgroupCountPerGroup { _layout.subgroupCountPerGroup = subgroupCountPerGroup; }
+
+- (NSIndexSet *)subgroupRowSet { return _layout.subgroupRowSet; }
+- (void)setSubgroupRowSet:(NSIndexSet *)subgroupRowSet { _layout.subgroupRowSet = subgroupRowSet; }
+
+- (NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex { return _layout.subgroupRowToIndex; }
+- (void)setSubgroupRowToIndex:(NSDictionary<NSNumber *, NSNumber *> *)subgroupRowToIndex { _layout.subgroupRowToIndex = subgroupRowToIndex; }
+
+- (CGFloat)rowHeight { return _layout.rowHeight; }
+- (void)setRowHeight:(CGFloat)rowHeight { _layout.rowHeight = rowHeight; }
+
+- (CGFloat)headerHeight { return _layout.headerHeight; }
+- (void)setHeaderHeight:(CGFloat)headerHeight { _layout.headerHeight = headerHeight; }
+
+- (NSInteger)headerDisplayStyle { return _layout.headerDisplayStyle; }
+- (void)setHeaderDisplayStyle:(NSInteger)headerDisplayStyle { _layout.headerDisplayStyle = headerDisplayStyle; }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -229,32 +322,33 @@ static NSString *formatGroupDuration(double seconds) {
     using namespace simplaylist_config;
     _displaySize = getConfigInt(kDisplaySize, kDefaultDisplaySize);
 
-    // Row height based on display size: 0=Compact, 1=Normal, 2=Large
-    switch (_displaySize) {
-        case 0:  _rowHeight = 19.0; break;  // Compact
-        case 2:  _rowHeight = 26.0; break;  // Large
-        default: _rowHeight = 22.0; break;  // Normal
-    }
+    // Row height from shared UIStyles (metrics live on the layout model)
+    fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
+    _layout.rowHeight = fb2k_ui::rowHeight(size);
 
     _subgroupHeight = getConfigInt(kSubgroupHeight, kDefaultSubgroupHeight);
     _groupColumnWidth = getConfigInt(kGroupColumnWidth, kDefaultGroupColumnWidth);
     _showNowPlayingShading = getConfigBool(kNowPlayingShading, kDefaultNowPlayingShading);
-    _headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
+    _layout.headerDisplayStyle = getConfigInt(kHeaderDisplayStyle, kDefaultHeaderDisplayStyle);
     _dimParentheses = getConfigBool(kDimParentheses, kDefaultDimParentheses);
     _showGroupDuration = getConfigBool(kShowGroupDuration, kDefaultShowGroupDuration);
     _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
 
-    // Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
-    switch (_groupHeaderSpacing) {
-        case 0:  _headerHeight = _rowHeight; break;      // Compact - same as track rows
-        case 2:  _headerHeight = _rowHeight + 12; break; // Larger - generous padding
-        default: _headerHeight = _rowHeight + 6; break;  // Normal - some extra padding
-    }
+    [self updateHeaderHeightForSpacing];
 
     // Update frame size to reflect new row heights (header height affects total content height)
     [self reloadData];
+}
+
+// Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
+- (void)updateHeaderHeightForSpacing {
+    switch (_groupHeaderSpacing) {
+        case 0:  _layout.headerHeight = _layout.rowHeight; break;      // Compact - same as track rows
+        case 2:  _layout.headerHeight = _layout.rowHeight + 12; break; // Larger - generous padding
+        default: _layout.headerHeight = _layout.rowHeight + 6; break;  // Normal - some extra padding
+    }
 }
 
 #pragma mark - View Configuration
@@ -282,12 +376,24 @@ static NSString *formatGroupDuration(double seconds) {
     return YES;
 }
 
+- (void)setDecorationsEnabled:(BOOL)decorationsEnabled {
+    _decorationsEnabled = decorationsEnabled;
+    [self updateTrackingAreas];  // (Un)register the decorator tooltip rect
+}
+
+// The hover NSTrackingArea was removed with _hoveredRow; this override now
+// only manages the decorator tooltip rect (NSToolTipOwner, no tracking area).
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
 
-    if (_trackingArea) {
-        [self removeTrackingArea:_trackingArea];
+    // Decorator tooltips: one dynamic full-bounds tooltip rect; the string is
+    // resolved per point in view:stringForToolTip:point:userData:. Registered
+    // only when a provider exists (zero-provider guard).
+    [self removeAllToolTips];
+    if (_decorationsEnabled) {
+        [self addToolTipRect:self.bounds owner:self userData:NULL];
     }
+}
 
     _trackingArea = [[NSTrackingArea alloc]
                      initWithRect:self.bounds
@@ -298,6 +404,20 @@ static NSString *formatGroupDuration(double seconds) {
                             owner:self
                          userInfo:nil];
     [self addTrackingArea:_trackingArea];
+}
+
+// NSToolTipOwner: resolve the decoration tooltip for the row under the cursor.
+- (NSString *)view:(NSView *)view stringForToolTip:(NSToolTipTag)tag point:(NSPoint)point userData:(void *)data {
+    if (!_decorationsEnabled ||
+        ![_delegate respondsToSelector:@selector(playlistView:rowDecorationForPlaylistIndex:)]) {
+        return nil;
+    }
+    NSInteger row = [self rowAtPoint:point];
+    if (row < 0) return nil;
+    NSInteger playlistIndex = [self playlistIndexForRow:row];
+    if (playlistIndex < 0) return nil;
+    RowDecoration *decoration = [_delegate playlistView:self rowDecorationForPlaylistIndex:playlistIndex];
+    return decoration.tooltip.length > 0 ? decoration.tooltip : nil;
 }
 
 #pragma mark - Data Management
@@ -323,232 +443,42 @@ static NSString *formatGroupDuration(double seconds) {
     [self setNeedsDisplay:YES];
 }
 
-- (void)setNodes:(NSArray<GroupNode *> *)nodes {
-    _nodes = [nodes copy];
-    [self rebuildRowOffsetCache];
-    [self reloadData];
-}
-
 #pragma mark - Layout Calculations
 
 // Returns total row count: itemCount + groupCount + subgroupCount (each group/subgroup adds 1 header row)
 // Only style 3 (under album art) has no header rows - header text is below album art
+// NOTE: The sparse-group row/index arithmetic below lives in PlaylistLayoutModel
+// (Core/PlaylistLayoutModel.*) so it can be unit-tested without an NSView/host.
+// These methods forward to _layout, which mirrors the view's geometry ivars.
+
 - (NSInteger)rowCount {
-    // Total rows = items + group headers + subgroup headers + padding rows
-    // Uses cached totalPaddingRowsCached for O(1) instead of O(G) loop
-
-    // Only style 3 has no header rows (header is drawn below album art)
-    // Styles 0, 1, 2 all have header rows
-    NSInteger groupHeaderRows = (_headerDisplayStyle == 3) ? 0 : (NSInteger)_groupStarts.count;
-
-    return _itemCount + groupHeaderRows + (NSInteger)_subgroupStarts.count + _totalPaddingRowsCached;
+    return [_layout rowCount];
 }
 
-// Helper: cumulative padding rows up to (but not including) group g - O(1) using cache
-- (NSInteger)cumulativePaddingBeforeGroup:(NSInteger)groupIndex {
-    if (groupIndex <= 0 || _cumulativePaddingCache.count == 0) return 0;
-    if (groupIndex >= (NSInteger)_cumulativePaddingCache.count) {
-        return [_cumulativePaddingCache.lastObject integerValue];
-    }
-    return [_cumulativePaddingCache[groupIndex] integerValue];
-}
+#pragma mark - Row Mapping (O(log g) using binary search) — forwards to PlaylistLayoutModel
 
-// Helper: total rows in group g (header + subgroups + tracks + padding)
-// Only style 3 has no header row (header is drawn below album art)
-- (NSInteger)totalRowsInGroup:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return 0;
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    NSInteger trackCount = groupEnd - groupStart;
-    NSInteger padding = (groupIndex < (NSInteger)_groupPaddingRows.count)
-        ? [_groupPaddingRows[groupIndex] integerValue] : 0;
-    // Only style 3 has no header row
-    NSInteger headerRows = (_headerDisplayStyle == 3) ? 0 : 1;
-
-    // Use pre-computed subgroup count (O(1) instead of O(S))
-    NSInteger subgroupCount = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-
-    return headerRows + subgroupCount + trackCount + padding;
-}
-
-#pragma mark - Row Mapping (O(log g) using binary search)
-
-// Find which group a row belongs to using binary search
 - (NSInteger)groupIndexForRow:(NSInteger)row {
-    if (_groupStarts.count == 0 || row < 0) return -1;
-
-    // Binary search: find the largest group index g where rowForGroupHeader(g) <= row
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    NSInteger result = 0;
-
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        NSInteger headerRow = [self rowForGroupHeader:mid];
-        if (headerRow <= row) {
-            result = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return result;
+    return [_layout groupIndexForRow:row];
 }
 
-// Row number where group header appears (or first track row for style 3)
 - (NSInteger)rowForGroupHeader:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) return -1;
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-
-    // Count all subgroups that appear before this group - O(log S) using binary search
-    NSInteger subgroupsBeforeGroup = [self subgroupCountBeforePlaylistIndex:groupStart];
-
-    // Only style 3 has no header rows
-    if (_headerDisplayStyle == 3) {
-        // Style 3: no header rows, return position of first track
-        return groupStart + subgroupsBeforeGroup + cumulativePadding;
-    } else {
-        // Styles 0, 1, 2: Header row = groupStart[g] + g (group headers) + subgroups before + cumulative padding
-        return groupStart + groupIndex + subgroupsBeforeGroup + cumulativePadding;
-    }
+    return [_layout rowForGroupHeader:groupIndex];
 }
 
-// Check if row is a group header
 - (BOOL)isRowGroupHeader:(NSInteger)row {
-    if (_groupStarts.count == 0) return NO;
-    // Only style 3 has no header rows (header is drawn below album art)
-    if (_headerDisplayStyle == 3) return NO;
-
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    return row == [self rowForGroupHeader:groupIndex];
+    return [_layout isRowGroupHeader:row];
 }
 
-// Check if row is a padding row (empty space for minimum group height)
 - (BOOL)isRowPaddingRow:(NSInteger)row {
-    if (_groupStarts.count == 0 || _groupPaddingRows.count == 0) return NO;
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    if (groupIndex < 0) return NO;
-
-    NSInteger headerRow = [self rowForGroupHeader:groupIndex];
-    NSInteger rowWithinGroup = row - headerRow;
-
-    // Get track count for this group
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    NSInteger trackCount = groupEnd - groupStart;
-
-    // Get subgroup count for this group (subgroup headers add to row count)
-    NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-        ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-
-    // Total content rows = tracks + subgroup headers (header row already excluded by rowWithinGroup)
-    NSInteger contentRows = trackCount + subgroupsInGroup;
-
-    // Row is padding if it's after all content (tracks + subgroups) in the group
-    return (rowWithinGroup > contentRows);
+    return [_layout isRowPaddingRow:row];
 }
 
-// Convert row to playlist index (-1 for header rows, subgroup rows, and padding rows)
 - (NSInteger)playlistIndexForRow:(NSInteger)row {
-    if (row < 0 || row >= [self rowCount]) return -1;
-    if (_groupStarts.count == 0) return row;  // No groups = flat mode
-
-    // Check if this is a subgroup header row
-    if ([self isRowSubgroupHeader:row]) {
-        return -1;
-    }
-
-    NSInteger groupIndex = [self groupIndexForRow:row];
-    NSInteger groupStartRow = [self rowForGroupHeader:groupIndex];
-
-    // Styles 0, 1, 2 have header rows; only style 3 doesn't
-    if (_headerDisplayStyle != 3 && row == groupStartRow) {
-        return -1;  // This is a header row
-    }
-
-    // Count subgroups in this group before this row to get correct playlist index
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-
-    // Count subgroup rows between groupStartRow and this row - O(log n) with NSIndexSet
-    NSInteger subgroupsInGroup = 0;
-
-    // For style 3 (inline/no group header), groupStartRow itself might be a subgroup header
-    // In styles 0-2, groupStartRow is always a group header (album title), but in style 3
-    // there's no group header row, so groupStartRow is the first content row which could be
-    // a subgroup header. We need to count it when calculating track positions.
-    if (_headerDisplayStyle == 3 && [self isRowSubgroupHeader:groupStartRow]) {
-        subgroupsInGroup = 1;
-    }
-
-    if (row > groupStartRow + 1) {
-        NSRange range = NSMakeRange(groupStartRow + 1, row - groupStartRow - 1);
-        subgroupsInGroup += (NSInteger)[_subgroupRowSet countOfIndexesInRange:range];
-    }
-
-    // Calculate position within group accounting for subgroups
-    NSInteger rowWithinGroup = row - groupStartRow - subgroupsInGroup;
-
-    // Styles 0, 1, 2 have header rows; only style 3 doesn't
-    if (_headerDisplayStyle != 3) {
-        rowWithinGroup -= 1;
-    }
-
-    NSInteger trackCount = groupEnd - groupStart;
-
-    // If row is beyond tracks, it's a padding row
-    if (rowWithinGroup >= trackCount) {
-        return -1;  // Padding row
-    }
-
-    // Track row: playlist index = groupStart + rowWithinGroup
-    return groupStart + rowWithinGroup;
+    return [_layout playlistIndexForRow:row];
 }
 
-// Convert playlist index to row
 - (NSInteger)rowForPlaylistIndex:(NSInteger)playlistIndex {
-    if (playlistIndex < 0 || playlistIndex >= _itemCount) return -1;
-    if (_groupStarts.count == 0) return playlistIndex;  // No groups
-
-    // Find which group this playlist index belongs to - O(log G) using binary search
-    NSInteger groupIndex = 0;
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_groupStarts[mid] integerValue] <= playlistIndex) {
-            groupIndex = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    // Count subgroups before this playlist index - O(log S)
-    // subgroupCountBeforePlaylistIndex counts subgroups with start < playlistIndex
-    // But if a subgroup starts at exactly playlistIndex, its header row is BEFORE this track
-    NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:playlistIndex];
-    BOOL hasSubgroupHere = [self hasSubgroupAtPlaylistIndex:playlistIndex];
-    if (hasSubgroupHere) {
-        subgroupsBefore++;
-    }
-
-    // Only style 3 has no header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
-
-    // Row = playlist index + group headers (if not style 3) + subgroup headers + cumulative padding
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger result = playlistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
-
-    return result;
+    return [_layout rowForPlaylistIndex:playlistIndex];
 }
 
 // Clear formatted values cache (call when playlist changes)
@@ -556,158 +486,26 @@ static NSString *formatGroupDuration(double seconds) {
     [_formattedValuesCache removeAllObjects];
 }
 
-// Rebuild subgroup row cache for O(1) lookup (call when subgroups or layout changes)
+// Cache rebuilds happen on the model (the single owner of the geometry).
+// rebuildSubgroupRowCache MUST run after rebuildPaddingCache.
 - (void)rebuildSubgroupRowCache {
-    if (_subgroupStarts.count == 0) {
-        _subgroupRowSet = [NSIndexSet indexSet];
-        _subgroupRowToIndex = @{};
-        return;
-    }
-
-    NSMutableIndexSet *rowSet = [NSMutableIndexSet indexSet];
-    NSMutableDictionary<NSNumber *, NSNumber *> *rowToIndex = [NSMutableDictionary dictionaryWithCapacity:_subgroupStarts.count];
-
-    for (NSUInteger i = 0; i < _subgroupStarts.count; i++) {
-        NSInteger subgroupPlaylistIndex = [_subgroupStarts[i] integerValue];
-        NSInteger subgroupRow = [self rowForSubgroupAtPlaylistIndex:subgroupPlaylistIndex];
-
-        if (subgroupRow >= 0) {
-            [rowSet addIndex:(NSUInteger)subgroupRow];
-            rowToIndex[@(subgroupRow)] = @(i);
-        }
-    }
-
-    _subgroupRowSet = [rowSet copy];
-    _subgroupRowToIndex = [rowToIndex copy];
+    [_layout rebuildSubgroupRowCache];
 }
 
-// Rebuild padding cache for O(1) lookup (call when groupPaddingRows changes)
 - (void)rebuildPaddingCache {
-    if (_groupPaddingRows.count == 0) {
-        _totalPaddingRowsCached = 0;
-        _cumulativePaddingCache = @[];
-        return;
-    }
-
-    NSMutableArray<NSNumber *> *cumulative = [NSMutableArray arrayWithCapacity:_groupPaddingRows.count];
-    NSInteger runningTotal = 0;
-
-    for (NSNumber *padding in _groupPaddingRows) {
-        [cumulative addObject:@(runningTotal)];  // Cumulative BEFORE this group
-        runningTotal += [padding integerValue];
-    }
-
-    _totalPaddingRowsCached = runningTotal;
-    _cumulativePaddingCache = [cumulative copy];
+    [_layout rebuildPaddingCache];
 }
 
-// Get playlist index range for a group
 - (NSRange)playlistIndexRangeForGroup:(NSInteger)groupIndex {
-    if (groupIndex < 0 || groupIndex >= (NSInteger)_groupStarts.count) {
-        return NSMakeRange(NSNotFound, 0);
-    }
-    NSInteger groupStart = [_groupStarts[groupIndex] integerValue];
-    NSInteger groupEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-        ? [_groupStarts[groupIndex + 1] integerValue]
-        : _itemCount;
-    return NSMakeRange(groupStart, groupEnd - groupStart);
+    return [_layout playlistIndexRangeForGroup:groupIndex];
 }
 
-// Count subgroups strictly before a given playlist index - O(log S) using binary search
-- (NSInteger)subgroupCountBeforePlaylistIndex:(NSInteger)playlistIndex {
-    if (_subgroupStarts.count == 0) return 0;
-
-    // Binary search for the first subgroup >= playlistIndex
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_subgroupStarts.count;
-
-    while (low < high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_subgroupStarts[mid] integerValue] < playlistIndex) {
-            low = mid + 1;
-        } else {
-            high = mid;
-        }
-    }
-
-    return low;  // Number of subgroups with start < playlistIndex
-}
-
-// Check if a subgroup starts at exactly this playlist index - O(log S)
-- (BOOL)hasSubgroupAtPlaylistIndex:(NSInteger)playlistIndex {
-    if (_subgroupStarts.count == 0) return NO;
-
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_subgroupStarts.count - 1;
-
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        NSInteger midVal = [_subgroupStarts[mid] integerValue];
-        if (midVal == playlistIndex) {
-            return YES;
-        } else if (midVal < playlistIndex) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    return NO;
-}
-
-// Check if a row is a subgroup header - O(1) using pre-computed cache
 - (BOOL)isRowSubgroupHeader:(NSInteger)row {
-    if (row < 0) return NO;
-    return [_subgroupRowSet containsIndex:(NSUInteger)row];
+    return [_layout isRowSubgroupHeader:row];
 }
 
-// Get subgroup header text for a row (returns nil if not a subgroup header) - O(1) using cache
 - (NSString *)subgroupHeaderForRow:(NSInteger)row {
-    NSNumber *indexNum = _subgroupRowToIndex[@(row)];
-    if (!indexNum) return nil;
-
-    NSUInteger i = [indexNum unsignedIntegerValue];
-    if (i < _subgroupHeaders.count) {
-        return _subgroupHeaders[i];
-    }
-    return nil;
-}
-
-// Calculate row for a subgroup that starts at given playlist index
-- (NSInteger)rowForSubgroupAtPlaylistIndex:(NSInteger)subgroupPlaylistIndex {
-    if (_groupStarts.count == 0) return subgroupPlaylistIndex;
-
-    // Find which group this subgroup belongs to - O(log G) using binary search
-    NSInteger groupIndex = 0;
-    NSInteger low = 0;
-    NSInteger high = (NSInteger)_groupStarts.count - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        if ([_groupStarts[mid] integerValue] <= subgroupPlaylistIndex) {
-            groupIndex = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    // Row = subgroupPlaylistIndex + (group headers if not inline) + (subgroups before this index) + padding
-    NSInteger cumulativePadding = [self cumulativePaddingBeforeGroup:groupIndex];
-    NSInteger subgroupsBefore = [self subgroupCountBeforePlaylistIndex:subgroupPlaylistIndex];
-
-    // Only style 3 has no group header rows
-    NSInteger headerRowsOffset = (_headerDisplayStyle == 3) ? 0 : (groupIndex + 1);
-
-    return subgroupPlaylistIndex + headerRowsOffset + subgroupsBefore + cumulativePadding;
-}
-
-// Find group boundary for a display row (unused in flat mode)
-- (GroupBoundary *)groupBoundaryForRow:(NSInteger)row {
-    return nil;  // No groups in flat mode
-}
-
-// Find group boundary for a playlist index (unused in flat mode)
-- (GroupBoundary *)groupBoundaryForPlaylistIndex:(NSInteger)playlistIndex {
-    return nil;  // No groups in flat mode
+    return [_layout subgroupHeaderForRow:row];
 }
 
 - (NSSize)intrinsicContentSize {
@@ -720,7 +518,7 @@ static NSString *formatGroupDuration(double seconds) {
 // Internal method for calculating actual content size (for frame/scrolling)
 - (NSSize)calculatedContentSize {
     CGFloat totalHeight = [self totalContentHeightCached];
-    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth;
+    CGFloat totalWidth = [self totalColumnWidth] + _groupColumnWidth + _decorationGutterWidth;
     return NSMakeSize(totalWidth, totalHeight);
 }
 
@@ -829,96 +627,32 @@ static NSString *formatGroupDuration(double seconds) {
     return [self ratingFromString:columnValues[columnIndex]];
 }
 
-- (CGFloat)heightForNode:(GroupNode *)node {
-    switch (node.type) {
-        case GroupNodeTypeHeader:
-            return _headerHeight;
-        case GroupNodeTypeSubgroup:
-            return _subgroupHeight;
-        case GroupNodeTypeTrack:
-        default:
-            return _rowHeight;
-    }
-}
-
-// All rows have constant height for O(1) calculations
-- (CGFloat)heightForRow:(NSInteger)row {
-    if ([self isRowGroupHeader:row]) {
-        return _headerHeight;
-    }
-    return _rowHeight;
-}
-
+// Pixel geometry — forwards to PlaylistLayoutModel (pure, unit-testable).
 - (CGFloat)yOffsetForRow:(NSInteger)row {
-    if (row < 0) return 0;
-    NSInteger totalRows = [self rowCount];
-    if (row >= totalRows) return [self totalContentHeightCached];
-
-    // Count header rows before this row to account for their extra height
-    NSInteger headerRowsBefore = 0;
-    if (_headerDisplayStyle != 3 && _groupStarts.count > 0) {
-        // Find how many group headers are at row indices < row
-        for (NSInteger g = 0; g < (NSInteger)_groupStarts.count; g++) {
-            NSInteger headerRow = [self rowForGroupHeader:g];
-            if (headerRow < row) {
-                headerRowsBefore++;
-            } else {
-                break;  // Groups are ordered, so no more headers before this row
-            }
-        }
-    }
-
-    // Base offset + extra height from header rows
-    CGFloat extraHeaderHeight = headerRowsBefore * (_headerHeight - _rowHeight);
-    return row * _rowHeight + extraHeaderHeight;
+    return [_layout yOffsetForRow:row];
 }
 
+// Kept in the view: needs self.bounds for the row width. Geometry comes from the model.
 - (NSRect)rectForRow:(NSInteger)row {
     NSInteger totalRows = [self rowCount];
     if (row < 0 || row >= totalRows) {
         return NSZeroRect;
     }
-    CGFloat y = [self yOffsetForRow:row];
-    CGFloat h = [self heightForRow:row];
+    CGFloat y = [_layout yOffsetForRow:row];
+    CGFloat h = [_layout heightForRow:row];
     return NSMakeRect(0, y, self.bounds.size.width, h);
 }
 
 - (NSInteger)rowAtPoint:(NSPoint)point {
-    if (point.y < 0) return -1;
-    CGFloat totalHeight = [self totalContentHeightCached];
-    if (point.y >= totalHeight) return -1;
-
-    // Binary search to find row at point (accounts for variable header heights)
-    NSInteger totalRows = [self rowCount];
-    NSInteger low = 0, high = totalRows - 1;
-    while (low <= high) {
-        NSInteger mid = (low + high) / 2;
-        CGFloat midY = [self yOffsetForRow:mid];
-        CGFloat midH = [self heightForRow:mid];
-        if (point.y < midY) {
-            high = mid - 1;
-        } else if (point.y >= midY + midH) {
-            low = mid + 1;
-        } else {
-            return mid;
-        }
-    }
-    return -1;
+    return [_layout rowAtPoint:point];
 }
 
 - (CGFloat)totalContentHeightCached {
-    NSInteger totalRows = [self rowCount];
-    // Account for header rows being taller
-    NSInteger headerRowCount = (_headerDisplayStyle == 3) ? 0 : (NSInteger)_groupStarts.count;
-    CGFloat extraHeaderHeight = headerRowCount * (_headerHeight - _rowHeight);
-    return totalRows * _rowHeight + extraHeaderHeight;
+    return [_layout totalContentHeightCached];
 }
 
-// Total pixel height of a group (accounts for header row being taller)
 - (CGFloat)pixelHeightForGroup:(NSInteger)groupIndex {
-    NSInteger totalRows = [self totalRowsInGroup:groupIndex];
-    NSInteger headerRows = (_headerDisplayStyle == 3) ? 0 : 1;
-    return headerRows * _headerHeight + (totalRows - headerRows) * _rowHeight;
+    return [_layout pixelHeightForGroup:groupIndex];
 }
 
 #pragma mark - Drawing (Virtual Scrolling - SPARSE MODEL)
@@ -960,38 +694,47 @@ static NSString *formatGroupDuration(double seconds) {
     if (firstRow < 0) firstRow = 0;
     if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
 
-    // Add small buffer for smooth scrolling
-    firstRow = MAX(0, firstRow - 1);
-    lastRow = MIN(totalRows - 1, lastRow + 1);
+    // Decorator providers: let the delegate batch-resolve decorations for the
+    // visible range + overscan (off-main; results land via invalidation).
+    // Zero providers registered => decorationsEnabled is NO and this whole
+    // block is a single branch.
+    if (_decorationsEnabled &&
+        [_delegate respondsToSelector:@selector(playlistView:prepareDecorationsForRowRange:)]) {
+        const NSInteger overscan = 32;
+        NSInteger prepFirst = MAX((NSInteger)0, firstRow - overscan);
+        NSInteger prepLast = MIN(totalRows - 1, lastRow + overscan);
+        [_delegate playlistView:self
+            prepareDecorationsForRowRange:NSMakeRange(prepFirst, prepLast - prepFirst + 1)];
+    }
 
     // STEP 1: Fill group column background FIRST (before any content)
     // This ensures header text drawn later won't be covered
-    if (_groupColumnWidth > 0 && _groupStarts.count > 0) {
-        [self fillGroupColumnBackgroundInRect:dirtyRect];
+    if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
+        [self fillGroupColumnBackgroundInRect:dirtyRect firstRow:firstRow lastRow:lastRow];
     }
 
     // STEP 2: Draw only visible rows (typically ~30 rows)
-    // Draw all rows in range without dirtyRect filtering — the row range is already
-    // bounded to visible rows (±1 buffer), and skipping the intersection test prevents
-    // sub-pixel boundary mismatches that can leave unrendered strips at scroll edges.
+    // Draw every row in the range without a per-row dirtyRect intersection test —
+    // the range comes from dirtyRect itself, and the extra test would re-introduce
+    // the sub-pixel boundary mismatches that left unrendered strips at scroll edges.
     for (NSInteger row = firstRow; row <= lastRow; row++) {
         NSRect rowRect = [self rectForRow:row];
         [self drawSparseRow:row inRect:rowRect];
     }
 
     // STEP 3: Draw album art on top (after all row content)
-    if (_groupColumnWidth > 0 && _groupStarts.count > 0) {
+    if (_groupColumnWidth > 0 && _layout.groupStarts.count > 0) {
         [self drawAlbumArtInRect:dirtyRect firstRow:firstRow lastRow:lastRow];
     }
 
     // Draw focus ring - only on valid track rows, not during drag operations
     if (!_isDragging && _dropTargetRow < 0 && !_suppressFocusRing &&
-        self.window.firstResponder == self && _focusIndex >= 0 && _focusIndex < _itemCount) {
-        NSInteger focusRow = [self rowForPlaylistIndex:_focusIndex];
+        self.window.firstResponder == self && _selection.focusIndex >= 0 && _selection.focusIndex < _layout.itemCount) {
+        NSInteger focusRow = [self rowForPlaylistIndex:_selection.focusIndex];
         // Verify this row maps back to a valid track (not header/subgroup/padding)
         if (focusRow >= 0 && focusRow >= firstRow && focusRow <= lastRow) {
             NSInteger verifyIndex = [self playlistIndexForRow:focusRow];
-            if (verifyIndex == _focusIndex) {
+            if (verifyIndex == _selection.focusIndex) {
                 NSRect focusRect = [self rectForRow:focusRow];
                 [self drawFocusRingForRect:focusRect];
             }
@@ -1017,14 +760,14 @@ static NSString *formatGroupDuration(double seconds) {
             NSInteger groupIndex = [self groupIndexForRow:row];
             NSInteger headerRow = [self rowForGroupHeader:groupIndex];
             NSInteger rowInGroup = row - headerRow;
-            NSInteger gStart = (groupIndex >= 0 && groupIndex < (NSInteger)_groupStarts.count)
-                ? [_groupStarts[groupIndex] integerValue] : -1;
-            NSInteger gEnd = (groupIndex + 1 < (NSInteger)_groupStarts.count)
-                ? [_groupStarts[groupIndex + 1] integerValue] : _itemCount;
-            NSInteger subgroupsInGroup = (groupIndex < (NSInteger)_subgroupCountPerGroup.count)
-                ? [_subgroupCountPerGroup[groupIndex] integerValue] : 0;
-            NSInteger paddingInGroup = (groupIndex < (NSInteger)_groupPaddingRows.count)
-                ? [_groupPaddingRows[groupIndex] integerValue] : 0;
+            NSInteger gStart = (groupIndex >= 0 && groupIndex < (NSInteger)_layout.groupStarts.count)
+                ? [_layout.groupStarts[groupIndex] integerValue] : -1;
+            NSInteger gEnd = (groupIndex + 1 < (NSInteger)_layout.groupStarts.count)
+                ? [_layout.groupStarts[groupIndex + 1] integerValue] : _layout.itemCount;
+            NSInteger subgroupsInGroup = (groupIndex >= 0 && groupIndex < (NSInteger)_layout.subgroupCountPerGroup.count)
+                ? [_layout.subgroupCountPerGroup[groupIndex] integerValue] : 0;
+            NSInteger paddingInGroup = (groupIndex >= 0 && groupIndex < (NSInteger)_layout.groupPaddingRows.count)
+                ? [_layout.groupPaddingRows[groupIndex] integerValue] : 0;
             NSString *diag = [NSString stringWithFormat:@"BLANK r%ld g%ld rIG%ld gS%ld-%ld sg%ld pad%ld tot%ld",
                               (long)row, (long)groupIndex, (long)rowInGroup,
                               (long)gStart, (long)gEnd, (long)subgroupsInGroup,
@@ -1047,6 +790,21 @@ static NSString *formatGroupDuration(double seconds) {
     BOOL isSelected = (playlistIndex >= 0 && [_selectedIndices containsIndex:playlistIndex]);
     BOOL isPlaying = (playlistIndex >= 0 && playlistIndex == _playingIndex);
 
+    // Row decoration (decorator providers): cache-only lookup, tint drawn
+    // UNDER the selection/playing background.
+    RowDecoration *decoration = nil;
+    if (_decorationsEnabled && playlistIndex >= 0 &&
+        [_delegate respondsToSelector:@selector(playlistView:rowDecorationForPlaylistIndex:)]) {
+        decoration = [_delegate playlistView:self rowDecorationForPlaylistIndex:playlistIndex];
+        NSColor *tint = colorFromRGBA(decoration.tintRGBA);
+        if (tint) {
+            [tint setFill];
+            NSRectFillUsingOperation(NSMakeRect(_groupColumnWidth, rect.origin.y,
+                                                rect.size.width - _groupColumnWidth, rect.size.height),
+                                     NSCompositingOperationSourceOver);
+        }
+    }
+
     // Selection/playing background - only in columns area, not album art column
     BOOL shouldDrawBackground = isSelected || (isPlaying && _showNowPlayingShading);
     if (shouldDrawBackground) {
@@ -1067,7 +825,8 @@ static NSString *formatGroupDuration(double seconds) {
         NSString *subgroupText = [self subgroupHeaderForRow:row];
         [self drawSparseSubgroupRow:subgroupText inRect:rect];
     } else {
-        [self drawSparseTrackRow:playlistIndex inRect:rect selected:isSelected playing:isPlaying];
+        [self drawSparseTrackRow:playlistIndex inRect:rect selected:isSelected playing:isPlaying
+                      decoration:decoration];
     }
 }
 
@@ -1079,13 +838,17 @@ static NSString *formatGroupDuration(double seconds) {
 - (void)drawSparseHeaderRow:(NSInteger)groupIndex inRect:(NSRect)rect {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupHeaders.count) return;
 
-    NSString *headerText = _groupHeaders[groupIndex];
-
-    // Text attributes: bold, primary color
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
-        NSForegroundColorAttributeName: [NSColor labelColor]
-    };
+    // Text attributes: bold, primary color. Fixed contents, so one allocation
+    // for the process lifetime instead of one per header row per frame
+    // (labelColor stays dynamic — the appearance is resolved at draw time).
+    static NSDictionary *attrs;
+    static dispatch_once_t headerAttrsOnce;
+    dispatch_once(&headerAttrsOnce, ^{
+        attrs = @{
+            NSFontAttributeName: [NSFont boldSystemFontOfSize:12],
+            NSForegroundColorAttributeName: [NSColor labelColor]
+        };
+    });
 
     // Build attributed string: title + optional duration
     NSAttributedString *displayString = [self headerAttributedStringForGroup:groupIndex
@@ -1099,7 +862,7 @@ static NSString *formatGroupDuration(double seconds) {
     CGFloat lineY;
     CGFloat padding = 6;
 
-    if (_headerDisplayStyle == 1) {
+    if (_layout.headerDisplayStyle == 1) {
         // Style 1 (Album art aligned): text aligned with album art left edge
         CGFloat artX = (_groupColumnWidth - _albumArtSize) / 2;
         if (artX < padding) artX = padding;
@@ -1108,15 +871,15 @@ static NSString *formatGroupDuration(double seconds) {
         textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = textX + textSize.width + 12;
         lineY = rect.origin.y + rect.size.height / 2;
-    } else if (_headerDisplayStyle == 2) {
+    } else if (_layout.headerDisplayStyle == 2) {
         // Style 2 (Inline): text at top of row
-        textX = _groupColumnWidth + 8;
+        textX = _groupColumnWidth + _decorationGutterWidth + 8;
         textY = rect.origin.y + 2;
         lineStartX = lineEndX + 1;  // No line for style 2
         lineY = 0;
     } else {
         // Style 0: text starts after album art column
-        textX = _groupColumnWidth + 8;
+        textX = _groupColumnWidth + _decorationGutterWidth + 8;
         // Center text vertically in the (now variable height) row
         textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = textX + textSize.width + 12;
@@ -1127,7 +890,7 @@ static NSString *formatGroupDuration(double seconds) {
     [displayString drawAtPoint:NSMakePoint(textX, textY)];
 
     // Draw horizontal line after text (not for style 2 - inline mode)
-    if (_headerDisplayStyle != 2 && lineStartX < lineEndX) {
+    if (_layout.headerDisplayStyle != 2 && lineStartX < lineEndX) {
         [[NSColor separatorColor] setStroke];
         NSBezierPath *line = [NSBezierPath bezierPath];
         [line moveToPoint:NSMakePoint(lineStartX, lineY)];
@@ -1141,8 +904,6 @@ static NSString *formatGroupDuration(double seconds) {
 // This is called from drawAlbumArtInRect after album art is drawn
 - (void)drawInlineHeaderForGroup:(NSInteger)groupIndex atGroupTop:(CGFloat)groupTop artBottom:(CGFloat)artBottom groupHeight:(CGFloat)groupHeight {
     if (groupIndex < 0 || groupIndex >= (NSInteger)_groupHeaders.count) return;
-
-    NSString *headerText = _groupHeaders[groupIndex];
 
     // Position: centered below album art in the group column
     CGFloat textY = artBottom + 4;  // Below album art with small padding
@@ -1176,40 +937,75 @@ static NSString *formatGroupDuration(double seconds) {
     NSMutableAttributedString *result =
         [[NSMutableAttributedString alloc] initWithString:title attributes:titleAttrs];
 
-    if (!_showGroupDuration) return result;
-    if (groupIndex >= (NSInteger)_groupDurations.count) return result;
-    double seconds = [_groupDurations[groupIndex] doubleValue];
-    if (seconds <= 0) return result;
-
-    NSString *durStr = [NSString stringWithFormat:@"  •  %@", formatGroupDuration(seconds)];
-    NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
-    NSDictionary *durAttrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
-    if (titleAttrs[NSParagraphStyleAttributeName]) {
-        NSMutableDictionary *m = [durAttrs mutableCopy];
-        m[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
-        durAttrs = m;
+    BOOL wantDuration = _showGroupDuration && groupIndex < (NSInteger)_groupDurations.count;
+    double seconds = wantDuration ? [_groupDurations[groupIndex] doubleValue] : 0;
+    if (wantDuration && seconds > 0) {
+        NSString *durStr = [NSString stringWithFormat:@"  •  %@", formatGroupDuration(seconds)];
+        NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
+        NSDictionary *durAttrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
+            NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+        };
+        if (titleAttrs[NSParagraphStyleAttributeName]) {
+            NSMutableDictionary *m = [durAttrs mutableCopy];
+            m[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
+            durAttrs = m;
+        }
+        [result appendAttributedString:[[NSAttributedString alloc] initWithString:durStr
+                                                                       attributes:durAttrs]];
     }
-    [result appendAttributedString:[[NSAttributedString alloc] initWithString:durStr
-                                                                   attributes:durAttrs]];
+
+    [self appendGroupBadgeForGroup:groupIndex to:result titleAttrs:titleAttrs];
     return result;
+}
+
+// Appends a decorator-provider badge (e.g. an intake assignment target) to a
+// group header attributed string. No-op when decorations are disabled.
+- (void)appendGroupBadgeForGroup:(NSInteger)groupIndex
+                              to:(NSMutableAttributedString *)header
+                      titleAttrs:(NSDictionary *)titleAttrs {
+    if (!_decorationsEnabled ||
+        ![_delegate respondsToSelector:@selector(playlistView:groupDecorationForGroupIndex:)]) {
+        return;
+    }
+    GroupDecoration *gd = [_delegate playlistView:self groupDecorationForGroupIndex:groupIndex];
+    if (gd.badgeText.length == 0) return;
+
+    NSFont *titleFont = titleAttrs[NSFontAttributeName] ?: [NSFont systemFontOfSize:12];
+    NSColor *badgeColor = colorFromRGBA(gd.badgeRGBA) ?: [NSColor secondaryLabelColor];
+    NSMutableDictionary *badgeAttrs = [@{
+        NSFontAttributeName: [NSFont systemFontOfSize:titleFont.pointSize],
+        NSForegroundColorAttributeName: badgeColor
+    } mutableCopy];
+    if (titleAttrs[NSParagraphStyleAttributeName]) {
+        badgeAttrs[NSParagraphStyleAttributeName] = titleAttrs[NSParagraphStyleAttributeName];
+    }
+    NSString *glyph = glyphForIconId(gd.iconId);
+    NSString *badge = glyph
+        ? [NSString stringWithFormat:@"  %@ %@", glyph, gd.badgeText]
+        : [NSString stringWithFormat:@"  %@", gd.badgeText];
+    [header appendAttributedString:[[NSAttributedString alloc] initWithString:badge
+                                                                    attributes:badgeAttrs]];
 }
 
 // Draw subgroup header row - indented, smaller text with line
 - (void)drawSparseSubgroupRow:(NSString *)subgroupText inRect:(NSRect)rect {
     if (!subgroupText || subgroupText.length == 0) return;
 
-    // Subgroup text attributes - smaller and secondary color
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
-    };
+    // Subgroup text attributes - smaller and secondary color. Fixed contents,
+    // so allocated once rather than per subgroup row per frame.
+    static NSDictionary *attrs;
+    static dispatch_once_t subgroupAttrsOnce;
+    dispatch_once(&subgroupAttrsOnce, ^{
+        attrs = @{
+            NSFontAttributeName: [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+            NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
+        };
+    });
 
     // Calculate text size - indented more than group header
     NSSize textSize = [subgroupText sizeWithAttributes:attrs];
-    CGFloat textX = _groupColumnWidth + 24;  // More indent than group header
+    CGFloat textX = _groupColumnWidth + _decorationGutterWidth + 24;  // More indent than group header
     CGFloat textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
 
     // Draw subgroup text
@@ -1242,49 +1038,107 @@ static NSString *formatGroupDuration(double seconds) {
         NSParagraphStyleAttributeName: style
     }];
 
+    // Fast path: no brackets at all — skip the per-character scan (this runs
+    // per cell in the draw path; most values have nothing to dim)
+    static NSCharacterSet *bracketSet = nil;
+    static dispatch_once_t bracketOnce;
+    dispatch_once(&bracketOnce, ^{
+        bracketSet = [NSCharacterSet characterSetWithCharactersInString:@"()[]"];
+    });
+    if ([text rangeOfCharacterFromSet:bracketSet].location == NSNotFound) {
+        return result;
+    }
+
     // Find and dim text inside () and []
     NSUInteger length = text.length;
     NSInteger parenDepth = 0;  // () depth
     NSInteger bracketDepth = 0;  // [] depth
 
+    // Copy the UTF-16 units out once - one characterAtIndex: message per unit
+    // adds up in the per-cell draw path. Cell values are short, so keep the
+    // common case on the stack: the heap buffer is only for outliers.
+    constexpr NSUInteger kStackChars = 256;
+    unichar stackChars[kStackChars];
+    std::vector<unichar> heapChars;
+    unichar *chars = stackChars;
+    if (length > kStackChars) {
+        heapChars.resize(length);
+        chars = heapChars.data();
+    }
+    [text getCharacters:chars range:NSMakeRange(0, length)];
+
+    // Apply the dim color per contiguous run, not per character - each
+    // addAttribute: call splits/merges attribute runs, and this is in the
+    // per-cell draw path.
+    NSInteger dimRunStart = -1;
     for (NSUInteger i = 0; i < length; i++) {
-        unichar c = [text characterAtIndex:i];
+        unichar c = chars[i];
+        BOOL dim;
 
         if (c == '(' || c == '[') {
             // Start of parentheses/bracket - dim from this character
             if (c == '(') parenDepth++;
             else bracketDepth++;
-
-            [result addAttribute:NSForegroundColorAttributeName
-                           value:dimmedColor
-                           range:NSMakeRange(i, 1)];
+            dim = YES;
         } else if (c == ')' || c == ']') {
             // End of parentheses/bracket - dim this character too
-            [result addAttribute:NSForegroundColorAttributeName
-                           value:dimmedColor
-                           range:NSMakeRange(i, 1)];
-
+            dim = YES;
             if (c == ')' && parenDepth > 0) parenDepth--;
             else if (c == ']' && bracketDepth > 0) bracketDepth--;
-        } else if (parenDepth > 0 || bracketDepth > 0) {
+        } else {
             // Inside parentheses/brackets - dim
+            dim = (parenDepth > 0 || bracketDepth > 0);
+        }
+
+        if (dim) {
+            if (dimRunStart < 0) dimRunStart = (NSInteger)i;
+        } else if (dimRunStart >= 0) {
             [result addAttribute:NSForegroundColorAttributeName
                            value:dimmedColor
-                           range:NSMakeRange(i, 1)];
+                           range:NSMakeRange((NSUInteger)dimRunStart, i - (NSUInteger)dimRunStart)];
+            dimRunStart = -1;
         }
+    }
+    if (dimRunStart >= 0) {
+        [result addAttribute:NSForegroundColorAttributeName
+                       value:dimmedColor
+                       range:NSMakeRange((NSUInteger)dimRunStart, length - (NSUInteger)dimRunStart)];
     }
 
     return result;
 }
 
+// Immutable per-alignment paragraph styles — one allocation for the process
+// lifetime instead of one per cell per frame.
+static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
+    static NSParagraphStyle *left, *center, *right;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSMutableParagraphStyle *s = [[NSMutableParagraphStyle alloc] init];
+        s.lineBreakMode = NSLineBreakByTruncatingTail;
+        s.alignment = NSTextAlignmentLeft;
+        left = [s copy];
+        s.alignment = NSTextAlignmentCenter;
+        center = [s copy];
+        s.alignment = NSTextAlignmentRight;
+        right = [s copy];
+    });
+    switch (alignment) {
+        case ColumnAlignmentCenter: return center;
+        case ColumnAlignmentRight: return right;
+        default: return left;
+    }
+}
+
 // Draw track row with lazy column formatting
-- (void)drawSparseTrackRow:(NSInteger)playlistIndex inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing {
+- (void)drawSparseTrackRow:(NSInteger)playlistIndex inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing
+                decoration:(RowDecoration *)decoration {
     if (playlistIndex < 0) return;
 
     // Get cached column values or request from delegate
     NSNumber *indexKey = @(playlistIndex);
     NSArray<NSString *> *columnValues = [_formattedValuesCache objectForKey:indexKey];
-    if (!columnValues && [_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
+    if (!columnValues && _delegate && _delegateHasColumnValues) {
         columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
         if (columnValues) {
             [_formattedValuesCache setObject:columnValues forKey:indexKey];
@@ -1303,23 +1157,40 @@ static NSString *formatGroupDuration(double seconds) {
         return;
     }
 
-    // Draw columns
-    CGFloat x = _groupColumnWidth;
+    // Draw columns (shifted right by the decoration gutter when providers exist)
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth;
     NSColor *textColor = selected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
-    NSColor *dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
-                                    : fb2k_ui::secondaryTextColor();
-    // Font size based on display size: 0=Compact, 1=Normal, 2=Large
-    CGFloat fontSize;
-    switch (_displaySize) {
-        case 0:  fontSize = 12.0; break;  // Compact
-        case 2:  fontSize = 14.0; break;  // Large
-        default: fontSize = 13.0; break;  // Normal
+    // Only the dim-parentheses path reads this; deriving it unconditionally
+    // allocated a color per selected row per frame that was never used.
+    NSColor *dimmedColor = nil;
+    if (_dimParentheses) {
+        dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
+                               : fb2k_ui::secondaryTextColor();
     }
-    NSFont *font = [NSFont systemFontOfSize:fontSize];
+    // Font size from shared UIStyles
+    fb2k_ui::SizeVariant size = static_cast<fb2k_ui::SizeVariant>(_displaySize);
+    NSFont *font = fb2k_ui::rowFont(size);
 
     // Calculate vertical centering with equal top/bottom padding
     CGFloat textHeight = font.ascender - font.descender;
     CGFloat verticalPadding = round((rect.size.height - textHeight) / 2.0);
+
+    // Decoration status icon in the leading gutter column
+    if (_decorationGutterWidth > 0 && decoration.iconId != 0) {
+        NSString *glyph = glyphForIconId(decoration.iconId);
+        if (glyph) {
+            NSColor *iconColor = colorFromRGBA(decoration.iconRGBA)
+                ?: (selected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor());
+            NSDictionary *iconAttrs = @{
+                NSFontAttributeName: [NSFont systemFontOfSize:font.pointSize],
+                NSForegroundColorAttributeName: iconColor
+            };
+            NSSize glyphSize = [glyph sizeWithAttributes:iconAttrs];
+            CGFloat iconX = _groupColumnWidth + round((_decorationGutterWidth - glyphSize.width) / 2.0);
+            [glyph drawAtPoint:NSMakePoint(iconX, rect.origin.y + verticalPadding)
+                withAttributes:iconAttrs];
+        }
+    }
 
     for (NSUInteger colIndex = 0; colIndex < _columns.count; colIndex++) {
         ColumnDefinition *col = _columns[colIndex];
@@ -1342,13 +1213,7 @@ static NSString *formatGroupDuration(double seconds) {
             value = [NSString stringWithFormat:@"\u25B6 %@", value];  // Play triangle
         }
 
-        NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-        style.lineBreakMode = NSLineBreakByTruncatingTail;
-        switch (col.alignment) {
-            case ColumnAlignmentCenter: style.alignment = NSTextAlignmentCenter; break;
-            case ColumnAlignmentRight: style.alignment = NSTextAlignmentRight; break;
-            default: style.alignment = NSTextAlignmentLeft; break;
-        }
+        NSParagraphStyle *style = paragraphStyleForAlignment(col.alignment);
 
         // Queue column with accent style: use system accent color for non-empty values
         BOOL isQueueAccent = (_queueDisplayStyle == 1 &&
@@ -1363,6 +1228,13 @@ static NSString *formatGroupDuration(double seconds) {
                                                        textColor:cellColor
                                                       dimmedColor:dimmedColor
                                                   paragraphStyle:style];
+            if (decoration.strikethrough) {
+                NSMutableAttributedString *struck = [attrStr mutableCopy];
+                [struck addAttribute:NSStrikethroughStyleAttributeName
+                               value:@(NSUnderlineStyleSingle)
+                               range:NSMakeRange(0, struck.length)];
+                attrStr = struck;
+            }
             [attrStr drawInRect:colRect];
         } else {
             // Draw normally (or queue accent)
@@ -1371,39 +1243,45 @@ static NSString *formatGroupDuration(double seconds) {
                 NSForegroundColorAttributeName: cellColor,
                 NSParagraphStyleAttributeName: style
             };
+            if (decoration.strikethrough) {
+                NSMutableDictionary *struck = [attrs mutableCopy];
+                struck[NSStrikethroughStyleAttributeName] = @(NSUnderlineStyleSingle);
+                attrs = struck;
+            }
             [value drawInRect:colRect withAttributes:attrs];
         }
         x += col.width;
     }
 }
 
-// Fill group column background (called BEFORE drawing row content)
-- (void)fillGroupColumnBackgroundInRect:(NSRect)dirtyRect {
+// Fill group column background (called BEFORE drawing row content).
+// firstRow/lastRow come from the caller, which already derived them from the
+// same dirtyRect: re-deriving them here cost two more rowAtPoint: probes (each
+// a nested binary search) per draw.
+- (void)fillGroupColumnBackgroundInRect:(NSRect)dirtyRect
+                               firstRow:(NSInteger)firstRow
+                                lastRow:(NSInteger)lastRow {
     // Skip background fill for glass mode - let the effect show through
     if (_glassBackground) return;
-    if (_groupStarts.count == 0) return;
+    if (_layout.groupStarts.count == 0) return;
 
     NSRect visibleRect = [self visibleRect];
 
     // Style 1: Leave header row area unfilled so header text at x=8 is visible
     // Styles 0, 2, 3: Fill entire column
 
-    if (_headerDisplayStyle == 1) {
-        // Style 1: Fill only the track areas (below each header row)
-        NSInteger firstRow = [self rowAtPoint:NSMakePoint(0, NSMinY(visibleRect))];
-        NSInteger lastRow = [self rowAtPoint:NSMakePoint(0, NSMaxY(visibleRect))];
-        if (firstRow < 0) firstRow = 0;
-        NSInteger totalRows = [self rowCount];
-        if (lastRow < 0 || lastRow >= totalRows) lastRow = totalRows - 1;
-
+    if (_layout.headerDisplayStyle == 1) {
+        // Style 1: Fill only the track areas (below each header row). Every
+        // fill is intersected with dirtyRect, so the dirtyRect-derived row
+        // range covers exactly the same pixels the visibleRect range did.
         NSInteger firstGroupIndex = [self groupIndexForRow:firstRow];
         NSInteger lastGroupIndex = [self groupIndexForRow:lastRow];
 
-        for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_groupStarts.count; g++) {
+        for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_layout.groupStarts.count; g++) {
             NSInteger groupStartRow = [self rowForGroupHeader:g];
             CGFloat groupTop = [self yOffsetForRow:groupStartRow];
             CGFloat groupHeight = [self pixelHeightForGroup:g];
-            CGFloat headerOffset = _headerHeight;  // Style 1 has header rows
+            CGFloat headerOffset = _layout.headerHeight;  // Style 1 has header rows
 
             // Fill only below the header row
             NSRect groupColRect = NSMakeRect(0, groupTop + headerOffset, _groupColumnWidth, groupHeight - headerOffset);
@@ -1424,7 +1302,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 // Draw album art for visible groups (called AFTER drawing row content)
 - (void)drawAlbumArtInRect:(NSRect)dirtyRect firstRow:(NSInteger)firstRow lastRow:(NSInteger)lastRow {
-    if (_groupStarts.count == 0) return;
+    if (_layout.groupStarts.count == 0) return;
 
     // Find which groups are visible
     NSInteger firstGroupIndex = [self groupIndexForRow:firstRow];
@@ -1432,8 +1310,8 @@ static NSString *formatGroupDuration(double seconds) {
 
     CGFloat padding = 6;
 
-    for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_groupStarts.count; g++) {
-        NSInteger groupStart = [_groupStarts[g] integerValue];
+    for (NSInteger g = firstGroupIndex; g <= lastGroupIndex && g < (NSInteger)_layout.groupStarts.count; g++) {
+        NSInteger groupStart = [_layout.groupStarts[g] integerValue];
 
         // Calculate group's row range
         NSInteger groupStartRow = [self rowForGroupHeader:g];
@@ -1443,7 +1321,7 @@ static NSString *formatGroupDuration(double seconds) {
         // Style 0, 1: Album art is below header row
         // Style 2: Album art starts at header row Y (next to header text in content area)
         // Style 3: No header row, album art at group top
-        CGFloat headerOffset = (_headerDisplayStyle == 0 || _headerDisplayStyle == 1) ? _headerHeight : 0;
+        CGFloat headerOffset = (_layout.headerDisplayStyle == 0 || _layout.headerDisplayStyle == 1) ? _layout.headerHeight : 0;
 
         // Calculate available height for album art (below header if present, minus padding)
         CGFloat availableHeight = groupHeight - headerOffset - padding * 2;
@@ -1460,7 +1338,7 @@ static NSString *formatGroupDuration(double seconds) {
 
         // Get album art from cache or delegate
         NSImage *albumArt = nil;
-        if (g < (NSInteger)_groupArtKeys.count && [_delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)]) {
+        if (g < (NSInteger)_groupArtKeys.count && _delegate && _delegateHasAlbumArt) {
             albumArt = [_delegate playlistView:self albumArtForGroupAtPlaylistIndex:groupStart];
         }
 
@@ -1476,7 +1354,7 @@ static NSString *formatGroupDuration(double seconds) {
         }
 
         // For style 3 (under album art), draw header text below album art in the group column
-        if (_headerDisplayStyle == 3) {
+        if (_layout.headerDisplayStyle == 3) {
             CGFloat artBottom = artY + artSize;
             [self drawInlineHeaderForGroup:g atGroupTop:groupTop artBottom:artBottom groupHeight:groupHeight];
         }
@@ -1506,488 +1384,14 @@ static NSString *formatGroupDuration(double seconds) {
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
     };
     NSSize textSize = [text sizeWithAttributes:attrs];
+    // Center within the visible rect, not the dirty rect (partial redraws
+    // would otherwise shift the message)
+    NSRect visible = [self visibleRect];
     NSPoint point = NSMakePoint(
-        (rect.size.width - textSize.width) / 2,
-        (rect.size.height - textSize.height) / 2
+        NSMidX(visible) - textSize.width / 2,
+        NSMidY(visible) - textSize.height / 2
     );
     [text drawAtPoint:point withAttributes:attrs];
-}
-
-#pragma mark - Flat Mode (Large Playlists)
-
-- (void)drawFlatModeInRect:(NSRect)dirtyRect {
-    if (_flatModeTrackCount == 0) {
-        [self drawEmptyStateInRect:dirtyRect];
-        return;
-    }
-
-    // In flat mode: all rows have same height, row index = playlist index
-    // Calculate visible row range - O(1)
-    NSRect visibleRect = [self visibleRect];
-    NSInteger firstRow = (NSInteger)floor(NSMinY(visibleRect) / _rowHeight);
-    NSInteger lastRow = (NSInteger)ceil(NSMaxY(visibleRect) / _rowHeight);
-
-    if (firstRow < 0) firstRow = 0;
-    if (lastRow >= _flatModeTrackCount) lastRow = _flatModeTrackCount - 1;
-
-    // Add buffer rows
-    firstRow = MAX(0, firstRow - 2);
-    lastRow = MIN(_flatModeTrackCount - 1, lastRow + 2);
-
-    // Draw group column background if enabled
-    if (_groupColumnWidth > 0) {
-        [[self groupColumnBackgroundColor] setFill];
-        NSRect groupColRect = NSMakeRect(0, NSMinY(visibleRect), _groupColumnWidth, visibleRect.size.height);
-        NSRectFill(NSIntersectionRect(groupColRect, dirtyRect));
-    }
-
-    // Draw only visible rows (~30-50 rows)
-    for (NSInteger row = firstRow; row <= lastRow; row++) {
-        CGFloat y = row * _rowHeight;
-        NSRect rowRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _rowHeight);
-
-        if (NSIntersectsRect(rowRect, dirtyRect)) {
-            [self drawFlatModeRow:row inRect:rowRect];
-        }
-    }
-
-    // Draw focus ring
-    if (self.window.firstResponder == self && _focusIndex >= 0 && _focusIndex < _flatModeTrackCount) {
-        CGFloat y = _focusIndex * _rowHeight;
-        NSRect focusRect = NSMakeRect(_groupColumnWidth, y, self.bounds.size.width - _groupColumnWidth, _rowHeight);
-        if (NSIntersectsRect(focusRect, dirtyRect)) {
-            [self drawFocusRingForRect:focusRect];
-        }
-    }
-
-    // Draw drop indicator if dragging
-    if (_dropTargetRow >= 0) {
-        CGFloat y = _dropTargetRow * _rowHeight;
-        [[NSColor systemBlueColor] setFill];
-        NSRectFill(NSMakeRect(_groupColumnWidth, y - 1, self.bounds.size.width - _groupColumnWidth, 3));
-    }
-
-    // Draw group column separator
-    if (_groupColumnWidth > 0) {
-        [[NSColor separatorColor] setFill];
-        NSRectFill(NSMakeRect(_groupColumnWidth - 1, NSMinY(visibleRect), 1, visibleRect.size.height));
-    }
-}
-
-- (void)drawFlatModeRow:(NSInteger)row inRect:(NSRect)rect {
-    // In flat mode: row index = playlist index directly
-    // Selection stores playlist indices
-    BOOL isSelected = [_selectedIndices containsIndex:row];  // row == playlistIndex in flat mode
-    BOOL isPlaying = (row == _playingIndex);  // playingIndex is playlist index
-
-    // Background - clean design without alternating stripes
-    if (isSelected) {
-        [fb2k_ui::selectedBackgroundColor() setFill];
-        NSRectFill(rect);
-    } else if (isPlaying && _showNowPlayingShading) {
-        [[[NSColor systemYellowColor] colorWithAlphaComponent:0.15] setFill];
-        NSRectFill(rect);
-    }
-
-    // Text color
-    NSColor *textColor = isSelected ? [NSColor alternateSelectedControlTextColor] : [NSColor labelColor];
-
-    // Get column values lazily from delegate (only for visible rows!)
-    NSArray<NSString *> *columnValues = nil;
-    if ([_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
-        columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:row];
-    }
-
-    // Draw columns starting at x=0 of the rect (which already accounts for group column offset)
-    CGFloat x = rect.origin.x;
-
-    for (NSInteger col = 0; col < (NSInteger)_columns.count; col++) {
-        ColumnDefinition *colDef = _columns[col];
-        CGFloat colWidth = colDef.width;
-
-        if (colWidth > 0) {
-            NSString *value = (col < (NSInteger)columnValues.count) ? columnValues[col] : @"";
-
-            if ([self isRatingColumn:colDef]) {
-                NSRect ratingRect = NSMakeRect(x, rect.origin.y, colWidth, rect.size.height);
-                [self drawRatingValue:value inRect:ratingRect column:colDef playlistIndex:row selected:isSelected];
-                x += colWidth;
-                continue;
-            }
-
-            // Text alignment and style
-            NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-            style.lineBreakMode = NSLineBreakByTruncatingTail;
-            switch (colDef.alignment) {
-                case ColumnAlignmentCenter:
-                    style.alignment = NSTextAlignmentCenter;
-                    break;
-                case ColumnAlignmentRight:
-                    style.alignment = NSTextAlignmentRight;
-                    break;
-                default:
-                    style.alignment = NSTextAlignmentLeft;
-                    break;
-            }
-
-            NSDictionary *attrs = @{
-                NSFontAttributeName: [NSFont systemFontOfSize:12],
-                NSForegroundColorAttributeName: textColor,
-                NSParagraphStyleAttributeName: style
-            };
-
-            NSRect textRect = NSMakeRect(x + 4, rect.origin.y + 3, colWidth - 8, rect.size.height - 6);
-            [value drawInRect:textRect withAttributes:attrs];
-        }
-        x += colWidth;
-    }
-
-    // Draw playing indicator in first column
-    if (isPlaying) {
-        NSString *playIcon = @"\u25B6";  // Play triangle
-        NSDictionary *attrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:9],
-            NSForegroundColorAttributeName: [NSColor systemOrangeColor]
-        };
-        [playIcon drawAtPoint:NSMakePoint(rect.origin.x + 4, rect.origin.y + 5) withAttributes:attrs];
-    }
-}
-
-#pragma mark - Legacy Drawing Methods (Deprecated)
-
-// DEPRECATED: Old sparse group mode using _groupBoundaries
-- (void)drawSparseGroupModeInRect_Legacy:(NSRect)dirtyRect {
-    return;  // Disabled - use drawSparseModelInRect instead
-}
-
-- (void)drawSparseGroupRow_Legacy:(NSInteger)row inRect:(NSRect)rect {
-    // DEPRECATED
-    GroupBoundary *group = [self groupBoundaryForRow:row];
-    BOOL isHeader = (group && row == group.rowOffset);
-    NSInteger playlistIndex = [self playlistIndexForRow:row];
-
-    BOOL isSelected = NO;
-    BOOL isPlaying = NO;
-
-    if (!isHeader && playlistIndex >= 0) {
-        // Selection uses playlist index (not row index)
-        isSelected = [_selectedIndices containsIndex:playlistIndex];
-        isPlaying = (playlistIndex == _playingIndex);
-    }
-
-    // Background
-    if (isSelected) {
-        [fb2k_ui::selectedBackgroundColor() setFill];
-        NSRectFill(rect);
-    } else if (isPlaying && _showNowPlayingShading) {
-        [[[NSColor systemYellowColor] colorWithAlphaComponent:0.15] setFill];
-        NSRectFill(rect);
-    } else if (isHeader) {
-        [[self headerBackgroundColor] setFill];
-        NSRectFill(rect);
-    }
-
-    if (isHeader) {
-        // Draw group header
-        [self drawSparseGroupHeader:group inRect:rect selected:isSelected];
-    } else {
-        // Draw track row
-        [self drawSparseGroupTrack:playlistIndex inRect:rect selected:isSelected playing:isPlaying];
-    }
-}
-
-- (void)drawSparseGroupHeader:(GroupBoundary *)group inRect:(NSRect)rect selected:(BOOL)selected {
-    // Header text
-    CGFloat textX = _groupColumnWidth + 8;
-    NSRect textRect = NSMakeRect(textX, rect.origin.y + 4,
-                                  rect.size.width - textX - 8,
-                                  rect.size.height - 8);
-
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:13],
-        NSForegroundColorAttributeName: selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor]
-    };
-
-    NSString *text = group.headerText ?: @"";
-    [text drawInRect:textRect withAttributes:attrs];
-
-    // Bottom separator
-    [[NSColor separatorColor] setFill];
-    NSRectFill(NSMakeRect(rect.origin.x, NSMaxY(rect) - 1, rect.size.width, 1));
-}
-
-- (void)drawSparseGroupTrack:(NSInteger)playlistIndex inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing {
-    // Text colors
-    NSColor *textColor = selected ? [NSColor alternateSelectedControlTextColor] : [NSColor labelColor];
-    NSColor *secondaryColor = selected ? [NSColor alternateSelectedControlTextColor] : [NSColor secondaryLabelColor];
-
-    // Get column values lazily from delegate
-    NSArray<NSString *> *columnValues = nil;
-    if ([_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
-        columnValues = [_delegate playlistView:self columnValuesForPlaylistIndex:playlistIndex];
-    }
-
-    // Draw columns (skip group column area)
-    CGFloat x = _groupColumnWidth + 4;
-
-    for (NSInteger col = 0; col < (NSInteger)_columns.count; col++) {
-        ColumnDefinition *colDef = _columns[col];
-        CGFloat colWidth = colDef.width;
-
-        if (colWidth > 0) {
-            NSString *value = (col < (NSInteger)columnValues.count) ? columnValues[col] : @"";
-
-            NSDictionary *attrs = @{
-                NSFontAttributeName: [NSFont systemFontOfSize:12],
-                NSForegroundColorAttributeName: (col == 0) ? textColor : secondaryColor
-            };
-
-            NSRect textRect = NSMakeRect(x + 4, rect.origin.y + 2, colWidth - 8, rect.size.height - 4);
-            [value drawInRect:textRect withAttributes:attrs];
-        }
-        x += colWidth;
-    }
-
-    // Draw playing indicator
-    if (playing) {
-        NSString *playIcon = @"\u25B6";
-        NSDictionary *attrs = @{
-            NSFontAttributeName: [NSFont systemFontOfSize:10],
-            NSForegroundColorAttributeName: [NSColor systemOrangeColor]
-        };
-        [playIcon drawAtPoint:NSMakePoint(_groupColumnWidth + 6, rect.origin.y + 4) withAttributes:attrs];
-    }
-}
-
-- (void)drawSparseGroupColumnInRect_Legacy:(NSRect)dirtyRect {
-    if (_groupColumnWidth <= 0) return;
-    if (_groupBoundaries.count == 0) return;
-
-    // Find visible groups
-    NSRect visibleRect = [self visibleRect];
-
-    for (GroupBoundary *group in _groupBoundaries) {
-        // Calculate group's vertical extent
-        CGFloat groupTop = group.rowOffset * _rowHeight;
-        CGFloat groupHeight = [group rowCount] * _rowHeight;
-        CGFloat groupBottom = groupTop + groupHeight;
-
-        // Skip if not visible
-        NSRect groupRect = NSMakeRect(0, groupTop, _groupColumnWidth, groupHeight);
-        if (!NSIntersectsRect(groupRect, visibleRect)) continue;
-
-        // Draw group column background
-        [[self groupColumnBackgroundColor] setFill];
-        NSRectFill(groupRect);
-
-        // Calculate album art rect
-        CGFloat padding = 4;
-        CGFloat artSize = MIN(_groupColumnWidth - padding * 2, groupHeight - padding * 2);
-        artSize = MIN(artSize, _groupColumnWidth - padding * 2);
-
-        if (artSize < 20) continue;
-
-        NSRect artRect = NSMakeRect(padding, groupTop + padding, artSize, artSize);
-
-        // Get album art from delegate
-        NSImage *albumArt = nil;
-        if ([_delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)]) {
-            albumArt = [_delegate playlistView:self albumArtForGroupAtPlaylistIndex:group.startPlaylistIndex];
-        }
-
-        if (albumArt) {
-            [albumArt drawInRect:artRect
-                        fromRect:NSZeroRect
-                       operation:NSCompositingOperationSourceOver
-                        fraction:1.0
-                  respectFlipped:YES
-                           hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
-        } else {
-            [self drawAlbumArtPlaceholderInRect:artRect];
-        }
-
-        // Check if any track in group is selected (using playlist indices)
-        BOOL groupHasSelection = NO;
-        for (NSInteger i = group.startPlaylistIndex; i <= group.endPlaylistIndex; i++) {
-            if ([_selectedIndices containsIndex:i]) {
-                groupHasSelection = YES;
-                break;
-            }
-        }
-
-        // No selection border on album art - cleaner look
-
-        // Draw group separator
-        [[NSColor separatorColor] setFill];
-        NSRectFill(NSMakeRect(0, groupBottom - 1, _groupColumnWidth, 1));
-    }
-}
-
-- (void)drawRow:(NSInteger)row inRect:(NSRect)rect {
-    GroupNode *node = _nodes[row];
-    // Selection uses playlist index (not row index)
-    NSInteger playlistIndex = (node.type == GroupNodeTypeTrack) ? node.playlistIndex : -1;
-    BOOL isSelected = (playlistIndex >= 0 && [_selectedIndices containsIndex:playlistIndex]);
-    BOOL isPlaying = (playlistIndex >= 0 && playlistIndex == _playingIndex);
-
-    // Background - only in columns area, not album art column
-    BOOL shouldDrawBackground = isSelected || (isPlaying && _showNowPlayingShading);
-    if (shouldDrawBackground) {
-        NSRect contentRect = NSMakeRect(_groupColumnWidth, rect.origin.y,
-                                        rect.size.width - _groupColumnWidth, rect.size.height);
-        if (isSelected) {
-            [fb2k_ui::selectedBackgroundColor() setFill];
-        } else {
-            [[[NSColor systemYellowColor] colorWithAlphaComponent:0.15] setFill];
-        }
-        NSRectFill(contentRect);
-    }
-
-    // Draw based on node type
-    switch (node.type) {
-        case GroupNodeTypeHeader:
-            [self drawHeaderNode:node inRect:rect selected:NO];  // Headers can't be selected
-            break;
-        case GroupNodeTypeSubgroup:
-            [self drawSubgroupNode:node inRect:rect selected:NO];
-            break;
-        case GroupNodeTypeTrack:
-            [self drawTrackNode:node inRect:rect selected:isSelected playing:isPlaying];
-            break;
-    }
-}
-
-- (void)drawHeaderNode:(GroupNode *)node inRect:(NSRect)rect selected:(BOOL)selected {
-    // Header background
-    if (!selected) {
-        [[self headerBackgroundColor] setFill];
-        NSRectFill(rect);
-    }
-
-    // Header text - use 13pt bold to match system list appearance
-    CGFloat textX = _groupColumnWidth + 8;
-    NSRect textRect = NSMakeRect(textX, rect.origin.y + 4,
-                                  rect.size.width - textX - 8,
-                                  rect.size.height - 8);
-
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:13],
-        NSForegroundColorAttributeName: selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor]
-    };
-
-    NSString *text = node.displayText ?: @"";
-    [text drawInRect:textRect withAttributes:attrs];
-
-    // Bottom separator
-    [[NSColor separatorColor] setFill];
-    NSRectFill(NSMakeRect(rect.origin.x, NSMaxY(rect) - 1, rect.size.width, 1));
-}
-
-- (void)drawSubgroupNode:(GroupNode *)node inRect:(NSRect)rect selected:(BOOL)selected {
-    // Subgroup background
-    if (!selected) {
-        [[self subgroupBackgroundColor] setFill];
-        NSRectFill(rect);
-    }
-
-    // Indent
-    CGFloat indent = _groupColumnWidth + 16 + (node.indentLevel * 16);
-    NSRect textRect = NSMakeRect(indent, rect.origin.y + 2,
-                                  rect.size.width - indent - 8,
-                                  rect.size.height - 4);
-
-    // Use 12pt medium weight for subgroups
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightMedium],
-        NSForegroundColorAttributeName: selected ? [NSColor selectedMenuItemTextColor] : [NSColor secondaryLabelColor]
-    };
-
-    NSString *text = node.displayText ?: @"";
-    [text drawInRect:textRect withAttributes:attrs];
-}
-
-- (void)drawTrackNode:(GroupNode *)node inRect:(NSRect)rect selected:(BOOL)selected playing:(BOOL)playing {
-    CGFloat x = _groupColumnWidth;
-    CGFloat indent = node.indentLevel * 16;
-
-    // Lazy load column values if not already cached
-    if (!node.columnValues && node.playlistIndex >= 0) {
-        if ([_delegate respondsToSelector:@selector(playlistView:columnValuesForPlaylistIndex:)]) {
-            NSArray<NSString *> *values = [_delegate playlistView:self
-                                   columnValuesForPlaylistIndex:node.playlistIndex];
-            if (values) {
-                node.columnValues = values;  // Cache for next draw
-            }
-        }
-    }
-
-    // Draw each column
-    for (NSInteger colIndex = 0; colIndex < (NSInteger)_columns.count; colIndex++) {
-        ColumnDefinition *col = _columns[colIndex];
-
-        NSRect colRect = NSMakeRect(x, rect.origin.y,
-                                    col.width, rect.size.height);
-
-        // Get column value
-        NSString *value = @"";
-        if (node.columnValues && colIndex < (NSInteger)node.columnValues.count) {
-            value = node.columnValues[colIndex];
-        }
-
-        // Apply indent to first column
-        if (colIndex == 0) {
-            colRect.origin.x += indent;
-            colRect.size.width -= indent;
-        }
-
-        if ([self isRatingColumn:col]) {
-            [self drawRatingValue:value inRect:colRect column:col playlistIndex:node.playlistIndex selected:selected];
-        } else {
-            [self drawColumnValue:value inRect:colRect column:col selected:selected];
-        }
-
-        x += col.width;
-    }
-}
-
-- (void)drawColumnValue:(NSString *)value
-                 inRect:(NSRect)rect
-                 column:(ColumnDefinition *)column
-               selected:(BOOL)selected {
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.lineBreakMode = NSLineBreakByTruncatingTail;
-
-    switch (column.alignment) {
-        case ColumnAlignmentCenter:
-            style.alignment = NSTextAlignmentCenter;
-            break;
-        case ColumnAlignmentRight:
-            style.alignment = NSTextAlignmentRight;
-            break;
-        default:
-            style.alignment = NSTextAlignmentLeft;
-            break;
-    }
-
-    // Use system font to match sparse track row drawing
-    NSFont *font = [NSFont systemFontOfSize:13];
-    NSDictionary *attrs = @{
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: selected ? [NSColor selectedMenuItemTextColor] : [NSColor labelColor],
-        NSParagraphStyleAttributeName: style
-    };
-
-    // Calculate proper vertical centering
-    CGFloat lineHeight = font.ascender - font.descender;
-    CGFloat verticalPadding = (rect.size.height - lineHeight) / 2.0;
-
-    // Horizontal padding of 4px, vertical centered
-    NSRect textRect = NSMakeRect(rect.origin.x + 4,
-                                  rect.origin.y + verticalPadding,
-                                  rect.size.width - 8,
-                                  lineHeight);
-
-    [value drawInRect:textRect withAttributes:attrs];
 }
 
 - (void)drawFocusRingForRect:(NSRect)rect {
@@ -2004,148 +1408,24 @@ static NSString *formatGroupDuration(double seconds) {
 
 #pragma mark - Group Column (Album Art)
 
-- (void)drawGroupColumnInRect:(NSRect)dirtyRect {
-    if (_groupColumnWidth <= 0) return;
-    if (_nodes.count == 0) return;
-
-    // Find visible row range first (O(log n) binary search)
-    NSInteger firstRow = [self rowAtPoint:NSMakePoint(0, NSMinY(dirtyRect))];
-    NSInteger lastRow = [self rowAtPoint:NSMakePoint(0, NSMaxY(dirtyRect))];
-
-    if (firstRow < 0) firstRow = 0;
-    if (lastRow < 0 || lastRow >= (NSInteger)_nodes.count) lastRow = (NSInteger)_nodes.count - 1;
-
-    // Extend range to include groups that start before visible area but extend into it
-    // Walk backwards from firstRow to find the header that contains it
-    NSInteger headerRow = firstRow;
-    while (headerRow > 0 && _nodes[headerRow].type != GroupNodeTypeHeader) {
-        headerRow--;
-    }
-    firstRow = headerRow;
-
-    // Track which groups we've already drawn to avoid duplicates
-    NSMutableSet<NSNumber *> *drawnGroups = [NSMutableSet set];
-
-    // Only iterate visible rows (plus the header that contains them)
-    for (NSInteger row = firstRow; row <= lastRow; row++) {
-        GroupNode *node = _nodes[row];
-        if (node.type != GroupNodeTypeHeader) continue;
-
-        // Skip if already drawn
-        if ([drawnGroups containsObject:@(row)]) continue;
-        [drawnGroups addObject:@(row)];
-
-        // Calculate group's vertical extent
-        CGFloat groupTop = [self yOffsetForRow:row];
-        CGFloat groupBottom;
-
-        if (node.groupEndIndex >= 0 && node.groupEndIndex < (NSInteger)_nodes.count) {
-            groupBottom = [self yOffsetForRow:node.groupEndIndex + 1];
-        } else {
-            // Find the next header or end
-            NSInteger nextHeader = row + 1;
-            while (nextHeader < (NSInteger)_nodes.count && _nodes[nextHeader].type != GroupNodeTypeHeader) {
-                nextHeader++;
-            }
-            groupBottom = [self yOffsetForRow:nextHeader];
-        }
-
-        CGFloat groupHeight = groupBottom - groupTop;
-
-        // Final visibility check
-        NSRect groupRect = NSMakeRect(0, groupTop, _groupColumnWidth, groupHeight);
-        if (!NSIntersectsRect(groupRect, dirtyRect)) continue;
-
-        // Draw group column background
-        [[self groupColumnBackgroundColor] setFill];
-        NSRectFill(groupRect);
-
-        // Calculate album art rect (square, with padding)
-        CGFloat padding = 4;
-        CGFloat artSize = MIN(_groupColumnWidth - padding * 2, groupHeight - padding * 2);
-        artSize = MIN(artSize, _groupColumnWidth - padding * 2);  // Cap to column width
-
-        if (artSize < 20) continue;  // Too small to draw
-
-        NSRect artRect = NSMakeRect(
-            padding,
-            groupTop + padding,
-            artSize,
-            artSize
-        );
-
-        // Get album art from delegate
-        NSImage *albumArt = nil;
-        if ([_delegate respondsToSelector:@selector(playlistView:albumArtForGroupAtPlaylistIndex:)]) {
-            // Use the first track index of this group
-            NSInteger firstTrackIndex = node.groupStartIndex;
-            if (firstTrackIndex >= 0) {
-                albumArt = [_delegate playlistView:self albumArtForGroupAtPlaylistIndex:firstTrackIndex];
-            }
-        }
-
-        if (albumArt) {
-            // Draw album art
-            [albumArt drawInRect:artRect
-                        fromRect:NSZeroRect
-                       operation:NSCompositingOperationSourceOver
-                        fraction:1.0
-                  respectFlipped:YES
-                           hints:@{NSImageHintInterpolation: @(NSImageInterpolationHigh)}];
-        } else {
-            // Draw placeholder
-            [self drawAlbumArtPlaceholderInRect:artRect];
-        }
-
-        // Draw right border for group column
-        [[NSColor separatorColor] setFill];
-        NSRectFill(NSMakeRect(_groupColumnWidth - 1, groupTop, 1, groupHeight));
-    }
-}
-
 - (void)drawAlbumArtPlaceholderInRect:(NSRect)rect {
-    // Background
-    [[NSColor colorWithWhite:0.15 alpha:1.0] setFill];
-    NSRectFill(rect);
-
-    // Music note symbol
-    NSString *musicNote = @"\u266B";
-    CGFloat fontSize = MIN(rect.size.width, rect.size.height) * 0.4;
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:fontSize weight:NSFontWeightLight],
-        NSForegroundColorAttributeName: [NSColor colorWithWhite:0.4 alpha:1.0]
-    };
-    NSSize textSize = [musicNote sizeWithAttributes:attrs];
-    NSPoint point = NSMakePoint(
-        rect.origin.x + (rect.size.width - textSize.width) / 2,
-        rect.origin.y + (rect.size.height - textSize.height) / 2
-    );
-    [musicNote drawAtPoint:point withAttributes:attrs];
+    // Pre-rendered once by AlbumArtCache. Building the font, the attributes
+    // dictionary and laying out the glyph here ran a full Core Text pass per
+    // artless group per frame.
+    [[AlbumArtCache placeholderImage] drawInRect:rect
+                                        fromRect:NSZeroRect
+                                       operation:NSCompositingOperationSourceOver
+                                        fraction:1.0
+                                  respectFlipped:YES
+                                           hints:nil];
 }
 
-- (NSColor *)groupColumnBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.05
-                                                              ofColor:[NSColor blackColor]];
-}
+#pragma mark - Selection Management (state math in PlaylistSelectionModel)
 
-#pragma mark - Colors
-
-- (NSColor *)alternateRowColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.03
-                                                              ofColor:[NSColor labelColor]];
-}
-
-- (NSColor *)headerBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.08
-                                                              ofColor:[NSColor labelColor]];
-}
-
-- (NSColor *)subgroupBackgroundColor {
-    return [[NSColor controlBackgroundColor] blendedColorWithFraction:0.04
-                                                              ofColor:[NSColor labelColor]];
-}
-
-#pragma mark - Selection Management
+// The selection/anchor/focus math lives in Core/PlaylistSelectionModel so it
+// can be unit-tested without an NSView/host. The view converts rows to
+// playlist indices, delegates the state change, then handles notification,
+// scrolling and redraw.
 
 - (void)selectRowAtIndex:(NSInteger)index {
     [self selectRowAtIndex:index extendSelection:NO];
@@ -2159,40 +1439,21 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger playlistIndex = [self playlistIndexForRow:index];
     if (playlistIndex < 0) return;  // Don't select headers
 
-    if (extend && _selectionAnchor >= 0) {
-        // Range selection from anchor to clicked item
-        NSInteger start = MIN(_selectionAnchor, playlistIndex);
-        NSInteger end = MAX(_selectionAnchor, playlistIndex);
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-    } else {
-        // Single selection
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndex:playlistIndex];
-        _selectionAnchor = playlistIndex;
-    }
-
-    _focusIndex = playlistIndex;
-    [self notifySelectionChanged];
-    [self setNeedsDisplay:YES];
-}
-
-- (void)selectRowsInRange:(NSRange)range {
-    [_selectedIndices addIndexesInRange:range];
+    [_selection selectPlaylistIndex:playlistIndex extendFromAnchor:extend];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
 
 - (void)selectAll {
     // Select all playlist items (not row indices)
-    if (_itemCount == 0) return;
-    [_selectedIndices addIndexesInRange:NSMakeRange(0, _itemCount)];
+    if (_layout.itemCount == 0) return;
+    [_selection selectAll];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
 
 - (void)deselectAll {
-    [_selectedIndices removeAllIndexes];
+    [_selection deselectAll];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
@@ -2205,78 +1466,51 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger playlistIndex = [self playlistIndexForRow:index];
     if (playlistIndex < 0) return;  // Don't select headers
 
-    if ([_selectedIndices containsIndex:playlistIndex]) {
-        [_selectedIndices removeIndex:playlistIndex];
-    } else {
-        [_selectedIndices addIndex:playlistIndex];
-    }
-
+    [_selection togglePlaylistIndex:playlistIndex];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
 }
 
+// focusIndex lives in the selection model; both accessors are implemented so
+// no ivar is synthesized (any leftover direct _focusIndex reference is a
+// compile error rather than a silent desync).
+- (NSInteger)focusIndex {
+    return _selection.focusIndex;
+}
+
 - (void)setFocusIndex:(NSInteger)index {
     // Focus index is a playlist index
-    if (index < -1 || index >= _itemCount) return;
-    _focusIndex = index;
+    if (index < -1 || index >= _layout.itemCount) return;
+    _selection.focusIndex = index;
     [self setNeedsDisplay:YES];
 }
 
+// sourcePlaylistIndex changes exactly when the panel switches playlists. The
+// shift-selection anchor belongs to the playlist it was set in: carried across
+// a switch it makes the next shift-click extend from an index in the previous
+// playlist (and a following Delete remove that whole range).
+- (void)setSourcePlaylistIndex:(NSInteger)index {
+    if (_sourcePlaylistIndex != index) {
+        _selection.anchorIndex = -1;
+    }
+    _sourcePlaylistIndex = index;
+}
+
+// selectedIndices: the getter is synthesized and returns the ivar, which
+// aliases the selection model's stable NSMutableIndexSet (assigned in
+// commonInit). A property-setter write must not replace that shared instance,
+// so it funnels the contents instead.
+- (void)setSelectedIndices:(NSMutableIndexSet *)selectedIndices {
+    [_selectedIndices removeAllIndexes];
+    if (selectedIndices) {
+        [_selectedIndices addIndexes:selectedIndices];
+    }
+}
+
 - (void)moveFocusBy:(NSInteger)delta extendSelection:(BOOL)extend {
-    NSInteger totalRows = [self rowCount];
-    if (totalRows == 0) return;
+    NSInteger newRow = [_selection moveFocusBy:delta extendSelection:extend];
+    if (newRow < 0) return;  // No move (empty list or no valid track found)
 
-    // Convert current focus (playlist index) to row
-    NSInteger currentRow = (_focusIndex >= 0) ? [self rowForPlaylistIndex:_focusIndex] : 0;
-    if (currentRow < 0) currentRow = 0;
-
-    // Move by delta rows
-    NSInteger newRow = currentRow + delta;
-    newRow = MAX(0, MIN(totalRows - 1, newRow));
-
-    // Skip header/subgroup/padding rows when navigating
-    NSInteger playlistIndex = [self playlistIndexForRow:newRow];
-    NSInteger searchRow = newRow;
-    while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
-        searchRow += (delta > 0) ? 1 : -1;
-        if (searchRow < 0 || searchRow >= totalRows) break;
-        playlistIndex = [self playlistIndexForRow:searchRow];
-    }
-
-    // If we found a valid row, use it; otherwise try the opposite direction
-    if (playlistIndex >= 0) {
-        newRow = searchRow;
-    } else {
-        // Try opposite direction from original newRow
-        searchRow = newRow;
-        while (playlistIndex < 0 && searchRow >= 0 && searchRow < totalRows) {
-            searchRow += (delta > 0) ? -1 : 1;  // Opposite direction
-            if (searchRow < 0 || searchRow >= totalRows) break;
-            playlistIndex = [self playlistIndexForRow:searchRow];
-        }
-        if (playlistIndex >= 0) {
-            newRow = searchRow;
-        }
-    }
-
-    if (playlistIndex < 0) return;  // Couldn't find a valid track in either direction
-
-    if (extend) {
-        // Extend selection from anchor to new focus
-        if (_selectionAnchor < 0) {
-            _selectionAnchor = _focusIndex >= 0 ? _focusIndex : playlistIndex;
-        }
-        NSInteger start = MIN(_selectionAnchor, playlistIndex);
-        NSInteger end = MAX(_selectionAnchor, playlistIndex);
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-    } else {
-        [_selectedIndices removeAllIndexes];
-        [_selectedIndices addIndex:playlistIndex];
-        _selectionAnchor = playlistIndex;
-    }
-
-    _focusIndex = playlistIndex;
     [self scrollRowToVisible:newRow];
     [self notifySelectionChanged];
     [self setNeedsDisplay:YES];
@@ -2336,43 +1570,15 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Check if clicked on group header or group column (album art area)
     BOOL isGroupHeader = [self isRowGroupHeader:row];
-    BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _groupStarts.count > 0);
+    BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _layout.groupStarts.count > 0);
 
     if (isGroupHeader || isInGroupColumn) {
-        // Select all items in the group
+        // Select all items in the group (cmd toggles, shift extends from anchor)
         NSInteger groupIndex = [self groupIndexForRow:row];
         if (groupIndex >= 0) {
             NSRange range = [self playlistIndexRangeForGroup:groupIndex];
             if (range.location != NSNotFound && range.length > 0) {
-                if (hasCmd) {
-                    // Cmd+click on group: toggle group selection
-                    BOOL allSelected = YES;
-                    for (NSUInteger i = range.location; i < range.location + range.length; i++) {
-                        if (![_selectedIndices containsIndex:i]) {
-                            allSelected = NO;
-                            break;
-                        }
-                    }
-                    if (allSelected) {
-                        [_selectedIndices removeIndexesInRange:range];
-                    } else {
-                        [_selectedIndices addIndexesInRange:range];
-                    }
-                } else if (hasShift && _selectionAnchor >= 0) {
-                    // Shift+click: extend selection to include entire group
-                    NSInteger groupStart = range.location;
-                    NSInteger groupEnd = range.location + range.length - 1;
-                    NSInteger start = MIN(_selectionAnchor, groupStart);
-                    NSInteger end = MAX(_selectionAnchor, groupEnd);
-                    [_selectedIndices removeAllIndexes];
-                    [_selectedIndices addIndexesInRange:NSMakeRange(start, end - start + 1)];
-                } else {
-                    // Regular click: select all items in group
-                    [_selectedIndices removeAllIndexes];
-                    [_selectedIndices addIndexesInRange:range];
-                    _selectionAnchor = range.location;
-                }
-                _focusIndex = range.location;
+                [_selection clickGroupRange:range commandKey:hasCmd shiftKey:hasShift];
                 [self notifySelectionChanged];
                 [self setNeedsDisplay:YES];
                 return;
@@ -2387,10 +1593,10 @@ static NSString *formatGroupDuration(double seconds) {
         // Cmd+click: toggle selection
         [self toggleSelectionAtIndex:row];
         if (playlistIndex >= 0) {
-            _focusIndex = playlistIndex;
+            _selection.focusIndex = playlistIndex;
         }
         _pendingClickRow = -1;
-    } else if (hasShift && _focusIndex >= 0) {
+    } else if (hasShift && _selection.focusIndex >= 0) {
         // Shift+click: extend selection
         [self selectRowAtIndex:row extendSelection:YES];
         _pendingClickRow = -1;
@@ -2424,10 +1630,14 @@ static NSString *formatGroupDuration(double seconds) {
     _isDragging = YES;
     _pendingClickRow = -1;  // Cancel pending selection change since drag started
 
-    FB2K_console_formatter() << "[SimPlaylist] mouseDragged: starting drag, selection count=" << _selectedIndices.count;
-
-    // Only drag if there's a selection
-    if (_selectedIndices.count == 0) return;
+    // Only drag if there's a selection. Reset the flag on this and the later
+    // early return: no session begins, so the session-ended callback that
+    // normally clears it never fires and a stale YES would suppress the focus
+    // ring and anchor capture for the rest of the session.
+    if (_selectedIndices.count == 0) {
+        _isDragging = NO;
+        return;
+    }
 
     // Create dragging item with selected row indices, source playlist, AND file paths
     // File paths ensure drag works correctly even if active playlist changes mid-drag
@@ -2442,13 +1652,14 @@ static NSString *formatGroupDuration(double seconds) {
 
     // Capture file paths for cross-playlist drops
     BOOL hasPathsMethod = [_delegate respondsToSelector:@selector(playlistView:filePathsForPlaylistIndices:)];
-    FB2K_console_formatter() << "[SimPlaylist] delegate responds to filePathsForPlaylistIndices: " << (hasPathsMethod ? "YES" : "NO");
 
     if (hasPathsMethod) {
         NSArray<NSString *> *paths = [_delegate playlistView:self filePathsForPlaylistIndices:_selectedIndices];
-        FB2K_console_formatter() << "[SimPlaylist] DRAG START: sourcePlaylist=" << _sourcePlaylistIndex
-                                 << ", indices=" << rowNumbers.count
-                                 << ", paths=" << (paths ? paths.count : 0);
+        if (_debugRendering) {
+            FB2K_console_formatter() << "[SimPlaylist] DRAG START: sourcePlaylist=" << _sourcePlaylistIndex
+                                     << ", indices=" << rowNumbers.count
+                                     << ", paths=" << (paths ? paths.count : 0);
+        }
         if (paths && paths.count > 0) {
             dragData[@"paths"] = paths;
         }
@@ -2464,16 +1675,22 @@ static NSString *formatGroupDuration(double seconds) {
     NSMutableArray<NSURL *> *fileURLs = [NSMutableArray array];
     NSArray<NSString *> *dragPaths = dragData[@"paths"];
     if (dragPaths) {
-        for (NSString *path in dragPaths) {
-            pfc::string8 nativePath;
-            if (filesystem::g_get_native_path(path.UTF8String, nativePath)) {
-                NSString *posix = [NSString stringWithUTF8String:nativePath.c_str()];
-                if (posix && [[NSFileManager defaultManager] fileExistsAtPath:posix]) {
-                    NSURL *url = [NSURL fileURLWithPath:posix];
-                    if (url) [fileURLs addObject:url];
+        runGuardedSDKAction("Drag path resolution", ^{
+            for (NSString *path in dragPaths) {
+                pfc::string8 nativePath;
+                if (filesystem::g_get_native_path(path.UTF8String, nativePath)) {
+                    // Same existence test as -fileExistsAtPath:, but on the native
+                    // bytes we already hold: this loop walks the entire selection on
+                    // the main thread, so missing entries cost no NSString/NSURL.
+                    if (access(nativePath.c_str(), F_OK) != 0) continue;
+                    NSString *posix = [NSString stringWithUTF8String:nativePath.c_str()];
+                    if (posix) {
+                        NSURL *url = [NSURL fileURLWithPath:posix];
+                        if (url) [fileURLs addObject:url];
+                    }
                 }
             }
-        }
+        });
     }
 
     // Create a simple drag image
@@ -2502,10 +1719,16 @@ static NSString *formatGroupDuration(double seconds) {
         return @[component];
     };
 
-    // Archive internal data for pasteboard
+    // Archive internal data for pasteboard (plist types only, so secure
+    // coding is safe; the unarchive side is already class-restricted)
+    NSError *archiveError = nil;
     NSData *internalData = [NSKeyedArchiver archivedDataWithRootObject:dragData
-                                                 requiringSecureCoding:NO
-                                                                 error:nil];
+                                                 requiringSecureCoding:YES
+                                                                 error:&archiveError];
+    if (!internalData) {
+        FB2K_console_formatter() << "[SimPlaylist] Drag data archive failed: "
+                                 << (archiveError.localizedDescription.UTF8String ?: "unknown");
+    }
 
     // Always use a SINGLE NSDraggingItem — multiple items cause macOS to stack them
     // with per-item Y offsets, shifting the drag image far from the cursor.
@@ -2520,7 +1743,13 @@ static NSString *formatGroupDuration(double seconds) {
         writer.internalData = internalData;
         dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:writer];
     } else {
-        // No file URLs (cloud/non-local tracks) — internal type only
+        // No file URLs (cloud/non-local tracks) — internal type only. If the
+        // archive failed there is nothing to put on the pasteboard (setData:
+        // requires nonnull), so abort the drag.
+        if (!internalData) {
+            _isDragging = NO;
+            return;
+        }
         NSPasteboardItem *pbItem = [[NSPasteboardItem alloc] init];
         [pbItem setData:internalData forType:SimPlaylistPasteboardType];
         dragItem = [[NSDraggingItem alloc] initWithPasteboardWriter:pbItem];
@@ -2615,7 +1844,6 @@ static NSString *formatGroupDuration(double seconds) {
 
     if (row != _hoveredRow) {
         _hoveredRow = row;
-        // Could add hover highlight here if desired
     }
 }
 
@@ -2635,16 +1863,19 @@ static NSString *formatGroupDuration(double seconds) {
     BOOL hasCtrl = (event.modifierFlags & NSEventModifierFlagControl) != 0;
 
     if (hasCtrl && _groupColumnWidth > 0) {
-        // Resize group column
+        // Resize group column. Clamp matches the header-bar group-column
+        // resize; sensitivity is tuned per input device.
+        static const CGFloat kGroupColumnMinWidth = 40;
+        static const CGFloat kGroupColumnMaxWidth = 300;
+        static const CGFloat kTrackpadResizeSensitivity = 0.5;   // reduce for precise deltas
+        static const CGFloat kMouseWheelResizeSensitivity = 10;  // amplify line-based deltas
+
         CGFloat delta = event.scrollingDeltaY;
-        if (event.hasPreciseScrollingDeltas) {
-            delta *= 0.5;  // Reduce sensitivity for trackpad
-        } else {
-            delta *= 10;  // Increase for mouse wheel
-        }
+        delta *= event.hasPreciseScrollingDeltas ? kTrackpadResizeSensitivity
+                                                 : kMouseWheelResizeSensitivity;
 
         CGFloat newWidth = _groupColumnWidth + delta;
-        newWidth = MAX(40, MIN(300, newWidth));  // Clamp to reasonable range
+        newWidth = MAX(kGroupColumnMinWidth, MIN(kGroupColumnMaxWidth, newWidth));
 
         if (newWidth != _groupColumnWidth) {
             _groupColumnWidth = newWidth;
@@ -2669,23 +1900,44 @@ static NSString *formatGroupDuration(double seconds) {
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     NSUInteger modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
     NSString *chars = event.charactersIgnoringModifiers;
-    if (chars.length > 0 && modifiers == NSEventModifierFlagCommand) {
-        unichar key = [chars characterAtIndex:0];
-        if (key == 'f' || key == 'F') {
-            // Cmd+F: find and invoke the Search menu item in foobar2000's Edit menu
-            NSMenu *mainMenu = [NSApp mainMenu];
-            for (NSMenuItem *topItem in mainMenu.itemArray) {
-                NSMenu *submenu = topItem.submenu;
-                if (!submenu) continue;
-                for (NSMenuItem *item in submenu.itemArray) {
-                    if ([item.title localizedCaseInsensitiveContainsString:@"search"] && item.action) {
-                        [NSApp sendAction:item.action to:item.target from:item];
-                        return YES;
-                    }
+    if (chars.length == 0) return [super performKeyEquivalent:event];
+    unichar key = [chars characterAtIndex:0];
+
+    BOOL cmd = (modifiers & NSEventModifierFlagCommand) != 0;
+    BOOL shift = (modifiers & NSEventModifierFlagShift) != 0;
+    BOOL onlyCmd = (modifiers == NSEventModifierFlagCommand);
+    BOOL cmdShift = (modifiers == (NSEventModifierFlagCommand | NSEventModifierFlagShift));
+
+    if (cmd && (key == 'z' || key == 'Z')) {
+        // Cmd+Z: undo, Cmd+Shift+Z: redo
+        if (!cmdShift && !onlyCmd) {
+            return [super performKeyEquivalent:event];
+        }
+        runGuardedSDKAction("Undo/redo", ^{
+            auto pm = playlist_manager::get();
+            if (cmdShift) {
+                pm->activeplaylist_redo_restore();
+            } else {
+                pm->activeplaylist_undo_restore();
+            }
+        });
+        return YES;
+    }
+
+    if (onlyCmd && (key == 'f' || key == 'F')) {
+        // Cmd+F: find and invoke the Search menu item in foobar2000's Edit menu
+        NSMenu *mainMenu = [NSApp mainMenu];
+        for (NSMenuItem *topItem in mainMenu.itemArray) {
+            NSMenu *submenu = topItem.submenu;
+            if (!submenu) continue;
+            for (NSMenuItem *item in submenu.itemArray) {
+                if ([item.title localizedCaseInsensitiveContainsString:@"search"] && item.action) {
+                    [NSApp sendAction:item.action to:item.target from:item];
+                    return YES;
                 }
             }
-            return NO;
         }
+        return NO;
     }
     return [super performKeyEquivalent:event];
 }
@@ -2720,29 +1972,36 @@ static NSString *formatGroupDuration(double seconds) {
             [self moveFocusBy:[self visibleRowCount] extendSelection:hasShift];
             break;
 
+        // moveFocusBy: takes a delta in DISPLAY ROWS, not playlist indices. A
+        // whole-list delta clamps to the first/last row and then skips back to
+        // the nearest track, which is what Home/End mean. Deriving the delta
+        // from focusIndex instead undershoots in grouped playlists, where a
+        // track's row is always past its index by the headers above it.
         case NSHomeFunctionKey:
-            [self moveFocusBy:-(_focusIndex + 1) extendSelection:hasShift];
+            [self moveFocusBy:-[self rowCount] extendSelection:hasShift];
             break;
 
         case NSEndFunctionKey:
-            [self moveFocusBy:([self rowCount] - _focusIndex) extendSelection:hasShift];
+            [self moveFocusBy:[self rowCount] extendSelection:hasShift];
             break;
 
         case ' ':  // Space - toggle play/pause (consistent with foobar2000 convention)
         {
-            auto pc = playback_control::get();
-            if (pc->is_playing() || pc->is_paused()) {
-                pc->toggle_pause();
-            } else {
-                pc->play_or_unpause();
-            }
+            runGuardedSDKAction("Play/pause", ^{
+                auto pc = playback_control::get();
+                if (pc->is_playing() || pc->is_paused()) {
+                    pc->toggle_pause();
+                } else {
+                    pc->play_or_unpause();
+                }
+            });
             break;
         }
 
         case '\r':  // Enter - execute default action on focused track
-            if (_focusIndex >= 0 &&
+            if (_selection.focusIndex >= 0 &&
                 [_delegate respondsToSelector:@selector(playlistView:didDoubleClickRow:)]) {
-                NSInteger row = [self rowForPlaylistIndex:_focusIndex];
+                NSInteger row = [self rowForPlaylistIndex:_selection.focusIndex];
                 if (row >= 0) {
                     [_delegate playlistView:self didDoubleClickRow:row];
                 }
@@ -2774,7 +2033,7 @@ static NSString *formatGroupDuration(double seconds) {
 
 - (NSInteger)visibleRowCount {
     NSRect visible = [self visibleRect];
-    return (NSInteger)(visible.size.height / _rowHeight);
+    return (NSInteger)(visible.size.height / _layout.rowHeight);
 }
 
 #pragma mark - NSDraggingSource
@@ -2788,7 +2047,9 @@ static NSString *formatGroupDuration(double seconds) {
     bool moveByDefault = simplaylist_config::getConfigBool(
         simplaylist_config::kDragToFinderMove,
         simplaylist_config::kDefaultDragToFinderMove);
-    return moveByDefault ? NSDragOperationEvery : NSDragOperationCopy;
+    // Move|Copy only - NSDragOperationEvery would also permit Delete/Link on
+    // the user's actual music files at arbitrary destinations
+    return moveByDefault ? (NSDragOperationMove | NSDragOperationCopy) : NSDragOperationCopy;
 }
 
 - (void)draggingSession:(NSDraggingSession *)session
@@ -2811,7 +2072,16 @@ static NSString *formatGroupDuration(double seconds) {
 
 #pragma mark - NSDraggingDestination
 
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+// Remote-URL schemes accepted for plain-text drops. Single source for
+// draggingEntered/draggingUpdated/performDragOperation.
+static BOOL isSupportedURLString(NSString *str) {
+    return [str hasPrefix:@"http://"] || [str hasPrefix:@"https://"] ||
+           [str hasPrefix:@"tidal://"] ||
+           [str hasPrefix:@"soundcloud://"] || [str hasPrefix:@"mixcloud://"];
+}
+
+// Shared operation resolution for draggingEntered/draggingUpdated.
+- (NSDragOperation)dragOperationForInfo:(id<NSDraggingInfo>)sender {
     NSPasteboard *pb = [sender draggingPasteboard];
 
     BOOL isInternalDrag = [[sender draggingSource] isKindOfClass:[SimPlaylistView class]]
@@ -2828,12 +2098,30 @@ static NSString *formatGroupDuration(double seconds) {
     } else if ([pb.types containsObject:NSPasteboardTypeString]) {
         // Plain text - check if it looks like a URL
         NSString *str = [pb stringForType:NSPasteboardTypeString];
-        if ([str hasPrefix:@"http://"] || [str hasPrefix:@"https://"] ||
-            [str hasPrefix:@"soundcloud://"] || [str hasPrefix:@"mixcloud://"]) {
+        if (isSupportedURLString(str)) {
             return NSDragOperationCopy;
         }
     }
     return NSDragOperationNone;
+}
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+    return [self dragOperationForInfo:sender];
+}
+
+// Redraws only the indicator strips affected by a drop-target change.
+- (void)updateDropTargetRow:(NSInteger)row {
+    if (row == _dropTargetRow) return;
+    [self invalidateDropIndicatorAtRow:_dropTargetRow];
+    _dropTargetRow = row;
+    [self invalidateDropIndicatorAtRow:row];
+}
+
+- (void)invalidateDropIndicatorAtRow:(NSInteger)row {
+    if (row < 0) return;
+    CGFloat y = (row >= [self rowCount]) ? [self totalContentHeightCached]
+                                         : [self yOffsetForRow:row];
+    [self setNeedsDisplayInRect:NSMakeRect(0, y - 2, self.bounds.size.width, 5)];
 }
 
 - (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
@@ -2841,53 +2129,58 @@ static NSString *formatGroupDuration(double seconds) {
     NSInteger totalRows = [self rowCount];
 
     if (totalRows == 0) {
-        _dropTargetRow = 0;
-        [self setNeedsDisplay:YES];
+        [self updateDropTargetRow:0];
         return NSDragOperationCopy;
     }
 
     // Simple distance-based logic: find the closest valid drop position
-    // A drop position N means "insert before row N" and is drawn at Y = N * rowHeight
+    // A drop position N means "insert before row N"; its true Y is
+    // yOffsetForRow:N, the same geometry drawDropIndicatorAtRow: renders at.
+    // Scoring must use that geometry: group headers are taller than rows, so
+    // pos * rowHeight would drift below the cursor by the accumulated extra
+    // header height.
     // Valid positions: before any track, or after last track of album (at album boundary)
+
+    NSInteger baseRow = [self rowAtPoint:location];
+    if (baseRow < 0) {
+        baseRow = (location.y <= 0) ? 0 : totalRows;
+    }
+
+    // Only positions near the cursor can win the distance test; 32 rows each
+    // way covers any run of header/padding rows between albums while keeping
+    // the scan O(1) per mouse-move instead of O(totalRows).
+    NSInteger scanStart = MAX((NSInteger)0, baseRow - 32);
+    NSInteger scanEnd = MIN(totalRows, baseRow + 32);
 
     CGFloat cursorY = location.y;
     NSInteger bestPosition = totalRows;  // Default to end
     CGFloat bestDistance = CGFLOAT_MAX;
 
-    // Check all possible drop positions (0 to totalRows inclusive)
     // A position is valid if:
     // 1. It's before a track row (inserting before that track)
     // 2. It's after a track row that's followed by padding/header/end (album boundary)
-    for (NSInteger pos = 0; pos <= totalRows; pos++) {
-        CGFloat posY = pos * _rowHeight;
+    // playlistIndexForRow: is a nested binary search, and each position needs the
+    // index at pos and at pos-1 — carry the previous iteration's value forward
+    // instead of re-deriving it (this runs per mouse-move during a drag).
+    NSInteger prevIdx = (scanStart > 0) ? [self playlistIndexForRow:scanStart - 1] : -1;
+    for (NSInteger pos = scanStart; pos <= scanEnd; pos++) {
         BOOL isValid = NO;
+        NSInteger curIdx = (pos < totalRows) ? [self playlistIndexForRow:pos] : -1;
 
-        if (pos < totalRows) {
-            // Check if row at 'pos' is a track - if so, we can drop before it
-            NSInteger rowAtPosPlaylistIdx = [self playlistIndexForRow:pos];
-            if (rowAtPosPlaylistIdx >= 0) {
-                isValid = YES;
-            }
+        if (curIdx >= 0) {
+            // Row at 'pos' is a track - we can drop before it
+            isValid = YES;
+        } else if (pos > 0 && prevIdx >= 0) {
+            // Row at 'pos-1' is a track and this one is padding/header/end of
+            // playlist - an album boundary
+            isValid = YES;
         }
 
-        if (!isValid && pos > 0) {
-            // Check if row at 'pos-1' is a track followed by non-track (album boundary)
-            NSInteger prevRowPlaylistIdx = [self playlistIndexForRow:pos - 1];
-            if (prevRowPlaylistIdx >= 0) {
-                if (pos >= totalRows) {
-                    // End of playlist
-                    isValid = YES;
-                } else {
-                    NSInteger nextRowPlaylistIdx = [self playlistIndexForRow:pos];
-                    if (nextRowPlaylistIdx < 0) {
-                        // Next row is padding/header - album boundary
-                        isValid = YES;
-                    }
-                }
-            }
-        }
+        prevIdx = curIdx;
 
         if (isValid) {
+            CGFloat posY = (pos >= totalRows) ? [self totalContentHeightCached]
+                                              : [self yOffsetForRow:pos];
             CGFloat dist = fabs(cursorY - posY);
             if (dist < bestDistance) {
                 bestDistance = dist;
@@ -2896,32 +2189,9 @@ static NSString *formatGroupDuration(double seconds) {
         }
     }
 
-    _dropTargetRow = bestPosition;
-    [self setNeedsDisplay:YES];
+    [self updateDropTargetRow:bestPosition];
 
-    NSPasteboard *pb = [sender draggingPasteboard];
-    BOOL isInternalDrag = [[sender draggingSource] isKindOfClass:[SimPlaylistView class]]
-                          || [pb.types containsObject:SimPlaylistPasteboardType];
-    if (isInternalDrag) {
-        // Option key = copy, otherwise move
-        BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
-        return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
-    }
-
-    if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
-        return NSDragOperationCopy;
-    } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
-        // Web URLs (e.g., from Cloud Browser)
-        return NSDragOperationCopy;
-    } else if ([pb.types containsObject:NSPasteboardTypeString]) {
-        // Plain text - check if it looks like a URL
-        NSString *str = [pb stringForType:NSPasteboardTypeString];
-        if ([str hasPrefix:@"http://"] || [str hasPrefix:@"https://"] ||
-            [str hasPrefix:@"soundcloud://"] || [str hasPrefix:@"mixcloud://"]) {
-            return NSDragOperationCopy;
-        }
-    }
-    return NSDragOperationNone;
+    return [self dragOperationForInfo:sender];
 }
 
 - (void)draggingExited:(id<NSDraggingInfo>)sender {
@@ -2933,10 +2203,46 @@ static NSString *formatGroupDuration(double seconds) {
     return YES;
 }
 
+// The unarchiver's class allowlist restricts which classes may appear, not
+// where: a crafted pasteboard can still deliver an NSArray root, NSString
+// indices or NSNumber paths, and the typed sends below would then throw an
+// uncaught unrecognized-selector exception. Accept only the exact shape
+// {sourcePlaylist: NSNumber >= 0, indices: [NSNumber >= 0], paths: [NSString]}.
+// Values are range-checked too: a negative index maps to a huge NSUInteger and
+// -[NSMutableIndexSet addIndex:] raises for values >= NSNotFound, and a missing
+// sourcePlaylist would alias playlist 0 in the drop handler. Array sizes are
+// capped to bound the drop handler's work on a hostile payload.
+static NSDictionary *validatedDragData(id unarchived) {
+    static const NSUInteger kMaxDragEntries = 1000000;
+    if (![unarchived isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *dict = unarchived;
+    id sourcePlaylist = dict[@"sourcePlaylist"];
+    id indices = dict[@"indices"];
+    id paths = dict[@"paths"];
+    if (sourcePlaylist && (![sourcePlaylist isKindOfClass:[NSNumber class]] ||
+                           [sourcePlaylist integerValue] < 0)) return nil;
+    if (indices) {
+        if (!sourcePlaylist) return nil;  // indices are meaningless without a source
+        if (![indices isKindOfClass:[NSArray class]]) return nil;
+        if ([(NSArray *)indices count] > kMaxDragEntries) return nil;
+        for (id v in (NSArray *)indices) {
+            if (![v isKindOfClass:[NSNumber class]]) return nil;
+            NSInteger idx = [v integerValue];
+            if (idx < 0 || idx >= NSNotFound) return nil;
+        }
+    }
+    if (paths) {
+        if (![paths isKindOfClass:[NSArray class]]) return nil;
+        if ([(NSArray *)paths count] > kMaxDragEntries) return nil;
+        for (id v in (NSArray *)paths) {
+            if (![v isKindOfClass:[NSString class]]) return nil;
+        }
+    }
+    return dict;
+}
+
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
     NSPasteboard *pb = [sender draggingPasteboard];
-
-    FB2K_console_formatter() << "[SimPlaylist] performDragOperation called";
 
     // Internal drag (reorder or cross-playlist move)
     // Drag data is stored on the source view to avoid pasteboard type conflicts with Finder
@@ -2950,10 +2256,19 @@ static NSString *formatGroupDuration(double seconds) {
         // Fallback: read from pasteboard (for non-local file drags that use the old path)
         NSData *data = [pb dataForType:SimPlaylistPasteboardType];
         if (data) {
-            dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:
-                        [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSNumber class], [NSString class], nil]
-                                                           fromData:data
-                                                              error:nil];
+            NSError *unarchiveError = nil;
+            id unarchived = [NSKeyedUnarchiver unarchivedObjectOfClasses:
+                             [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSNumber class], [NSString class], nil]
+                                                                fromData:data
+                                                                   error:&unarchiveError];
+            if (!unarchived) {
+                FB2K_console_formatter() << "[SimPlaylist] Drag data unarchive failed: "
+                                         << (unarchiveError.localizedDescription.UTF8String ?: "unknown");
+            }
+            dragData = validatedDragData(unarchived);
+            if (unarchived && !dragData) {
+                FB2K_console_formatter() << "[SimPlaylist] Ignoring drag data with unexpected shape";
+            }
         }
     }
 
@@ -2963,11 +2278,13 @@ static NSString *formatGroupDuration(double seconds) {
         NSArray<NSString *> *paths = dragData[@"paths"];
 
         BOOL samePlaylist = (sourcePlaylist && [sourcePlaylist integerValue] == _sourcePlaylistIndex);
-        FB2K_console_formatter() << "[SimPlaylist] DROP: sourcePlaylist=" << [sourcePlaylist integerValue]
-                                 << ", currentPlaylist=" << _sourcePlaylistIndex
-                                 << ", samePlaylist=" << (samePlaylist ? "YES" : "NO")
-                                 << ", paths=" << (paths ? paths.count : 0)
-                                 << ", indices=" << (rowNumbers ? rowNumbers.count : 0);
+        if (_debugRendering) {
+            FB2K_console_formatter() << "[SimPlaylist] DROP: sourcePlaylist=" << [sourcePlaylist integerValue]
+                                     << ", currentPlaylist=" << _sourcePlaylistIndex
+                                     << ", samePlaylist=" << (samePlaylist ? "YES" : "NO")
+                                     << ", paths=" << (paths ? paths.count : 0)
+                                     << ", indices=" << (rowNumbers ? rowNumbers.count : 0);
+        }
 
         if (samePlaylist) {
             // Same playlist - reorder or duplicate based on modifier key
@@ -2994,13 +2311,8 @@ static NSString *formatGroupDuration(double seconds) {
                 }
 
                 BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
-                // Library drops (no source indices) are always copy operations
                 BOOL isLibraryDrop = (sourceIndices.count == 0);
                 NSDragOperation operation = (optionKeyHeld || isLibraryDrop) ? NSDragOperationCopy : NSDragOperationMove;
-                FB2K_console_formatter() << "[SimPlaylist] Cross-playlist drop: optionKey=" << (optionKeyHeld ? "YES" : "NO")
-                                         << ", libraryDrop=" << (isLibraryDrop ? "YES" : "NO")
-                                         << ", operation=" << (int)operation
-                                         << " (Move=" << (int)NSDragOperationMove << ", Copy=" << (int)NSDragOperationCopy << ")";
 
                 if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedPaths:fromPlaylist:sourceIndices:atRow:operation:)]) {
                     [_delegate playlistView:self didReceiveDroppedPaths:paths
@@ -3014,6 +2326,43 @@ static NSString *formatGroupDuration(double seconds) {
         _dropTargetRow = -1;
         [self setNeedsDisplay:YES];
         return YES;
+    }
+
+    // Tidal browser drop
+    if ([pb.types containsObject:TidalBrowserPasteboardType]) {
+        BOOL handled = NO;
+        NSData *data = [pb dataForType:TidalBrowserPasteboardType];
+        if (data) {
+            NSDictionary *dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:
+                                      [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], nil]
+                                                                         fromData:data
+                                                                            error:nil];
+            if (dragData) {
+                NSArray<NSString *> *urlStrings = dragData[@"urls"];
+                if (urlStrings.count > 0) {
+                    FB2K_console_formatter() << "[SimPlaylist] Tidal browser drop: " << urlStrings.count << " tracks";
+
+                    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+                    for (NSString *urlStr in urlStrings) {
+                        NSURL *url = [NSURL URLWithString:urlStr];
+                        if (url) {
+                            [urls addObject:url];
+                        }
+                    }
+
+                    if (urls.count > 0 && [_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                        [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
+                        handled = YES;
+                    }
+                }
+            }
+        }
+        if (handled) {
+            _dropTargetRow = -1;
+            [self setNeedsDisplay:YES];
+            return YES;
+        }
+        // Fall through to other handlers if Tidal data couldn't be read
     }
 
     // File drop from Finder or media library
@@ -3034,7 +2383,9 @@ static NSString *formatGroupDuration(double seconds) {
     if ([pb.types containsObject:NSPasteboardTypeURL]) {
         NSArray *urls = [pb readObjectsForClasses:@[[NSURL class]] options:nil];
         if (urls.count > 0) {
-            FB2K_console_formatter() << "[SimPlaylist] received URL drop: " << [[urls[0] absoluteString] UTF8String];
+            // Log scheme only — full URLs may carry signed query parameters
+            FB2K_console_formatter() << "[SimPlaylist] received URL drop, scheme: "
+                                     << ([[urls[0] scheme] UTF8String] ?: "unknown");
             if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
                 [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
             }
@@ -3044,17 +2395,30 @@ static NSString *formatGroupDuration(double seconds) {
         return YES;
     }
 
-    // Plain text URL drop (fallback for Cloud Browser)
+    // Plain text URL drop
     if ([pb.types containsObject:NSPasteboardTypeString]) {
         NSString *str = [pb stringForType:NSPasteboardTypeString];
-        if ([str hasPrefix:@"http://"] || [str hasPrefix:@"https://"] ||
-            [str hasPrefix:@"soundcloud://"] || [str hasPrefix:@"mixcloud://"]) {
-            FB2K_console_formatter() << "[SimPlaylist] received string URL drop: " << [str UTF8String];
-            NSURL *url = [NSURL URLWithString:str];
-            if (url) {
-                if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
-                    [_delegate playlistView:self didReceiveDroppedURLs:@[url] atRow:_dropTargetRow];
+        if (isSupportedURLString(str)) {
+            // Handle multi-line URL strings (e.g., multiple tidal:// tracks)
+            NSArray<NSString *> *lines = [str componentsSeparatedByString:@"\n"];
+            NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+            for (NSString *line in lines) {
+                NSString *trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                if (trimmed.length > 0) {
+                    NSURL *url = [NSURL URLWithString:trimmed];
+                    if (url) {
+                        // Log scheme only — full URLs may carry signed query parameters
+                        if (urls.count == 0) {
+                            FB2K_console_formatter() << "[SimPlaylist] received string URL drop, scheme: "
+                                                     << (url.scheme.UTF8String ?: "unknown");
+                        }
+                        [urls addObject:url];
+                    }
                 }
+            }
+
+            if (urls.count > 0 && [_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedURLs:atRow:)]) {
+                [_delegate playlistView:self didReceiveDroppedURLs:urls atRow:_dropTargetRow];
             }
         }
         _dropTargetRow = -1;

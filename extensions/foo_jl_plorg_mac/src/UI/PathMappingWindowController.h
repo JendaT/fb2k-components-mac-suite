@@ -22,9 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface PathMappingWindowController : NSWindowController
 
-@property (nonatomic, weak) id<PathMappingWindowDelegate> delegate;
-@property (nonatomic, copy) NSString *playlistsDir;  // Directory containing .fplite files
-@property (nonatomic, copy) NSString *themeFilePath; // Path to theme.fth for tree structure
+@property (nonatomic, weak, nullable) id<PathMappingWindowDelegate> delegate;
 
 // Start scanning and show window
 - (void)beginScanningWithPlaylistsDir:(NSString *)playlistsDir

@@ -83,7 +83,11 @@ module Fb2kVersions
     "queue_manager" => "QUEUE_MANAGER_VERSION",
     "queue" => "QUEUE_MANAGER_VERSION",
     "libvanced" => "LIBVANCED_VERSION",
-    "playvanced" => "PLAYVANCED_VERSION"
+    "playvanced" => "PLAYVANCED_VERSION",
+    "cloud_streamer" => "CLOUD_STREAMER_VERSION",
+    "cloud" => "CLOUD_STREAMER_VERSION",
+    "tidal" => "TIDAL_VERSION",
+    "playback_controls" => "PLAYBACK_CONTROLS_VERSION"
   }
 
   # Parse version.h and extract versions

@@ -75,7 +75,7 @@
     // Final fallback: create basic preset
     GroupPreset *basic = [GroupPreset presetWithName:@"Album"];
     basic.sortingPattern = @"%path_sort%";
-    basic.headerPattern = @"[%album artist% - ]['['%date%']' ][%album%]";
+    basic.headerPattern = @"[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]";
     basic.groupColumnPattern = @"[%album%]";
     basic.groupColumnDisplayType = GroupDisplayTypeFront;
     basic.subgroups = @[
@@ -90,13 +90,21 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) return 0;
+    // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
+    // would throw on nil data.
+    if (!jsonData) return 0;
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it would raise NSInvalidArgumentException on every panel construction.
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) return 0;
+    NSDictionary *json = root;
 
+    // A corrupted entry can hold any type here; integerValue is not universal.
     NSNumber *activeIndex = json[@"active_index"];
-    return activeIndex ? [activeIndex integerValue] : 0;
+    if (![activeIndex isKindOfClass:[NSNumber class]]) return 0;
+    return [activeIndex integerValue];
 }
 
 + (NSArray<GroupPreset *> *)presetsFromJSON:(NSString *)jsonString {
@@ -104,10 +112,12 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) return @[];
+    if (!jsonData) return @[];
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) return @[];
+    NSDictionary *json = root;
 
     NSArray *presetsArray = json[@"presets"];
     if (![presetsArray isKindOfClass:[NSArray class]]) return @[];
@@ -117,14 +127,16 @@
     for (NSDictionary *presetDict in presetsArray) {
         if (![presetDict isKindOfClass:[NSDictionary class]]) continue;
 
+        // Corrupted config can put non-strings in these slots; a number here
+        // would crash later on isEqualToString:/UTF8String sends.
         NSString *name = presetDict[@"name"];
-        if (!name) continue;
+        if (![name isKindOfClass:[NSString class]]) continue;
 
         GroupPreset *preset = [GroupPreset presetWithName:name];
 
         // Sorting pattern
         NSString *sortingPattern = presetDict[@"sorting_pattern"];
-        if (sortingPattern) {
+        if ([sortingPattern isKindOfClass:[NSString class]]) {
             preset.sortingPattern = sortingPattern;
         }
 
@@ -133,8 +145,8 @@
         if ([headerDict isKindOfClass:[NSDictionary class]]) {
             NSString *pattern = headerDict[@"pattern"];
             NSString *display = headerDict[@"display"];
-            if (pattern) preset.headerPattern = pattern;
-            if (display) preset.headerDisplayType = [self displayTypeFromString:display];
+            if ([pattern isKindOfClass:[NSString class]]) preset.headerPattern = pattern;
+            if ([display isKindOfClass:[NSString class]]) preset.headerDisplayType = [self displayTypeFromString:display];
         }
 
         // Group column
@@ -142,8 +154,8 @@
         if ([groupColDict isKindOfClass:[NSDictionary class]]) {
             NSString *pattern = groupColDict[@"pattern"];
             NSString *display = groupColDict[@"display"];
-            if (pattern) preset.groupColumnPattern = pattern;
-            if (display) preset.groupColumnDisplayType = [self displayTypeFromString:display];
+            if ([pattern isKindOfClass:[NSString class]]) preset.groupColumnPattern = pattern;
+            if ([display isKindOfClass:[NSString class]]) preset.groupColumnDisplayType = [self displayTypeFromString:display];
         }
 
         // Subgroups
@@ -155,8 +167,9 @@
 
                 NSString *pattern = subDict[@"pattern"];
                 NSString *display = subDict[@"display"];
-                if (pattern) {
-                    GroupDisplayType type = display ? [self displayTypeFromString:display] : GroupDisplayTypeText;
+                if ([pattern isKindOfClass:[NSString class]]) {
+                    GroupDisplayType type = [display isKindOfClass:[NSString class]]
+                        ? [self displayTypeFromString:display] : GroupDisplayTypeText;
                     [subgroups addObject:[SubgroupDefinition subgroupWithPattern:pattern displayType:type]];
                 }
             }
@@ -174,8 +187,9 @@
 
     for (GroupPreset *preset in presets) {
         NSMutableDictionary *presetDict = [NSMutableDictionary dictionary];
-        presetDict[@"name"] = preset.name;
-        presetDict[@"sorting_pattern"] = preset.sortingPattern;
+        // nil field would crash the dictionary assignment
+        presetDict[@"name"] = preset.name ?: @"";
+        presetDict[@"sorting_pattern"] = preset.sortingPattern ?: @"";
 
         // Header
         presetDict[@"header"] = @{
@@ -193,7 +207,7 @@
         NSMutableArray *subgroupsArray = [NSMutableArray array];
         for (SubgroupDefinition *sub in preset.subgroups) {
             [subgroupsArray addObject:@{
-                @"pattern": sub.pattern,
+                @"pattern": sub.pattern ?: @"",
                 @"display": [self stringFromDisplayType:sub.displayType]
             }];
         }

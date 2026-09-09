@@ -10,16 +10,20 @@
 #import "../Core/BiographyData.h"
 #import "../Core/BiographyRequest.h"
 #import "../Core/BiographyFetcher.h"
+#import "../Core/ArtistGalleryCoordinator.h"
+#import "../Core/ArtistGalleryData.h"
+#import "../Core/ArtistImage.h"
 #import "BiographyContentView.h"
 #import "BiographyLoadingView.h"
 #import "BiographyErrorView.h"
 #import "BiographyEmptyView.h"
+#import "LightboxWindowController.h"
 #import <QuartzCore/QuartzCore.h>
 
 // Debounce delay for rapid track changes (in seconds)
 static const NSTimeInterval kDebounceDelay = 0.3;
 
-@interface BiographyController () <BiographyErrorViewDelegate>
+@interface BiographyController () <BiographyErrorViewDelegate, BiographyContentViewDelegate, ArtistGalleryCoordinatorDelegate>
 
 // State views
 @property (nonatomic, strong) NSView *containerView;
@@ -43,6 +47,12 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 // Layout parameters
 @property (nonatomic, copy, nullable) NSString *displayMode;
 
+// Gallery coordinator
+@property (nonatomic, strong) ArtistGalleryCoordinator *galleryCoordinator;
+
+// Lightbox (retained while showing)
+@property (nonatomic, strong, nullable) LightboxWindowController *lightboxController;
+
 @end
 
 @implementation BiographyController
@@ -62,7 +72,8 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 
 - (void)dealloc {
     [self.debounceTimer invalidate];
-    [self.currentRequest cancel];
+    [[BiographyFetcher shared] cancelCurrentRequest];
+    [self.galleryCoordinator cancelCurrentFetch];
     BiographyCallbackManager::instance().unregisterController(self);
 }
 
@@ -72,10 +83,15 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 
     // Create state views with zero frame
     self.contentView = [[BiographyContentView alloc] initWithFrame:NSZeroRect];
+    self.contentView.delegate = self;
     self.loadingView = [[BiographyLoadingView alloc] initWithFrame:NSZeroRect];
     self.errorView = [[BiographyErrorView alloc] initWithFrame:NSZeroRect];
     self.errorView.delegate = self;
     self.emptyView = [[BiographyEmptyView alloc] initWithFrame:NSZeroRect];
+
+    // Create gallery coordinator
+    self.galleryCoordinator = [[ArtistGalleryCoordinator alloc] init];
+    self.galleryCoordinator.delegate = self;
 
     // Configure autoresizing - views should resize with container
     NSAutoresizingMaskOptions resizing = NSViewWidthSizable | NSViewHeightSizable;
@@ -176,11 +192,13 @@ static const NSTimeInterval kDebounceDelay = 0.3;
     self.pendingArtist = artistName;
     [self.debounceTimer invalidate];
 
+    // QUAL-14: Block-based timer avoids retaining self as target
+    __weak typeof(self) weakSelf = self;
     self.debounceTimer = [NSTimer scheduledTimerWithTimeInterval:kDebounceDelay
-                                                          target:self
-                                                        selector:@selector(processPendingArtist)
-                                                        userInfo:nil
-                                                         repeats:NO];
+                                                         repeats:NO
+                                                           block:^(NSTimer * _Nonnull timer) {
+        [weakSelf processPendingArtist];
+    }];
 }
 
 - (void)processPendingArtist {
@@ -189,8 +207,8 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 
     if (!artistName) return;
 
-    // Cancel any in-flight request
-    [self.currentRequest cancel];
+    // ARCH-5: Cancel via fetcher (single authoritative token system)
+    [[BiographyFetcher shared] cancelCurrentRequest];
 
     // Update current artist
     self.currentArtist = artistName;
@@ -199,10 +217,9 @@ static const NSTimeInterval kDebounceDelay = 0.3;
     [self transitionToState:BiographyViewStateLoading];
     [self.loadingView setArtistName:artistName];
 
-    // Create new request token
+    // Create request token for staleness checking in completion block
     self.currentRequest = [[BiographyRequest alloc] initWithArtistName:artistName];
 
-    // Fetch biography (placeholder - will be connected to BiographyFetcher)
     [self fetchBiographyForRequest:self.currentRequest force:NO];
 }
 
@@ -211,7 +228,7 @@ static const NSTimeInterval kDebounceDelay = 0.3;
     self.debounceTimer = nil;
     self.pendingArtist = nil;
 
-    [self.currentRequest cancel];
+    [[BiographyFetcher shared] cancelCurrentRequest];
     self.currentRequest = nil;
 
     self.currentArtist = nil;
@@ -223,18 +240,22 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 #pragma mark - Fetching
 
 - (void)fetchBiographyForRequest:(BiographyRequest *)request force:(BOOL)force {
+    // QUAL-2: Use weak/strong dance to prevent retain cycle through singleton
+    __weak typeof(self) weakSelf = self;
     [[BiographyFetcher shared] fetchBiographyForArtist:request.artistName
                                                  force:force
                                             completion:^(BiographyData * _Nullable data, NSError * _Nullable error) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+
         // Check if this request is still current
-        if (self.currentRequest != request || request.isCancelled) {
+        if (strongSelf.currentRequest != request || request.isCancelled) {
             return;
         }
 
         if (error) {
-            // Handle error
             if (error.code == BiographyFetcherErrorCodeCancelled) {
-                return;  // Silent - cancelled by user action
+                return;
             }
 
             NSString *errorMessage = @"Unable to load biography";
@@ -247,35 +268,54 @@ static const NSTimeInterval kDebounceDelay = 0.3;
                 errorDetail = @"Check your internet connection and try again.";
             }
 
-            [self.errorView setErrorMessage:errorMessage];
-            [self.errorView setErrorDetail:errorDetail];
-            [self transitionToState:BiographyViewStateError];
+            [strongSelf.errorView setErrorMessage:errorMessage];
+            [strongSelf.errorView setErrorDetail:errorDetail];
+            [strongSelf transitionToState:BiographyViewStateError];
             return;
         }
 
+        // QUAL-13: No biography is not an error - show empty state
         if (!data || !data.hasBiography) {
-            // No biography available
-            [self.errorView setErrorMessage:@"No biography available"];
-            [self.errorView setErrorDetail:[NSString stringWithFormat:@"No biography found for %@", request.artistName]];
-            [self transitionToState:BiographyViewStateError];
+            [strongSelf transitionToState:BiographyViewStateEmpty];
             return;
         }
 
         // Success - update UI
-        self.biographyData = data;
-        [self.contentView updateWithBiographyData:data];
+        strongSelf.biographyData = data;
+        [strongSelf.contentView updateWithBiographyData:data];
 
         if (data.isStale) {
-            [self transitionToState:BiographyViewStateOffline];
+            [strongSelf transitionToState:BiographyViewStateOffline];
         } else {
-            [self transitionToState:BiographyViewStateContent];
+            [strongSelf transitionToState:BiographyViewStateContent];
         }
+
+        // Fetch gallery images after biography loads
+        [strongSelf fetchGalleryImagesForData:data];
     }];
+}
+
+- (void)fetchGalleryImagesForData:(BiographyData *)data {
+    if (!data || !data.artistName) {
+        NSLog(@"[Gallery] fetchGalleryImagesForData: No data or artist name");
+        return;
+    }
+
+    NSLog(@"[Gallery] Fetching gallery for: %@ (mbid: %@, fallback: %@)",
+          data.artistName, data.musicBrainzId ?: @"nil", data.artistImageURL ? @"yes" : @"no");
+
+    // Show loading state in gallery
+    [self.contentView setGalleryLoading:YES];
+
+    // Fetch from FanartTV + AudioDB, with Last.fm image as fallback
+    [self.galleryCoordinator fetchImagesForArtist:data.artistName
+                                             mbid:data.musicBrainzId
+                                 fallbackImageURL:data.artistImageURL];
 }
 
 - (void)forceRefresh {
     if (self.currentArtist) {
-        [self.currentRequest cancel];
+        [[BiographyFetcher shared] cancelCurrentRequest];
         self.currentRequest = [[BiographyRequest alloc] initWithArtistName:self.currentArtist];
         [self transitionToState:BiographyViewStateLoading];
         [self.loadingView setArtistName:self.currentArtist];
@@ -291,6 +331,53 @@ static const NSTimeInterval kDebounceDelay = 0.3;
 
 - (void)errorViewDidTapRetry:(BiographyErrorView *)errorView {
     [self retryFetch];
+}
+
+#pragma mark - ArtistGalleryCoordinatorDelegate
+
+- (void)coordinator:(ArtistGalleryCoordinator *)coordinator
+    didUpdateImages:(NSArray<ArtistImage *> *)images {
+    NSLog(@"[Gallery] Received %lu images from coordinator", (unsigned long)images.count);
+    [self.contentView setGalleryLoading:NO];
+    [self.contentView updateGalleryImages:images];
+}
+
+- (void)coordinatorDidStartLoading:(ArtistGalleryCoordinator *)coordinator {
+    [self.contentView setGalleryLoading:YES];
+}
+
+- (void)coordinatorDidFinishLoading:(ArtistGalleryCoordinator *)coordinator {
+    [self.contentView setGalleryLoading:NO];
+}
+
+- (void)coordinator:(ArtistGalleryCoordinator *)coordinator
+   didFailWithError:(NSError *)error {
+    NSLog(@"[Gallery] Coordinator failed with error: %@", error.localizedDescription);
+    // Gallery failures are silent - just hide the gallery
+    [self.contentView setGalleryLoading:NO];
+    [self.contentView updateGalleryImages:@[]];
+}
+
+#pragma mark - BiographyContentViewDelegate
+
+- (void)contentView:(BiographyContentView *)contentView didSelectGalleryImageAtIndex:(NSUInteger)index {
+    NSLog(@"[Gallery/Controller] didSelectGalleryImageAtIndex:%lu", (unsigned long)index);
+    NSArray<ArtistImage *> *images = self.galleryCoordinator.galleryData.images;
+    NSLog(@"[Gallery/Controller] images count: %lu", (unsigned long)images.count);
+    if (!images || index >= images.count) {
+        NSLog(@"[Gallery/Controller] No images or index out of range, aborting");
+        return;
+    }
+
+    // Show lightbox
+    // QUAL-5: Set onDismiss to nil the strong reference
+    self.lightboxController = [[LightboxWindowController alloc] initWithImages:images
+                                                                  initialIndex:index];
+    __weak typeof(self) weakSelf = self;
+    self.lightboxController.onDismiss = ^{
+        weakSelf.lightboxController = nil;
+    };
+    [self.lightboxController showRelativeToWindow:self.view.window];
 }
 
 @end

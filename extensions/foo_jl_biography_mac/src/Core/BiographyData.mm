@@ -97,6 +97,8 @@
             return @"TheAudioDB";
         case BiographySourceFanartTv:
             return @"Fanart.tv";
+        case BiographySourceDeezer:
+            return @"Deezer";
         case BiographySourceCache:
             return @"Cache";
         case BiographySourceUnknown:
@@ -134,6 +136,32 @@
     self = [self init];
     if (self) {
         _artistName = [artistName copy];
+    }
+    return self;
+}
+
+- (instancetype)initWithData:(BiographyData *)data {
+    self = [self init];
+    if (self) {
+        _artistName = [data.artistName copy];
+        _musicBrainzId = [data.musicBrainzId copy];
+        _biography = [data.biography copy];
+        _biographySummary = [data.biographySummary copy];
+        _biographySource = data.biographySource;
+        _language = [data.language copy];
+        _artistImage = data.artistImage;
+        _artistImageURL = [data.artistImageURL copy];
+        _imageSource = data.imageSource;
+        _imageType = data.imageType;
+        _tags = [data.tags copy];
+        _similarArtists = [data.similarArtists copy];
+        _genre = [data.genre copy];
+        _country = [data.country copy];
+        _listeners = data.listeners;
+        _playcount = data.playcount;
+        _fetchedAt = data.fetchedAt;
+        _isFromCache = data.isFromCache;
+        _isStale = data.isStale;
     }
     return self;
 }

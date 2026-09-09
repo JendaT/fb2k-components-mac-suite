@@ -6,7 +6,9 @@
 #import "PathMappingWindowController.h"
 #import <objc/runtime.h>
 
-@interface PathMappingWindowController ()
+static void *kDriveKeyAssocKey = &kDriveKeyAssocKey;
+
+@interface PathMappingWindowController () <NSWindowDelegate>
 
 @property (nonatomic, strong) NSProgressIndicator *progressBar;
 @property (nonatomic, strong) NSTextField *statusLabel;
@@ -17,12 +19,16 @@
 @property (nonatomic, strong) NSTextField *defaultMappingField;
 @property (nonatomic, strong) NSScrollView *scrollView;
 
+@property (nonatomic, copy) NSString *playlistsDir;  // Directory containing .fplite files
+@property (nonatomic, copy) NSString *themeFilePath; // Path to theme.fth for tree structure
+
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *discoveredDrives;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSTextField *> *mappingFields;
 @property (nonatomic, strong) NSMutableArray<NSString *> *fpliteFiles;
 
 @property (nonatomic, assign) BOOL isScanning;
 @property (nonatomic, assign) BOOL shouldStop;
+@property (nonatomic, assign) BOOL didNotifyDelegate;
 @property (nonatomic, assign) NSInteger scannedCount;
 @property (nonatomic, assign) NSInteger totalCount;
 
@@ -40,6 +46,7 @@
 
     self = [super initWithWindow:window];
     if (self) {
+        window.delegate = self;
         _discoveredDrives = [NSMutableDictionary dictionary];
         _mappingFields = [NSMutableDictionary dictionary];
         _fpliteFiles = [NSMutableArray array];
@@ -203,57 +210,73 @@
         NSFileManager *fm = [NSFileManager defaultManager];
         NSArray *contents = [fm contentsOfDirectoryAtPath:strongSelf.playlistsDir error:nil];
 
-        [strongSelf.fpliteFiles removeAllObjects];
+        NSMutableArray<NSString *> *files = [NSMutableArray array];
         for (NSString *file in contents) {
             if ([file hasSuffix:@".fplite"]) {
-                [strongSelf.fpliteFiles addObject:[strongSelf.playlistsDir stringByAppendingPathComponent:file]];
+                [files addObject:[strongSelf.playlistsDir stringByAppendingPathComponent:file]];
             }
         }
 
-        strongSelf.totalCount = strongSelf.fpliteFiles.count;
+        NSInteger totalCount = files.count;
+        NSMutableDictionary<NSString *, NSString *> *drives = [NSMutableDictionary dictionary];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) mainSelf = weakSelf;
             if (!mainSelf) return;
-            mainSelf.progressBar.maxValue = mainSelf.totalCount;
-            mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Found %ld playlist files", (long)mainSelf.totalCount];
+            mainSelf.progressBar.maxValue = totalCount;
+            mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Found %ld playlist files", (long)totalCount];
         });
 
         // Scan each file for unique paths
-        for (NSString *fplitePath in strongSelf.fpliteFiles) {
+        NSInteger scanned = 0;
+        NSInteger lastReported = 0;
+        for (NSString *fplitePath in files) {
             if (strongSelf.shouldStop) break;
 
-            [strongSelf scanFpliteFile:fplitePath];
-            strongSelf.scannedCount++;
+            @autoreleasepool {
+                [strongSelf scanFpliteFile:fplitePath intoDrives:drives];
+                scanned++;
 
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) mainSelf = weakSelf;
-                if (!mainSelf) return;
-                mainSelf.progressBar.doubleValue = mainSelf.scannedCount;
-                mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Scanned %ld / %ld files, found %ld drives",
-                    (long)mainSelf.scannedCount, (long)mainSelf.totalCount, (long)mainSelf.discoveredDrives.count];
-            });
+                if (scanned - lastReported >= 25 || scanned == totalCount) {
+                    lastReported = scanned;
+                    NSInteger scannedSnapshot = scanned;
+                    NSInteger drivesSnapshot = drives.count;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        __strong typeof(weakSelf) mainSelf = weakSelf;
+                        if (!mainSelf) return;
+                        mainSelf.progressBar.doubleValue = scannedSnapshot;
+                        mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Scanned %ld / %ld files, found %ld drives",
+                            (long)scannedSnapshot, (long)totalCount, (long)drivesSnapshot];
+                    });
+                }
+            }
         }
 
+        NSInteger finalScanned = scanned;
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) mainSelf = weakSelf;
             if (!mainSelf) return;
+            mainSelf.fpliteFiles = files;
+            mainSelf.discoveredDrives = drives;
+            mainSelf.totalCount = totalCount;
+            mainSelf.scannedCount = finalScanned;
             mainSelf.isScanning = NO;
             mainSelf.importButton.enabled = YES;
             mainSelf.stopButton.title = @"Rescan";
+            mainSelf.stopButton.enabled = YES;
 
             if (mainSelf.shouldStop) {
                 mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Scan stopped. Scanned %ld / %ld files, found %ld drives",
-                    (long)mainSelf.scannedCount, (long)mainSelf.totalCount, (long)mainSelf.discoveredDrives.count];
+                    (long)finalScanned, (long)totalCount, (long)drives.count];
             } else {
                 mainSelf.statusLabel.stringValue = [NSString stringWithFormat:@"Scan complete. Found %ld drives in %ld playlists",
-                    (long)mainSelf.discoveredDrives.count, (long)mainSelf.totalCount];
+                    (long)drives.count, (long)totalCount];
             }
         });
     });
 }
 
-- (void)scanFpliteFile:(NSString *)path {
+- (void)scanFpliteFile:(NSString *)path intoDrives:(NSMutableDictionary<NSString *, NSString *> *)drives {
     NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     if (!content) return;
 
@@ -295,7 +318,7 @@
             }
         }
 
-        if (driveKey && !self.discoveredDrives[driveKey]) {
+        if (driveKey && !drives[driveKey]) {
             // Suggest a default mapping
             NSString *suggestion = @"";
             if (driveKey.length == 2 && [driveKey characterAtIndex:1] == ':') {
@@ -310,7 +333,7 @@
                 }
             }
 
-            self.discoveredDrives[driveKey] = suggestion;
+            drives[driveKey] = suggestion;
 
             __weak typeof(self) weakSelf = self;
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -338,8 +361,7 @@
     [pathField setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
     NSButton *browseButton = [NSButton buttonWithTitle:@"..." target:self action:@selector(browseForPath:)];
-    browseButton.tag = self.mappingFields.count;
-    objc_setAssociatedObject(browseButton, "driveKey", drive, OBJC_ASSOCIATION_RETAIN);
+    objc_setAssociatedObject(browseButton, kDriveKeyAssocKey, drive, OBJC_ASSOCIATION_COPY_NONATOMIC);
 
     [row addArrangedSubview:driveLabel];
     [row addArrangedSubview:pathField];
@@ -356,7 +378,7 @@
 }
 
 - (void)browseForPath:(NSButton *)sender {
-    NSString *driveKey = objc_getAssociatedObject(sender, "driveKey");
+    NSString *driveKey = objc_getAssociatedObject(sender, kDriveKeyAssocKey);
     NSTextField *field = self.mappingFields[driveKey];
 
     NSOpenPanel *panel = [NSOpenPanel openPanel];
@@ -382,8 +404,12 @@
 
 - (void)cancel:(id)sender {
     self.shouldStop = YES;
+    BOOL shouldNotify = !self.didNotifyDelegate;
+    self.didNotifyDelegate = YES;
     [self.window close];
-    [self.delegate pathMappingDidCancel:self];
+    if (shouldNotify) {
+        [self.delegate pathMappingDidCancel:self];
+    }
 }
 
 - (void)doImport:(id)sender {
@@ -398,8 +424,18 @@
 
     NSString *defaultMapping = self.defaultMappingField.stringValue;
 
+    self.didNotifyDelegate = YES;
     [self.window close];
     [self.delegate pathMappingDidComplete:self mappings:mappings defaultMapping:defaultMapping];
+}
+
+#pragma mark - NSWindowDelegate
+
+- (void)windowWillClose:(NSNotification *)notification {
+    if (self.didNotifyDelegate) return;
+    self.didNotifyDelegate = YES;
+    self.shouldStop = YES;
+    [self.delegate pathMappingDidCancel:self];
 }
 
 @end

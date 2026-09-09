@@ -8,19 +8,11 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import "BiographySource.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 #pragma mark - Enums
-
-typedef NS_ENUM(NSInteger, BiographySource) {
-    BiographySourceUnknown = 0,
-    BiographySourceLastFm,
-    BiographySourceWikipedia,
-    BiographySourceAudioDb,
-    BiographySourceFanartTv,
-    BiographySourceCache
-};
 
 typedef NS_ENUM(NSInteger, BiographyImageType) {
     BiographyImageTypeThumb = 0,
@@ -126,6 +118,10 @@ typedef NS_ENUM(NSInteger, BiographyImageType) {
 @property (nonatomic, assign) BOOL isStale;
 
 - (instancetype)initWithArtistName:(NSString *)artistName;
+
+/// Start from an existing immutable data object (for enrichment passes)
+- (instancetype)initWithData:(BiographyData *)data;
+
 - (BiographyData *)build;
 
 @end

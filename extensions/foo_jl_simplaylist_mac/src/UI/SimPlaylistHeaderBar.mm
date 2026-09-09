@@ -6,16 +6,25 @@
 #import "SimPlaylistHeaderBar.h"
 #import "../Core/ColumnDefinition.h"
 
+// Column-index sentinels shared by the hit-test methods and the gesture state.
+// The group (album art) column is not part of _columns, so it has no index of
+// its own and is reported with its own sentinel.
+static const NSInteger kNoColumn = -1;
+static const NSInteger kGroupColumn = -2;
+
 @interface SimPlaylistHeaderBar ()
 @property (nonatomic, assign) CGFloat scrollOffset;
-@property (nonatomic, assign) NSInteger resizingColumn;      // -1 if not resizing
+@property (nonatomic, assign) NSInteger resizingColumn;      // kNoColumn if not resizing
 @property (nonatomic, assign) CGFloat resizeStartX;
 @property (nonatomic, assign) CGFloat resizeStartWidth;
-@property (nonatomic, assign) NSInteger draggingColumn;      // -1 if not dragging
+@property (nonatomic, assign) NSInteger draggingColumn;      // kNoColumn if not dragging
 @property (nonatomic, assign) CGFloat dragStartX;
 @property (nonatomic, assign) NSInteger dropTargetIndex;
 @property (nonatomic, assign) NSInteger hoveredColumn;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
+@property (nonatomic, strong, nullable) NSDictionary *headerTextAttrs;
+@property (nonatomic, assign) fb2k_ui::SizeVariant headerTextAttrsSize;
+@property (nonatomic, assign) BOOL resizeCursorShown;
 @end
 
 @implementation SimPlaylistHeaderBar
@@ -40,10 +49,33 @@
     _columns = @[];
     _groupColumnWidth = 80;
     _scrollOffset = 0;
-    _resizingColumn = -1;
-    _draggingColumn = -1;
-    _dropTargetIndex = -1;
-    _hoveredColumn = -1;
+    _resizingColumn = kNoColumn;
+    _draggingColumn = kNoColumn;
+    _dropTargetIndex = kNoColumn;
+    _hoveredColumn = kNoColumn;
+}
+
+// Single place where a live gesture is invalidated. The column array is
+// replaced from settings reloads and from the controller's own persist path,
+// which can happen mid-drag: indices captured on mouseDown would then address
+// a different column or run off the end.
+- (void)setColumns:(NSArray<ColumnDefinition *> *)columns {
+    _columns = columns;
+
+    if (_resizingColumn >= 0) {
+        // Balances the push in mouseDown:; the group-column resize (kGroupColumn)
+        // does not depend on the array and is left running.
+        [NSCursor pop];
+        _resizingColumn = kNoColumn;
+        _resizeCursorShown = NO;
+    }
+    if (_draggingColumn >= 0) {
+        _draggingColumn = kNoColumn;
+        _dropTargetIndex = kNoColumn;
+    }
+    _hoveredColumn = kNoColumn;
+
+    [self setNeedsDisplay:YES];
 }
 
 - (BOOL)isFlipped {
@@ -51,6 +83,9 @@
 }
 
 - (void)setScrollOffset:(CGFloat)offset {
+    // Vertical scrolling fires bounds-change notifications too; skip the
+    // redraw when the horizontal offset did not actually change.
+    if (_scrollOffset == offset) return;
     _scrollOffset = offset;
     [self setNeedsDisplay:YES];
 }
@@ -76,7 +111,7 @@
 #pragma mark - Layout
 
 - (CGFloat)xOffsetForColumn:(NSInteger)columnIndex {
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
     for (NSInteger i = 0; i < columnIndex && i < (NSInteger)_columns.count; i++) {
         x += _columns[i].width;
     }
@@ -84,7 +119,14 @@
 }
 
 - (NSInteger)columnAtX:(CGFloat)x {
-    CGFloat currentX = _groupColumnWidth - _scrollOffset;
+    // drawRect: clips cells to x >= _groupColumnWidth. Without the same bound
+    // here, a column scrolled behind the album-art strip stays hit-testable and
+    // clicking the visually empty group-column header starts its drag/reorder.
+    if (x < _groupColumnWidth) {
+        return kNoColumn;
+    }
+
+    CGFloat currentX = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
@@ -93,31 +135,34 @@
         }
         currentX += colWidth;
     }
-    return -1;
+    return kNoColumn;
 }
 
-// Returns -2 for group column resize handle, -1 for none, >=0 for regular column
+// Returns kGroupColumn for the group column resize handle, kNoColumn for none, >=0 for a regular column
 - (NSInteger)resizeHandleAtX:(CGFloat)x {
     // Check group column resize handle first (right edge of group column)
     if (_groupColumnWidth > 0) {
         CGFloat groupHandleX = _groupColumnWidth - fb2k_ui::kResizeHandleWidth / 2;
         if (x >= groupHandleX && x <= groupHandleX + fb2k_ui::kResizeHandleWidth) {
-            return -2;  // Special value for group column
+            return kGroupColumn;  // Special value for group column
         }
     }
 
-    CGFloat currentX = _groupColumnWidth - _scrollOffset;
+    CGFloat currentX = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
         CGFloat handleX = currentX + colWidth - fb2k_ui::kResizeHandleWidth / 2;
 
-        if (x >= handleX && x <= handleX + fb2k_ui::kResizeHandleWidth) {
+        // Handles scrolled entirely behind the album-art strip are not drawn,
+        // so they must not be grabbable either.
+        if (handleX + fb2k_ui::kResizeHandleWidth >= _groupColumnWidth &&
+            x >= handleX && x <= handleX + fb2k_ui::kResizeHandleWidth) {
             return i;
         }
         currentX += colWidth;
     }
-    return -1;
+    return kNoColumn;
 }
 
 #pragma mark - Drawing
@@ -148,7 +193,7 @@
     }
 
     // Draw column headers - start right after group column
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         ColumnDefinition *col = _columns[i];
@@ -219,17 +264,21 @@
     textRect.origin.x += 4;
     textRect.size.width -= 8;  // 4px each side
 
-    NSFont *font = fb2k_ui::headerFont();
-    NSColor *textColor = fb2k_ui::secondaryTextColor();
-
-    NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
-    style.lineBreakMode = NSLineBreakByTruncatingTail;
-
-    NSDictionary *attrs = @{
-        NSFontAttributeName: font,
-        NSForegroundColorAttributeName: textColor,
-        NSParagraphStyleAttributeName: style
-    };
+    // Rebuilt only when the header size changes: drawRect: reaches this method
+    // once per column per frame, on a live resize/drag path. The stored colour
+    // is a dynamic system colour, so appearance changes still resolve at draw
+    // time without a rebuild.
+    if (!_headerTextAttrs || _headerTextAttrsSize != _headerSize) {
+        NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+        style.lineBreakMode = NSLineBreakByTruncatingTail;
+        _headerTextAttrs = @{
+            NSFontAttributeName: fb2k_ui::headerFont(_headerSize),
+            NSForegroundColorAttributeName: fb2k_ui::headerTextColor(),
+            NSParagraphStyleAttributeName: style
+        };
+        _headerTextAttrsSize = _headerSize;
+    }
+    NSDictionary *attrs = _headerTextAttrs;
 
     // Calculate vertical centering
     NSSize textSize = [title sizeWithAttributes:attrs];
@@ -247,9 +296,9 @@
 
     // Check for resize handle first
     NSInteger resizeHandle = [self resizeHandleAtX:location.x];
-    if (resizeHandle == -2) {
+    if (resizeHandle == kGroupColumn) {
         // Group column resize
-        _resizingColumn = -2;
+        _resizingColumn = kGroupColumn;
         _resizeStartX = location.x;
         _resizeStartWidth = _groupColumnWidth;
         [[NSCursor resizeLeftRightCursor] push];
@@ -267,14 +316,14 @@
     if (column >= 0) {
         _draggingColumn = column;
         _dragStartX = [self xOffsetForColumn:column] + _scrollOffset;
-        _dropTargetIndex = -1;
+        _dropTargetIndex = kNoColumn;
     }
 }
 
 - (void)mouseDragged:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
 
-    if (_resizingColumn == -2) {
+    if (_resizingColumn == kGroupColumn) {
         // Resizing group column
         CGFloat delta = location.x - _resizeStartX;
         CGFloat newWidth = MAX(40, MIN(300, _resizeStartWidth + delta));  // Clamp 40-300
@@ -288,6 +337,14 @@
         [self setNeedsDisplay:YES];
 
     } else if (_resizingColumn >= 0) {
+        // The column list can be replaced mid-gesture (settings reload); a
+        // stale index would go out of range.
+        if (_resizingColumn >= (NSInteger)_columns.count) {
+            _resizingColumn = kNoColumn;
+            [NSCursor pop];
+            return;
+        }
+
         // Resizing regular column
         CGFloat delta = location.x - _resizeStartX;
         CGFloat newWidth = MAX(40, _resizeStartWidth + delta);  // Min width 40
@@ -302,6 +359,13 @@
         [self setNeedsDisplay:YES];
 
     } else if (_draggingColumn >= 0) {
+        // Same stale-index concern as the resize branch above.
+        if (_draggingColumn >= (NSInteger)_columns.count) {
+            _draggingColumn = kNoColumn;
+            _dropTargetIndex = kNoColumn;
+            return;
+        }
+
         // Dragging column for reorder
         CGFloat dragDelta = location.x - ([self xOffsetForColumn:_draggingColumn]);
         _dragStartX = [self xOffsetForColumn:_draggingColumn] + _scrollOffset + dragDelta;
@@ -324,7 +388,7 @@
 - (void)mouseUp:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
 
-    if (_resizingColumn == -2) {
+    if (_resizingColumn == kGroupColumn) {
         // Finished resizing group column
         [NSCursor pop];
 
@@ -332,19 +396,21 @@
             [_delegate headerBar:self didFinishResizingGroupColumn:_groupColumnWidth];
         }
 
-        _resizingColumn = -1;
+        _resizingColumn = kNoColumn;
 
     } else if (_resizingColumn >= 0) {
         [NSCursor pop];
 
-        if ([_delegate respondsToSelector:@selector(headerBar:didFinishResizingColumn:)]) {
+        if (_resizingColumn < (NSInteger)_columns.count &&
+            [_delegate respondsToSelector:@selector(headerBar:didFinishResizingColumn:)]) {
             [_delegate headerBar:self didFinishResizingColumn:_resizingColumn];
         }
 
-        _resizingColumn = -1;
+        _resizingColumn = kNoColumn;
 
     } else if (_draggingColumn >= 0) {
-        if (_dropTargetIndex >= 0 && _dropTargetIndex != _draggingColumn &&
+        if (_draggingColumn < (NSInteger)_columns.count &&
+            _dropTargetIndex >= 0 && _dropTargetIndex != _draggingColumn &&
             _dropTargetIndex != _draggingColumn + 1) {
             // Reorder columns
             if ([_delegate respondsToSelector:@selector(headerBar:didReorderColumnFrom:to:)]) {
@@ -360,8 +426,8 @@
             }
         }
 
-        _draggingColumn = -1;
-        _dropTargetIndex = -1;
+        _draggingColumn = kNoColumn;
+        _dropTargetIndex = kNoColumn;
         [self setNeedsDisplay:YES];
     }
 }
@@ -378,12 +444,18 @@
 - (void)mouseMoved:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
 
-    // Update cursor for resize handles
+    // Update cursor for resize handles. mouseMoved: fires at 60-120 Hz, so only
+    // touch the cursor on a transition; resetCursorRects already registers the
+    // steady-state shapes.
     NSInteger resizeHandle = [self resizeHandleAtX:location.x];
-    if (resizeHandle == -2 || resizeHandle >= 0) {
-        [[NSCursor resizeLeftRightCursor] set];
-    } else {
-        [[NSCursor arrowCursor] set];
+    BOOL wantsResizeCursor = (resizeHandle == kGroupColumn || resizeHandle >= 0);
+    if (wantsResizeCursor != _resizeCursorShown) {
+        _resizeCursorShown = wantsResizeCursor;
+        if (wantsResizeCursor) {
+            [[NSCursor resizeLeftRightCursor] set];
+        } else {
+            [[NSCursor arrowCursor] set];
+        }
     }
 
     // Update hovered column
@@ -396,8 +468,9 @@
 
 - (void)mouseExited:(NSEvent *)event {
     [[NSCursor arrowCursor] set];
+    _resizeCursorShown = NO;
     if (_hoveredColumn >= 0) {
-        _hoveredColumn = -1;
+        _hoveredColumn = kNoColumn;
         [self setNeedsDisplay:YES];
     }
 }
@@ -412,13 +485,17 @@
         [self addCursorRect:groupHandleRect cursor:[NSCursor resizeLeftRightCursor]];
     }
 
-    CGFloat x = _groupColumnWidth - _scrollOffset;
+    CGFloat x = _groupColumnWidth + _decorationGutterWidth - _scrollOffset;
 
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
         NSRect handleRect = NSMakeRect(x + colWidth - fb2k_ui::kResizeHandleWidth / 2, 0,
-                                       fb2k_ui::kResizeHandleWidth, self.bounds.size.height);
-        [self addCursorRect:handleRect cursor:[NSCursor resizeLeftRightCursor]];
+                                       fb2k_ui::kResizeHandleWidth, fb2k_ui::headerHeight(_headerSize));
+        // Mirrors the bound in resizeHandleAtX:: handles hidden behind the
+        // album-art strip must not offer a resize cursor.
+        if (NSMaxX(handleRect) >= _groupColumnWidth) {
+            [self addCursorRect:handleRect cursor:[NSCursor resizeLeftRightCursor]];
+        }
         x += colWidth;
     }
 }

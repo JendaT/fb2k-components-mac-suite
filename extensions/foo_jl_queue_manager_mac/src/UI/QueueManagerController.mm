@@ -11,12 +11,17 @@
 #import "../Integration/QueueCallbackManager.h"
 #import "../Core/QueueOperations.h"
 #import "../Core/QueueConfig.h"
+#import "../Core/QueueDropParser.h"
+#import "../Core/QueueFormatting.h"
+#import "../Core/QueueReorderPlanner.h"
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/UIStyles.h"
 
 static NSString* const kColumnIdQueueIndex = @"queue_index";
 static NSString* const kColumnIdArtistTitle = @"artist_title";
 static NSString* const kColumnIdDuration = @"duration";
+
+#include <algorithm>
 
 static NSPasteboardType const QueueItemPasteboardType = @"com.foobar2000.queue-manager.queue-item";
 static NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
@@ -41,6 +46,50 @@ static void ensureStatusIcons() {
                        imageWithSymbolConfiguration:config];
     });
 }
+
+// Notify class for async track URL import (adds to playlist + queues)
+class QueueDropNotify : public process_locations_notify {
+public:
+    t_size m_playlistIndex;
+    t_size m_insertAt;
+    pfc::string_list_impl m_paths;
+
+    QueueDropNotify(t_size playlistIndex, t_size insertAt)
+        : m_playlistIndex(playlistIndex), m_insertAt(insertAt) {}
+
+    void on_completion(metadb_handle_list_cref items) override {
+        if (items.get_count() > 0) {
+            auto pm = playlist_manager::get();
+            if (m_playlistIndex < pm->get_playlist_count()) {
+                pm->playlist_undo_backup(m_playlistIndex);
+                pm->playlist_insert_items(m_playlistIndex, m_insertAt, items, pfc::bit_array_val(true));
+
+                for (t_size i = 0; i < items.get_count(); i++) {
+                    pm->queue_add_item_playlist(m_playlistIndex, m_insertAt + i);
+                }
+            }
+        }
+    }
+
+    void on_aborted() override {}
+
+    void startImport() {
+        if (m_paths.get_count() == 0) return;
+
+        pfc::list_t<const char*> pathPtrs;
+        for (t_size i = 0; i < m_paths.get_count(); i++) {
+            pathPtrs.add_item(m_paths[i]);
+        }
+
+        playlist_incoming_item_filter_v2::get()->process_locations_async(
+            pathPtrs,
+            playlist_incoming_item_filter_v2::op_flag_no_filter |
+            playlist_incoming_item_filter_v2::op_flag_delay_ui,
+            nullptr, nullptr, nullptr,
+            this
+        );
+    }
+};
 
 @implementation QueueManagerController
 
@@ -150,9 +199,6 @@ static void ensureStatusIcons() {
 
     // Set up drag & drop
     [self setupDragAndDrop];
-
-    // Set up keyboard handling
-    [self setupKeyboardHandling];
 }
 
 - (void)viewDidLoad {
@@ -164,34 +210,32 @@ static void ensureStatusIcons() {
 #pragma mark - Setup
 
 - (void)setupColumns {
-    // Column 1: Queue # (narrow, fixed width)
-    NSTableColumn* indexColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdQueueIndex];
-    indexColumn.title = @"#";
-    indexColumn.width = 30;
-    indexColumn.minWidth = 30;
-    indexColumn.maxWidth = 50;
-    indexColumn.resizingMask = NSTableColumnUserResizingMask;
-    indexColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"#"];
-    [_tableView addTableColumn:indexColumn];
+    // Phase 1: fixed default column set; all layout metadata comes from
+    // the shared column table in QueueConfig.h
+    static const char* const kVisibleColumns[] = {
+        queue_config::kColumnQueueIndex,
+        queue_config::kColumnArtistTitle,
+        queue_config::kColumnDuration,
+    };
 
-    // Column 2: Artist - Title (flex width)
-    NSTableColumn* titleColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdArtistTitle];
-    titleColumn.title = @"Artist - Title";
-    titleColumn.width = 200;
-    titleColumn.minWidth = 100;
-    titleColumn.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
-    titleColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"Artist - Title"];
-    [_tableView addTableColumn:titleColumn];
+    for (const char* identifier : kVisibleColumns) {
+        const queue_config::ColumnInfo* info = queue_config::findColumn(identifier);
+        if (!info) continue;
 
-    // Column 3: Duration (narrow, fixed width)
-    NSTableColumn* durationColumn = [[NSTableColumn alloc] initWithIdentifier:kColumnIdDuration];
-    durationColumn.title = @"Duration";
-    durationColumn.width = 60;
-    durationColumn.minWidth = 50;
-    durationColumn.maxWidth = 80;
-    durationColumn.resizingMask = NSTableColumnUserResizingMask;
-    durationColumn.headerCell = [[NSTableHeaderCell alloc] initTextCell:@"Duration"];
-    [_tableView addTableColumn:durationColumn];
+        NSString* title = @(info->displayName);
+        NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@(info->identifier)];
+        column.title = title;
+        column.width = info->defaultWidth;
+        column.minWidth = info->minWidth;
+        if (info->maxWidth > 0) {
+            column.maxWidth = info->maxWidth;
+        }
+        column.resizingMask = info->flexible
+            ? (NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask)
+            : NSTableColumnUserResizingMask;
+        column.headerCell = [[NSTableHeaderCell alloc] initTextCell:title];
+        [_tableView addTableColumn:column];
+    }
 }
 
 - (void)setupStatusBar {
@@ -224,15 +268,12 @@ static void ensureStatusIcons() {
     [_tableView registerForDraggedTypes:@[
         QueueItemPasteboardType,      // Internal reorder
         SimPlaylistPasteboardType,    // From SimPlaylist component
-        NSPasteboardTypeFileURL       // From Finder
+        NSPasteboardTypeFileURL,      // From Finder
+        NSPasteboardTypeString        // Track URLs from Tidal browser etc.
     ]];
 
     // Enable dragging
     [_tableView setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
-}
-
-- (void)setupKeyboardHandling {
-    // The table view handles Delete key via keyDown
 }
 
 #pragma mark - Data Loading
@@ -337,8 +378,8 @@ static void ensureStatusIcons() {
 
     t_playback_queue_item queueItem;
     queueItem.m_handle = [item handle];
-    queueItem.m_playlist = item.isOrphan ? ~(size_t)0 : item.sourcePlaylist;
-    queueItem.m_item = item.isOrphan ? ~(size_t)0 : item.sourceItem;
+    queueItem.m_playlist = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourcePlaylist;
+    queueItem.m_item = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourceItem;
 
     queue_ops::playItem(queueItem);
 }
@@ -391,6 +432,14 @@ static void ensureStatusIcons() {
         return NSDragOperationCopy;
     }
 
+    // Track URLs as plain text (e.g., tidal:// from Tidal browser)
+    if ([pb.types containsObject:NSPasteboardTypeString]) {
+        NSString *text = [pb stringForType:NSPasteboardTypeString];
+        if (text && [text containsString:@"tidal://track/"]) {
+            return NSDragOperationCopy;
+        }
+    }
+
     return NSDragOperationNone;
 }
 
@@ -417,98 +466,63 @@ static void ensureStatusIcons() {
         return [self handleFileURLDropFromPasteboard:pasteboard];
     }
 
+    // Handle track URL drop (e.g., tidal:// from Tidal browser)
+    if ([pasteboard.types containsObject:NSPasteboardTypeString]) {
+        return [self handleTrackURLDropFromPasteboard:pasteboard];
+    }
+
     return NO;
 }
 
-// Handle internal queue reordering
+// Handle internal queue reordering (single- or multi-row drag)
 - (BOOL)handleInternalDropAtRow:(NSInteger)targetRow fromPasteboard:(NSPasteboard*)pasteboard {
-    NSString* rowString = [pasteboard stringForType:QueueItemPasteboardType];
-    if (!rowString) return NO;
+    // One pasteboard item per dragged row (see pasteboardWriterForRow:)
+    std::vector<size_t> sourceRows;
+    for (NSPasteboardItem* pbItem in pasteboard.pasteboardItems) {
+        NSString* rowString = [pbItem stringForType:QueueItemPasteboardType];
+        if (!rowString) continue;
+        NSInteger row = [rowString integerValue];
+        if (row >= 0) {
+            sourceRows.push_back((size_t)row);
+        }
+    }
+    if (sourceRows.empty()) return NO;
+    std::sort(sourceRows.begin(), sourceRows.end());
+    sourceRows.erase(std::unique(sourceRows.begin(), sourceRows.end()), sourceRows.end());
 
-    NSInteger sourceRow = [rowString integerValue];
-    if (sourceRow < 0 || sourceRow >= (NSInteger)_queueItems.count) return NO;
     if (targetRow < 0) targetRow = 0;
-    if (targetRow > (NSInteger)_queueItems.count) targetRow = _queueItems.count;
 
-    // The prepended playing track is not draggable within the SDK queue
+    // The prepended playing track is not in the SDK queue and cannot be reordered.
+    // Adjust all UI row indices to SDK-space indices.
     NSInteger sdkOffset = (NSInteger)[self playingTrackPrependedCount];
-    if (sourceRow < sdkOffset) return NO;
 
-    // Adjust indices to SDK queue space
-    NSInteger sdkSource = sourceRow - sdkOffset;
+    std::vector<size_t> sdkSourceRows;
+    for (size_t uiRow : sourceRows) {
+        if ((NSInteger)uiRow >= sdkOffset) {
+            sdkSourceRows.push_back(uiRow - (size_t)sdkOffset);
+        }
+    }
+    if (sdkSourceRows.empty()) return NO;
+
     NSInteger sdkTarget = targetRow - sdkOffset;
     if (sdkTarget < 0) sdkTarget = 0;
 
-    // If dropping at the same position or the position right after, no change needed
-    if (sdkSource == sdkTarget || sdkSource + 1 == sdkTarget) return NO;
-
-    // Set flag to prevent callback storm
-    _isReorderingInProgress = YES;
-
-    // Get current queue contents
     auto contents = queue_ops::getContentsVector();
-    if (sdkSource >= (NSInteger)contents.size()) {
-        _isReorderingInProgress = NO;
+    auto newOrder = queue_reorder::planMove(contents.size(), sdkSourceRows, (size_t)sdkTarget);
+    if (newOrder.empty()) {
         return NO;
     }
 
-    // Use SDK-space indices from here on
-    sourceRow = sdkSource;
-    targetRow = sdkTarget;
-
-    // Capture the item being moved
-    t_playback_queue_item movingItem = contents[sourceRow];
-
-    // Clear the queue
-    queue_ops::clear();
-
-    // Rebuild in new order
-    // Adjust target if source was before target
-    NSInteger adjustedTarget = targetRow;
-    if (sourceRow < targetRow) {
-        adjustedTarget--;
+    _isReorderingInProgress = YES;
+    try {
+        queue_ops::rebuildInOrder(contents, newOrder);
+    } catch (...) {
+        console::error("[Queue Manager] Queue rebuild failed mid-reorder");
     }
-
-    for (NSInteger i = 0; i < (NSInteger)contents.size(); i++) {
-        if (i == sourceRow) continue; // Skip source position
-
-        // Insert the moved item at target position
-        if (i == adjustedTarget || (i == 0 && adjustedTarget == 0 && sourceRow != 0)) {
-            // Actually we need a different approach - rebuild properly
-        }
     }
-
-    // Simpler approach: build new order array
-    std::vector<t_playback_queue_item> newOrder;
-    newOrder.reserve(contents.size());
-
-    for (NSInteger i = 0; i < (NSInteger)contents.size(); i++) {
-        if (i == sourceRow) continue;
-
-        // Insert moved item at correct position
-        if ((NSInteger)newOrder.size() == adjustedTarget) {
-            newOrder.push_back(movingItem);
-        }
-        newOrder.push_back(contents[i]);
-    }
-
-    // If target is at the end
-    if (adjustedTarget >= (NSInteger)newOrder.size()) {
-        newOrder.push_back(movingItem);
-    }
-
-    // Add all items back to queue
-    for (const auto& item : newOrder) {
-        if (item.m_playlist != ~(size_t)0) {
-            queue_ops::addItemFromPlaylist(item.m_playlist, item.m_item);
-        } else {
-            queue_ops::addOrphanItem(item.m_handle);
-        }
-    }
-
     _isReorderingInProgress = NO;
 
-    // Manually reload since we suppressed callbacks
+    // Manually reload since callbacks were suppressed
     [self reloadQueueContents];
 
     return YES;
@@ -517,32 +531,19 @@ static void ensureStatusIcons() {
 // Handle drop from SimPlaylist component
 - (BOOL)handleSimPlaylistDropFromPasteboard:(NSPasteboard*)pasteboard {
     NSData* data = [pasteboard dataForType:SimPlaylistPasteboardType];
-    if (!data) return NO;
 
-    // SimPlaylist now sends a dictionary with:
-    // - @"sourcePlaylist": NSNumber (playlist index)
-    // - @"indices": NSArray of NSNumber (row indices)
-    // - @"paths": (optional) NSArray of NSString (file paths)
-    NSError* error = nil;
-    NSSet* classes = [NSSet setWithObjects:[NSDictionary class], [NSArray class],
-                      [NSNumber class], [NSString class], nil];
-    NSDictionary* dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes
-                                                                 fromData:data
-                                                                    error:&error];
-    if (!dragData || ![dragData isKindOfClass:[NSDictionary class]]) {
-        console::error("[Queue Manager] Failed to decode SimPlaylist drag data");
-        return NO;
-    }
-
-    // Extract source playlist and indices
-    NSNumber* sourcePlaylistNum = dragData[@"sourcePlaylist"];
-    NSArray<NSNumber*>* rowNumbers = dragData[@"indices"];
-
-    // Library drag (e.g. from AlbumViewVanced): indices are empty but paths are provided
-    if (!rowNumbers || rowNumbers.count == 0) {
+    QueueDropRequest* request = [QueueDropRequest requestFromDragData:data];
+    if (!request) {
+        // Library drag (e.g. from AlbumViewVanced): indices are empty but paths are provided.
+        // QueueDropRequest returns nil for empty indices, so handle paths-only case here.
+        NSSet* classes = [NSSet setWithObjects:[NSDictionary class], [NSArray class],
+                          [NSNumber class], [NSString class], nil];
+        NSDictionary* dragData = [NSKeyedUnarchiver unarchivedObjectOfClasses:classes
+                                                                     fromData:data
+                                                                        error:nil];
         NSArray<NSString*>* paths = dragData[@"paths"];
         if (!paths || paths.count == 0) {
-            console::error("[Queue Manager] No indices or paths in SimPlaylist drag data");
+            console::error("[Queue Manager] Failed to decode SimPlaylist drag data");
             return NO;
         }
         try {
@@ -560,30 +561,30 @@ static void ensureStatusIcons() {
         }
         return YES;
     }
-
     // Use the source playlist from the drag data, not the active playlist
     // This ensures correct behavior even if active playlist changes during drag
     size_t sourcePlaylist;
-    if (sourcePlaylistNum) {
-        sourcePlaylist = [sourcePlaylistNum unsignedLongValue];
+    if (request.hasSourcePlaylist) {
+        sourcePlaylist = request.sourcePlaylist;
+        // The payload is untrusted (any process can write this pasteboard
+        // type) and the playlist may have been deleted mid-drag
+        if (sourcePlaylist >= queue_ops::playlistCount()) {
+            console::error("[Queue Manager] Drop references nonexistent playlist");
+            return NO;
+        }
     } else {
         // Fallback to active playlist if not specified
-        auto pm = playlist_manager::get();
-        sourcePlaylist = pm->get_active_playlist();
+        sourcePlaylist = queue_ops::activePlaylist();
         if (sourcePlaylist == SIZE_MAX) {
             return NO;
         }
     }
 
-    auto pm = playlist_manager::get();
-    size_t playlistItemCount = pm->playlist_get_item_count(sourcePlaylist);
+    size_t playlistItemCount = queue_ops::playlistItemCount(sourcePlaylist);
 
-    // Add each item to the queue
-    for (NSNumber* rowNum in rowNumbers) {
-        size_t row = [rowNum unsignedLongValue];
-        if (row < playlistItemCount) {
-            queue_ops::addItemFromPlaylist(sourcePlaylist, row);
-        }
+    // Add each item to the queue, skipping stale rows past the playlist end
+    for (NSNumber* rowNum in [request indicesBelowItemCount:playlistItemCount]) {
+        queue_ops::addItemFromPlaylist(sourcePlaylist, [rowNum unsignedLongValue]);
     }
 
     return YES;
@@ -603,6 +604,44 @@ static void ensureStatusIcons() {
     console::info("[Queue Manager] File drop not yet implemented - use 'Add to Playback Queue' from context menu");
 
     return NO;
+}
+
+// Handle track URL drop (e.g., tidal:// URLs from Tidal browser)
+- (BOOL)handleTrackURLDropFromPasteboard:(NSPasteboard*)pasteboard {
+    NSString* text = [pasteboard stringForType:NSPasteboardTypeString];
+    if (!text || text.length == 0) return NO;
+
+    // Parse newline-separated URLs, filter for tidal:// tracks
+    NSArray<NSString*>* lines = [text componentsSeparatedByString:@"\n"];
+    NSMutableArray<NSString*>* trackURLs = [NSMutableArray array];
+    for (NSString* line in lines) {
+        NSString* trimmed = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trimmed hasPrefix:@"tidal://track/"]) {
+            [trackURLs addObject:trimmed];
+        }
+    }
+
+    if (trackURLs.count == 0) return NO;
+
+    // Add to active playlist and queue
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = pm->get_active_playlist();
+
+    if (activePlaylist == SIZE_MAX) {
+        activePlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        pm->set_active_playlist(activePlaylist);
+    }
+
+    t_size insertAt = pm->playlist_get_item_count(activePlaylist);
+    auto notify = new service_impl_t<QueueDropNotify>(activePlaylist, insertAt);
+
+    for (NSString* url in trackURLs) {
+        notify->m_paths.add_item([url UTF8String]);
+    }
+    notify->startImport();
+
+    console::printf("[Queue Manager] Queuing %lu track(s) from Tidal", (unsigned long)trackURLs.count);
+    return YES;
 }
 
 #pragma mark - NSTableViewDelegate
@@ -731,20 +770,16 @@ static void ensureStatusIcons() {
 }
 
 - (void)tableViewSelectionDidChange:(NSNotification*)notification {
-    NSIndexSet* selectedRows = _tableView.selectedRowIndexes;
+    [_tableView enumerateAvailableRowViewsUsingBlock:^(NSTableRowView* rowView, NSInteger row) {
+        BOOL isSelected = rowView.selected;
+        QueueItemWrapper* item = (row >= 0 && row < (NSInteger)self->_queueItems.count)
+            ? self->_queueItems[row] : nil;
 
-    for (NSInteger row = 0; row < (NSInteger)_queueItems.count; row++) {
-        NSTableRowView* rowView = [_tableView rowViewAtRow:row makeIfNecessary:NO];
-        if (!rowView) continue;
-
-        QueueItemWrapper* item = _queueItems[row];
-        BOOL isSelected = [selectedRows containsIndex:row];
-
-        for (NSInteger col = 0; col < (NSInteger)_tableView.numberOfColumns; col++) {
-            NSTableCellView* cellView = [_tableView viewAtColumn:col row:row makeIfNecessary:NO];
+        for (NSInteger col = 0; col < (NSInteger)self->_tableView.numberOfColumns; col++) {
+            NSTableCellView* cellView = [self->_tableView viewAtColumn:col row:row makeIfNecessary:NO];
             if (!cellView) continue;
 
-            NSTableColumn* column = _tableView.tableColumns[col];
+            NSTableColumn* column = self->_tableView.tableColumns[col];
 
             if ([column.identifier isEqualToString:kColumnIdQueueIndex]) {
                 if (item.isCurrentlyPlaying) {
@@ -758,14 +793,12 @@ static void ensureStatusIcons() {
                     cellView.textField.textColor = fb2k_ui::selectedTextColor();
                 } else if (item.isCurrentlyPlaying) {
                     cellView.textField.textColor = [NSColor controlAccentColor];
-                } else if ([column.identifier isEqualToString:kColumnIdQueueIndex]) {
-                    cellView.textField.textColor = fb2k_ui::secondaryTextColor();
                 } else {
                     cellView.textField.textColor = fb2k_ui::textColor();
                 }
             }
         }
-    }
+    }];
 }
 
 #pragma mark - Playback State

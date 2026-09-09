@@ -1,0 +1,6 @@
+node_modules/
+*.unpacked/
+.intake.json
+.intake.*.json
+__pycache__/
+*.pyc

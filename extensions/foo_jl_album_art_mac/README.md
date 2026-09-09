@@ -71,6 +71,37 @@ splitter horizontal
 - **Hover** - Reveals navigation arrows on left/right edges
 - **Click arrows** - Cycle through available artwork types for the current track
 
+### Fetch Missing Artwork
+
+Right-click the panel and choose **Fetch Missing...** to search online sources
+for artwork matching the current track (artist + album, or MusicBrainz IDs when
+tagged). Results appear as thumbnails in a footer below the artwork; click one
+to open the lightbox, filter by artwork type, select the images you want, and
+save them.
+
+Sources (no configuration needed): **Cover Art Archive** (all artwork types,
+via MusicBrainz lookup), **iTunes**, and **Deezer** (front covers).
+
+Save options:
+- **Save to album folder** - writes `front.jpg`, `back.jpg`, `disc.jpg`, ...
+  next to the audio files (a save panel opens if the folder is not writable)
+- **Embed in audio file** - writes the image into the file's tags (MP3, FLAC,
+  M4A, ...; not available for WAV/AIFF)
+
+#### TIDAL (optional)
+
+TIDAL requires free developer credentials from
+[developer.tidal.com](https://developer.tidal.com/dashboard) (create an app to
+get a Client ID and Client Secret). Configure them once from Terminal:
+
+```bash
+defaults write com.foobar2000.mac JLAlbumArtTidalClientID "your-client-id"
+defaults write com.foobar2000.mac JLAlbumArtTidalClientSecret "your-client-secret"
+```
+
+Restart foobar2000; TIDAL is then included in searches automatically. Without
+credentials the source is simply skipped.
+
 ### Display Priority
 
 1. **Selected track** in the active playlist (first selected item)
