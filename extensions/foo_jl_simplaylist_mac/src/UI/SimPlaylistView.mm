@@ -122,6 +122,8 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) CGFloat totalContentHeight;
 @property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
+@property (nonatomic, assign) NSInteger hoveredRow;   // Row under cursor for rating hover
+@property (nonatomic, strong) NSTrackingArea *trackingArea;  // For mouseMoved/mouseExited events
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
 // Pure geometry/index model — owns the row-mapping arithmetic. The view mirrors
 // its geometry ivars into this model (see the custom setters below) and forwards
@@ -381,8 +383,7 @@ static NSString *formatGroupDuration(double seconds) {
     [self updateTrackingAreas];  // (Un)register the decorator tooltip rect
 }
 
-// The hover NSTrackingArea was removed with _hoveredRow; this override now
-// only manages the decorator tooltip rect (NSToolTipOwner, no tracking area).
+// Manages the decorator tooltip rect and the rating hover tracking area.
 - (void)updateTrackingAreas {
     [super updateTrackingAreas];
 
@@ -393,8 +394,10 @@ static NSString *formatGroupDuration(double seconds) {
     if (_decorationsEnabled) {
         [self addToolTipRect:self.bounds owner:self userData:NULL];
     }
-}
 
+    if (_trackingArea) {
+        [self removeTrackingArea:_trackingArea];
+    }
     _trackingArea = [[NSTrackingArea alloc]
                      initWithRect:self.bounds
                           options:(NSTrackingMouseMoved |
@@ -1779,7 +1782,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
         NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
         NSInteger row = [self rowAtPoint:location];
         if (row >= 0 && [_delegate respondsToSelector:@selector(playlistView:didDoubleClickRow:)]) {
-            BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _groupStarts.count > 0);
+            BOOL isInGroupColumn = (location.x < _groupColumnWidth && _groupColumnWidth > 0 && _layout.groupStarts.count > 0);
             if (isInGroupColumn) {
                 NSInteger groupIndex = [self groupIndexForRow:row];
                 if (groupIndex >= 0) {

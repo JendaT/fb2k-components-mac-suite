@@ -23,7 +23,7 @@ static const NSInteger kGroupColumn = -2;
 @property (nonatomic, assign) NSInteger hoveredColumn;
 @property (nonatomic, strong) NSTrackingArea *trackingArea;
 @property (nonatomic, strong, nullable) NSDictionary *headerTextAttrs;
-@property (nonatomic, assign) fb2k_ui::SizeVariant headerTextAttrsSize;
+@property (nonatomic, assign) CGFloat headerTextAttrsCachedHeight;
 @property (nonatomic, assign) BOOL resizeCursorShown;
 @end
 
@@ -268,15 +268,15 @@ static const NSInteger kGroupColumn = -2;
     // once per column per frame, on a live resize/drag path. The stored colour
     // is a dynamic system colour, so appearance changes still resolve at draw
     // time without a rebuild.
-    if (!_headerTextAttrs || _headerTextAttrsSize != _headerSize) {
+    if (!_headerTextAttrs || _headerTextAttrsCachedHeight != _headerHeight) {
         NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
         style.lineBreakMode = NSLineBreakByTruncatingTail;
         _headerTextAttrs = @{
-            NSFontAttributeName: fb2k_ui::headerFont(_headerSize),
+            NSFontAttributeName: fb2k_ui::headerFont(),
             NSForegroundColorAttributeName: fb2k_ui::headerTextColor(),
             NSParagraphStyleAttributeName: style
         };
-        _headerTextAttrsSize = _headerSize;
+        _headerTextAttrsCachedHeight = _headerHeight;
     }
     NSDictionary *attrs = _headerTextAttrs;
 
@@ -490,7 +490,7 @@ static const NSInteger kGroupColumn = -2;
     for (NSInteger i = 0; i < (NSInteger)_columns.count; i++) {
         CGFloat colWidth = _columns[i].width;
         NSRect handleRect = NSMakeRect(x + colWidth - fb2k_ui::kResizeHandleWidth / 2, 0,
-                                       fb2k_ui::kResizeHandleWidth, fb2k_ui::headerHeight(_headerSize));
+                                       fb2k_ui::kResizeHandleWidth, _headerHeight);
         // Mirrors the bound in resizeHandleAtX:: handles hidden behind the
         // album-art strip must not offer a resize cursor.
         if (NSMaxX(handleRect) >= _groupColumnWidth) {
