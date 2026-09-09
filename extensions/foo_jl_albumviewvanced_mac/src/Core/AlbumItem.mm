@@ -18,7 +18,7 @@
 }
 
 - (NSString *)groupKey {
-    return [NSString stringWithFormat:@"%@ - %@", _artistName, _albumName];
+    return [NSString stringWithFormat:@"%@||%@", _albumName, _year];
 }
 
 - (NSArray<NSString *> *)allTrackPaths {

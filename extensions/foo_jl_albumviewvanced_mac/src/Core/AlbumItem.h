@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic, copy) NSString *path;       // fb2k path (e.g. mac-volume://...)
 @property (nonatomic, copy) NSString *duration;
+@property (nonatomic, copy) NSString *artistName;
 @property (nonatomic, assign) NSInteger rating;
 @property (nonatomic, assign) NSUInteger trackNumber;
 @end

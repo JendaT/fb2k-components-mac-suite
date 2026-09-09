@@ -7,7 +7,8 @@
 NSPasteboardType const AlbumViewVancedPasteboardType = @"com.foobar2000.albumviewvanced.albums";
 
 static const CGFloat kCellPadding      = 12.0;
-static const CGFloat kContentInsetLeft = 10.0;
+static const CGFloat kContentInsetLeft  = 10.0;
+static const CGFloat kContentInsetRight = 10.0;
 static const CGFloat kTextAreaHeight   = 48.0;
 static const CGFloat kTrackRowHeight   = 22.0;
 static const CGFloat kTrackListPadding = 8.0;
@@ -31,7 +32,7 @@ static inline CGFloat cellWidth(CGFloat viewWidth, NSInteger cols) {
 }
 
 static inline CGFloat contentWidthForView(CGFloat viewWidth) {
-    return MAX(1.0, viewWidth - kContentInsetLeft);
+    return MAX(1.0, viewWidth - kContentInsetLeft - kContentInsetRight);
 }
 
 @implementation AlbumGridView {
@@ -451,11 +452,12 @@ static const CGFloat kTrackHeaderHeight = 28.0;
                           options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
                        attributes:titleAttrs];
 
-        // Artist
+        // Artist (per-track for VA albums, album-level otherwise)
         CGFloat artistX = leftMargin + titleW + kTrackListPadding;
-        [album.artistName drawWithRect:NSMakeRect(artistX, rowY + 3, artistW - kTrackListPadding, kTrackRowHeight - 4)
-                                options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
-                             attributes:artistAttrs];
+        NSString *trackArtist = track.artistName.length > 0 ? track.artistName : album.artistName;
+        [trackArtist drawWithRect:NSMakeRect(artistX, rowY + 3, artistW - kTrackListPadding, kTrackRowHeight - 4)
+                          options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                       attributes:artistAttrs];
 
         // Rating
         CGFloat ratingX = rect.size.width - durW - ratingW - kTrackListPadding;

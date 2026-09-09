@@ -128,6 +128,13 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
 
     _scrollView.documentView = _gridView;
     [_containerView addSubview:_scrollView];
+
+    // Re-layout grid when the clip view resizes (e.g. scrollbar appears/disappears)
+    _scrollView.contentView.postsFrameChangedNotifications = YES;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(clipViewFrameDidChange:)
+                                                 name:NSViewFrameDidChangeNotification
+                                               object:_scrollView.contentView];
 }
 
 - (void)setupStatusBar {
@@ -186,11 +193,24 @@ static BOOL executeRatingCommand(menu_tree_item::ptr item, NSInteger rating, NSS
     if (scrollHeight < 0) scrollHeight = 0;
     _scrollView.frame = NSMakeRect(0, scrollBottom, w, scrollHeight);
 
-    // Update grid view width and recalc content height
+    // Update grid view width to match the clip view (excludes scrollbar)
+    CGFloat gridWidth = _scrollView.contentView.bounds.size.width;
+    if (gridWidth <= 0) gridWidth = w;
     NSRect gridFrame = _gridView.frame;
-    gridFrame.size.width = w;
+    gridFrame.size.width = gridWidth;
     _gridView.frame = gridFrame;
     [_gridView recalcFrameHeight];
+}
+
+- (void)clipViewFrameDidChange:(NSNotification *)note {
+    CGFloat clipW = _scrollView.contentView.bounds.size.width;
+    if (clipW > 0 && fabs(_gridView.frame.size.width - clipW) > 0.5) {
+        NSRect gridFrame = _gridView.frame;
+        gridFrame.size.width = clipW;
+        _gridView.frame = gridFrame;
+        [_gridView recalcFrameHeight];
+        [_gridView setNeedsDisplay:YES];
+    }
 }
 
 #pragma mark - AlbumDataSourceDelegate

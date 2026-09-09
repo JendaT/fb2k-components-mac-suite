@@ -98,12 +98,13 @@
 }
 
 - (NSArray<AlbumItem *> *)buildAlbumsFromHandles:(const std::vector<metadb_handle_ptr> &)handles {
-    titleformat_object_ptr groupFmt, titleFmt, artistFmt, albumFmt, yearFmt, durationFmt, trackNumFmt, ratingFmt;
+    titleformat_object_ptr groupFmt, titleFmt, artistFmt, trackArtistFmt, albumFmt, yearFmt, durationFmt, trackNumFmt, ratingFmt;
     static_api_ptr_t<titleformat_compiler> compiler;
 
-    compiler->compile_safe_ex(groupFmt, "%album artist% - %album%");
+    compiler->compile_safe_ex(groupFmt, "%album%||%date%");
     compiler->compile_safe_ex(titleFmt, "%title%");
     compiler->compile_safe_ex(artistFmt, "%album artist%");
+    compiler->compile_safe_ex(trackArtistFmt, "%artist%");
     compiler->compile_safe_ex(albumFmt, "%album%");
     compiler->compile_safe_ex(yearFmt, "%date%");
     compiler->compile_safe_ex(durationFmt, "%length%");
@@ -112,12 +113,14 @@
 
     NSMutableDictionary<NSString *, AlbumItem *> *albumMap = [NSMutableDictionary dictionary];
     NSMutableArray<NSString *> *insertionOrder = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *artistSets = [NSMutableDictionary dictionary];
 
     for (auto &handle : handles) {
-        pfc::string8 groupStr, titleStr, artistStr, albumStr, yearStr, durationStr, trackNumStr, ratingStr;
+        pfc::string8 groupStr, titleStr, artistStr, trackArtistStr, albumStr, yearStr, durationStr, trackNumStr, ratingStr;
         handle->format_title(nullptr, groupStr, groupFmt, nullptr);
         handle->format_title(nullptr, titleStr, titleFmt, nullptr);
         handle->format_title(nullptr, artistStr, artistFmt, nullptr);
+        handle->format_title(nullptr, trackArtistStr, trackArtistFmt, nullptr);
         handle->format_title(nullptr, albumStr, albumFmt, nullptr);
         handle->format_title(nullptr, yearStr, yearFmt, nullptr);
         handle->format_title(nullptr, durationStr, durationFmt, nullptr);
@@ -126,27 +129,40 @@
 
         NSString *key = [NSString stringWithUTF8String:groupStr.c_str()];
         NSString *path = [NSString stringWithUTF8String:handle->get_path()];
+        NSString *artist = [NSString stringWithUTF8String:artistStr.c_str()];
 
         AlbumItem *album = albumMap[key];
         if (!album) {
             album = [[AlbumItem alloc] init];
-            album.artistName = [NSString stringWithUTF8String:artistStr.c_str()];
+            album.artistName = artist;
             album.albumName = [NSString stringWithUTF8String:albumStr.c_str()];
             album.year = [NSString stringWithUTF8String:yearStr.c_str()];
             album.artPath = path;
             albumMap[key] = album;
             [insertionOrder addObject:key];
+            artistSets[key] = [NSMutableSet setWithObject:artist];
+        } else {
+            [artistSets[key] addObject:artist];
         }
 
         AlbumTrack *track = [[AlbumTrack alloc] init];
         track.title = [NSString stringWithUTF8String:titleStr.c_str()];
         track.path = path;
         track.duration = [NSString stringWithUTF8String:durationStr.c_str()];
+        track.artistName = [NSString stringWithUTF8String:trackArtistStr.c_str()];
         track.trackNumber = (NSUInteger)atoi(trackNumStr.c_str());
         track.rating = MAX(0, MIN(5, atoi(ratingStr.c_str())));
 
         [album.tracks addObject:track];
         album.trackCount = album.tracks.count;
+    }
+
+    // Resolve multi-artist albums to "Various Artists"
+    for (NSString *key in insertionOrder) {
+        NSMutableSet<NSString *> *artists = artistSets[key];
+        if (artists.count > 1) {
+            albumMap[key].artistName = @"Various Artists";
+        }
     }
 
     // Sort tracks within each album by track number
@@ -168,15 +184,16 @@
         album.rating = ratingCount > 0 ? (NSInteger)llround((double)ratingTotal / (double)ratingCount) : 0;
     }
 
-    // Sort albums by artist then album name
-    [insertionOrder sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
-        return [a localizedCaseInsensitiveCompare:b];
-    }];
-
+    // Build result array and sort by artist then album name
     NSMutableArray<AlbumItem *> *result = [NSMutableArray arrayWithCapacity:insertionOrder.count];
     for (NSString *key in insertionOrder) {
         [result addObject:albumMap[key]];
     }
+    [result sortUsingComparator:^NSComparisonResult(AlbumItem *a, AlbumItem *b) {
+        NSComparisonResult cmp = [a.artistName localizedCaseInsensitiveCompare:b.artistName];
+        if (cmp != NSOrderedSame) return cmp;
+        return [a.albumName localizedCaseInsensitiveCompare:b.albumName];
+    }];
     return result;
 }
 
