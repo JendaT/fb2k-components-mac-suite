@@ -249,7 +249,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
-### [1.5.0] - Unreleased
+### [1.5.1] - 2026-08-27
+
+#### Fixed
+- **Crash on restart after a repair**: the migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database
+- **Database growth**: rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and needs no VACUUM
+- **Migration speed**: 29.1s down to 4.6s on a 2.35 GB database, byte-identical result
+- **Reclaiming old bloat**: the staged copy is compacted when mostly free pages, recovering space lost to earlier versions
+
+#### Added
+
+### [1.5.0] - 2026-08-26
 
 #### Added
 - **Automatic Volume UUID Sync**: Repairs stale `mac-volume://` UUIDs in playlists after SMB/Tailscale remounts. Off by default
