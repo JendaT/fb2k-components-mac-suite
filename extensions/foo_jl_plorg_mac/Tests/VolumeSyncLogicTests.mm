@@ -555,27 +555,30 @@ int main(void) {
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"REPLACE(name, 'mac-volume://%@', 'mac-volume://%@')", kDead, kLive]]),
             "metadb REPLACE clause");
-        CHECK([sql containsString:@"INSERT OR IGNORE INTO metadb "], "metadb insert");
+        CHECK([sql containsString:@"UPDATE OR IGNORE metadb SET name = REPLACE("], "metadb in-place rename");
+        CHECK(![sql containsString:@"INSERT OR IGNORE INTO metadb"], "no row-copying insert");
+        CHECK(![sql containsString:@"VACUUM"], "no VACUUM - the rename does not grow the file");
         CHECK(([sql containsString:
-            [NSString stringWithFormat:@"INSERT OR IGNORE INTO \"%@\" (key, filename)", idxTable]]),
-              "index table insert");
+            [NSString stringWithFormat:@"UPDATE OR IGNORE \"%@\" SET filename = REPLACE(", idxTable]]),
+              "index table in-place rename");
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
             "LIKE pattern scoped to dead UUID");
 
-        // Move semantics: dead-UUID source rows are deleted in the same
+        // Move semantics: any dead-UUID row the rename could not claim (because a
+        // row already existed under the live name) is deleted in the same
         // transaction, so copies do not accumulate across remount generations.
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"DELETE FROM metadb WHERE name LIKE '%%mac-volume://%@/%%'", kDead]]),
-            "metadb source rows deleted after copy");
+            "metadb leftover source rows deleted");
         CHECK(([sql containsString:
             [NSString stringWithFormat:@"DELETE FROM \"%@\" WHERE filename LIKE '%%mac-volume://%@/%%'",
                 idxTable, kDead]]),
-            "index table source rows deleted after copy");
-        NSRange insertPos = [sql rangeOfString:@"INSERT OR IGNORE INTO metadb "];
+            "index table leftover source rows deleted");
+        NSRange updatePos = [sql rangeOfString:@"UPDATE OR IGNORE metadb SET name = REPLACE("];
         NSRange deletePos = [sql rangeOfString:@"DELETE FROM metadb "];
-        CHECK(insertPos.location != NSNotFound && deletePos.location != NSNotFound &&
-              insertPos.location < deletePos.location, "copy precedes delete");
+        CHECK(updatePos.location != NSNotFound && deletePos.location != NSNotFound &&
+              updatePos.location < deletePos.location, "rename precedes delete");
 
         // Tables failing the shape validator must never be written to.
         NSString *guarded = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{ kDead: kLive }
@@ -583,14 +586,14 @@ int main(void) {
         CHECK(![guarded containsString:@"\"metadb_indexes\""], "metadb_indexes never written");
         CHECK(![guarded containsString:@"_data\""], "_data sibling never written");
         CHECK(([guarded containsString:
-            [NSString stringWithFormat:@"INSERT OR IGNORE INTO \"%@\" (key, filename)", idxTable]]),
+            [NSString stringWithFormat:@"UPDATE OR IGNORE \"%@\" SET filename = REPLACE(", idxTable]]),
               "valid table still migrated alongside rejected ones");
 
         NSString *emptySql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:@{} indexTables:@[]];
         CHECK_EQ(emptySql, @"PRAGMA busy_timeout=10000;\nBEGIN IMMEDIATE;\nCOMMIT;\n",
                  "no actions -> empty transaction");
 
-        // Two remap actions in one call: both dead UUIDs get copy+delete pairs
+        // Two remap actions in one call: both dead UUIDs get rename+delete pairs
         NSString *twoSql = [PlorgVolumeSyncLogic metadbMigrationSQLForRemapActions:
                                 @{ kDead: kLive, kOther: kLive } indexTables:@[]];
         CHECK(([twoSql containsString:

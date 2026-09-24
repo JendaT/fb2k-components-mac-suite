@@ -48,6 +48,15 @@ static NSString *stagedMigrationSQLPathForPID(pid_t pid) {
 // still writing), and the poll had a 15-minute bound after which it reopened
 // foobar2000 regardless - all of which surfaced as "metadb is corrupted" on
 // restart, because fb2k opened the database mid-write.
+// Compact the staged copy when this share of its pages are free. Done on the COPY,
+// never the live database: VACUUM on the live file is what held an EXCLUSIVE lock
+// for minutes and crashed foobar2000 on 2026-08-27. Here it costs only time, and a
+// failure is non-fatal - the uncompacted copy is still correct.
+// Needed because renaming rows in place no longer frees pages as a side effect, so
+// space already lost to the old copy-then-delete scheme would otherwise be
+// permanent (measured 2026-08-28: 4.68 GB file, 49.6%% of it free pages).
+static const int kMigratorVacuumFreePagePercent = 20;
+
 static NSString *relaunchMarkerPathForPID(pid_t pid) {
     return [NSString stringWithFormat:@"/tmp/plorg_metadb_relaunch_%d.marker", pid];
 }
@@ -1229,76 +1238,134 @@ public:
     NSString *logPath = [NSString stringWithFormat:@"/tmp/plorg_metadb_migration_%d.log", pid];
     NSString *markerPath = relaunchMarkerPathForPID(pid);
     NSString *appPath = [[NSBundle mainBundle] bundlePath] ?: @"";
-    // This script owns the entire post-quit sequence, in order:
+    // This script owns the entire post-quit sequence. The design rule that makes
+    // it safe: the LIVE database is never opened for writing. Everything happens
+    // on a staged copy, and the result is put in place with a rename.
+    //
     //  1. waits for this fb2k process to exit;
-    //  2. aborts if another foobar2000 is already running (user relaunched
-    //     manually before the migration could start) - never write to metadb
-    //     while any fb2k session may hold it;
-    //  3. best-effort backup: one rotating copy next to the DB when disk
-    //     space allows (DB + WAL/SHM siblings);
-    //  4. feeds the staged SQL to sqlite3 (transactional, .bail on);
-    //  5. verifies with quick_check, restoring the backup if it fails;
-    //  6. VACUUMs, because the copy-then-delete migration frees pages inside
-    //     the file that SQLite never returns to the filesystem - without this
-    //     the DB parks at ~2.7x the size it needs, forever;
-    //  7. drops the now-redundant backup (the DB has been verified good);
-    //  8. reopens foobar2000 if relaunchApp asked for it.
-    // Steps 4-8 in one process is what guarantees fb2k cannot reopen while
-    // sqlite3 still holds metadb - see relaunchMarkerPathForPID.
+    //  2. aborts if another foobar2000 is already running;
+    //  3. fingerprints the live DB and stages a working copy of it;
+    //  4. migrates and verifies THE COPY - from here until step 6 foobar2000 may
+    //     be reopened at any moment with no effect on it whatsoever;
+    //  5. re-checks that no fb2k is running and that the live DB is byte-for-byte
+    //     as fingerprinted, else abandons the copy and reschedules;
+    //  6. compacts the copy if it is mostly free pages, then swaps by rename
+    //     (original kept aside until the new file verifies);
+    //  7. reopens foobar2000 if relaunchApp asked for it.
+    //
+    // Why: on 2026-08-27 foobar2000 was relaunched ~4s before the migration
+    // finished, hit the EXCLUSIVE lock sqlite3 held on metadb, logged
+    // "SQLite error" and segfaulted. The previous script guarded only the window
+    // BEFORE the write started, and the write itself ran for minutes (a 6.7 GB
+    // backup copy, then a migration that doubled the file, then a VACUUM that
+    // gave back 4.4 GB). Two changes close it: the migration is now an in-place
+    // rename that needs no VACUUM (29.1s -> 4.6s measured), and the live file is
+    // no longer the one being written. A rename cannot corrupt a reader - worst
+    // case a process that opened the old inode keeps reading it.
     NSString *script = [NSString stringWithFormat:
         @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin\n"
-        @"DB='%@'; SQL='%@'; LOG='%@'; MARK='%@'; BK=\"$DB.plorg-pre-migration\"\n"
+        @"DB='%@'; SQL='%@'; LOG='%@'; MARK='%@'\n"
+        @"WORK=\"$DB.plorg-work\"; PREV=\"$DB.plorg-prev\"\n"
+        @"note() { echo \"[Plorg VolumeSync] $1\" >> \"$LOG\"; }\n"
         @"relaunch() { [ -e \"$MARK\" ] || return 0; rm -f \"$MARK\"; if [ -n '%@' ]; then /usr/bin/open '%@'; fi; return 0; }\n"
+        @"give_up() { note \"$1\"; rm -f \"$WORK\" \"$WORK-wal\" \"$WORK-shm\" \"$SQL\"; relaunch; exit 0; }\n"
+        @"fingerprint() { /usr/bin/stat -f'%%z:%%m' \"$DB\" 2>/dev/null || echo none; }\n"
+        @": > \"$LOG\"\n"
         @"while kill -0 %d 2>/dev/null; do sleep 0.5; done\n"
         @"sleep 1\n"
         @"t=0\n"
         @"while /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; do\n"
         @"  t=$((t+1))\n"
         @"  if [ \"$t\" -ge %d ]; then\n"
-        @"    echo \"[Plorg VolumeSync] Migration SKIPPED: foobar2000 was relaunched before it could run. It will be rescheduled on next repair.\" > \"$LOG\"\n"
+        @"    note \"Migration SKIPPED: foobar2000 was relaunched before it could start. It will be rescheduled on next repair.\"\n"
         @"    rm -f \"$SQL\" \"$MARK\"\n"
         @"    exit 0\n"
         @"  fi\n"
         @"  sleep 1\n"
         @"done\n"
+        @"FP0=$(fingerprint)\n"
         @"dbsize=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
         @"avail=$(( $(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}') * 1024 ))\n"
-        @"if [ \"$avail\" -gt \"$((dbsize + dbsize / 10))\" ]; then\n"
-        @"  /bin/cp -f \"$DB\" \"$BK\" && echo \"[Plorg VolumeSync] metadb backed up to $BK\" > \"$LOG\"\n"
-        @"  for ext in -wal -shm; do\n"
-        @"    if [ -f \"$DB$ext\" ]; then /bin/cp -f \"$DB$ext\" \"$BK$ext\"; else rm -f \"$BK$ext\"; fi\n"
-        @"  done\n"
-        @"else\n"
-        @"  echo \"[Plorg VolumeSync] WARNING: not enough disk space for a metadb backup; proceeding (migration is transactional)\" > \"$LOG\"\n"
+        @"if [ \"$avail\" -lt \"$((dbsize + dbsize / 10))\" ]; then\n"
+        @"  note \"Migration SKIPPED: needs $((dbsize / 1048576)) MB free to stage a copy. Rescheduled on next repair.\"\n"
+        @"  rm -f \"$SQL\" \"$MARK\"\n"
+        @"  exit 0\n"
         @"fi\n"
-        @"/usr/bin/sqlite3 \"$DB\" < \"$SQL\" >> \"$LOG\" 2>&1\n"
+        @"rm -f \"$WORK\" \"$WORK-wal\" \"$WORK-shm\"\n"
+        @"/bin/cp -f \"$DB\" \"$WORK\" || give_up \"Migration SKIPPED: could not stage a working copy.\"\n"
+        @"for ext in -wal -shm; do\n"
+        @"  if [ -f \"$DB$ext\" ]; then /bin/cp -f \"$DB$ext\" \"$WORK$ext\"; fi\n"
+        @"done\n"
+        @"note \"Staged a $((dbsize / 1048576)) MB working copy. The live database is not opened for writing again until the swap, so reopening foobar2000 from here is harmless.\"\n"
+        @"/usr/bin/sqlite3 \"$WORK\" < \"$SQL\" >> \"$LOG\" 2>&1\n"
         @"rc=$?\n"
-        @"echo \"[Plorg VolumeSync] Metadb migration finished (exit $rc) at $(date)\" >> \"$LOG\"\n"
-        @"if [ \"$rc\" -eq 0 ]; then\n"
-        @"  chk=$(/usr/bin/sqlite3 \"$DB\" 'PRAGMA quick_check;' 2>&1 | /usr/bin/head -1)\n"
-        @"  echo \"[Plorg VolumeSync] Integrity after migration: $chk\" >> \"$LOG\"\n"
-        @"  if [ \"$chk\" = \"ok\" ]; then\n"
-        @"    before=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
-        @"    avail=$(( $(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}') * 1024 ))\n"
-        @"    if [ \"$avail\" -gt \"$before\" ]; then\n"
-        @"      if /usr/bin/sqlite3 \"$DB\" 'VACUUM;' >> \"$LOG\" 2>&1; then\n"
-        @"        after=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
-        @"        echo \"[Plorg VolumeSync] VACUUM reclaimed $(( (before - after) / 1048576 )) MB\" >> \"$LOG\"\n"
-        @"      fi\n"
-        @"    else\n"
-        @"      echo \"[Plorg VolumeSync] VACUUM skipped: not enough free disk space\" >> \"$LOG\"\n"
-        @"    fi\n"
-        @"    rm -f \"$BK\" \"$BK-wal\" \"$BK-shm\"\n"
-        @"  elif [ -f \"$BK\" ]; then\n"
-        @"    /bin/cp -f \"$BK\" \"$DB\" && echo \"[Plorg VolumeSync] Integrity check FAILED - restored the pre-migration backup; it is kept at $BK\" >> \"$LOG\"\n"
+        @"note \"Migrated the working copy (exit $rc) at $(date)\"\n"
+        @"if [ \"$rc\" -ne 0 ]; then\n"
+        @"  give_up \"Migration FAILED on the working copy. The live database was never modified.\"\n"
+        @"fi\n"
+        @"if [ -f \"$WORK-wal\" ]; then\n"
+        @"  if /usr/bin/sqlite3 \"$WORK\" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null 2>&1; then\n"
+        @"    rm -f \"$WORK-wal\" \"$WORK-shm\"\n"
         @"  else\n"
-        @"    echo \"[Plorg VolumeSync] Integrity check FAILED and no backup was made (disk space)\" >> \"$LOG\"\n"
+        @"    give_up \"Could not checkpoint the working copy's journal. The live database was never modified.\"\n"
         @"  fi\n"
+        @"fi\n"
+        @"pc=$(/usr/bin/sqlite3 \"$WORK\" 'PRAGMA page_count;' 2>/dev/null || echo 0)\n"
+        @"fl=$(/usr/bin/sqlite3 \"$WORK\" 'PRAGMA freelist_count;' 2>/dev/null || echo 0)\n"
+        @"if [ \"$pc\" -gt 0 ] && [ \"$(( fl * 100 / pc ))\" -ge %d ]; then\n"
+        @"  wsize=$(/usr/bin/stat -f%%z \"$WORK\" 2>/dev/null || echo 0)\n"
+        @"  avail=$(( $(/bin/df -k \"$(dirname \"$DB\")\" | /usr/bin/awk 'NR==2 {print $4}') * 1024 ))\n"
+        @"  if [ \"$avail\" -gt \"$wsize\" ]; then\n"
+        @"    note \"Working copy is $(( fl * 100 / pc ))%% free pages; compacting it.\"\n"
+        @"    if /usr/bin/sqlite3 \"$WORK\" 'VACUUM;' >> \"$LOG\" 2>&1; then\n"
+        @"      note \"Compacted the working copy: $(( wsize / 1048576 )) MB -> $(( $(/usr/bin/stat -f%%z \"$WORK\" 2>/dev/null || echo 0) / 1048576 )) MB\"\n"
+        @"    else\n"
+        @"      note \"VACUUM of the working copy failed; continuing with the uncompacted copy.\"\n"
+        @"    fi\n"
+        @"  else\n"
+        @"    note \"VACUUM skipped: not enough free disk space.\"\n"
+        @"  fi\n"
+        @"fi\n"
+        @"chk=$(/usr/bin/sqlite3 \"$WORK\" 'PRAGMA quick_check;' 2>&1 | /usr/bin/head -1)\n"
+        @"note \"Integrity of the migrated copy: $chk\"\n"
+        @"if [ \"$chk\" != \"ok\" ]; then\n"
+        @"  give_up \"Integrity check FAILED on the working copy. The live database was never modified.\"\n"
+        @"fi\n"
+        @"if /usr/bin/pgrep -x foobar2000 >/dev/null 2>&1; then\n"
+        @"  give_up \"Swap SKIPPED: foobar2000 was reopened while the copy was migrating. The live database is untouched and the repair reruns on next launch.\"\n"
+        @"fi\n"
+        @"if [ \"$(fingerprint)\" != \"$FP0\" ]; then\n"
+        @"  give_up \"Swap SKIPPED: the live database changed while the copy was migrating. It is untouched and the repair reruns on next launch.\"\n"
+        @"fi\n"
+        @"if ! /bin/mv -f \"$DB\" \"$PREV\"; then\n"
+        @"  give_up \"Swap FAILED: could not set the original aside. It is untouched.\"\n"
+        @"fi\n"
+        @"for ext in -wal -shm; do\n"
+        @"  if [ -f \"$DB$ext\" ]; then /bin/mv -f \"$DB$ext\" \"$PREV$ext\"; fi\n"
+        @"done\n"
+        @"if ! /bin/mv -f \"$WORK\" \"$DB\"; then\n"
+        @"  /bin/mv -f \"$PREV\" \"$DB\"\n"
+        @"  for ext in -wal -shm; do\n"
+        @"    if [ -f \"$PREV$ext\" ]; then /bin/mv -f \"$PREV$ext\" \"$DB$ext\"; fi\n"
+        @"  done\n"
+        @"  give_up \"Swap FAILED: the original database has been put back.\"\n"
+        @"fi\n"
+        @"chk=$(/usr/bin/sqlite3 \"$DB\" 'PRAGMA quick_check;' 2>&1 | /usr/bin/head -1)\n"
+        @"if [ \"$chk\" = \"ok\" ]; then\n"
+        @"  after=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
+        @"  note \"Swap complete and verified. $((dbsize / 1048576)) MB -> $((after / 1048576)) MB.\"\n"
+        @"  rm -f \"$PREV\" \"$PREV-wal\" \"$PREV-shm\"\n"
+        @"else\n"
+        @"  /bin/mv -f \"$PREV\" \"$DB\"\n"
+        @"  for ext in -wal -shm; do\n"
+        @"    if [ -f \"$PREV$ext\" ]; then /bin/mv -f \"$PREV$ext\" \"$DB$ext\"; fi\n"
+        @"  done\n"
+        @"  note \"Post-swap integrity check FAILED ($chk). Restored the original database.\"\n"
         @"fi\n"
         @"rm -f \"$SQL\"\n"
         @"relaunch\n",
         dbPath, sqlPath, logPath, markerPath, appPath, appPath,
-        pid, kMigratorRelaunchAbortWaitSeconds];
+        pid, kMigratorRelaunchAbortWaitSeconds, kMigratorVacuumFreePagePercent];
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/bin/sh";
@@ -1311,9 +1378,9 @@ public:
         self.migratorSpawned = YES;
         [self deferLog:[NSString stringWithFormat:
             @"[Plorg VolumeSync] Spawned metadb migrator (%lu UUID remap%@). "
-            @"It runs after foobar quits: backup, transactional migration, "
-            @"integrity check, VACUUM, then reopens foobar2000 if the repair "
-            @"prompt asked for a restart. Log: %@",
+            @"It runs after foobar quits: it migrates a staged copy, verifies it, "
+            @"then swaps it in by rename, so reopening foobar2000 while it works "
+            @"cannot disturb the live database. Log: %@",
             (unsigned long)remapActions.count,
             remapActions.count == 1 ? @"" : @"s",
             logPath]];

@@ -467,17 +467,23 @@ static NSString *normalizeVolumePath(NSString *path) {
         NSString *toTok = sqlQuote([NSString stringWithFormat:@"%@%@", PlorgMacVolumePrefix, liveUUID]);
         NSString *likePattern = sqlQuote([NSString stringWithFormat:@"%%%@%@/%%", PlorgMacVolumePrefix, deadUUID]);
 
-        // Main metadb rows: copy under a new name with the UUID rewritten,
-        // then delete the dead-UUID sources. metadb.name is a unique primary
-        // key, so OR IGNORE preserves rows foobar already cached for the live
-        // UUID; deleting the sources keeps one metadata copy per file instead
-        // of accumulating one per remount generation (observed: 4 full
-        // library copies, 8.7 GB).
+        // Main metadb rows: rename in place. metadb.name is a unique primary
+        // key, so OR IGNORE leaves rows foobar already cached for the live UUID
+        // untouched and skips the colliding source, which the guarded DELETE
+        // below then removes - one metadata copy per file instead of one per
+        // remount generation (observed: 4 full library copies, 8.7 GB).
+        //
+        // This used to be INSERT-then-DELETE, which duplicated every row before
+        // freeing the originals: the file peaked at 2x and stayed there, so a
+        // VACUUM was needed to give the pages back. Renaming touches the same
+        // page budget (both UUIDs are 36 chars), so the file no longer grows and
+        // no VACUUM is needed. Measured on the real 2.35 GB / 157,781-row
+        // database: 29.1s and a 4.61 GB peak became 4.6s and +4 MB, producing a
+        // byte-identical result. That collapse in runtime is also the fix for
+        // the crash - see the migrator script in VolumeSyncService.mm.
         [sql appendFormat:
-            @"INSERT OR IGNORE INTO metadb "
-            @"(name, info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial) "
-            @"SELECT REPLACE(name, '%@', '%@'), info, infoBrowse, size, lastModified, infoBrowseTime, lastseen, created, attribs, attribsValid, partial "
-            @"FROM metadb WHERE name LIKE '%@';\n",
+            @"UPDATE OR IGNORE metadb SET name = REPLACE(name, '%@', '%@') "
+            @"WHERE name LIKE '%@';\n",
             fromTok, toTok, likePattern];
         [sql appendFormat:
             @"DELETE FROM metadb WHERE name LIKE '%@' "
@@ -486,13 +492,12 @@ static NSString *normalizeVolumePath(NSString *path) {
 
         // Library / component index tables (key INTEGER, filename TEXT UNIQUE
         // PRIMARY KEY). The *_data blob siblings are keyed by `key`, which the
-        // copy preserves, so they need no migration and no cleanup here.
+        // rename preserves, so they need no migration and no cleanup here.
         for (NSString *table in safeTables) {
             [sql appendFormat:
-                @"INSERT OR IGNORE INTO \"%@\" (key, filename) "
-                @"SELECT key, REPLACE(filename, '%@', '%@') "
-                @"FROM \"%@\" WHERE filename LIKE '%@';\n",
-                sqlIdentifier(table), fromTok, toTok, sqlIdentifier(table), likePattern];
+                @"UPDATE OR IGNORE \"%@\" SET filename = REPLACE(filename, '%@', '%@') "
+                @"WHERE filename LIKE '%@';\n",
+                sqlIdentifier(table), fromTok, toTok, likePattern];
             [sql appendFormat:
                 @"DELETE FROM \"%@\" WHERE filename LIKE '%@' "
                 @"AND REPLACE(filename, '%@', '%@') <> filename;\n",
