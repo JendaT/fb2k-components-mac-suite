@@ -258,6 +258,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reclaiming old bloat**: the staged copy is compacted when mostly free pages, recovering space lost to earlier versions
 
 #### Added
+- **`Scripts/volume_registry_prune.sh`**: removes unused volume bookmarks for the music share; dry run by default, refuses to write while foobar2000 runs
 
 ### [1.5.0] - 2026-08-26
 

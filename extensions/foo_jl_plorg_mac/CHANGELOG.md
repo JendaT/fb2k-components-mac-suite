@@ -11,6 +11,7 @@ All notable changes to Playlist Organizer will be documented in this file.
 - **Reclaiming old bloat**: the staged copy is compacted when it is mostly free pages, so space lost to earlier versions is recovered instead of being permanent. Compacting a copy carries none of the risk that compacting the live database did.
 
 ### Added
+- **`Scripts/volume_registry_prune.sh`**: Removes foobar2000 volume bookmarks for the music share that no live playlist or cached metadata uses; each stale bookmark is a way for the share to be mounted a second time. Dry run by default; refuses to write while foobar2000 runs.
 
 ## [1.5.0] - 2026-08-26
 
