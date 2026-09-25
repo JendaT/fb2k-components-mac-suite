@@ -298,7 +298,7 @@ A foobar2000 macOS component that [description].
 ## Requirements
 
 - foobar2000 for Mac 2.x
-- macOS 11.0+
+- macOS 12.0+
 
 ## Installation
 

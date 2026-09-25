@@ -249,7 +249,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
-### [1.5.1] - 2026-08-27
+### [1.5.1] - 2026-09-25
+
+#### Changed
+- **Requires macOS 12**: built with Xcode 27, which cannot target macOS 11
 
 #### Fixed
 - **Crash on restart after a repair**: the migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database

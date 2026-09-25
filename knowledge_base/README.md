@@ -116,7 +116,7 @@ Intake system overview and decision log (music ingest pipeline):
 
 ## Prerequisites
 
-- **macOS 11+** (Big Sur or later)
+- **macOS 12+** (Monterey or later)
 - **Xcode 12+** with Command Line Tools
 - **Ruby** (for project generation scripts)
 - **foobar2000 for Mac** installed for testing

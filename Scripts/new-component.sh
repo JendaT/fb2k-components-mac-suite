@@ -132,7 +132,7 @@ ${DISPLAY_NAME} for foobar2000 macOS.
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later
+- macOS 12.0 or later
 
 ## Building
 

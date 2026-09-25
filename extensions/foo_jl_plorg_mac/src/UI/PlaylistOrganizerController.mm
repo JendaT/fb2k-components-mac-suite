@@ -438,7 +438,7 @@ static NSString* makeUniquePlaylistName(NSString* baseName) {
 }
 
 
-@interface PlaylistOrganizerController () <NSTextFieldDelegate, PathMappingWindowDelegate, StrawberryImportPreviewDelegate, UUIDRemappingWindowDelegate>
+@interface PlaylistOrganizerController () <NSTextFieldDelegate, NSMenuItemValidation, PathMappingWindowDelegate, StrawberryImportPreviewDelegate, UUIDRemappingWindowDelegate>
 @property (nonatomic, strong) NSOutlineView *outlineView;
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) TreeModel *treeModel;
@@ -571,8 +571,8 @@ static NSString *leafNameForNode(TreeNode *node) {
     // First column expands to fill available space
     self.outlineView.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;
 
-    // Style as source list
-    self.outlineView.selectionHighlightStyle = NSTableViewSelectionHighlightStyleSourceList;
+    // Style as source list (the selectionHighlightStyle form is deprecated in macOS 12)
+    self.outlineView.style = NSTableViewStyleSourceList;
 
     // Apply opaque background if transparent is disabled
     // (Source list style provides glass effect by default - only override when user wants opaque)

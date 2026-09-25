@@ -194,6 +194,10 @@ if [ -z "$EXT_DIR_NAME" ]; then
 fi
 
 EXT_DIR="$PROJECT_ROOT/extensions/$EXT_DIR_NAME"
+# The release notes state the component's real minimum macOS, read from its
+# project generator - components move to newer targets independently.
+MIN_MACOS="$(grep -oE 'MACOSX_DEPLOYMENT_TARGET = [0-9.]+' "$EXT_DIR/Scripts/generate_xcode_project.rb" 2>/dev/null | head -1 | awk '{print $3}')"
+MIN_MACOS="${MIN_MACOS:-12.0}"
 if [ ! -d "$EXT_DIR" ]; then
     echo "Error: Extension directory not found: $EXT_DIR"
     exit 1
@@ -349,7 +353,7 @@ $CHANGELOG_CONTENT
 
 ### Requirements
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later"
+- macOS $MIN_MACOS or later"
 else
     # Fallback if no changelog found
     RELEASE_NOTES="## $DISPLAY_NAME v$VERSION
@@ -362,7 +366,7 @@ else
 
 ### Requirements
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later"
+- macOS $MIN_MACOS or later"
 fi
 
 gh release create "$TAG_NAME" \

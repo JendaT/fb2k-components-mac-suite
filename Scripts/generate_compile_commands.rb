@@ -66,7 +66,7 @@ component_dirs.each do |component_dir|
     end
 
     arguments += [
-      "-mmacosx-version-min=11.0",
+      "-mmacosx-version-min=12.0",
       "-DFOOBAR2000_HAVE_CFG_VAR_LEGACY=1",
       "-isysroot", SYSTEM_SDK,
       "-I#{FB2K_SDK}",
@@ -104,7 +104,7 @@ shared_files.each do |source_file|
   end
 
   arguments += [
-    "-mmacosx-version-min=11.0",
+    "-mmacosx-version-min=12.0",
     "-DFOOBAR2000_HAVE_CFG_VAR_LEGACY=1",
     "-isysroot", SYSTEM_SDK,
     "-I#{FB2K_SDK}",

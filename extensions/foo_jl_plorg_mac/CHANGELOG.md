@@ -2,7 +2,10 @@
 
 All notable changes to Playlist Organizer will be documented in this file.
 
-## [1.5.1] - 2026-08-27
+## [1.5.1] - 2026-09-25
+
+### Changed
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
 
 ### Fixed
 - **Crash on restart after a repair**: foobar2000 could be reopened while the migration still held the database, logging "SQLite error" and segfaulting. The migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database.
