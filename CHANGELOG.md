@@ -33,7 +33,7 @@ Adds the Sort submenu, plus a large bug-fix pass: five ways of silently losing
 settings, two ways of hanging the app, and the misplaced drag indicator.
 
 #### Added
-- Sort submenu in the right-click menu, matching the built-in playlist view — Sort by..., Randomize, Reverse and sort by album/artist/file path/title/track number, acting on the selection when two or more tracks are selected (#20). Entries are proxied from foobar2000's own sort commands, so the real Sort by... dialog and any component-registered sort command appear too.
+- **Sort submenu**: Right-click menu now has Sort (Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
 
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
@@ -61,6 +61,7 @@ settings, two ways of hanging the app, and the misplaced drag indicator.
 - Assorted crash guards from a multi-pass code review
 
 #### Changed
+- **macOS 12 required**: Minimum raised from macOS 11; current Xcode no longer builds for 11.
 - Row hit-testing in large grouped playlists no longer nests four searches: group header rows are precomputed, taking a 200k-track/20k-group query from 10,338 array lookups to none, with a probe-budget test enforcing it
 - Internal cleanup, no behaviour change: ~1,100 lines of legacy rendering code removed, five copies of the group-application sequence merged, the column layout given a single writer, settings changes given a defined order
 - Test coverage grew from ~104,000 to ~108,000 assertions, adding suites for the column and preset data formats

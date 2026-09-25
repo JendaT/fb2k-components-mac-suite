@@ -11,7 +11,7 @@ silently losing your settings, two ways of hanging the app, and the drag
 indicator that landed in the wrong place.
 
 ### Added
-- **Sort submenu in the right-click menu** (#20). The context menu now has a Sort submenu matching the built-in playlist view: Sort by..., Randomize, Reverse, and sort by album, artist, file path, title or track number. With two or more tracks selected it reads "Sort Selection" and sorts only those; otherwise it sorts the whole playlist. The entries come from foobar2000 itself rather than being reimplemented, so "Sort by..." opens the real sort dialog and any sort command another component registers appears here too.
+- **Sort submenu**: Right-click menu now has Sort (Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
 
 ### Fixed
 - **Compilation ordering**: Dropped Various Artists albums no longer scatter alphabetically by performer; an album whose tracks disagree about the album artist now sorts by disc and track alone (pure `Core/ImportSorter`, unit-tested).
@@ -50,6 +50,7 @@ tag-derived text, bounds and lifetime checks, and error paths where a
 foobar2000 failure would have closed the app rather than skipping a frame.
 
 ### Changed
+- **macOS 12 required**: Minimum raised from macOS 11; current Xcode no longer builds for 11.
 - **Scrolling and hit-testing are much cheaper in large grouped playlists.** Finding the row under the pointer ran four nested searches; each group's header row is now precomputed. On a 200,000-track, 20,000-group playlist that query went from 10,338 array lookups to none.
 - Internal cleanup with no behaviour change: about 1,100 lines of unreferenced legacy rendering code removed, five copies of the group-application sequence merged into one, the column layout given a single writer, and settings changes given a defined order instead of depending on which listener was notified first.
 - Test coverage grew from roughly 104,000 to 108,000 assertions, including new suites for the column and preset data formats and a performance guard on the row mapping.
