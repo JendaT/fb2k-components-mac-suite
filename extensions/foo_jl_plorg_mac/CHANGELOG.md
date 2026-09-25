@@ -8,6 +8,7 @@ All notable changes to Playlist Organizer will be documented in this file.
 - **Crash on restart after a repair**: foobar2000 could be reopened while the migration still held the database, logging "SQLite error" and segfaulting. The migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database.
 - **Database growth**: cached rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and no longer needs a VACUUM to give the space back.
 - **Migration speed**: 29.1s down to 4.6s on a 2.35 GB / 157,781-row database, with a byte-identical result.
+- **Faster restart after a repair**: The working copy is an instant APFS clone, a redundant second integrity check is gone, and foobar2000 reopens before the old file is deleted.
 - **Reclaiming old bloat**: the staged copy is compacted when it is mostly free pages, so space lost to earlier versions is recovered instead of being permanent. Compacting a copy carries none of the risk that compacting the live database did.
 
 ### Added

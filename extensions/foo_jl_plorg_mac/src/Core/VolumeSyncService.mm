@@ -1244,14 +1244,18 @@ public:
     //
     //  1. waits for this fb2k process to exit;
     //  2. aborts if another foobar2000 is already running;
-    //  3. fingerprints the live DB and stages a working copy of it;
+    //  3. fingerprints the live DB and stages a working copy of it - an APFS
+    //     clone, which is instant and shares blocks until the migration writes
+    //     (a plain copy of a 4.5 GB DB took ~7s of the restart delay);
     //  4. migrates and verifies THE COPY - from here until step 6 foobar2000 may
     //     be reopened at any moment with no effect on it whatsoever;
     //  5. re-checks that no fb2k is running and that the live DB is byte-for-byte
     //     as fingerprinted, else abandons the copy and reschedules;
     //  6. compacts the copy if it is mostly free pages, then swaps by rename
-    //     (original kept aside until the new file verifies);
-    //  7. reopens foobar2000 if relaunchApp asked for it.
+    //     (original kept aside until the new file opens; the full quick_check
+    //     already ran on these exact bytes, and a rename cannot change them);
+    //  7. reopens foobar2000 if relaunchApp asked for it, and only then deletes
+    //     the set-aside original, so that unlink is not on the restart path.
     //
     // Why: on 2026-08-27 foobar2000 was relaunched ~4s before the migration
     // finished, hit the EXCLUSIVE lock sqlite3 held on metadb, logged
@@ -1292,7 +1296,7 @@ public:
         @"  exit 0\n"
         @"fi\n"
         @"rm -f \"$WORK\" \"$WORK-wal\" \"$WORK-shm\"\n"
-        @"/bin/cp -f \"$DB\" \"$WORK\" || give_up \"Migration SKIPPED: could not stage a working copy.\"\n"
+        @"/bin/cp -c -f \"$DB\" \"$WORK\" 2>/dev/null || /bin/cp -f \"$DB\" \"$WORK\" || give_up \"Migration SKIPPED: could not stage a working copy.\"\n"
         @"for ext in -wal -shm; do\n"
         @"  if [ -f \"$DB$ext\" ]; then /bin/cp -f \"$DB$ext\" \"$WORK$ext\"; fi\n"
         @"done\n"
@@ -1350,11 +1354,14 @@ public:
         @"  done\n"
         @"  give_up \"Swap FAILED: the original database has been put back.\"\n"
         @"fi\n"
-        @"chk=$(/usr/bin/sqlite3 \"$DB\" 'PRAGMA quick_check;' 2>&1 | /usr/bin/head -1)\n"
+        @"chk=$(/usr/bin/sqlite3 \"$DB\" 'PRAGMA schema_version;' >/dev/null 2>&1 && echo ok || echo unreadable)\n"
         @"if [ \"$chk\" = \"ok\" ]; then\n"
         @"  after=$(/usr/bin/stat -f%%z \"$DB\" 2>/dev/null || echo 0)\n"
         @"  note \"Swap complete and verified. $((dbsize / 1048576)) MB -> $((after / 1048576)) MB.\"\n"
+        @"  rm -f \"$SQL\"\n"
+        @"  relaunch\n"
         @"  rm -f \"$PREV\" \"$PREV-wal\" \"$PREV-shm\"\n"
+        @"  exit 0\n"
         @"else\n"
         @"  /bin/mv -f \"$PREV\" \"$DB\"\n"
         @"  for ext in -wal -shm; do\n"
