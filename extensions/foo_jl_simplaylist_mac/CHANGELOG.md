@@ -30,10 +30,11 @@ indicator that landed in the wrong place.
 
 **Grouping and preferences actually apply**
 - Switching grouping preset works. It previously appeared to do nothing until you edited a pattern field.
+- **Preset and display size at launch**: Your chosen preset and row size now apply on startup; previously every restart used the first preset and 22 pt rows until a setting changed.
+- **Glass background toggle**: Switching glass on or off no longer blanks the panel until restart.
 - Adding, removing or renaming a custom column shows up immediately instead of after a restart.
 - Toggling either subgroup option redraws with the new setting instead of reusing the old layout.
 - Typing a grouping pattern is no longer sluggish, and leaving the field rebuilds the playlist once rather than twice.
-- An invalid pattern is now reported as invalid, instead of previewing a track filename as though it had worked.
 
 **Dragging, keys and selection**
 - **Drops from the album list**: Tracks dragged from the album list are now accepted, in album list order with their exact subsongs.

@@ -213,6 +213,10 @@ struct ReloadOperation {
     // The service_ptr must outlive the menu, since execute() is called after
     // the menu has been built and dismissed.
     std::vector<std::pair<mainmenu_commands::ptr, t_uint32>> _sortCommands;
+    // Blur layer behind the header and scroll view while glass mode is on.
+    // A subview of the controller's permanent root view — see
+    // -updateGlassEffectView: for why the root is never replaced.
+    NSVisualEffectView *_glassEffectView;
     // Active reload operations for progress tracking
     std::vector<ReloadOperation> _reloadOperations;
     // Pre-compiled title format scripts for columns (rebuilt when columns change)
@@ -276,8 +280,7 @@ struct ReloadOperation {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
         [self reloadColumnsFromConfig];
-        _groupPresets = [GroupPreset defaultPresets];
-        _activePresetIndex = 0;
+        [self reloadPresetsFromConfig];
         _currentPlaylistIndex = -1;
         _scrollAnchorIndices = [NSMutableDictionary dictionary];
         _scrollRestorePlaylistIndex = -1;
@@ -304,13 +307,10 @@ struct ReloadOperation {
             simplaylist_config::kHeaderAccentColor,
             simplaylist_config::kDefaultHeaderAccentColor));
 
-    // Create container view - use glass helper for transparent mode
-    NSView *container;
-    if (glassBackground) {
-        container = fb2k_ui::createGlassContainer(NSMakeRect(0, 0, 400, 300));
-    } else {
-        container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
-    }
+    // The root view is created once and kept for the controller's lifetime;
+    // glass mode is a blur layer added beneath the content, not a different
+    // root. See -updateGlassEffectView:.
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.view = container;
 
@@ -352,11 +352,17 @@ struct ReloadOperation {
         simplaylist_config::kDefaultAlbumArtSize);
     _playlistView.glassBackground = glassBackground;
     _playlistView.wantsLayer = YES;  // Layer backing for smooth drawing
+    // Row height, subgroup height, header style and spacing come from config
+    // here, the same as after a settings change. Until this call existed they
+    // only did the latter: commonInit hard-codes the 22 pt default row height,
+    // so Compact and Large users got 22 pt rows after every launch.
+    [_playlistView reloadSettings];
 
     // Configure scroll view and set document view
     _scrollView.documentView = _playlistView;
     fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
     [container addSubview:_scrollView];
+    [self updateGlassEffectView:glassBackground];
 
     // Observe scroll changes to sync header
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -437,6 +443,30 @@ struct ReloadOperation {
     [self autoResizeColumns];
 }
 
+// Add or remove the blur layer behind the header and scroll view.
+//
+// This used to build a new NSVisualEffectView or NSView, move the header and
+// scroll view into it, and assign it to self.view. -[NSViewController setView:]
+// does not re-parent: the host's split and tab containers kept displaying the
+// old root, now emptied of its subviews, so toggling Glass background blanked
+// every panel until restart — the opposite of the live toggle it announced.
+// Adding and removing a background subview under a permanent root is the
+// pattern the waveform seekbar uses, and it needs no cooperation from the host.
+- (void)updateGlassEffectView:(BOOL)glass {
+    if (glass == (_glassEffectView != nil)) return;
+
+    if (glass) {
+        // Shared helper, so the material and blending match the other
+        // components' glass mode.
+        _glassEffectView = (NSVisualEffectView *)fb2k_ui::createGlassContainer(self.view.bounds);
+        _glassEffectView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self.view addSubview:_glassEffectView positioned:NSWindowBelow relativeTo:nil];
+    } else {
+        [_glassEffectView removeFromSuperview];
+        _glassEffectView = nil;
+    }
+}
+
 - (void)handleSettingsChanged:(NSNotification *)notification {
     // First, so the rest of this method sees current geometry. rowHeight and
     // headerDisplayStyle live on the view and feed the group padding computed
@@ -449,16 +479,7 @@ struct ReloadOperation {
     NSDictionary *savedAnchor = [self captureScrollAnchor];
 
     // Reload group presets from config
-    std::string savedJSON = simplaylist_config::getConfigString(
-        simplaylist_config::kGroupPresets, "");
-    if (!savedJSON.empty()) {
-        NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
-        _groupPresets = [GroupPreset presetsFromJSON:jsonString];
-        _activePresetIndex = [GroupPreset activeIndexFromJSON:jsonString];
-    } else {
-        _groupPresets = [GroupPreset defaultPresets];
-        _activePresetIndex = 0;
-    }
+    [self reloadPresetsFromConfig];
 
     // Reload header size and accent mode from config
     fb2k_ui::SizeVariant headerSize = static_cast<fb2k_ui::SizeVariant>(
@@ -482,25 +503,7 @@ struct ReloadOperation {
     BOOL glassBackground = simplaylist_config::getConfigBool(
         simplaylist_config::kGlassBackground,
         simplaylist_config::kDefaultGlassBackground);
-    BOOL currentlyGlass = [self.view isKindOfClass:[NSVisualEffectView class]];
-    if (glassBackground != currentlyGlass) {
-        NSView *newContainer;
-        if (glassBackground) {
-            newContainer = fb2k_ui::createGlassContainer(self.view.frame);
-        } else {
-            newContainer = [[NSView alloc] initWithFrame:self.view.frame];
-        }
-        newContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-
-        // Transfer subviews to new container
-        [_headerBar removeFromSuperview];
-        [_scrollView removeFromSuperview];
-        [newContainer addSubview:_headerBar];
-        [newContainer addSubview:_scrollView];
-
-        // Replace the view (NSViewController manages parent insertion)
-        self.view = newContainer;
-    }
+    [self updateGlassEffectView:glassBackground];
     _headerBar.glassBackground = glassBackground;
     _playlistView.glassBackground = glassBackground;
     fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
@@ -3171,6 +3174,24 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
 // The store used to persist those repairs itself, from inside a getter, which
 // left kColumns with four writers and no owner. The controller holds the live
 // layout, so the decision to save belongs here.
+// Load the preset list and the active index from config.
+//
+// The single path for both, used at init and on every settings change. init
+// used to assign _activePresetIndex = 0 (unchanged since the initial commit)
+// and only the settings handler read the saved index, so after every restart
+// panels grouped by preset 0 while Preferences showed the user's real choice —
+// until the first unrelated settings change happened to fix it. The handler
+// also re-parsed the JSON with its own fallback policy (empty list, grouping
+// silently off) where the Store falls back to the built-in presets. Both now
+// go through the Store, and the index is clamped here rather than trusted: an
+// out-of-range value would otherwise yield a nil preset and no grouping.
+- (void)reloadPresetsFromConfig {
+    _groupPresets = [GroupPreset defaultPresets];
+    NSInteger index = [GroupPreset defaultActivePresetIndex];
+    if (index < 0 || index >= (NSInteger)_groupPresets.count) index = 0;
+    _activePresetIndex = index;
+}
+
 - (void)reloadColumnsFromConfig {
     BOOL needsPersist = NO;
     _columns = [ColumnDefinition loadVisibleColumnsNeedingPersist:&needsPersist];

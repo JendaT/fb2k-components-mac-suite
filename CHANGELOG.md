@@ -48,10 +48,11 @@ settings, two ways of hanging the app, and the misplaced drag indicator.
 - An oversized cover was re-decoded on every redraw across four threads for as long as it was on screen
 - Album art is capped by memory (256 MB) as well as image count; it could previously reach ~1 GB
 - Switching grouping preset did nothing until an unrelated pattern field was edited
+- **Preset and display size at launch**: Chosen preset and row size now apply on startup instead of falling back to the first preset and 22 pt rows
+- **Glass background toggle**: No longer blanks the panel until restart
 - Custom column changes required a restart
 - Toggling either subgroup option reused the layout cached under the old setting
 - Typing a grouping pattern was sluggish; leaving the field rebuilt the playlist twice
-- An invalid pattern previewed a track filename instead of being reported as invalid
 - Drop indicator sat up to 150 px below the cursor in grouped playlists, and the drop landed where the line was drawn
 - Home/End jumped to an arbitrary point mid-list in grouped playlists
 - Multi-disc albums dropped from the Tidal browser interleaved their discs
