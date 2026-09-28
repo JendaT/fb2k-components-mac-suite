@@ -91,6 +91,8 @@ static const char* const kShowGroupDuration = "show_group_duration";
 // 0 = default (replace active playlist), 1 = append to current playlist, 2 = send to named playlist
 static const char* const kFinderOpenBehavior = "finder_open_behavior";
 static const char* const kFinderOpenTargetPlaylist = "finder_open_target_playlist";
+// Last pattern entered in the context menu's "Sort by..." prompt.
+static const char* const kLastSortPattern = "last_sort_pattern";
 
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;

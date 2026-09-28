@@ -34,4 +34,18 @@ std::vector<size_t> planReorder(size_t itemCount,
 size_t adjustedReorderDestination(const std::vector<size_t> &sortedSources,
                                   size_t destIndex);
 
+// Plan reversing the items at `positions` among themselves, leaving every
+// other item where it is: the item at the first listed position swaps with the
+// one at the last, and so on inward. Pass every index to reverse the whole
+// playlist, or the selected indices to reverse just the selection (the
+// Sort > Reverse command).
+//
+// `positions` is sanitised rather than trusted: it is sorted, duplicates are
+// dropped, and indices >= itemCount are ignored, so a stale selection cannot
+// produce an invalid permutation.
+//
+// Returns the permutation in playlist_reorder_items() convention:
+// result[newPosition] = oldPosition, with result.size() == itemCount.
+std::vector<size_t> planReverse(size_t itemCount, std::vector<size_t> positions);
+
 }  // namespace simplaylist

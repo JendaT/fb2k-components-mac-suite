@@ -209,10 +209,6 @@ struct ReloadOperation {
     contextmenu_manager::ptr _contextMenuManagerV1;
     // Store handles for custom menu actions (Reload Info)
     metadb_handle_list _contextMenuHandles;
-    // Sort submenu backing store: menu item tag -> (service, command index).
-    // The service_ptr must outlive the menu, since execute() is called after
-    // the menu has been built and dismissed.
-    std::vector<std::pair<mainmenu_commands::ptr, t_uint32>> _sortCommands;
     // Blur layer behind the header and scroll view while glass mode is on.
     // A subview of the controller's permanent root view — see
     // -updateGlassEffectView: for why the root is never replaced.
@@ -2506,74 +2502,84 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 // the context menu (both the v2 and v1 menu builders call this last).
 #pragma mark - Sort submenu
 
-// Collect the sort commands foobar2000 registers under one main-menu group.
+// The Sort submenu (GitHub issue #20) sorts through the documented
+// playlist_manager API rather than proxying the host's own Sort commands.
 //
-// The host registers its sort commands in two groups: edit_part2_sort acts on
-// the whole playlist, edit_part2_selection_sort on the selection. Proxying them
-// rather than reimplementing sorting means "Sort by..." opens the host's real
-// dialog, the entries match the built-in playlist view exactly, and any sort
-// command a third-party component adds shows up here too.
+// The host does register Sort under edit_part2_sort and
+// edit_part2_selection_sort, as one dynamic mainmenu command per group that
+// expands to exactly these eight entries. But it reports every entry disabled
+// unless its own playlist view is the context: a startup dump with foobar2000
+// frontmost and an ordinary unlocked 8,732-item playlist active showed all of
+// them — and Remove duplicates — flagged disabled. SimPlaylist can never be
+// that context, so a proxied submenu is permanently greyed out, and executing
+// entries the host marks disabled would rely on undocumented behaviour.
 //
-// Appends to _sortCommands, whose index becomes the menu item's tag.
-- (void)collectSortCommandsForGroup:(const GUID &)group into:(NSMenu *)submenu {
-    for (auto commands : mainmenu_commands::enumerate()) {
-        if (commands->get_parent() != group) continue;
+// Labels and order match the host's menu. The field sorts use the field the
+// label names; playlist_sort_by_format with a null pattern is the SDK's
+// randomize; Reverse is planned by the tested simplaylist::planReverse.
+enum : NSInteger {
+    kSortActionPrompt = 1,   // "Sort by..." — ask for a title-formatting pattern
+    kSortActionRandomize,
+    kSortActionReverse,
+    kSortActionPattern,      // representedObject holds the pattern
+};
 
-        const t_uint32 count = commands->get_command_count();
-        for (t_uint32 i = 0; i < count; i++) {
-            pfc::string8 text;
-            t_uint32 flags = 0;
-            // false means "do not display" — a keyboard-shortcut-only command.
-            if (!commands->get_display(i, text, flags)) continue;
-            // Hidden unless shift is held; the context menu has no such affordance.
-            if (flags & mainmenu_commands::flag_defaulthidden) continue;
+// Entries on menu items carry the action in the tag and "sort only the
+// selection" in the high bit, so a click acts on what the menu was built for.
+static const NSInteger kSortSelectionOnlyFlag = 1 << 16;
 
-            NSString *title = [NSString stringWithUTF8String:text.c_str()];
-            if (title.length == 0) continue;  // nil on invalid UTF-8
-
-            NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
-                                                          action:@selector(sortCommandClicked:)
-                                                   keyEquivalent:@""];
-            item.target = self;
-            item.tag = (NSInteger)_sortCommands.size();
-            item.enabled = !(flags & mainmenu_commands::flag_disabled);
-            if (flags & (mainmenu_commands::flag_checked | mainmenu_commands::flag_radiochecked)) {
-                item.state = NSControlStateValueOn;
-            }
-            _sortCommands.emplace_back(commands, i);
-            [submenu addItem:item];
-        }
-    }
+- (NSMenuItem *)sortItemWithTitle:(NSString *)title action:(NSInteger)action
+                          pattern:(NSString *)pattern selectionOnly:(BOOL)selectionOnly
+                          enabled:(BOOL)enabled {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                  action:@selector(sortMenuItemClicked:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.tag = action | (selectionOnly ? kSortSelectionOnlyFlag : 0);
+    item.representedObject = pattern;
+    item.enabled = enabled;
+    return item;
 }
 
-// Add the "Sort" submenu, mirroring the built-in playlist view's context menu
-// (GitHub issue #20).
-//
-// Which group to offer depends on what the click acted on: with two or more
-// tracks selected the user means "sort these", otherwise "sort the playlist".
-// Falls back to the whole-playlist group if the selection group turns out to be
-// empty, so an unpopulated group can never leave an empty submenu behind.
+// With two or more tracks selected the user means "sort these", so the item
+// reads "Sort Selection" and every entry acts on the selection only — the
+// same split the host makes with its two Sort groups. Otherwise it sorts the
+// whole playlist.
 - (void)appendSortSubmenuToMenu:(NSMenu *)menu selectedCount:(NSUInteger)selectedCount {
-    _sortCommands.clear();
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
+    auto pm = playlist_manager::get();
+    if (pm->playlist_get_item_count(playlist) < 2) return;  // nothing to order
+
+    const BOOL selectionOnly = (selectedCount > 1);
+    // A lock that forbids reordering (for example an autoplaylist) makes every
+    // entry a no-op, so show them disabled rather than fail silently.
+    const BOOL enabled = !(pm->playlist_lock_is_present(playlist) &&
+                           (pm->playlist_lock_get_filter_mask(playlist) & playlist_lock::filter_reorder));
 
     NSMenu *submenu = [[NSMenu alloc] initWithTitle:@"Sort"];
     [submenu setAutoenablesItems:NO];
-
-    BOOL sortingSelection = (selectedCount > 1);
-    if (sortingSelection) {
-        [self collectSortCommandsForGroup:mainmenu_groups::edit_part2_selection_sort into:submenu];
-        if (submenu.numberOfItems == 0) sortingSelection = NO;
+    [submenu addItem:[self sortItemWithTitle:@"Sort by..." action:kSortActionPrompt
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    [submenu addItem:[self sortItemWithTitle:@"Randomize" action:kSortActionRandomize
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    [submenu addItem:[self sortItemWithTitle:@"Reverse" action:kSortActionReverse
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    static NSArray<NSArray<NSString *> *> *const kFieldSorts = @[
+        @[@"Sort by album", @"%album%"],
+        @[@"Sort by artist", @"%artist%"],
+        @[@"Sort by file path", @"%path%"],
+        @[@"Sort by title", @"%title%"],
+        @[@"Sort by track number", @"%tracknumber%"],
+    ];
+    for (NSArray<NSString *> *entry in kFieldSorts) {
+        [submenu addItem:[self sortItemWithTitle:entry[0] action:kSortActionPattern
+                                         pattern:entry[1] selectionOnly:selectionOnly enabled:enabled]];
     }
-    if (!sortingSelection) {
-        [self collectSortCommandsForGroup:mainmenu_groups::edit_part2_sort into:submenu];
-    }
 
-    // Nothing registered — omit the submenu rather than show an empty one.
-    if (submenu.numberOfItems == 0) return;
-
-    // Name it for what it will actually do, so sorting a selection is never a
-    // surprise on a playlist the user cannot see all of.
-    NSMenuItem *sortItem = [[NSMenuItem alloc] initWithTitle:(sortingSelection ? @"Sort Selection" : @"Sort")
+    // Named for what it will do, so sorting a selection is never a surprise
+    // on a playlist too long to see all of.
+    NSMenuItem *sortItem = [[NSMenuItem alloc] initWithTitle:(selectionOnly ? @"Sort Selection" : @"Sort")
                                                       action:nil
                                                keyEquivalent:@""];
     sortItem.submenu = submenu;
@@ -2581,14 +2587,79 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     [menu addItem:[NSMenuItem separatorItem]];
 }
 
-- (void)sortCommandClicked:(NSMenuItem *)sender {
-    NSInteger tag = sender.tag;
-    if (tag < 0 || (size_t)tag >= _sortCommands.size()) return;
+// Ask for a title-formatting pattern, remembering the last one used.
+// Returns nil if the user cancels or enters nothing.
+- (nullable NSString *)promptForSortPattern {
+    std::string last = simplaylist_config::getConfigString(simplaylist_config::kLastSortPattern, "");
+    NSString *initial = [NSString stringWithUTF8String:last.c_str()] ?: @"";
 
-    auto entry = _sortCommands[(size_t)tag];
-    runGuardedSDKAction("Sort command", ^{
-        // The callback parameter is reserved by the SDK and must be null.
-        entry.first->execute(entry.second, nullptr);
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Sort by";
+    alert.informativeText = @"Title formatting pattern, for example %album artist% - %date% - %album%";
+    [alert addButtonWithTitle:@"Sort"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.stringValue = initial.length ? initial : @"%artist%";
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+
+    if ([alert runModal] != NSAlertFirstButtonReturn) return nil;
+    NSString *pattern = [field.stringValue stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (pattern.length == 0) return nil;
+    simplaylist_config::setConfigString(simplaylist_config::kLastSortPattern, pattern.UTF8String);
+    return pattern;
+}
+
+- (void)sortMenuItemClicked:(NSMenuItem *)sender {
+    const NSInteger action = sender.tag & ~kSortSelectionOnlyFlag;
+    const bool selectionOnly = (sender.tag & kSortSelectionOnlyFlag) != 0;
+    NSString *pattern = [sender.representedObject isKindOfClass:[NSString class]] ? sender.representedObject : nil;
+
+    // Modal, so before resolving the playlist: the prompt spins the run loop,
+    // during which the active playlist can change.
+    if (action == kSortActionPrompt) {
+        pattern = [self promptForSortPattern];
+        if (!pattern) return;
+    }
+
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
+
+    runGuardedSDKAction("Sort playlist", ^{
+        auto pm = playlist_manager::get();
+        // Each sort is one undoable step, like the host's own.
+        pm->playlist_undo_backup(playlist);
+
+        switch (action) {
+            case kSortActionRandomize:
+                // A null pattern is the SDK's documented randomize.
+                pm->playlist_sort_by_format(playlist, nullptr, selectionOnly);
+                break;
+            case kSortActionReverse: {
+                const t_size count = pm->playlist_get_item_count(playlist);
+                std::vector<size_t> positions;
+                if (selectionOnly) {
+                    bit_array_bittable mask(count);
+                    pm->playlist_get_selection_mask(playlist, mask);
+                    for (t_size i = 0; i < count; i++) if (mask.get(i)) positions.push_back(i);
+                } else {
+                    positions.resize(count);
+                    for (t_size i = 0; i < count; i++) positions[i] = i;
+                }
+                std::vector<size_t> order = simplaylist::planReverse(count, positions);
+                pm->playlist_reorder_items(playlist, order.data(), order.size());
+                break;
+            }
+            case kSortActionPrompt:
+            case kSortActionPattern:
+                if (pattern.length) {
+                    pm->playlist_sort_by_format(playlist, pattern.UTF8String, selectionOnly);
+                }
+                break;
+            default:
+                break;
+        }
     });
 }
 

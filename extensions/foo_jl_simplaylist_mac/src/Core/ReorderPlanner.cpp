@@ -8,6 +8,8 @@
 
 #include "ReorderPlanner.h"
 
+#include <algorithm>
+
 namespace simplaylist {
 
 size_t adjustedReorderDestination(const std::vector<size_t> &sortedSources,
@@ -81,6 +83,23 @@ std::vector<size_t> planReorder(size_t itemCount,
         order[writePos++] = nonMovedItems[i];
     }
 
+    return order;
+}
+
+std::vector<size_t> planReverse(size_t itemCount, std::vector<size_t> positions) {
+    std::vector<size_t> order(itemCount);
+    for (size_t i = 0; i < itemCount; i++) order[i] = i;
+
+    positions.erase(std::remove_if(positions.begin(), positions.end(),
+                                   [itemCount](size_t p) { return p >= itemCount; }),
+                    positions.end());
+    std::sort(positions.begin(), positions.end());
+    positions.erase(std::unique(positions.begin(), positions.end()), positions.end());
+
+    const size_t n = positions.size();
+    for (size_t k = 0; k < n; k++) {
+        order[positions[k]] = positions[n - 1 - k];
+    }
     return order;
 }
 
