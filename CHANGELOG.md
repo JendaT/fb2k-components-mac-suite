@@ -488,24 +488,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Queue Manager
 
-### [1.2.0] - 2026-08-17
+### [1.2.0] - 2026-10-02
 
 #### Added
-- Multi-row drag reorder — moves the whole selection as a block (previously only the first row moved)
-- Queue restored after restart (on by default; "Restore queue after restart" in preferences)
-- Stop After Queue — stops playback when the queue runs out; in the Playback menu, a new Queue Manager context menu, and preferences; optional one-shot mode (off by default)
+- **Stop After Queue**: Stops playback when the last queued track finishes; Playback menu, context menu or preferences (off by default).
+- **Stop only once**: Optional mode that turns Stop After Queue off after it stops playback.
+- **Queue restore**: Queue is saved on quit and re-added on launch (on by default).
+- **Context menu**: Right-click in Queue Manager for the Stop After Queue toggles.
+- **Multi-row drag reorder**: Selected rows move together; previously only the first row moved.
 
 #### Fixed
-- Double refresh and doubled selection reset on every reorder (suppression flag was checked after it had been cleared)
-- View froze permanently if a queue rebuild failed partway
-- Tracks lost on reorder when the source playlist had changed — now re-added by handle
-- Malformed drops referencing a nonexistent playlist are rejected instead of reaching the SDK
-- Malformed track lengths (NaN/infinite/oversized) show `--:--` instead of garbage
-- Build failure after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`
+- **Reorder flicker**: Each reorder no longer rebuilds the view and resets the selection twice.
+- **Frozen view**: View no longer stops updating after a failed reorder.
+- **Reorder after playlist edits**: Tracks whose source playlist changed are kept instead of lost.
+- **Malformed drops**: Drops referencing a nonexistent playlist are rejected.
+- **Duration display**: Malformed track lengths show `--:--` instead of garbage.
 
 #### Changed
-- Column metadata consolidated into a single source of truth; dead QueueHeaderView removed from the binary
-- Pure logic extracted into SDK-free Core units (QueueReorderPlanner, QueueFormatting, QueueDropParser) with 3300+ unit test checks gating every build
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **Column metadata**: Consolidated into a single source of truth; unused `QueueHeaderView` removed.
 
 ### [1.1.2] - 2026-02-09
 
