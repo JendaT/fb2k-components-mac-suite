@@ -106,11 +106,12 @@ Visual playback queue manager - functionality that exists in Windows foobar2000 
 <!-- Screenshot: Queue Manager -->
 
 **Features:**
-- Visual queue display with configurable columns
-- Drag & drop reordering within queue
+- Visual queue display with item count
+- Drag & drop reordering (multiple rows at once) and drops from SimPlaylist
 - Live updates when queue changes
-- Double-click to play, Delete to remove
-- Context menu (Play, Remove, Clear, Show in Playlist)
+- Double-click or Enter to play, Delete to remove
+- Queue restored after restart
+- Stop After Queue: stop playback when the queue runs out (Playback menu, context menu, preferences)
 
 ---
 
@@ -164,7 +165,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 ## Requirements
 
 - foobar2000 v2.6+ for macOS
-- macOS 11 "Big Sur" or newer
+- macOS 11 "Big Sur" or newer (Playlist Organizer and Queue Manager: macOS 12 "Monterey" or newer)
 - Intel or Apple Silicon processor
 
 ## Building from Source

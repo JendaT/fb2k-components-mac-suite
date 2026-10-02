@@ -31,23 +31,13 @@ With **Stop After Queue** on, playback stops when the last queued track finishes
 - Only the queue running out during playback triggers it; clearing the queue by hand does not.
 - **Turn off after it stops playback once** (preferences or context menu) makes it one-shot: after it stops playback, Stop After Queue switches itself off.
 
-### Configurable Columns
+### Columns
 
-Choose which information to display:
+The queue shows three columns: **#** (queue position), **Artist - Title** and **Duration**. Drag the header dividers to resize them. Choosing other columns is not implemented yet.
 
-| Column | Description |
-|--------|-------------|
-| # | Queue position (1-based) |
-| Artist - Title | Combined artist and title |
-| Artist | Artist name only |
-| Title | Track title only |
-| Album | Album name |
-| Duration | Track length |
-| Codec | Audio format |
-| Bitrate | Bitrate in kbps |
-| Path | File path |
+### Status Bar
 
-Right-click on the column header to show/hide columns.
+The bar at the bottom shows how many items are queued.
 
 ### Keyboard Shortcuts
 
@@ -56,17 +46,12 @@ Right-click on the column header to show/hide columns.
 | Delete/Backspace | Remove selected from queue |
 | Enter | Play selected item |
 | Cmd+A | Select all |
-| Escape | Deselect all |
 
 ### Context Menu
 
 Right-click anywhere in Queue Manager for:
 - **Stop After Queue** - Stop playback when the queue runs out
 - **Turn Off After Stopping Once** - Make Stop After Queue one-shot (available while Stop After Queue is on)
-
-### Empty State
-
-When the queue is empty, a helpful message explains how to add items.
 
 ## Adding Tracks to Queue
 
@@ -77,14 +62,13 @@ Or use the keyboard shortcut (if configured).
 
 ## Configuration
 
-Access settings via **Preferences > Display > Queue Manager** (if available).
+Access settings via **Preferences > Display > Queue Manager**.
 
 ### Available Settings
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Show Status Bar | Display item count at bottom | On |
-| Alternating Rows | Alternating row background colors | On |
+| Transparent background (glass effect) | Translucent background; takes effect after restart | On |
 | Restore queue after restart | Save the queue on quit and re-add it on launch | On |
 | Stop after queue | Stop when the last queued track finishes | Off |
 | Turn off after it stops playback once | Stop after queue switches itself off after stopping once | Off |
