@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Fixed
+- Dragging tracks or folders from the album list into the playlist did nothing
 - Home key jumped to an arbitrary point mid-list instead of the first track in grouped playlists (End was wrong the same way but masked by clamping)
 - An album cover too large to cache was re-decoded on every redraw, on up to four threads, for as long as it was on screen
 - Invalid grouping patterns previewed as the track's filename instead of reporting themselves as invalid
