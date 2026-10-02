@@ -14,6 +14,7 @@
 # An entry is removed only when ALL of these hold:
 #   * its originalPath is the share's mountpoint: /Volumes/<share> or
 #     /Volumes/<share>-N (case-insensitive) - other volumes are not ours to judge
+#   * the Media Library does not watch it (library-v2.0 folders / rootPath)
 #   * no live playlist references its UUID (plorg's backup_* folders are ignored;
 #     a restored backup is re-mapped by plorg's volume sync anyway)
 #   * no metadb row references it
@@ -53,6 +54,7 @@ done
 CONFIG="$FB2K_DIR/config.sqlite"
 METADB="$FB2K_DIR/metadb.sqlite"
 PLAYLISTS="$FB2K_DIR/playlists-v2.0"
+LIBRARY="$FB2K_DIR/library-v2.0"
 UUID_RE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 
 [ -f "$CONFIG" ] || { echo "no config.sqlite at $CONFIG" >&2; exit 3; }
@@ -77,6 +79,19 @@ trap '/bin/rm -rf "$WORK"' EXIT
         /usr/bin/find "$PLAYLISTS" -maxdepth 1 -type f -exec \
             /usr/bin/grep -aohE "mac-volume://$UUID_RE" {} + 2>/dev/null
     fi
+    # The Media Library's watched folders. Missing these let a prune delete the
+    # bookmark the library root depends on, so the library could not refill
+    # (2026-10-02). Both the folder list and each library database's rootPath.
+    if [ -f "$LIBRARY/folders" ]; then
+        /usr/bin/grep -aohE "mac-volume://$UUID_RE" "$LIBRARY/folders" 2>/dev/null
+    fi
+    for lib in "$LIBRARY"/*/content.sqlite; do
+        [ -f "$lib" ] || continue
+        /usr/bin/sqlite3 -cmd "PRAGMA busy_timeout=15000;" "file:$lib?mode=ro" \
+            "SELECT value FROM config WHERE key = 'rootPath';" 2>/dev/null \
+            | /usr/bin/grep -aoE "mac-volume://$UUID_RE" \
+            || true
+    done
     if [ -f "$METADB" ]; then
         /usr/bin/sqlite3 -cmd "PRAGMA busy_timeout=15000;" "file:$METADB?mode=ro" "
             SELECT DISTINCT substr(name, instr(name, 'mac-volume://'), 49)

@@ -83,5 +83,14 @@ FB2K_DIR="$P" FB2K_PROCESS=plorgnosuchproc "$SCRIPT" --apply >/dev/null 2>&1; rc
 ck "exit 3" "$rc" "3"
 ck "nothing written" "$(entries "$P")" "6"
 
+echo "=== 6. a UUID only the Media Library watches is kept (2026-10-02) ==="
+P="$T/p6"; mkprofile "$P"
+mkdir -p "$P/library-v2.0/2C246EEC2C162256"
+printf '\001\000\000\0002\000\000\000mac-volume://%s/\000\000\000\000' "$DEAD2" > "$P/library-v2.0/folders"
+sqlite3 "$P/library-v2.0/2C246EEC2C162256/content.sqlite" "CREATE TABLE config (key TEXT UNIQUE PRIMARY KEY, value TEXT); INSERT INTO config VALUES ('rootPath','mac-volume://$NEAR/');"
+OUT="$(FB2K_DIR="$P" FB2K_PROCESS=plorgnosuchproc "$SCRIPT" 2>&1)"
+ck "library folder UUID kept"       "$(echo "$OUT" | grep "$DEAD2" | grep -c 'keep - referenced')" "1"
+ck "dead music-1 UUID still removed" "$(echo "$OUT" | grep "$DEAD1" | grep -c 'REMOVE')" "1"
+
 echo; printf ' RESULT: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
