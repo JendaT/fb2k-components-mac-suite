@@ -8,7 +8,7 @@ A visual playback queue manager for foobar2000 macOS - functionality that exists
 
 See all queued tracks in a familiar table view interface. The queue shows tracks waiting to be played in order.
 
-<!-- Screenshot: Queue Manager with items -->
+![Queue Manager with queued tracks](images/queuemanager-overview.png)
 
 ### Drag & Drop Reordering
 

@@ -103,7 +103,7 @@ splitter horizontal
 
 Visual playback queue manager - functionality that exists in Windows foobar2000 but was missing on macOS. See all queued tracks and manage playback order.
 
-<!-- Screenshot: Queue Manager -->
+![Queue Manager](docs/images/queuemanager-overview.png)
 
 **Features:**
 - Visual queue display with item count
