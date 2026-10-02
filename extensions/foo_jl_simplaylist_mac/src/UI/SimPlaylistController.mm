@@ -856,10 +856,22 @@ struct ReloadOperation {
                                  (isFirstLoad || (NSInteger)activePlaylist != _currentPlaylistIndex));
 
     // Save scroll anchor for BOTH playlist switches AND same-playlist refreshes
-    // This prevents visual jumping when items are added/removed
-    // IMPORTANT: Skip saving if a drag is in progress - drag can trigger playlist switches
-    // when hovering over another playlist, and we don't want to save the mid-drag position
-    if (!isFirstLoad && !_playlistView.isDragging) {
+    // This prevents visual jumping when items are added/removed.
+    //
+    // During a drag, skip it only when SWITCHING: hovering over another
+    // playlist mid-drag makes it active, and the outgoing playlist's viewport
+    // may hold a mid-drag (autoscrolled) position that must not be saved.
+    // A same-playlist refresh during a drag is the drop itself landing —
+    // isDragging is still YES then, because AppKit clears it in
+    // draggingSession:endedAtPoint:, after performDragOperation, while the
+    // reorder callbacks are already queued on the main queue. Skipping the
+    // capture there left the anchor from the last rebuild BEFORE the user
+    // scrolled away, and the synchronous detection path's inline restore then
+    // jumped the view back to it (the playlist over 500 groups has no group
+    // cache, so every drop took that path). The viewport at the drop is
+    // exactly the position to keep.
+    const BOOL dragSwitch = isSwitchingPlaylist && _playlistView.isDragging;
+    if (!isFirstLoad && !dragSwitch) {
         // Only save when the viewport reflects the user's position (a restore
         // has run, or there was nothing to restore) - never overwrite a good
         // anchor with a pre-restore viewport.
@@ -2514,7 +2526,7 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 // that context, so a proxied submenu is permanently greyed out, and executing
 // entries the host marks disabled would rely on undocumented behaviour.
 //
-// Labels and order match the host's menu. The field sorts use the field the
+// Labels and order match the host's menu, plus disc-and-track first. The field sorts use the field the
 // label names; playlist_sort_by_format with a null pattern is the SDK's
 // randomize; Reverse is planned by the tested simplaylist::planReverse.
 enum : NSInteger {
@@ -2559,6 +2571,14 @@ static const NSInteger kSortSelectionOnlyFlag = 1 << 16;
 
     NSMenu *submenu = [[NSMenu alloc] initWithTitle:@"Sort"];
     [submenu setAutoenablesItems:NO];
+    // First, and not in the host's menu: restoring an album's running order is
+    // the sort people reach for most, and needs both fields. Zero-padded so
+    // disc 10 follows disc 9 and a missing disc number sorts as disc 0; ties
+    // keep their order. Across several albums it interleaves them, as the
+    // host's track-number sort does — it is meant for one album's tracks.
+    [submenu addItem:[self sortItemWithTitle:@"Sort by disc and track number" action:kSortActionPattern
+                                     pattern:@"$num(%discnumber%,3)$num(%tracknumber%,4)"
+                               selectionOnly:selectionOnly enabled:enabled]];
     [submenu addItem:[self sortItemWithTitle:@"Sort by..." action:kSortActionPrompt
                                      pattern:nil selectionOnly:selectionOnly enabled:enabled]];
     [submenu addItem:[self sortItemWithTitle:@"Randomize" action:kSortActionRandomize

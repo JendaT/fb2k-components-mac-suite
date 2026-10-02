@@ -33,7 +33,7 @@ Adds the Sort submenu, plus a large bug-fix pass: five ways of silently losing
 settings, two ways of hanging the app, and the misplaced drag indicator.
 
 #### Added
-- **Sort submenu**: Right-click menu now has Sort (Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
+- **Sort submenu**: Right-click menu now has Sort (by disc and track number, Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
 
 #### Fixed
 - Dragging tracks or folders from the album list into the playlist did nothing
@@ -53,6 +53,7 @@ settings, two ways of hanging the app, and the misplaced drag indicator.
 - Custom column changes required a restart
 - Toggling either subgroup option reused the layout cached under the old setting
 - Typing a grouping pattern was sluggish; leaving the field rebuilt the playlist twice
+- **Drop scroll jump**: Dropping a track after scrolling far within a playlist no longer jumps the view back to an earlier position
 - Drop indicator sat up to 150 px below the cursor in grouped playlists, and the drop landed where the line was drawn
 - Home/End jumped to an arbitrary point mid-list in grouped playlists
 - Multi-disc albums dropped from the Tidal browser interleaved their discs

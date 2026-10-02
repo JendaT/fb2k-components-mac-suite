@@ -11,7 +11,7 @@ silently losing your settings, two ways of hanging the app, and the drag
 indicator that landed in the wrong place.
 
 ### Added
-- **Sort submenu**: Right-click menu now has Sort (Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
+- **Sort submenu**: Right-click menu now has Sort (by disc and track number, Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
 
 ### Fixed
 - **Compilation ordering**: Dropped Various Artists albums no longer scatter alphabetically by performer; an album whose tracks disagree about the album artist now sorts by disc and track alone (pure `Core/ImportSorter`, unit-tested).
@@ -39,6 +39,7 @@ indicator that landed in the wrong place.
 **Dragging, keys and selection**
 - **Drops from the album list**: Tracks dragged from the album list are now accepted, in album list order with their exact subsongs.
 - **File drops with spaces in the path**: No longer fail with "Access denied"; scheme-less file URLs are imported as local paths.
+- **Drop scroll jump**: Dropping a track after scrolling far within a playlist no longer jumps the view back to an earlier position.
 - The drop indicator follows the cursor. In grouped playlists it sat up to 150 px too low, and the drop landed where the line was drawn.
 - Home and End jump to the first and last track. Home previously landed at an arbitrary point mid-list.
 - Multi-disc albums dropped from the Tidal browser keep their discs together instead of interleaving them.
