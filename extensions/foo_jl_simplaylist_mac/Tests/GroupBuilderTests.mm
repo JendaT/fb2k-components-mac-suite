@@ -17,12 +17,16 @@
 // Test track data: parallel header/subgroup arrays. artKey is "art<i>".
 struct FakeTracks {
     std::vector<std::string> headers;
+    std::vector<std::string> groupKeys;  // may be empty when unused
     std::vector<std::string> subgroups;  // may be empty when unused
     mutable std::string artBuf;
 
     simplaylist::GroupBuildCallbacks callbacks(std::function<bool()> cancelled = nullptr) const {
         simplaylist::GroupBuildCallbacks cb;
         cb.formatHeader = [this](size_t i) { return headers[i].c_str(); };
+        if (!groupKeys.empty()) {
+            cb.formatGroupKey = [this](size_t i) { return groupKeys[i].c_str(); };
+        }
         if (!subgroups.empty()) {
             cb.formatSubgroup = [this](size_t i) { return subgroups[i].c_str(); };
         }
@@ -124,6 +128,32 @@ int main(void) {
             checkArray(chunked.subgroupStarts, full.subgroupStarts, what);
             checkArray(chunked.subgroupHeaders, full.subgroupHeaders, what);
         }
+    }
+
+    // --- Grouping key: boundaries on the key, headers stay per-group display text ---
+    {
+        g_context = "group-key";
+        FakeTracks t;
+        // Multi-artist album: headers differ per track, key keeps them together
+        t.headers = {"Artist1 - Album1", "Artist2 - Album1", "Artist3 - Album2", "Artist3 - Album2"};
+        t.groupKeys = {"Album1", "Album1", "Album2", "Album2"};
+        BuildResult r;
+        std::string cur;
+        SubgroupDetector det(true);
+        simplaylist::buildGroups(0, t.headers.size(), false, true, cur, det, t.callbacks(),
+                                 r.groupStarts, r.groupHeaders, r.groupArtKeys,
+                                 r.subgroupStarts, r.subgroupHeaders);
+        checkArray(r.groupStarts, @[@0, @2], "groups break on key changes only");
+        checkArray(r.groupHeaders, @[@"Artist1 - Album1", @"Artist3 - Album2"],
+                   "header text taken from first track of each group");
+        CHECK(cur == "Album2", "carried state holds the key, not the header");
+
+        // Continuation seeded with the key: same key at the seam -> no boundary
+        BuildResult r2;
+        simplaylist::buildGroups(2, t.headers.size(), false, false, cur, det, t.callbacks(),
+                                 r2.groupStarts, r2.groupHeaders, r2.groupArtKeys,
+                                 r2.subgroupStarts, r2.subgroupHeaders);
+        checkArray(r2.groupStarts, @[], "no boundary at seam with matching key");
     }
 
     // --- Subgroup wiring: isNewGroup reaches the detector ---

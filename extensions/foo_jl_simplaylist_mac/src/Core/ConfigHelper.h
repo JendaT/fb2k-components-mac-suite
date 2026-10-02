@@ -205,6 +205,7 @@ inline const char* getDefaultGroupPresetsJSON() {
         "pattern": "[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]",
         "display": "text"
       },
+      "grouping_pattern": "['['%date%']' ][%album%]",
       "group_column": {
         "pattern": "[%album%]",
         "display": "front"

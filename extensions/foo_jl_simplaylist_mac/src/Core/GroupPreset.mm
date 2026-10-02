@@ -25,6 +25,7 @@
     preset.sortingPattern = @"%path_sort%";
     preset.headerPattern = @"";
     preset.headerDisplayType = GroupDisplayTypeText;
+    preset.groupingPattern = @"";
     preset.groupColumnPattern = @"";
     preset.groupColumnDisplayType = GroupDisplayTypeFront;
     preset.subgroups = @[];
@@ -76,6 +77,7 @@
     GroupPreset *basic = [GroupPreset presetWithName:@"Album"];
     basic.sortingPattern = @"%path_sort%";
     basic.headerPattern = @"[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]";
+    basic.groupingPattern = @"['['%date%']' ][%album%]";
     basic.groupColumnPattern = @"[%album%]";
     basic.groupColumnDisplayType = GroupDisplayTypeFront;
     basic.subgroups = @[
@@ -149,6 +151,10 @@
             if ([display isKindOfClass:[NSString class]]) preset.headerDisplayType = [self displayTypeFromString:display];
         }
 
+        // Grouping key pattern (optional — falls back to headerPattern when absent)
+        NSString *groupingPattern = presetDict[@"grouping_pattern"];
+        if (groupingPattern) preset.groupingPattern = groupingPattern;
+
         // Group column
         NSDictionary *groupColDict = presetDict[@"group_column"];
         if ([groupColDict isKindOfClass:[NSDictionary class]]) {
@@ -196,6 +202,11 @@
             @"pattern": preset.headerPattern ?: @"",
             @"display": [self stringFromDisplayType:preset.headerDisplayType]
         };
+
+        // Grouping key pattern (omit when empty to keep JSON compact)
+        if (preset.groupingPattern.length > 0) {
+            presetDict[@"grouping_pattern"] = preset.groupingPattern;
+        }
 
         // Group column
         presetDict[@"group_column"] = @{
