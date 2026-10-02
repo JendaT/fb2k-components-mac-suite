@@ -144,7 +144,9 @@ static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NS
     auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
 
     for (NSURL* url in sortedURLs) {
-        if (url.isFileURL) {
+        // Scheme-less absolute path: a file, and absoluteString would stay percent-encoded.
+        BOOL schemelessPath = (url.scheme.length == 0 && [url.path hasPrefix:@"/"]);
+        if (url.isFileURL || schemelessPath) {
             // File URL - use path
             NSString* path = url.path;
             if (path && path.length > 0) {
