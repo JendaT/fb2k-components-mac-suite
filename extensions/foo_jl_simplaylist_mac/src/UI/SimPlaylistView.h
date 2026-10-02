@@ -160,6 +160,9 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 // Drag & drop - import files from Finder
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row;
 
+// Drag & drop - foobar2000 native locations (paths and subsongs are parallel arrays)
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedLocations:(NSArray<NSString *> *)paths subsongs:(NSArray<NSNumber *> *)subsongs atRow:(NSInteger)row;
+
 // Get file paths for playlist indices (for drag data capture)
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices;
 
