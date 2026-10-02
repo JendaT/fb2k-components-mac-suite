@@ -492,6 +492,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Added
 - Multi-row drag reorder — moves the whole selection as a block (previously only the first row moved)
+- Queue restored after restart (on by default; "Restore queue after restart" in preferences)
+- Stop After Queue — stops playback when the queue runs out; in the Playback menu, a new Queue Manager context menu, and preferences; optional one-shot mode (off by default)
 
 #### Fixed
 - Double refresh and doubled selection reset on every reorder (suppression flag was checked after it had been cleared)

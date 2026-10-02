@@ -105,6 +105,46 @@ void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
     }
 }
 
+std::vector<queue_persist::SavedEntry> captureForPersistence() {
+    std::vector<queue_persist::SavedEntry> result;
+    for (const auto& item : getContentsVector()) {
+        if (!item.m_handle.is_valid()) continue;
+        queue_persist::SavedEntry e;
+        e.path = item.m_handle->get_path();
+        e.subsong = item.m_handle->get_subsong_index();
+        if (!isOrphanItem(item)) {
+            e.playlist = item.m_playlist;
+            e.item = item.m_item;
+        }
+        result.push_back(std::move(e));
+    }
+    return result;
+}
+
+size_t restoreFromPersistence(const std::vector<queue_persist::SavedEntry>& entries) {
+    auto db = metadb::get();
+    size_t added = 0;
+    for (const auto& e : entries) {
+        metadb_handle_ptr handle = db->handle_create(e.path.c_str(), e.subsong);
+        if (!handle.is_valid()) continue;
+
+        t_playback_queue_item probe;
+        probe.m_handle = handle;
+        probe.m_playlist = e.playlist == queue_persist::kNoPlaylist
+            ? queue_config::kOrphanPlaylistIndex : e.playlist;
+        probe.m_item = e.item;
+
+        if (!isOrphanItem(probe) && isItemValid(probe)) {
+            addItemFromPlaylist(probe.m_playlist, probe.m_item);
+        } else {
+            // Playlist changed or entry was an orphan: keep the track anyway
+            addOrphanItem(handle);
+        }
+        added++;
+    }
+    return added;
+}
+
 size_t playlistCount() {
     return playlist_manager::get()->get_playlist_count();
 }

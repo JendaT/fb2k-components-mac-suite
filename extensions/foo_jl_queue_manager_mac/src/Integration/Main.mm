@@ -20,7 +20,9 @@ DECLARE_COMPONENT_VERSION(
     "- View and manage playback queue\n"
     "- Drag & drop reordering\n"
     "- Drag tracks in from SimPlaylist\n"
-    "- Live updates\n\n"
+    "- Live updates\n"
+    "- Queue restored after restart\n"
+    "- Stop After Queue (Playback menu and context menu)\n\n"
     "MIT License - https://github.com/JendaT/fb2k-components-mac-suite"
 );
 

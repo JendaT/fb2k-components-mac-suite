@@ -9,6 +9,7 @@
 #import "QueueItemWrapper.h"
 #import "QueueRowView.h"
 #import "../Integration/QueueCallbackManager.h"
+#import "../Integration/StopAfterQueue.h"
 #import "../Core/QueueOperations.h"
 #import "../Core/QueueConfig.h"
 #import "../Core/QueueDropParser.h"
@@ -163,6 +164,8 @@ public:
 
     // Set up drag & drop
     [self setupDragAndDrop];
+
+    [self setupContextMenu];
 }
 
 - (void)viewDidLoad {
@@ -625,6 +628,53 @@ public:
             }
         }
     }];
+}
+
+#pragma mark - Context Menu
+
+- (void)setupContextMenu {
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:@"Queue Manager"];
+    menu.delegate = self;
+    menu.autoenablesItems = NO;
+
+    NSMenuItem* stopItem = [[NSMenuItem alloc] initWithTitle:@"Stop After Queue"
+                                                      action:@selector(toggleStopAfterQueue:)
+                                               keyEquivalent:@""];
+    stopItem.target = self;
+    [menu addItem:stopItem];
+
+    NSMenuItem* onceItem = [[NSMenuItem alloc] initWithTitle:@"Turn Off After Stopping Once"
+                                                      action:@selector(toggleStopAfterQueueOnce:)
+                                               keyEquivalent:@""];
+    onceItem.target = self;
+    onceItem.indentationLevel = 1;
+    [menu addItem:onceItem];
+
+    // Table covers the rows and the empty area below them; the root view
+    // covers the status bar
+    _tableView.menu = menu;
+    self.view.menu = menu;
+}
+
+- (void)menuNeedsUpdate:(NSMenu*)menu {
+    // Settings can also change from the Playback menu or preferences
+    BOOL enabled = stop_after_queue::isEnabled();
+    for (NSMenuItem* item in menu.itemArray) {
+        if (item.action == @selector(toggleStopAfterQueue:)) {
+            item.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+        } else if (item.action == @selector(toggleStopAfterQueueOnce:)) {
+            item.state = stop_after_queue::isOnlyOnce() ? NSControlStateValueOn : NSControlStateValueOff;
+            item.enabled = enabled;
+        }
+    }
+}
+
+- (void)toggleStopAfterQueue:(id)sender {
+    stop_after_queue::setEnabled(!stop_after_queue::isEnabled());
+}
+
+- (void)toggleStopAfterQueueOnce:(id)sender {
+    stop_after_queue::setOnlyOnce(!stop_after_queue::isOnlyOnce());
 }
 
 #pragma mark - Keyboard Handling

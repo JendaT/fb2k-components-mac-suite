@@ -5,6 +5,9 @@
 ### Added
 
 - **Multi-row drag reorder**: dragging a multi-row selection moves all selected rows as a contiguous block, preserving their relative order. Previously only the first row moved, silently.
+- **Queue restored after restart**: the queue is saved on quit and re-added on the next launch; tracks keep their playlist position when it still holds the same track, otherwise they are re-added by location. On by default; toggle via "Restore queue after restart" in preferences.
+- **Stop After Queue**: stops playback when the last queued track finishes instead of continuing in the playlist. Toggle from Playback > Stop After Queue, the new Queue Manager context menu, or preferences; off by default. Queuing more tracks or skipping past the last queued track cancels the pending stop. Optional one-shot mode ("Turn off after it stops playback once") switches it off after it stops playback.
+- **Context menu**: right-click in Queue Manager for the Stop After Queue toggles (the view had no context menu before)
 
 ### Fixed
 
@@ -27,6 +30,8 @@
   - `QueueReorderPlanner` — drag-reorder move planning, generalized to multi-row moves
   - `QueueFormatting` — duration and status bar text
   - `QueueDropParser` — SimPlaylist drag payload decoding and validation
+  - `QueuePersistence` — versioned, escape-safe text serialization of the saved queue
+  - `StopAfterQueuePolicy` — Stop After Queue arm/cancel/one-shot decisions; `StopAfterQueue.mm` applies them to fb2k's stop-after-current flag and registers the Playback menu command
 - New `Tests/` suite (3300+ checks, including an exhaustive reorder sweep against a naive simulation) compiled with bare clang by `Scripts/run_tests.sh`, gating every build via `Scripts/build.sh`
 - Queue rebuild and playlist lookups moved out of the controller into `queue_ops`; internal cleanups (orphan sentinel constants, selection recoloring limited to instantiated rows, no-op callback dispatch skipped, named constants)
 - Component and preferences GUIDs are documented as frozen — foobar2000 resolves saved layouts by element GUID

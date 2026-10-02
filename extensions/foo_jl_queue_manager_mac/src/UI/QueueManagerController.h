@@ -11,7 +11,7 @@
 
 @class QueueItemWrapper;
 
-@interface QueueManagerController : NSViewController <NSTableViewDataSource, NSTableViewDelegate>
+@interface QueueManagerController : NSViewController <NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate>
 
 // Main views
 @property (nonatomic, strong) NSScrollView* scrollView;

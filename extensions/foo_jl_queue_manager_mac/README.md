@@ -77,6 +77,8 @@ foo_jl_queue_manager/
 │   │   ├── ConfigHelper.h          # fb2k::configStore wrapper
 │   │   ├── QueueConfig.h           # Configuration constants
 │   │   ├── QueueOperations.h/cpp   # SDK queue operations wrapper
+│   │   ├── QueuePersistence.h/cpp  # Saved-queue serialization
+│   │   ├── StopAfterQueuePolicy.h/cpp  # Stop After Queue decisions
 │   ├── UI/
 │   │   ├── QueueManagerController.h/mm  # Main view controller
 │   │   ├── QueueItemWrapper.h/mm   # Safe wrapper for queue items
@@ -86,7 +88,8 @@ foo_jl_queue_manager/
 │   ├── Integration/
 │   │   ├── Main.mm                 # Component registration
 │   │   ├── QueueCallbackManager.h/mm  # Singleton callback dispatcher
-│   │   └── QueueCallback.mm        # playback_queue_callback service
+│   │   ├── QueueCallback.mm        # playback_queue_callback service
+│   │   └── StopAfterQueue.mm       # Stop After Queue glue + Playback menu command
 │   ├── fb2k_sdk.h                  # SDK configuration
 │   └── Prefix.pch                  # Precompiled header
 ├── Resources/

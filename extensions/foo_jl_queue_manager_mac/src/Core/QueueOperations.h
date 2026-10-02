@@ -9,6 +9,7 @@
 #pragma once
 
 #include <foobar2000/SDK/foobar2000.h>
+#include "QueuePersistence.h"
 #include <vector>
 #include <string>
 
@@ -49,6 +50,14 @@ void addOrphanItem(metadb_handle_ptr handle);
 // callers suppress reloads around this (see QueueManagerController).
 void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
                     const std::vector<size_t>& order);
+
+// Snapshot the current queue as location + playlist position entries
+std::vector<queue_persist::SavedEntry> captureForPersistence();
+
+// Append saved entries to the queue. Entries whose playlist position
+// still holds the same track are re-added from the playlist; the rest are
+// added by handle (orphan). Returns the number of entries added.
+size_t restoreFromPersistence(const std::vector<queue_persist::SavedEntry>& entries);
 
 // Playlist lookups (thin playlist_manager wrappers so UI code never
 // touches the SDK directly)
