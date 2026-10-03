@@ -322,27 +322,42 @@ static NSColor *colorFromARGB(uint32_t argb) {
     }
 }
 
+// Curve points sit at band centres ((i + 0.5) / n) so they line up with the
+// frequency grid. The first and last bands are held flat out to the plot
+// edges (0 and 1) so the curve spans the full width instead of stopping
+// half a band short at each end.
+- (std::vector<CGPoint>)curvePointsForValues:(const std::vector<float> &)v {
+    std::vector<CGPoint> pts;
+    const NSInteger n = (NSInteger)v.size();
+    if (n <= 0) return pts;
+    auto clamped = [&](NSInteger i) -> CGFloat {
+        CGFloat m = v[i]; return m < 0 ? 0 : (m > 1 ? 1 : m);
+    };
+    pts.reserve(n + 2);
+    pts.push_back([self mapF:0.0 mag:clamped(0)]);
+    for (NSInteger i = 0; i < n; ++i) {
+        pts.push_back([self mapF:((CGFloat)i + 0.5) / n mag:clamped(i)]);
+    }
+    pts.push_back([self mapF:1.0 mag:clamped(n - 1)]);
+    return pts;
+}
+
 - (NSBezierPath *)areaPathForValues:(const std::vector<float> &)v {
     NSBezierPath *p = [NSBezierPath bezierPath];
-    const NSInteger n = (NSInteger)v.size();
-    if (n <= 0) return p;
-    [p moveToPoint:[self mapF:0.5 / n mag:0.0]];
-    for (NSInteger i = 0; i < n; ++i) {
-        CGFloat m = v[i]; if (m < 0) m = 0; else if (m > 1) m = 1;
-        [p lineToPoint:[self mapF:((CGFloat)i + 0.5) / n mag:m]];
-    }
-    [p lineToPoint:[self mapF:((CGFloat)n - 0.5) / n mag:0.0]];
+    const std::vector<CGPoint> pts = [self curvePointsForValues:v];
+    if (pts.empty()) return p;
+    [p moveToPoint:[self mapF:0.0 mag:0.0]];
+    for (const CGPoint &pt : pts) [p lineToPoint:pt];
+    [p lineToPoint:[self mapF:1.0 mag:0.0]];
     [p closePath];
     return p;
 }
 
 - (NSBezierPath *)linePathForValues:(const std::vector<float> &)v {
     NSBezierPath *p = [NSBezierPath bezierPath];
-    const NSInteger n = (NSInteger)v.size();
-    for (NSInteger i = 0; i < n; ++i) {
-        CGFloat m = v[i]; if (m < 0) m = 0; else if (m > 1) m = 1;
-        CGPoint pt = [self mapF:((CGFloat)i + 0.5) / n mag:m];
-        if (i == 0) [p moveToPoint:pt]; else [p lineToPoint:pt];
+    const std::vector<CGPoint> pts = [self curvePointsForValues:v];
+    for (size_t i = 0; i < pts.size(); ++i) {
+        if (i == 0) [p moveToPoint:pts[i]]; else [p lineToPoint:pts[i]];
     }
     return p;
 }
@@ -421,7 +436,8 @@ static NSColor *colorFromARGB(uint32_t argb) {
                 CGContextMoveToPoint(ctx, _pOx, y);
                 CGContextAddLineToPoint(ctx, _pOx + _pMag, y);
                 CGContextStrokePath(ctx);
-                CGFloat ly = y - sz.height / 2;
+                // Keep the lowest label (at the plot edge) fully visible.
+                CGFloat ly = MAX(y - sz.height / 2, _pOy);
                 if (ly > lastLabelEdge + 2.0 && ly + sz.height < _pOy + _pFreq) {
                     [label drawAtPoint:NSMakePoint(_pOx + _pMag + 5, ly) withAttributes:attrs];
                     lastLabelEdge = ly + sz.height;
@@ -432,7 +448,8 @@ static NSColor *colorFromARGB(uint32_t argb) {
                 CGContextMoveToPoint(ctx, x, _pOy);
                 CGContextAddLineToPoint(ctx, x, _pOy + _pMag);
                 CGContextStrokePath(ctx);
-                CGFloat lx = x - sz.width / 2;
+                // Keep the lowest label (at the plot edge) fully visible.
+                CGFloat lx = MAX(x - sz.width / 2, _pOx);
                 if (lx > lastLabelEdge + 4.0 && lx + sz.width < _pOx + _pFreq) {
                     [label drawAtPoint:NSMakePoint(lx, (_pOy - sz.height) / 2 + 1) withAttributes:attrs];
                     lastLabelEdge = lx + sz.width;
