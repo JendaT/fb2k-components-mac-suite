@@ -70,6 +70,7 @@ void SpectrumAnalyzer::rebuildBands() {
 
     _binLo.assign(bars, 0);
     _binHi.assign(bars, 0);
+    _binCenter.assign(bars, -1.0f);
 
     const double minHz = std::min<double>(_settings.minHz, nyquist - 1);
     const double maxHz = std::min<double>(_settings.maxHz, nyquist);
@@ -98,6 +99,14 @@ void SpectrumAnalyzer::rebuildBands() {
 
         _binLo[i] = lo;
         _binHi[i] = hi;
+
+        // At the low end several bands can fall inside one FFT bin and would
+        // all read the same value, drawing flat steps. Sample those bands at
+        // their centre frequency, interpolated between neighbouring bins.
+        if (f1 - f0 < hzPerBin) {
+            const double fc = _settings.logScale ? std::sqrt(f0 * f1) : 0.5 * (f0 + f1);
+            _binCenter[i] = (float)(fc / hzPerBin);
+        }
     }
 
     _bandsDirty = false;
@@ -158,15 +167,27 @@ bool SpectrumAnalyzer::tick() {
             // If the clamp leaves lo > hi, the band loop runs zero times and
             // the bar decays toward a zero target.
 
-            // Peak magnitude across the band (peak reads punchier than average).
-            float mag = 0.0f;
-            for (int b = lo; b <= hi; ++b) {
+            auto binMag = [&](int b) -> float {
                 float m = 0.0f;
                 for (unsigned c = 0; c < channels; ++c) {
                     m += (float)std::fabs(data[(size_t)b * channels + c]);
                 }
-                if (channels > 1) m /= (float)channels;
-                if (m > mag) mag = m;
+                return channels > 1 ? m / (float)channels : m;
+            };
+
+            float mag = 0.0f;
+            const float centre = _binCenter[i];
+            if (centre >= 1.0f && centre < (float)(binCount - 1)) {
+                // Narrower than a bin: interpolate at the band centre.
+                const int b0 = (int)centre;
+                const float t = centre - (float)b0;
+                mag = binMag(b0) * (1.0f - t) + binMag(b0 + 1) * t;
+            } else {
+                // Peak magnitude across the band (peak reads punchier than average).
+                for (int b = lo; b <= hi; ++b) {
+                    const float m = binMag(b);
+                    if (m > mag) mag = m;
+                }
             }
 
             float target = magnitudeToDisplay(mag);

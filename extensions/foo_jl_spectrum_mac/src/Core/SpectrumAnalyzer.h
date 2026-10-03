@@ -66,6 +66,9 @@ private:
     // Per-bar frequency bin ranges into the FFT magnitude array.
     std::vector<int> _binLo;   // inclusive
     std::vector<int> _binHi;   // inclusive
+    // Fractional bin position of the band centre for bands narrower than one
+    // FFT bin (low end), or -1 for bands that aggregate whole bins.
+    std::vector<float> _binCenter;
 
     std::vector<float> _bars;     // fast: instantaneous level
     std::vector<float> _shadow;   // medium: falls slower than the bar

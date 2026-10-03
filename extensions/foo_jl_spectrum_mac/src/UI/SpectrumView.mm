@@ -6,6 +6,7 @@
 #import "SpectrumView.h"
 #include "../Core/SpectrumConfig.h"
 #include "../../../../shared/UIStyles.h"
+#include <algorithm>
 #include <vector>
 #include <cmath>
 
@@ -322,32 +323,66 @@ static NSColor *colorFromARGB(uint32_t argb) {
     }
 }
 
-// Curve points sit at band centres ((i + 0.5) / n) so they line up with the
+// Curve knots sit at band centres ((i + 0.5) / n) so they line up with the
 // frequency grid. The first and last bands are held flat out to the plot
 // edges (0 and 1) so the curve spans the full width instead of stopping
-// half a band short at each end.
-- (std::vector<CGPoint>)curvePointsForValues:(const std::vector<float> &)v {
-    std::vector<CGPoint> pts;
+// half a band short at each end. Knots are in (frequency, magnitude) space;
+// mapF:mag: is affine, so Bezier control points map through it unchanged.
+- (std::vector<CGPoint>)curveKnotsForValues:(const std::vector<float> &)v {
+    std::vector<CGPoint> k;
     const NSInteger n = (NSInteger)v.size();
-    if (n <= 0) return pts;
+    if (n <= 0) return k;
     auto clamped = [&](NSInteger i) -> CGFloat {
         CGFloat m = v[i]; return m < 0 ? 0 : (m > 1 ? 1 : m);
     };
-    pts.reserve(n + 2);
-    pts.push_back([self mapF:0.0 mag:clamped(0)]);
+    k.reserve(n + 2);
+    k.push_back(CGPointMake(0.0, clamped(0)));
     for (NSInteger i = 0; i < n; ++i) {
-        pts.push_back([self mapF:((CGFloat)i + 0.5) / n mag:clamped(i)]);
+        k.push_back(CGPointMake(((CGFloat)i + 0.5) / n, clamped(i)));
     }
-    pts.push_back([self mapF:1.0 mag:clamped(n - 1)]);
-    return pts;
+    k.push_back(CGPointMake(1.0, clamped(n - 1)));
+    return k;
+}
+
+// Append a smooth curve through the knots, assuming the path's current point
+// is already at k[0]. Uses Steffen's monotone cubic tangents: the curve never
+// overshoots past neighbouring knots, so peaks stay where the data puts them
+// and the curve cannot leave the 0..1 magnitude range.
+- (void)appendSmoothCurve:(const std::vector<CGPoint> &)k toPath:(NSBezierPath *)p {
+    const size_t n = k.size();
+    if (n < 2) return;
+
+    std::vector<CGFloat> slope(n - 1), tangent(n, 0.0);
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const CGFloat h = k[i + 1].x - k[i].x;
+        slope[i] = h > 0 ? (k[i + 1].y - k[i].y) / h : 0.0;
+    }
+    tangent[0] = slope[0];
+    tangent[n - 1] = slope[n - 2];
+    for (size_t i = 1; i + 1 < n; ++i) {
+        const CGFloat s0 = slope[i - 1], s1 = slope[i];
+        if (s0 * s1 <= 0) continue;  // local extremum or flat: zero tangent
+        const CGFloat h0 = k[i].x - k[i - 1].x, h1 = k[i + 1].x - k[i].x;
+        const CGFloat pm = (s0 * h1 + s1 * h0) / (h0 + h1);
+        const CGFloat lim = std::min({std::fabs(s0), std::fabs(s1), 0.5 * std::fabs(pm)});
+        tangent[i] = (s0 > 0 ? 2.0 : -2.0) * lim;
+    }
+
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const CGFloat h3 = (k[i + 1].x - k[i].x) / 3.0;
+        [p curveToPoint:[self mapF:k[i + 1].x mag:k[i + 1].y]
+          controlPoint1:[self mapF:k[i].x + h3 mag:k[i].y + tangent[i] * h3]
+          controlPoint2:[self mapF:k[i + 1].x - h3 mag:k[i + 1].y - tangent[i + 1] * h3]];
+    }
 }
 
 - (NSBezierPath *)areaPathForValues:(const std::vector<float> &)v {
     NSBezierPath *p = [NSBezierPath bezierPath];
-    const std::vector<CGPoint> pts = [self curvePointsForValues:v];
-    if (pts.empty()) return p;
+    const std::vector<CGPoint> k = [self curveKnotsForValues:v];
+    if (k.empty()) return p;
     [p moveToPoint:[self mapF:0.0 mag:0.0]];
-    for (const CGPoint &pt : pts) [p lineToPoint:pt];
+    [p lineToPoint:[self mapF:k[0].x mag:k[0].y]];
+    [self appendSmoothCurve:k toPath:p];
     [p lineToPoint:[self mapF:1.0 mag:0.0]];
     [p closePath];
     return p;
@@ -355,10 +390,10 @@ static NSColor *colorFromARGB(uint32_t argb) {
 
 - (NSBezierPath *)linePathForValues:(const std::vector<float> &)v {
     NSBezierPath *p = [NSBezierPath bezierPath];
-    const std::vector<CGPoint> pts = [self curvePointsForValues:v];
-    for (size_t i = 0; i < pts.size(); ++i) {
-        if (i == 0) [p moveToPoint:pts[i]]; else [p lineToPoint:pts[i]];
-    }
+    const std::vector<CGPoint> k = [self curveKnotsForValues:v];
+    if (k.empty()) return p;
+    [p moveToPoint:[self mapF:k[0].x mag:k[0].y]];
+    [self appendSmoothCurve:k toPath:p];
     return p;
 }
 
