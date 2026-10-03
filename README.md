@@ -78,7 +78,9 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 
 Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation stream.
 
-![Spectrum Analyzer](docs/images/spectrum-overview.png)
+| Overview | Settings |
+|----------|----------|
+| ![Spectrum Analyzer](docs/images/spectrum-overview.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
 
 **Features:**
 - Bars or filled curve display, horizontal or vertical orientation

@@ -18,6 +18,7 @@ Place screenshots in this directory with the following filenames:
 
 ## Spectrum Analyzer
 - `spectrum-overview.png` - Spectrum panel (curve mode) below the waveform seekbar
+- `spectrum-settings.png` - Preferences page with analysis, dynamics and appearance options
 
 ## Last.fm Scrobbler
 - `scrobbler-settings.png` - Preferences page with account and options
