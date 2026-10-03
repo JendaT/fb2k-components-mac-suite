@@ -607,6 +607,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Drag-to-reorder buttons in editing mode
 - Compact and normal display modes
 
+## Spectrum Analyzer
+
+### [0.1.0] - 2026-10-03
+
+#### Added
+- Initial release, contributed by [Scannou](https://github.com/Scannou)
+- **Analyzer core**: Real-time FFT bars from the core visualisation stream; log/linear band mapping; sub-bin low-end bands interpolated; 0..-80 dB display window shared by bars and grid.
+- **Dynamics**: Attack/decay smoothing plus three fall timescales (bar, shadow envelope, peak line with hold).
+- **Rendering**: Solid / gradient / spectrum bar styles; bars or smooth full-width curve; horizontal or vertical orientation; dB scale and frequency axis; glass background.
+- **Preferences**: Bar count up to 256, FFT size, frequency scale/range, smoothing, fall rates, peak hold, grid color/opacity, light/dark colors, 10 color theme presets.
+- **Lifecycle**: Streams released via `initquit` before service teardown (fixes abort on quit).
+
 ## Tidal Integration
 
 ### [Unreleased]

@@ -20,6 +20,7 @@ DISPLAY_NAMES=(
     [biography]="Artist Biography"
     [cloud-streamer]="Cloud Streamer"
     [playback-controls]="Playback Controls"
+    [spectrum]="Spectrum Analyzer"
 )
 
 # Generate CLAUDE.md for a component

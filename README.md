@@ -11,7 +11,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
-| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.1.0 | – |
+| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.1.0 | [📖](docs/spectrum.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
@@ -250,6 +250,7 @@ Or build all extensions at once:
 - [Waveform Seekbar](docs/waveform.md) - Features, configuration, and usage
 - [Album Art (Extended)](docs/albumart.md) - Features, configuration, and usage
 - [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
+- [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
@@ -305,7 +306,7 @@ splitter horizontal style=thin
 ```
 
 This creates a layout with:
-- Waveform seekbar at the top 
+- Waveform seekbar at the top
 - Spectrum analyzer below it
 - Playlist Organizer on the left sidebar
 - SimPlaylist as the main playlist view

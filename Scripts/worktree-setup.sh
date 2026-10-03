@@ -19,6 +19,7 @@ COMPONENTS=(
     biography
     cloud-streamer
     playback-controls
+    spectrum
 )
 
 echo "=== foobar2000 Worktree Setup ==="
