@@ -144,7 +144,9 @@ static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NS
     auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
 
     for (NSURL* url in sortedURLs) {
-        if (url.isFileURL) {
+        // Scheme-less absolute path: a file, and absoluteString would stay percent-encoded.
+        BOOL schemelessPath = (url.scheme.length == 0 && [url.path hasPrefix:@"/"]);
+        if (url.isFileURL || schemelessPath) {
             // File URL - use path
             NSString* path = url.path;
             if (path && path.length > 0) {
@@ -3218,6 +3220,41 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 
     // Use async import to avoid crash from synchronous process_location
     importFilesToPlaylistAsync(activePlaylist, insertAt, urls);
+}
+
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedLocations:(NSArray<NSString *> *)paths subsongs:(NSArray<NSNumber *> *)subsongs atRow:(NSInteger)row {
+    if (_currentPlaylistIndex < 0) return;
+    if (paths.count == 0 || paths.count != subsongs.count) return;
+
+    auto pm = playlist_manager::get();
+    t_size activePlaylist = (t_size)_currentPlaylistIndex;
+
+    if (pm->playlist_lock_is_present(activePlaylist)) {
+        t_uint32 lockMask = pm->playlist_lock_get_filter_mask(activePlaylist);
+        if (lockMask & playlist_lock::filter_add) {
+            return;
+        }
+    }
+
+    NSInteger dropIdx = insertionIndexForDropRow(view, row);
+    t_size insertAt = (dropIdx >= 0) ? (t_size)dropIdx : SIZE_MAX;  // SIZE_MAX: append at end
+
+    // Direct handles keep source order and exact subsongs; process_locations would expand cue sheets.
+    auto db = metadb::get();
+    metadb_handle_list handles;
+    handles.prealloc(paths.count);
+    for (NSUInteger i = 0; i < paths.count; i++) {
+        handles.add_item(db->handle_create(paths[i].UTF8String, subsongs[i].unsignedIntValue));
+    }
+
+    pm->playlist_undo_backup(activePlaylist);
+    pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), pfc::bit_array_false());
+    t_size first = pm->playlist_insert_items(activePlaylist, insertAt, handles, pfc::bit_array_val(true));
+    if (first != SIZE_MAX) {
+        pm->playlist_set_focus_item(activePlaylist, first);
+    } else {
+        FB2K_console_formatter() << "[SimPlaylist] Inserting " << handles.get_count() << " dropped tracks failed";
+    }
 }
 
 - (NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices {
