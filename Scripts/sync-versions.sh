@@ -21,6 +21,7 @@ VERSION_MAP=(
     [albumart]="ALBUMART_VERSION"
     [queue_manager]="QUEUE_MANAGER_VERSION"
     [scrobble]="SCROBBLE_VERSION"
+    [spectrum]="SPECTRUM_VERSION"
 )
 
 typeset -A DISPLAY_MAP
@@ -31,6 +32,7 @@ DISPLAY_MAP=(
     [albumart]="Album Art"
     [queue_manager]="Queue Manager"
     [scrobble]="Last.fm Scrobbler"
+    [spectrum]="Spectrum Analyzer"
 )
 
 echo "=== Syncing versions from version.h to README.md ==="

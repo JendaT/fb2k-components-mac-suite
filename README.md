@@ -11,6 +11,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
+| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.1.0 | – |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
@@ -70,6 +71,20 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 - Customizable colors and effects
 - Click-to-seek functionality
 - Downmix/channel selection
+
+---
+
+### Spectrum Analyzer
+
+Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation stream.
+
+**Features:**
+- Bars or filled curve display, horizontal or vertical orientation
+- Logarithmic or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
+- Falling peak line and slow-decaying shadow fill
+- dB guides and frequency gridlines with adjustable opacity
+- Bar styles (solid, gradient, spectrum hue) and color presets (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, ...) with separate light/dark colors and optional glass background
+- Tunable bar count, FFT size, smoothing and peak/shadow fall speeds
 
 ---
 
@@ -151,6 +166,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
+| Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
@@ -258,16 +274,18 @@ Use these names in the layout editor or when editing the layout text file direct
 | SimPlaylist | `simplaylist` | `SimPlaylist`, `foo_jl_simplaylist`, `jl_simplaylist` |
 | Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
+| Spectrum Analyzer | `spectrum` | `Spectrum Analyzer`, `spectrum_analyzer`, `foo_jl_spectrum`, `jl_spectrum` |
 | Album Art (Extended) | `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art` |
 | Queue Manager | `Queue Manager` | `queue_manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager` |
 
 ### Example Layout
 
-Here's a complete layout configuration featuring all three UI components:
+Here's a complete layout configuration featuring the UI components:
 
 ```
 splitter horizontal style=thin
   waveform-seekbar
+  spectrum
   splitter vertical style=thin
     splitter horizontal style=thin
       plorg tab-name="Playlists"
@@ -283,7 +301,8 @@ splitter horizontal style=thin
 ```
 
 This creates a layout with:
-- Waveform seekbar at the top
+- Waveform seekbar at the top 
+- Spectrum analyzer below it
 - Playlist Organizer on the left sidebar
 - SimPlaylist as the main playlist view
 - Tabbed panel with Now Playing info and EQ visualization
