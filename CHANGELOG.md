@@ -339,6 +339,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Waveform Seekbar
 
+### [Unreleased]
+
+#### Changed
+- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s.
+
 ### [1.2.0] - 2026-07-02
 
 #### Added
