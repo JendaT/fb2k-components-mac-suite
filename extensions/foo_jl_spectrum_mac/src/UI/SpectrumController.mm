@@ -14,6 +14,8 @@
 
 @interface SpectrumController () {
     std::unique_ptr<SpectrumAnalyzer> _analyzer;
+    SpectrumAnalyzer::Settings _settings;  // last applied, for "Auto" bar count updates
+    bool _autoBars;
     NSTimer *_timer;
     NSVisualEffectView *_glassEffectView;
 }
@@ -131,8 +133,14 @@ FB2K_SERVICE_FACTORY(spectrum_initquit);
 
 - (void)applySettings {
     using namespace spectrum_config;
+    // The view caches orientation and margins that the "Auto" bar count
+    // depends on, so it reloads first.
+    [self.spectrumView reloadSettings];
+
     SpectrumAnalyzer::Settings s;
     s.barCount  = (int)getConfigInt(kKeyBarCount, kDefaultBarCount);
+    _autoBars   = s.barCount == kBarCountAuto;
+    if (_autoBars) s.barCount = (int)[self.spectrumView autoBarCount];
     s.fftSize   = (int)getConfigInt(kKeyFftSize, kDefaultFftSize);
     s.minHz     = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     s.maxHz     = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -148,9 +156,9 @@ FB2K_SERVICE_FACTORY(spectrum_initquit);
     s.peakGravity    = (float)(0.0001 + peakSpeed * 0.0027);    // ~0.0001 .. 0.0028
     s.peakHoldFrames = (int)std::lround(peakHoldMs * 60.0 / 1000.0);
 
+    _settings = s;
     _analyzer->configure(s);
 
-    [self.spectrumView reloadSettings];
     [self updateGlassBackground];
 }
 
@@ -219,6 +227,12 @@ FB2K_SERVICE_FACTORY(spectrum_initquit);
 }
 
 #pragma mark - SpectrumViewDelegate
+
+- (void)spectrumView:(SpectrumView *)view autoBarCountChanged:(NSInteger)count {
+    if (!_autoBars || count == _settings.barCount) return;
+    _settings.barCount = (int)count;
+    _analyzer->configure(_settings);
+}
 
 - (void)spectrumViewRequestsContextMenu:(SpectrumView *)view atPoint:(NSPoint)point {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Spectrum Analyzer"];

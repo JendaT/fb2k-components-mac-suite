@@ -27,6 +27,20 @@ namespace {
         while (p < v) p <<= 1;
         return p;
     }
+
+    // Nearest-neighbour resample along the frequency axis (bars share the same
+    // fractional layout at any count). Empty input yields zeros.
+    template <typename T>
+    void resampleTo(std::vector<T>& v, size_t n) {
+        const size_t old = v.size();
+        if (old == n) return;
+        if (old == 0) { v.assign(n, T{}); return; }
+        std::vector<T> out(n);
+        for (size_t i = 0; i < n; ++i) {
+            out[i] = v[std::min(old - 1, (size_t)(((double)i + 0.5) * old / n))];
+        }
+        v.swap(out);
+    }
 }
 
 SpectrumAnalyzer::SpectrumAnalyzer() {
@@ -38,7 +52,7 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
 
     // Sanitize
     if (_settings.barCount < 4)   _settings.barCount = 4;
-    if (_settings.barCount > 512) _settings.barCount = 512;
+    if (_settings.barCount > spectrum_config::kMaxBarCount) _settings.barCount = spectrum_config::kMaxBarCount;
     _settings.fftSize = nextPow2(std::max(256, std::min(_settings.fftSize, 32768)));
     if (_settings.minHz < 10)     _settings.minHz = 10;
     if (_settings.maxHz <= _settings.minHz + 100) _settings.maxHz = _settings.minHz + 100;
@@ -48,12 +62,15 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     if (_settings.peakGravity < 0.00005f) _settings.peakGravity = 0.00005f;
     if (_settings.peakHoldFrames < 0) _settings.peakHoldFrames = 0;
 
+    // Keep the current levels across reconfiguration, resampled when the bar
+    // count changes, so a settings tweak or an "Auto" bar count tracking a
+    // resize does not blank the display.
     const size_t n = static_cast<size_t>(_settings.barCount);
-    _bars.assign(n, 0.0f);
-    _shadow.assign(n, 0.0f);
-    _peaks.assign(n, 0.0f);
-    _peakVel.assign(n, 0.0f);
-    _peakHold.assign(n, 0);
+    resampleTo(_bars, n);
+    resampleTo(_shadow, n);
+    resampleTo(_peaks, n);
+    resampleTo(_peakVel, n);
+    resampleTo(_peakHold, n);
     _bandsDirty = true;  // bin ranges depend on sample rate, computed lazily
 }
 

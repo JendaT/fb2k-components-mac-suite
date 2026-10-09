@@ -19,6 +19,7 @@
     int      _barStyle;
     int      _drawMode;
     bool     _vertical;
+    bool     _autoBars;
     int      _gapPercent;
     int      _minHz;
     int      _maxHz;
@@ -72,6 +73,7 @@
     _barStyle      = (int)getConfigInt(kKeyBarStyle, kDefaultBarStyle);
     _drawMode      = (int)getConfigInt(kKeyDrawMode, kDefaultDrawMode);
     _vertical      = getConfigInt(kKeyOrientation, kDefaultOrientation) == OrientationVertical;
+    _autoBars      = getConfigInt(kKeyBarCount, kDefaultBarCount) == kBarCountAuto;
     _gapPercent    = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
     _minHz         = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHz         = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -172,6 +174,40 @@ static NSColor *colorFromARGB(uint32_t argb) {
     return CGPointMake(_pOx + f * _pFreq, _pOy + m * _pMag);
 }
 
+// The magnitude axis needs a wide margin for "-80dB" labels; the frequency
+// axis a thin one. Which screen edge holds which depends on orientation.
+static const CGFloat kDbThick = 34.0;    // along the magnitude axis
+static const CGFloat kFreqThick = 13.0;  // along the frequency axis
+
+// Plot length along the frequency axis. Only the dB-label margin shortens it
+// (the frequency-label margin runs across the other axis), so it is known
+// before bar labels are laid out.
+- (CGFloat)freqAxisLengthForSize:(NSSize)size drawDb:(BOOL *)drawDb drawFreq:(BOOL *)drawFreq {
+    const CGFloat W = size.width, H = size.height;
+    if (_vertical) {
+        *drawDb   = _showDbGuides && (H > 50.0);   // dB labels along the bottom
+        *drawFreq = _showFreqAxis && (W > 80.0);   // freq labels along the right
+        return H - (*drawDb ? kFreqThick : 0.0) - 2.0;
+    }
+    *drawDb   = _showDbGuides && (W > 80.0);       // dB labels along the right
+    *drawFreq = _showFreqAxis && (H > 50.0);       // freq labels along the bottom
+    return W - (*drawDb ? kDbThick : 0.0);
+}
+
+- (NSInteger)autoBarCount {
+    BOOL drawDb, drawFreq;
+    const CGFloat len = [self freqAxisLengthForSize:self.bounds.size drawDb:&drawDb drawFreq:&drawFreq];
+    const NSInteger n = (NSInteger)std::floor(len / spectrum_config::kAutoBarPitch);
+    return std::max<NSInteger>(16, std::min<NSInteger>(n, spectrum_config::kMaxBarCount));
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    if (_autoBars && [self.delegate respondsToSelector:@selector(spectrumView:autoBarCountChanged:)]) {
+        [self.delegate spectrumView:self autoBarCountChanged:[self autoBarCount]];
+    }
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
 
@@ -188,29 +224,19 @@ static NSColor *colorFromARGB(uint32_t argb) {
     const NSInteger n = (NSInteger)_bars.size();
     if (n <= 0) { [self drawPlaceholder:bounds]; return; }
 
-    // The magnitude axis needs a wide margin for "-80dB" labels; the frequency
-    // axis a thin one. Which screen edge holds which depends on orientation.
-    const CGFloat dbThick = 34.0;    // along the magnitude axis
-    const CGFloat freqThick = 13.0;  // along the frequency axis
-
     BOOL drawDb, drawFreq;
     CGFloat rightMargin = 0, bottomMargin = 0;
-    if (_vertical) {
-        drawDb   = _showDbGuides  && (H > 50.0);   // dB labels along the bottom
-        drawFreq = _showFreqAxis  && (W > 80.0);   // freq labels along the right
-        bottomMargin = drawDb   ? freqThick : 0.0;
-    } else {
-        drawDb   = _showDbGuides  && (W > 80.0);   // dB labels along the right
-        drawFreq = _showFreqAxis  && (H > 50.0);   // freq labels along the bottom
-        rightMargin  = drawDb   ? dbThick   : 0.0;
-    }
+    const CGFloat freqLen = [self freqAxisLengthForSize:bounds.size
+                                                 drawDb:&drawDb
+                                               drawFreq:&drawFreq];
+    if (_vertical) bottomMargin = H - 2.0 - freqLen;
+    else           rightMargin  = W - freqLen;
 
     // The frequency-label margin does not change the plot's length along the
     // frequency axis, so bar labels can be laid out against that length first.
     const BOOL barLabels = drawFreq && _drawMode == spectrum_config::DrawModeBars;
-    CGFloat freqMargin = _vertical ? dbThick : freqThick;
+    CGFloat freqMargin = _vertical ? kDbThick : kFreqThick;
     if (barLabels) {
-        const CGFloat freqLen = _vertical ? H - bottomMargin - 2.0 : W - rightMargin;
         if (freqLen <= 1.0) return;
         [self layoutBarLabelsForCount:n length:freqLen crossSpace:(_vertical ? W : H)];
         freqMargin = _blLanes * _blLaneSize + (_vertical ? 4.0 : 2.0);
@@ -256,37 +282,92 @@ static NSColor *colorFromARGB(uint32_t argb) {
                  cap:(NSColor *)capColor
                count:(NSInteger)n
              context:(CGContextRef)ctx {
+    using namespace spectrum_config;
     const CGFloat slot = _pFreq / (CGFloat)n;
     CGFloat gap = slot * (_gapPercent / 100.0);
     if (gap > slot - 1.0) gap = slot - 1.0;
     if (gap < 0) gap = 0;
-    const CGFloat th = slot - gap;
 
+    // Snap bar edges to device pixels. With narrow slots (e.g. "Auto" at
+    // 2pt/bar) a fractional gap is antialiased into two faint pixels or
+    // vanishes depending on its sub-pixel phase, so neighbouring bars look
+    // fused in a repeating pattern. Any non-zero gap is at least 1px wide.
+    const CGFloat scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
+    auto snap = [&](CGFloat v) { return std::round(v * scale) / scale; };
+    const CGFloat px = 1.0 / scale;
+    CGFloat gapSnapped = snap(gap);
+    if (_gapPercent > 0 && gapSnapped < px) gapSnapped = px;
+    const CGFloat gapLead = std::floor(gapSnapped * scale / 2.0) / scale;
+
+    struct Span { CGFloat off, th; };
+    std::vector<Span> spans((size_t)n);
     for (NSInteger i = 0; i < n; ++i) {
-        const CGFloat off = (CGFloat)i * slot + gap * 0.5;
+        const CGFloat a = snap((CGFloat)i * slot), b = snap((CGFloat)(i + 1) * slot);
+        CGFloat off = a + gapLead, th = (b - a) - gapSnapped;
+        if (th < px) { off = a; th = std::max(px, b - a); }  // too narrow for a gap
+        spans[(size_t)i] = {off, th};
+    }
 
-        CGFloat bv = _bars[i];  if (bv < 0) bv = 0; else if (bv > 1) bv = 1;
+    auto clamp01 = [](float v) -> CGFloat { return v < 0 ? 0 : (v > 1 ? 1 : v); };
+    auto barRect = [&](NSInteger i, CGFloat m) {
+        return [self barRectAtOffset:spans[(size_t)i].off thickness:spans[(size_t)i].th magnitude:m];
+    };
 
-        if (_shadowFill) {
-            CGFloat sv = _shadow[i]; if (sv < 0) sv = 0; else if (sv > 1) sv = 1;
-            if (sv > bv + 0.005) {
-                CGContextSetFillColorWithColor(ctx, shadowColor.CGColor);
-                CGContextFillRect(ctx, [self barRectAtOffset:off thickness:th magnitude:sv]);
-            }
+    // Each layer is drawn for all bars before the next (bars never overlap),
+    // and single-colour layers go out as one path fill. With an "Auto" bar
+    // count there can be ~1000 bars per frame.
+    if (_shadowFill) {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat sv = clamp01(_shadow[i]);
+            if (sv > clamp01(_bars[i]) + 0.005)
+                CGContextAddRect(ctx, barRect(i, sv));
         }
+        CGContextSetFillColorWithColor(ctx, shadowColor.CGColor);
+        CGContextFillPath(ctx);
+    }
 
-        if (bv * _pMag >= 1.0) {
-            [self fillBarRect:[self barRectAtOffset:off thickness:th magnitude:bv]
-                        index:i count:n base:base context:ctx];
+    if (_barStyle == BarStyleGradient) {
+        NSColor *lo = [base blendedColorWithFraction:0.55 ofColor:[NSColor blackColor]];
+        NSColor *hi = [base blendedColorWithFraction:0.25 ofColor:[NSColor whiteColor]];
+        NSGradient *grad = [[NSGradient alloc] initWithStartingColor:lo endingColor:hi];
+        const CGFloat angle = _vertical ? 0.0 : 90.0;  // along the magnitude axis
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag >= 1.0)
+                [grad drawInRect:barRect(i, bv) angle:angle];
         }
+    } else if (_barStyle == BarStyleSpectrum) {
+        const CGFloat brightness = fb2k_ui::isDarkMode() ? 1.0 : 0.9;
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag < 1.0) continue;
+            CGFloat h = 0.66 - 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);
+            if (h < 0) h = 0;
+            NSColor *c = [NSColor colorWithHue:h saturation:0.85 brightness:brightness alpha:1.0];
+            CGContextSetFillColorWithColor(ctx, c.CGColor);
+            CGContextFillRect(ctx, barRect(i, bv));
+        }
+    } else {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag >= 1.0)
+                CGContextAddRect(ctx, barRect(i, bv));
+        }
+        CGContextSetFillColorWithColor(ctx, base.CGColor);
+        CGContextFillPath(ctx);
+    }
 
-        if (_peakHold) {
-            CGFloat pv = _peaks[i]; if (pv < 0) pv = 0; else if (pv > 1) pv = 1;
-            if (pv > 0.001) {
-                CGContextSetFillColorWithColor(ctx, capColor.CGColor);
-                CGContextFillRect(ctx, [self capRectAtOffset:off thickness:th magnitude:pv]);
-            }
+    if (_peakHold) {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat pv = clamp01(_peaks[i]);
+            if (pv > 0.001)
+                CGContextAddRect(ctx, [self capRectAtOffset:spans[(size_t)i].off thickness:spans[(size_t)i].th magnitude:pv]);
         }
+        CGContextSetFillColorWithColor(ctx, capColor.CGColor);
+        CGContextFillPath(ctx);
     }
 }
 
@@ -300,36 +381,6 @@ static NSColor *colorFromARGB(uint32_t argb) {
 - (CGRect)capRectAtOffset:(CGFloat)off thickness:(CGFloat)th magnitude:(CGFloat)m {
     if (_vertical) return CGRectMake(_pOx + m * _pMag, _pOy + off, 2.0, th);
     return CGRectMake(_pOx + off, _pOy + m * _pMag, th, 2.0);
-}
-
-- (void)fillBarRect:(CGRect)r
-              index:(NSInteger)i
-              count:(NSInteger)n
-               base:(NSColor *)base
-            context:(CGContextRef)ctx {
-    using namespace spectrum_config;
-    const CGFloat gradAngle = _vertical ? 0.0 : 90.0;  // along the magnitude axis
-
-    if (_barStyle == BarStyleSpectrum) {
-        CGFloat hue = 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);
-        CGFloat h = (0.66 - hue); if (h < 0) h = 0;
-        NSColor *c = [NSColor colorWithHue:h saturation:0.85
-                               brightness:fb2k_ui::isDarkMode() ? 1.0 : 0.9 alpha:1.0];
-        CGContextSetFillColorWithColor(ctx, c.CGColor);
-        CGContextFillRect(ctx, r);
-        return;
-    }
-
-    if (_barStyle == BarStyleGradient) {
-        NSColor *lo = [base blendedColorWithFraction:0.55 ofColor:[NSColor blackColor]];
-        NSColor *hi = [base blendedColorWithFraction:0.25 ofColor:[NSColor whiteColor]];
-        NSGradient *grad = [[NSGradient alloc] initWithStartingColor:lo endingColor:hi];
-        [grad drawInBezierPath:[NSBezierPath bezierPathWithRect:r] angle:gradAngle];
-        return;
-    }
-
-    CGContextSetFillColorWithColor(ctx, base.CGColor);
-    CGContextFillRect(ctx, r);
 }
 
 #pragma mark - Curve
