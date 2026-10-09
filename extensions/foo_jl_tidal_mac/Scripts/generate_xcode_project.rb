@@ -153,7 +153,7 @@ pbxproj_content += "\t\t#{uuid_sdk_lib} /* libfoobar2000_SDK.a in Frameworks */ 
 pbxproj_content += "\t\t#{uuid_helpers_lib} /* libfoobar2000_SDK_helpers.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */; };\n"
 pbxproj_content += "\t\t#{uuid_component_client_lib} /* libfoobar2000_component_client.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */; };\n"
 pbxproj_content += "\t\t#{uuid_shared_lib} /* libshared.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_shared_lib_ref} /* libshared.a */; };\n"
-pbxproj_content += "\t\t#{uuid_pfc_lib} /* libpfc-Mac.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_pfc_lib_ref} /* libpfc-Mac.a */; };\n"
+pbxproj_content += "\t\t#{uuid_pfc_lib} /* libpfc.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_pfc_lib_ref} /* libpfc.a */; };\n"
 
 pbxproj_content += <<~PBXPROJ
 /* End PBXBuildFile section */
@@ -214,7 +214,7 @@ pbxproj_content += "\t\t#{uuid_sdk_lib_ref} /* libfoobar2000_SDK.a */ = {isa = P
 pbxproj_content += "\t\t#{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libfoobar2000_SDK_helpers.a; path = \"#{SDK_PATH}/foobar2000/helpers/build/Release/libfoobar2000_SDK_helpers.a\"; sourceTree = \"<group>\"; };\n"
 pbxproj_content += "\t\t#{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libfoobar2000_component_client.a; path = \"#{SDK_PATH}/foobar2000/foobar2000_component_client/build/Release/libfoobar2000_component_client.a\"; sourceTree = \"<group>\"; };\n"
 pbxproj_content += "\t\t#{uuid_shared_lib_ref} /* libshared.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libshared.a; path = \"#{SDK_PATH}/foobar2000/shared/build/Release/libshared.a\"; sourceTree = \"<group>\"; };\n"
-pbxproj_content += "\t\t#{uuid_pfc_lib_ref} /* libpfc-Mac.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = \"libpfc-Mac.a\"; path = \"#{SDK_PATH}/pfc/build/Release/libpfc-Mac.a\"; sourceTree = \"<group>\"; };\n"
+pbxproj_content += "\t\t#{uuid_pfc_lib_ref} /* libpfc.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = \"libpfc.a\"; path = \"#{SDK_PATH}/pfc/build/Release/libpfc.a\"; sourceTree = \"<group>\"; };\n"
 
 pbxproj_content += <<~PBXPROJ
 /* End PBXFileReference section */
@@ -234,7 +234,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_helpers_lib} /* libfoobar2000_SDK_helpers.a in Frameworks */,
 				#{uuid_component_client_lib} /* libfoobar2000_component_client.a in Frameworks */,
 				#{uuid_shared_lib} /* libshared.a in Frameworks */,
-				#{uuid_pfc_lib} /* libpfc-Mac.a in Frameworks */,
+				#{uuid_pfc_lib} /* libpfc.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -369,7 +369,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */,
 				#{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */,
 				#{uuid_shared_lib_ref} /* libshared.a */,
-				#{uuid_pfc_lib_ref} /* libpfc-Mac.a */,
+				#{uuid_pfc_lib_ref} /* libpfc.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -479,7 +479,7 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
@@ -524,7 +524,7 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;

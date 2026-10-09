@@ -6,7 +6,7 @@ set -e
 
 MAIN_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORKTREE_BASE="$HOME/Projects/Foobar2000-worktrees"
-SDK_DIR="SDK-2025-03-07"
+SDK_DIR="SDK-2026-10-01"
 
 COMPONENTS=(
     effects-dsp

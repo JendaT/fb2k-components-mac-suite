@@ -9,7 +9,7 @@
 #   VERSION = Fb2kVersions.get("simplaylist")  # Returns "1.1.0"
 #
 # Configure SDK via environment variable:
-#   export FB2K_SDK_PATH="/path/to/SDK-2025-03-07"
+#   export FB2K_SDK_PATH="/path/to/SDK-2026-10-01"
 #
 # Or use the default relative path from extension directories.
 #
@@ -17,7 +17,7 @@
 
 module Fb2kSdk
   # Default SDK version (relative to project root)
-  DEFAULT_SDK_DIR = "SDK-2025-03-07"
+  DEFAULT_SDK_DIR = "SDK-2026-10-01"
 
   def self.path
     # Check environment variable first

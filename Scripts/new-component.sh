@@ -199,8 +199,8 @@ if [ ! -d "$WORKTREE_DIR" ]; then
     git worktree add "$WORKTREE_DIR" -b "dev/$COMPONENT_HYPHEN" main
 
     # Symlink SDK
-    if [ -d "$PROJECT_ROOT/SDK-2025-03-07" ]; then
-        ln -s "$PROJECT_ROOT/SDK-2025-03-07" "$WORKTREE_DIR/SDK-2025-03-07"
+    if [ -d "$PROJECT_ROOT/SDK-2026-10-01" ]; then
+        ln -s "$PROJECT_ROOT/SDK-2026-10-01" "$WORKTREE_DIR/SDK-2026-10-01"
     fi
 
     # Symlink shared
