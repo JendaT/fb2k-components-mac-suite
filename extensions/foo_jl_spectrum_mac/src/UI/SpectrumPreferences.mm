@@ -233,7 +233,7 @@
     y += 26;
 
     _freqAxisCheckbox = [self checkbox:@"Show frequency axis" at:NSMakePoint(labelX + 10, y)];
-    _freqAxisCheckbox.toolTip = @"Draw frequency gridlines and labels along the bottom";
+    _freqAxisCheckbox.toolTip = @"Draw frequency gridlines and labels (in Bars mode, label each bar with its centre frequency)";
     [self.view addSubview:_freqAxisCheckbox];
     y += 26;
 
