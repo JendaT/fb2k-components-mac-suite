@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 @optional
 // Sent on resize while the bar count is "Auto", with the count for the new size.
 - (void)spectrumView:(SpectrumView *)view autoBarCountChanged:(NSInteger)count;
+// Sent on a left double-click.
+- (void)spectrumViewRequestsFullScreenToggle:(SpectrumView *)view;
 @end
 
 @interface SpectrumView : NSView
