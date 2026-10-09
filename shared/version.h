@@ -50,5 +50,5 @@
 #define TIDAL_VERSION_INT 031
 
 // Spectrum Analyzer
-#define SPECTRUM_VERSION "0.1.0"
-#define SPECTRUM_VERSION_INT 010
+#define SPECTRUM_VERSION "0.2.0"
+#define SPECTRUM_VERSION_INT 020

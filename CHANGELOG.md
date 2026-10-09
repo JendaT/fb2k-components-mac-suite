@@ -609,6 +609,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Spectrum Analyzer
 
+### [0.2.0] - 2026-10-09
+
+#### Added
+- **Auto bar count**: Fits the panel width (one bar per 2 points), up to 2048 bars; new 384/512 presets.
+- **Per-bar frequency labels**: Each bar labelled with its centre frequency in Bars mode.
+- **Frequency readout**: Click and hold for the exact frequency under the cursor.
+- **Denser frequency axis**: Extra ticks in the 10-20 kHz range; round steps on the linear scale.
+
+#### Changed
+- **Settings changes and resizes**: Bars keep their levels instead of blanking.
+- **Drawing**: Batched bar paths, one gradient per frame, pixel-snapped bar edges.
+
+#### Fixed
+- **Small FFT sizes**: Lowest bands no longer read the DC bin.
+
 ### [0.1.0] - 2026-10-03
 
 #### Added

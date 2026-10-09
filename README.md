@@ -11,7 +11,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
-| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.1.0 | [📖](docs/spectrum.md) |
+| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 0.2.0 | [📖](docs/spectrum.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
@@ -88,7 +88,9 @@ Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation s
 - Falling peak line and slow-decaying shadow fill
 - dB guides and frequency gridlines with adjustable opacity
 - Bar styles (solid, gradient, spectrum hue) and color presets (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, ...) with separate light/dark colors and optional glass background
-- Tunable bar count, FFT size, smoothing and peak/shadow fall speeds
+- Auto bar count that fits the panel (up to 2048 bars), or fixed presets
+- Per-bar frequency labels; click and hold to read the exact frequency under the cursor
+- Tunable FFT size, smoothing and peak/shadow fall speeds
 
 ---
 

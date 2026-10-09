@@ -46,7 +46,8 @@ Each bar has three layers that rise instantly and fall at different rates:
 ### Grid
 
 - **dB scale**: guide lines every 10 dB with labels, positioned against the same 0..-80 dB window the bars use
-- **Frequency axis**: logarithmic gridlines at 1..9 x 10^n Hz with de-cluttered labels (20 Hz to 20 kHz)
+- **Frequency axis**: logarithmic gridlines at 1..9 x 10^n Hz, with extra ticks where there is room (filling 10-20 kHz) and de-cluttered labels; the linear scale uses round steps
+- **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
 
 ### Color Themes
@@ -56,6 +57,10 @@ Ten presets stamp bar, background, and grid colors for both light and dark appea
 ### Glass Background
 
 Optional translucent behind-window blur instead of a solid background color (same effect as SimPlaylist and Waveform Seekbar).
+
+### Frequency Readout
+
+Click and hold the left mouse button to show a marker and the exact frequency under the cursor; drag to scrub.
 
 ### Dark Mode Support
 
@@ -71,7 +76,7 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Bars | Number of frequency bars | 16, 24, 32, 48, 64, 96, 128, 192, 256 | 48 |
+| Bars | Number of frequency bars; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | 48 |
 | FFT size | FFT window length | 1024, 2048, 4096, 8192, 16384 | 4096 |
 | Frequency scale | Band mapping | Logarithmic, Linear | Logarithmic |
 | Range (Hz) | Lowest and highest displayed frequency | 10-2000 to 1000-24000 | 20 to 20000 |

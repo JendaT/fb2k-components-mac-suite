@@ -2,6 +2,23 @@
 
 All notable changes to Spectrum Analyzer will be documented in this file.
 
+## [0.2.0] - 2026-10-09
+
+Contributed by [Scannou](https://github.com/Scannou).
+
+### Added
+- **Auto bar count**: One bar per 2 points of panel width, recomputed on resize, orientation and dB-scale changes; up to 2048 bars. New 384 and 512 presets.
+- **Per-bar frequency labels**: In Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density.
+- **Frequency readout**: Click and hold to show a marker and the exact frequency under the cursor; drag to scrub.
+- **Denser frequency axis**: Extra log ticks fill the 10-20 kHz range; linear scale uses round steps; the top label stays inside the plot.
+
+### Changed
+- **Settings changes and resizes**: Bars keep their levels (resampled to the new count) instead of blanking.
+- **Drawing**: Bars drawn as batched paths with one gradient per frame instead of one per bar; bar edges snap to device pixels with a minimum 1px gap, so narrow bars no longer blur into a moire pattern.
+
+### Fixed
+- **Small FFT sizes**: The lowest bands no longer read the DC bin.
+
 ## [0.1.0] - 2026-10-03
 
 Initial release. Contributed by [Scannou](https://github.com/Scannou).
