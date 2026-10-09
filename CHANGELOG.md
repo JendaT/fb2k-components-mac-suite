@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distribution packaging scripts
 
 ### Changed
+- **SDK**: Built against foobar2000 SDK 2026-10-01; components now compile as C++20 and link the renamed `libpfc.a`.
+- **Requires macOS 12**: All components now target macOS 12, as Xcode 27 cannot build for macOS 11.
 - Preferences page titles now match foobar2000's built-in style (non-bold)
 - Unified copyright notices across all extensions
 

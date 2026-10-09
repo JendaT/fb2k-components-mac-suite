@@ -21,7 +21,7 @@ Hierarchical playlist organization with folders for foobar2000 macOS.
 First, build the foobar2000 SDK libraries if not already done:
 
 ```bash
-cd ../SDK-2025-03-07/foobar2000
+cd ../SDK-2026-10-01/foobar2000
 xcodebuild -workspace foobar2000.xcworkspace -scheme "foobar2000 SDK" -configuration Release build
 ```
 

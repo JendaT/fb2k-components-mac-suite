@@ -134,7 +134,7 @@ Intake system overview and decision log (music ingest pipeline):
 The SDK should be located at:
 ```
 /path/to/your/projects/
-├── SDK-2025-03-07/           # Official SDK
+├── SDK-2026-10-01/           # Official SDK
 ├── foo_scrobble_mac/         # Reference implementation
 └── foo_[your_component]_mac/ # Your component
 ```

@@ -212,7 +212,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 ## Requirements
 
 - foobar2000 v2.6+ for macOS
-- macOS 11 "Big Sur" or newer (Playlist Organizer and Queue Manager: macOS 12 "Monterey" or newer)
+- macOS 12 "Monterey" or newer
 - Intel or Apple Silicon processor
 
 ## Building from Source
@@ -230,7 +230,7 @@ directory layout looks like this:
 
 ```
 fb2k-components-mac-suite/
-└── SDK-2025-03-07/          # exact name must match the downloaded archive
+└── SDK-2026-10-01/          # exact name must match the downloaded archive
     ├── pfc/
     ├── foobar2000/
     │   ├── SDK/
@@ -240,19 +240,22 @@ fb2k-components-mac-suite/
     └── ...
 ```
 
-Then build the SDK libraries **in this order** (each must succeed before the next):
+Then build the SDK libraries **in this order** (each must succeed before the next).
+The SDK's own projects target macOS 11, which Xcode 27 rejects, so the deployment
+target is overridden on the command line:
 
 ```bash
-SDK=SDK-2025-03-07
+SDK=SDK-2026-10-01
 
-xcodebuild -project $SDK/pfc/pfc.xcodeproj                                                         -configuration Release
-xcodebuild -project $SDK/foobar2000/SDK/foobar2000_SDK.xcodeproj                                   -configuration Release
-xcodebuild -project $SDK/foobar2000/shared/shared.xcodeproj                                        -configuration Release
-xcodebuild -project $SDK/foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj                       -configuration Release
-xcodebuild -project $SDK/foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release
+xcodebuild -project $SDK/pfc/pfc.xcodeproj                                                         -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/SDK/foobar2000_SDK.xcodeproj                                   -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/shared/shared.xcodeproj                                        -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj                       -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
 ```
 
-This only needs to be done once (or when the SDK version changes).
+This only needs to be done once (or when the SDK version changes). Components build as C++20,
+which the SDK requires since 2026-09-16.
 
 ### 2. Build a component
 

@@ -76,7 +76,7 @@ Access preferences via: foobar2000 > Preferences > Tools > Cloud Streamer
 
 ### Requirements
 - Xcode 15+
-- foobar2000 macOS SDK (SDK-2025-03-07)
+- foobar2000 macOS SDK (SDK-2026-10-01)
 
 ### Build
 ```bash

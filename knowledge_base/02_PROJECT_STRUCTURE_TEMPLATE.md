@@ -221,7 +221,7 @@ require 'securerandom'
 
 PROJECT_NAME = "foo_mycomponent"
 BUNDLE_ID = "com.yourname.foo_mycomponent"
-SDK_PATH = "../SDK-2025-03-07"
+SDK_PATH = "../SDK-2026-10-01"
 
 # Generate UUIDs for all Xcode objects
 # Collect source files from src/
@@ -310,7 +310,7 @@ A foobar2000 macOS component that [description].
 
 ```bash
 # Build SDK libraries first
-cd ../SDK-2025-03-07
+cd ../SDK-2026-10-01
 ./build_all.sh
 
 # Build component

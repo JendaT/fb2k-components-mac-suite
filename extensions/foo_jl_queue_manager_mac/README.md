@@ -146,7 +146,7 @@ Queue items are wrapped in `QueueItemWrapper` using C++ member variables (not Ob
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2025-03-07 && xcodebuild`
+1. Ensure SDK is built: `cd ../SDK-2026-10-01 && xcodebuild`
 2. Regenerate project: `ruby Scripts/generate_xcode_project.rb`
 
 ## License

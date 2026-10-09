@@ -27,7 +27,7 @@ require 'fileutils'
 # Configuration
 PROJECT_NAME = "foo_mycomponent"
 BUNDLE_ID = "com.yourname.foo_mycomponent"
-SDK_PATH = "../SDK-2025-03-07"
+SDK_PATH = "../SDK-2026-10-01"
 DEPLOYMENT_TARGET = "10.13"
 
 # UUID generation
@@ -100,7 +100,7 @@ end
 | `libfoobar2000_SDK_helpers.a` | `helpers/build/Release/` | Helper utilities |
 | `libfoobar2000_component_client.a` | `foobar2000_component_client/build/Release/` | Component loader |
 | `libshared.a` | `shared/build/Release/` | Shared utilities |
-| `libpfc-Mac.a` | `pfc/build/Release/` | Platform foundation |
+| `libpfc.a` | `pfc/build/Release/` | Platform foundation |
 
 ### 2.2 Library Search Path Configuration
 
@@ -129,7 +129,7 @@ LIBRARIES = [
   { name: "libfoobar2000_SDK_helpers.a", path: "helpers/build/Release" },
   { name: "libfoobar2000_component_client.a", path: "foobar2000_component_client/build/Release" },
   { name: "libshared.a", path: "shared/build/Release" },
-  { name: "libpfc-Mac.a", path: "../pfc/build/Release" }
+  { name: "libpfc.a", path: "../pfc/build/Release" }
 ]
 
 def generate_library_references
@@ -172,7 +172,7 @@ def generate_build_settings(config)
       isa = XCBuildConfiguration;
       buildSettings = {
         ALWAYS_SEARCH_USER_PATHS = NO;
-        CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+        CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
         CLANG_ENABLE_MODULES = YES;
         CLANG_ENABLE_OBJC_ARC = YES;
         CODE_SIGN_STYLE = Automatic;
@@ -240,7 +240,7 @@ def generate_frameworks_build_phase
         #{@helpers_lib_build_uuid} /* libfoobar2000_SDK_helpers.a */,
         #{@client_lib_build_uuid} /* libfoobar2000_component_client.a */,
         #{@shared_lib_build_uuid} /* libshared.a */,
-        #{@pfc_lib_build_uuid} /* libpfc-Mac.a */,
+        #{@pfc_lib_build_uuid} /* libpfc.a */,
       );
       runOnlyForDeploymentPostprocessing = 0;
     };
@@ -310,7 +310,7 @@ RELEASE_SETTINGS = {
 set -e
 
 PROJECT_NAME="foo_mycomponent"
-SDK_PATH="../SDK-2025-03-07"
+SDK_PATH="../SDK-2026-10-01"
 
 echo "=== Building foobar2000 Component: $PROJECT_NAME ==="
 
@@ -321,7 +321,7 @@ REQUIRED_LIBS=(
     "$SDK_PATH/foobar2000/helpers/build/Release/libfoobar2000_SDK_helpers.a"
     "$SDK_PATH/foobar2000/foobar2000_component_client/build/Release/libfoobar2000_component_client.a"
     "$SDK_PATH/foobar2000/shared/build/Release/libshared.a"
-    "$SDK_PATH/pfc/build/Release/libpfc-Mac.a"
+    "$SDK_PATH/pfc/build/Release/libpfc.a"
 )
 
 MISSING_LIBS=()
@@ -423,9 +423,9 @@ require 'fileutils'
 #
 PROJECT_NAME = "foo_mycomponent"
 BUNDLE_ID = "com.yourname.foo_mycomponent"
-SDK_PATH = "../SDK-2025-03-07"
+SDK_PATH = "../SDK-2026-10-01"
 DEPLOYMENT_TARGET = "10.13"
-CPP_STANDARD = "gnu++17"
+CPP_STANDARD = "gnu++20"
 
 #
 # UUID Generation
@@ -519,7 +519,7 @@ class XcodeProject
       { name: "libfoobar2000_SDK_helpers.a", path: "helpers/build/Release" },
       { name: "libfoobar2000_component_client.a", path: "foobar2000_component_client/build/Release" },
       { name: "libshared.a", path: "shared/build/Release" },
-      { name: "libpfc-Mac.a", path: "../pfc/build/Release" }
+      { name: "libpfc.a", path: "../pfc/build/Release" }
     ]
 
     libs.map do |lib|
@@ -599,12 +599,12 @@ jobs:
     - name: Cache SDK
       uses: actions/cache@v3
       with:
-        path: ../SDK-2025-03-07
+        path: ../SDK-2026-10-01
         key: sdk-2025-03-07
 
     - name: Download SDK
       run: |
-        if [ ! -d "../SDK-2025-03-07" ]; then
+        if [ ! -d "../SDK-2026-10-01" ]; then
           # Download and extract SDK
           curl -L "https://example.com/sdk.zip" -o sdk.zip
           unzip sdk.zip -d ..
@@ -612,7 +612,7 @@ jobs:
 
     - name: Build SDK
       run: |
-        cd ../SDK-2025-03-07
+        cd ../SDK-2026-10-01
         ./build_all.sh
 
     - name: Generate Project
@@ -640,7 +640,7 @@ jobs:
 | "No such file or directory: SDK/..." | Check SDK_PATH in generate script |
 | "Undefined symbols for architecture..." | Verify all 5 libraries are linked |
 | "Could not build module 'Cocoa'" | Check MACOSX_DEPLOYMENT_TARGET |
-| "No matching function for call..." | Verify C++ standard is gnu++17 or higher |
+| "No matching function for call..." | Verify C++ standard is gnu++20 (required since SDK 2026-09-16) |
 
 ### 9.2 Verification Checklist
 
@@ -652,7 +652,7 @@ ls -la foo_mycomponent.xcodeproj/project.pbxproj
 grep -c "PBXBuildFile" foo_mycomponent.xcodeproj/project.pbxproj
 
 # Verify library paths exist
-for lib in ../SDK-2025-03-07/foobar2000/*/build/Release/*.a; do
+for lib in ../SDK-2026-10-01/foobar2000/*/build/Release/*.a; do
     echo "Found: $lib"
 done
 

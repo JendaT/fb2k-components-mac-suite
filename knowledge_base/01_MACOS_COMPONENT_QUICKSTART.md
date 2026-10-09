@@ -29,7 +29,7 @@ Examples:
 Create your project directory at the same level as the SDK:
 ```
 /path/to/foobar2000/
-├── SDK-2025-03-07/          # Official SDK
+├── SDK-2026-10-01/          # Official SDK
 ├── foo_scrobble_mac/        # Existing reference project
 └── foo_[your_name]_mac/     # Your new component
 ```
@@ -196,7 +196,7 @@ namespace {
 | `libfoobar2000_SDK_helpers.a` | `helpers/build/Release/` | Helper utilities |
 | `libfoobar2000_component_client.a` | `foobar2000_component_client/build/Release/` | Component loader |
 | `libshared.a` | `shared/build/Release/` | Shared utilities |
-| `libpfc-Mac.a` | `pfc/build/Release/` | Platform foundation |
+| `libpfc.a` | `pfc/build/Release/` | Platform foundation |
 | `Cocoa.framework` | System | macOS UI framework |
 
 ### Building SDK Libraries
@@ -204,7 +204,7 @@ namespace {
 Before building your component, build the SDK libraries:
 
 ```bash
-cd /path/to/SDK-2025-03-07
+cd /path/to/SDK-2026-10-01
 
 # Build all SDK projects in Release mode
 xcodebuild -project foobar2000/SDK/foobar2000_SDK.xcodeproj -configuration Release
@@ -216,18 +216,18 @@ xcodebuild -project pfc/pfc.xcodeproj -configuration Release
 
 ### Header Search Paths
 ```
-$(PROJECT_DIR)/../SDK-2025-03-07
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000
-$(PROJECT_DIR)/../SDK-2025-03-07/pfc
+$(PROJECT_DIR)/../SDK-2026-10-01
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000
+$(PROJECT_DIR)/../SDK-2026-10-01/pfc
 ```
 
 ### Library Search Paths
 ```
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/SDK/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/helpers/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/foobar2000_component_client/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/shared/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/pfc/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/SDK/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/helpers/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/foobar2000_component_client/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/shared/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/pfc/build/Release
 ```
 
 ## 6. Build Configuration
@@ -238,8 +238,8 @@ $(PROJECT_DIR)/../SDK-2025-03-07/pfc/build/Release
 |---------|-------|
 | Product Type | `com.apple.product-type.bundle` |
 | Bundle Extension | `component` |
-| Deployment Target | `11.0` (Big Sur - verify against SDK minimum) |
-| C++ Language Standard | `gnu++17` (or `gnu++20`) |
+| Deployment Target | `12.0` (Monterey; Xcode 27 cannot target 11) |
+| C++ Language Standard | `gnu++20` (required since SDK 2026-09-16) |
 | Objective-C ARC | `YES` |
 | Code Signing | Automatic |
 
@@ -281,7 +281,7 @@ cp -r build/Release/foo_mycomponent.component \
 ## 8. Common Issues
 
 ### Build Fails: Missing Headers
-- Ensure SDK is at correct relative path (`../SDK-2025-03-07/`)
+- Ensure SDK is at correct relative path (`../SDK-2026-10-01/`)
 - Verify header search paths in Xcode project
 
 ### Build Fails: Missing Libraries
@@ -311,4 +311,4 @@ After your skeleton compiles:
 
 - [foobar2000 SDK Documentation](https://www.foobar2000.org/SDK)
 - [Hydrogenaudio Development Wiki](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Development:Overview)
-- [foo_sample in SDK](../SDK-2025-03-07/foobar2000/foo_sample/) - Reference implementation
+- [foo_sample in SDK](../SDK-2026-10-01/foobar2000/foo_sample/) - Reference implementation

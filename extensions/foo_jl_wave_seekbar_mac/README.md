@@ -11,7 +11,7 @@ An interactive waveform display and seekbar for foobar2000 macOS.
 ## Requirements
 
 - foobar2000 for Mac 2.x
-- macOS 11.0+ (Big Sur or later)
+- macOS 12.0+ (Monterey or later)
 - Xcode 12+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
@@ -226,7 +226,7 @@ foo_jl_wave_seekbar_mac/
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2025-03-07 && xcodebuild`
+1. Ensure SDK is built: `cd ../SDK-2026-10-01 && xcodebuild`
 2. Regenerate project: `./Scripts/clean.sh --all && ./Scripts/test_install.sh`
 
 ## Credits

@@ -102,7 +102,7 @@ splitter horizontal
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 (Big Sur) or later
+- macOS 12.0 (Monterey) or later
 
 ## Links
 
