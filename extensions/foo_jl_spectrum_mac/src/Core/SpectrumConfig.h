@@ -45,6 +45,9 @@ enum Orientation {
 
 // --- Defaults ---
 constexpr int      kDefaultBarCount   = 48;      // Number of frequency bars
+constexpr int      kBarCountAuto      = 0;       // Bar count follows the view size
+constexpr double   kAutoBarPitch      = 2.0;     // Auto: points per bar along the frequency axis
+constexpr int      kMaxBarCount       = 2048;
 constexpr int      kDefaultFftSize    = 4096;    // FFT window (power of 2)
 constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleLog;

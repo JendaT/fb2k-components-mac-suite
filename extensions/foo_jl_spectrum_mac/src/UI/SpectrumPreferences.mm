@@ -87,9 +87,14 @@
 
     [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
     _barCountPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
-    for (NSNumber *n in @[@16, @24, @32, @48, @64, @96, @128, @192, @256]) {
+    // Item tags hold the stored value; "Auto" (0) fits the bar count to the panel.
+    [_barCountPopup addItemWithTitle:@"Auto"];
+    _barCountPopup.lastItem.tag = spectrum_config::kBarCountAuto;
+    for (NSNumber *n in @[@16, @24, @32, @48, @64, @96, @128, @192, @256, @384, @512]) {
         [_barCountPopup addItemWithTitle:n.stringValue];
+        _barCountPopup.lastItem.tag = n.integerValue;
     }
+    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width (pair with a large FFT size for bass detail)";
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
     [self.view addSubview:_barCountPopup];
     y += 30;
@@ -334,7 +339,8 @@
 - (void)loadSettings {
     using namespace spectrum_config;
 
-    [self selectPopup:_barCountPopup value:(int)getConfigInt(kKeyBarCount, kDefaultBarCount)];
+    if (![_barCountPopup selectItemWithTag:getConfigInt(kKeyBarCount, kDefaultBarCount)])
+        [_barCountPopup selectItemWithTag:kDefaultBarCount];
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
     [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
     [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
@@ -427,7 +433,7 @@
 #pragma mark - Actions
 
 - (void)barCountChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyBarCount, _barCountPopup.titleOfSelectedItem.intValue);
+    spectrum_config::setConfigInt(spectrum_config::kKeyBarCount, _barCountPopup.selectedItem.tag);
     [self notifyChanged];
 }
 
