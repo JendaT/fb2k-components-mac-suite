@@ -91,9 +91,11 @@ void SpectrumAnalyzer::rebuildBands() {
         int lo = (int)std::floor(f0 / hzPerBin);
         int hi = (int)std::ceil(f1 / hzPerBin) - 1;
 
-        // Ensure every bar covers at least one bin and stays in range.
-        if (hi < lo) hi = lo;
+        // Ensure every bar covers at least one bin and stays in range. The DC
+        // skip must come before hi is raised to lo: a band entirely below bin 1
+        // (e.g. 20 Hz at FFT 2048, 21.5 Hz/bin) would otherwise read DC (~0).
         if (lo < 1) lo = 1;                          // skip DC bin
+        if (hi < lo) hi = lo;
         if (hi >= binCount) hi = binCount - 1;
         if (lo > hi) lo = hi;
 
@@ -105,7 +107,9 @@ void SpectrumAnalyzer::rebuildBands() {
         // their centre frequency, interpolated between neighbouring bins.
         if (f1 - f0 < hzPerBin) {
             const double fc = _settings.logScale ? std::sqrt(f0 * f1) : 0.5 * (f0 + f1);
-            _binCenter[i] = (float)(fc / hzPerBin);
+            // Below bin 1 there is nothing to interpolate towards except DC;
+            // hold at bin 1 so the lowest bands read flat instead of dropping.
+            _binCenter[i] = (float)std::max(1.0, fc / hzPerBin);
         }
     }
 
