@@ -11,6 +11,7 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <Carbon/Carbon.h>  // kVK_Escape
 
 @interface SpectrumController () {
     std::unique_ptr<SpectrumAnalyzer> _analyzer;
@@ -56,6 +57,46 @@ public:
     }
 };
 FB2K_SERVICE_FACTORY(spectrum_initquit);
+
+#pragma mark - Full-screen window
+
+// Hosts its own SpectrumController in a native full-screen Space, so the panel
+// stays in the foobar2000 layout. Closes itself once full screen is exited.
+@interface SpectrumFullScreenWindow : NSWindow <NSWindowDelegate>
+@property (nonatomic, strong) SpectrumController *spectrumController;
+- (void)exitFullScreen;
+@end
+
+namespace {
+    // At most one full-screen spectrum; main thread only.
+    SpectrumFullScreenWindow *g_fullScreenWindow = nil;
+}
+
+@implementation SpectrumFullScreenWindow
+
+- (void)exitFullScreen {
+    if (self.styleMask & NSWindowStyleMaskFullScreen) [self toggleFullScreen:nil];
+    else [self close];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (event.keyCode == kVK_Escape) { [self exitFullScreen]; return; }
+    [super keyDown:event];
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)note {
+    [self close];
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+    [self close];
+}
+
+- (void)windowWillClose:(NSNotification *)note {
+    if (g_fullScreenWindow == self) g_fullScreenWindow = nil;
+}
+
+@end
 
 @implementation SpectrumController
 
@@ -208,7 +249,10 @@ FB2K_SERVICE_FACTORY(spectrum_initquit);
 - (void)tick {
     @autoreleasepool {
         if (g_shutdown.load()) { [self stopTimer]; return; }
-        if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
+        NSWindow *window = self.view.window;
+        if (!window || self.view.isHiddenOrHasHiddenAncestor) return;
+        // Skip fully covered windows, e.g. the panel while full screen is up.
+        if (!(window.occlusionState & NSWindowOcclusionStateVisible)) return;
 
         bool live = _analyzer->tick();
         self.spectrumView.playing = live;
@@ -236,12 +280,69 @@ FB2K_SERVICE_FACTORY(spectrum_initquit);
 
 - (void)spectrumViewRequestsContextMenu:(SpectrumView *)view atPoint:(NSPoint)point {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Spectrum Analyzer"];
+    NSMenuItem *fullScreen = [[NSMenuItem alloc] initWithTitle:g_fullScreenWindow ? @"Exit Full Screen" : @"Full Screen"
+                                                        action:@selector(menuToggleFullScreen:)
+                                                 keyEquivalent:@""];
+    fullScreen.target = self;
+    [menu addItem:fullScreen];
+    [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *prefs = [[NSMenuItem alloc] initWithTitle:@"Preferences..."
                                                    action:@selector(menuShowPreferences:)
                                             keyEquivalent:@""];
     prefs.target = self;
     [menu addItem:prefs];
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+}
+
+- (void)spectrumViewRequestsFullScreenToggle:(SpectrumView *)view {
+    [self toggleFullScreen];
+}
+
+- (void)menuToggleFullScreen:(NSMenuItem *)sender {
+    [self toggleFullScreen];
+}
+
+// From the panel this opens the full-screen window; from inside it (or while
+// one is already open) it exits.
+- (void)toggleFullScreen {
+    if (g_fullScreenWindow) { [g_fullScreenWindow exitFullScreen]; return; }
+    if (g_shutdown.load()) return;
+
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    const NSRect frame = screen.visibleFrame;
+
+    SpectrumFullScreenWindow *w = [[SpectrumFullScreenWindow alloc]
+        initWithContentRect:frame
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    w.releasedWhenClosed = NO;
+    w.title = @"Spectrum Analyzer";
+    w.titleVisibility = NSWindowTitleHidden;
+    w.titlebarAppearsTransparent = YES;
+    w.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+    w.delegate = w;
+
+    // The controller's view opts out of autoresizing masks, so pin it inside
+    // a plain content view rather than making it the window's content view.
+    SpectrumController *controller = [[SpectrumController alloc] init];
+    NSView *spectrum = controller.view;
+    spectrum.layer.cornerRadius = 0;
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)];
+    [content addSubview:spectrum];
+    [NSLayoutConstraint activateConstraints:@[
+        [spectrum.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [spectrum.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [spectrum.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [spectrum.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+    ]];
+    w.contentView = content;
+    w.spectrumController = controller;
+
+    g_fullScreenWindow = w;
+    [w makeKeyAndOrderFront:nil];
+    [w toggleFullScreen:nil];
 }
 
 - (void)menuShowPreferences:(NSMenuItem *)sender {

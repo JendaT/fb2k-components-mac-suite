@@ -805,9 +805,18 @@ static NSString *probeHz(double f) {
 - (BOOL)mouseDownCanMoveWindow { return NO; }
 
 // Hold the left button to read the frequency under the cursor; drag to scrub.
+// Double-click toggles full screen.
 - (void)mouseDown:(NSEvent *)event {
     if (event.modifierFlags & NSEventModifierFlagControl) {
         [self rightMouseDown:event];  // ctrl-click opens the context menu
+        return;
+    }
+    if (event.clickCount == 2) {
+        _probing = NO;
+        [self setNeedsDisplay:YES];
+        if ([self.delegate respondsToSelector:@selector(spectrumViewRequestsFullScreenToggle:)]) {
+            [self.delegate spectrumViewRequestsFullScreenToggle:self];
+        }
         return;
     }
     _probing = YES;
