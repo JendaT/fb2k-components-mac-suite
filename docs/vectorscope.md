@@ -76,6 +76,8 @@ The correlation meter hides when the panel is under 90 points in either directio
 
 Access settings via **Preferences > Display > Vectorscope**, or right-click the element and choose **Preferences...**. Changes apply live.
 
+![Vectorscope Settings](images/vectorscope-settings.png)
+
 ### Scope
 
 | Setting | Description | Range | Default |
