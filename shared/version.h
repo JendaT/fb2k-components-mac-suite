@@ -52,3 +52,7 @@
 // Spectrum Analyzer
 #define SPECTRUM_VERSION "0.2.0"
 #define SPECTRUM_VERSION_INT 020
+
+// Vectorscope
+#define VECTORSCOPE_VERSION "0.1.0"
+#define VECTORSCOPE_VERSION_INT 010
