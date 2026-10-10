@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <atomic>
+#include <mutex>
 
 // Forward declaration for Objective-C compatibility
 #ifdef __OBJC__
@@ -48,11 +49,13 @@ private:
 
     // Atomic state
     std::atomic<bool> m_scanning{false};
-    std::atomic<bool> m_cancelRequested{false};
     std::atomic<uint64_t> m_generation{0};  // Increments per scan to detect stale results
 
-    // Current abort callback for cancellation
-    abort_callback_impl m_abort;
+    // Each scan owns its abort object for its whole lifetime. A shared member
+    // would let a newly started scan reset the flag an older, still-running scan
+    // is about to observe - leaving two decoders racing on one abort_callback.
+    std::mutex m_abortMutex;
+    std::shared_ptr<abort_callback_impl> m_currentAbort;
 };
 
 // Singleton accessor
