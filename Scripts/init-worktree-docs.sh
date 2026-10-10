@@ -21,6 +21,7 @@ DISPLAY_NAMES=(
     [cloud-streamer]="Cloud Streamer"
     [playback-controls]="Playback Controls"
     [spectrum]="Spectrum Analyzer"
+    [vectorscope]="Vectorscope"
 )
 
 # Generate CLAUDE.md for a component

@@ -43,6 +43,8 @@ typeset -A DIR_MAP=(
     ["jl_tidal"]="jl_tidal"
     ["spectrum"]="jl_spectrum"
     ["jl_spectrum"]="jl_spectrum"
+    ["vectorscope"]="jl_vectorscope"
+    ["jl_vectorscope"]="jl_vectorscope"
 )
 
 if [ -z "$1" ]; then
@@ -58,6 +60,7 @@ if [ -z "$1" ]; then
     echo "  biography      - Artist Biography"
     echo "  tidal          - Tidal Integration"
     echo "  spectrum       - Spectrum Analyzer"
+    echo "  vectorscope    - Vectorscope"
     exit 1
 fi
 
@@ -66,7 +69,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, tidal, spectrum"
+    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, tidal, spectrum, vectorscope"
     exit 1
 fi
 
