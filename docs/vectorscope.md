@@ -18,6 +18,8 @@ Every stereo sample is plotted as a point: the vertical axis is mid (L+R), the h
 
 The diamond marks full scale at 0 dB gain; the dashed inner diamond is half scale (-6 dB).
 
+![Vectorscope beside the Spectrum Analyzer](images/vectorscope-overview.png)
+
 ### Afterglow
 
 The trace fades over an adjustable time instead of being redrawn from scratch, like the phosphor of an oscilloscope tube. The brightest parts bleach towards white in dark mode.
@@ -49,6 +51,10 @@ Negative readings draw in red. The bar shows `--` while the signal is below abou
 ### Three-Band Correlation
 
 Optionally the meter splits into low, mid, and high bars with adjustable crossovers (24 dB/octave), showing which part of the spectrum is out of phase. A mix can read fine overall while its bass cancels in mono.
+
+![Vectorscope with three-band correlation](images/vectorscope-panel.png)
+
+In this example the low and high bands are in phase while the mid band reads slightly negative.
 
 ### Grid
 

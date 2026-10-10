@@ -99,6 +99,10 @@ Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation s
 
 Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a phase correlation meter, fed by foobar2000's visualisation stream.
 
+| Overview | Scope |
+|----------|-------|
+| ![Vectorscope in a layout](docs/images/vectorscope-overview.png) | ![Vectorscope panel](docs/images/vectorscope-panel.png) |
+
 **Features:**
 - Goniometer display: mono is a vertical line, out-of-phase material spreads horizontally
 - Afterglow trace drawn as lines or dots, with adjustable persistence and brightness
