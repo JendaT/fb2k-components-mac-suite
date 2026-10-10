@@ -20,6 +20,7 @@ COMPONENTS=(
     cloud-streamer
     playback-controls
     spectrum
+    vectorscope
 )
 
 echo "=== foobar2000 Worktree Setup ==="
