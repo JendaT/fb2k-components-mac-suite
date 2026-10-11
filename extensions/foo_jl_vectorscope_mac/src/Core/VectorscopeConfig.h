@@ -55,6 +55,8 @@ constexpr int      kMaxBarThickness       = 24;
 constexpr int      kDefaultIntegrationMs  = 500;     // Correlation time window
 constexpr int      kMinIntegrationMs      = 100;
 constexpr int      kMaxIntegrationMs      = 3000;
+constexpr int      kDefaultRangeHoldMs    = 200;     // How long the meter's recent range is held; 0 = off
+constexpr int      kMaxRangeHoldMs        = 5000;
 constexpr int      kDefaultLowHz          = 250;     // Low / mid crossover
 constexpr int      kMinLowHz              = 40;
 constexpr int      kMaxLowHz              = 1000;
@@ -94,6 +96,7 @@ static const char* const kKeyCorrelationMode  = "correlation_mode";
 static const char* const kKeyMeterPosition    = "correlation_position";
 static const char* const kKeyBarThickness     = "correlation_bar_thickness";
 static const char* const kKeyIntegrationMs    = "integration_ms";
+static const char* const kKeyRangeHoldMs      = "correlation_range_hold_ms";
 static const char* const kKeyLowHz            = "xover_low_hz";
 static const char* const kKeyHighHz           = "xover_high_hz";
 static const char* const kKeyShowGrid         = "show_grid";

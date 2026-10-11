@@ -7,6 +7,7 @@
 #include "../Core/VectorscopeConfig.h"
 #include "../Core/PhosphorBuffer.h"
 #include "../Core/ScopeLayout.h"
+#include "../Core/StereoAnalysis.h"
 #include "../../../../shared/UIStyles.h"
 #include <algorithm>
 #include <cmath>
@@ -20,8 +21,12 @@ namespace {
 
     // Bars ease to new readings over this long.
     const double kBarEase = 0.08;
+    // A held end of the recent range closes in on the bar over this long.
+    const double kRangeRelease = 0.25;
 
     const int kMaxRows = 3;
+
+    const CGFloat kRangeAlpha = 0.35;
 }
 
 @implementation VectorscopeView {
@@ -61,6 +66,9 @@ namespace {
     bool     _targetSilent[kMaxRows];
     float    _shown[kMaxRows];
     bool     _shownSilent[kMaxRows];
+    // How far each shown reading has swung recently; off when the hold is 0.
+    double   _rangeHold;     // seconds
+    stereo::HeldRange _range[kMaxRows];
 }
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -112,6 +120,8 @@ namespace {
     _showCorrelation = getConfigBool(kKeyShowCorrelation, kDefaultShowCorrelation);
     _bandMode     = getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode) == CorrelationBands;
     _meterPosition = (int)getConfigInt(kKeyMeterPosition, kDefaultMeterPosition);
+    _rangeHold    = getConfigIntClamped(kKeyRangeHoldMs, kDefaultRangeHoldMs, 0, kMaxRangeHoldMs) / 1000.0;
+    for (int i = 0; i < kMaxRows; ++i) _range[i].configure(_rangeHold, kRangeRelease);
     _barThickness = getConfigIntClamped(kKeyBarThickness, kDefaultBarThickness, kMinBarThickness, kMaxBarThickness);
     _showGrid     = getConfigBool(kKeyShowGrid, kDefaultShowGrid);
     _showLabels   = getConfigBool(kKeyShowLabels, kDefaultShowLabels);
@@ -311,6 +321,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
     for (int i = 0; i < kMaxRows; ++i) {
         _target[i] = _shown[i] = 0.0f;
         _targetSilent[i] = _shownSilent[i] = true;
+        _range[i].reset(0.0f);
     }
     [self setNeedsDisplayInRect:_corrRect];
 }
@@ -340,6 +351,12 @@ static NSColor *colorFromARGB(uint32_t argb) {
         if (next != _shown[i] || silent != _shownSilent[i]) changed = true;
         _shown[i] = next;
         _shownSilent[i] = silent;
+
+        // The range starts afresh when a row comes back from silence.
+        const float low = _range[i].low(), high = _range[i].high();
+        if (silent) _range[i].reset(0.0f);
+        else _range[i].update(next, dt);
+        if (_range[i].low() != low || _range[i].high() != high) changed = true;
     }
     if (changed && !NSIsEmptyRect(_corrRect)) [self setNeedsDisplayInRect:_corrRect];
 }
@@ -467,6 +484,19 @@ static NSColor *colorFromARGB(uint32_t argb) {
         if (!_shownSilent[i]) {
             const CGFloat p = mid + v * half;
             if (bandColors) positive = colorFromARGB([self bandARGB][i]);
+            if (_rangeHold > 0.0) {
+                // Recent range, dim behind the bar: where the reading has just been.
+                const CGFloat from = mid + _range[i].low() * half;
+                const CGFloat to = mid + _range[i].high() * half;
+                if (from < mid) {
+                    CGContextSetFillColorWithColor(ctx, [negative colorWithAlphaComponent:kRangeAlpha].CGColor);
+                    CGContextFillRect(ctx, slice(from, std::min(to, mid) - from, 0.0));
+                }
+                if (to > mid) {
+                    CGContextSetFillColorWithColor(ctx, [positive colorWithAlphaComponent:kRangeAlpha].CGColor);
+                    CGContextFillRect(ctx, slice(std::max(from, mid), to - std::max(from, mid), 0.0));
+                }
+            }
             CGContextSetFillColorWithColor(ctx, (v >= 0 ? positive : negative).CGColor);
             CGContextFillRect(ctx, slice(std::min(mid, p), std::fabs(p - mid), 0.0));
             // Cursor stays visible when the reading sits at the centre.

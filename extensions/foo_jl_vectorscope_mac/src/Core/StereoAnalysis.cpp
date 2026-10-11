@@ -17,6 +17,8 @@ namespace {
     // Peaks under this do not move the auto-gain (track gaps, fade tails).
     const float  kAutoGainGate = 1e-4f;  // -80 dBFS
     const double kAutoGainEase = 0.15;   // seconds
+    // A released extreme this close to the reading lands on it.
+    const float  kRangeSnap = 0.002f;
 }
 
 void goniometerPoints(const float* lr, size_t frames, float gain, float* xy) {
@@ -196,6 +198,39 @@ float AutoGain::process(float peak, double seconds) {
     const float wanted = std::min(_maxGain, std::max(_minGain, _target / _env));
     _gain += (wanted - _gain) * (float)(1.0 - std::exp(-seconds / kAutoGainEase));
     return _gain;
+}
+
+#pragma mark - HeldRange
+
+void HeldRange::configure(double holdSeconds, double releaseSeconds) {
+    _hold = std::max(holdSeconds, 0.0);
+    _release = std::max(releaseSeconds, 0.01);
+}
+
+void HeldRange::reset(float value) {
+    _low = _high = value;
+    _lowAge = _highAge = 0.0;
+}
+
+void HeldRange::update(float value, double seconds) {
+    if (!std::isfinite(value)) return;
+    if (!(seconds > 0.0)) seconds = 0.0;
+    const float ease = (float)(1.0 - std::exp(-seconds / _release));
+
+    if (value <= _low) {
+        _low = value;
+        _lowAge = 0.0;
+    } else if ((_lowAge += seconds) > _hold) {
+        _low += (value - _low) * ease;
+        if (value - _low < kRangeSnap) _low = value;
+    }
+    if (value >= _high) {
+        _high = value;
+        _highAge = 0.0;
+    } else if ((_highAge += seconds) > _hold) {
+        _high += (value - _high) * ease;
+        if (_high - value < kRangeSnap) _high = value;
+    }
 }
 
 #pragma mark - StereoAnalyzer

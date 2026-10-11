@@ -210,6 +210,70 @@ void testAutoGain() {
     CHECK(std::fabs(cap.gain() - 31.6f) < 0.1f, "gain is capped");
 }
 
+void testHeldRange() {
+    g_context = "held range";
+    const double frame = 1.0 / 60.0;
+    HeldRange r;
+    r.configure(1.0, 0.25);
+    r.reset(0.8f);
+    CHECK_FLOAT_EQ(r.low(), 0.8, "reset collapses the low end");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "reset collapses the high end");
+
+    // A dip is caught at once and held while the reading recovers.
+    r.update(-0.4f, frame);
+    CHECK_FLOAT_EQ(r.low(), -0.4, "low end follows a dip immediately");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "high end stays");
+    for (int i = 0; i < 54; ++i) r.update(0.6f, frame);   // 0.9 s
+    CHECK_FLOAT_EQ(r.low(), -0.4, "low end is held");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "high end is held");
+
+    // After the hold both ends close in on the reading.
+    for (int i = 0; i < 18; ++i) r.update(0.6f, frame);   // 1.2 s since the dip
+    CHECK(r.low() > -0.4f && r.low() < 0.6f, "low end releases after the hold");
+    CHECK(r.high() < 0.8f && r.high() > 0.6f, "high end releases after the hold");
+    for (int i = 0; i < 180; ++i) r.update(0.6f, frame);
+    CHECK_FLOAT_EQ(r.low(), 0.6, "low end lands on the reading");
+    CHECK_FLOAT_EQ(r.high(), 0.6, "high end lands on the reading");
+    CHECK(r.low() == r.high(), "the range closes completely");
+
+    // Reaching an extreme again restarts its hold.
+    r.reset(0.0f);
+    r.update(-0.5f, frame);
+    for (int i = 0; i < 48; ++i) r.update(0.0f, frame);   // 0.8 s
+    r.update(-0.5f, frame);
+    for (int i = 0; i < 48; ++i) r.update(0.0f, frame);   // 0.8 s more
+    CHECK_FLOAT_EQ(r.low(), -0.5, "a repeated dip restarts the hold");
+
+    // The reading always lies inside the range.
+    r.reset(0.0f);
+    bool inside = true;
+    uint32_t seed = 12345;
+    float v = 0.0f;
+    for (int i = 0; i < 5000; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        if (i % 7 == 0) v = (float)(seed >> 8) / 8388608.0f - 1.0f;
+        r.update(v, frame);
+        if (!(r.low() <= v && v <= r.high())) inside = false;
+    }
+    CHECK(inside, "the reading stays inside its range");
+
+    // No hold: the ends start closing in on the next frame.
+    HeldRange quick;
+    quick.configure(0.0, 0.25);
+    quick.reset(0.0f);
+    quick.update(-1.0f, frame);
+    quick.update(0.0f, frame);
+    CHECK(quick.low() > -1.0f, "zero hold releases immediately");
+
+    // Bad input leaves the range alone.
+    r.reset(0.3f);
+    r.update(std::numeric_limits<float>::quiet_NaN(), frame);
+    r.update(0.3f, -1.0);
+    r.update(0.3f, std::numeric_limits<double>::quiet_NaN());
+    CHECK_FLOAT_EQ(r.low(), 0.3, "bad input does not move the low end");
+    CHECK_FLOAT_EQ(r.high(), 0.3, "bad input does not move the high end");
+}
+
 void testAnalyzer() {
     g_context = "analyzer";
     // 60 Hz in phase plus 8 kHz out of phase, at equal level.
@@ -305,6 +369,7 @@ int main() {
     testCorrelation();
     testSplitter();
     testAutoGain();
+    testHeldRange();
     testAnalyzer();
     TEST_MAIN_END();
 }

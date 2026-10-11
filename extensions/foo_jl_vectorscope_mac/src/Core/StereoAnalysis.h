@@ -100,6 +100,27 @@ private:
     float  _gain = 1.0f;
 };
 
+// Recent range of a meter reading: the lowest and the highest value seen.
+// Each extreme is held for a while after the reading last reached it and
+// then eases back to the reading, so a brief swing stays visible.
+class HeldRange {
+public:
+    void configure(double holdSeconds, double releaseSeconds);
+    // Collapse the range onto `value`.
+    void reset(float value);
+    // `value` is the current reading, `seconds` the time since the last call.
+    void update(float value, double seconds);
+
+    float low() const { return _low; }
+    float high() const { return _high; }
+
+private:
+    double _hold = 0.2;
+    double _release = 0.25;
+    float  _low = 0.0f, _high = 0.0f;
+    double _lowAge = 0.0, _highAge = 0.0;   // since the reading last reached it
+};
+
 // Everything the vectorscope needs from one block of audio.
 class StereoAnalyzer {
 public:

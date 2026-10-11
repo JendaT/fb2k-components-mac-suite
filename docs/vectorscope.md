@@ -52,6 +52,8 @@ A bar showing how alike the two channels are. It sits below, above, left, or rig
 
 Negative readings draw in red. The bar shows `--` while the signal is below about -70 dBFS.
 
+A dim band behind the bar marks how far the reading has swung recently. Each end is held for an adjustable time and then closes in on the bar, so a brief out-of-phase moment stays visible after the bar has moved on.
+
 ### Three-Band Correlation
 
 Optionally the meter splits into low, mid, and high bars with adjustable crossovers (24 dB/octave), showing which part of the spectrum is out of phase. A mix can read fine overall while its bass cancels in mono.
@@ -102,6 +104,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Position | Side of the scope the meter sits on; Auto picks below or right, whichever leaves the larger scope | Auto, Bottom, Top, Left, Right | Auto |
 | Bar thickness | Thickness of each bar | 4-24 pt | 6 pt |
 | Response time | Window the reading is averaged over | 100-3000 ms | 500 ms |
+| Range hold | How long each end of the recent-range band is held | Off, 0.1-5.0 s | 0.2 s |
 | Crossovers (Hz) | Low / mid and mid / high splits, for the band meters and the band-colored trace | 40-1000 and 1000-12000 | 250 and 2000 |
 
 ### Appearance

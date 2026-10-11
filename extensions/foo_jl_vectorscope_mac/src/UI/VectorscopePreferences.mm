@@ -33,6 +33,8 @@
     NSTextField   *_barThicknessLabel;
     NSSlider      *_integrationSlider;
     NSTextField   *_integrationLabel;
+    NSSlider      *_rangeHoldSlider;
+    NSTextField   *_rangeHoldLabel;
     NSTextField   *_lowHzField;
     NSTextField   *_highHzField;
     NSPopUpButton *_themePopup;
@@ -61,7 +63,7 @@
 - (NSString *)preferencesTitle { return @"Vectorscope"; }
 
 - (void)loadView {
-    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 794)];
+    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 824)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -181,6 +183,15 @@
     [self.view addSubview:_integrationSlider];
     _integrationLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_integrationLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Range hold:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _rangeHoldSlider = [self sliderAt:NSMakePoint(controlX, y) min:0 max:kMaxRangeHoldMs
+                               action:@selector(rangeHoldChanged:)];
+    _rangeHoldSlider.toolTip = @"A dim band shows how far the reading has swung recently; each end is held this long. 0 turns it off";
+    [self.view addSubview:_rangeHoldSlider];
+    _rangeHoldLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_rangeHoldLabel];
     y += 30;
 
     [self.view addSubview:[self label:@"Crossovers (Hz):" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -360,6 +371,10 @@
     _barThicknessSlider.integerValue = thickness;
     _barThicknessLabel.stringValue = [NSString stringWithFormat:@"%dpt", thickness];
 
+    int rangeHold = getConfigIntClamped(kKeyRangeHoldMs, kDefaultRangeHoldMs, 0, kMaxRangeHoldMs);
+    _rangeHoldSlider.integerValue = rangeHold;
+    _rangeHoldLabel.stringValue = [self rangeHoldText:rangeHold];
+
     _lowHzField.integerValue = getConfigIntClamped(kKeyLowHz, kDefaultLowHz, kMinLowHz, kMaxLowHz);
     _highHzField.integerValue = getConfigIntClamped(kKeyHighHz, kDefaultHighHz, kMinHighHz, kMaxHighHz);
 
@@ -414,6 +429,7 @@
     _meterPositionPopup.enabled = corr;
     _barThicknessSlider.enabled = corr;
     _integrationSlider.enabled = corr;
+    _rangeHoldSlider.enabled = corr;
     _lowHzField.enabled = bands;
     _highHzField.enabled = bands;
 }
@@ -502,6 +518,18 @@
     int v = (int)_integrationSlider.integerValue;
     vectorscope_config::setConfigInt(vectorscope_config::kKeyIntegrationMs, v);
     _integrationLabel.stringValue = [NSString stringWithFormat:@"%dms", v];
+    [self notifyChanged];
+}
+
+- (NSString *)rangeHoldText:(int)ms {
+    return ms > 0 ? [NSString stringWithFormat:@"%.1fs", ms / 1000.0] : @"Off";
+}
+
+- (void)rangeHoldChanged:(id)sender {
+    // Tenths of a second; the bottom of the slider is off.
+    int v = (int)(_rangeHoldSlider.integerValue / 100) * 100;
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyRangeHoldMs, v);
+    _rangeHoldLabel.stringValue = [self rangeHoldText:v];
     [self notifyChanged];
 }
 
