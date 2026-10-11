@@ -86,9 +86,10 @@ private:
     double _lr = 0.0, _ll = 0.0, _rr = 0.0;
 };
 
-// Slow gain rider so quiet material still fills the scope. Follows the block
-// peak (instant attack, slow release) and eases the gain towards the value
-// that puts that peak at `target`.
+// Gain rider so quiet material still fills the scope. Follows the block peak
+// (instant attack, slow release) and aims the gain at the value that puts
+// that peak at `target`: down immediately, so no block overshoots, and up
+// gently.
 class AutoGain {
 public:
     void configure(float target, float minGain, float maxGain, double releaseSeconds);

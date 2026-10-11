@@ -200,7 +200,10 @@ float AutoGain::process(float peak, double seconds) {
     if (_env <= 0.0f) return _gain;
 
     const float wanted = std::min(_maxGain, std::max(_minGain, _target / _env));
-    _gain += (wanted - _gain) * (float)(1.0 - std::exp(-seconds / kAutoGainEase));
+    // Down at once, so the block that raised the envelope already fits the
+    // scope; up gently.
+    if (wanted < _gain) _gain = wanted;
+    else _gain += (wanted - _gain) * (float)(1.0 - std::exp(-seconds / kAutoGainEase));
     return _gain;
 }
 
@@ -279,7 +282,15 @@ void StereoAnalyzer::process(const float* lr, size_t frames, double sampleRate, 
         for (int b = 0; b < BandCount; ++b) _bands[b].process(_scratch[b].data(), frames);
     }
 
-    if (_settings.autoGain) _autoGain.process(blockPeak(lr, frames), (double)frames / sampleRate);
+    if (_settings.autoGain) {
+        float peak = blockPeak(lr, frames);
+        // A band can peak above the full signal (the other bands cancel part
+        // of it there), so a band trace is sized by its largest band.
+        if (_settings.bandTrace) {
+            for (const std::vector<float>& s : _scratch) peak = std::max(peak, blockPeak(s.data(), frames));
+        }
+        _autoGain.process(peak, (double)frames / sampleRate);
+    }
     const auto points = _settings.lissajous ? lissajousPoints : goniometerPoints;
     points(lr, frames, gain(), xy);
     // The bands share the broadband gain, so their sizes compare.
