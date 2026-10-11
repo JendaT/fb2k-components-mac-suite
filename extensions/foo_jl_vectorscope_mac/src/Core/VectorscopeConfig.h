@@ -24,6 +24,12 @@ enum DrawMode {
     DrawModeDots = 1        // One dot per sample
 };
 
+// How the trace is coloured
+enum TraceColorMode {
+    TraceColorSingle = 0,   // One trace colour
+    TraceColorBands = 1     // Low / mid / high bands, each in its own colour
+};
+
 // Correlation meter layout
 enum CorrelationMode {
     CorrelationSingle = 0,  // One broadband bar
@@ -32,6 +38,7 @@ enum CorrelationMode {
 
 // --- Defaults ---
 constexpr int      kDefaultDrawMode       = DrawModeLines;
+constexpr int      kDefaultTraceColorMode = TraceColorSingle;
 constexpr int      kDefaultPersistenceMs  = 300;     // Afterglow time constant
 constexpr int      kMinPersistenceMs      = 20;
 constexpr int      kMaxPersistenceMs      = 2000;
@@ -68,9 +75,16 @@ constexpr uint32_t kDefaultTraceColorDark  = 0xFF33FF66;  // Phosphor green
 constexpr uint32_t kDefaultBgColorDark     = 0xFF0A0A0A;  // Near-black
 constexpr uint32_t kDefaultGridColorDark   = 0xFF4D4D4D;  // Dark gray
 
+// Band colours for the band-coloured trace: low, mid, high. Red is left to
+// the correlation meter's out-of-phase reading.
+constexpr int      kBandCount = 3;
+constexpr uint32_t kDefaultBandColorLight[kBandCount] = { 0xFFB86A00, 0xFF1B8A3A, 0xFF2E7DD1 };  // Amber, green, blue
+constexpr uint32_t kDefaultBandColorDark[kBandCount]  = { 0xFFFFB000, 0xFF33FF66, 0xFF4DA3F0 };
+
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix        = "foo_jl_vectorscope.";
 static const char* const kKeyDrawMode         = "draw_mode";
+static const char* const kKeyTraceColorMode   = "trace_color_mode";
 static const char* const kKeyPersistenceMs    = "persistence_ms";
 static const char* const kKeyBrightness       = "brightness";
 static const char* const kKeyAutoGain         = "auto_gain";
@@ -93,6 +107,8 @@ static const char* const kKeyGridColorLight   = "grid_color_light";
 static const char* const kKeyTraceColorDark   = "trace_color_dark";
 static const char* const kKeyBgColorDark      = "bg_color_dark";
 static const char* const kKeyGridColorDark    = "grid_color_dark";
+static const char* const kKeyBandColorLight[kBandCount] = { "band_low_color_light", "band_mid_color_light", "band_high_color_light" };
+static const char* const kKeyBandColorDark[kBandCount]  = { "band_low_color_dark", "band_mid_color_dark", "band_high_color_dark" };
 
 // Notification posted when preferences change so live views can reload.
 // Guarded so this header stays includable from pure C++ translation units.

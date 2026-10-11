@@ -17,7 +17,7 @@ namespace stereo {
 // Map interleaved L/R frames to goniometer points (x, y in -1..1, y up),
 // written as interleaved x/y pairs. Mono is vertical, left-only leans
 // upper-left, out-of-phase is horizontal. At gain 1 full-scale input stays
-// inside the diamond |x| + |y| <= 1.
+// inside the diamond |x| + |y| <= 1. `xy` may be `lr` (in place).
 void goniometerPoints(const float* lr, size_t frames, float gain, float* xy);
 
 // Largest absolute sample in an interleaved L/R block.
@@ -108,6 +108,7 @@ public:
     struct Settings {
         double integrationSeconds = 0.5;   // correlation window
         bool   multiband = false;          // also meter low / mid / high
+        bool   bandTrace = false;          // also map each band to goniometer points
         double lowHz = 250.0;              // low / mid crossover
         double highHz = 2000.0;            // mid / high crossover
         bool   autoGain = true;
@@ -119,6 +120,9 @@ public:
     // Analyse `frames` interleaved L/R frames and write their goniometer
     // points (2 * frames floats) to `xy`.
     void process(const float* lr, size_t frames, double sampleRate, float* xy);
+    // One band's goniometer points from the last process() call (2 * frames
+    // floats, same gain as `xy`); null unless Settings::bandTrace is on.
+    const float* bandPoints(int band) const { return _bandPoints ? _scratch[band].data() : nullptr; }
     // Advance the meters by `seconds` with no audio.
     void idle(double seconds);
 
@@ -139,7 +143,8 @@ private:
     CorrelationMeter  _bands[BandCount];
     ThreeBandSplitter _splitter;
     AutoGain          _autoGain;
-    std::vector<float> _scratch[BandCount];
+    std::vector<float> _scratch[BandCount];   // band audio, then its points
+    bool _bandPoints = false;
 };
 
 } // namespace stereo

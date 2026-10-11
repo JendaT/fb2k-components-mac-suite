@@ -31,6 +31,10 @@ The trace fades over an adjustable time instead of being redrawn from scratch, l
 | **Lines** | Samples are joined; fast beam movement draws dimmer, so dense areas glow and jumps stay faint |
 | **Dots** | One dot per sample, drawn as a point cloud |
 
+### Band Colors
+
+Optionally the trace is split into low, mid, and high bands, each drawn in its own color, so the picture shows where in the spectrum the width or the phase trouble sits. Where bands overlap the colors mix by brightness. The bands use the same crossovers as the three-band correlation meter, and with both on, the meter's bars take the band colors.
+
 ### Gain
 
 Auto gain follows the track's peak level (fast down, slow up) so quiet and loud material both fill the scope, within -6 dB to +30 dB. It holds through silence instead of rising between tracks. Turn it off to use a fixed gain of 0 to +36 dB.
@@ -83,6 +87,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | Trace | How samples are drawn | Lines, Dots | Lines |
+| Trace color | One color, or one per frequency band | Single, Low / Mid / High | Single |
 | Afterglow | How long the trace takes to fade | 20-2000 ms | 300 ms |
 | Brightness | Trace brightness | 0-100 | 60 |
 | Auto gain | Scale the picture to the track's level | On / Off | On |
@@ -97,7 +102,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Position | Side of the scope the meter sits on; Auto picks below or right, whichever leaves the larger scope | Auto, Bottom, Top, Left, Right | Auto |
 | Bar thickness | Thickness of each bar | 4-24 pt | 6 pt |
 | Response time | Window the reading is averaged over | 100-3000 ms | 500 ms |
-| Crossovers (Hz) | Low / mid and mid / high splits | 40-1000 and 1000-12000 | 250 and 2000 |
+| Crossovers (Hz) | Low / mid and mid / high splits, for the band meters and the band-colored trace | 40-1000 and 1000-12000 | 250 and 2000 |
 
 ### Appearance
 
@@ -109,6 +114,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Glass background | Translucent blur instead of solid color | Off |
 | Grid opacity | Grid line and label opacity (0% hides) | 40% |
 | Colors (Light / Dark) | Trace, background, and grid color per appearance | Green on light gray / phosphor green on near-black |
+| Band colors (Light / Dark) | Low, mid, and high color of the band-colored trace; themes leave them alone | Amber, green, blue |
 
 ## Layout Editor
 
@@ -142,6 +148,7 @@ splitter horizontal style=thin
 ### Rendering
 
 - The trace is a CPU intensity buffer at device resolution (capped at 1024 px), faded and added to every frame, then color-mapped and shown as a layer image on top of the Core Graphics grid
+- With band colors there is one buffer per band, fed through the same Linkwitz-Riley split as the band meters and mixed into one image
 - 60 fps `NSTimer` on the main run loop (common modes); fades use real elapsed time, and nothing is redrawn once the trace has died away
 - Stream released when the view goes off-screen; recreated lazily on the next tick
 

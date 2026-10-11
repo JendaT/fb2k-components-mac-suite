@@ -9,6 +9,7 @@
 #include "TestHarness.h"
 #include "../src/Core/StereoAnalysis.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -258,6 +259,39 @@ void testAnalyzer() {
     CHECK(!plain.silent(), "broadband meter runs with multiband off");
     CHECK(plain.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with multiband off");
     CHECK(plain.gain() > 1.0f, "auto gain raises a -7 dBFS signal");
+
+    CHECK(an.bandPoints(StereoAnalyzer::BandLow) == nullptr, "no band points unless asked for");
+
+    // Band trace: each band's points, at the broadband gain. The 60 Hz part
+    // is mono (vertical), the 8 kHz part out of phase (horizontal).
+    StereoAnalyzer::Settings traced;
+    traced.bandTrace = true;
+    traced.autoGain = false;
+    traced.manualGain = 2.0f;
+    StereoAnalyzer tr;
+    tr.configure(traced);
+    double lowX = 0.0, lowY = 0.0, midXY = 0.0, highX = 0.0, highY = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        tr.process(lr.data() + off * 2, block, kSR, xy.data());
+        if (off + block * 2 > frames) {   // last block, filters long settled
+            const float* low = tr.bandPoints(StereoAnalyzer::BandLow);
+            const float* mid = tr.bandPoints(StereoAnalyzer::BandMid);
+            const float* high = tr.bandPoints(StereoAnalyzer::BandHigh);
+            for (size_t i = 0; i < block; ++i) {
+                lowX = std::max(lowX, (double)std::fabs(low[2 * i]));
+                lowY = std::max(lowY, (double)std::fabs(low[2 * i + 1]));
+                midXY = std::max(midXY, (double)std::max(std::fabs(mid[2 * i]), std::fabs(mid[2 * i + 1])));
+                highX = std::max(highX, (double)std::fabs(high[2 * i]));
+                highY = std::max(highY, (double)std::fabs(high[2 * i + 1]));
+            }
+        }
+    }
+    CHECK(lowY > 0.55 && lowY < 0.65, "low band carries the 60 Hz part at the broadband gain");
+    CHECK(lowX < 0.02, "low band is mono");
+    CHECK(highX > 0.55 && highX < 0.65, "high band carries the 8 kHz part at the broadband gain");
+    CHECK(highY < 0.02, "high band is out of phase");
+    CHECK(midXY < 0.02, "mid band is empty");
+    CHECK(tr.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with only the band trace on");
 
     // A sample-rate change mid-stream is absorbed.
     an.process(lr.data(), block, 96000.0, xy.data());

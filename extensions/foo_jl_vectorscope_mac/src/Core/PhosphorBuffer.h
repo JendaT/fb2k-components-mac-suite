@@ -5,7 +5,8 @@
 //  Square intensity buffer that imitates an oscilloscope tube: every frame
 //  the old image fades a little and the new trace is added on top, so the
 //  beam leaves an afterglow. Pure C++ (no SDK, no Cocoa); the view turns the
-//  rendered pixels into an image.
+//  rendered pixels into an image. One buffer draws a single-colour trace;
+//  three of them, one per frequency band, draw a band-coloured one.
 //
 
 #pragma once
@@ -53,3 +54,13 @@ private:
 // trace colour. Intensity drives alpha, so the trace composites over any
 // background. With `hotCore` the brightest values bleach towards white.
 void buildPhosphorLUT(uint32_t argb, bool hotCore, uint32_t* lut);
+
+constexpr int kPhosphorBands = 3;
+
+// Tone-map three equally sized band buffers (low, mid, high) into one image
+// of side * side RGBA pixels, each band in its own 0xAARRGGBB colour. Where
+// bands overlap, the colours mix in proportion to their intensity and the
+// opacity builds up. A pixel lit by one band alone comes out as render()
+// would draw it through that colour's table.
+void renderPhosphorBands(const PhosphorBuffer bands[kPhosphorBands], const uint32_t argb[kPhosphorBands],
+                         bool hotCore, uint8_t* rgba);

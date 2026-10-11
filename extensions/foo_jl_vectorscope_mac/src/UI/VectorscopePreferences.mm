@@ -18,6 +18,7 @@
 
 @interface VectorscopePreferences () {
     NSPopUpButton *_drawModePopup;
+    NSPopUpButton *_traceColorModePopup;
     NSSlider      *_persistenceSlider;
     NSTextField   *_persistenceLabel;
     NSSlider      *_brightnessSlider;
@@ -46,6 +47,8 @@
     NSColorWell   *_traceColorDarkWell;
     NSColorWell   *_bgColorDarkWell;
     NSColorWell   *_gridColorDarkWell;
+    NSColorWell   *_bandColorLightWells[vectorscope_config::kBandCount];
+    NSColorWell   *_bandColorDarkWells[vectorscope_config::kBandCount];
 }
 @end
 
@@ -58,7 +61,7 @@
 - (NSString *)preferencesTitle { return @"Vectorscope"; }
 
 - (void)loadView {
-    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 700)];
+    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 794)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -90,6 +93,15 @@
     _drawModePopup.toolTip = @"Lines join the samples and draw fast movement dimmer, like an oscilloscope tube";
     _drawModePopup.target = self; _drawModePopup.action = @selector(drawModeChanged:);
     [self.view addSubview:_drawModePopup];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Trace color:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _traceColorModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 160, 25)];
+    [_traceColorModePopup addItemWithTitle:@"Single"];
+    [_traceColorModePopup addItemWithTitle:@"Low / Mid / High"];
+    _traceColorModePopup.toolTip = @"Color the trace by frequency band, split at the crossovers below";
+    _traceColorModePopup.target = self; _traceColorModePopup.action = @selector(traceColorModeChanged:);
+    [self.view addSubview:_traceColorModePopup];
     y += 30;
 
     [self.view addSubview:[self label:@"Afterglow:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -174,13 +186,13 @@
     [self.view addSubview:[self label:@"Crossovers (Hz):" at:NSMakePoint(labelX + 10, y + 3)]];
     _lowHzField = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX, y, 70, 22)];
     _lowHzField.formatter = [self intFormatterMin:kMinLowHz max:kMaxLowHz];
-    _lowHzField.toolTip = @"Low / mid split";
+    _lowHzField.toolTip = @"Low / mid split for the band meters and the band-colored trace";
     _lowHzField.target = self; _lowHzField.action = @selector(crossoverChanged:);
     [self.view addSubview:_lowHzField];
     [self.view addSubview:[self label:@"and" at:NSMakePoint(controlX + 76, y + 3)]];
     _highHzField = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX + 104, y, 70, 22)];
     _highHzField.formatter = [self intFormatterMin:kMinHighHz max:kMaxHighHz];
-    _highHzField.toolTip = @"Mid / high split";
+    _highHzField.toolTip = @"Mid / high split for the band meters and the band-colored trace";
     _highHzField.target = self; _highHzField.action = @selector(crossoverChanged:);
     [self.view addSubview:_highHzField];
     y += 34;
@@ -228,12 +240,29 @@
     y += 22;
     [self addColorRowAt:y trace:&_traceColorLightWell background:&_bgColorLightWell grid:&_gridColorLightWell];
     y += 32;
+    [self addBandColorRowAt:y wells:_bandColorLightWells];
+    y += 32;
 
     // Colors - dark
     [self.view addSubview:[self label:@"Colors (Dark Mode)" at:NSMakePoint(labelX, y)]];
     y += 22;
     [self addColorRowAt:y trace:&_traceColorDarkWell background:&_bgColorDarkWell grid:&_gridColorDarkWell];
     y += 32;
+    [self addBandColorRowAt:y wells:_bandColorDarkWells];
+    y += 32;
+}
+
+// Band colors of the band-colored trace (and its correlation bars).
+- (void)addBandColorRowAt:(CGFloat)y wells:(NSColorWell * __strong *)wells {
+    static NSString * const kNames[vectorscope_config::kBandCount] = { @"Low:", @"Mid:", @"High:" };
+    static const CGFloat kLabelX[vectorscope_config::kBandCount] = { 30, 134, 270 };
+    static const CGFloat kWellX[vectorscope_config::kBandCount] = { 72, 208, 304 };
+    for (int b = 0; b < vectorscope_config::kBandCount; ++b) {
+        [self.view addSubview:[self label:kNames[b] at:NSMakePoint(kLabelX[b], y + 3)]];
+        wells[b] = [self colorWellAt:NSMakePoint(kWellX[b], y)];
+        wells[b].action = @selector(bandColorChanged:);
+        [self.view addSubview:wells[b]];
+    }
 }
 
 - (void)addColorRowAt:(CGFloat)y
@@ -307,6 +336,7 @@
     using namespace vectorscope_config;
 
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
+    [self selectIndexPopup:_traceColorModePopup index:getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode)];
     [self selectIndexPopup:_correlationModePopup index:getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode)];
     [self selectIndexPopup:_meterPositionPopup index:getConfigInt(kKeyMeterPosition, kDefaultMeterPosition)];
 
@@ -359,6 +389,10 @@
     _traceColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyTraceColorDark, kDefaultTraceColorDark)];
     _bgColorDarkWell.color     = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)];
     _gridColorDarkWell.color   = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark)];
+    for (int b = 0; b < kBandCount; ++b) {
+        _bandColorLightWells[b].color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBandColorLight[b], kDefaultBandColorLight[b])];
+        _bandColorDarkWells[b].color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBandColorDark[b], kDefaultBandColorDark[b])];
+    }
 }
 
 // Grey out controls that have no effect in the current setup.
@@ -366,8 +400,16 @@
     const BOOL autoGain = _autoGainCheckbox.state == NSControlStateValueOn;
     _gainSlider.enabled = !autoGain;
 
+    const BOOL bandTrace = _traceColorModePopup.indexOfSelectedItem == vectorscope_config::TraceColorBands;
+    for (int b = 0; b < vectorscope_config::kBandCount; ++b) {
+        _bandColorLightWells[b].enabled = bandTrace;
+        _bandColorDarkWells[b].enabled = bandTrace;
+    }
+
     const BOOL corr = _correlationCheckbox.state == NSControlStateValueOn;
-    const BOOL bands = corr && _correlationModePopup.indexOfSelectedItem == vectorscope_config::CorrelationBands;
+    // The crossovers split both the band meters and the band-colored trace.
+    const BOOL bands = bandTrace ||
+        (corr && _correlationModePopup.indexOfSelectedItem == vectorscope_config::CorrelationBands);
     _correlationModePopup.enabled = corr;
     _meterPositionPopup.enabled = corr;
     _barThicknessSlider.enabled = corr;
@@ -408,6 +450,12 @@
 
 - (void)drawModeChanged:(id)sender {
     vectorscope_config::setConfigInt(vectorscope_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
+- (void)traceColorModeChanged:(id)sender {
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyTraceColorMode, _traceColorModePopup.indexOfSelectedItem);
+    [self updateEnabledStates];
     [self notifyChanged];
 }
 
@@ -505,6 +553,16 @@
     // A manual color edit means the palette no longer matches a preset.
     setConfigInt(kKeyTheme, 0);
     [_themePopup selectItemAtIndex:0];
+    [self notifyChanged];
+}
+
+// Themes leave the band colors alone, so editing one keeps the theme.
+- (void)bandColorChanged:(id)sender {
+    using namespace vectorscope_config;
+    for (int b = 0; b < kBandCount; ++b) {
+        if (sender == _bandColorLightWells[b])     setConfigInt(kKeyBandColorLight[b], [self argbFromColor:_bandColorLightWells[b].color]);
+        else if (sender == _bandColorDarkWells[b]) setConfigInt(kKeyBandColorDark[b], [self argbFromColor:_bandColorDarkWells[b].color]);
+    }
     [self notifyChanged];
 }
 

@@ -229,17 +229,24 @@ void StereoAnalyzer::process(const float* lr, size_t frames, double sampleRate, 
 
     _wide.process(lr, frames);
 
-    if (_settings.multiband) {
+    if (_settings.multiband || _settings.bandTrace) {
         for (std::vector<float>& s : _scratch) {
             if (s.size() < frames * 2) s.resize(frames * 2);
         }
         _splitter.process(lr, frames, _scratch[BandLow].data(), _scratch[BandMid].data(),
                           _scratch[BandHigh].data());
+    }
+    if (_settings.multiband) {
         for (int b = 0; b < BandCount; ++b) _bands[b].process(_scratch[b].data(), frames);
     }
 
     if (_settings.autoGain) _autoGain.process(blockPeak(lr, frames), (double)frames / sampleRate);
     goniometerPoints(lr, frames, gain(), xy);
+    // The bands share the broadband gain, so their sizes compare.
+    _bandPoints = _settings.bandTrace;
+    if (_bandPoints) {
+        for (std::vector<float>& s : _scratch) goniometerPoints(s.data(), frames, gain(), s.data());
+    }
 }
 
 void StereoAnalyzer::idle(double seconds) {
