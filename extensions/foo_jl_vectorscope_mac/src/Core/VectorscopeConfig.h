@@ -18,6 +18,12 @@ static const GUID guid_preferences_page = {
     {0xBC, 0xAA, 0x31, 0x0D, 0xCB, 0xC5, 0xDD, 0xA4}
 };
 
+// What the scope plots
+enum ScopeStyle {
+    ScopeStyleGoniometer = 0,   // Mid up, side across: mono is vertical
+    ScopeStyleLissajous = 1     // Left across, right up: mono is diagonal
+};
+
 // How the trace is drawn
 enum DrawMode {
     DrawModeLines = 0,      // Samples joined by lines; fast beam movement is dimmer
@@ -37,6 +43,7 @@ enum CorrelationMode {
 };
 
 // --- Defaults ---
+constexpr int      kDefaultScopeStyle     = ScopeStyleGoniometer;
 constexpr int      kDefaultDrawMode       = DrawModeLines;
 constexpr int      kDefaultTraceColorMode = TraceColorSingle;
 constexpr int      kDefaultDotSize        = 0;       // Dot diameter in tenths of a point; 0 = auto
@@ -88,6 +95,7 @@ constexpr uint32_t kDefaultBandColorDark[kBandCount]  = { 0xFFFFB000, 0xFF33FF66
 
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix        = "foo_jl_vectorscope.";
+static const char* const kKeyScopeStyle       = "scope_style";
 static const char* const kKeyDrawMode         = "draw_mode";
 static const char* const kKeyTraceColorMode   = "trace_color_mode";
 static const char* const kKeyDotSize          = "dot_size";

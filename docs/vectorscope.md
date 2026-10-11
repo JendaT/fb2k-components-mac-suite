@@ -16,9 +16,13 @@ Every stereo sample is plotted as a point: the vertical axis is mid (L+R), the h
 | **Wide stereo** | Rounded cloud |
 | **Out of phase** | Horizontal line |
 
-The diamond marks full scale at 0 dB gain; the dashed inner diamond is half scale (-6 dB).
+The diamond marks full scale at 0 dB gain; the dashed inner diamonds are half scale (-6 dB) and, on scopes large enough, quarter scale (-12 dB).
 
 ![Vectorscope beside the Spectrum Analyzer](images/vectorscope-overview.png)
+
+### Lissajous
+
+Alternatively the scope plots left against right: left along the horizontal axis, right along the vertical. It is the same picture turned 45 degrees inside a square, so mono is a diagonal from the lower left to the upper right, left only is horizontal, right only is vertical, and out of phase is the other diagonal.
 
 ### Afterglow
 
@@ -66,7 +70,7 @@ In this example the low and high bands are in phase while the mid band reads sli
 
 ### Grid
 
-Full-scale diamond, mid and side axes, left-only and right-only diagonals, and L / R / M / S labels. Color and opacity are configurable (0% hides the grid).
+Full-scale outline (diamond, or square in the Lissajous style), dashed level guides, mid and side axes, left-only and right-only axes, and L / R / M / S labels. Color and opacity are configurable (0% hides the grid).
 
 ### Color Themes
 
@@ -90,6 +94,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
+| Style | What the scope plots | Goniometer (Mid / Side), Lissajous (Left / Right) | Goniometer |
 | Trace | How samples are drawn | Lines, Dots | Lines |
 | Dot size | Diameter of each dot in Dots mode | Auto, 1.0-8.0 pt | Auto |
 | Trace color | One color, or one per frequency band | Single, Low / Mid / High | Single |
@@ -115,7 +120,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Theme | Color preset (Custom + 11 presets) | Default (Phosphor Green) |
-| Show grid | Diamond, axes, and diagonals | On |
+| Show grid | Outline, level guides, and axes | On |
 | Show labels | L / R / M / S and the correlation scale and readouts | On |
 | Glass background | Translucent blur instead of solid color | Off |
 | Grid opacity | Grid line and label opacity (0% hides) | 40% |

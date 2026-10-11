@@ -17,6 +17,7 @@
 @end
 
 @interface VectorscopePreferences () {
+    NSPopUpButton *_scopeStylePopup;
     NSPopUpButton *_drawModePopup;
     NSPopUpButton *_traceColorModePopup;
     NSSlider      *_dotSizeSlider;
@@ -65,7 +66,7 @@
 - (NSString *)preferencesTitle { return @"Vectorscope"; }
 
 - (void)loadView {
-    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 854)];
+    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 884)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -89,6 +90,15 @@
     scopeHeader.frame = NSMakeRect(labelX, y, 200, 17);
     [self.view addSubview:scopeHeader];
     y += 22;
+
+    [self.view addSubview:[self label:@"Style:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _scopeStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 200, 25)];
+    [_scopeStylePopup addItemWithTitle:@"Goniometer (Mid / Side)"];
+    [_scopeStylePopup addItemWithTitle:@"Lissajous (Left / Right)"];
+    _scopeStylePopup.toolTip = @"Goniometer draws mono upright; Lissajous plots left against right, so mono is a diagonal";
+    _scopeStylePopup.target = self; _scopeStylePopup.action = @selector(scopeStyleChanged:);
+    [self.view addSubview:_scopeStylePopup];
+    y += 30;
 
     [self.view addSubview:[self label:@"Trace:" at:NSMakePoint(labelX + 10, y + 3)]];
     _drawModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
@@ -140,7 +150,7 @@
 
     [self.view addSubview:[self label:@"Gain:" at:NSMakePoint(labelX + 10, y + 3)]];
     _gainSlider = [self sliderAt:NSMakePoint(controlX, y) min:0 max:kMaxGainDb action:@selector(gainChanged:)];
-    _gainSlider.toolTip = @"Fixed gain used when auto gain is off (0 dB: full scale touches the diamond)";
+    _gainSlider.toolTip = @"Fixed gain used when auto gain is off (0 dB: full scale touches the outline)";
     [self.view addSubview:_gainSlider];
     _gainLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_gainLabel];
@@ -236,7 +246,7 @@
     y += 30;
 
     _gridCheckbox = [self checkbox:@"Show grid" at:NSMakePoint(labelX + 10, y)];
-    _gridCheckbox.toolTip = @"Full-scale diamond, mid / side axes and left / right diagonals";
+    _gridCheckbox.toolTip = @"Full-scale outline, inner level guides, and the mid / side and left / right axes";
     [self.view addSubview:_gridCheckbox];
     y += 26;
 
@@ -357,6 +367,7 @@
 - (void)loadSettings {
     using namespace vectorscope_config;
 
+    [self selectIndexPopup:_scopeStylePopup index:getConfigInt(kKeyScopeStyle, kDefaultScopeStyle)];
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
     [self selectIndexPopup:_traceColorModePopup index:getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode)];
     [self selectIndexPopup:_correlationModePopup index:getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode)];
@@ -481,6 +492,11 @@
 }
 
 #pragma mark - Actions
+
+- (void)scopeStyleChanged:(id)sender {
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyScopeStyle, _scopeStylePopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
 
 - (void)drawModeChanged:(id)sender {
     vectorscope_config::setConfigInt(vectorscope_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);

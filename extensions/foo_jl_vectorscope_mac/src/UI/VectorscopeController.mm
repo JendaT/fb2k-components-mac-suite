@@ -147,6 +147,7 @@ FB2K_SERVICE_FACTORY(vectorscope_initquit);
     // The band meters only run while their bars are on screen.
     s.multiband  = getConfigBool(kKeyShowCorrelation, kDefaultShowCorrelation) &&
                    getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode) == CorrelationBands;
+    s.lissajous  = getConfigInt(kKeyScopeStyle, kDefaultScopeStyle) == ScopeStyleLissajous;
     s.bandTrace  = getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode) == TraceColorBands;
     s.lowHz      = getConfigIntClamped(kKeyLowHz, kDefaultLowHz, kMinLowHz, kMaxLowHz);
     s.highHz     = getConfigIntClamped(kKeyHighHz, kDefaultHighHz, kMinHighHz, kMaxHighHz);
