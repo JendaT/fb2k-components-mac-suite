@@ -6,22 +6,12 @@
 #import "VectorscopeView.h"
 #include "../Core/VectorscopeConfig.h"
 #include "../Core/PhosphorBuffer.h"
+#include "../Core/ScopeLayout.h"
 #include "../../../../shared/UIStyles.h"
 #include <algorithm>
 #include <cmath>
 
 namespace {
-    const CGFloat kPad = 6.0;           // around the scope square
-    const CGFloat kLabelInset = 14.0;   // room for L / R / M / S outside the diamond
-    const CGFloat kMinLabelSide = 120.0;
-    const CGFloat kMinCorrSize = 90.0;  // panel smaller than this: scope only
-    const CGFloat kCorrPad = 6.0;
-    const CGFloat kBarHeight = 6.0;
-    const CGFloat kRowPitch = 11.0;
-    const CGFloat kScaleHeight = 12.0;  // "-1  0  +1" under the bars
-    const CGFloat kRowLabelWidth = 26.0;
-    const CGFloat kReadoutWidth = 38.0;
-
     // Trace image resolution: device pixels, in steps so a live resize does
     // not reallocate (and clear) the afterglow on every mouse move.
     const NSInteger kTraceStep = 16;
@@ -48,6 +38,8 @@ namespace {
     float    _brightness;    // energy multiplier
     bool     _showCorrelation;
     bool     _bandMode;
+    int      _meterPosition; // scope_layout::MeterPosition
+    int      _barThickness;  // points
     bool     _showGrid;
     bool     _showLabels;
     int      _gridOpacity;
@@ -56,8 +48,9 @@ namespace {
     uint32_t _traceColorDark,  _bgColorDark,  _gridColorDark;
 
     // Layout (recomputed on resize / settings change)
+    scope_layout::Result _layout;
     NSRect   _plotRect;      // square the diamond is inscribed in; empty = hidden
-    NSRect   _corrRect;      // correlation strip along the bottom; empty = hidden
+    NSRect   _corrRect;      // correlation meter strip; empty = hidden
     bool     _labelsVisible;
 
     // Correlation rows: [0] broadband, or low / mid / high in band mode.
@@ -107,6 +100,8 @@ namespace {
     _brightness   = 0.1f * std::pow(40.0f, getConfigIntClamped(kKeyBrightness, kDefaultBrightness, 0, 100) / 100.0f);
     _showCorrelation = getConfigBool(kKeyShowCorrelation, kDefaultShowCorrelation);
     _bandMode     = getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode) == CorrelationBands;
+    _meterPosition = (int)getConfigInt(kKeyMeterPosition, kDefaultMeterPosition);
+    _barThickness = getConfigIntClamped(kKeyBarThickness, kDefaultBarThickness, kMinBarThickness, kMaxBarThickness);
     _showGrid     = getConfigBool(kKeyShowGrid, kDefaultShowGrid);
     _showLabels   = getConfigBool(kKeyShowLabels, kDefaultShowLabels);
     _gridOpacity  = getConfigIntClamped(kKeyGridOpacity, kDefaultGridOpacity, 0, 100);
@@ -129,22 +124,19 @@ namespace {
 - (void)updateLayout {
     const NSRect b = self.bounds;
 
-    CGFloat corrH = 0.0;
-    if (_showCorrelation && b.size.width >= kMinCorrSize && b.size.height >= kMinCorrSize) {
-        corrH = kCorrPad + [self rowCount] * kRowPitch + (_showLabels ? kScaleHeight : 0.0) + kCorrPad;
-    }
-    _corrRect = NSMakeRect(0, 0, b.size.width, corrH);
+    scope_layout::Input in;
+    in.width = b.size.width;
+    in.height = b.size.height;
+    in.position = _meterPosition;
+    in.showMeter = _showCorrelation;
+    in.bars = (int)[self rowCount];
+    in.barThickness = _barThickness;
+    in.labels = _showLabels;
+    _layout = scope_layout::layout(in);
 
-    const CGFloat side = std::min(b.size.width, b.size.height - corrH) - 2.0 * kPad;
-    _labelsVisible = _showLabels && side >= kMinLabelSide;
-    const CGFloat r = std::floor(side / 2.0 - (_labelsVisible ? kLabelInset : 0.0));
-    if (r < 8.0) {
-        _plotRect = NSZeroRect;
-    } else {
-        const CGFloat cx = std::round(NSMidX(b));
-        const CGFloat cy = std::round(corrH + (b.size.height - corrH) / 2.0);
-        _plotRect = NSMakeRect(cx - r, cy - r, 2.0 * r, 2.0 * r);
-    }
+    _plotRect = NSMakeRect(_layout.plot.x, _layout.plot.y, _layout.plot.w, _layout.plot.h);
+    _corrRect = NSMakeRect(_layout.meter.x, _layout.meter.y, _layout.meter.w, _layout.meter.h);
+    _labelsVisible = _layout.axisLabels;
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -328,7 +320,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
         CGContextFillRect(ctx, self.bounds);
     }
 
-    if (!NSIsEmptyRect(_plotRect) && NSIntersectsRect(dirtyRect, NSInsetRect(_plotRect, -kLabelInset, -kLabelInset))) {
+    if (!NSIsEmptyRect(_plotRect) && NSIntersectsRect(dirtyRect, NSInsetRect(_plotRect, -scope_layout::kLabelInset, -scope_layout::kLabelInset))) {
         if (_showGrid) [self drawGridInContext:ctx];
         if (_labelsVisible) [self drawAxisLabels];
     }
@@ -389,7 +381,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
     };
     // Just outside the diamond: M above the top corner, S beside the side
     // corners, L / R off the middle of the upper edges.
-    const CGFloat off = kLabelInset / 2.0;
+    const CGFloat off = scope_layout::kLabelInset / 2.0;
     drawCentered(@"M", cx, cy + r + off);
     drawCentered(@"S", cx - r - off, cy);
     drawCentered(@"S", cx + r + off, cy);
@@ -398,18 +390,11 @@ static NSColor *colorFromARGB(uint32_t argb) {
 }
 
 - (void)drawCorrelationInContext:(CGContextRef)ctx {
-    const NSInteger rows = [self rowCount];
+    using namespace scope_layout;
+    const int rows = _layout.bars;
+    if (rows == 0) return;
+    const bool vertical = _layout.vertical;
     NSDictionary *attrs = [self labelAttrs];
-
-    // Bars are as wide as the scope, but never cramped in a narrow panel.
-    const CGFloat avail = _corrRect.size.width - 2.0 * kPad;
-    const CGFloat width = std::min(avail, std::max<CGFloat>(_plotRect.size.width + 2.0 * kLabelInset, 220.0));
-    const CGFloat left = std::round(NSMidX(_corrRect) - width / 2.0);
-    const CGFloat barL = left + ((_bandMode && _showLabels) ? kRowLabelWidth : 0.0);
-    const CGFloat barR = left + width - (_showLabels ? kReadoutWidth : 0.0);
-    if (barR - barL < 20.0) return;
-    const CGFloat mid = std::round((barL + barR) / 2.0);
-    const CGFloat half = (barR - barL) / 2.0;
 
     NSColor *track = [[self gridColor] colorWithAlphaComponent:0.30];
     NSColor *positive = [self traceColor];
@@ -417,44 +402,78 @@ static NSColor *colorFromARGB(uint32_t argb) {
     NSColor *tick = [[self gridColor] colorWithAlphaComponent:0.9];
     static NSString * const kBandNames[3] = { @"Lo", @"Mid", @"Hi" };
 
-    const CGFloat top = NSMaxY(_corrRect) - kCorrPad;
-    for (NSInteger i = 0; i < rows; ++i) {
-        const CGFloat y = top - (i + 1) * kRowPitch + (kRowPitch - kBarHeight) / 2.0;
-        const CGRect bar = CGRectMake(barL, y, barR - barL, kBarHeight);
+    auto drawCentered = [&](NSString *s, CGFloat x, CGFloat y) {
+        const NSSize sz = [s sizeWithAttributes:attrs];
+        [s drawAtPoint:NSMakePoint(x - sz.width / 2, y - sz.height / 2) withAttributes:attrs];
+    };
+
+    for (int i = 0; i < rows; ++i) {
+        const scope_layout::Rect &t = _layout.track[i];
         CGContextSetFillColorWithColor(ctx, track.CGColor);
-        CGContextFillRect(ctx, bar);
+        CGContextFillRect(ctx, CGRectMake(t.x, t.y, t.w, t.h));
+
+        // Along the bar -1 is at `lo` and +1 at `hi`; `across` is its other axis.
+        const CGFloat lo = vertical ? t.y : t.x;
+        const CGFloat hi = lo + (vertical ? t.h : t.w);
+        const CGFloat mid = std::round((lo + hi) / 2.0);
+        const CGFloat half = (hi - lo) / 2.0;
+        const CGFloat across = vertical ? t.x : t.y;
+        const CGFloat thickness = vertical ? t.w : t.h;
+        // Slice of the bar starting at `from`, widened by `grow` on both sides.
+        auto slice = [&](CGFloat from, CGFloat length, CGFloat grow) {
+            return vertical ? CGRectMake(across - grow, from, thickness + 2.0 * grow, length)
+                            : CGRectMake(from, across - grow, length, thickness + 2.0 * grow);
+        };
 
         const float v = _shown[i];
         if (!_shownSilent[i]) {
-            const CGFloat x = mid + v * half;
+            const CGFloat p = mid + v * half;
             CGContextSetFillColorWithColor(ctx, (v >= 0 ? positive : negative).CGColor);
-            CGContextFillRect(ctx, CGRectMake(std::min(mid, x), y, std::fabs(x - mid), kBarHeight));
+            CGContextFillRect(ctx, slice(std::min(mid, p), std::fabs(p - mid), 0.0));
             // Cursor stays visible when the reading sits at the centre.
-            CGContextFillRect(ctx, CGRectMake(std::max(barL, std::min(barR - 2.0, x - 1.0)), y - 1.0, 2.0, kBarHeight + 2.0));
+            CGContextFillRect(ctx, slice(std::max(lo, std::min(hi - 2.0, p - 1.0)), 2.0, 1.0));
         }
         CGContextSetFillColorWithColor(ctx, tick.CGColor);
-        CGContextFillRect(ctx, CGRectMake(mid - 0.5, y - 1.0, 1.0, kBarHeight + 2.0));
+        CGContextFillRect(ctx, slice(mid - 0.5, 1.0, 1.0));
 
         if (_showLabels) {
-            const CGFloat textY = y + kBarHeight / 2.0;
-            if (_bandMode) {
-                const NSSize sz = [kBandNames[i] sizeWithAttributes:attrs];
-                [kBandNames[i] drawAtPoint:NSMakePoint(left, textY - sz.height / 2) withAttributes:attrs];
-            }
             NSString *readout = _shownSilent[i] ? @"--" : [NSString stringWithFormat:@"%+.2f", v];
-            const NSSize sz = [readout sizeWithAttributes:attrs];
-            [readout drawAtPoint:NSMakePoint(left + width - sz.width, textY - sz.height / 2) withAttributes:attrs];
+            if (vertical) {
+                const CGFloat cx = t.x + t.w / 2.0;
+                if (_bandMode) drawCentered(kBandNames[i], cx, t.y + t.h + kTextRow / 2.0);
+                drawCentered(readout, cx, t.y - kTextRow / 2.0);
+            } else {
+                const CGFloat textY = t.y + t.h / 2.0;
+                if (_bandMode) {
+                    const NSSize sz = [kBandNames[i] sizeWithAttributes:attrs];
+                    [kBandNames[i] drawAtPoint:NSMakePoint(t.x - kRowLabelWidth, textY - sz.height / 2) withAttributes:attrs];
+                }
+                const NSSize sz = [readout sizeWithAttributes:attrs];
+                [readout drawAtPoint:NSMakePoint(t.x + t.w + kReadoutWidth - sz.width, textY - sz.height / 2) withAttributes:attrs];
+            }
         }
     }
 
     if (_showLabels) {
-        const CGFloat y = top - rows * kRowPitch - kScaleHeight + 1.0;
         NSString *lo = @"-1", *zero = @"0", *hi = @"+1";
-        [lo drawAtPoint:NSMakePoint(barL, y) withAttributes:attrs];
+        const NSSize ls = [lo sizeWithAttributes:attrs];
         const NSSize zs = [zero sizeWithAttributes:attrs];
-        [zero drawAtPoint:NSMakePoint(mid - zs.width / 2, y) withAttributes:attrs];
         const NSSize hs = [hi sizeWithAttributes:attrs];
-        [hi drawAtPoint:NSMakePoint(barR - hs.width, y) withAttributes:attrs];
+        const scope_layout::Rect &t = _layout.track[rows - 1];
+        if (vertical) {
+            // Right-aligned in a column on the outer edge of the strip.
+            const CGFloat right = _layout.position == MeterLeft
+                ? NSMinX(_corrRect) + kMeterPad + kScaleWidth - 4.0
+                : NSMaxX(_corrRect) - kMeterPad;
+            [hi drawAtPoint:NSMakePoint(right - hs.width, t.y + t.h - hs.height) withAttributes:attrs];
+            [zero drawAtPoint:NSMakePoint(right - zs.width, std::round(t.y + t.h / 2.0) - zs.height / 2) withAttributes:attrs];
+            [lo drawAtPoint:NSMakePoint(right - ls.width, t.y) withAttributes:attrs];
+        } else {
+            const CGFloat y = t.y - kBarGap / 2.0 - kScaleHeight + 1.0;
+            [lo drawAtPoint:NSMakePoint(t.x, y) withAttributes:attrs];
+            [zero drawAtPoint:NSMakePoint(std::round(t.x + t.w / 2.0) - zs.width / 2, y) withAttributes:attrs];
+            [hi drawAtPoint:NSMakePoint(t.x + t.w - hs.width, y) withAttributes:attrs];
+        }
     }
 }
 

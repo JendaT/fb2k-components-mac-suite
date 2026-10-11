@@ -37,7 +37,7 @@ Auto gain follows the track's peak level (fast down, slow up) so quiet and loud 
 
 ### Correlation Meter
 
-A bar under the scope showing how alike the two channels are.
+A bar showing how alike the two channels are. It sits below, above, left, or right of the scope; beside the scope the bars stand upright with +1 at the top. Auto places it below or to the right, whichever leaves the larger scope. Bar thickness is adjustable.
 
 | Reading | Meaning |
 |---------|---------|
@@ -70,7 +70,7 @@ Optional translucent behind-window blur instead of a solid background color (sam
 
 ### Small Panels
 
-The correlation meter hides when the panel is under 90 points in either direction, and the axis labels hide when the scope is under 120 points, so the scope keeps the available space.
+The correlation meter hides when the panel is under 90 points in either direction or when it would leave no room for the scope, and the axis labels hide when the scope is under 120 points, so the scope keeps the available space.
 
 ## Configuration
 
@@ -92,8 +92,10 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Show correlation meter | Bar(s) under the scope | On / Off | On |
+| Show correlation meter | Bar(s) beside the scope | On / Off | On |
 | Bands | One broadband bar or three band bars | Single, Low / Mid / High | Single |
+| Position | Side of the scope the meter sits on; Auto picks below or right, whichever leaves the larger scope | Auto, Bottom, Top, Left, Right | Auto |
+| Bar thickness | Thickness of each bar | 4-24 pt | 6 pt |
 | Response time | Window the reading is averaged over | 100-3000 ms | 500 ms |
 | Crossovers (Hz) | Low / mid and mid / high splits | 40-1000 and 1000-12000 | 250 and 2000 |
 
@@ -150,7 +152,7 @@ splitter horizontal style=thin
 
 ### Tests
 
-The stereo maths and the afterglow buffer are SDK-free and unit-tested (`Scripts/run_tests.sh`, 101 checks); the tests gate `build.sh`. See [Testable Core Pattern](testable-core-pattern.md).
+The stereo maths, the afterglow buffer, and the panel layout are SDK-free and unit-tested (`Scripts/run_tests.sh`); the tests gate `build.sh`. See [Testable Core Pattern](testable-core-pattern.md).
 
 ## Requirements
 
