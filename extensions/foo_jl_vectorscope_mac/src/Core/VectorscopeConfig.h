@@ -87,8 +87,8 @@ constexpr uint32_t kDefaultTraceColorDark  = 0xFF33FF66;  // Phosphor green
 constexpr uint32_t kDefaultBgColorDark     = 0xFF0A0A0A;  // Near-black
 constexpr uint32_t kDefaultGridColorDark   = 0xFF4D4D4D;  // Dark gray
 
-// Band colours for the band-coloured trace: low, mid, high. Red is left to
-// the correlation meter's out-of-phase reading.
+// Band colours for the band-coloured trace: low, mid, high (the Default
+// theme's). Red is left to the correlation meter's out-of-phase reading.
 constexpr int      kBandCount = 3;
 constexpr uint32_t kDefaultBandColorLight[kBandCount] = { 0xFFB86A00, 0xFF1B8A3A, 0xFF2E7DD1 };  // Amber, green, blue
 constexpr uint32_t kDefaultBandColorDark[kBandCount]  = { 0xFFFFB000, 0xFF33FF66, 0xFF4DA3F0 };
