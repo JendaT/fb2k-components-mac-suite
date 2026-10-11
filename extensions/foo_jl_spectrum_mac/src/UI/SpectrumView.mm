@@ -403,7 +403,7 @@ static const CGFloat kFreqThick = 13.0;  // along the frequency axis
         CGContextSaveGState(ctx);
         // With a line the stripes only fill the area under it.
         if (hasLine) [[self areaPathForValues:_bars] addClip];
-        [self drawColorBarsBase:base hot:capColor context:ctx];
+        [self drawColorBarsColor:capColor context:ctx];
         CGContextRestoreGState(ctx);
     } else if (_curveStyle == CurveStyleFilled) {
         NSBezierPath *area = [self areaPathForValues:_bars];
@@ -427,35 +427,33 @@ static const CGFloat kFreqThick = 13.0;  // along the frequency axis
     }
 }
 
-// Level (0..1 of the dB window) to stripe strength (0..1): a steep curve that
-// keeps most of the spectrum dim and lets only the loudest bands reach full
-// strength.
+// Level (0..1 of the dB window) to stripe strength (0..1). A small floor keeps
+// quiet bands faintly visible; above it the strength climbs steeply, so the
+// loudest bands stand out without the mid-level ones disappearing.
 static CGFloat colorBarStrength(CGFloat level) {
     if (level <= 0.0) return 0.0;
-    const CGFloat x = MIN(1.0, level / 0.88);
-    return 0.06 * MIN(1.0, level / 0.2) + 0.94 * std::pow(x, 5.0);
+    const CGFloat x = MIN(1.0, level / 0.9);
+    return 0.12 * MIN(1.0, level / 0.2) + 0.88 * std::pow(x, 4.0);
 }
 
-// One stripe per band over the full magnitude range. The louder the band, the
-// more opaque it is and the closer to `hot`, so dominant frequencies stand
-// out; the brightness setting caps how strong the loudest stripe gets. Drawn
-// as a single gradient along the frequency axis with a stop at each band
-// centre, which blends neighbouring bands smoothly.
-- (void)drawColorBarsBase:(NSColor *)base hot:(NSColor *)hot context:(CGContextRef)ctx {
+// One stripe per band over the full magnitude range, in the high-contrast
+// peak-line colour: the louder the band, the more opaque its stripe, so
+// dominant frequencies stand out. The brightness setting caps how strong the
+// loudest stripe gets. Drawn as a single gradient along the frequency axis
+// with a stop at each band centre, which blends neighbouring bands smoothly.
+- (void)drawColorBarsColor:(NSColor *)color context:(CGContextRef)ctx {
     const size_t n = _bars.size();
     if (n == 0) return;
     NSColorSpace *srgb = [NSColorSpace sRGBColorSpace];
-    NSColor *b = [base colorUsingColorSpace:srgb];
-    NSColor *h = [hot colorUsingColorSpace:srgb];
-    if (!b || !h) return;
-    const CGFloat b3[3] = {b.redComponent, b.greenComponent, b.blueComponent};
+    NSColor *h = [color colorUsingColorSpace:srgb];
+    if (!h) return;
     const CGFloat h3[3] = {h.redComponent, h.greenComponent, h.blueComponent};
 
     const CGFloat maxStrength = MIN(100, MAX(0, _colorBarBrightness)) / 100.0;
     std::vector<CGFloat> comps(n * 4), locs(n);
     for (size_t i = 0; i < n; ++i) {
         const CGFloat a = maxStrength * colorBarStrength(_bars[i]);
-        for (int c = 0; c < 3; ++c) comps[i * 4 + c] = b3[c] + (h3[c] - b3[c]) * a;
+        for (int c = 0; c < 3; ++c) comps[i * 4 + c] = h3[c];
         comps[i * 4 + 3] = a;
         locs[i] = ((CGFloat)i + 0.5) / (CGFloat)n;
     }
