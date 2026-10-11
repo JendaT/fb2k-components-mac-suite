@@ -107,12 +107,14 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 | ![Vectorscope in a layout](docs/images/vectorscope-overview.png) | ![Vectorscope Settings](docs/images/vectorscope-settings.png) |
 
 **Features:**
-- Goniometer display: mono is a vertical line, out-of-phase material spreads horizontally
-- Afterglow trace drawn as lines or dots, with adjustable persistence and brightness
+- Goniometer display (mono is a vertical line, out-of-phase material spreads horizontally) or Lissajous display (left against right)
+- Afterglow trace drawn as lines or dots, with adjustable persistence, brightness and dot size
+- Optional band colors: low / mid / high drawn in their own colors
 - Auto gain so quiet and loud tracks both fill the scope, or a fixed gain
 - Phase correlation meter, broadband or split into low / mid / high bands with adjustable crossovers
-- Diamond grid with L / R / M / S labels and adjustable opacity
-- Color presets (Phosphor Green, Amber, Nord, Dracula, Gruvbox, ...) with separate light/dark colors and optional glass background
+- Meter below, above, left or right of the scope, with adjustable bar thickness and a band showing its recent range
+- Grid with level guides, L / R / M / S labels and adjustable opacity
+- Color presets (Phosphor Green, Amber, Nord, Dracula, Gruvbox, ...) with separate light/dark colors, band colors and optional glass background
 
 ---
 
