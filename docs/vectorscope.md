@@ -37,7 +37,7 @@ Auto gain follows the track's peak level (fast down, slow up) so quiet and loud 
 
 ### Correlation Meter
 
-A bar showing how alike the two channels are. It sits below, above, left, or right of the scope; beside the scope the bars stand upright with +1 at the top. Auto places it below or to the right, whichever leaves the larger scope. Bar thickness is adjustable.
+A bar showing how alike the two channels are. It sits below, above, left, or right of the scope; beside the scope the bars stand upright with +1 at the top and the readouts are listed underneath. Auto places it below or to the right, whichever leaves the larger scope. Bar thickness is adjustable.
 
 | Reading | Meaning |
 |---------|---------|

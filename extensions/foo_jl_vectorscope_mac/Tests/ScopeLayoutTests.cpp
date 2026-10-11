@@ -84,11 +84,14 @@ void testBeside() {
     CHECK(right.vertical, "bars are vertical");
     CHECK_FLOAT_EQ(right.meter.x + right.meter.w, 600.0, "strip touches the right edge");
     CHECK_FLOAT_EQ(right.meter.h, 400.0, "strip spans the panel height");
-    CHECK_FLOAT_EQ(right.meter.w, 118.0, "pad + three labelled columns + scale + pad");
+    CHECK_FLOAT_EQ(right.meter.w, 61.0, "pad + three columns + scale + pad");
     CHECK(right.plot.x + right.plot.w <= right.meter.x, "scope is left of the strip");
     CHECK_EQ(right.bars, 3, "three tracks");
     CHECK(right.track[0].x < right.track[1].x && right.track[1].x < right.track[2].x, "low band first");
-    CHECK_FLOAT_EQ(right.track[1].x - right.track[0].x, kLabelledPitch, "columns fit a readout");
+    CHECK_FLOAT_EQ(right.track[1].x - right.track[0].x, 11.0, "columns are one pitch apart");
+    CHECK(right.legend[0].y > right.legend[1].y && right.legend[1].y > right.legend[2].y, "legend lists the low band first");
+    CHECK(right.legend[0].y + right.legend[0].h <= right.track[0].y, "legend is under the bars");
+    CHECK(right.legend[0].w >= kLegendNameWidth + kLegendValueWidth, "legend line fits a name and a readout");
     CHECK_FLOAT_EQ(right.track[0].w, 6.0, "bar has the requested thickness");
     CHECK_FLOAT_EQ(right.track[0].y + right.track[0].h / 2.0, right.plot.y + right.plot.h / 2.0,
                    "zero lines up with the scope's side axis");
@@ -105,12 +108,19 @@ void testBeside() {
 
     const Result bare = layout(panel(600, 400, MeterRight, 3, false));
     CHECK_FLOAT_EQ(bare.meter.w, 45.0, "unlabelled columns are packed");
-    CHECK_FLOAT_EQ(bare.track[1].x - bare.track[0].x, 11.0, "one bar pitch apart");
-    CHECK(bare.track[0].h > right.track[0].h, "bars take the text rows");
+    CHECK(bare.track[0].h > right.track[0].h, "bars take the legend's room");
+    CHECK(bare.legend[0].empty(), "no legend without labels");
+
+    const Result single = layout(panel(600, 400, MeterRight));
+    CHECK_FLOAT_EQ(single.meter.w, 39.0, "one column, scale, and a readout underneath");
+    CHECK(single.track[0].h > right.track[0].h, "one legend line leaves longer bars");
+
+    const Result thin = layout(panel(600, 400, MeterRight, 3, true, 4.0));
+    CHECK_FLOAT_EQ(thin.meter.w, 59.0, "strip stays wide enough for the legend");
 
     const Result thick = layout(panel(600, 400, MeterRight, 3, true, 24.0));
     CHECK_FLOAT_EQ(thick.track[0].w, 24.0, "thick bars keep their thickness");
-    CHECK_FLOAT_EQ(thick.track[1].x - thick.track[0].x, kLabelledPitch, "and still fit a labelled column");
+    CHECK_FLOAT_EQ(thick.track[1].x - thick.track[0].x, 29.0, "and move one pitch apart");
 }
 
 void testAuto() {
@@ -124,8 +134,8 @@ void testAuto() {
     CHECK(layout(hidden).meter.empty(), "no strip when the meter is off");
     CHECK_FLOAT_EQ(layout(hidden).plot.w, 260.0, "scope takes the whole panel");
 
-    // Wide but too narrow for three labelled columns: below still shows it.
-    const Result r = layout(panel(120, 100, MeterAuto, 3));
+    // Too narrow for three thick columns beside the scope: below still shows it.
+    const Result r = layout(panel(130, 150, MeterAuto, 3, true, 24.0));
     CHECK_EQ(r.position, MeterBottom, "keeps the meter rather than the larger scope");
     CHECK(!r.meter.empty(), "meter is shown");
 
@@ -161,9 +171,14 @@ void testSmallPanels() {
     CHECK(crowded.meter.empty(), "meter hides rather than squeeze out the scope");
     CHECK(!crowded.plot.empty(), "scope is still drawn");
 
-    const Result narrow = layout(panel(100, 300, MeterRight, 3));
-    CHECK(narrow.meter.empty(), "labelled columns that do not fit give way");
+    const Result narrow = layout(panel(100, 300, MeterRight, 3, true, 24.0));
+    CHECK(narrow.meter.empty(), "columns that do not fit give way");
     CHECK(!narrow.plot.empty(), "scope is still drawn");
+
+    // A strip whose bars would be too short to read is not reserved at all.
+    CHECK(layout(panel(300, 100, MeterRight, 3)).meter.empty(), "no room for bars between the legend rows");
+    CHECK(!layout(panel(300, 100, MeterRight, 3, false)).meter.empty(), "unlabelled bars still fit");
+    CHECK(layout(panel(92, 300, MeterBottom, 3)).meter.empty(), "no room for bars between name and readout");
 }
 
 void testBadInput() {
@@ -200,18 +215,25 @@ void testInvariants() {
                                 CHECK_EQ(r.bars, 0, "no tracks without a strip");
                                 continue;
                             }
+                            CHECK_EQ(r.bars, bars, "a shown meter draws every bar");
                             CHECK(inside(r.meter, w, h), "strip is inside the panel");
                             CHECK(!r.plot.empty(), "a shown meter leaves room for the scope");
                             CHECK(!overlap(r.plot, r.meter), "scope and strip do not overlap");
-                            // Text that hangs off the ends of a vertical bar.
-                            const double text = (r.vertical && labels) ? kTextRow : 0.0;
                             for (int i = 0; i < r.bars; ++i) {
-                                Rect t = r.track[i];
+                                const Rect& t = r.track[i];
                                 CHECK(t.w >= (r.vertical ? thickness : kMinBarLength) &&
                                       t.h >= (r.vertical ? kMinBarLength : thickness), "track has a drawable size");
-                                t.y -= text;
-                                t.h += 2.0 * text;
-                                CHECK(inside(t, w, h), "track and its text are inside the panel");
+                                CHECK(inside(t, w, h), "track is inside the panel");
+                                if (r.vertical && labels) {
+                                    const Rect& line = r.legend[i];
+                                    CHECK(inside(line, w, h), "legend line is inside the panel");
+                                    CHECK(line.x >= r.meter.x && line.x + line.w <= r.meter.x + r.meter.w, "legend line is inside the strip");
+                                    CHECK(line.y + line.h <= t.y, "legend line is under the bars");
+                                    // The same room is left above the bars.
+                                    CHECK(t.y + t.h + (t.y - r.legend[r.bars - 1].y) <= h, "bars stay centred");
+                                } else {
+                                    CHECK(r.legend[i].empty(), "legend only beside the scope with labels");
+                                }
                                 CHECK(r.vertical ? (t.x >= r.meter.x && t.x + t.w <= r.meter.x + r.meter.w)
                                                  : (t.y >= r.meter.y && t.y + t.h <= r.meter.y + r.meter.h),
                                       "track is inside the strip");

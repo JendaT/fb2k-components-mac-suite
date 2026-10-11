@@ -43,8 +43,9 @@ constexpr double kReadoutWidth = 38.0;    // "+0.00" after a bar
 
 // Vertical bars (meter beside the scope)
 constexpr double kScaleWidth = 16.0;      // "+1 / 0 / -1" on the outer edge
-constexpr double kLabelledPitch = 30.0;   // column wide enough for a "+0.00" readout
-constexpr double kTextRow = 13.0;         // band name above a bar, readout below
+constexpr double kLegendLine = 12.0;      // one "Lo  +0.00" line per bar, listed under the bars
+constexpr double kLegendNameWidth = 20.0;
+constexpr double kLegendValueWidth = 27.0;
 
 // Origin bottom-left, y up (the view is not flipped).
 struct Rect {
@@ -67,16 +68,10 @@ struct Result {
     Rect meter;                 // strip reserved for the meter; empty = hidden
     int  position = MeterBottom;  // resolved, never MeterAuto
     bool vertical = false;      // bars run from -1 at the bottom to +1 at the top
-    int  bars = 0;              // valid tracks; 0 when hidden or too short to draw
+    int  bars = 0;              // valid tracks; 0 when the meter is hidden
     Rect track[kMaxBars];
+    Rect legend[kMaxBars];      // vertical with labels: each bar's name / readout line
 };
-
-// Distance from one bar to the next. Beside the scope each bar carries its
-// name and readout, so labelled columns have a minimum width.
-inline double barPitch(const Input& in, bool vertical) {
-    const double pitch = in.barThickness + kBarGap;
-    return (vertical && in.labels) ? std::max(pitch, kLabelledPitch) : pitch;
-}
 
 // Layout for one concrete position (not MeterAuto).
 inline Result layoutAt(const Input& in, int position) {
@@ -85,13 +80,27 @@ inline Result layoutAt(const Input& in, int position) {
     out.vertical = position == MeterLeft || position == MeterRight;
 
     const int bars = std::max(1, std::min(in.bars, kMaxBars));
-    const double pitch = barPitch(in, out.vertical);
+    const double pitch = in.barThickness + kBarGap;
     const double scale = !in.labels ? 0.0 : (out.vertical ? kScaleWidth : kScaleHeight);
-    const double extent = kMeterPad + bars * pitch + scale + kMeterPad;
-    // The meter gives way when the panel is small or it would crowd out the scope.
-    const double room = (out.vertical ? in.width : in.height) - extent;
+    double extent = kMeterPad + bars * pitch + scale + kMeterPad;
+    // Text on the bars' own axis: name and readout at the ends of a horizontal
+    // bar; under vertical bars a legend, with the same room left above so
+    // zero lines up with the scope's side axis.
+    double text = 0.0;
+    if (in.labels && out.vertical) {
+        text = 2.0 * (bars * kLegendLine + 1.0);
+        const double legend = (bars > 1 ? kLegendNameWidth : 0.0) + kLegendValueWidth;
+        extent = std::max(extent, kMeterPad + legend + kMeterPad);
+    } else if (in.labels) {
+        text = (bars > 1 ? kRowLabelWidth : 0.0) + kReadoutWidth;
+    }
+    // The meter gives way when the panel is small, when it would crowd out
+    // the scope, or when its bars would be too short to read.
+    const double along = out.vertical ? in.height : in.width;
+    const double across = out.vertical ? in.width : in.height;
     const bool meter = in.showMeter && in.width >= kMinMeterPanel && in.height >= kMinMeterPanel &&
-                       room >= 2.0 * (kPad + kMinPlotRadius);
+                       across - extent >= 2.0 * (kPad + kMinPlotRadius) &&
+                       std::min(along - 2.0 * kPad, kMinMeterLength) - text >= kMinBarLength;
 
     Rect area;   // what is left for the scope
     area.w = in.width;
@@ -130,12 +139,9 @@ inline Result layoutAt(const Input& in, int position) {
 
     // The meter is as long as the scope, but never cramped beside a small one.
     if (out.vertical) {
-        // Text rows above and below are equal so zero lines up with the side axis.
-        const double text = in.labels ? kTextRow : 0.0;
         const double total = std::min(in.height - 2.0 * kPad,
                                       std::max(out.plot.h + 2.0 * kLabelInset, kMinMeterLength));
-        const double length = 2.0 * std::floor((total - 2.0 * text) / 2.0);
-        if (length < kMinBarLength) return out;
+        const double length = 2.0 * std::floor((total - text) / 2.0);
         const double bottom = std::round(in.height / 2.0) - length / 2.0;
         // Bars sit next to the scope, the scale on the outer edge.
         const double first = out.meter.x + kMeterPad + ((in.labels && position == MeterLeft) ? kScaleWidth : 0.0);
@@ -144,6 +150,12 @@ inline Result layoutAt(const Input& in, int position) {
             out.track[i].y = bottom;
             out.track[i].w = in.barThickness;
             out.track[i].h = length;
+            if (in.labels) {
+                out.legend[i].x = out.meter.x + kMeterPad;
+                out.legend[i].y = bottom - 1.0 - (i + 1) * kLegendLine;
+                out.legend[i].w = out.meter.w - 2.0 * kMeterPad;
+                out.legend[i].h = kLegendLine;
+            }
         }
     } else {
         const double total = std::min(in.width - 2.0 * kPad,
@@ -151,7 +163,6 @@ inline Result layoutAt(const Input& in, int position) {
         const double left = std::round(in.width / 2.0 - total / 2.0);
         const double barL = left + ((in.labels && bars > 1) ? kRowLabelWidth : 0.0);
         const double barR = left + total - (in.labels ? kReadoutWidth : 0.0);
-        if (barR - barL < kMinBarLength) return out;
         const double top = out.meter.y + out.meter.h - kMeterPad;
         for (int i = 0; i < bars; ++i) {
             out.track[i].x = barL;

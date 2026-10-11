@@ -439,9 +439,16 @@ static NSColor *colorFromARGB(uint32_t argb) {
         if (_showLabels) {
             NSString *readout = _shownSilent[i] ? @"--" : [NSString stringWithFormat:@"%+.2f", v];
             if (vertical) {
-                const CGFloat cx = t.x + t.w / 2.0;
-                if (_bandMode) drawCentered(kBandNames[i], cx, t.y + t.h + kTextRow / 2.0);
-                drawCentered(readout, cx, t.y - kTextRow / 2.0);
+                const scope_layout::Rect &line = _layout.legend[i];
+                const CGFloat textY = line.y + line.h / 2.0;
+                if (_bandMode) {
+                    const NSSize ns = [kBandNames[i] sizeWithAttributes:attrs];
+                    [kBandNames[i] drawAtPoint:NSMakePoint(line.x, textY - ns.height / 2) withAttributes:attrs];
+                    const NSSize sz = [readout sizeWithAttributes:attrs];
+                    [readout drawAtPoint:NSMakePoint(line.x + line.w - sz.width, textY - sz.height / 2) withAttributes:attrs];
+                } else {
+                    drawCentered(readout, line.x + line.w / 2.0, textY);
+                }
             } else {
                 const CGFloat textY = t.y + t.h / 2.0;
                 if (_bandMode) {
