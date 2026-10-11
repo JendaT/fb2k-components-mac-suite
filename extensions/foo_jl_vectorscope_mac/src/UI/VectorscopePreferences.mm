@@ -241,7 +241,7 @@
         [_themePopup addItemWithTitle:[NSString stringWithUTF8String:kThemes[i].name]];
     }
     _themePopup.target = self; _themePopup.action = @selector(themeChanged:);
-    _themePopup.toolTip = @"Apply a color preset to trace, background, and grid";
+    _themePopup.toolTip = @"Apply a color preset to trace, background, grid, and band colors";
     [self.view addSubview:_themePopup];
     y += 30;
 
@@ -631,13 +631,15 @@
     [self notifyChanged];
 }
 
-// Themes leave the band colors alone, so editing one keeps the theme.
 - (void)bandColorChanged:(id)sender {
     using namespace vectorscope_config;
     for (int b = 0; b < kBandCount; ++b) {
         if (sender == _bandColorLightWells[b])     setConfigInt(kKeyBandColorLight[b], [self argbFromColor:_bandColorLightWells[b].color]);
         else if (sender == _bandColorDarkWells[b]) setConfigInt(kKeyBandColorDark[b], [self argbFromColor:_bandColorDarkWells[b].color]);
     }
+    // A manual color edit means the palette no longer matches a preset.
+    setConfigInt(kKeyTheme, 0);
+    [_themePopup selectItemAtIndex:0];
     [self notifyChanged];
 }
 

@@ -74,7 +74,7 @@ Full-scale outline (diamond, or square in the Lissajous style), dashed level gui
 
 ### Color Themes
 
-Eleven presets stamp trace, background, and grid colors for both light and dark appearance at once: Default (Phosphor Green), Blue, Amber, Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. Editing any color well switches the theme selector to Custom.
+Eleven presets stamp trace, background, grid, and band colors for both light and dark appearance at once: Default (Phosphor Green), Blue, Amber, Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. Editing any color well switches the theme selector to Custom.
 
 ### Glass Background
 
@@ -125,7 +125,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Glass background | Translucent blur instead of solid color | Off |
 | Grid opacity | Grid line and label opacity (0% hides) | 40% |
 | Colors (Light / Dark) | Trace, background, and grid color per appearance | Green on light gray / phosphor green on near-black |
-| Band colors (Light / Dark) | Low, mid, and high color of the band-colored trace; themes leave them alone | Amber, green, blue |
+| Band colors (Light / Dark) | Low, mid, and high color of the band-colored trace; set by the theme | Amber, green, blue |
 
 ## Layout Editor
 
