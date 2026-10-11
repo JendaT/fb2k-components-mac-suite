@@ -47,6 +47,18 @@ constexpr double kLegendLine = 12.0;      // one "Lo  +0.00" line per bar, liste
 constexpr double kLegendNameWidth = 20.0;
 constexpr double kLegendValueWidth = 27.0;
 
+// Dots trace: diameter of a dot in points.
+constexpr double kAutoDotScope = 400.0;   // auto: one point per this much scope
+constexpr double kAutoDotMin = 1.0;
+constexpr double kAutoDotMax = 2.5;
+
+// The configured dot size, or for 0 (auto) one that grows gently with the
+// scope so the cloud keeps its look from a small panel to a large one.
+inline double dotSize(double configured, double plotSide) {
+    if (configured > 0.0) return configured;
+    return std::min(kAutoDotMax, std::max(kAutoDotMin, plotSide / kAutoDotScope));
+}
+
 // Origin bottom-left, y up (the view is not flipped).
 struct Rect {
     double x = 0.0, y = 0.0, w = 0.0, h = 0.0;

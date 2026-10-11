@@ -26,10 +26,17 @@ public:
     // pixel, 0 once the image has fully died away.
     float decay(float keep);
 
+    // Diameter of an unconnected point in pixels. Up to 1 it is a single
+    // dot carrying exactly its energy; a larger one is a filled disc, dimmer
+    // per pixel but with `pixels` times the light in total.
+    void setDotSize(float pixels);
+    float dotSize() const { return _dotSize; }
+
     // Add a trace of `points` goniometer points (interleaved x/y, -1..1,
     // y up). Each point deposits `energy`. With `connect` the energy is
     // spread along the line from the previous point, so fast beam movement
-    // draws dimmer, as on a real tube; otherwise each point is a single dot.
+    // draws dimmer, as on a real tube; otherwise each point is a dot of the
+    // set size.
     // The stroke continues across calls until breakTrace().
     void addTrace(const float* xy, size_t points, float energy, bool connect);
     void breakTrace() { _havePrev = false; }
@@ -42,9 +49,13 @@ public:
 
 private:
     inline void splat(float px, float py, float energy);
+    inline void stamp(float px, float py, float energy);
 
     int _side = 0;
     std::vector<float> _pixels;
+    float _dotSize = 1.0f;
+    int   _dotSpan = 0;             // disc is _dotSpan x _dotSpan; 0 = single dot
+    std::vector<float> _dot;        // its per-pixel weights
     bool  _havePrev = false;
     float _prevX = 0.0f, _prevY = 0.0f;   // pixel coordinates
 };

@@ -41,6 +41,7 @@ namespace {
     // Cached settings (refreshed via reloadSettings)
     bool     _connect;
     bool     _bandTrace;     // trace coloured by band
+    double   _dotSize;       // points; 0 = auto
     double   _persistence;   // seconds
     float    _brightness;    // energy multiplier
     bool     _showCorrelation;
@@ -133,6 +134,9 @@ namespace {
     _traceColorDark  = (uint32_t)getConfigInt(kKeyTraceColorDark, kDefaultTraceColorDark);
     _bgColorDark     = (uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark);
     _gridColorDark   = (uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
+    // Anything under the smallest size the slider offers is auto.
+    const int dotSize = getConfigIntClamped(kKeyDotSize, kDefaultDotSize, 0, kMaxDotSize);
+    _dotSize      = dotSize < kMinDotSize ? 0.0 : dotSize / 10.0;
     for (int b = 0; b < kPhosphorBands; ++b) {
         _bandColorLight[b] = (uint32_t)getConfigInt(kKeyBandColorLight[b], kDefaultBandColorLight[b]);
         _bandColorDark[b]  = (uint32_t)getConfigInt(kKeyBandColorDark[b], kDefaultBandColorDark[b]);
@@ -180,6 +184,10 @@ namespace {
             _traceEmpty = true;
             _traceLayer.contents = nil;
         }
+        // Dot size is set in points; the buffer works in its own pixels.
+        const double pixelsPerPoint = _phosphor[0].side() / _plotRect.size.width;
+        const float dot = (float)(scope_layout::dotSize(_dotSize, _plotRect.size.width) * pixelsPerPoint);
+        for (int i = 0; i < [self layerCount]; ++i) _phosphor[i].setDotSize(dot);
     }
 }
 

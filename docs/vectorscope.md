@@ -31,6 +31,8 @@ The trace fades over an adjustable time instead of being redrawn from scratch, l
 | **Lines** | Samples are joined; fast beam movement draws dimmer, so dense areas glow and jumps stay faint |
 | **Dots** | One dot per sample, drawn as a point cloud |
 
+Dot size is adjustable. Auto keeps dots one point across on small scopes and grows them gently on large ones, independent of the screen's pixel density.
+
 ### Band Colors
 
 Optionally the trace is split into low, mid, and high bands, each drawn in its own color, so the picture shows where in the spectrum the width or the phase trouble sits. Where bands overlap the colors mix by brightness. The bands use the same crossovers as the three-band correlation meter, and with both on, the meter's bars take the band colors.
@@ -89,6 +91,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | Trace | How samples are drawn | Lines, Dots | Lines |
+| Dot size | Diameter of each dot in Dots mode | Auto, 1.0-8.0 pt | Auto |
 | Trace color | One color, or one per frequency band | Single, Low / Mid / High | Single |
 | Afterglow | How long the trace takes to fade | 20-2000 ms | 300 ms |
 | Brightness | Trace brightness | 0-100 | 60 |

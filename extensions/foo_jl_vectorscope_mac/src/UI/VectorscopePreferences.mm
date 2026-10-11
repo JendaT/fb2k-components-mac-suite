@@ -19,6 +19,8 @@
 @interface VectorscopePreferences () {
     NSPopUpButton *_drawModePopup;
     NSPopUpButton *_traceColorModePopup;
+    NSSlider      *_dotSizeSlider;
+    NSTextField   *_dotSizeLabel;
     NSSlider      *_persistenceSlider;
     NSTextField   *_persistenceLabel;
     NSSlider      *_brightnessSlider;
@@ -63,7 +65,7 @@
 - (NSString *)preferencesTitle { return @"Vectorscope"; }
 
 - (void)loadView {
-    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 824)];
+    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 854)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -95,6 +97,15 @@
     _drawModePopup.toolTip = @"Lines join the samples and draw fast movement dimmer, like an oscilloscope tube";
     _drawModePopup.target = self; _drawModePopup.action = @selector(drawModeChanged:);
     [self.view addSubview:_drawModePopup];
+    y += 30;
+
+    // Half-point steps; the bottom of the slider is auto.
+    [self.view addSubview:[self label:@"Dot size:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _dotSizeSlider = [self sliderAt:NSMakePoint(controlX, y) min:1 max:kMaxDotSize / 5 action:@selector(dotSizeChanged:)];
+    _dotSizeSlider.toolTip = @"Size of each dot in Dots mode; Auto grows gently with the scope";
+    [self.view addSubview:_dotSizeSlider];
+    _dotSizeLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_dotSizeLabel];
     y += 30;
 
     [self.view addSubview:[self label:@"Trace color:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -351,6 +362,11 @@
     [self selectIndexPopup:_correlationModePopup index:getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode)];
     [self selectIndexPopup:_meterPositionPopup index:getConfigInt(kKeyMeterPosition, kDefaultMeterPosition)];
 
+    int dotSize = getConfigIntClamped(kKeyDotSize, kDefaultDotSize, 0, kMaxDotSize);
+    if (dotSize < kMinDotSize) dotSize = 0;
+    _dotSizeSlider.integerValue = dotSize > 0 ? dotSize / 5 : 1;
+    _dotSizeLabel.stringValue = [self dotSizeText:dotSize];
+
     int persistence = getConfigIntClamped(kKeyPersistenceMs, kDefaultPersistenceMs, kMinPersistenceMs, kMaxPersistenceMs);
     _persistenceSlider.integerValue = persistence;
     _persistenceLabel.stringValue = [NSString stringWithFormat:@"%dms", persistence];
@@ -412,6 +428,8 @@
 
 // Grey out controls that have no effect in the current setup.
 - (void)updateEnabledStates {
+    _dotSizeSlider.enabled = _drawModePopup.indexOfSelectedItem == vectorscope_config::DrawModeDots;
+
     const BOOL autoGain = _autoGainCheckbox.state == NSControlStateValueOn;
     _gainSlider.enabled = !autoGain;
 
@@ -466,6 +484,19 @@
 
 - (void)drawModeChanged:(id)sender {
     vectorscope_config::setConfigInt(vectorscope_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);
+    [self updateEnabledStates];
+    [self notifyChanged];
+}
+
+- (NSString *)dotSizeText:(int)tenths {
+    return tenths > 0 ? [NSString stringWithFormat:@"%.1fpt", tenths / 10.0] : @"Auto";
+}
+
+- (void)dotSizeChanged:(id)sender {
+    const int step = (int)_dotSizeSlider.integerValue;
+    const int v = step * 5 < vectorscope_config::kMinDotSize ? 0 : step * 5;
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyDotSize, v);
+    _dotSizeLabel.stringValue = [self dotSizeText:v];
     [self notifyChanged];
 }
 

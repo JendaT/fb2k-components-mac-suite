@@ -241,6 +241,88 @@ void testRender() {
     CHECK_EQ(std::memcmp(&rgba[0], &lut[0], 4), 0, "every pixel is written");
 }
 
+// Unconnected points drawn as discs of a set diameter.
+void testDotSize() {
+    g_context = "dot size";
+    const float centre[] = { 0.0f, 0.0f };
+    auto lit = [](const PhosphorBuffer& b) {
+        int count = 0;
+        for (float v : b.pixels()) if (v > 0.0f) ++count;
+        return count;
+    };
+
+    PhosphorBuffer b;
+    b.resize(101);
+    CHECK_FLOAT_EQ(b.dotSize(), 1.0, "starts with single dots");
+    b.setDotSize(6.0f);
+    b.addTrace(centre, 1, 1.0f, false);
+    CHECK_FLOAT_EQ(total(b), 6.0, "a disc carries its diameter's worth of light");
+    CHECK(brightest(b) < 0.3f, "and is dimmer per pixel than a single dot");
+    // Area of a 6 px disc is 28.3; the soft edge lights a ring more.
+    CHECK(lit(b) >= 29 && lit(b) <= 49, "it covers about its area");
+    double cx, cy;
+    centroid(b, cx, cy);
+    CHECK_FLOAT_EQ(cx, 50.0, "disc is centred on the point (x)");
+    CHECK_FLOAT_EQ(cy, 50.0, "disc is centred on the point (y)");
+    const std::vector<float>& px = b.pixels();
+    CHECK_FLOAT_EQ(px[50 * 101 + 47], px[50 * 101 + 53], "disc is symmetric left to right");
+    CHECK_FLOAT_EQ(px[47 * 101 + 50], px[53 * 101 + 50], "disc is symmetric top to bottom");
+    CHECK_FLOAT_EQ(px[50 * 101 + 52], px[50 * 101 + 50], "disc is flat inside");
+    CHECK_FLOAT_EQ(px[50 * 101 + 55], 0.0, "nothing beyond the edge");
+
+    // Sizes up to one pixel keep the exact single dot.
+    for (float size : { 1.0f, 0.5f, 0.0f, -3.0f, std::numeric_limits<float>::quiet_NaN() }) {
+        b.clear();
+        b.setDotSize(6.0f);
+        b.setDotSize(size);
+        b.addTrace(centre, 1, 1.0f, false);
+        CHECK_FLOAT_EQ(b.dotSize(), 1.0, "small and bad sizes mean a single dot");
+        CHECK_FLOAT_EQ(total(b), 1.0, "a single dot deposits exactly its energy");
+        CHECK_EQ(lit(b), 1, "on one pixel");
+    }
+
+    // Light grows steadily from the single dot upwards.
+    double previous = 1.0;
+    bool growing = true;
+    for (float size = 1.25f; size <= 16.0f; size += 0.25f) {
+        b.clear();
+        b.setDotSize(size);
+        b.addTrace(centre, 1, 1.0f, false);
+        if (std::fabs(total(b) - size) > 0.001) growing = false;
+        if (total(b) <= previous) growing = false;
+        previous = total(b);
+    }
+    CHECK(growing, "total light equals the diameter at every size");
+
+    // Lines ignore the dot size.
+    PhosphorBuffer thin, thick;
+    thin.resize(101);
+    thick.resize(101);
+    thick.setDotSize(8.0f);
+    const float path[] = { -0.5f, -0.2f, 0.4f, 0.3f, 0.1f, -0.6f };
+    thin.addTrace(path, 3, 1.0f, true);
+    thick.addTrace(path, 3, 1.0f, true);
+    CHECK(thin.pixels() == thick.pixels(), "connected traces are unaffected");
+
+    // Discs hanging over the edge are clipped, not wrapped or dropped.
+    b.clear();
+    b.setDotSize(12.0f);
+    const float corners[] = { -0.99f, 0.99f, 0.97f, -0.97f, -0.99f, -0.99f, 0.97f, 0.97f };
+    b.addTrace(corners, 4, 1.0f, false);
+    CHECK(total(b) > 4.0 * 12.0 * 0.2 && total(b) < 4.0 * 12.0 * 0.6, "corner discs keep the part inside");
+    CHECK(b.pixels()[0] > 0.0f, "the top-left corner pixel is lit");
+    CHECK_FLOAT_EQ(b.pixels()[50 * 101 + 50], 0.0, "the centre is untouched");
+
+    // A huge size is capped rather than allocating without bound.
+    b.setDotSize(1e9f);
+    CHECK(b.dotSize() <= 64.0f, "dot size is capped");
+
+    // Resizing keeps the dot size.
+    b.setDotSize(5.0f);
+    b.resize(51);
+    CHECK_FLOAT_EQ(b.dotSize(), 5.0, "resize keeps the dot size");
+}
+
 // Three band buffers drawn as one band-coloured image.
 void testBands() {
     g_context = "bands";
@@ -331,6 +413,7 @@ int main() {
     testBadInput();
     testDecay();
     testRender();
+    testDotSize();
     testBands();
     TEST_MAIN_END();
 }
