@@ -228,13 +228,28 @@ void testAutoGain() {
     for (int i = 0; i < 600; ++i) ag.process(0.0f, block);
     CHECK(std::fabs(ag.gain() - 10.0f) < 0.1f, "silence holds the gain");
 
-    // A loud passage pulls the gain down within a fraction of a second.
+    // A loud passage pulls the gain down at once: its own block already fits.
+    ag.process(1.0f, block);
+    CHECK_FLOAT_EQ(ag.gain(), 0.9, "a loud block is brought to the target immediately");
     for (int i = 0; i < 60; ++i) ag.process(1.0f, block);
-    CHECK(std::fabs(ag.gain() - 0.9f) < 0.05f, "loud material is brought back to the target");
+    CHECK_FLOAT_EQ(ag.gain(), 0.9, "and stays there");
 
     // Release is slow: one second later the gain has barely recovered.
     for (int i = 0; i < 60; ++i) ag.process(0.09f, block);
     CHECK(ag.gain() < 2.0f, "gain recovers slowly after a loud passage");
+
+    // Whatever the level does, no block lands beyond the target.
+    AutoGain rider;
+    rider.configure(0.9f, 0.5f, 31.6f, 3.0);
+    Rng rng{777};
+    bool contained = true;
+    float level = 0.01f;
+    for (int i = 0; i < 20000; ++i) {
+        if (i % 37 == 0) level = 0.001f + 0.999f * std::fabs(rng.next());   // sudden jumps
+        const float peak = level * (0.5f + 0.5f * std::fabs(rng.next()));
+        if (peak * rider.process(peak, block) > 0.9f * 1.0001f) contained = false;
+    }
+    CHECK(contained, "a block's peak never lands beyond the target");
 
     // Very quiet material is capped at the maximum gain.
     AutoGain cap;
@@ -389,6 +404,38 @@ void testAnalyzer() {
     CHECK(highY < 0.02, "high band is out of phase");
     CHECK(midXY < 0.02, "mid band is empty");
     CHECK(tr.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with only the band trace on");
+
+    // Auto gain keeps every band inside the outline, also on a sudden loud
+    // entry and when a band peaks above the full signal. A clipped bass note
+    // does both: its low band swings wider than the clipped waveform.
+    StereoAnalyzer::Settings riding;
+    riding.bandTrace = true;
+    StereoAnalyzer rd;
+    rd.configure(riding);
+    std::vector<float> hit(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const double t = (double)i / kSR;
+        float v = (float)(0.02 * std::sin(2.0 * kPi * 1000.0 * t));    // quiet lead-in
+        if (t >= 1.0) v = std::sin(2.0 * kPi * 60.0 * t) >= 0.0 ? 0.8f : -0.8f;
+        hit[2 * i] = v;
+        hit[2 * i + 1] = -v;
+    }
+    double widest = 0.0, lowPeakIn = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        rd.process(hit.data() + off * 2, block, kSR, xy.data());
+        for (size_t i = 0; i < block; ++i) {
+            widest = std::max(widest, (double)(std::fabs(xy[2 * i]) + std::fabs(xy[2 * i + 1])));
+            for (int b = 0; b < StereoAnalyzer::BandCount; ++b) {
+                const float* p = rd.bandPoints(b);
+                widest = std::max(widest, (double)(std::fabs(p[2 * i]) + std::fabs(p[2 * i + 1])));
+            }
+            // Low band level before gain: |x| + |y| is the larger channel times the gain.
+            const float* low = rd.bandPoints(StereoAnalyzer::BandLow);
+            lowPeakIn = std::max(lowPeakIn, (double)(std::fabs(low[2 * i]) + std::fabs(low[2 * i + 1])) / rd.gain());
+        }
+    }
+    CHECK(lowPeakIn > 0.85, "the low band of a clipped bass note peaks above the waveform");
+    CHECK(widest <= 0.9 * 1.0001, "auto gain keeps the whole trace inside the outline");
 
     // Lissajous style: the points, broadband and per band, are L against R.
     traced.lissajous = true;

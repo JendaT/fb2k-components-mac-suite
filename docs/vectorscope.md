@@ -43,7 +43,7 @@ Optionally the trace is split into low, mid, and high bands, each drawn in its o
 
 ### Gain
 
-Auto gain follows the track's peak level (fast down, slow up) so quiet and loud material both fill the scope, within -6 dB to +30 dB. It holds through silence instead of rising between tracks. Turn it off to use a fixed gain of 0 to +36 dB.
+Auto gain follows the track's peak level so quiet and loud material both fill the scope, within -6 dB to +30 dB. It drops at once when the level jumps, so the trace stays inside the outline, and rises slowly. It holds through silence instead of rising between tracks. Turn it off to use a fixed gain of 0 to +36 dB.
 
 ### Correlation Meter
 
