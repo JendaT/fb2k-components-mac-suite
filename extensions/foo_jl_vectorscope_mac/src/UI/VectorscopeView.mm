@@ -27,6 +27,9 @@ namespace {
     const int kMaxRows = 3;
 
     const CGFloat kRangeAlpha = 0.35;
+
+    // Scopes smaller than this skip the quarter-scale guide.
+    const CGFloat kMinQuarterRingRadius = 80.0;
 }
 
 @implementation VectorscopeView {
@@ -39,6 +42,7 @@ namespace {
     CGColorSpaceRef _colorSpace;
 
     // Cached settings (refreshed via reloadSettings)
+    bool     _lissajous;     // square L/R picture instead of the M/S diamond
     bool     _connect;
     bool     _bandTrace;     // trace coloured by band
     double   _dotSize;       // points; 0 = auto
@@ -105,6 +109,7 @@ namespace {
 
 - (void)reloadSettings {
     using namespace vectorscope_config;
+    _lissajous    = getConfigInt(kKeyScopeStyle, kDefaultScopeStyle) == ScopeStyleLissajous;
     _connect      = getConfigInt(kKeyDrawMode, kDefaultDrawMode) != DrawModeDots;
     const bool bandTrace = getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode) == TraceColorBands;
     if (bandTrace != _bandTrace) {
@@ -389,43 +394,55 @@ static NSColor *colorFromARGB(uint32_t argb) {
     }
 }
 
-// Diamond = full scale at gain 1. Vertical axis is mid (L+R), horizontal is
-// side (L-R); the diagonals are the left-only and right-only directions.
+// Goniometer: the diamond is full scale at gain 1, the vertical axis mid
+// (L+R), the horizontal side (L-R), the diagonals left-only and right-only.
+// Lissajous is the same picture turned 45 degrees: a square with left along
+// x, right along y, and mid and side on the diagonals.
 - (void)drawGridInContext:(CGContextRef)ctx {
     const CGFloat cx = NSMidX(_plotRect), cy = NSMidY(_plotRect);
     const CGFloat r = _plotRect.size.width / 2.0;
+    const bool square = _lissajous;
+
+    // The full-scale outline shrunk to `scale`.
+    auto addOutline = [&](CGFloat scale) {
+        const CGFloat s = std::round(r * scale);
+        if (square) {
+            // Half a pixel in, so the one-pixel stroke stays sharp.
+            CGContextAddRect(ctx, CGRectMake(cx - s + 0.5, cy - s + 0.5, 2.0 * s - 1.0, 2.0 * s - 1.0));
+        } else {
+            CGContextMoveToPoint(ctx, cx, cy + s);
+            CGContextAddLineToPoint(ctx, cx + s, cy);
+            CGContextAddLineToPoint(ctx, cx, cy - s);
+            CGContextAddLineToPoint(ctx, cx - s, cy);
+            CGContextClosePath(ctx);
+        }
+    };
 
     CGContextSetLineWidth(ctx, 1.0);
     CGContextSetStrokeColorWithColor(ctx, [self gridLineColor].CGColor);
 
     CGContextBeginPath(ctx);
-    CGContextMoveToPoint(ctx, cx, cy + r);
-    CGContextAddLineToPoint(ctx, cx + r, cy);
-    CGContextAddLineToPoint(ctx, cx, cy - r);
-    CGContextAddLineToPoint(ctx, cx - r, cy);
-    CGContextClosePath(ctx);
-    // Mid and side axes
+    addOutline(1.0);
+    // Upright axes
     CGContextMoveToPoint(ctx, cx + 0.5, cy - r);
     CGContextAddLineToPoint(ctx, cx + 0.5, cy + r);
     CGContextMoveToPoint(ctx, cx - r, cy + 0.5);
     CGContextAddLineToPoint(ctx, cx + r, cy + 0.5);
-    // Left-only and right-only axes
-    CGContextMoveToPoint(ctx, cx - r / 2, cy + r / 2);
-    CGContextAddLineToPoint(ctx, cx + r / 2, cy - r / 2);
-    CGContextMoveToPoint(ctx, cx + r / 2, cy + r / 2);
-    CGContextAddLineToPoint(ctx, cx - r / 2, cy - r / 2);
+    // Diagonal axes, out to the outline
+    const CGFloat d = square ? r : r / 2;
+    CGContextMoveToPoint(ctx, cx - d, cy + d);
+    CGContextAddLineToPoint(ctx, cx + d, cy - d);
+    CGContextMoveToPoint(ctx, cx + d, cy + d);
+    CGContextAddLineToPoint(ctx, cx - d, cy - d);
     CGContextStrokePath(ctx);
 
-    // Half scale (-6 dB), dashed
+    // Half scale (-6 dB) and, where there is room, quarter scale (-12 dB), dashed
     const CGFloat dash[] = { 2.0, 3.0 };
     CGContextSaveGState(ctx);
     CGContextSetLineDash(ctx, 0, dash, 2);
     CGContextBeginPath(ctx);
-    CGContextMoveToPoint(ctx, cx, cy + r / 2);
-    CGContextAddLineToPoint(ctx, cx + r / 2, cy);
-    CGContextAddLineToPoint(ctx, cx, cy - r / 2);
-    CGContextAddLineToPoint(ctx, cx - r / 2, cy);
-    CGContextClosePath(ctx);
+    addOutline(0.5);
+    if (r >= kMinQuarterRingRadius) addOutline(0.25);
     CGContextStrokePath(ctx);
     CGContextRestoreGState(ctx);
 }
@@ -439,14 +456,23 @@ static NSColor *colorFromARGB(uint32_t argb) {
         const NSSize sz = [s sizeWithAttributes:attrs];
         [s drawAtPoint:NSMakePoint(x - sz.width / 2, y - sz.height / 2) withAttributes:attrs];
     };
-    // Just outside the diamond: M above the top corner, S beside the side
-    // corners, L / R off the middle of the upper edges.
     const CGFloat off = scope_layout::kLabelInset / 2.0;
-    drawCentered(@"M", cx, cy + r + off);
-    drawCentered(@"S", cx - r - off, cy);
-    drawCentered(@"S", cx + r + off, cy);
-    drawCentered(@"L", cx - r / 2 - off, cy + r / 2 + off);
-    drawCentered(@"R", cx + r / 2 + off, cy + r / 2 + off);
+    if (_lissajous) {
+        // Just outside the square, at the positive end of each axis: L on
+        // the right, R on top, M and S off the upper corners.
+        drawCentered(@"L", cx + r + off, cy);
+        drawCentered(@"R", cx, cy + r + off);
+        drawCentered(@"M", cx + r + off, cy + r + off);
+        drawCentered(@"S", cx - r - off, cy + r + off);
+    } else {
+        // Just outside the diamond: M above the top corner, S beside the side
+        // corners, L / R off the middle of the upper edges.
+        drawCentered(@"M", cx, cy + r + off);
+        drawCentered(@"S", cx - r - off, cy);
+        drawCentered(@"S", cx + r + off, cy);
+        drawCentered(@"L", cx - r / 2 - off, cy + r / 2 + off);
+        drawCentered(@"R", cx + r / 2 + off, cy + r / 2 + off);
+    }
 }
 
 - (void)drawCorrelationInContext:(CGContextRef)ctx {

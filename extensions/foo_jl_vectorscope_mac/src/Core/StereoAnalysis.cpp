@@ -31,6 +31,10 @@ void goniometerPoints(const float* lr, size_t frames, float gain, float* xy) {
     }
 }
 
+void lissajousPoints(const float* lr, size_t frames, float gain, float* xy) {
+    for (size_t i = 0; i < frames * 2; ++i) xy[i] = lr[i] * gain;
+}
+
 float blockPeak(const float* lr, size_t frames) {
     float peak = 0.0f;
     for (size_t i = 0; i < frames * 2; ++i) {
@@ -276,11 +280,12 @@ void StereoAnalyzer::process(const float* lr, size_t frames, double sampleRate, 
     }
 
     if (_settings.autoGain) _autoGain.process(blockPeak(lr, frames), (double)frames / sampleRate);
-    goniometerPoints(lr, frames, gain(), xy);
+    const auto points = _settings.lissajous ? lissajousPoints : goniometerPoints;
+    points(lr, frames, gain(), xy);
     // The bands share the broadband gain, so their sizes compare.
     _bandPoints = _settings.bandTrace;
     if (_bandPoints) {
-        for (std::vector<float>& s : _scratch) goniometerPoints(s.data(), frames, gain(), s.data());
+        for (std::vector<float>& s : _scratch) points(s.data(), frames, gain(), s.data());
     }
 }
 

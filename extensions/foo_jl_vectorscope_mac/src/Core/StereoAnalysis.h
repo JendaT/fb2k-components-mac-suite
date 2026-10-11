@@ -20,6 +20,12 @@ namespace stereo {
 // inside the diamond |x| + |y| <= 1. `xy` may be `lr` (in place).
 void goniometerPoints(const float* lr, size_t frames, float gain, float* xy);
 
+// Map interleaved L/R frames to Lissajous points: left along x, right along
+// y, so mono runs from the lower left to the upper right. It is the
+// goniometer picture turned 45 degrees and filling the square |x|, |y| <= 1
+// at gain 1. `xy` may be `lr` (in place).
+void lissajousPoints(const float* lr, size_t frames, float gain, float* xy);
+
 // Largest absolute sample in an interleaved L/R block.
 float blockPeak(const float* lr, size_t frames);
 
@@ -132,16 +138,17 @@ public:
         bool   bandTrace = false;          // also map each band to goniometer points
         double lowHz = 250.0;              // low / mid crossover
         double highHz = 2000.0;            // mid / high crossover
+        bool   lissajous = false;          // points are Lissajous instead of goniometer
         bool   autoGain = true;
         float  manualGain = 1.0f;          // used when autoGain is off
     };
 
     void configure(const Settings& settings);
 
-    // Analyse `frames` interleaved L/R frames and write their goniometer
-    // points (2 * frames floats) to `xy`.
+    // Analyse `frames` interleaved L/R frames and write their goniometer (or
+    // Lissajous) points (2 * frames floats) to `xy`.
     void process(const float* lr, size_t frames, double sampleRate, float* xy);
-    // One band's goniometer points from the last process() call (2 * frames
+    // One band's points from the last process() call (2 * frames
     // floats, same gain as `xy`); null unless Settings::bandTrace is on.
     const float* bandPoints(int band) const { return _bandPoints ? _scratch[band].data() : nullptr; }
     // Advance the meters by `seconds` with no audio.

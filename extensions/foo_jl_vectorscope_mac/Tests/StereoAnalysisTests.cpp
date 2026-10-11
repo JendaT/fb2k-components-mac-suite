@@ -89,6 +89,39 @@ void testGoniometer() {
     }
     CHECK(inside, "full-scale input stays inside the diamond");
 
+    // Lissajous: left along x, right along y.
+    lissajousPoints(lr, 5, 1.0f, xy);
+    CHECK_FLOAT_EQ(xy[0], 1.0, "Lissajous mono x");
+    CHECK_FLOAT_EQ(xy[1], 1.0, "Lissajous mono y (upper right)");
+    CHECK_FLOAT_EQ(xy[2], 1.0, "Lissajous left-only x (horizontal)");
+    CHECK_FLOAT_EQ(xy[3], 0.0, "Lissajous left-only y");
+    CHECK_FLOAT_EQ(xy[4], 0.0, "Lissajous right-only x");
+    CHECK_FLOAT_EQ(xy[5], 1.0, "Lissajous right-only y (vertical)");
+    CHECK_FLOAT_EQ(xy[6], 1.0, "Lissajous out-of-phase x");
+    CHECK_FLOAT_EQ(xy[7], -1.0, "Lissajous out-of-phase y (lower right)");
+    lissajousPoints(lr, 1, 0.5f, xy);
+    CHECK_FLOAT_EQ(xy[0], 0.5, "Lissajous gain scales the point");
+
+    // Both mappings work in place, and one is the other turned 45 degrees.
+    float gon[10], lis[10];
+    goniometerPoints(lr, 5, 1.0f, gon);
+    for (int i = 0; i < 10; ++i) lis[i] = lr[i];
+    lissajousPoints(lis, 5, 1.0f, lis);
+    bool turned = true;
+    for (int i = 0; i < 5; ++i) {
+        // Rotate the Lissajous point by +45 degrees and scale by 1/sqrt(2).
+        const float x = (lis[2 * i] - lis[2 * i + 1]) * -0.5f;
+        const float y = (lis[2 * i] + lis[2 * i + 1]) * 0.5f;
+        if (std::fabs(x - gon[2 * i]) > 1e-6f || std::fabs(y - gon[2 * i + 1]) > 1e-6f) turned = false;
+    }
+    CHECK(turned, "Lissajous is the goniometer picture turned 45 degrees");
+    float inPlace[10];
+    for (int i = 0; i < 10; ++i) inPlace[i] = lr[i];
+    goniometerPoints(inPlace, 5, 1.0f, inPlace);
+    bool same = true;
+    for (int i = 0; i < 10; ++i) if (inPlace[i] != gon[i]) same = false;
+    CHECK(same, "goniometer mapping works in place");
+
     const float pk[] = { 0.1f, -0.7f, 0.3f, 0.2f };
     CHECK_FLOAT_EQ(blockPeak(pk, 2), 0.7, "blockPeak takes the absolute maximum");
 }
@@ -356,6 +389,29 @@ void testAnalyzer() {
     CHECK(highY < 0.02, "high band is out of phase");
     CHECK(midXY < 0.02, "mid band is empty");
     CHECK(tr.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with only the band trace on");
+
+    // Lissajous style: the points, broadband and per band, are L against R.
+    traced.lissajous = true;
+    tr.configure(traced);
+    double lowDiff = 0.0, lowPeak = 0.0, highSum = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        tr.process(lr.data() + off * 2, block, kSR, xy.data());
+        if (off + block * 2 > frames) {
+            const float* low = tr.bandPoints(StereoAnalyzer::BandLow);
+            const float* high = tr.bandPoints(StereoAnalyzer::BandHigh);
+            for (size_t i = 0; i < block; ++i) {
+                lowDiff = std::max(lowDiff, (double)std::fabs(low[2 * i] - low[2 * i + 1]));
+                lowPeak = std::max(lowPeak, (double)std::fabs(low[2 * i]));
+                highSum = std::max(highSum, (double)std::fabs(high[2 * i] + high[2 * i + 1]));
+            }
+        }
+    }
+    const float* tail = lr.data() + (frames - block) * 2;
+    CHECK_FLOAT_EQ(xy[0], tail[0] * 2.0f, "Lissajous point x is the left sample");
+    CHECK_FLOAT_EQ(xy[1], tail[1] * 2.0f, "Lissajous point y is the right sample");
+    CHECK(lowPeak > 0.55 && lowPeak < 0.65, "Lissajous low band keeps the broadband gain");
+    CHECK(lowDiff < 0.03, "Lissajous low band lies on the mono diagonal");
+    CHECK(highSum < 0.03, "Lissajous high band lies on the side diagonal");
 
     // A sample-rate change mid-stream is absorbed.
     an.process(lr.data(), block, 96000.0, xy.data());
