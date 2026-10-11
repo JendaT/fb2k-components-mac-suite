@@ -13,6 +13,7 @@ namespace {
     // lets the image reach a true "empty" state and keeps floats out of
     // denormal range.
     const float kFloor = 1e-3f;
+    const float kMaxDotSize = 64.0f;
 
     // Soft shoulder: intensity is unbounded, the display saturates gently.
     inline int toneIndex(float intensity) {
@@ -108,6 +109,53 @@ inline void PhosphorBuffer::splat(float px, float py, float energy) {
     row1[1] += energy * fx * fy;
 }
 
+void PhosphorBuffer::setDotSize(float pixels) {
+    if (!(pixels > 1.0f)) pixels = 1.0f;   // also catches NaN
+    if (pixels > kMaxDotSize) pixels = kMaxDotSize;
+    if (pixels == _dotSize) return;
+    _dotSize = pixels;
+    _dotSpan = 0;
+    _dot.clear();
+    if (pixels <= 1.0f) return;
+
+    // Disc with a one-pixel soft edge, centred on the middle pixel.
+    const float radius = pixels / 2.0f;
+    const int reach = (int)std::ceil(radius);
+    const int span = 2 * reach + 1;
+    _dot.resize((size_t)span * (size_t)span);
+    float sum = 0.0f;
+    for (int y = 0; y < span; ++y) {
+        for (int x = 0; x < span; ++x) {
+            const float dx = (float)(x - reach), dy = (float)(y - reach);
+            const float w = std::min(1.0f, std::max(0.0f, radius + 0.5f - std::sqrt(dx * dx + dy * dy)));
+            _dot[(size_t)y * span + x] = w;
+            sum += w;
+        }
+    }
+    // Light grows with the diameter, not the area: a big dot stays visible
+    // on its own without a dense cloud of them burning out.
+    const float scale = pixels / sum;
+    for (float& w : _dot) w *= scale;
+    _dotSpan = span;
+}
+
+// Deposit the dot disc centred on the nearest pixel, clipped to the buffer.
+// The centre obeys the same bounds as splat().
+inline void PhosphorBuffer::stamp(float px, float py, float energy) {
+    const float limit = (float)(_side - 1);
+    if (!(px >= 0.0f && px < limit && py >= 0.0f && py < limit)) return;
+    const int reach = _dotSpan / 2;
+    const int cx = (int)(px + 0.5f);
+    const int cy = (int)(py + 0.5f);
+    const int x0 = std::max(cx - reach, 0), x1 = std::min(cx + reach, _side - 1);
+    const int y0 = std::max(cy - reach, 0), y1 = std::min(cy + reach, _side - 1);
+    for (int y = y0; y <= y1; ++y) {
+        const float* w = _dot.data() + (size_t)(y - cy + reach) * (size_t)_dotSpan + (size_t)(x0 - cx + reach);
+        float* row = _pixels.data() + (size_t)y * (size_t)_side + (size_t)x0;
+        for (int x = 0; x <= x1 - x0; ++x) row[x] += energy * w[x];
+    }
+}
+
 void PhosphorBuffer::addTrace(const float* xy, size_t points, float energy, bool connect) {
     if (_side < 2 || !(energy > 0.0f)) return;
     const float half = 0.5f * (float)(_side - 1);
@@ -124,7 +172,10 @@ void PhosphorBuffer::addTrace(const float* xy, size_t points, float energy, bool
         const float px = (x + 1.0f) * half;
         const float py = (1.0f - y) * half;   // row 0 is the top
 
-        if (!connect || !_havePrev) {
+        if (!connect) {
+            if (_dotSpan > 0) stamp(px, py, energy);
+            else splat(px, py, energy);
+        } else if (!_havePrev) {
             splat(px, py, energy);
         } else {
             const float dx = px - _prevX;

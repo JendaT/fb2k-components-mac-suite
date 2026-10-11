@@ -39,6 +39,9 @@ enum CorrelationMode {
 // --- Defaults ---
 constexpr int      kDefaultDrawMode       = DrawModeLines;
 constexpr int      kDefaultTraceColorMode = TraceColorSingle;
+constexpr int      kDefaultDotSize        = 0;       // Dot diameter in tenths of a point; 0 = auto
+constexpr int      kMinDotSize            = 10;
+constexpr int      kMaxDotSize            = 80;
 constexpr int      kDefaultPersistenceMs  = 300;     // Afterglow time constant
 constexpr int      kMinPersistenceMs      = 20;
 constexpr int      kMaxPersistenceMs      = 2000;
@@ -87,6 +90,7 @@ constexpr uint32_t kDefaultBandColorDark[kBandCount]  = { 0xFFFFB000, 0xFF33FF66
 static const char* const kConfigPrefix        = "foo_jl_vectorscope.";
 static const char* const kKeyDrawMode         = "draw_mode";
 static const char* const kKeyTraceColorMode   = "trace_color_mode";
+static const char* const kKeyDotSize          = "dot_size";
 static const char* const kKeyPersistenceMs    = "persistence_ms";
 static const char* const kKeyBrightness       = "brightness";
 static const char* const kKeyAutoGain         = "auto_gain";

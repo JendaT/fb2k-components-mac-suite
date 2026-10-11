@@ -194,6 +194,17 @@ void testBadInput() {
     CHECK(layout(panel(0, 0, MeterAuto)).meter.empty(), "empty panel has no meter");
 }
 
+void testDotSize() {
+    g_context = "dot size";
+    CHECK_FLOAT_EQ(dotSize(3.5, 100.0), 3.5, "a set size is used as is");
+    CHECK_FLOAT_EQ(dotSize(3.5, 2000.0), 3.5, "whatever the scope size");
+    CHECK_FLOAT_EQ(dotSize(0.0, 100.0), 1.0, "auto: small scopes get one-point dots");
+    CHECK_FLOAT_EQ(dotSize(0.0, 400.0), 1.0, "auto: still one point at a medium scope");
+    CHECK_FLOAT_EQ(dotSize(0.0, 600.0), 1.5, "auto: grows with the scope");
+    CHECK_FLOAT_EQ(dotSize(0.0, 5000.0), 2.5, "auto: capped for huge scopes");
+    CHECK_FLOAT_EQ(dotSize(-1.0, 600.0), 1.5, "a negative size means auto");
+}
+
 // Nothing overlaps or leaves the panel, whatever the size and settings.
 void testInvariants() {
     g_context = "invariants";
@@ -256,6 +267,7 @@ int main() {
     testAuto();
     testSmallPanels();
     testBadInput();
+    testDotSize();
     testInvariants();
     TEST_MAIN_END();
 }
