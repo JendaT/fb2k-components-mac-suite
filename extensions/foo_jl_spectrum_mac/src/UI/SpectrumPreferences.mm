@@ -575,8 +575,7 @@
 }
 
 - (void)slopeChanged:(id)sender {
-    int v = (int)std::lround(_slopeSlider.doubleValue / 5.0) * 5;   // 0.5 dB/oct steps
-    _slopeSlider.integerValue = v;
+    int v = (int)std::lround(_slopeSlider.doubleValue);   // 0.1 dB/oct steps
     spectrum_config::setConfigInt(spectrum_config::kKeySlopeTenths, v);
     _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", v / 10.0];
     [self notifyChanged];
