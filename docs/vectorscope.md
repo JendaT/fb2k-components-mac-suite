@@ -18,7 +18,7 @@ Every stereo sample is plotted as a point: the vertical axis is mid (L+R), the h
 
 The diamond marks full scale at 0 dB gain; the dashed inner diamonds are half scale (-6 dB) and, on scopes large enough, quarter scale (-12 dB).
 
-![Vectorscope beside the Spectrum Analyzer](images/vectorscope-overview.png)
+![Vectorscope beside the Spectrum Analyzer, with band colors and the correlation meter on the right](images/vectorscope-overview.png)
 
 ### Lissajous
 
@@ -40,6 +40,10 @@ Dot size is adjustable. Auto keeps dots one point across on small scopes and gro
 ### Band Colors
 
 Optionally the trace is split into low, mid, and high bands, each drawn in its own color, so the picture shows where in the spectrum the width or the phase trouble sits. Where bands overlap the colors mix by brightness. The bands use the same crossovers as the three-band correlation meter, and with both on, the meter's bars take the band colors.
+
+![Band-colored trace with the three-band meter beside the scope](images/vectorscope-bands.png)
+
+In this example the wide low band (amber) surrounds a narrow core of mid and high content, and all three bands read in phase.
 
 ### Gain
 
@@ -66,7 +70,7 @@ Optionally the meter splits into low, mid, and high bars with adjustable crossov
 
 ![Vectorscope with three-band correlation](images/vectorscope-panel.png)
 
-In this example the low and high bands are in phase while the mid band reads slightly negative.
+In this example, with the meter below the scope and a single-color trace, the low and high bands are in phase while the mid band reads slightly negative.
 
 ### Grid
 
