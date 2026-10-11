@@ -78,13 +78,16 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 
 Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation stream.
 
-| Overview | Settings |
-|----------|----------|
-| ![Spectrum Analyzer](docs/images/spectrum-overview.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
+| Curve with color bars | Bars | Settings |
+|-----------------------|------|----------|
+| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png) | ![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
 
 **Features:**
-- Bars or filled curve display, horizontal or vertical orientation
-- Logarithmic or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
+- Bars or curve display, horizontal or vertical orientation
+- Curve styles: filled, line, color bars (stripes that brighten where a frequency is louder), or line + color bars
+- Logarithmic, compact-bass logarithmic or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
+- Attack/decay or RMS-average smoothing, plus an optional spectral slope (0–6 dB/octave)
+- Full-screen view via double-click or the context menu
 - Falling peak line and slow-decaying shadow fill
 - dB guides and frequency gridlines with adjustable opacity
 - Bar styles (solid, gradient, spectrum hue) and color presets (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, ...) with separate light/dark colors and optional glass background
