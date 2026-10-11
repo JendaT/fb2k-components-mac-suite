@@ -26,9 +26,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)reloadSettings;
 
 // Advance the afterglow by `dt` seconds and add `count` goniometer points
-// (interleaved x/y, -1..1, y up; may be 0 with a NULL pointer).
+// (interleaved x/y, -1..1, y up; may be 0 with a NULL pointer). `bands`
+// holds the same points split into low / mid / high and is drawn instead of
+// `xy` when the trace is coloured by band.
 // Returns NO once the trace has fully faded and nothing is left to animate.
 - (BOOL)advanceTrace:(nullable const float *)xy
+               bands:(const float * _Nullable const * _Nullable)bands
                count:(NSInteger)count
           sampleRate:(double)sampleRate
            deltaTime:(double)dt;

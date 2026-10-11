@@ -25,7 +25,8 @@ namespace {
 }
 
 @implementation VectorscopeView {
-    PhosphorBuffer _phosphor;
+    // One afterglow layer, or one per band when the trace is coloured by band.
+    PhosphorBuffer _phosphor[kPhosphorBands];
     uint32_t _lut[256];
     bool     _lutDirty;
     bool     _traceEmpty;
@@ -34,6 +35,7 @@ namespace {
 
     // Cached settings (refreshed via reloadSettings)
     bool     _connect;
+    bool     _bandTrace;     // trace coloured by band
     double   _persistence;   // seconds
     float    _brightness;    // energy multiplier
     bool     _showCorrelation;
@@ -46,6 +48,7 @@ namespace {
     bool     _glass;
     uint32_t _traceColorLight, _bgColorLight, _gridColorLight;
     uint32_t _traceColorDark,  _bgColorDark,  _gridColorDark;
+    uint32_t _bandColorLight[kPhosphorBands], _bandColorDark[kPhosphorBands];
 
     // Layout (recomputed on resize / settings change)
     scope_layout::Result _layout;
@@ -94,6 +97,14 @@ namespace {
 - (void)reloadSettings {
     using namespace vectorscope_config;
     _connect      = getConfigInt(kKeyDrawMode, kDefaultDrawMode) != DrawModeDots;
+    const bool bandTrace = getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode) == TraceColorBands;
+    if (bandTrace != _bandTrace) {
+        // The layers mean something else now; drop them (and their memory).
+        for (PhosphorBuffer &layer : _phosphor) layer = PhosphorBuffer();
+        _bandTrace = bandTrace;
+        _traceEmpty = true;
+        _traceLayer.contents = nil;
+    }
     _persistence  = getConfigIntClamped(kKeyPersistenceMs, kDefaultPersistenceMs,
                                         kMinPersistenceMs, kMaxPersistenceMs) / 1000.0;
     // 0-100 slider -> 0.1x .. 4x, exponential so each step looks even.
@@ -112,6 +123,10 @@ namespace {
     _traceColorDark  = (uint32_t)getConfigInt(kKeyTraceColorDark, kDefaultTraceColorDark);
     _bgColorDark     = (uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark);
     _gridColorDark   = (uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
+    for (int b = 0; b < kPhosphorBands; ++b) {
+        _bandColorLight[b] = (uint32_t)getConfigInt(kKeyBandColorLight[b], kDefaultBandColorLight[b]);
+        _bandColorDark[b]  = (uint32_t)getConfigInt(kKeyBandColorDark[b], kDefaultBandColorDark[b]);
+    }
     _lutDirty = true;
     [self updateLayout];
     [self setNeedsDisplay:YES];
@@ -120,6 +135,8 @@ namespace {
 #pragma mark - Layout
 
 - (NSInteger)rowCount { return _bandMode ? 3 : 1; }
+
+- (int)layerCount { return _bandTrace ? kPhosphorBands : 1; }
 
 - (void)updateLayout {
     const NSRect b = self.bounds;
@@ -148,8 +165,8 @@ namespace {
         const CGFloat scale = self.window ? self.window.backingScaleFactor : 2.0;
         NSInteger px = (NSInteger)std::lround(_plotRect.size.width * scale / kTraceStep) * kTraceStep;
         px = std::max(kTraceMinSide, std::min(px, kTraceMaxSide));
-        if (px != _phosphor.side()) {
-            _phosphor.resize((int)px);
+        if (px != _phosphor[0].side()) {
+            for (int i = 0; i < [self layerCount]; ++i) _phosphor[i].resize((int)px);
             _traceEmpty = true;
             _traceLayer.contents = nil;
         }
@@ -186,6 +203,10 @@ static NSColor *colorFromARGB(uint32_t argb) {
     return fb2k_ui::isDarkMode() ? _traceColorDark : _traceColorLight;
 }
 
+- (const uint32_t *)bandARGB {
+    return fb2k_ui::isDarkMode() ? _bandColorDark : _bandColorLight;
+}
+
 - (NSColor *)traceColor { return colorFromARGB([self traceARGB]); }
 
 - (NSColor *)bgColor {
@@ -218,24 +239,33 @@ static NSColor *colorFromARGB(uint32_t argb) {
 #pragma mark - Trace
 
 - (BOOL)advanceTrace:(const float *)xy
+               bands:(const float * const *)bands
                count:(NSInteger)count
           sampleRate:(double)sampleRate
            deltaTime:(double)dt {
     [self easeBars:dt];
 
-    if (NSIsEmptyRect(_plotRect) || _phosphor.side() < kTraceMinSide) return NO;
-    if (!xy || sampleRate <= 0) count = 0;
+    if (NSIsEmptyRect(_plotRect) || _phosphor[0].side() < kTraceMinSide) return NO;
+    const int layers = [self layerCount];
+    const float *points[kPhosphorBands] = { xy, NULL, NULL };
+    if (_bandTrace) {
+        for (int i = 0; i < layers; ++i) points[i] = bands ? bands[i] : NULL;
+    }
+    for (int i = 0; i < layers; ++i) if (!points[i]) count = 0;
+    if (sampleRate <= 0) count = 0;
     if (count <= 0 && _traceEmpty) return NO;
 
-    const float remaining = _phosphor.decay((float)std::exp(-std::max(dt, 0.0) / _persistence));
-    if (count > 0) {
-        // Energy per sample, normalised so brightness does not depend on the
-        // sample rate or the afterglow time, and only mildly on panel size.
-        const double side = _phosphor.side();
-        const float energy = (float)(_brightness * 2.0 * side * std::sqrt(side) / (sampleRate * _persistence));
-        _phosphor.addTrace(xy, (size_t)count, energy, _connect);
-    } else {
-        _phosphor.breakTrace();
+    const float keep = (float)std::exp(-std::max(dt, 0.0) / _persistence);
+    // Energy per sample, normalised so brightness does not depend on the
+    // sample rate or the afterglow time, and only mildly on panel size.
+    const double side = _phosphor[0].side();
+    const float energy = count > 0
+        ? (float)(_brightness * 2.0 * side * std::sqrt(side) / (sampleRate * _persistence)) : 0.0f;
+    float remaining = 0.0f;
+    for (int i = 0; i < layers; ++i) {
+        remaining = std::max(remaining, _phosphor[i].decay(keep));
+        if (count > 0) _phosphor[i].addTrace(points[i], (size_t)count, energy, _connect);
+        else _phosphor[i].breakTrace();
     }
     _traceEmpty = (count <= 0 && remaining <= 0.0f);
 
@@ -248,16 +278,21 @@ static NSColor *colorFromARGB(uint32_t argb) {
         _traceLayer.contents = nil;
         return;
     }
+    // The white-hot core only reads as "brighter" on a dark background.
+    const bool hotCore = fb2k_ui::isDarkMode();
     if (_lutDirty) {
-        // The white-hot core only reads as "brighter" on a dark background.
-        buildPhosphorLUT([self traceARGB], fb2k_ui::isDarkMode(), _lut);
+        buildPhosphorLUT([self traceARGB], hotCore, _lut);
         _lutDirty = false;
     }
 
-    const size_t side = (size_t)_phosphor.side();
+    const size_t side = (size_t)_phosphor[0].side();
     NSMutableData *pixels = [NSMutableData dataWithLength:side * side * 4];
     if (!pixels) return;
-    _phosphor.render((uint8_t *)pixels.mutableBytes, _lut);
+    if (_bandTrace) {
+        renderPhosphorBands(_phosphor, [self bandARGB], hotCore, (uint8_t *)pixels.mutableBytes);
+    } else {
+        _phosphor[0].render((uint8_t *)pixels.mutableBytes, _lut);
+    }
 
     CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
     CGImageRef image = CGImageCreate(side, side, 8, 32, side * 4, _colorSpace,
@@ -270,7 +305,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
 }
 
 - (void)clearTrace {
-    _phosphor.clear();
+    for (PhosphorBuffer &layer : _phosphor) layer.clear();
     _traceEmpty = true;
     _traceLayer.contents = nil;
     for (int i = 0; i < kMaxRows; ++i) {
@@ -397,6 +432,9 @@ static NSColor *colorFromARGB(uint32_t argb) {
     NSDictionary *attrs = [self labelAttrs];
 
     NSColor *track = [[self gridColor] colorWithAlphaComponent:0.30];
+    // Band bars take the band colours of a band-coloured trace, so the meter
+    // doubles as its legend.
+    const bool bandColors = _bandTrace && _bandMode;
     NSColor *positive = [self traceColor];
     NSColor *negative = [NSColor systemRedColor];
     NSColor *tick = [[self gridColor] colorWithAlphaComponent:0.9];
@@ -428,6 +466,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
         const float v = _shown[i];
         if (!_shownSilent[i]) {
             const CGFloat p = mid + v * half;
+            if (bandColors) positive = colorFromARGB([self bandARGB][i]);
             CGContextSetFillColorWithColor(ctx, (v >= 0 ? positive : negative).CGColor);
             CGContextFillRect(ctx, slice(std::min(mid, p), std::fabs(p - mid), 0.0));
             // Cursor stays visible when the reading sits at the centre.

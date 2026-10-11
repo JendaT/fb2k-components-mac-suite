@@ -8,7 +8,9 @@
 #include "TestHarness.h"
 #include "../src/Core/PhosphorBuffer.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -239,6 +241,88 @@ void testRender() {
     CHECK_EQ(std::memcmp(&rgba[0], &lut[0], 4), 0, "every pixel is written");
 }
 
+// Three band buffers drawn as one band-coloured image.
+void testBands() {
+    g_context = "bands";
+    const uint32_t colours[kPhosphorBands] = { 0xFFFFB000, 0xFF33FF66, 0x804DA3F0 };
+    const int side = 9;
+    const size_t n = (size_t)side * side;
+    auto pixel = [&](const std::vector<uint8_t>& img, int col, int row) { return &img[((size_t)row * side + col) * 4]; };
+    // One dot per call; the buffer maps x, y in -1..1 onto 0..8 (row 0 on top).
+    auto dot = [](PhosphorBuffer& b, float x, float y, float energy) {
+        const float xy[] = { x, y };
+        b.addTrace(xy, 1, energy, false);
+        b.breakTrace();
+    };
+
+    for (int hot = 0; hot <= 1; ++hot) {
+        PhosphorBuffer bands[kPhosphorBands];
+        for (PhosphorBuffer& b : bands) b.resize(side);
+
+        std::vector<uint8_t> img(n * 4, 0xAB);
+        renderPhosphorBands(bands, colours, hot != 0, img.data());
+        bool clear = true;
+        for (uint8_t v : img) if (v != 0) clear = false;
+        CHECK(clear, "empty bands give a transparent image");
+
+        // A band alone looks exactly like a single-colour trace of its colour,
+        // at every brightness.
+        const float energies[] = { 0.02f, 0.3f, 1.0f, 4.0f, 60.0f, 1e9f };
+        for (int b = 0; b < kPhosphorBands; ++b) {
+            uint32_t lut[256];
+            buildPhosphorLUT(colours[b], hot != 0, lut);
+            for (PhosphorBuffer& band : bands) band.clear();
+            for (int e = 0; e < 6; ++e) dot(bands[b], -1.0f + 0.25f * (float)e, 0.5f, energies[e]);
+            std::vector<uint8_t> alone(n * 4), reference(n * 4);
+            renderPhosphorBands(bands, colours, hot != 0, alone.data());
+            bands[b].render(reference.data(), lut);
+            int worst = 0;
+            for (size_t i = 0; i < n * 4; ++i) worst = std::max(worst, std::abs((int)alone[i] - (int)reference[i]));
+            CHECK(worst <= 1, "a band alone matches a single-colour render");
+        }
+    }
+
+    // Overlap: low and mid on the same pixel, high elsewhere.
+    PhosphorBuffer bands[kPhosphorBands];
+    for (PhosphorBuffer& b : bands) b.resize(side);
+    dot(bands[0], 0.0f, 0.0f, 1.0f);    // centre pixel (4, 4), half intensity
+    dot(bands[1], 0.0f, 0.0f, 1.0f);
+    dot(bands[2], 0.5f, 0.0f, 1.0f);    // pixel (6, 4)
+    std::vector<uint8_t> img(n * 4);
+    renderPhosphorBands(bands, colours, false, img.data());
+
+    const uint8_t* both = pixel(img, 4, 4);
+    CHECK_EQ(both[3], 192, "two half-lit bands build up to three quarters");
+    // Even mix of amber (FF B0 00) and green (33 FF 66), premultiplied by 0.75.
+    CHECK(std::abs((int)both[0] - 115) <= 1, "overlap mixes the colours evenly (R)");
+    CHECK(std::abs((int)both[1] - 162) <= 1, "overlap mixes the colours evenly (G)");
+    CHECK(std::abs((int)both[2] - 38) <= 1, "overlap mixes the colours evenly (B)");
+
+    const uint8_t* high = pixel(img, 6, 4);
+    CHECK_EQ(high[3], 64, "a half-transparent colour halves the opacity");
+    CHECK(high[2] > high[0] && high[2] > high[1], "the high band keeps its hue");
+    CHECK_EQ(pixel(img, 1, 1)[3], 0, "unlit pixels stay transparent");
+
+    // A brighter band dominates the mix.
+    dot(bands[1], 0.0f, 0.0f, 30.0f);
+    renderPhosphorBands(bands, colours, false, img.data());
+    CHECK(both[1] > both[0] + 60, "the brighter band dominates the colour");
+
+    bool premultiplied = true;
+    renderPhosphorBands(bands, colours, true, img.data());
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* px = &img[i * 4];
+        if (px[0] > px[3] || px[1] > px[3] || px[2] > px[3]) premultiplied = false;
+    }
+    CHECK(premultiplied, "colour never exceeds alpha (premultiplied)");
+
+    // Mismatched sizes (mid-resize) must not read out of bounds.
+    bands[1].resize(5);
+    std::vector<uint8_t> small(n * 4, 0);
+    renderPhosphorBands(bands, colours, true, small.data());
+    CHECK(true, "mismatched band sizes are tolerated");
+}
+
 } // namespace
 
 int main() {
@@ -247,5 +331,6 @@ int main() {
     testBadInput();
     testDecay();
     testRender();
+    testBands();
     TEST_MAIN_END();
 }

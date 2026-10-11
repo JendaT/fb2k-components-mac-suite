@@ -147,6 +147,7 @@ FB2K_SERVICE_FACTORY(vectorscope_initquit);
     // The band meters only run while their bars are on screen.
     s.multiband  = getConfigBool(kKeyShowCorrelation, kDefaultShowCorrelation) &&
                    getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode) == CorrelationBands;
+    s.bandTrace  = getConfigInt(kKeyTraceColorMode, kDefaultTraceColorMode) == TraceColorBands;
     s.lowHz      = getConfigIntClamped(kKeyLowHz, kDefaultLowHz, kMinLowHz, kMaxLowHz);
     s.highHz     = getConfigIntClamped(kKeyHighHz, kDefaultHighHz, kMinHighHz, kMaxHighHz);
     s.autoGain   = getConfigBool(kKeyAutoGain, kDefaultAutoGain);
@@ -232,7 +233,12 @@ FB2K_SERVICE_FACTORY(vectorscope_initquit);
                                 silent:_analyzer->silent()
                                  bands:bands
                            bandsSilent:bandsSilent];
+        const float *bandXY[stereo::StereoAnalyzer::BandCount];
+        for (int b = 0; b < stereo::StereoAnalyzer::BandCount; ++b) {
+            bandXY[b] = frames > 0 ? _analyzer->bandPoints(b) : NULL;
+        }
         [self.scopeView advanceTrace:(frames > 0 ? _xy.data() : NULL)
+                               bands:bandXY
                                count:(NSInteger)frames
                           sampleRate:sampleRate
                            deltaTime:dt];
