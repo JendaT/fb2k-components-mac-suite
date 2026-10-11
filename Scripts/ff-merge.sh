@@ -21,6 +21,7 @@ if [ -z "$COMPONENT" ]; then
     echo "Components: simplaylist plorg scrobble waveform albumart"
     echo "            queue-manager biography cloud-streamer playback-controls"
     echo "            spectrum"
+    echo "            spectrogram"
     exit 1
 fi
 
