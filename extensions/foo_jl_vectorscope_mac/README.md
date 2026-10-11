@@ -75,6 +75,7 @@ foo_jl_vectorscope_mac/
 │   ├── Core/
 │   │   ├── StereoAnalysis.h/cpp       # Goniometer mapping, correlation, band split, auto gain (pure C++)
 │   │   ├── PhosphorBuffer.h/cpp       # Afterglow intensity buffer and color table (pure C++)
+│   │   ├── ScopeLayout.h              # Scope and correlation meter geometry (pure C++)
 │   │   ├── VectorscopeConfig.h        # Config keys, enums, defaults, configStore accessors
 │   │   └── VectorscopeThemes.h        # Color theme presets
 │   ├── UI/
@@ -89,6 +90,7 @@ foo_jl_vectorscope_mac/
 ├── Tests/
 │   ├── StereoAnalysisTests.cpp
 │   ├── PhosphorBufferTests.cpp
+│   ├── ScopeLayoutTests.cpp
 │   └── TestHarness.h
 ├── Resources/
 │   └── Info.plist
@@ -99,7 +101,7 @@ foo_jl_vectorscope_mac/
 ## Technical Details
 
 - Samples come from `visualisation_stream_v2::get_chunk_absolute`; each frame reads the audio played since the previous frame.
-- `StereoAnalysis` and `PhosphorBuffer` have no SDK or Cocoa dependency and are unit-tested standalone; the tests gate the build.
+- `StereoAnalysis`, `PhosphorBuffer`, and `ScopeLayout` have no SDK or Cocoa dependency and are unit-tested standalone; the tests gate the build.
 - The trace is a CPU intensity buffer (faded and added to each frame), color-mapped and shown as a layer image above the Core Graphics grid.
 - A 60 fps `NSTimer` drives the view; it pauses when the view is hidden and the stream is released so the core can stop the visualisation backend.
 - An `initquit` service releases all live streams before service teardown; holding a stream through shutdown aborts the app.

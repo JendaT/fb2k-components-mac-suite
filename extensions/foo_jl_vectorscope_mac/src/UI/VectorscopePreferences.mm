@@ -27,6 +27,9 @@
     NSTextField   *_gainLabel;
     NSButton      *_correlationCheckbox;
     NSPopUpButton *_correlationModePopup;
+    NSPopUpButton *_meterPositionPopup;
+    NSSlider      *_barThicknessSlider;
+    NSTextField   *_barThicknessLabel;
     NSSlider      *_integrationSlider;
     NSTextField   *_integrationLabel;
     NSTextField   *_lowHzField;
@@ -55,7 +58,7 @@
 - (NSString *)preferencesTitle { return @"Vectorscope"; }
 
 - (void)loadView {
-    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 640)];
+    VectorscopeFlippedView *view = [[VectorscopeFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 700)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -138,6 +141,27 @@
     [self.view addSubview:_correlationModePopup];
     y += 30;
 
+    // Item order matches scope_layout::MeterPosition.
+    [self.view addSubview:[self label:@"Position:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _meterPositionPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 160, 25)];
+    [_meterPositionPopup addItemWithTitle:@"Auto"];
+    [_meterPositionPopup addItemWithTitle:@"Bottom"];
+    [_meterPositionPopup addItemWithTitle:@"Top"];
+    [_meterPositionPopup addItemWithTitle:@"Left"];
+    [_meterPositionPopup addItemWithTitle:@"Right"];
+    _meterPositionPopup.toolTip = @"Auto puts the meter below or to the right, whichever leaves the larger scope";
+    _meterPositionPopup.target = self; _meterPositionPopup.action = @selector(meterPositionChanged:);
+    [self.view addSubview:_meterPositionPopup];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Bar thickness:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _barThicknessSlider = [self sliderAt:NSMakePoint(controlX, y) min:kMinBarThickness max:kMaxBarThickness
+                                  action:@selector(barThicknessChanged:)];
+    [self.view addSubview:_barThicknessSlider];
+    _barThicknessLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_barThicknessLabel];
+    y += 30;
+
     [self.view addSubview:[self label:@"Response time:" at:NSMakePoint(labelX + 10, y + 3)]];
     _integrationSlider = [self sliderAt:NSMakePoint(controlX, y) min:kMinIntegrationMs max:kMaxIntegrationMs
                                  action:@selector(integrationChanged:)];
@@ -183,7 +207,7 @@
     y += 26;
 
     _labelsCheckbox = [self checkbox:@"Show labels" at:NSMakePoint(labelX + 10, y)];
-    _labelsCheckbox.toolTip = @"L / R / M / S around the scope and the scale under the correlation meter";
+    _labelsCheckbox.toolTip = @"L / R / M / S around the scope and the correlation meter's scale and readouts";
     [self.view addSubview:_labelsCheckbox];
     y += 26;
 
@@ -284,6 +308,7 @@
 
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
     [self selectIndexPopup:_correlationModePopup index:getConfigInt(kKeyCorrelationMode, kDefaultCorrelationMode)];
+    [self selectIndexPopup:_meterPositionPopup index:getConfigInt(kKeyMeterPosition, kDefaultMeterPosition)];
 
     int persistence = getConfigIntClamped(kKeyPersistenceMs, kDefaultPersistenceMs, kMinPersistenceMs, kMaxPersistenceMs);
     _persistenceSlider.integerValue = persistence;
@@ -300,6 +325,10 @@
     int integration = getConfigIntClamped(kKeyIntegrationMs, kDefaultIntegrationMs, kMinIntegrationMs, kMaxIntegrationMs);
     _integrationSlider.integerValue = integration;
     _integrationLabel.stringValue = [NSString stringWithFormat:@"%dms", integration];
+
+    int thickness = getConfigIntClamped(kKeyBarThickness, kDefaultBarThickness, kMinBarThickness, kMaxBarThickness);
+    _barThicknessSlider.integerValue = thickness;
+    _barThicknessLabel.stringValue = [NSString stringWithFormat:@"%dpt", thickness];
 
     _lowHzField.integerValue = getConfigIntClamped(kKeyLowHz, kDefaultLowHz, kMinLowHz, kMaxLowHz);
     _highHzField.integerValue = getConfigIntClamped(kKeyHighHz, kDefaultHighHz, kMinHighHz, kMaxHighHz);
@@ -340,6 +369,8 @@
     const BOOL corr = _correlationCheckbox.state == NSControlStateValueOn;
     const BOOL bands = corr && _correlationModePopup.indexOfSelectedItem == vectorscope_config::CorrelationBands;
     _correlationModePopup.enabled = corr;
+    _meterPositionPopup.enabled = corr;
+    _barThicknessSlider.enabled = corr;
     _integrationSlider.enabled = corr;
     _lowHzField.enabled = bands;
     _highHzField.enabled = bands;
@@ -404,6 +435,18 @@
 - (void)correlationModeChanged:(id)sender {
     vectorscope_config::setConfigInt(vectorscope_config::kKeyCorrelationMode, _correlationModePopup.indexOfSelectedItem);
     [self updateEnabledStates];
+    [self notifyChanged];
+}
+
+- (void)meterPositionChanged:(id)sender {
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyMeterPosition, _meterPositionPopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
+- (void)barThicknessChanged:(id)sender {
+    int v = (int)_barThicknessSlider.integerValue;
+    vectorscope_config::setConfigInt(vectorscope_config::kKeyBarThickness, v);
+    _barThicknessLabel.stringValue = [NSString stringWithFormat:@"%dpt", v];
     [self notifyChanged];
 }
 
