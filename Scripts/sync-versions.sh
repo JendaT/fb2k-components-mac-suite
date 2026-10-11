@@ -22,6 +22,7 @@ VERSION_MAP=(
     [queue_manager]="QUEUE_MANAGER_VERSION"
     [scrobble]="SCROBBLE_VERSION"
     [spectrum]="SPECTRUM_VERSION"
+    [spectrogram]="SPECTROGRAM_VERSION"
 )
 
 typeset -A DISPLAY_MAP
@@ -33,6 +34,7 @@ DISPLAY_MAP=(
     [queue_manager]="Queue Manager"
     [scrobble]="Last.fm Scrobbler"
     [spectrum]="Spectrum Analyzer"
+    [spectrogram]="Spectrogram"
 )
 
 echo "=== Syncing versions from version.h to README.md ==="
