@@ -53,8 +53,12 @@ extern NSNotificationName const ScrobbleCacheDidChangeNotification;
 /// Load cache from disk
 - (void)loadFromDisk;
 
-/// Save cache to disk
+/// Save cache to disk (asynchronous)
 - (void)saveToDisk;
+
+/// Save cache to disk before returning. For shutdown, where an asynchronous
+/// save would not finish before the process exits.
+- (void)saveToDiskNow;
 
 #pragma mark - Duplicate Prevention
 

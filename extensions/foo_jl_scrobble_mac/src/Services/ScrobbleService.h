@@ -59,6 +59,13 @@ extern NSNotificationName const ScrobbleServiceDidFailNotification;
 /// Queue a track for scrobbling
 - (void)queueTrack:(ScrobbleTrack*)track;
 
+/// Queue a track and write the queue to disk before returning, without
+/// submitting it. For playback stopping at shutdown: queueTrack: submits
+/// asynchronously, which does not finish before the process exits, and a
+/// track already handed to a submission is not part of the saved queue.
+/// The track is submitted on the next launch. Safe to call from any thread.
+- (void)queueTrackForShutdown:(ScrobbleTrack*)track;
+
 /// Process pending queue now (if possible)
 - (void)processQueue;
 

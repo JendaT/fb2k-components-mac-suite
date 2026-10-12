@@ -13,11 +13,33 @@
 @interface ScrobbleCache ()
 @property (nonatomic, strong) ScrobbleQueueModel* queueModel;
 @property (nonatomic, strong) dispatch_queue_t syncQueue;
+// Serial, so an older snapshot can never be written over a newer one
+@property (nonatomic, strong) dispatch_queue_t writeQueue;
 @property (nonatomic, copy) NSString* cachedFilePath;
 @property (nonatomic, strong, nullable) NSTimer* saveDebouncTimer;
 @end
 
 @implementation ScrobbleCache
+
+/// Write the pending queue to `path`, or delete the file when it is empty.
+static void WritePendingTracks(NSArray* toSave, NSString* path) {
+    if (toSave.count == 0) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        return;
+    }
+
+    @try {
+        NSError* error = nil;
+        NSData* data = [NSKeyedArchiver archivedDataWithRootObject:toSave
+                                             requiringSecureCoding:YES
+                                                             error:&error];
+        if (data && !error) {
+            [data writeToFile:path atomically:YES];
+        }
+    } @catch (NSException* exception) {
+        // Archive/write failure - will retry on next change
+    }
+}
 
 #pragma mark - Singleton
 
@@ -35,6 +57,7 @@
     if (self) {
         _queueModel = [[ScrobbleQueueModel alloc] init];
         _syncQueue = dispatch_queue_create("com.foobar2000.foo_scrobble.cache", DISPATCH_QUEUE_SERIAL);
+        _writeQueue = dispatch_queue_create("com.foobar2000.foo_scrobble.cache.write", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -193,29 +216,29 @@
 }
 
 - (void)saveToDisk {
-    // Snapshot and write without blocking main thread
+    // Snapshot and write without blocking main thread. The write is queued
+    // from inside the snapshot block, so writes run in snapshot order.
     dispatch_async(_syncQueue, ^{
         NSArray* toSave = self.queueModel.pendingTracks;
         NSString* path = [self cacheFilePath];
 
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            if (toSave.count == 0) {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-                return;
-            }
-
-            @try {
-                NSError* error = nil;
-                NSData* data = [NSKeyedArchiver archivedDataWithRootObject:toSave
-                                                     requiringSecureCoding:YES
-                                                                     error:&error];
-                if (data && !error) {
-                    [data writeToFile:path atomically:YES];
-                }
-            } @catch (NSException* exception) {
-                // Archive/write failure - will retry on next change
-            }
+        dispatch_async(self.writeQueue, ^{
+            WritePendingTracks(toSave, path);
         });
+    });
+}
+
+- (void)saveToDiskNow {
+    __block NSArray* toSave = nil;
+    __block NSString* path = nil;
+    dispatch_sync(_syncQueue, ^{
+        toSave = self.queueModel.pendingTracks;
+        path = [self cacheFilePath];
+    });
+
+    // Behind any write already queued, which holds an older snapshot
+    dispatch_sync(_writeQueue, ^{
+        WritePendingTracks(toSave, path);
     });
 }
 

@@ -111,7 +111,13 @@ public:
                 scrobble::PlaybackDecision decision = m_tracker.onStop(startingAnother);
 
                 if (decision.scrobble && m_currentTrack) {
-                    queueScrobble(m_currentTrack, decision.timestamp);
+                    if (reason == play_control::stop_reason_shutting_down) {
+                        // queueScrobble() hands off to the main queue, which
+                        // does not run again before the process exits.
+                        queueScrobbleForShutdown(m_currentTrack, decision.timestamp);
+                    } else {
+                        queueScrobble(m_currentTrack, decision.timestamp);
+                    }
                 }
 
                 if (!startingAnother) {
@@ -190,6 +196,13 @@ private:
         dispatch_async(dispatch_get_main_queue(), ^{
             [[ScrobbleService shared] queueTrack:copy];
         });
+    }
+
+    /// Queue and persist synchronously; submitted on the next launch.
+    void queueScrobbleForShutdown(ScrobbleTrack* track, int64_t timestamp) {
+        track.timestamp = timestamp;
+        console::info("[Scrobble] Saving scrobble at shutdown");
+        [[ScrobbleService shared] queueTrackForShutdown:[track copy]];
     }
 
     /// Extract track info from foobar2000 metadb handle
