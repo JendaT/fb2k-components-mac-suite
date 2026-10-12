@@ -27,46 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
-### [1.6.0] - 2026-08-23
+### [1.6.0] - 2026-10-12
 
-Adds the Sort submenu, plus a large bug-fix pass: five ways of silently losing
-settings, two ways of hanging the app, and the misplaced drag indicator.
+Sort and Remove in the right-click menu, album list drops, and a large bug-fix pass. Requires macOS 12.
 
 #### Added
-- **Sort submenu**: Right-click menu now has Sort (by disc and track number, Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
+- **Sort submenu**: Right-click Sort by disc and track number, Sort by..., Randomize, Reverse, or by album/artist/path/title/track number; selection-only when 2+ tracks are selected (#20)
+- **Remove**: Right-click Remove deletes the selected tracks (thanks @Scannou, #34)
+- **Drops from the album list**: Inserted in album list order with exact subsongs (thanks @alies-dev, #38)
 
 #### Fixed
-- Dragging tracks or folders from the album list into the playlist did nothing
-- Dropped files whose path contained a space could fail with "Access denied" (scheme-less file URL was imported percent-encoded)
-- Dropped Various Artists albums no longer scatter alphabetically by performer (compilations sort by disc/track when their album artists disagree)
-- Renaming a custom column no longer gets undone by the next column resize and then deleted on the following launch
-- A hiccup registering another component's columns no longer wipes columns from the saved layout
-- Clearing the subgroup pattern no longer discards the other subgroups a preset defines
-- Preferences no longer silently discards edits when the stored preset index is out of range
-- Deleting or reordering playlists no longer saves scroll positions and group data under another playlist's name, or applies a drag reorder to the wrong playlist
-- Delete/Backspace with an empty selection hung the app
-- An oversized cover was re-decoded on every redraw across four threads for as long as it was on screen
-- Album art is capped by memory (256 MB) as well as image count; it could previously reach ~1 GB
-- Switching grouping preset did nothing until an unrelated pattern field was edited
-- **Preset and display size at launch**: Chosen preset and row size now apply on startup instead of falling back to the first preset and 22 pt rows
-- **Glass background toggle**: No longer blanks the panel until restart
-- Custom column changes required a restart
-- Toggling either subgroup option reused the layout cached under the old setting
-- Typing a grouping pattern was sluggish; leaving the field rebuilt the playlist twice
-- **Drop scroll jump**: Dropping a track after scrolling far within a playlist no longer jumps the view back to an earlier position
-- Drop indicator sat up to 150 px below the cursor in grouped playlists, and the drop landed where the line was drawn
-- Home/End jumped to an arbitrary point mid-list in grouped playlists
-- Multi-disc albums dropped from the Tidal browser interleaved their discs
-- Shift-click after a playlist switch extended from the previous playlist's anchor
-- Two open panels interfered: one rebuilding cancelled the other's grouping
-- Column headers hidden behind the album-art strip stayed clickable and resizable
-- Assorted crash guards from a multi-pass code review
+- **Settings loss**: Custom column renames, columns at startup, extra subgroups, preset edits, and positions saved under the wrong playlist after deleting or reordering playlists
+- **Hangs and memory**: Delete with nothing selected, oversized cover art re-decoding on every redraw, album art cache reaching ~1 GB
+- **Preferences**: Preset switching, preset and display size at launch, glass toggle blanking the panel, custom columns needing a restart, subgroup toggles, sluggish pattern editing
+- **Dragging**: Drop indicator 150 px too low, drop scroll jump, file drops with spaces in the path (thanks @alies-dev, #38), compilation and Tidal multi-disc running order
+- **Keys and selection**: Home/End in grouped playlists, shift-click after switching playlists, two panels cancelling each other's grouping, hidden column headers staying interactive
+- **Crash guards**: Several paths where a foobar2000 error closed the app now skip a frame instead
 
 #### Changed
-- **macOS 12 required**: Minimum raised from macOS 11; current Xcode no longer builds for 11.
-- Row hit-testing in large grouped playlists no longer nests four searches: group header rows are precomputed, taking a 200k-track/20k-group query from 10,338 array lookups to none, with a probe-budget test enforcing it
-- Internal cleanup, no behaviour change: ~1,100 lines of legacy rendering code removed, five copies of the group-application sequence merged, the column layout given a single writer, settings changes given a defined order
-- Test coverage grew from ~104,000 to ~108,000 assertions, adding suites for the column and preset data formats
+- **macOS 12 required**; built against foobar2000 SDK 2026-10-01
+- **Faster hit-testing** in large grouped playlists (10,338 lookups to none on 20,000 groups)
+- **Internal cleanup**: ~1,100 lines of unused rendering code removed; single column-layout writer; ordered settings propagation; tests grew to ~112,000 checks
 
 ### [1.5.1] - 2026-07-07
 

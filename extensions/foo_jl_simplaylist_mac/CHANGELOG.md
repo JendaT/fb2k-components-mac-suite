@@ -4,58 +4,57 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
-## [1.6.0] - 2026-08-23
+## [1.6.0] - 2026-10-12
 
-Adds the Sort submenu, on top of a large bug-fix pass: five separate ways of
-silently losing your settings, two ways of hanging the app, and the drag
-indicator that landed in the wrong place.
+Adds Sort and Remove to the right-click menu and accepts drops from the album
+list; fixes five ways of silently losing settings, two hangs and the misplaced
+drop indicator. Requires macOS 12.
 
 ### Added
-- **Sort submenu**: Right-click menu now has Sort (by disc and track number, Sort by..., Randomize, Reverse, by album/artist/path/title/track number), acting on the selection when 2+ tracks are selected (#20).
+- **Sort submenu**: Right-click Sort by disc and track number, Sort by..., Randomize, Reverse, or by album, artist, file path, title or track number; sorts only the selection when 2+ tracks are selected (#20).
+- **Remove**: Right-click Remove deletes the selected tracks (thanks @Scannou, #34).
+- **Drops from the album list**: Tracks dragged from the album list are inserted in album list order with their exact subsongs (thanks @alies-dev, #38).
 
 ### Fixed
-- **Compilation ordering**: Dropped Various Artists albums no longer scatter alphabetically by performer; an album whose tracks disagree about the album artist now sorts by disc and track alone (pure `Core/ImportSorter`, unit-tested).
 
-**No longer loses your settings**
-- Renaming a custom column stuck. Previously the rename was undone by the next column resize, and the column itself was deleted on the following launch.
-- A hiccup while another component registered its columns no longer wipes columns from your layout.
-- Clearing the subgroup pattern no longer discards the other subgroups a preset defines.
-- Preferences no longer silently discards everything you type when the stored preset index has gone out of range.
-- Deleting or reordering playlists no longer saves scroll positions and group data under a *different* playlist's name, and a drag reorder can no longer modify the wrong playlist.
+**Settings no longer lost**
+- **Custom column rename**: No longer undone by the next column resize and the column deleted on the following launch.
+- **Columns at startup**: A hiccup while another component registers its columns no longer wipes columns from the layout.
+- **Subgroups**: Clearing the subgroup pattern no longer discards the other subgroups a preset defines.
+- **Preset edits**: No longer silently discarded when the stored preset index is out of range.
+- **Deleting or reordering playlists**: No longer saves scroll positions and group data under another playlist's name, or applies a drag reorder to the wrong playlist.
 
-**No longer hangs or eats memory**
-- Pressing Delete or Backspace with nothing selected hung foobar2000. Fixed.
-- A cover too large to cache was re-decoded on every redraw, across four threads, for as long as its album was on screen. Fixed.
-- Album art is now capped by memory (256 MB) as well as image count; it could previously reach about a gigabyte.
+**Hangs and memory**
+- **Delete with nothing selected**: No longer hangs foobar2000.
+- **Oversized cover art**: No longer re-decoded on every redraw across four threads.
+- **Album art memory**: Capped at 256 MB as well as by image count; could previously reach about 1 GB.
 
-**Grouping and preferences actually apply**
-- Switching grouping preset works. It previously appeared to do nothing until you edited a pattern field.
-- **Preset and display size at launch**: Your chosen preset and row size now apply on startup; previously every restart used the first preset and 22 pt rows until a setting changed.
-- **Glass background toggle**: Switching glass on or off no longer blanks the panel until restart.
-- Adding, removing or renaming a custom column shows up immediately instead of after a restart.
-- Toggling either subgroup option redraws with the new setting instead of reusing the old layout.
-- Typing a grouping pattern is no longer sluggish, and leaving the field rebuilds the playlist once rather than twice.
+**Grouping and preferences**
+- **Preset switching**: Choosing a grouping preset takes effect immediately.
+- **Preset and display size at launch**: Applied on startup instead of the first preset and 22 pt rows.
+- **Glass background toggle**: No longer blanks the panel until restart.
+- **Custom columns**: Adding, removing or renaming one shows up without a restart.
+- **Subgroup options**: Toggling either redraws with the new setting.
+- **Pattern editing**: Typing a grouping pattern is responsive, and leaving the field rebuilds the playlist once.
 
 **Dragging, keys and selection**
-- **Drops from the album list**: Tracks dragged from the album list are now accepted, in album list order with their exact subsongs.
-- **File drops with spaces in the path**: No longer fail with "Access denied"; scheme-less file URLs are imported as local paths.
-- **Drop scroll jump**: Dropping a track after scrolling far within a playlist no longer jumps the view back to an earlier position.
-- The drop indicator follows the cursor. In grouped playlists it sat up to 150 px too low, and the drop landed where the line was drawn.
-- Home and End jump to the first and last track. Home previously landed at an arbitrary point mid-list.
-- Multi-disc albums dropped from the Tidal browser keep their discs together instead of interleaving them.
-- Shift-click after switching playlists no longer extends the selection from the previous playlist's anchor.
-- Two panels open no longer interfere: one rebuilding its playlist used to cancel the other's grouping, leaving it half-grouped.
-- Column headers hidden behind the album-art strip are no longer clickable, draggable or resizable.
-
-Plus assorted crash guards from a multi-pass code review: nil handling on
-tag-derived text, bounds and lifetime checks, and error paths where a
-foobar2000 failure would have closed the app rather than skipping a frame.
+- **Drop indicator**: Follows the cursor; in grouped playlists it sat up to 150 px too low.
+- **Drop scroll jump**: Dropping after scrolling far no longer jumps the view back to an earlier position.
+- **File drops with spaces in the path**: No longer fail with "Access denied" (thanks @alies-dev, #38).
+- **Compilations**: Dropped Various Artists albums keep their running order instead of scattering by performer.
+- **Tidal multi-disc albums**: Dropped discs no longer interleave.
+- **Home and End**: Jump to the first and last track in grouped playlists.
+- **Shift-click after switching playlists**: No longer extends from the previous playlist's anchor.
+- **Two panels**: One rebuilding no longer cancels the other's grouping.
+- **Hidden column headers**: Headers behind the album-art strip are no longer interactive.
+- **Crash guards**: Several paths where a foobar2000 error closed the app now skip a frame instead.
 
 ### Changed
-- **macOS 12 required**: Minimum raised from macOS 11; current Xcode no longer builds for 11.
-- **Scrolling and hit-testing are much cheaper in large grouped playlists.** Finding the row under the pointer ran four nested searches; each group's header row is now precomputed. On a 200,000-track, 20,000-group playlist that query went from 10,338 array lookups to none.
-- Internal cleanup with no behaviour change: about 1,100 lines of unreferenced legacy rendering code removed, five copies of the group-application sequence merged into one, the column layout given a single writer, and settings changes given a defined order instead of depending on which listener was notified first.
-- Test coverage grew from roughly 104,000 to 108,000 assertions, including new suites for the column and preset data formats and a performance guard on the row mapping.
+- **macOS 12 required**: Current Xcode no longer builds for macOS 11.
+- **Faster hit-testing**: Finding the row under the pointer in large grouped playlists no longer runs four nested searches (10,338 lookups to none on 20,000 groups).
+- **foobar2000 SDK 2026-10-01**: Built against the current SDK.
+- **Internal cleanup**: About 1,100 lines of unused rendering code removed; the column layout has a single writer; settings changes apply in a defined order.
+- **Tests**: Grew from about 104,000 to 112,000 checks.
 
 ## [1.5.1] - 2026-07-07
 
