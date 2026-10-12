@@ -18,8 +18,8 @@
 #define WAVEFORM_VERSION_INT 120
 
 // Last.fm Scrobbler
-#define SCROBBLE_VERSION "1.4.0"
-#define SCROBBLE_VERSION_INT 140
+#define SCROBBLE_VERSION "1.4.1"
+#define SCROBBLE_VERSION_INT 141
 
 // Album Art (Extended)
 #define ALBUMART_VERSION "1.1.0"

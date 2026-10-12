@@ -374,15 +374,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Last.fm Scrobbler
 
-### [Unreleased]
+### [1.4.1] - 2026-10-12
 
 #### Changed
-- Core logic extracted into pure, unit-tested modules gating every build (playback state machine, Last.fm signing/parsing, error policy, queue/dedup, streak validity, streak discovery walk, widget layout math). No functional change intended.
-- Widget layout computed in a geometry pass shared by drawing and hit-testing (was a side effect of drawing)
+- **Scrobble timing**: Submitted at the next track change, pause, stop or quit instead of mid-play — by [@Scannou](https://github.com/Scannou)
+- **Widget layout**: Computed in one geometry pass shared by drawing and click handling.
+- **Testable core**: Core logic moved into pure modules; unit tests gate every build.
+- **Requirements**: macOS 12 or later (was 11).
 
 #### Fixed
-- Latent double-queue of an already-scrobbled track on playback stop
-- Streak inflated by one day when the user had not scrobbled today
+- **Quit mid-track**: The last scrobble is saved at shutdown and submitted on next launch.
+- **Listening streak**: No longer one day too high when nothing has been scrobbled today.
+- **Stop after scrobble**: A track already scrobbled is no longer queued a second time on stop.
 
 ### [1.4.0] - 2026-05-17
 

@@ -2,19 +2,21 @@
 
 All notable changes to foo_jl_scrobble (Last.fm Scrobbler) will be documented in this file.
 
-## [Unreleased]
+## [1.4.1] - 2026-10-12
 
 ### Changed
-- Core logic extracted into pure, host-independent modules covered by a unit-test suite (~430 checks) that now gates every build, mirroring the SimPlaylist testable architecture: playback-to-scrobble state machine (PlaybackTracker), Last.fm request signing/parameter assembly (LastFmRequestBuilder), per-endpoint JSON parsing (LastFmResponseParser), submission error policy and backoff (ScrobblePolicy), queue/duplicate detection (ScrobbleQueueModel), streak cache validity (StreakValidity), streak discovery walk (StreakWalker), and widget layout geometry (WidgetLayoutMath). No functional change intended.
-- Widget layout is now computed in a dedicated geometry pass consumed by both drawing and mouse hit-testing; previously rects were a side effect of drawing (style switches even forced a synchronous draw just to obtain them)
+- **Scrobble timing**: Submitted at the next track change, pause, stop or quit instead of mid-play, so a scrobble no longer shows on the profile next to its own Now Playing entry — contributed by [@Scannou](https://github.com/Scannou) (#29)
+- **Widget layout**: Computed in one geometry pass shared by drawing and click handling; style switches no longer force a redraw.
+- **Requirements**: macOS 12 or later (was 11); current Xcode can no longer build for macOS 11.
 
 ### Fixed
-- Latent double-queue of an already-scrobbled track on playback stop (previously masked by cache duplicate detection)
-- Streak inflated by one day when the user had not scrobbled today (yesterday was checked and counted twice during discovery)
+- **Quit mid-track**: The last scrobble is saved at shutdown and submitted on next launch with its original start time.
+- **Listening streak**: No longer one day too high when nothing has been scrobbled today.
+- **Stop after scrobble**: A track already scrobbled is no longer queued a second time on stop.
 
 ### Technical
-- Tests compile standalone with clang (no Xcode target) via Scripts/run_tests.sh; build.sh aborts if any test fails
-- Duplicated local-midnight and ARGB color conversion helpers consolidated into single definitions
+- **Testable core**: Playback tracking, Last.fm signing/parsing, error policy, queue/dedup, streak logic and widget layout moved into pure modules; unit tests (`Scripts/run_tests.sh`) gate every build.
+- **Queue persistence**: Queue writes go through one serial queue; shutdown saves synchronously.
 
 ## [1.4.0] - 2026-05-17
 
