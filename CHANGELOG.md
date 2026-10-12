@@ -646,6 +646,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Preferences**: Bar count up to 256, FFT size, frequency scale/range, smoothing, fall rates, peak hold, grid color/opacity, light/dark colors, 10 color theme presets.
 - **Lifecycle**: Streams released via `initquit` before service teardown (fixes abort on quit).
 
+## Vectorscope
+
+### [0.1.0] - 2026-10-12
+
+#### Added
+- Initial release, contributed by [Scannou](https://github.com/Scannou)
+- **Scope**: Goniometer or Lissajous style with afterglow trace (lines or dots), -6/-12 dB guides and L/R/M/S axes.
+- **Band colors**: Optional low/mid/high colored trace.
+- **Gain**: Auto gain that keeps the trace inside the scope, or fixed 0 to +36 dB.
+- **Correlation meter**: Broadband or low/mid/high bars, configurable position, thickness and recent-range hold.
+- **Appearance**: 11 color presets with light/dark colors, glass background.
+
 ## Tidal Integration
 
 ### [Unreleased]
