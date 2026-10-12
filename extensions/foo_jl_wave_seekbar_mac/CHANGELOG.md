@@ -2,6 +2,16 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s.
+
+### Technical
+- Segments run on the foobar2000 CPU thread pool and seek by absolute sample position, so the result matches a sequential scan exactly; remote, non-seekable and expensive-seek inputs stay sequential, and a segment failure (including a mid-stream sample rate change) falls back to one sequential pass.
+- Buckets split the track proportionally; the old fixed bucket size dropped up to 2047 trailing samples.
+- Bucket min/max/RMS computed with vDSP; RMS accumulates in double instead of float.
+
 ## [1.2.0] - 2026-07-02
 
 ### Added
