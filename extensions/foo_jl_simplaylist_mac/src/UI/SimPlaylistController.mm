@@ -2284,15 +2284,28 @@ static BOOL validCachedStringArray(NSArray *arr) {
 
     // Copy indices and capture current playlist for the async block
     NSIndexSet *indicesCopy = [selectedPlaylistIndices copy];
+    // The indices belong to the playlist on screen, which can trail the active
+    // one; pushing them into a different playlist would select arbitrary rows
+    // there.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-    if (activePlaylist == SIZE_MAX) return;
 
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
     if (itemCount == 0) return;
 
     // Deferred one runloop turn (SDK calls must be on the main thread)
+    __weak SimPlaylistController *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Re-validate after the hop: a switch or an add/remove in between means
+        // the captured indices no longer name the same tracks.
+        SimPlaylistController *strongSelf = weakSelf;
+        t_size stillActive;
+        if (!strongSelf || ![strongSelf resolveActivePlaylist:&stillActive] ||
+            stillActive != activePlaylist || pm->playlist_get_item_count(activePlaylist) != itemCount) {
+            return;
+        }
+
         // Build new state bit array directly from NSIndexSet - O(selection count)
         __block bit_array_bittable newState(itemCount);
 
@@ -2906,9 +2919,12 @@ static const NSInteger kSortSelectionOnlyFlag = 1 << 16;
     // loop runs ~2^63 times, freezing the app.
     if (!view || view.selectedIndices.count == 0) return;
 
+    // selectedIndices are row numbers in the playlist on screen. If the active
+    // playlist has moved on and the panel has not caught up yet, removing them
+    // from the active one would delete unrelated tracks from another playlist.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-    if (activePlaylist == SIZE_MAX) return;
 
     // Keep the core's active-playlist selection in sync with what's highlighted
     // here (the view normally syncs asynchronously) so the native
@@ -2924,10 +2940,9 @@ static const NSInteger kSortSelectionOnlyFlag = 1 << 16;
 }
 
 - (void)removeSelectedTracksFromView:(SimPlaylistView *)view {
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-
-    if (activePlaylist == SIZE_MAX) return;
 
     // Check if playlist is locked
     if (pm->playlist_lock_is_present(activePlaylist)) {
@@ -3622,11 +3637,11 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 }
 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedLocations:(NSArray<NSString *> *)paths subsongs:(NSArray<NSNumber *> *)subsongs atRow:(NSInteger)row {
-    if (_currentPlaylistIndex < 0) return;
     if (paths.count == 0 || paths.count != subsongs.count) return;
 
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     if (pm->playlist_lock_is_present(activePlaylist)) {
         t_uint32 lockMask = pm->playlist_lock_get_filter_mask(activePlaylist);
