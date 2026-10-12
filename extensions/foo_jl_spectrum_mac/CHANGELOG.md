@@ -2,6 +2,22 @@
 
 All notable changes to Spectrum Analyzer will be documented in this file.
 
+## [0.3.0] - 2026-10-12
+
+Contributed by [Scannou](https://github.com/Scannou).
+
+### Added
+- **Full-screen view**: Double-click the panel, or choose Full Screen from its context menu, to open the spectrum in a native full-screen Space; Esc, double-click or Exit Full Screen leaves it.
+- **Logarithmic (compact bass) scale**: Maps frequency as log10(1 + f/50), so the bottom octaves take far less width than on a pure log axis.
+- **RMS averaging**: New Smoothing mode that averages signal power per FFT bin over 0-200 ms, so levels rise and fall at one even rate like a real-time analyzer.
+- **Spectral slope**: Tilts the display 0-6 dB/octave around 1 kHz so high frequencies read higher.
+- **Curve styles**: Filled, Line, Color bars, and Line + color bars for the Curve draw mode, with adjustable color bar brightness.
+
+### Changed
+- **Display-synced redraw**: On macOS 14+ the spectrum updates in step with the screen refresh (60-90 fps on fast displays) instead of a free-running 60 Hz timer; macOS 12-13 keep the timer.
+- **Frame-rate independent motion**: Smoothing, shadow fall, peak hold and peak fall scale with elapsed time, so motion looks the same at any refresh rate.
+- **Covered panels**: A panel whose window is fully covered (e.g. by the full-screen view) skips redrawing.
+
 ## [0.2.0] - 2026-10-09
 
 Contributed by [Scannou](https://github.com/Scannou).

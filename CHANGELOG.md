@@ -609,6 +609,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Spectrum Analyzer
 
+### [0.3.0] - 2026-10-12
+
+#### Added
+- **Full-screen view**: Double-click or context menu opens a native full-screen spectrum; Esc or double-click leaves it.
+- **Logarithmic (compact bass) scale**: Bottom octaves take far less width than on a pure log axis.
+- **RMS averaging**: Averages power per bin over 0-200 ms for even, analyzer-style motion.
+- **Spectral slope**: 0-6 dB/octave tilt around 1 kHz.
+- **Curve styles**: Filled, Line, Color bars, Line + color bars.
+
+#### Changed
+- **Display-synced redraw**: macOS 14+ redraws in step with the screen refresh; motion is frame-rate independent.
+
 ### [0.2.0] - 2026-10-09
 
 #### Added
