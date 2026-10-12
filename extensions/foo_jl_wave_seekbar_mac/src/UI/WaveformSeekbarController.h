@@ -27,7 +27,8 @@ struct WaveformData;
 - (void)handlePlaybackPause:(BOOL)paused;
 
 // Waveform data update
-- (void)updateWaveformData:(const WaveformData *)waveform;
+// nullable: a failed or abandoned scan reports "no waveform" with a null pointer
+- (void)updateWaveformData:(nullable const WaveformData *)waveform;
 
 @end
 
