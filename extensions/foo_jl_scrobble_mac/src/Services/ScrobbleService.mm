@@ -112,8 +112,9 @@
     [_retryTimer invalidate];
     _retryTimer = nil;
 
-    // Save pending scrobbles
-    [[ScrobbleCache shared] saveToDisk];
+    // Save pending scrobbles before returning: an asynchronous save would
+    // not finish before the process exits
+    [[ScrobbleCache shared] saveToDiskNow];
 
     self.state = ScrobbleServiceStateShutDown;
 }
@@ -145,6 +146,17 @@
 
     [[ScrobbleCache shared] enqueueTrack:track];
     [self processQueue];
+}
+
+- (void)queueTrackForShutdown:(ScrobbleTrack*)track {
+    if (!track || !track.isValid) return;
+    if (!scrobble_config::isScrobblingEnabled()) return;
+
+    ScrobbleCache* cache = [ScrobbleCache shared];
+    if ([cache isDuplicateTrack:track]) return;
+
+    [cache enqueueTrack:track];
+    [cache saveToDiskNow];
 }
 
 - (void)processQueue {
