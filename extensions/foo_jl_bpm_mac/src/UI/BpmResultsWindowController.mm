@@ -31,12 +31,14 @@ static NSString *const kColumnSource = @"source";
 @property (nonatomic) double value;         // NAN when there is no result
 @property (nonatomic, copy) NSString *sourceText;
 @property (nonatomic) BOOL writable;
+@property (nonatomic) BOOL uncertain;  // local analysis without a clear beat
 @property (nonatomic) BOOL checked;
 @property (nonatomic, readonly) BOOL hasValue;
 @property (nonatomic, readonly) NSString *tagText;         // what Write Tags writes
 @property (nonatomic, readonly) NSString *comparisonText;  // same / double / half / different
 @property (nonatomic, readonly) double currentSortKey;
 @property (nonatomic, readonly) double valueSortKey;
+@property (nonatomic, readonly) BOOL differsFromTag;
 - (void)resetChecked;
 @end
 
@@ -70,10 +72,15 @@ static NSString *const kColumnSource = @"source";
     return self.hasValue ? self.value : -1.0;
 }
 
-// Checked by default when writing would change the tag.
+// Writing would change the tag.
+- (BOOL)differsFromTag {
+    return !(!std::isnan(self.currentValue) && std::fabs(std::round(self.value) - self.currentValue) < 0.5);
+}
+
+// Checked by default when writing would change the tag, except for uncertain
+// estimates: those are left for the user to tick.
 - (void)resetChecked {
-    self.checked = self.writable && self.hasValue &&
-                   !(!std::isnan(self.currentValue) && std::fabs(std::round(self.value) - self.currentValue) < 0.5);
+    self.checked = self.writable && self.hasValue && !self.uncertain && self.differsFromTag;
 }
 
 @end
@@ -151,7 +158,8 @@ static NSMutableSet<BpmResultsWindowController *> *g_openWindows;
                 item.sourceText = row.isLocalFile ? @"TIDAL (ISRC match)" : @"TIDAL (stream, tag not writable)";
                 break;
             case bpm::ResultSource::Analysis:
-                item.sourceText = row.strength < bpm::kWeakPulseStrength ? @"Analysis (no clear beat)" : @"Analysis";
+                item.uncertain = row.strength < bpm::kUncertainStrength;
+                item.sourceText = item.uncertain ? @"Analysis (uncertain)" : @"Analysis";
                 break;
             case bpm::ResultSource::None:
                 item.sourceText = @(row.problem.c_str()) ?: @"";
@@ -358,7 +366,7 @@ static NSMutableSet<BpmResultsWindowController *> *g_openWindows;
         BpmResultItem *item = self->_items[row];
         if (!item.hasValue) return;
         item.value *= factor;
-        [item resetChecked];
+        item.checked = item.writable && item.differsFromTag;  // corrected by hand, so trusted
     }];
     [_table reloadDataForRowIndexes:rows
                       columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, (NSUInteger)_table.numberOfColumns)]];

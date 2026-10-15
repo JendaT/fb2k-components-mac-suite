@@ -21,12 +21,12 @@ Finds the tempo of tracks and writes it to the `BPM` tag. Adds a **BPM** submenu
 
 | Column | Meaning |
 |--------|---------|
-| Checkbox | Write this row. Checked by default when the new value differs from the tag. |
+| Checkbox | Write this row. Checked by default when the new value differs from the tag, except for uncertain results. |
 | **Track** | Artist - title; hover for the file path. |
 | **Tag** | The current `BPM` tag. |
 | **New** | The value that will be written, rounded to a whole number; hover for one decimal. |
 | **vs Tag** | `same` (within 1%), `double`, `half` or `different` compared to the current tag. |
-| **Source** | TIDAL, Analysis, Analysis (no clear beat), or why there is no result. |
+| **Source** | TIDAL, Analysis, Analysis (uncertain), or why there is no result. |
 
 - **Double** / **Halve** change the new value of the selected rows, for half/double tempo mistakes.
 - Click a column header to sort, e.g. by **vs Tag** to see the disagreements first.
@@ -47,5 +47,16 @@ The method follows librosa's tempo estimator; the code is a new implementation o
 
 - **Half/double tempo**: the most common mistake, especially around 85 vs 170 BPM (drum and bass is often found at 87). Use Double / Halve.
 - **One tempo per track**: tracks with tempo changes, DJ mixes and rubato get one averaged value.
-- **No clear beat** (ambient, classical, speech): the result is marked "Analysis (no clear beat)" and is a guess.
-- Accuracy on real music has not been measured yet. Synthetic test patterns land within 0.1 BPM.
+- **No clear beat** (ambient, classical, speech): the result is marked "Analysis (uncertain)", left unchecked, and is mostly a guess.
+
+### Measured so far
+
+80 tracks from the developer's library that already had a BPM tag (mostly psychill and dub techno; where the tags came from is unknown):
+
+| Group | Tracks | Same as tag (within 1%) | Half/double |
+|-------|--------|-------------------------|-------------|
+| All | 80 | 48% | 11% |
+| Clear beat (shown as Analysis) | 45 | 73% | 9% |
+| Uncertain | 35 | 14% | 14% |
+
+Where the estimate agrees with the tag, the median difference is 0.15 BPM. The analysis itself takes about 1 ms per track; decoding the file is nearly all of the time.

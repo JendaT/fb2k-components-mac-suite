@@ -96,7 +96,7 @@ void checkTempo(const Pattern &p, double expected, double tolerance) {
         printf("  estimate %.3f, expected %.3f +/- %.2f\n", r.bpm, expected, tolerance);
     }
     CHECK(std::fabs(r.bpm - expected) <= tolerance, "estimate within tolerance");
-    CHECK(r.strength >= kWeakPulseStrength, "steady beat is not reported as weak");
+    CHECK(r.strength >= kUncertainStrength, "steady beat is not reported as uncertain");
 }
 
 } // namespace
@@ -166,15 +166,15 @@ int main() {
         CHECK(!estimate(p).valid, "silence is not valid");
     }
 
-    // Noise has no pulse: valid or not, it must be reported as weak.
+    // Noise has no pulse: valid or not, it must be reported as uncertain.
     {
         g_context = "noise";
         Pattern p;
         p.hitLevel = 0.0;
         p.noiseLevel = 0.3;
         const TempoResult r = estimate(p);
-        if (r.valid && r.strength >= kWeakPulseStrength) printf("  strength %.3f\n", r.strength);
-        CHECK(!r.valid || r.strength < kWeakPulseStrength, "noise is weak");
+        if (r.valid && r.strength >= kUncertainStrength) printf("  strength %.3f\n", r.strength);
+        CHECK(!r.valid || r.strength < kUncertainStrength, "noise is uncertain");
     }
 
     // Too short to judge.
