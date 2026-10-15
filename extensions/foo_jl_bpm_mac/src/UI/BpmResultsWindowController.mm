@@ -175,6 +175,7 @@ static NSMutableSet<BpmResultsWindowController *> *g_openWindows;
     column.title = title;
     column.width = width;
     column.minWidth = MIN(width, 40);
+    column.resizingMask = NSTableColumnUserResizingMask;  // window resizes go to Track and Source
     if (sortKey) column.sortDescriptorPrototype = [NSSortDescriptor sortDescriptorWithKey:sortKey ascending:YES];
     return column;
 }
@@ -193,7 +194,7 @@ static NSMutableSet<BpmResultsWindowController *> *g_openWindows;
     _table.delegate = self;
     _table.allowsMultipleSelection = YES;
     _table.usesAlternatingRowBackgroundColors = YES;
-    _table.columnAutoresizingStyle = NSTableViewFirstColumnOnlyAutoresizingStyle;
+    _table.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
     _table.style = NSTableViewStyleFullWidth;
 
     NSTableColumn *write = [self columnWithIdentifier:kColumnWrite title:@"" width:24 sortKey:nil];
@@ -210,7 +211,9 @@ static NSMutableSet<BpmResultsWindowController *> *g_openWindows;
                                                 title:@"vs Tag"
                                                 width:70
                                               sortKey:@"comparisonText"]];
-    [_table addTableColumn:[self columnWithIdentifier:kColumnSource title:@"Source" width:220 sortKey:@"sourceText"]];
+    NSTableColumn *source = [self columnWithIdentifier:kColumnSource title:@"Source" width:220 sortKey:@"sourceText"];
+    source.resizingMask = NSTableColumnAutoresizingMask | NSTableColumnUserResizingMask;
+    [_table addTableColumn:source];
 
     NSScrollView *scroll = [[NSScrollView alloc] init];
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
