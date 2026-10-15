@@ -771,6 +771,16 @@ Display P3 colors contributed by @Scannou (#55).
 - **Correlation meter**: Broadband or low/mid/high bars, configurable position, thickness and recent-range hold.
 - **Appearance**: 11 color presets with light/dark colors, glass background.
 
+## BPM Analyzer
+
+### [0.1.0] - Unreleased
+
+#### Added
+- Initial release
+- **Analyze BPM...**: Tempo of the selected tracks with a review window before any tag is written.
+- **Sources**: TIDAL for exact ISRC matches when the Tidal component is installed; local analysis for the rest.
+- **Double BPM / Halve BPM**: Scale existing BPM tags.
+
 ## Tidal Integration
 
 ### [Unreleased]

@@ -56,3 +56,7 @@
 // Vectorscope
 #define VECTORSCOPE_VERSION "1.1.0"
 #define VECTORSCOPE_VERSION_INT 110
+
+// BPM Analyzer
+#define BPM_VERSION "0.1.0"
+#define BPM_VERSION_INT 010

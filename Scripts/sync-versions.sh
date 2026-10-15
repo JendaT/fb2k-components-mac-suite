@@ -23,6 +23,7 @@ VERSION_MAP=(
     [scrobble]="SCROBBLE_VERSION"
     [spectrum]="SPECTRUM_VERSION"
     [vectorscope]="VECTORSCOPE_VERSION"
+    [bpm]="BPM_VERSION"
 )
 
 typeset -A DISPLAY_MAP
@@ -35,6 +36,7 @@ DISPLAY_MAP=(
     [scrobble]="Last.fm Scrobbler"
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
+    [bpm]="BPM Analyzer"
 )
 
 echo "=== Syncing versions from version.h to README.md ==="

@@ -13,6 +13,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
+| [BPM Analyzer](#bpm-analyzer) | Tempo analysis and BPM tagging, with TIDAL lookup | 0.1.0 | [📖](docs/bpm.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
@@ -117,6 +118,18 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 
 ---
 
+### BPM Analyzer
+
+Finds the tempo of tracks and writes the `BPM` tag, from the track context menu (**BPM > Analyze BPM...**).
+
+**Features:**
+- Uses TIDAL's tempo for tracks it matches exactly by ISRC when the Tidal component is installed
+- Analyzes everything else locally, several tracks at a time
+- Review window before anything is written: current tag, new value, source, and whether they agree
+- Double BPM and Halve BPM for half/double tempo tags
+
+---
+
 ### Album Art (Extended)
 
 Extended album art viewer with support for multiple artwork types and selection-based display. Unlike the built-in album art element, this one can show back covers, disc art, and more.
@@ -196,6 +209,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
+| BPM Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=bpm) | TBD |
 | Album Art (Extended) | [1.0.1](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1) | TBD |
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=Queue+Manager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
@@ -278,6 +292,7 @@ cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
 - [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
 - [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
 - [Vectorscope](docs/vectorscope.md) - Features, configuration, and usage
+- [BPM Analyzer](docs/bpm.md) - Commands, sources, and how the analysis works
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices

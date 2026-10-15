@@ -48,6 +48,8 @@ typeset -A COMPONENT_MAP=(
     ["jl_spectrum"]="foo_jl_spectrum_mac"
     ["vectorscope"]="foo_jl_vectorscope_mac"
     ["jl_vectorscope"]="foo_jl_vectorscope_mac"
+    ["bpm"]="foo_jl_bpm_mac"
+    ["jl_bpm"]="foo_jl_bpm_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -77,6 +79,8 @@ typeset -A VERSION_MAP=(
     ["jl_spectrum"]="SPECTRUM_VERSION"
     ["vectorscope"]="VECTORSCOPE_VERSION"
     ["jl_vectorscope"]="VECTORSCOPE_VERSION"
+    ["bpm"]="BPM_VERSION"
+    ["jl_bpm"]="BPM_VERSION"
 )
 
 # Display names for release titles
@@ -106,6 +110,8 @@ typeset -A DISPLAY_NAME_MAP=(
     ["jl_spectrum"]="Spectrum Analyzer"
     ["vectorscope"]="Vectorscope"
     ["jl_vectorscope"]="Vectorscope"
+    ["bpm"]="BPM Analyzer"
+    ["jl_bpm"]="BPM Analyzer"
 )
 
 show_help() {
@@ -122,6 +128,7 @@ show_help() {
     echo "  queue_manager - Queue Manager (visual playback queue)"
     echo "  spectrum      - Spectrum Analyzer"
     echo "  vectorscope   - Vectorscope (goniometer + correlation meter)"
+    echo "  bpm           - BPM Analyzer (tempo analysis and BPM tagging)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"
@@ -262,6 +269,11 @@ fi
 if [ "$COMPONENT" = "vectorscope" ] || [ "$COMPONENT" = "jl_vectorscope" ]; then
     COMPONENT_FILE="foo_jl_vectorscope.fb2k-component"
     TAG_NAME="vectorscope-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "bpm" ] || [ "$COMPONENT" = "jl_bpm" ]; then
+    COMPONENT_FILE="foo_jl_bpm.fb2k-component"
+    TAG_NAME="bpm-v${VERSION}"
 fi
 
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="
