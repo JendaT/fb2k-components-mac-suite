@@ -59,7 +59,7 @@ Bars, gridlines, labels and the frequency readout all follow the selected scale.
 | **Attack / decay** | Fast rise and slower fall, applied to the displayed dB value |
 | **RMS average** | Running average of signal power per FFT bin; levels rise and fall at one even rate, like a real-time analyzer |
 
-In **RMS average** the Smoothing slider sets the averaging time (0-200 ms) and its label shows milliseconds.
+In **RMS average** the Smoothing slider sets the averaging time (0-500 ms, in 5 ms steps) and its label shows milliseconds. Each mode keeps its own Smoothing value, so switching modes does not carry an amount over that means something else in the other mode. Settings from 0.3.0, where RMS used the shared value at 2 ms per step, carry over until the slider is moved.
 
 ### Spectral Slope
 
@@ -80,8 +80,10 @@ Each bar has three layers that rise instantly and fall at different rates:
 | Layer | Behavior |
 |-------|----------|
 | **Bar** | Current level, smoothed by the selected smoothing mode |
-| **Shadow** | Dim fill behind the bar that eases down at a steady medium rate |
-| **Peak** | Thin cap that holds for a configurable time, then falls with gentle gravity |
+| **Shadow** | Dim fill behind the bar that eases down at a steady medium rate; in RMS average its fall is scaled to the curve's own fall rate, so it always trails the curve |
+| **Peak** | Thin cap that holds for a configurable time, then falls at a steady dB/s rate |
+
+The defaults follow common metering practice: the curve uses RMS averaging at 125 ms (the IEC 61672 "Fast" time weighting used by real-time analyzers, falling up to about 35 dB/s), and the peak line holds for 1 s and then falls 12 dB/s (close to the digital peak meter return of 20 dB in 1.7 s in IEC 60268-18). The curve shows what is playing now; the slower peak line above it shows how loud each band just was. Peak fall settings from 0.3.0 (a 0-100 accelerating speed) convert to the steady rate that covers the first 20 dB in the same time.
 
 ### Bar Styles
 
@@ -124,35 +126,35 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Bars | Number of frequency bars; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | 48 |
-| FFT size | FFT window length | 1024, 2048, 4096, 8192, 16384 | 4096 |
-| Frequency scale | Band mapping | Logarithmic, Linear, Logarithmic (compact bass) | Logarithmic |
+| Bars | Number of frequency bars; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | 96 |
+| FFT size | FFT window length | 1024, 2048, 4096, 8192, 16384 | 2048 |
+| Frequency scale | Band mapping | Logarithmic, Linear, Logarithmic (compact bass) | Logarithmic (compact bass) |
 | Range (Hz) | Lowest and highest displayed frequency | 10-2000 to 1000-24000 | 20 to 20000 |
-| Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | Attack / decay |
-| Smoothing | Temporal smoothing (higher = smoother); in RMS average, the averaging time at 2 ms per step | 0-100 (0-200 ms) | 60 |
-| Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 0 |
+| Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | RMS average |
+| Smoothing | Attack / decay: temporal smoothing (higher = smoother). RMS average: the averaging time. Stored per mode | 0-100 / 0-500 ms | 82 / 125 ms |
+| Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 0.4 |
 
 ### Dynamics
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Shadow fall | How fast the shadow band falls | 0-100 | 40 |
-| Peak fall | How fast the peak line falls after its hold | 0-100 | 30 |
-| Peak hold | How long the peak line stays before falling | 0-2000 ms | 400 ms |
+| Shadow fall | How fast the shadow band falls; disabled while the shadow is not drawn | 0-100 | 74 |
+| Peak fall | How fast the peak line falls after its hold | 1-60 dB/s | 12 dB/s |
+| Peak hold | How long the peak line stays before falling | 0-2000 ms | 1000 ms |
 
 ### Appearance
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Theme | Color preset (Custom + 10 presets) | Default (Blue) |
-| Draw mode | Bars or Curve | Bars |
-| Curve style | Filled, Line, Color bars, Line + color bars (Curve mode only) | Filled |
-| Color bar brightness | Strength of the loudest color bar, 10-100% (color-bar styles only) | 90% |
+| Draw mode | Bars or Curve | Curve |
+| Curve style | Filled, Line, Color bars, Line + color bars (Curve mode only) | Line + color bars |
+| Color bar brightness | Strength of the loudest color bar, 10-100% (color-bar styles only) | 64% |
 | Orientation | Horizontal or Vertical | Horizontal |
 | Bar style | Solid, Gradient, Spectrum | Gradient |
-| Bar gap | Gap between bars, % of slot width | 20% |
+| Bar gap | Gap between bars, % of slot width | 12% |
 | Show peak caps | Falling peak line | On |
-| Shadow fill | Slow-decaying dim fill behind bars | On |
+| Shadow fill | Slow-decaying dim fill behind bars; not drawn (and disabled) in the color-bar curve styles | On |
 | Show dB scale | dB guide lines and labels | On |
 | Show frequency axis | Frequency gridlines and labels | On |
 | Glass background | Translucent blur instead of solid color | Off |
@@ -162,7 +164,7 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Opacity | Grid line and label opacity (0% hides) | 40% |
+| Opacity | Grid line and label opacity (0% hides) | 84% |
 | Color (light / dark) | Grid color per appearance | Neutral gray |
 
 ## Layout Editor
@@ -189,9 +191,9 @@ splitter vertical
 - `visualisation_stream_v2::get_spectrum_absolute` with `KStreamFlagNewFFT`, mono channel mode
 - Band edges recomputed when the stream's sample rate changes; the DC bin is skipped
 - Peak magnitude across each band's bins (reads punchier than the average)
-- RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum
+- RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 35 dB/s at 125 ms); the shadow fall slider maps to 15-90% of that rate
 - The slope is a per-bar gain of `slope x log2(f / 1 kHz)` dB at the bar's centre frequency
-- Rates for smoothing, shadow fall, peak gravity, and peak hold are defined per 1/60 s and scaled by the time since the previous update, so motion is the same at any refresh rate
+- Rates for smoothing, shadow fall, peak fall, and peak hold are defined per 1/60 s and scaled by the time since the previous update, so motion is the same at any refresh rate
 
 ### Rendering
 

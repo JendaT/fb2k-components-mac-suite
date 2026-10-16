@@ -10,6 +10,7 @@
 
 #include "../fb2k_sdk.h"
 #include <cmath>
+#include <algorithm>
 
 namespace spectrum_config {
 
@@ -84,33 +85,36 @@ enum Orientation {
 };
 
 // --- Defaults ---
-constexpr int      kDefaultBarCount   = 48;      // Number of frequency bars
+constexpr int      kDefaultBarCount   = 96;      // Number of frequency bars
 constexpr int      kBarCountAuto      = 0;       // Bar count follows the view size
 constexpr double   kAutoBarPitch      = 2.0;     // Auto: points per bar along the frequency axis
 constexpr int      kMaxBarCount       = 2048;
-constexpr int      kDefaultFftSize    = 4096;    // FFT window (power of 2)
+constexpr int      kDefaultFftSize    = 2048;    // FFT window (power of 2)
 constexpr int      kDefaultBarStyle   = BarStyleGradient;
-constexpr int      kDefaultFreqScale  = FreqScaleLog;
-constexpr int      kDefaultDrawMode   = DrawModeBars;
-constexpr int      kDefaultCurveStyle = CurveStyleFilled;
-constexpr int      kDefaultColorBarBrightness = 90; // Strength of the loudest color bar, % (10-100)
+constexpr int      kDefaultFreqScale  = FreqScaleSoftLog;
+constexpr int      kDefaultDrawMode   = DrawModeCurve;
+constexpr int      kDefaultCurveStyle = CurveStyleLineColorBars;
+constexpr int      kDefaultColorBarBrightness = 64; // Strength of the loudest color bar, % (10-100)
 constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
-constexpr int      kDefaultGapPercent = 20;      // Gap between bars, % of slot width
-constexpr int      kDefaultSmoothing  = 60;      // Temporal smoothing 0-100 (higher = smoother)
-constexpr int      kDefaultSmoothingMode = SmoothingAttackDecay;
-constexpr double   kRmsMsPerSmoothingStep = 2.0; // RMS mode: averaging time constant per smoothing step (50 -> 100 ms)
-constexpr int      kDefaultSlopeTenths = 0;      // Spectral slope around 1 kHz, in 0.1 dB/octave
+constexpr int      kDefaultGapPercent = 12;      // Gap between bars, % of slot width
+constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100 (higher = smoother)
+constexpr int      kDefaultSmoothingMode = SmoothingRms;
+constexpr int      kDefaultRmsMs      = 125;     // RMS mode: power averaging time constant (ms); 125 = IEC 61672 "Fast"
+constexpr int      kMaxRmsMs          = 500;
+constexpr int      kDefaultSlopeTenths = 4;      // Spectral slope around 1 kHz, in 0.1 dB/octave
 constexpr int      kMaxSlopeTenths    = 60;
-constexpr int      kDefaultShadowFallSpeed = 40; // Shadow band fall speed 0-100 (higher = faster)
-constexpr int      kDefaultPeakFallSpeed   = 30; // Peak line fall speed 0-100 (higher = faster)
-constexpr int      kDefaultPeakHoldMs      = 400;// Peak line hold time before it starts falling (ms)
+constexpr int      kDefaultShadowFallSpeed = 74; // Shadow band fall speed 0-100 (higher = faster)
+constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after its hold (dB/s), ~IEC 60268-18 (20 dB in 1.7 s)
+constexpr int      kMinPeakFallDbPerSec = 1;
+constexpr int      kMaxPeakFallDbPerSec = 60;
+constexpr int      kDefaultPeakHoldMs = 1000;    // Peak line hold time before it starts falling (ms)
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
 constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
-constexpr int      kDefaultGridOpacity = 40;     // Grid line opacity 0-100
+constexpr int      kDefaultGridOpacity = 84;     // Grid line opacity 0-100
 constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
 
@@ -142,9 +146,11 @@ static const char* const kKeyMaxHz          = "max_hz";
 static const char* const kKeyGapPercent     = "gap_percent";
 static const char* const kKeySmoothing      = "smoothing";
 static const char* const kKeySmoothingMode  = "smoothing_mode";
+static const char* const kKeyRmsMs          = "rms_ms";
 static const char* const kKeySlopeTenths    = "slope_tenths";
 static const char* const kKeyShadowFallSpeed = "shadow_fall_speed";
-static const char* const kKeyPeakFallSpeed   = "peak_fall_speed";
+static const char* const kKeyPeakFallSpeed   = "peak_fall_speed";  // up to 0.3.0: 0-100 gravity, read only to migrate
+static const char* const kKeyPeakFallDbPerSec = "peak_fall_db_s";
 static const char* const kKeyPeakHoldMs      = "peak_hold_ms";
 static const char* const kKeyPeakHold       = "peak_hold";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
@@ -194,6 +200,38 @@ inline bool getConfigBool(const char* key, bool defaultVal) {
 
 inline void setConfigBool(const char* key, bool value) {
     setConfigInt(key, value ? 1 : 0);
+}
+
+// RMS averaging time in ms. Up to 0.3.0 RMS mode had no key of its own and read
+// "smoothing" at 2 ms per step; a user who picked RMS there keeps that time
+// until they move the slider, everyone else starts at the default.
+inline int getRmsMs() {
+    int64_t ms = getConfigInt(kKeyRmsMs, -1);
+    if (ms < 0) {
+        ms = getConfigInt(kKeySmoothingMode, -1) == SmoothingRms
+            ? getConfigInt(kKeySmoothing, 60) * 2   // 60 was the 0.3.0 default
+            : kDefaultRmsMs;
+    }
+    return (int)std::max<int64_t>(0, std::min<int64_t>(ms, kMaxRmsMs));
+}
+
+// Peak line fall rate in dB/s. Up to 0.3.0 the peak fell with accelerating
+// "gravity" set by a 0-100 speed; a stored speed converts to the steady rate
+// that covers the same first 20 dB in the same time.
+inline int getPeakFallDbPerSec() {
+    int64_t rate = getConfigInt(kKeyPeakFallDbPerSec, -1);
+    if (rate < 0) {
+        const int64_t speed = getConfigInt(kKeyPeakFallSpeed, -1);
+        if (speed >= 0) {
+            const double range = kDisplayCeilDb - kDisplayFloorDb;
+            const double gravityDb = (0.0001 + speed / 100.0 * 0.0027) * range;  // dB per 1/60 s frame^2
+            const double frames = std::sqrt(2.0 * 20.0 / gravityDb);
+            rate = std::lround(20.0 * 60.0 / frames);
+        } else {
+            rate = kDefaultPeakFallDbPerSec;
+        }
+    }
+    return (int)std::max<int64_t>(kMinPeakFallDbPerSec, std::min<int64_t>(rate, kMaxPeakFallDbPerSec));
 }
 
 } // namespace spectrum_config
