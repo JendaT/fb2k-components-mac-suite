@@ -45,24 +45,24 @@ enum CorrelationMode {
 // --- Defaults ---
 constexpr int      kDefaultScopeStyle     = ScopeStyleGoniometer;
 constexpr int      kDefaultDrawMode       = DrawModeLines;
-constexpr int      kDefaultTraceColorMode = TraceColorSingle;
+constexpr int      kDefaultTraceColorMode = TraceColorBands;
 constexpr int      kDefaultDotSize        = 0;       // Dot diameter in tenths of a point; 0 = auto
 constexpr int      kMinDotSize            = 10;
 constexpr int      kMaxDotSize            = 80;
-constexpr int      kDefaultPersistenceMs  = 300;     // Afterglow time constant
+constexpr int      kDefaultPersistenceMs  = 118;     // Afterglow time constant
 constexpr int      kMinPersistenceMs      = 20;
 constexpr int      kMaxPersistenceMs      = 2000;
-constexpr int      kDefaultBrightness     = 60;      // Trace brightness 0-100
+constexpr int      kDefaultBrightness     = 82;      // Trace brightness 0-100
 constexpr bool     kDefaultAutoGain       = true;    // Scale quiet material up to fill the scope
 constexpr int      kDefaultGainDb         = 0;       // Fixed gain when auto gain is off
 constexpr int      kMaxGainDb             = 36;
 constexpr bool     kDefaultShowCorrelation = true;
-constexpr int      kDefaultCorrelationMode = CorrelationSingle;
-constexpr int      kDefaultMeterPosition  = 0;       // scope_layout::MeterAuto
-constexpr int      kDefaultBarThickness   = 6;       // Correlation bar thickness, points
+constexpr int      kDefaultCorrelationMode = CorrelationBands;
+constexpr int      kDefaultMeterPosition  = 4;       // scope_layout::MeterRight
+constexpr int      kDefaultBarThickness   = 11;      // Correlation bar thickness, points
 constexpr int      kMinBarThickness       = 4;
 constexpr int      kMaxBarThickness       = 24;
-constexpr int      kDefaultIntegrationMs  = 500;     // Correlation time window
+constexpr int      kDefaultIntegrationMs  = 300;     // Correlation time window
 constexpr int      kMinIntegrationMs      = 100;
 constexpr int      kMaxIntegrationMs      = 3000;
 constexpr int      kDefaultRangeHoldMs    = 200;     // How long the meter's recent range is held; 0 = off
@@ -75,7 +75,7 @@ constexpr int      kMinHighHz             = 1000;
 constexpr int      kMaxHighHz             = 12000;
 constexpr bool     kDefaultShowGrid       = true;    // Diamond, M/S axes, L/R diagonals
 constexpr bool     kDefaultShowLabels     = true;    // L / R / M / S and correlation scale
-constexpr int      kDefaultGridOpacity    = 40;      // Grid line opacity 0-100
+constexpr int      kDefaultGridOpacity    = 100;     // Grid line opacity 0-100
 constexpr int      kDefaultTheme          = 1;       // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
 
