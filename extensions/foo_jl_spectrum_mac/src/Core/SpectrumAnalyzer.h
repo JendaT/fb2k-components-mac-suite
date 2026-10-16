@@ -20,8 +20,9 @@ public:
         int    fftSize    = 4096;    // power of 2
         int    minHz      = 40;
         int    maxHz      = 18000;
-        int    smoothing  = 60;      // 0-100, higher = smoother
+        int    smoothing  = 60;      // attack/decay: 0-100, higher = smoother
         int    smoothingMode = 0;    // spectrum_config::SmoothingMode
+        int    rmsMs      = 125;     // RMS: power averaging time constant (ms)
         float  slopeDbPerOct = 0.0f; // level tilt around 1 kHz (0 = flat)
         int    freqScale  = 0;       // spectrum_config::FreqScale
         bool   peakHold    = true;
@@ -29,7 +30,7 @@ public:
         // Fall dynamics (concrete rates per 1/60 s frame; the UI maps friendly
         // 0-100 sliders to these). Each layer should fall slower than the one below.
         float  shadowFall    = 0.012f;   // shadow band linear fall per frame
-        float  peakGravity   = 0.0009f;  // peak line acceleration per frame
+        float  peakFall      = 0.0025f;  // peak line linear fall per frame, after its hold
         int    peakHoldFrames = 24;      // frames a peak holds before falling
     };
 
@@ -82,8 +83,7 @@ private:
 
     std::vector<float> _bars;     // fast: instantaneous level
     std::vector<float> _shadow;   // medium: falls slower than the bar
-    std::vector<float> _peaks;    // slowest: holds, then eases down
-    std::vector<float> _peakVel;  // downward velocity per peak cap
+    std::vector<float> _peaks;    // slowest: holds, then falls at a steady rate
     std::vector<float> _peakHold; // 1/60 s frames remaining before a peak starts falling
 
     bool _bandsDirty = true;

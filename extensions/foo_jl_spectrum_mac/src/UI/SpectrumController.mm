@@ -205,16 +205,25 @@ namespace {
     s.maxHz     = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
     s.smoothing = (int)getConfigInt(kKeySmoothing, kDefaultSmoothing);
     s.smoothingMode = (int)getConfigInt(kKeySmoothingMode, kDefaultSmoothingMode);
+    s.rmsMs     = getRmsMs();
     s.slopeDbPerOct = getConfigInt(kKeySlopeTenths, kDefaultSlopeTenths) / 10.0f;
     s.freqScale = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
     s.peakHold  = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
 
     // Map friendly 0-100 sliders / ms to concrete per-frame rates (60fps timer).
     double shadowSpeed = getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed) / 100.0;
-    double peakSpeed   = getConfigInt(kKeyPeakFallSpeed, kDefaultPeakFallSpeed) / 100.0;
     int    peakHoldMs  = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
     s.shadowFall     = (float)(0.001 + shadowSpeed * 0.0275);   // ~0.001 (slow) .. 0.0285 (fast)
-    s.peakGravity    = (float)(0.0001 + peakSpeed * 0.0027);    // ~0.0001 .. 0.0028
+    if (s.smoothingMode == SmoothingRms && s.rmsMs > 0) {
+        // An RMS curve falls at most 10*log10(e)/tau dB/s (power decaying with
+        // nothing coming in), slow enough that most fixed shadow rates would
+        // fall faster and stay hidden under it. Scale the slider to 15-90% of
+        // that rate so the shadow always trails the curve.
+        const double curveFallDbPerSec = 10.0 * std::log10(std::exp(1.0)) / (s.rmsMs / 1000.0);
+        const double curveFall = curveFallDbPerSec / 60.0 / (kDisplayCeilDb - kDisplayFloorDb);
+        s.shadowFall = (float)(curveFall * (0.15 + 0.75 * shadowSpeed));
+    }
+    s.peakFall       = (float)(getPeakFallDbPerSec() / 60.0 / (kDisplayCeilDb - kDisplayFloorDb));
     s.peakHoldFrames = (int)std::lround(peakHoldMs * 60.0 / 1000.0);
 
     _settings = s;

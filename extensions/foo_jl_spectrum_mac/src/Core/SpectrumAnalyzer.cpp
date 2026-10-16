@@ -81,8 +81,9 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     if (_settings.maxHz <= _settings.minHz + 100) _settings.maxHz = _settings.minHz + 100;
     if (_settings.smoothing < 0)   _settings.smoothing = 0;
     if (_settings.smoothing > 100) _settings.smoothing = 100;
+    _settings.rmsMs = std::max(0, std::min(_settings.rmsMs, spectrum_config::kMaxRmsMs));
     if (_settings.shadowFall < 0.0005f) _settings.shadowFall = 0.0005f;
-    if (_settings.peakGravity < 0.00005f) _settings.peakGravity = 0.00005f;
+    if (_settings.peakFall < 0.0001f) _settings.peakFall = 0.0001f;
     if (_settings.peakHoldFrames < 0) _settings.peakHoldFrames = 0;
 
     // Keep the current levels across reconfiguration, resampled when the bar
@@ -92,7 +93,6 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     resampleTo(_bars, n);
     resampleTo(_shadow, n);
     resampleTo(_peaks, n);
-    resampleTo(_peakVel, n);
     resampleTo(_peakHold, n);
     if (_settings.smoothingMode != spectrum_config::SmoothingRms) _binPow.clear();
     _bandsDirty = true;  // bin ranges depend on sample rate, computed lazily
@@ -174,10 +174,9 @@ bool SpectrumAnalyzer::tick(double dt) {
     const float decayKeep  = std::pow(0.60f + 0.39f * s, frames);   // ~0.60 .. 0.99 per frame
     const float attackKeep = std::pow(0.10f + 0.50f * s, frames);   // ~0.10 .. 0.60 per frame
 
-    // RMS mode: one-pole average of power with a time constant set by the
-    // smoothing value.
+    // RMS mode: one-pole average of power with its own time constant.
     const bool rms = _settings.smoothingMode == spectrum_config::SmoothingRms;
-    const double rmsTauMs = _settings.smoothing * spectrum_config::kRmsMsPerSmoothingStep;
+    const double rmsTauMs = _settings.rmsMs;
     const float rmsKeep = rmsTauMs > 0.0 ? (float)std::exp(-(frames * 1000.0 / 60.0) / rmsTauMs) : 0.0f;
 
     audio_chunk_impl spectrum;
@@ -269,7 +268,7 @@ bool SpectrumAnalyzer::tick(double dt) {
     // than the layer beneath it: bar (fast) < shadow (medium) < peak (slowest).
     const float kShadowFall  = _settings.shadowFall * frames;
     const float kPeakHold    = (float)_settings.peakHoldFrames;
-    const float kPeakGravity = _settings.peakGravity * frames;
+    const float kPeakFall    = _settings.peakFall * frames;
 
     bool anyActive = false;
     for (int i = 0; i < bars; ++i) {
@@ -283,17 +282,16 @@ bool SpectrumAnalyzer::tick(double dt) {
             if (_shadow[i] < b) _shadow[i] = b;
         }
 
-        // Peak line: instant rise, brief hold, then slow accelerating fall.
+        // Peak line: instant rise, hold, then a steady fall in dB (the
+        // peak-meter convention, e.g. IEC 60268-18).
         if (b >= _peaks[i]) {
             _peaks[i] = b;
             _peakHold[i] = kPeakHold;
-            _peakVel[i] = 0.0f;
         } else if (_peakHold[i] > 0.0f) {
             _peakHold[i] -= frames;
         } else {
-            _peakVel[i] += kPeakGravity;
-            _peaks[i] -= _peakVel[i] * frames;
-            if (_peaks[i] < b) { _peaks[i] = b; _peakVel[i] = 0.0f; }
+            _peaks[i] -= kPeakFall;
+            if (_peaks[i] < b) _peaks[i] = b;
             if (_peaks[i] < 0.0f) _peaks[i] = 0.0f;
         }
 
@@ -313,7 +311,6 @@ void SpectrumAnalyzer::suspend() {
     std::fill(_bars.begin(), _bars.end(), 0.0f);
     std::fill(_shadow.begin(), _shadow.end(), 0.0f);
     std::fill(_peaks.begin(), _peaks.end(), 0.0f);
-    std::fill(_peakVel.begin(), _peakVel.end(), 0.0f);
     std::fill(_binPow.begin(), _binPow.end(), 0.0f);
     std::fill(_peakHold.begin(), _peakHold.end(), 0.0f);
     _active = false;
