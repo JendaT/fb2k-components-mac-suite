@@ -28,6 +28,7 @@ public:
         int    smoothingMode = 0;    // spectrum_config::SmoothingMode
         int    rmsMs      = 125;     // RMS: power averaging time constant (ms)
         int    stereoMode = 0;       // spectrum_config::StereoMode
+        int    octaveFraction = 0;   // 0 = per-bin detail, N = average power over 1/N octave per bar
         float  slopeDbPerOct = 0.0f; // level tilt around 1 kHz (0 = flat)
         int    freqScale  = 0;       // spectrum_config::FreqScale
         bool   peakHold    = true;
@@ -76,8 +77,9 @@ public:
 
 private:
     void rebuildBands();
-    // Display level (0..1) of one bar, read off the first `binCount` bins of `mag`.
-    float barTarget(int bar, const std::vector<float>& mag, int binCount) const;
+    // Display level (0..1) of one bar, read off the first `binCount` bins of
+    // `mag`; `cumPow` is the running sum of mag^2 (needed for octave smoothing).
+    float barTarget(int bar, const std::vector<float>& mag, const std::vector<double>& cumPow, int binCount) const;
     void releaseStream();
     // Fill _mid (and _side) with fftSize samples around stream time `t`.
     bool readAudio(double t);
@@ -108,6 +110,11 @@ private:
     // FFT bin (low end), or -1 for bands that aggregate whole bins.
     std::vector<float> _binCenter;
     std::vector<float> _barGain;  // per-bar linear gain from the spectral slope
+    // Octave smoothing: averaging window per bar in fractional bin units
+    // (bin b spans b-0.5..b+0.5), or a negative start when the bar is read the
+    // normal way (no smoothing, or a window narrower than one bin).
+    std::vector<double> _avgFrom, _avgTo;
+    std::vector<double> _cumPow;  // scratch: running sum of power per bin
 
     std::vector<float> _binMag, _binMagSide;  // per-bin magnitude the bars are read from
     std::vector<float> _binPow, _binPowSide;  // RMS mode: time-averaged power per bin

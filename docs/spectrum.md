@@ -15,7 +15,9 @@ At the low end, where several log-scale bands fall inside a single FFT bin, each
 | Mode | Description |
 |------|-------------|
 | **Bars** | Discrete frequency bars with configurable gap and fill style |
-| **Curve** | Smooth curve spanning the full plot width, in one of four curve styles; always drawn at full resolution (one point per point of panel width, up to 2048), so the Bars setting does not apply |
+| **Curve** | Smooth curve spanning the full plot width, in one of four curve styles; always drawn at full resolution (one point per point of panel width, up to 2048), so the Bars setting does not apply. **Curve detail** sets how much of the FFT's detail it shows |
+
+**Curve detail** takes the Bars setting's place in Curve mode. **Full** draws every FFT bin. **1/24**, **1/12**, **1/6** or **1/3 octave** averages the signal power over that fraction of an octave around each point (fractional-octave smoothing, as measurement analyzers offer), for a calmer curve with less detail; the peak and side lines follow it. At the low end, where the window is narrower than an FFT bin, the curve keeps reading the bins directly and blends into the average as the window widens.
 
 The curve uses monotone cubic interpolation (Steffen), so it never overshoots between bands: peaks stay where the data puts them and the curve stays inside the 0..1 range.
 
@@ -93,7 +95,7 @@ The peak line is the highest of every recent level, each held for the hold time 
 
 **Stereo: Mid + side** adds the side channel, (L - R) / 2, as a second line in the bar color's complementary hue. The main curve is always the mid channel, (L + R) / 2. Mono content leaves the side line at the bottom; wide content brings it up towards the mid curve.
 
-By default the curve uses RMS averaging at 200 ms (falling up to about 22 dB/s), and the peak line holds for 1 s and then falls 18 dB/s. For reference, real-time analyzers commonly use the IEC 61672 "Fast" time weighting (125 ms, up to about 35 dB/s), and digital peak meters return 20 dB in 1.7 s (about 12 dB/s, IEC 60268-18). The curve shows what is playing now; the peak line above it shows how loud each band just was. Peak fall settings from 0.3.0 (a 0-100 accelerating speed) convert to the steady rate that covers the first 20 dB in the same time.
+By default the curve uses RMS averaging at 270 ms (falling up to about 16 dB/s), and the peak line holds for 920 ms and then falls 12 dB/s. For reference, real-time analyzers commonly use the IEC 61672 "Fast" time weighting (125 ms, up to about 35 dB/s), and digital peak meters return 20 dB in 1.7 s (about 12 dB/s, IEC 60268-18). The curve shows what is playing now; the peak line above it shows how loud each band just was. Peak fall settings from 0.3.0 (a 0-100 accelerating speed) convert to the steady rate that covers the first 20 dB in the same time.
 
 ### Bar Styles
 
@@ -136,13 +138,14 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Bars | Number of frequency bars in Bars mode; Auto draws one bar per 2 points of panel width (up to 2048). Disabled in Curve mode | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | Auto |
+| Bars | Number of frequency bars in Bars mode; Auto draws one bar per 2 points of panel width (up to 2048). Replaced by Curve detail in Curve mode | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | Auto |
 | FFT size | FFT window length | 1024, 2048, 4096, 8192, 16384 | 2048 |
 | Stereo | Mono, or Mid + side (side channel as a second line) | Mono, Mid + side | Mono |
+| Curve detail | Curve mode only, in the Bars row: Full draws every FFT bin, an octave fraction averages power over that band around each point | Full, 1/24, 1/12, 1/6, 1/3 octave | Full |
 | Frequency scale | Band mapping | Logarithmic, Linear, Logarithmic (compact bass) | Logarithmic (compact bass) |
 | Range (Hz) | Lowest and highest displayed frequency | 10-2000 to 1000-24000 | 20 to 20000 |
 | Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | RMS average |
-| Smoothing | Attack / decay: temporal smoothing (higher = smoother). RMS average: the averaging time. Stored per mode | 0-100 / 0-500 ms | 82 / 200 ms |
+| Smoothing | Attack / decay: temporal smoothing (higher = smoother). RMS average: the averaging time. Stored per mode | 0-100 / 0-500 ms | 82 / 270 ms |
 | Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 0 |
 | Top | Level at the top of the display | 0 to -60 dB | 0 dB |
 | Range | dB from the top of the display to the bottom | 60, 80, 90, 120 dB | 90 dB |
@@ -152,8 +155,8 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | Shadow fall | How fast the shadow band falls; disabled while the shadow is not drawn | 0-100 | 76 |
-| Peak fall | How fast the peak line falls after its hold | 1-60 dB/s | 18 dB/s |
-| Peak hold | How long the peak line stays before falling | 0-2000 ms | 1000 ms |
+| Peak fall | How fast the peak line falls after its hold | 1-60 dB/s | 12 dB/s |
+| Peak hold | How long the peak line stays before falling | 0-2000 ms | 920 ms |
 
 ### Appearance
 
@@ -205,7 +208,7 @@ splitter vertical
 - Mid is the channel average, side half the difference of the first two channels; each gets a Hann window and a vDSP real FFT, scaled by `1 / sum(window)` so a full-scale sine reads 1.0
 - Band edges recomputed when the stream's sample rate changes; the DC bin is skipped
 - Peak magnitude across each band's bins (reads punchier than the average)
-- RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 22 dB/s at 200 ms); the shadow fall slider maps to 15-90% of that rate
+- RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 16 dB/s at 270 ms); the shadow fall slider maps to 15-90% of that rate
 - Bar height is `(dB - (Top - Range)) / Range`, clamped to 0..1; peak fall and the RMS shadow fall are converted to height per frame against the current Range, so their dB/s rates hold at any range
 - The slope is a per-bar gain of `slope x log2(f / 1 kHz)` dB at the bar's centre frequency
 - Rates for smoothing, shadow fall, peak fall, and peak hold are defined per 1/60 s and scaled by the time since the previous update, so motion is the same at any refresh rate

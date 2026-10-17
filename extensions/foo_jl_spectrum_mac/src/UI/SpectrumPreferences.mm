@@ -24,7 +24,8 @@
     NSTextField   *_colorBarBrightnessLabel;
     NSPopUpButton *_orientationPopup;
     NSPopUpButton *_barCountPopup;
-    NSTextField   *_barCountCurveNote;
+    NSTextField   *_barCountLabel;      // "Bars:" or "Curve detail:" with the draw mode
+    NSPopUpButton *_curveDetailPopup;   // takes the Bars popup's place in Curve mode
     NSPopUpButton *_fftSizePopup;
     NSPopUpButton *_stereoPopup;
     NSPopUpButton *_barStylePopup;
@@ -97,7 +98,9 @@
     [self.view addSubview:analysisHeader];
     y += 22;
 
-    [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
+    // One row, two settings: Bars in Bars mode, Curve detail in Curve mode.
+    _barCountLabel = [self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)];
+    [self.view addSubview:_barCountLabel];
     _barCountPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
     // Item tags hold the stored value; "Auto" (0) fits the bar count to the panel.
     [_barCountPopup addItemWithTitle:@"Auto"];
@@ -106,15 +109,19 @@
         [_barCountPopup addItemWithTitle:n.stringValue];
         _barCountPopup.lastItem.tag = n.integerValue;
     }
-    _barCountPopup.toolTip = @"Bars mode only (Curve mode always draws at full resolution). Auto draws one bar per 2 points of panel width";
+    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width";
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
     [self.view addSubview:_barCountPopup];
-    // Shown while Curve mode greys the popup out.
-    _barCountCurveNote = [self label:@"Curve mode uses full resolution"
-                                  at:NSMakePoint(controlX + 110, y + 4)];
-    _barCountCurveNote.frame = NSMakeRect(controlX + 110, y + 4, 190, 17);  // ends inside the 460 pt page
-    _barCountCurveNote.textColor = [NSColor secondaryLabelColor];
-    [self.view addSubview:_barCountCurveNote];
+    _curveDetailPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
+    // Item tags hold the stored octave fraction (0 = full detail).
+    for (int fraction : spectrum_config::kCurveOctaveFractions) {
+        [_curveDetailPopup addItemWithTitle:fraction == 0 ? @"Full"
+                                           : [NSString stringWithFormat:@"1/%d octave", fraction]];
+        _curveDetailPopup.lastItem.tag = fraction;
+    }
+    _curveDetailPopup.toolTip = @"Full draws every FFT bin; an octave fraction averages the power over that band around each point for a smoother curve";
+    _curveDetailPopup.target = self; _curveDetailPopup.action = @selector(curveDetailChanged:);
+    [self.view addSubview:_curveDetailPopup];
     y += 30;
 
     [self.view addSubview:[self label:@"FFT size:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -440,6 +447,7 @@
         [_barCountPopup selectItemWithTag:kDefaultBarCount];
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
     [self selectIndexPopup:_stereoPopup index:getConfigInt(kKeyStereoMode, kDefaultStereoMode)];
+    [_curveDetailPopup selectItemWithTag:getCurveOctaveFraction()];
     [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
     [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
@@ -548,6 +556,11 @@
     [self notifyChanged];
 }
 
+- (void)curveDetailChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyCurveOctaveFraction, _curveDetailPopup.selectedItem.tag);
+    [self notifyChanged];
+}
+
 - (void)stereoModeChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyStereoMode, _stereoPopup.indexOfSelectedItem);
     [self notifyChanged];
@@ -587,8 +600,8 @@
     [self notifyChanged];
 }
 
-// Bars applies to the Bars draw mode (Curve draws at full resolution); curve
-// style to the Curve draw mode, brightness to its color-bar styles. The shadow
+// The first row is Bars in Bars mode and Curve detail in Curve mode; curve
+// style applies to the Curve draw mode, brightness to its color-bar styles. The shadow
 // is not drawn in the color-bar styles, and its fall speed only matters while
 // it is shown.
 - (void)updateDependentControlsEnabled {
@@ -596,8 +609,9 @@
     const BOOL curve = _drawModePopup.indexOfSelectedItem == DrawModeCurve;
     const NSInteger style = _curveStylePopup.indexOfSelectedItem;
     const BOOL colorBars = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
-    _barCountPopup.enabled = !curve;
-    _barCountCurveNote.hidden = !curve;
+    _barCountLabel.stringValue = curve ? @"Curve detail:" : @"Bars:";
+    _barCountPopup.hidden = curve;
+    _curveDetailPopup.hidden = !curve;
     _curveStylePopup.enabled = curve;
     _colorBarBrightnessSlider.enabled = colorBars;
     _shadowFillCheckbox.enabled = !colorBars;
