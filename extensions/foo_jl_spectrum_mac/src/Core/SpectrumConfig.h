@@ -84,10 +84,17 @@ enum Orientation {
     OrientationVertical = 1    // Frequency along Y, magnitude grows sideways
 };
 
+// Which channels the spectrum shows
+enum StereoMode {
+    StereoMono = 0,     // Mid (L+R)/2 only
+    StereoMidSide = 1   // Mid, plus the side (L-R)/2 as a second line
+};
+
 // --- Defaults ---
 constexpr int      kDefaultBarCount   = 96;      // Number of frequency bars
 constexpr int      kBarCountAuto      = 0;       // Bar count follows the view size
 constexpr double   kAutoBarPitch      = 2.0;     // Auto: points per bar along the frequency axis
+constexpr double   kCurvePointPitch   = 1.0;     // Curve mode: points per curve knot (Bars setting not used)
 constexpr int      kMaxBarCount       = 2048;
 constexpr int      kDefaultFftSize    = 2048;    // FFT window (power of 2)
 constexpr int      kDefaultBarStyle   = BarStyleGradient;
@@ -122,6 +129,7 @@ constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behin
 constexpr int      kDefaultGridOpacity = 84;     // Grid line opacity 0-100
 constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
+constexpr int      kDefaultStereoMode = StereoMono;
 
 // The fixed dB window up to 0.3.0, before Top and Range were settings. Only the
 // peak fall migration still converts against it.
@@ -146,6 +154,7 @@ static const char* const kKeyDrawMode       = "draw_mode";
 static const char* const kKeyCurveStyle     = "curve_style";
 static const char* const kKeyColorBarBrightness = "color_bar_brightness";
 static const char* const kKeyOrientation    = "orientation";
+static const char* const kKeyStereoMode     = "stereo_mode";
 static const char* const kKeyMinHz          = "min_hz";
 static const char* const kKeyMaxHz          = "max_hz";
 static const char* const kKeyGapPercent     = "gap_percent";
