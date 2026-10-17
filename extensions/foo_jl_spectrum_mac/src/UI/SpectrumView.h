@@ -16,7 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 @protocol SpectrumViewDelegate <NSObject>
 - (void)spectrumViewRequestsContextMenu:(SpectrumView *)view atPoint:(NSPoint)point;
 @optional
-// Sent on resize while the bar count is "Auto", with the count for the new size.
+// Sent on resize while the bar count follows the view ("Auto" bars, or Curve
+// mode), with the count for the new size.
 - (void)spectrumView:(SpectrumView *)view autoBarCountChanged:(NSInteger)count;
 // Sent on a left double-click.
 - (void)spectrumViewRequestsFullScreenToggle:(SpectrumView *)view;
@@ -34,15 +35,18 @@ NS_ASSUME_NONNULL_BEGIN
 // Re-read display settings (colors, style, gap, peak hold) from config.
 - (void)reloadSettings;
 
-// Bar count for the "Auto" setting at the current size: one bar per
-// kAutoBarPitch points along the frequency axis.
+// Bar count that follows the view size: in Curve mode one curve point per
+// kCurvePointPitch points along the frequency axis, otherwise ("Auto" bars)
+// one bar per kAutoBarPitch points.
 - (NSInteger)autoBarCount;
 
-// Provide the latest bar magnitudes, shadow fill, and peak positions
-// (each 0..1, `count` entries) and redraw.
+// Provide the latest bar magnitudes, shadow fill, peak positions and, in
+// Mid + side mode, the side channel (nil otherwise); each 0..1 with `count`
+// entries. Redraws.
 - (void)setBarsData:(const float *)bars
              shadow:(const float *)shadow
               peaks:(const float *)peaks
+               side:(const float * _Nullable)side
               count:(NSInteger)count;
 
 @end

@@ -25,6 +25,7 @@
     NSPopUpButton *_orientationPopup;
     NSPopUpButton *_barCountPopup;
     NSPopUpButton *_fftSizePopup;
+    NSPopUpButton *_stereoPopup;
     NSPopUpButton *_barStylePopup;
     NSPopUpButton *_freqScalePopup;
     NSTextField   *_minHzField;
@@ -103,7 +104,7 @@
         [_barCountPopup addItemWithTitle:n.stringValue];
         _barCountPopup.lastItem.tag = n.integerValue;
     }
-    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width (pair with a large FFT size for bass detail)";
+    _barCountPopup.toolTip = @"Bars mode only (Curve mode always draws at full resolution). Auto draws one bar per 2 points of panel width";
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
     [self.view addSubview:_barCountPopup];
     y += 30;
@@ -115,6 +116,13 @@
     }
     _fftSizePopup.target = self; _fftSizePopup.action = @selector(fftSizeChanged:);
     [self.view addSubview:_fftSizePopup];
+    [self.view addSubview:[self label:@"Stereo:" at:NSMakePoint(controlX + 112, y + 3)]];
+    _stereoPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX + 165, y, 125, 25)];
+    [_stereoPopup addItemWithTitle:@"Mono"];          // order = StereoMode
+    [_stereoPopup addItemWithTitle:@"Mid + side"];
+    _stereoPopup.toolTip = @"Mid + side adds the stereo difference (L-R) as a second line; mono content leaves it at the bottom";
+    _stereoPopup.target = self; _stereoPopup.action = @selector(stereoModeChanged:);
+    [self.view addSubview:_stereoPopup];
     y += 30;
 
     [self.view addSubview:[self label:@"Frequency scale:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -418,6 +426,7 @@
     if (![_barCountPopup selectItemWithTag:getConfigInt(kKeyBarCount, kDefaultBarCount)])
         [_barCountPopup selectItemWithTag:kDefaultBarCount];
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
+    [self selectIndexPopup:_stereoPopup index:getConfigInt(kKeyStereoMode, kDefaultStereoMode)];
     [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
     [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
@@ -526,6 +535,11 @@
     [self notifyChanged];
 }
 
+- (void)stereoModeChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyStereoMode, _stereoPopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
 - (void)fftSizeChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyFftSize, _fftSizePopup.titleOfSelectedItem.intValue);
     [self notifyChanged];
@@ -560,14 +574,16 @@
     [self notifyChanged];
 }
 
-// Curve style applies to the Curve draw mode; brightness to its color-bar
-// styles. The shadow is not drawn in the color-bar styles, and its fall speed
-// only matters while it is shown.
+// Bars applies to the Bars draw mode (Curve draws at full resolution); curve
+// style to the Curve draw mode, brightness to its color-bar styles. The shadow
+// is not drawn in the color-bar styles, and its fall speed only matters while
+// it is shown.
 - (void)updateDependentControlsEnabled {
     using namespace spectrum_config;
     const BOOL curve = _drawModePopup.indexOfSelectedItem == DrawModeCurve;
     const NSInteger style = _curveStylePopup.indexOfSelectedItem;
     const BOOL colorBars = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
+    _barCountPopup.enabled = !curve;
     _curveStylePopup.enabled = curve;
     _colorBarBrightnessSlider.enabled = colorBars;
     _shadowFillCheckbox.enabled = !colorBars;

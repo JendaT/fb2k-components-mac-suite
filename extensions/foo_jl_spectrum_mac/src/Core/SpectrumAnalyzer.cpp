@@ -5,11 +5,12 @@
 
 #include "SpectrumAnalyzer.h"
 #include "SpectrumConfig.h"
+#include <Accelerate/Accelerate.h>
 #include <cmath>
 #include <algorithm>
 
 namespace {
-    // Convert a normalized magnitude (0..1 from KStreamFlagNewFFT) into a
+    // Convert a normalized magnitude (a full-scale sine reads 1.0) into a
     // display value by mapping a dB window to 0..1. This gives the familiar
     // spectrum-analyzer look where quiet detail is still visible.
     inline float magnitudeToDisplay(float mag, float topDb, float rangeDb) {
@@ -40,36 +41,49 @@ namespace {
         }
         v.swap(out);
     }
+
+    // Peak history keeps at most one entry per 1/60 s; faster frames merge.
+    constexpr double kPeakHistoryStep = 1.0 / 60.0;
 }
 
 SpectrumAnalyzer::SpectrumAnalyzer() {
     configure(Settings{});
 }
 
-float SpectrumAnalyzer::barTarget(int i, int binCount) const {
+SpectrumAnalyzer::~SpectrumAnalyzer() {
+    if (_fftSetup) vDSP_destroy_fftsetup(_fftSetup);
+}
+
+float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, int binCount) const {
     const int lo = _binLo[i];
     int hi = _binHi[i];
     if (hi >= binCount) hi = binCount - 1;
     // If the clamp leaves lo > hi, the band loop runs zero times and the bar
     // reads zero.
 
-    float mag = 0.0f;
+    const float gain = _barGain[i];
+    const float topDb = _settings.topDb, rangeDb = _settings.rangeDb;
     const float centre = _binCenter[i];
     if (centre >= 1.0f && centre < (float)(binCount - 1)) {
-        // Narrower than a bin: interpolate at the band centre.
+        // Narrower than a bin: interpolate at the band centre, in dB, so the
+        // curve runs straight between bins instead of sagging towards the
+        // quieter one.
         const int b0 = (int)centre;
         const float t = centre - (float)b0;
-        mag = _binMag[b0] * (1.0f - t) + _binMag[b0 + 1] * t;
-    } else {
-        // Peak magnitude across the band (peak reads punchier than average).
-        for (int b = lo; b <= hi; ++b) {
-            if (_binMag[b] > mag) mag = _binMag[b];
-        }
+        const float d0 = magnitudeToDisplay(mag[b0] * gain, topDb, rangeDb);
+        const float d1 = magnitudeToDisplay(mag[b0 + 1] * gain, topDb, rangeDb);
+        return d0 * (1.0f - t) + d1 * t;
     }
-    return magnitudeToDisplay(mag * _barGain[i], _settings.topDb, _settings.rangeDb);
+    // Peak magnitude across the band (peak reads punchier than average).
+    float m = 0.0f;
+    for (int b = lo; b <= hi; ++b) {
+        if (mag[b] > m) m = mag[b];
+    }
+    return magnitudeToDisplay(m * gain, topDb, rangeDb);
 }
 
 void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
+    const int oldFftSize = _settings.fftSize;
     _settings = settings;
 
     // Sanitize
@@ -83,8 +97,27 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     _settings.rmsMs = std::max(0, std::min(_settings.rmsMs, spectrum_config::kMaxRmsMs));
     if (_settings.shadowFall < 0.0005f) _settings.shadowFall = 0.0005f;
     if (_settings.peakFall < 0.0001f) _settings.peakFall = 0.0001f;
-    if (_settings.peakHoldFrames < 0) _settings.peakHoldFrames = 0;
+    if (_settings.peakHoldSec < 0.0f) _settings.peakHoldSec = 0.0f;
     if (_settings.rangeDb < 10.0f) _settings.rangeDb = 10.0f;
+
+    // FFT setup and Hann window for the current size.
+    if (!_fftSetup || _settings.fftSize != oldFftSize) {
+        const int n = _settings.fftSize;
+        if (_fftSetup) vDSP_destroy_fftsetup(_fftSetup);
+        _fftLog2 = (int)std::lround(std::log2((double)n));
+        _fftSetup = vDSP_create_fftsetup((vDSP_Length)_fftLog2, kFFTRadix2);
+        _window.resize((size_t)n);
+        vDSP_hann_window(_window.data(), (vDSP_Length)n, vDSP_HANN_DENORM);
+        _windowSum = 0.0f;
+        for (float w : _window) _windowSum += w;
+        _windowed.resize((size_t)n);
+        _re.resize((size_t)n / 2);
+        _im.resize((size_t)n / 2);
+        _mid.assign((size_t)n, 0.0f);
+        _side.assign((size_t)n, 0.0f);
+        _binPow.clear();
+        _binPowSide.clear();
+    }
 
     // Keep the current levels across reconfiguration, resampled when the bar
     // count changes, so a settings tweak or an "Auto" bar count tracking a
@@ -93,8 +126,19 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     resampleTo(_bars, n);
     resampleTo(_shadow, n);
     resampleTo(_peaks, n);
-    resampleTo(_peakHold, n);
-    if (_settings.smoothingMode != spectrum_config::SmoothingRms) _binPow.clear();
+    resampleTo(_peakQ, n);
+    for (auto& entry : _peakRing) resampleTo(entry, n);
+    _peakPool.clear();
+    if (_settings.stereoMode == spectrum_config::StereoMidSide) {
+        resampleTo(_sideBars, n);
+    } else {
+        _sideBars.clear();
+        _binPowSide.clear();
+    }
+    if (_settings.smoothingMode != spectrum_config::SmoothingRms) {
+        _binPow.clear();
+        _binPowSide.clear();
+    }
     _bandsDirty = true;  // bin ranges depend on sample rate, computed lazily
 }
 
@@ -162,6 +206,166 @@ void SpectrumAnalyzer::rebuildBands() {
     _bandsDirty = false;
 }
 
+bool SpectrumAnalyzer::readAudio(double t) {
+    const int n = _settings.fftSize;
+    const double sr = _lastSampleRate > 0 ? _lastSampleRate : 44100.0;
+    const double len = n / sr;
+
+    // Centre the FFT frame on the playback position, like the core's own
+    // spectrum. Right after a start or seek there is no history behind it, so
+    // fall back to the frame ending there, then to the one starting there.
+    audio_chunk_impl chunk;
+    bool ok = _stream->get_chunk_absolute(chunk, t - len * 0.5, len);
+    if (!ok) ok = _stream->get_chunk_absolute(chunk, t - len, len);
+    if (!ok) ok = _stream->get_chunk_absolute(chunk, t, len);
+    if (!ok) return false;
+
+    const unsigned channels = chunk.get_channel_count();
+    const size_t frames = chunk.get_sample_count();
+    const audio_sample* data = chunk.get_data();
+    if (channels == 0 || frames == 0 || data == nullptr) return false;
+
+    const double chunkRate = chunk.get_sample_rate();
+    if (chunkRate > 0 && chunkRate != _lastSampleRate) {
+        _lastSampleRate = chunkRate;
+        _bandsDirty = true;
+    }
+
+    // Mid is the channel average (what the core's mono mode shows); side is
+    // half the difference of the first two channels.
+    const bool wantSide = _settings.stereoMode == spectrum_config::StereoMidSide;
+    const size_t count = std::min(frames, (size_t)n);
+    const float invCh = 1.0f / (float)channels;
+    for (size_t i = 0; i < count; ++i) {
+        const audio_sample* f = data + i * channels;
+        float sum = 0.0f;
+        for (unsigned c = 0; c < channels; ++c) sum += (float)f[c];
+        _mid[i] = sum * invCh;
+        if (wantSide) _side[i] = channels >= 2 ? 0.5f * ((float)f[0] - (float)f[1]) : 0.0f;
+    }
+    // A short chunk (start of a track) is zero-padded.
+    std::fill(_mid.begin() + (long)count, _mid.end(), 0.0f);
+    if (wantSide) std::fill(_side.begin() + (long)count, _side.end(), 0.0f);
+    return true;
+}
+
+void SpectrumAnalyzer::computeSpectrum(const std::vector<float>& in, std::vector<float>& mag) {
+    const int n = _settings.fftSize;
+    const int half = n / 2;
+    vDSP_vmul(in.data(), 1, _window.data(), 1, _windowed.data(), 1, (vDSP_Length)n);
+
+    DSPSplitComplex split{_re.data(), _im.data()};
+    vDSP_ctoz(reinterpret_cast<const DSPComplex*>(_windowed.data()), 2, &split, 1, (vDSP_Length)half);
+    vDSP_fft_zrip(_fftSetup, &split, 1, (vDSP_Length)_fftLog2, kFFTDirection_Forward);
+
+    // vDSP's real FFT returns twice the DFT. Amplitude of bin k is
+    // 2|X[k]| / sum(window), so a full-scale sine reads 1.0: with the factor
+    // of two from vDSP that is |zrip[k]| / sum(window).
+    mag.resize((size_t)half);
+    vDSP_zvabs(&split, 1, mag.data(), 1, (vDSP_Length)half);
+    const float scale = 1.0f / _windowSum;
+    vDSP_vsmul(mag.data(), 1, &scale, mag.data(), 1, (vDSP_Length)half);
+    mag[0] = 0.0f;  // packed DC/Nyquist; DC is never displayed
+}
+
+void SpectrumAnalyzer::updateLayer(std::vector<float>& layer, std::vector<float>& mag, std::vector<float>& pow,
+                                   bool live, int binCount, float attackKeep, float decayKeep, float rmsKeep) {
+    const int bars = (int)layer.size();
+    const bool rms = _settings.smoothingMode == spectrum_config::SmoothingRms;
+
+    if (live && rms) {
+        // Average power per bin over time and read the bars off the
+        // averaged spectrum, so transients decay at one rate everywhere.
+        resampleTo(pow, (size_t)binCount);
+        for (int b = 0; b < binCount; ++b) {
+            pow[b] = pow[b] * rmsKeep + mag[b] * mag[b] * (1.0f - rmsKeep);
+            mag[b] = std::sqrt(pow[b]);
+        }
+        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, binCount);
+    } else if (live) {
+        for (int i = 0; i < bars; ++i) {
+            const float target = barTarget(i, mag, binCount);
+            const float prev = layer[i];
+            const float keep = (target > prev) ? attackKeep : decayKeep;
+            layer[i] = prev * keep + target * (1.0f - keep);
+        }
+    } else if (rms && !pow.empty()) {
+        // No live audio: let the averaged spectrum run down at its own rate.
+        const int bins = (int)pow.size();
+        mag.resize((size_t)bins);
+        for (int b = 0; b < bins; ++b) {
+            pow[b] *= rmsKeep;
+            mag[b] = std::sqrt(pow[b]);
+        }
+        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, bins);
+    } else {
+        // No live audio: decay everything toward zero.
+        for (int i = 0; i < bars; ++i) {
+            layer[i] *= decayKeep;
+            if (layer[i] < 0.0015f) layer[i] = 0.0f;
+        }
+    }
+}
+
+// The peak line at time t is the highest of every past level L(s), each held
+// for the hold time and then falling at the peak fall rate:
+//     peak(t) = max over s <= t of  L(s) - rate * max(0, t - s - hold)
+//             = max( highest L within [t - hold, t],  Q(t - hold) )
+// where Q is the plain linear-fall envelope (no hold) of the levels older than
+// the hold window. A per-bar "hold timer" that restarts only on a new maximum
+// forgets a slightly lower level that arrives during the hold, so neighbouring
+// bars end up seconds apart in their fall and the line shows notches; this
+// form keeps every level and stays as smooth across frequency as the bars.
+void SpectrumAnalyzer::updatePeaks(double dtSec) {
+    _clock += dtSec;
+    const size_t n = _bars.size();
+    const double hold = _settings.peakHoldSec;
+    const double fallPerSec = _settings.peakFall * 60.0;
+
+    // An entry keeps the time of its first frame. Moving it to the latest
+    // merged frame would let a fast display (every frame under 1/60 s apart)
+    // merge into one entry forever, which never ages out of the hold window
+    // and pins the peak line at the loudest level since.
+    if (!_peakTimes.empty() && _clock - _peakTimes.back() < kPeakHistoryStep) {
+        std::vector<float>& last = _peakRing.back();
+        for (size_t i = 0; i < n; ++i) last[i] = std::max(last[i], _bars[i]);
+    } else {
+        std::vector<float> entry;
+        if (!_peakPool.empty()) { entry.swap(_peakPool.back()); _peakPool.pop_back(); }
+        entry.assign(_bars.begin(), _bars.end());
+        _peakRing.push_back(std::move(entry));
+        _peakTimes.push_back(_clock);
+    }
+
+    // Levels whose hold has run out fold into the envelope Q.
+    if (_peakQ.size() != n) _peakQ.assign(n, 0.0f);
+    while (!_peakTimes.empty() && _peakTimes.front() <= _clock - hold) {
+        const double s = _peakTimes.front();
+        const float fall = (float)(std::max(0.0, s - _peakQTime) * fallPerSec);
+        const std::vector<float>& v = _peakRing.front();
+        for (size_t i = 0; i < n; ++i) _peakQ[i] = std::max(_peakQ[i] - fall, v[i]);
+        _peakQTime = s;
+        _peakPool.push_back(std::move(_peakRing.front()));
+        _peakRing.pop_front();
+        _peakTimes.pop_front();
+    }
+
+    const float qFall = (float)(std::max(0.0, (_clock - hold) - _peakQTime) * fallPerSec);
+    for (size_t i = 0; i < n; ++i) {
+        float p = _peakQ[i] - qFall;
+        for (const std::vector<float>& v : _peakRing) p = std::max(p, v[i]);
+        _peaks[i] = std::max(p, 0.0f);
+    }
+}
+
+void SpectrumAnalyzer::clearPeakHistory() {
+    for (auto& entry : _peakRing) _peakPool.push_back(std::move(entry));
+    _peakRing.clear();
+    _peakTimes.clear();
+    std::fill(_peakQ.begin(), _peakQ.end(), 0.0f);
+    _peakQTime = _clock;
+}
+
 bool SpectrumAnalyzer::tick(double dt) {
     // All rates are defined per 1/60 s frame; `frames` rescales them to the
     // actual step so motion looks the same at any refresh rate. Clamped so a
@@ -175,129 +379,65 @@ bool SpectrumAnalyzer::tick(double dt) {
     const float attackKeep = std::pow(0.10f + 0.50f * s, frames);   // ~0.10 .. 0.60 per frame
 
     // RMS mode: one-pole average of power with its own time constant.
-    const bool rms = _settings.smoothingMode == spectrum_config::SmoothingRms;
     const double rmsTauMs = _settings.rmsMs;
     const float rmsKeep = rmsTauMs > 0.0 ? (float)std::exp(-(frames * 1000.0 / 60.0) / rmsTauMs) : 0.0f;
 
-    audio_chunk_impl spectrum;
     bool gotData = false;
-
     try {
         if (_stream.is_empty()) {
             auto vm = visualisation_manager::get();
             if (vm.is_valid()) {
-                vm->create_stream(_stream, visualisation_manager::KStreamFlagNewFFT);
+                vm->create_stream(_stream, 0);
                 if (_stream.is_valid()) {
-                    _stream->set_channel_mode(visualisation_stream_v2::channel_mode_mono);
+                    _stream->set_channel_mode(visualisation_stream_v2::channel_mode_default);
+                    _stream->request_backlog(0.5);  // room for a centred frame at the largest FFT size
                 }
             }
         }
 
         if (_stream.is_valid()) {
             double t = 0;
-            if (_stream->get_absolute_time(t)) {
-                if (_stream->get_spectrum_absolute(spectrum, t, _settings.fftSize)) {
-                    gotData = true;
-                }
-            }
+            if (_stream->get_absolute_time(t)) gotData = readAudio(t);
         }
     } catch (...) {
         gotData = false;
     }
 
-    const int bars = _settings.barCount;
+    if (_bandsDirty) rebuildBands();
+    const int binCount = _settings.fftSize / 2;
+    const bool wantSide = _settings.stereoMode == spectrum_config::StereoMidSide;
 
     if (gotData) {
-        const double sr = spectrum.get_sample_rate();
-        if (sr > 0 && sr != _lastSampleRate) {
-            _lastSampleRate = sr;
-            _bandsDirty = true;
-        }
-        if (_bandsDirty) rebuildBands();
-
-        const audio_sample* data = spectrum.get_data();
-        const unsigned channels = spectrum.get_channel_count();
-        const int binCount = (int)spectrum.get_sample_count();   // == fftSize/2
-
-        // Magnitude per bin, averaged across channels.
-        _binMag.resize((size_t)binCount);
-        for (int b = 0; b < binCount; ++b) {
-            float m = 0.0f;
-            for (unsigned c = 0; c < channels; ++c) {
-                m += (float)std::fabs(data[(size_t)b * channels + c]);
-            }
-            _binMag[b] = channels > 1 ? m / (float)channels : m;
-        }
-
-        if (rms) {
-            // Average power per bin over time and read the bars off the
-            // averaged spectrum, so transients decay at one rate everywhere.
-            resampleTo(_binPow, (size_t)binCount);
-            for (int b = 0; b < binCount; ++b) {
-                _binPow[b] = _binPow[b] * rmsKeep + _binMag[b] * _binMag[b] * (1.0f - rmsKeep);
-                _binMag[b] = std::sqrt(_binPow[b]);
-            }
-            for (int i = 0; i < bars; ++i) _bars[i] = barTarget(i, binCount);
-        } else {
-            for (int i = 0; i < bars; ++i) {
-                const float target = barTarget(i, binCount);
-                const float prev = _bars[i];
-                const float keep = (target > prev) ? attackKeep : decayKeep;
-                _bars[i] = prev * keep + target * (1.0f - keep);
-            }
-        }
-    } else if (rms && !_binPow.empty()) {
-        // No live audio: let the averaged spectrum run down at its own rate.
-        if (_bandsDirty) rebuildBands();
-        const int binCount = (int)_binPow.size();
-        _binMag.resize((size_t)binCount);
-        for (int b = 0; b < binCount; ++b) {
-            _binPow[b] *= rmsKeep;
-            _binMag[b] = std::sqrt(_binPow[b]);
-        }
-        for (int i = 0; i < bars; ++i) _bars[i] = barTarget(i, binCount);
-    } else {
-        // No live audio: decay everything toward zero.
-        for (int i = 0; i < bars; ++i) {
-            _bars[i] *= decayKeep;
-            if (_bars[i] < 0.0015f) _bars[i] = 0.0f;
-        }
+        computeSpectrum(_mid, _binMag);
+        if (wantSide) computeSpectrum(_side, _binMagSide);
     }
+    updateLayer(_bars, _binMag, _binPow, gotData, binCount, attackKeep, decayKeep, rmsKeep);
+    if (wantSide) updateLayer(_sideBars, _binMagSide, _binPowSide, gotData, binCount, attackKeep, decayKeep, rmsKeep);
 
     // Three timescales, each rising instantly to the bar and falling slower
     // than the layer beneath it: bar (fast) < shadow (medium) < peak (slowest).
-    const float kShadowFall  = _settings.shadowFall * frames;
-    const float kPeakHold    = (float)_settings.peakHoldFrames;
-    const float kPeakFall    = _settings.peakFall * frames;
-
-    bool anyActive = false;
+    const float kShadowFall = _settings.shadowFall * frames;
+    const int bars = _settings.barCount;
     for (int i = 0; i < bars; ++i) {
-        const float b = _bars[i];
-
         // Shadow band: instant rise, steady medium fall.
+        const float b = _bars[i];
         if (b >= _shadow[i]) {
             _shadow[i] = b;
         } else {
             _shadow[i] -= kShadowFall;
             if (_shadow[i] < b) _shadow[i] = b;
         }
-
-        // Peak line: instant rise, hold, then a steady fall in dB (the
-        // peak-meter convention, e.g. IEC 60268-18).
-        if (b >= _peaks[i]) {
-            _peaks[i] = b;
-            _peakHold[i] = kPeakHold;
-        } else if (_peakHold[i] > 0.0f) {
-            _peakHold[i] -= frames;
-        } else {
-            _peaks[i] -= kPeakFall;
-            if (_peaks[i] < b) _peaks[i] = b;
-            if (_peaks[i] < 0.0f) _peaks[i] = 0.0f;
-        }
-
-        if (b > 0.0f || _shadow[i] > 0.0f || _peaks[i] > 0.0f) anyActive = true;
     }
+    updatePeaks(frames / 60.0);
 
+    bool anyActive = false;
+    for (int i = 0; i < bars && !anyActive; ++i) {
+        if (_bars[i] > 0.0f || _shadow[i] > 0.0f || _peaks[i] > 0.0f) anyActive = true;
+    }
+    for (float v : _sideBars) {
+        if (anyActive) break;
+        if (v > 0.0f) anyActive = true;
+    }
     _active = anyActive;
     return gotData;
 }
@@ -311,7 +451,9 @@ void SpectrumAnalyzer::suspend() {
     std::fill(_bars.begin(), _bars.end(), 0.0f);
     std::fill(_shadow.begin(), _shadow.end(), 0.0f);
     std::fill(_peaks.begin(), _peaks.end(), 0.0f);
+    std::fill(_sideBars.begin(), _sideBars.end(), 0.0f);
     std::fill(_binPow.begin(), _binPow.end(), 0.0f);
-    std::fill(_peakHold.begin(), _peakHold.end(), 0.0f);
+    std::fill(_binPowSide.begin(), _binPowSide.end(), 0.0f);
+    clearPeakHistory();
     _active = false;
 }

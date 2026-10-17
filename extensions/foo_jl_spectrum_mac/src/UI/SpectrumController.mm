@@ -16,8 +16,8 @@
 
 @interface SpectrumController () {
     std::unique_ptr<SpectrumAnalyzer> _analyzer;
-    SpectrumAnalyzer::Settings _settings;  // last applied, for "Auto" bar count updates
-    bool _autoBars;
+    SpectrumAnalyzer::Settings _settings;  // last applied, for view-sized bar count updates
+    bool _autoBars;             // bar count follows the view size ("Auto" bars, or Curve mode)
     id _displayLink;            // CADisplayLink (macOS 14+); otherwise _timer drives ticks
     NSTimer *_timer;
     CFTimeInterval _lastTick;   // time of the previous tick, 0 before the first
@@ -197,8 +197,11 @@ namespace {
     [self.spectrumView reloadSettings];
 
     SpectrumAnalyzer::Settings s;
+    // Curve mode always draws at the view's full resolution; the Bars
+    // setting only applies to Bars mode.
     s.barCount  = (int)getConfigInt(kKeyBarCount, kDefaultBarCount);
-    _autoBars   = s.barCount == kBarCountAuto;
+    _autoBars   = s.barCount == kBarCountAuto
+               || getConfigInt(kKeyDrawMode, kDefaultDrawMode) == DrawModeCurve;
     if (_autoBars) s.barCount = (int)[self.spectrumView autoBarCount];
     s.fftSize   = (int)getConfigInt(kKeyFftSize, kDefaultFftSize);
     s.minHz     = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
@@ -206,6 +209,7 @@ namespace {
     s.smoothing = (int)getConfigInt(kKeySmoothing, kDefaultSmoothing);
     s.smoothingMode = (int)getConfigInt(kKeySmoothingMode, kDefaultSmoothingMode);
     s.rmsMs     = getRmsMs();
+    s.stereoMode = (int)getConfigInt(kKeyStereoMode, kDefaultStereoMode);
     s.slopeDbPerOct = getConfigInt(kKeySlopeTenths, kDefaultSlopeTenths) / 10.0f;
     s.freqScale = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
     s.peakHold  = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
@@ -226,7 +230,7 @@ namespace {
         s.shadowFall = (float)(curveFall * (0.15 + 0.75 * shadowSpeed));
     }
     s.peakFall       = (float)(getPeakFallDbPerSec() / 60.0 / s.rangeDb);
-    s.peakHoldFrames = (int)std::lround(peakHoldMs * 60.0 / 1000.0);
+    s.peakHoldSec    = (float)(peakHoldMs / 1000.0);
 
     _settings = s;
     _analyzer->configure(s);
@@ -327,9 +331,11 @@ static const CFTimeInterval kMinTickInterval = 0.0105;
             const auto &bars = _analyzer->bars();
             const auto &shadow = _analyzer->shadow();
             const auto &peaks = _analyzer->peaks();
+            const auto &side = _analyzer->side();
             [self.spectrumView setBarsData:bars.data()
                                     shadow:shadow.data()
                                      peaks:peaks.data()
+                                      side:(side.size() == bars.size() ? side.data() : nullptr)
                                      count:(NSInteger)bars.size()];
         }
     }
