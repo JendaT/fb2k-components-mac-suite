@@ -24,6 +24,7 @@
     NSTextField   *_colorBarBrightnessLabel;
     NSPopUpButton *_orientationPopup;
     NSPopUpButton *_barCountPopup;
+    NSTextField   *_barCountCurveNote;
     NSPopUpButton *_fftSizePopup;
     NSPopUpButton *_stereoPopup;
     NSPopUpButton *_barStylePopup;
@@ -42,6 +43,7 @@
     NSPopUpButton *_rangeDbPopup;
     NSSlider      *_shadowFallSlider;
     NSTextField   *_shadowFallLabel;
+    NSTextField   *_shadowFallNote;
     NSSlider      *_peakFallSlider;
     NSTextField   *_peakFallLabel;
     NSSlider      *_peakHoldSlider;
@@ -107,6 +109,12 @@
     _barCountPopup.toolTip = @"Bars mode only (Curve mode always draws at full resolution). Auto draws one bar per 2 points of panel width";
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
     [self.view addSubview:_barCountPopup];
+    // Shown while Curve mode greys the popup out.
+    _barCountCurveNote = [self label:@"Curve mode uses full resolution"
+                                  at:NSMakePoint(controlX + 110, y + 4)];
+    _barCountCurveNote.frame = NSMakeRect(controlX + 110, y + 4, 190, 17);  // ends inside the 460 pt page
+    _barCountCurveNote.textColor = [NSColor secondaryLabelColor];
+    [self.view addSubview:_barCountCurveNote];
     y += 30;
 
     [self.view addSubview:[self label:@"FFT size:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -212,6 +220,11 @@
     [self.view addSubview:_shadowFallSlider];
     _shadowFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_shadowFallLabel];
+    // Takes the value label's place while the slider is disabled, saying why.
+    _shadowFallNote = [self label:@"" at:NSMakePoint(controlX + 160, y + 2)];
+    _shadowFallNote.frame = NSMakeRect(controlX + 160, y + 2, 145, 17);  // ends inside the 460 pt page
+    _shadowFallNote.textColor = [NSColor secondaryLabelColor];
+    [self.view addSubview:_shadowFallNote];
     y += 30;
 
     [self.view addSubview:[self label:@"Peak fall:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -584,10 +597,15 @@
     const NSInteger style = _curveStylePopup.indexOfSelectedItem;
     const BOOL colorBars = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
     _barCountPopup.enabled = !curve;
+    _barCountCurveNote.hidden = !curve;
     _curveStylePopup.enabled = curve;
     _colorBarBrightnessSlider.enabled = colorBars;
     _shadowFillCheckbox.enabled = !colorBars;
-    _shadowFallSlider.enabled = !colorBars && _shadowFillCheckbox.state == NSControlStateValueOn;
+    const BOOL shadowOn = _shadowFillCheckbox.state == NSControlStateValueOn;
+    _shadowFallSlider.enabled = !colorBars && shadowOn;
+    _shadowFallNote.stringValue = colorBars ? @"Not drawn with color bars" : @"Shadow fill is off";
+    _shadowFallNote.hidden = _shadowFallSlider.enabled;
+    _shadowFallLabel.hidden = !_shadowFallSlider.enabled;
 }
 
 - (void)orientationChanged:(id)sender {

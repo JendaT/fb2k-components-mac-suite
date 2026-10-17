@@ -91,8 +91,8 @@ enum StereoMode {
 };
 
 // --- Defaults ---
-constexpr int      kDefaultBarCount   = 96;      // Number of frequency bars
 constexpr int      kBarCountAuto      = 0;       // Bar count follows the view size
+constexpr int      kDefaultBarCount   = kBarCountAuto; // Number of frequency bars in Bars mode
 constexpr double   kAutoBarPitch      = 2.0;     // Auto: points per bar along the frequency axis
 constexpr double   kCurvePointPitch   = 1.0;     // Curve mode: points per curve knot (Bars setting not used)
 constexpr int      kMaxBarCount       = 2048;
@@ -101,26 +101,26 @@ constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleSoftLog;
 constexpr int      kDefaultDrawMode   = DrawModeCurve;
 constexpr int      kDefaultCurveStyle = CurveStyleLineColorBars;
-constexpr int      kDefaultColorBarBrightness = 64; // Strength of the loudest color bar, % (10-100)
+constexpr int      kDefaultColorBarBrightness = 69; // Strength of the loudest color bar, % (10-100)
 constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 12;      // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100 (higher = smoother)
 constexpr int      kDefaultSmoothingMode = SmoothingRms;
-constexpr int      kDefaultRmsMs      = 125;     // RMS mode: power averaging time constant (ms); 125 = IEC 61672 "Fast"
+constexpr int      kDefaultRmsMs      = 200;     // RMS mode: power averaging time constant (ms); falls up to ~22 dB/s
 constexpr int      kMaxRmsMs          = 500;
-constexpr int      kDefaultSlopeTenths = 4;      // Spectral slope around 1 kHz, in 0.1 dB/octave
+constexpr int      kDefaultSlopeTenths = 0;      // Spectral slope around 1 kHz, in 0.1 dB/octave
 constexpr int      kMaxSlopeTenths    = 60;
-constexpr int      kDefaultShadowFallSpeed = 74; // Shadow band fall speed 0-100 (higher = faster)
-constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after its hold (dB/s), ~IEC 60268-18 (20 dB in 1.7 s)
+constexpr int      kDefaultShadowFallSpeed = 76; // Shadow band fall speed 0-100 (higher = faster)
+constexpr int      kDefaultPeakFallDbPerSec = 18; // Peak line steady fall after its hold (dB/s)
 constexpr int      kMinPeakFallDbPerSec = 1;
 constexpr int      kMaxPeakFallDbPerSec = 60;
 constexpr int      kDefaultPeakHoldMs = 1000;    // Peak line hold time before it starts falling (ms)
 constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
 constexpr int      kMinTopDb          = -60;
 constexpr int      kMaxTopDb          = 0;
-constexpr int      kDefaultRangeDb    = 80;      // dB from the top of the display to the bottom
+constexpr int      kDefaultRangeDb    = 90;      // dB from the top of the display to the bottom
 constexpr int      kRangeDbChoices[]  = { 60, 80, 90, 120 };
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
