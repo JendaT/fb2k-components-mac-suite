@@ -12,11 +12,10 @@ namespace {
     // Convert a normalized magnitude (0..1 from KStreamFlagNewFFT) into a
     // display value by mapping a dB window to 0..1. This gives the familiar
     // spectrum-analyzer look where quiet detail is still visible.
-    inline float magnitudeToDisplay(float mag) {
+    inline float magnitudeToDisplay(float mag, float topDb, float rangeDb) {
         if (mag <= 1e-7f) return 0.0f;
         float db = 20.0f * std::log10(mag);
-        float v = (db - spectrum_config::kDisplayFloorDb) /
-                  (spectrum_config::kDisplayCeilDb - spectrum_config::kDisplayFloorDb);
+        float v = (db - (topDb - rangeDb)) / rangeDb;
         if (v < 0.0f) v = 0.0f;
         if (v > 1.0f) v = 1.0f;
         return v;
@@ -67,7 +66,7 @@ float SpectrumAnalyzer::barTarget(int i, int binCount) const {
             if (_binMag[b] > mag) mag = _binMag[b];
         }
     }
-    return magnitudeToDisplay(mag * _barGain[i]);
+    return magnitudeToDisplay(mag * _barGain[i], _settings.topDb, _settings.rangeDb);
 }
 
 void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
@@ -85,6 +84,7 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     if (_settings.shadowFall < 0.0005f) _settings.shadowFall = 0.0005f;
     if (_settings.peakFall < 0.0001f) _settings.peakFall = 0.0001f;
     if (_settings.peakHoldFrames < 0) _settings.peakHoldFrames = 0;
+    if (_settings.rangeDb < 10.0f) _settings.rangeDb = 10.0f;
 
     // Keep the current levels across reconfiguration, resampled when the bar
     // count changes, so a settings tweak or an "Auto" bar count tracking a

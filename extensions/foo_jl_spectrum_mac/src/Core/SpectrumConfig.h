@@ -110,6 +110,11 @@ constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after
 constexpr int      kMinPeakFallDbPerSec = 1;
 constexpr int      kMaxPeakFallDbPerSec = 60;
 constexpr int      kDefaultPeakHoldMs = 1000;    // Peak line hold time before it starts falling (ms)
+constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
+constexpr int      kMinTopDb          = -60;
+constexpr int      kMaxTopDb          = 0;
+constexpr int      kDefaultRangeDb    = 80;      // dB from the top of the display to the bottom
+constexpr int      kRangeDbChoices[]  = { 60, 80, 90, 120 };
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
@@ -118,10 +123,10 @@ constexpr int      kDefaultGridOpacity = 84;     // Grid line opacity 0-100
 constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
 
-// dB window that maps to the 0..1 bar height. Shared by the analyzer (scaling)
-// and the view (dB guide placement) so the guides line up with the bars.
-constexpr float    kDisplayFloorDb = -80.0f;     // maps to bar height 0
-constexpr float    kDisplayCeilDb  = 0.0f;       // maps to bar height 1
+// The fixed dB window up to 0.3.0, before Top and Range were settings. Only the
+// peak fall migration still converts against it.
+constexpr float    kDisplayFloorDb = -80.0f;     // mapped to bar height 0
+constexpr float    kDisplayCeilDb  = 0.0f;       // mapped to bar height 1
 
 // Default colors (ARGB)
 constexpr uint32_t kDefaultBarColorLight = 0xFF2E7DD1;  // Blue
@@ -153,6 +158,8 @@ static const char* const kKeyPeakFallSpeed   = "peak_fall_speed";  // up to 0.3.
 static const char* const kKeyPeakFallDbPerSec = "peak_fall_db_s";
 static const char* const kKeyPeakHoldMs      = "peak_hold_ms";
 static const char* const kKeyPeakHold       = "peak_hold";
+static const char* const kKeyTopDb          = "top_db";
+static const char* const kKeyRangeDb        = "range_db";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
 static const char* const kKeyShowFreqAxis   = "show_freq_axis";
 static const char* const kKeyShadowFill     = "shadow_fill";
@@ -232,6 +239,20 @@ inline int getPeakFallDbPerSec() {
         }
     }
     return (int)std::max<int64_t>(kMinPeakFallDbPerSec, std::min<int64_t>(rate, kMaxPeakFallDbPerSec));
+}
+
+// Display window: the level at the top and the dB span down to the bottom.
+// Shared by the analyzer (scaling) and the view (dB guides) so they line up.
+inline int getTopDb() {
+    return (int)std::max<int64_t>(kMinTopDb, std::min<int64_t>(getConfigInt(kKeyTopDb, kDefaultTopDb), kMaxTopDb));
+}
+
+inline int getRangeDb() {
+    const int64_t range = getConfigInt(kKeyRangeDb, kDefaultRangeDb);
+    for (int choice : kRangeDbChoices) {
+        if (range == choice) return choice;
+    }
+    return kDefaultRangeDb;
 }
 
 } // namespace spectrum_config
