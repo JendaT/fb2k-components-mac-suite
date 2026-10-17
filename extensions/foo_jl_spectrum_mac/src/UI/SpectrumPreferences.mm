@@ -24,7 +24,10 @@
     NSTextField   *_colorBarBrightnessLabel;
     NSPopUpButton *_orientationPopup;
     NSPopUpButton *_barCountPopup;
+    NSTextField   *_barCountLabel;      // "Bars:" or "Curve detail:" with the draw mode
+    NSPopUpButton *_curveDetailPopup;   // takes the Bars popup's place in Curve mode
     NSPopUpButton *_fftSizePopup;
+    NSPopUpButton *_stereoPopup;
     NSPopUpButton *_barStylePopup;
     NSPopUpButton *_freqScalePopup;
     NSTextField   *_minHzField;
@@ -36,8 +39,12 @@
     NSTextField   *_smoothingLabel;
     NSSlider      *_slopeSlider;
     NSTextField   *_slopeLabel;
+    NSSlider      *_topDbSlider;
+    NSTextField   *_topDbLabel;
+    NSPopUpButton *_rangeDbPopup;
     NSSlider      *_shadowFallSlider;
     NSTextField   *_shadowFallLabel;
+    NSTextField   *_shadowFallNote;
     NSSlider      *_peakFallSlider;
     NSTextField   *_peakFallLabel;
     NSSlider      *_peakHoldSlider;
@@ -67,7 +74,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 990)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 1050)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -91,7 +98,9 @@
     [self.view addSubview:analysisHeader];
     y += 22;
 
-    [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
+    // One row, two settings: Bars in Bars mode, Curve detail in Curve mode.
+    _barCountLabel = [self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)];
+    [self.view addSubview:_barCountLabel];
     _barCountPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
     // Item tags hold the stored value; "Auto" (0) fits the bar count to the panel.
     [_barCountPopup addItemWithTitle:@"Auto"];
@@ -100,9 +109,19 @@
         [_barCountPopup addItemWithTitle:n.stringValue];
         _barCountPopup.lastItem.tag = n.integerValue;
     }
-    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width (pair with a large FFT size for bass detail)";
+    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width";
     _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
     [self.view addSubview:_barCountPopup];
+    _curveDetailPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
+    // Item tags hold the stored octave fraction (0 = full detail).
+    for (int fraction : spectrum_config::kCurveOctaveFractions) {
+        [_curveDetailPopup addItemWithTitle:fraction == 0 ? @"Full"
+                                           : [NSString stringWithFormat:@"1/%d octave", fraction]];
+        _curveDetailPopup.lastItem.tag = fraction;
+    }
+    _curveDetailPopup.toolTip = @"Full draws every FFT bin; an octave fraction averages the power over that band around each point for a smoother curve";
+    _curveDetailPopup.target = self; _curveDetailPopup.action = @selector(curveDetailChanged:);
+    [self.view addSubview:_curveDetailPopup];
     y += 30;
 
     [self.view addSubview:[self label:@"FFT size:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -112,6 +131,13 @@
     }
     _fftSizePopup.target = self; _fftSizePopup.action = @selector(fftSizeChanged:);
     [self.view addSubview:_fftSizePopup];
+    [self.view addSubview:[self label:@"Stereo:" at:NSMakePoint(controlX + 112, y + 3)]];
+    _stereoPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX + 165, y, 125, 25)];
+    [_stereoPopup addItemWithTitle:@"Mono"];          // order = StereoMode
+    [_stereoPopup addItemWithTitle:@"Mid + side"];
+    _stereoPopup.toolTip = @"Mid + side adds the stereo difference (L-R) as a second line; mono content leaves it at the bottom";
+    _stereoPopup.target = self; _stereoPopup.action = @selector(stereoModeChanged:);
+    [self.view addSubview:_stereoPopup];
     y += 30;
 
     [self.view addSubview:[self label:@"Frequency scale:" at:NSMakePoint(labelX + 10, y + 3)]];
@@ -162,6 +188,29 @@
     _slopeLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     _slopeLabel.frame = NSMakeRect(controlX + 160, y + 2, 90, 17);
     [self.view addSubview:_slopeLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Top:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _topDbSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _topDbSlider.minValue = spectrum_config::kMinTopDb; _topDbSlider.maxValue = spectrum_config::kMaxTopDb;
+    _topDbSlider.continuous = YES;
+    _topDbSlider.target = self; _topDbSlider.action = @selector(topDbChanged:);
+    _topDbSlider.toolTip = @"Level at the top of the display; lower it to fill the height with quiet music";
+    [self.view addSubview:_topDbSlider];
+    _topDbLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_topDbLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Range:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _rangeDbPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
+    // Item tags hold the stored value in dB.
+    for (int range : spectrum_config::kRangeDbChoices) {
+        [_rangeDbPopup addItemWithTitle:[NSString stringWithFormat:@"%d dB", range]];
+        _rangeDbPopup.lastItem.tag = range;
+    }
+    _rangeDbPopup.target = self; _rangeDbPopup.action = @selector(rangeDbChanged:);
+    _rangeDbPopup.toolTip = @"dB from the top of the display to the bottom";
+    [self.view addSubview:_rangeDbPopup];
     y += 34;
 
     // --- Dynamics section ---
@@ -178,13 +227,20 @@
     [self.view addSubview:_shadowFallSlider];
     _shadowFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_shadowFallLabel];
+    // Takes the value label's place while the slider is disabled, saying why.
+    _shadowFallNote = [self label:@"" at:NSMakePoint(controlX + 160, y + 2)];
+    _shadowFallNote.frame = NSMakeRect(controlX + 160, y + 2, 145, 17);  // ends inside the 460 pt page
+    _shadowFallNote.textColor = [NSColor secondaryLabelColor];
+    [self.view addSubview:_shadowFallNote];
     y += 30;
 
     [self.view addSubview:[self label:@"Peak fall:" at:NSMakePoint(labelX + 10, y + 3)]];
     _peakFallSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _peakFallSlider.minValue = 0; _peakFallSlider.maxValue = 100; _peakFallSlider.continuous = YES;
+    _peakFallSlider.minValue = spectrum_config::kMinPeakFallDbPerSec;
+    _peakFallSlider.maxValue = spectrum_config::kMaxPeakFallDbPerSec;
+    _peakFallSlider.continuous = YES;
     _peakFallSlider.target = self; _peakFallSlider.action = @selector(peakFallChanged:);
-    _peakFallSlider.toolTip = @"How fast the peak line falls after its hold (higher = faster)";
+    _peakFallSlider.toolTip = @"How fast the peak line falls after its hold, in dB per second";
     [self.view addSubview:_peakFallSlider];
     _peakFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     [self.view addSubview:_peakFallLabel];
@@ -390,6 +446,8 @@
     if (![_barCountPopup selectItemWithTag:getConfigInt(kKeyBarCount, kDefaultBarCount)])
         [_barCountPopup selectItemWithTag:kDefaultBarCount];
     [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
+    [self selectIndexPopup:_stereoPopup index:getConfigInt(kKeyStereoMode, kDefaultStereoMode)];
+    [_curveDetailPopup selectItemWithTag:getCurveOctaveFraction()];
     [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
     [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
     [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
@@ -397,27 +455,30 @@
     int colorBarBrightness = (int)getConfigInt(kKeyColorBarBrightness, kDefaultColorBarBrightness);
     _colorBarBrightnessSlider.integerValue = colorBarBrightness;
     _colorBarBrightnessLabel.stringValue = [NSString stringWithFormat:@"%d%%", colorBarBrightness];
-    [self updateCurveControlsEnabled];
     [self selectIndexPopup:_orientationPopup index:getConfigInt(kKeyOrientation, kDefaultOrientation)];
 
     _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
 
     [self selectIndexPopup:_smoothingModePopup index:getConfigInt(kKeySmoothingMode, kDefaultSmoothingMode)];
-    _smoothingSlider.integerValue = getConfigInt(kKeySmoothing, kDefaultSmoothing);
-    [self updateSmoothingLabel];
+    [self loadSmoothingSlider];
 
     int slope = (int)getConfigInt(kKeySlopeTenths, kDefaultSlopeTenths);
     _slopeSlider.integerValue = slope;
     _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", slope / 10.0];
 
+    int topDb = getTopDb();
+    _topDbSlider.integerValue = topDb;
+    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", topDb];
+    [_rangeDbPopup selectItemWithTag:getRangeDb()];
+
     int shadowFall = (int)getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
     _shadowFallSlider.integerValue = shadowFall;
     _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", shadowFall];
 
-    int peakFall = (int)getConfigInt(kKeyPeakFallSpeed, kDefaultPeakFallSpeed);
+    int peakFall = getPeakFallDbPerSec();
     _peakFallSlider.integerValue = peakFall;
-    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", peakFall];
+    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d dB/s", peakFall];
 
     int peakHoldMs = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
     _peakHoldSlider.integerValue = peakHoldMs;
@@ -432,6 +493,7 @@
     _dbGuidesCheckbox.state = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides) ? NSControlStateValueOn : NSControlStateValueOff;
     _freqAxisCheckbox.state = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updateDependentControlsEnabled];
 
     int gridOpacity = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
     _gridOpacitySlider.integerValue = gridOpacity;
@@ -494,6 +556,16 @@
     [self notifyChanged];
 }
 
+- (void)curveDetailChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyCurveOctaveFraction, _curveDetailPopup.selectedItem.tag);
+    [self notifyChanged];
+}
+
+- (void)stereoModeChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyStereoMode, _stereoPopup.indexOfSelectedItem);
+    [self notifyChanged];
+}
+
 - (void)fftSizeChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyFftSize, _fftSizePopup.titleOfSelectedItem.intValue);
     [self notifyChanged];
@@ -511,13 +583,13 @@
 
 - (void)drawModeChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);
-    [self updateCurveControlsEnabled];
+    [self updateDependentControlsEnabled];
     [self notifyChanged];
 }
 
 - (void)curveStyleChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeyCurveStyle, _curveStylePopup.indexOfSelectedItem);
-    [self updateCurveControlsEnabled];
+    [self updateDependentControlsEnabled];
     [self notifyChanged];
 }
 
@@ -528,13 +600,26 @@
     [self notifyChanged];
 }
 
-// Curve style applies to the Curve draw mode; brightness to its color-bar styles.
-- (void)updateCurveControlsEnabled {
+// The first row is Bars in Bars mode and Curve detail in Curve mode; curve
+// style applies to the Curve draw mode, brightness to its color-bar styles. The shadow
+// is not drawn in the color-bar styles, and its fall speed only matters while
+// it is shown.
+- (void)updateDependentControlsEnabled {
     using namespace spectrum_config;
     const BOOL curve = _drawModePopup.indexOfSelectedItem == DrawModeCurve;
     const NSInteger style = _curveStylePopup.indexOfSelectedItem;
+    const BOOL colorBars = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
+    _barCountLabel.stringValue = curve ? @"Curve detail:" : @"Bars:";
+    _barCountPopup.hidden = curve;
+    _curveDetailPopup.hidden = !curve;
     _curveStylePopup.enabled = curve;
-    _colorBarBrightnessSlider.enabled = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
+    _colorBarBrightnessSlider.enabled = colorBars;
+    _shadowFillCheckbox.enabled = !colorBars;
+    const BOOL shadowOn = _shadowFillCheckbox.state == NSControlStateValueOn;
+    _shadowFallSlider.enabled = !colorBars && shadowOn;
+    _shadowFallNote.stringValue = colorBars ? @"Not drawn with color bars" : @"Shadow fill is off";
+    _shadowFallNote.hidden = _shadowFallSlider.enabled;
+    _shadowFallLabel.hidden = !_shadowFallSlider.enabled;
 }
 
 - (void)orientationChanged:(id)sender {
@@ -552,25 +637,49 @@
     [self notifyChanged];
 }
 
+- (BOOL)rmsSelected {
+    return _smoothingModePopup.indexOfSelectedItem == spectrum_config::SmoothingRms;
+}
+
 - (void)smoothingChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeySmoothing, _smoothingSlider.integerValue);
+    using namespace spectrum_config;
+    if ([self rmsSelected]) {
+        // 5 ms steps: the slider is ~3 ms per point over 0-500 ms.
+        const int ms = (int)std::lround(_smoothingSlider.doubleValue / 5.0) * 5;
+        setConfigInt(kKeyRmsMs, ms);
+    } else {
+        setConfigInt(kKeySmoothing, _smoothingSlider.integerValue);
+    }
     [self updateSmoothingLabel];
     [self notifyChanged];
 }
 
 - (void)smoothingModeChanged:(id)sender {
     spectrum_config::setConfigInt(spectrum_config::kKeySmoothingMode, _smoothingModePopup.indexOfSelectedItem);
-    [self updateSmoothingLabel];
+    [self loadSmoothingSlider];
     [self notifyChanged];
 }
 
-// RMS mode shows the averaging time the slider maps to; attack/decay a percentage.
-- (void)updateSmoothingLabel {
-    int v = (int)_smoothingSlider.integerValue;
-    if (_smoothingModePopup.indexOfSelectedItem == spectrum_config::SmoothingRms) {
-        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d ms", (int)(v * spectrum_config::kRmsMsPerSmoothingStep)];
+// Each mode keeps its own value: RMS an averaging time in ms, attack/decay a
+// 0-100 amount. The one slider takes the range and value of the selected mode.
+- (void)loadSmoothingSlider {
+    using namespace spectrum_config;
+    if ([self rmsSelected]) {
+        _smoothingSlider.maxValue = kMaxRmsMs;
+        _smoothingSlider.integerValue = getRmsMs();
     } else {
-        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+        _smoothingSlider.maxValue = 100;
+        _smoothingSlider.integerValue = getConfigInt(kKeySmoothing, kDefaultSmoothing);
+    }
+    [self updateSmoothingLabel];
+}
+
+- (void)updateSmoothingLabel {
+    if ([self rmsSelected]) {
+        const int ms = (int)std::lround(_smoothingSlider.doubleValue / 5.0) * 5;
+        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d ms", ms];
+    } else {
+        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d%%", (int)_smoothingSlider.integerValue];
     }
 }
 
@@ -578,6 +687,18 @@
     int v = (int)std::lround(_slopeSlider.doubleValue);   // 0.1 dB/oct steps
     spectrum_config::setConfigInt(spectrum_config::kKeySlopeTenths, v);
     _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", v / 10.0];
+    [self notifyChanged];
+}
+
+- (void)topDbChanged:(id)sender {
+    int v = (int)std::lround(_topDbSlider.doubleValue);
+    spectrum_config::setConfigInt(spectrum_config::kKeyTopDb, v);
+    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", v];
+    [self notifyChanged];
+}
+
+- (void)rangeDbChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyRangeDb, _rangeDbPopup.selectedItem.tag);
     [self notifyChanged];
 }
 
@@ -590,8 +711,8 @@
 
 - (void)peakFallChanged:(id)sender {
     int v = (int)_peakFallSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyPeakFallSpeed, v);
-    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
+    spectrum_config::setConfigInt(spectrum_config::kKeyPeakFallDbPerSec, v);
+    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d dB/s", v];
     [self notifyChanged];
 }
 
@@ -615,6 +736,7 @@
         setConfigBool(kKeyPeakHold, _peakHoldCheckbox.state == NSControlStateValueOn);
     } else if (sender == _shadowFillCheckbox) {
         setConfigBool(kKeyShadowFill, _shadowFillCheckbox.state == NSControlStateValueOn);
+        [self updateDependentControlsEnabled];
     } else if (sender == _dbGuidesCheckbox) {
         setConfigBool(kKeyShowDbGuides, _dbGuidesCheckbox.state == NSControlStateValueOn);
     } else if (sender == _freqAxisCheckbox) {

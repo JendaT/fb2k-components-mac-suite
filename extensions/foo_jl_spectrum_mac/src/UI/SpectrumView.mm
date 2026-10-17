@@ -14,6 +14,7 @@
     std::vector<float> _bars;
     std::vector<float> _shadow;
     std::vector<float> _peaks;
+    std::vector<float> _side;   // side channel in Mid + side mode, else empty
 
     // Cached settings (refreshed via reloadSettings)
     int      _barStyle;
@@ -35,6 +36,8 @@
     bool     _peakHold;
     bool     _shadowFill;
     bool     _showDbGuides;
+    int      _topDb;       // level at the top of the plot
+    int      _rangeDb;     // dB from the top of the plot to the bottom
     bool     _showFreqAxis;
     int      _gridOpacity;
     bool     _glass;
@@ -89,6 +92,8 @@
     _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
     _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
     _showDbGuides  = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
+    _topDb         = getTopDb();
+    _rangeDb       = getRangeDb();
     _showFreqAxis  = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
     _gridOpacity   = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
     _glass         = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
@@ -105,11 +110,14 @@
 - (void)setBarsData:(const float *)bars
              shadow:(const float *)shadow
               peaks:(const float *)peaks
+               side:(const float *)side
               count:(NSInteger)count {
     if (count < 0) count = 0;
     _bars.assign(bars, bars + count);
     _shadow.assign(shadow, shadow + count);
     _peaks.assign(peaks, peaks + count);
+    if (side) _side.assign(side, side + count);
+    else      _side.clear();
     [self setNeedsDisplay:YES];
 }
 
@@ -128,6 +136,25 @@ static NSColor *colorFromARGB(uint32_t argb) {
 
 - (NSColor *)bgColor {
     return colorFromARGB(fb2k_ui::isDarkMode() ? _bgColorDark : _bgColorLight);
+}
+
+// Side-channel line: the bar colour's complementary hue, so it reads as a
+// separate signal in every theme.
+- (NSColor *)sideColor {
+    NSColor *c = [[self barColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!c) return [NSColor systemOrangeColor];
+    CGFloat h, s, b, a;
+    [c getHue:&h saturation:&s brightness:&b alpha:&a];
+    h += 0.5; if (h >= 1.0) h -= 1.0;
+    return [NSColor colorWithHue:h saturation:MAX(s, 0.55) brightness:MAX(b, 0.75) alpha:1.0];
+}
+
+- (void)drawSideLine {
+    if (_side.size() != _bars.size() || _side.empty()) return;
+    NSBezierPath *line = [self linePathForValues:_side];
+    line.lineWidth = 1.5;
+    [[self sideColor] setStroke];
+    [line stroke];
 }
 
 - (NSColor *)gridColor {
@@ -197,13 +224,16 @@ static const CGFloat kFreqThick = 13.0;  // along the frequency axis
 - (NSInteger)autoBarCount {
     BOOL drawDb, drawFreq;
     const CGFloat len = [self freqAxisLengthForSize:self.bounds.size drawDb:&drawDb drawFreq:&drawFreq];
-    const NSInteger n = (NSInteger)std::floor(len / spectrum_config::kAutoBarPitch);
+    const double pitch = _drawMode == spectrum_config::DrawModeCurve ? spectrum_config::kCurvePointPitch
+                                                                     : spectrum_config::kAutoBarPitch;
+    const NSInteger n = (NSInteger)std::floor(len / pitch);
     return std::max<NSInteger>(16, std::min<NSInteger>(n, spectrum_config::kMaxBarCount));
 }
 
 - (void)setFrameSize:(NSSize)newSize {
     [super setFrameSize:newSize];
-    if (_autoBars && [self.delegate respondsToSelector:@selector(spectrumView:autoBarCountChanged:)]) {
+    const BOOL viewSized = _autoBars || _drawMode == spectrum_config::DrawModeCurve;
+    if (viewSized && [self.delegate respondsToSelector:@selector(spectrumView:autoBarCountChanged:)]) {
         [self.delegate spectrumView:self autoBarCountChanged:[self autoBarCount]];
     }
 }
@@ -359,6 +389,8 @@ static const CGFloat kFreqThick = 13.0;  // along the frequency axis
         CGContextFillPath(ctx);
     }
 
+    [self drawSideLine];
+
     if (_peakHold) {
         CGContextBeginPath(ctx);
         for (NSInteger i = 0; i < n; ++i) {
@@ -412,6 +444,7 @@ static const CGFloat kFreqThick = 13.0;  // along the frequency axis
                       endingColor:[base colorWithAlphaComponent:0.65]];
         [grad drawInBezierPath:area angle:(_vertical ? 0.0 : 90.0)];
     }
+    [self drawSideLine];
     if (!hasLine) return;
 
     NSBezierPath *line = [self linePathForValues:_bars];
@@ -546,12 +579,12 @@ static CGFloat colorBarStrength(CGFloat level) {
 
 // dB guides: lines of constant magnitude across the frequency axis.
 - (void)drawDbGuidesInContext:(CGContextRef)ctx {
-    const float floorDb = spectrum_config::kDisplayFloorDb;
-    const float ceilDb  = spectrum_config::kDisplayCeilDb;
-    const float range   = ceilDb - floorDb;
+    const float ceilDb  = _topDb;
+    const float range   = _rangeDb;
+    const float floorDb = ceilDb - range;
     if (range <= 0) return;
 
-    const int step = 10;
+    const int step = range > 90 ? 20 : 10;
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightRegular],
         NSForegroundColorAttributeName: [self gridLabelColor]
