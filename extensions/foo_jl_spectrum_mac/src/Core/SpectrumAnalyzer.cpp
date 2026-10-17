@@ -54,7 +54,8 @@ SpectrumAnalyzer::~SpectrumAnalyzer() {
     if (_fftSetup) vDSP_destroy_fftsetup(_fftSetup);
 }
 
-float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, int binCount) const {
+float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, const std::vector<double>& cumPow,
+                                  int binCount) const {
     const int lo = _binLo[i];
     int hi = _binHi[i];
     if (hi >= binCount) hi = binCount - 1;
@@ -63,23 +64,45 @@ float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, int binC
 
     const float gain = _barGain[i];
     const float topDb = _settings.topDb, rangeDb = _settings.rangeDb;
-    const float centre = _binCenter[i];
-    if (centre >= 1.0f && centre < (float)(binCount - 1)) {
-        // Narrower than a bin: interpolate at the band centre, in dB, so the
-        // curve runs straight between bins instead of sagging towards the
-        // quieter one.
-        const int b0 = (int)centre;
-        const float t = centre - (float)b0;
-        const float d0 = magnitudeToDisplay(mag[b0] * gain, topDb, rangeDb);
-        const float d1 = magnitudeToDisplay(mag[b0 + 1] * gain, topDb, rangeDb);
-        return d0 * (1.0f - t) + d1 * t;
-    }
-    // Peak magnitude across the band (peak reads punchier than average).
-    float m = 0.0f;
-    for (int b = lo; b <= hi; ++b) {
-        if (mag[b] > m) m = mag[b];
-    }
-    return magnitudeToDisplay(m * gain, topDb, rangeDb);
+
+    // Unsmoothed level: interpolated at the centre when the bar is narrower
+    // than a bin (in dB, so the curve runs straight between bins instead of
+    // sagging towards the quieter one), else the peak across its bins (reads
+    // punchier than the average).
+    const auto plain = [&]() {
+        const float centre = _binCenter[i];
+        if (centre >= 1.0f && centre < (float)(binCount - 1)) {
+            const int b0 = (int)centre;
+            const float t = centre - (float)b0;
+            const float d0 = magnitudeToDisplay(mag[b0] * gain, topDb, rangeDb);
+            const float d1 = magnitudeToDisplay(mag[b0 + 1] * gain, topDb, rangeDb);
+            return d0 * (1.0f - t) + d1 * t;
+        }
+        float m = 0.0f;
+        for (int b = lo; b <= hi; ++b) {
+            if (mag[b] > m) m = mag[b];
+        }
+        return magnitudeToDisplay(m * gain, topDb, rangeDb);
+    };
+
+    if (_avgFrom[i] < 0.0 || (int)cumPow.size() != binCount + 1) return plain();
+
+    // Octave smoothing: mean power over the window, counting the bins at its
+    // edges in proportion to their overlap, so the level slides smoothly from
+    // one bar to the next.
+    const auto cumAt = [&](double x) {
+        const double e = x + 0.5;                 // bin b spans b-0.5..b+0.5
+        const int k = std::max(0, std::min((int)e, binCount - 1));
+        const double p = (double)mag[k] * mag[k];
+        return cumPow[k] + (e - k) * p;
+    };
+    const double x0 = _avgFrom[i], x1 = _avgTo[i];
+    const double meanPow = (cumAt(x1) - cumAt(x0)) / (x1 - x0);
+    const float smoothed = magnitudeToDisplay((float)std::sqrt(std::max(0.0, meanPow)) * gain, topDb, rangeDb);
+    // Windows of one to two bins blend in from the plain reading, so there is
+    // no kink where smoothing takes over at the low end.
+    const float w = (float)std::min(1.0, x1 - x0 - 1.0);
+    return w >= 1.0f ? smoothed : plain() * (1.0f - w) + smoothed * w;
 }
 
 void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
@@ -157,6 +180,10 @@ void SpectrumAnalyzer::rebuildBands() {
     _binHi.assign(bars, 0);
     _binCenter.assign(bars, -1.0f);
     _barGain.assign(bars, 1.0f);
+    _avgFrom.assign(bars, -1.0);
+    _avgTo.assign(bars, -1.0);
+    const double octaveHalf = _settings.octaveFraction > 0
+        ? std::pow(2.0, 0.5 / _settings.octaveFraction) : 0.0;
 
     const double minHz = std::min<double>(_settings.minHz, nyquist - 1);
     const double maxHz = std::min<double>(_settings.maxHz, nyquist);
@@ -195,6 +222,19 @@ void SpectrumAnalyzer::rebuildBands() {
             // Below bin 1 there is nothing to interpolate towards except DC;
             // hold at bin 1 so the lowest bands read flat instead of dropping.
             _binCenter[i] = (float)std::max(1.0, fc / hzPerBin);
+        }
+
+        // Octave smoothing window around the bar's centre, in bin units. Where
+        // it is narrower than one bin (the low end) the bar is read the normal
+        // way above, interpolated between bins.
+        if (octaveHalf > 0.0) {
+            const double fc = hzAt(((double)i + 0.5) / bars);
+            double x0 = fc / octaveHalf / hzPerBin, x1 = fc * octaveHalf / hzPerBin;
+            if (x1 - x0 >= 1.0) {
+                x0 = std::max(x0, 0.5);                  // skip the DC bin
+                x1 = std::min(x1, binCount - 0.5);
+                if (x1 > x0) { _avgFrom[i] = x0; _avgTo[i] = x1; }
+            }
         }
 
         if (_settings.slopeDbPerOct != 0.0f) {
@@ -272,6 +312,14 @@ void SpectrumAnalyzer::updateLayer(std::vector<float>& layer, std::vector<float>
                                    bool live, int binCount, float attackKeep, float decayKeep, float rmsKeep) {
     const int bars = (int)layer.size();
     const bool rms = _settings.smoothingMode == spectrum_config::SmoothingRms;
+    // Running power sums for octave smoothing, taken from `mag` once it holds
+    // the values the bars are read from.
+    const auto prepare = [&](int bins) {
+        if (_settings.octaveFraction <= 0) { _cumPow.clear(); return; }
+        _cumPow.resize((size_t)bins + 1);
+        _cumPow[0] = 0.0;
+        for (int b = 0; b < bins; ++b) _cumPow[b + 1] = _cumPow[b] + (double)mag[b] * mag[b];
+    };
 
     if (live && rms) {
         // Average power per bin over time and read the bars off the
@@ -281,10 +329,12 @@ void SpectrumAnalyzer::updateLayer(std::vector<float>& layer, std::vector<float>
             pow[b] = pow[b] * rmsKeep + mag[b] * mag[b] * (1.0f - rmsKeep);
             mag[b] = std::sqrt(pow[b]);
         }
-        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, binCount);
+        prepare(binCount);
+        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, _cumPow, binCount);
     } else if (live) {
+        prepare(binCount);
         for (int i = 0; i < bars; ++i) {
-            const float target = barTarget(i, mag, binCount);
+            const float target = barTarget(i, mag, _cumPow, binCount);
             const float prev = layer[i];
             const float keep = (target > prev) ? attackKeep : decayKeep;
             layer[i] = prev * keep + target * (1.0f - keep);
@@ -297,7 +347,8 @@ void SpectrumAnalyzer::updateLayer(std::vector<float>& layer, std::vector<float>
             pow[b] *= rmsKeep;
             mag[b] = std::sqrt(pow[b]);
         }
-        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, bins);
+        prepare(bins);
+        for (int i = 0; i < bars; ++i) layer[i] = barTarget(i, mag, _cumPow, bins);
     } else {
         // No live audio: decay everything toward zero.
         for (int i = 0; i < bars; ++i) {

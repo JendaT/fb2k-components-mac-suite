@@ -197,11 +197,12 @@ namespace {
     [self.spectrumView reloadSettings];
 
     SpectrumAnalyzer::Settings s;
-    // Curve mode always draws at the view's full resolution; the Bars
-    // setting only applies to Bars mode.
+    // Curve mode always draws at the view's full resolution (Curve detail
+    // smooths it instead); the Bars setting only applies to Bars mode.
+    const bool curve = getConfigInt(kKeyDrawMode, kDefaultDrawMode) == DrawModeCurve;
     s.barCount  = (int)getConfigInt(kKeyBarCount, kDefaultBarCount);
-    _autoBars   = s.barCount == kBarCountAuto
-               || getConfigInt(kKeyDrawMode, kDefaultDrawMode) == DrawModeCurve;
+    _autoBars   = s.barCount == kBarCountAuto || curve;
+    s.octaveFraction = curve ? getCurveOctaveFraction() : 0;
     if (_autoBars) s.barCount = (int)[self.spectrumView autoBarCount];
     s.fftSize   = (int)getConfigInt(kKeyFftSize, kDefaultFftSize);
     s.minHz     = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);

@@ -108,15 +108,15 @@ constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 12;      // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100 (higher = smoother)
 constexpr int      kDefaultSmoothingMode = SmoothingRms;
-constexpr int      kDefaultRmsMs      = 200;     // RMS mode: power averaging time constant (ms); falls up to ~22 dB/s
+constexpr int      kDefaultRmsMs      = 270;     // RMS mode: power averaging time constant (ms); falls up to ~16 dB/s
 constexpr int      kMaxRmsMs          = 500;
 constexpr int      kDefaultSlopeTenths = 0;      // Spectral slope around 1 kHz, in 0.1 dB/octave
 constexpr int      kMaxSlopeTenths    = 60;
 constexpr int      kDefaultShadowFallSpeed = 76; // Shadow band fall speed 0-100 (higher = faster)
-constexpr int      kDefaultPeakFallDbPerSec = 18; // Peak line steady fall after its hold (dB/s)
+constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after its hold (dB/s)
 constexpr int      kMinPeakFallDbPerSec = 1;
 constexpr int      kMaxPeakFallDbPerSec = 60;
-constexpr int      kDefaultPeakHoldMs = 1000;    // Peak line hold time before it starts falling (ms)
+constexpr int      kDefaultPeakHoldMs = 920;     // Peak line hold time before it starts falling (ms)
 constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
 constexpr int      kMinTopDb          = -60;
 constexpr int      kMaxTopDb          = 0;
@@ -130,6 +130,8 @@ constexpr int      kDefaultGridOpacity = 84;     // Grid line opacity 0-100
 constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
 constexpr bool     kDefaultGlassBackground = false;
 constexpr int      kDefaultStereoMode = StereoMono;
+constexpr int      kDefaultCurveOctaveFraction = 0;  // Curve detail: 0 = full, N = 1/N-octave smoothing
+constexpr int      kCurveOctaveFractions[] = { 0, 24, 12, 6, 3 };  // popup order
 
 // The fixed dB window up to 0.3.0, before Top and Range were settings. Only the
 // peak fall migration still converts against it.
@@ -155,6 +157,7 @@ static const char* const kKeyCurveStyle     = "curve_style";
 static const char* const kKeyColorBarBrightness = "color_bar_brightness";
 static const char* const kKeyOrientation    = "orientation";
 static const char* const kKeyStereoMode     = "stereo_mode";
+static const char* const kKeyCurveOctaveFraction = "curve_octave_fraction";
 static const char* const kKeyMinHz          = "min_hz";
 static const char* const kKeyMaxHz          = "max_hz";
 static const char* const kKeyGapPercent     = "gap_percent";
@@ -262,6 +265,15 @@ inline int getRangeDb() {
         if (range == choice) return choice;
     }
     return kDefaultRangeDb;
+}
+
+// Curve detail as an octave fraction (0 = full detail), limited to the choices.
+inline int getCurveOctaveFraction() {
+    const int64_t fraction = getConfigInt(kKeyCurveOctaveFraction, kDefaultCurveOctaveFraction);
+    for (int choice : kCurveOctaveFractions) {
+        if (fraction == choice) return choice;
+    }
+    return kDefaultCurveOctaveFraction;
 }
 
 } // namespace spectrum_config
