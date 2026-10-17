@@ -35,6 +35,8 @@
     bool     _peakHold;
     bool     _shadowFill;
     bool     _showDbGuides;
+    int      _topDb;       // level at the top of the plot
+    int      _rangeDb;     // dB from the top of the plot to the bottom
     bool     _showFreqAxis;
     int      _gridOpacity;
     bool     _glass;
@@ -89,6 +91,8 @@
     _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
     _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
     _showDbGuides  = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
+    _topDb         = getTopDb();
+    _rangeDb       = getRangeDb();
     _showFreqAxis  = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
     _gridOpacity   = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
     _glass         = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
@@ -546,12 +550,12 @@ static CGFloat colorBarStrength(CGFloat level) {
 
 // dB guides: lines of constant magnitude across the frequency axis.
 - (void)drawDbGuidesInContext:(CGContextRef)ctx {
-    const float floorDb = spectrum_config::kDisplayFloorDb;
-    const float ceilDb  = spectrum_config::kDisplayCeilDb;
-    const float range   = ceilDb - floorDb;
+    const float ceilDb  = _topDb;
+    const float range   = _rangeDb;
+    const float floorDb = ceilDb - range;
     if (range <= 0) return;
 
-    const int step = 10;
+    const int step = range > 90 ? 20 : 10;
     NSDictionary *attrs = @{
         NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:9 weight:NSFontWeightRegular],
         NSForegroundColorAttributeName: [self gridLabelColor]

@@ -26,6 +26,8 @@ public:
         float  slopeDbPerOct = 0.0f; // level tilt around 1 kHz (0 = flat)
         int    freqScale  = 0;       // spectrum_config::FreqScale
         bool   peakHold    = true;
+        float  topDb      = 0.0f;    // level at bar height 1
+        float  rangeDb    = 80.0f;   // dB from bar height 1 down to 0
 
         // Fall dynamics (concrete rates per 1/60 s frame; the UI maps friendly
         // 0-100 sliders to these). Each layer should fall slower than the one below.

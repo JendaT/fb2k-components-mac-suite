@@ -36,6 +36,9 @@
     NSTextField   *_smoothingLabel;
     NSSlider      *_slopeSlider;
     NSTextField   *_slopeLabel;
+    NSSlider      *_topDbSlider;
+    NSTextField   *_topDbLabel;
+    NSPopUpButton *_rangeDbPopup;
     NSSlider      *_shadowFallSlider;
     NSTextField   *_shadowFallLabel;
     NSSlider      *_peakFallSlider;
@@ -67,7 +70,7 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 990)];
+    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 1050)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
@@ -162,6 +165,29 @@
     _slopeLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
     _slopeLabel.frame = NSMakeRect(controlX + 160, y + 2, 90, 17);
     [self.view addSubview:_slopeLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Top:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _topDbSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _topDbSlider.minValue = spectrum_config::kMinTopDb; _topDbSlider.maxValue = spectrum_config::kMaxTopDb;
+    _topDbSlider.continuous = YES;
+    _topDbSlider.target = self; _topDbSlider.action = @selector(topDbChanged:);
+    _topDbSlider.toolTip = @"Level at the top of the display; lower it to fill the height with quiet music";
+    [self.view addSubview:_topDbSlider];
+    _topDbLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
+    [self.view addSubview:_topDbLabel];
+    y += 30;
+
+    [self.view addSubview:[self label:@"Range:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _rangeDbPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
+    // Item tags hold the stored value in dB.
+    for (int range : spectrum_config::kRangeDbChoices) {
+        [_rangeDbPopup addItemWithTitle:[NSString stringWithFormat:@"%d dB", range]];
+        _rangeDbPopup.lastItem.tag = range;
+    }
+    _rangeDbPopup.target = self; _rangeDbPopup.action = @selector(rangeDbChanged:);
+    _rangeDbPopup.toolTip = @"dB from the top of the display to the bottom";
+    [self.view addSubview:_rangeDbPopup];
     y += 34;
 
     // --- Dynamics section ---
@@ -411,6 +437,11 @@
     _slopeSlider.integerValue = slope;
     _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", slope / 10.0];
 
+    int topDb = getTopDb();
+    _topDbSlider.integerValue = topDb;
+    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", topDb];
+    [_rangeDbPopup selectItemWithTag:getRangeDb()];
+
     int shadowFall = (int)getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
     _shadowFallSlider.integerValue = shadowFall;
     _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", shadowFall];
@@ -608,6 +639,18 @@
     int v = (int)std::lround(_slopeSlider.doubleValue);   // 0.1 dB/oct steps
     spectrum_config::setConfigInt(spectrum_config::kKeySlopeTenths, v);
     _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", v / 10.0];
+    [self notifyChanged];
+}
+
+- (void)topDbChanged:(id)sender {
+    int v = (int)std::lround(_topDbSlider.doubleValue);
+    spectrum_config::setConfigInt(spectrum_config::kKeyTopDb, v);
+    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", v];
+    [self notifyChanged];
+}
+
+- (void)rangeDbChanged:(id)sender {
+    spectrum_config::setConfigInt(spectrum_config::kKeyRangeDb, _rangeDbPopup.selectedItem.tag);
     [self notifyChanged];
 }
 

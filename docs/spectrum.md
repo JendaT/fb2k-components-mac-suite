@@ -6,7 +6,7 @@ A real-time spectrum analyzer UI element for foobar2000 macOS. Contributed by [S
 
 ### Real-Time FFT Bars
 
-Frequency bars driven by the core `visualisation_manager` stream, updated once per display frame. No third-party DSP; the core's normalized FFT (Gauss window) is mapped into a configurable number of bars over a 0 dB to -80 dB display window.
+Frequency bars driven by the core `visualisation_manager` stream, updated once per display frame. No third-party DSP; the core's normalized FFT (Gauss window) is mapped into a configurable number of bars over a dB window set by Top and Range (default 0 dB to -80 dB).
 
 At the low end, where several log-scale bands fall inside a single FFT bin, each band is sampled at its centre frequency (interpolated between neighbouring bins) instead of all reading the same bin as flat steps.
 
@@ -65,6 +65,10 @@ In **RMS average** the Smoothing slider sets the averaging time (0-500 ms, in 5 
 
 **Slope** tilts the displayed spectrum around 1 kHz by 0 to 6 dB per octave, so high frequencies read higher and bass lower. Music usually falls off towards the highs; a slope flattens the display so detail there is easier to see. The dB scale then shows sloped levels, not true ones.
 
+### Level Range
+
+The display shows a fixed dB window, as pro analyzers do: there is no auto gain, so a level always sits at the same height. **Top** sets the level at the top of the display (0 to -60 dB); lower it to fill the height with quiet music. **Range** sets the span down to the bottom: 60, 80, 90 or 120 dB. The dB scale follows both, with a guide every 10 dB (every 20 dB at 120 dB range).
+
 ### Full Screen
 
 Double-click the panel, or right-click and choose **Full Screen**, to open the spectrum in its own full-screen Space on the same display. It uses the same settings as the panel. Leave with Esc, a double-click, or **Exit Full Screen** in the context menu. The panel pauses while it is fully covered.
@@ -95,7 +99,7 @@ The defaults follow common metering practice: the curve uses RMS averaging at 12
 
 ### Grid
 
-- **dB scale**: guide lines every 10 dB with labels, positioned against the same 0..-80 dB window the bars use
+- **dB scale**: guide lines every 10 dB (20 dB at 120 dB range) with labels, positioned against the same Top / Range window the bars use
 - **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz, with extra ticks where there is room (filling 10-20 kHz) and de-cluttered labels; the linear scale uses round steps
 - **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
@@ -133,6 +137,8 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 | Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | RMS average |
 | Smoothing | Attack / decay: temporal smoothing (higher = smoother). RMS average: the averaging time. Stored per mode | 0-100 / 0-500 ms | 82 / 125 ms |
 | Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 0.4 |
+| Top | Level at the top of the display | 0 to -60 dB | 0 dB |
+| Range | dB from the top of the display to the bottom | 60, 80, 90, 120 dB | 80 dB |
 
 ### Dynamics
 
@@ -192,6 +198,7 @@ splitter vertical
 - Band edges recomputed when the stream's sample rate changes; the DC bin is skipped
 - Peak magnitude across each band's bins (reads punchier than the average)
 - RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 35 dB/s at 125 ms); the shadow fall slider maps to 15-90% of that rate
+- Bar height is `(dB - (Top - Range)) / Range`, clamped to 0..1; peak fall and the RMS shadow fall are converted to height per frame against the current Range, so their dB/s rates hold at any range
 - The slope is a per-bar gain of `slope x log2(f / 1 kHz)` dB at the bar's centre frequency
 - Rates for smoothing, shadow fall, peak fall, and peak hold are defined per 1/60 s and scaled by the time since the previous update, so motion is the same at any refresh rate
 
