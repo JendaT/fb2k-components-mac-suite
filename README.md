@@ -77,24 +77,24 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 
 ### Spectrum Analyzer
 
-Real-time spectrum analyzer panel, built on foobar2000's own FFT visualisation stream.
+Real-time spectrum analyzer panel, running its own FFT on the audio from foobar2000's visualisation stream.
 
-| Curve with color bars | Bars | Settings |
-|-----------------------|------|----------|
-| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png) | ![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
+| Curve and bars | Settings |
+|----------------|----------|
+| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png)<br>![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
 
 **Features:**
-- Bars or curve display, horizontal or vertical orientation
-- Curve styles: filled, line, color bars (stripes that brighten where a frequency is louder), or line + color bars
-- Logarithmic, compact-bass logarithmic or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
-- Attack/decay or RMS-average smoothing, plus an optional spectral slope (0–6 dB/octave)
+- Curve or bars, horizontal or vertical, edge to edge in the panel
+- Curve styles: filled, line, color bars (stripes that brighten where a frequency is louder), or line + color bars; a strong live line with a fainter peak line
+- Curve detail from every FFT bin to 1/24-1/3 octave smoothing; Hann or Blackman-Harris window, FFT size 1024-32768
+- Mid + side mode draws the stereo difference as a second line
+- Logarithmic, compact-bass logarithmic or linear frequency scale with adjustable range (default 20 Hz - 20 kHz)
+- Fixed dB window (Top and Range), optional spectral slope (0-6 dB/octave)
+- RMS-average or attack/decay smoothing; peak line that holds, then falls at a steady dB/s rate; slow-falling shadow fill
+- Hover readout with frequency, nearest note and level
+- Color themes, including P31 green, P3 amber, P4 white and P7 blue phosphors, with separate light/dark colors and optional glass background
+- Factory presets (Classic bars, RTA 1/3 octave, Fine detail, Mid + side) and a settings page that shows only what applies
 - Full-screen view via double-click or the context menu
-- Falling peak line and slow-decaying shadow fill
-- dB guides and frequency gridlines with adjustable opacity
-- Bar styles (solid, gradient, spectrum hue) and color presets (Nord, Dracula, Gruvbox, Solarized, Tokyo Night, ...) with separate light/dark colors and optional glass background
-- Auto bar count that fits the panel (up to 2048 bars), or fixed presets
-- Per-bar frequency labels; click and hold to read the exact frequency under the cursor
-- Tunable FFT size, smoothing and peak/shadow fall speeds
 
 ---
 
