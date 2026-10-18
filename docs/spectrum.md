@@ -155,9 +155,9 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 | Curve style | Curve mode only | Filled, Line, Color bars, Line + color bars | Line + color bars |
 | Curve detail | Curve mode only: Full draws every FFT bin, an octave fraction averages power over that band around each point | Full, 1/24, 1/12, 1/6, 1/3 octave | 1/24 octave |
 | Color bar brightness | Strength of the loudest color bar (Curve mode; color-bar styles only) | 10-100% | 85% |
-| Bars | Bars mode only; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16-512 | Auto |
+| Bars | Bars mode only; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16-512 | 96 |
 | Bar style | Bars mode only | Solid, Gradient, Spectrum | Gradient |
-| Bar gap | Bars mode only, % of slot width | 0-80% | 12% |
+| Bar gap | Bars mode only, % of slot width | 0-80% | 2% |
 | Orientation | | Horizontal, Vertical | Horizontal |
 | Top | Level at the top of the display | 0 to -60 dB | 0 dB |
 | Range | dB from the top of the display to the bottom | 60, 80, 90, 120 dB | 80 dB |

@@ -98,7 +98,7 @@ enum StereoMode {
 
 // --- Defaults ---
 constexpr int      kBarCountAuto      = 0;       // Bar count follows the view size
-constexpr int      kDefaultBarCount   = kBarCountAuto; // Number of frequency bars in Bars mode
+constexpr int      kDefaultBarCount   = 96;      // Number of frequency bars in Bars mode
 constexpr double   kAutoBarPitch      = 2.0;     // Auto: points per bar along the frequency axis
 constexpr double   kCurvePointPitch   = 1.0;     // Curve mode: points per curve knot (Bars setting not used)
 constexpr int      kMaxBarCount       = 2048;
@@ -111,7 +111,7 @@ constexpr int      kDefaultColorBarBrightness = 85; // Strength of the loudest c
 constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
-constexpr int      kDefaultGapPercent = 12;      // Gap between bars, % of slot width
+constexpr int      kDefaultGapPercent = 2;       // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100 (higher = smoother)
 constexpr int      kDefaultSmoothingMode = SmoothingRms;
 constexpr int      kDefaultRmsMs      = 270;     // RMS mode: power averaging time constant (ms); falls up to ~16 dB/s
