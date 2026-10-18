@@ -2,57 +2,62 @@
 //  WaveformData.h
 //  foo_wave_seekbar_mac
 //
-//  Core data structure for waveform peak data
+//  Per-track analysis, cached: block arrays at two fixed resolutions plus a
+//  loudness summary. Per-column values are aggregated from these at draw time
+//  (ColumnAggregator), so a resize never re-decodes. Pure C++ (zlib only).
 //
 
 #pragma once
 
 #include <vector>
 #include <cstdint>
-#include <string>
+#include <cmath>
 #include <optional>
 
+struct LoudnessSummary {
+    float integrated = -INFINITY;   // LUFS, BS.1770-4 gating
+    float range = 0.0f;             // LRA in LU, EBU Tech 3342
+    float truePeak = -INFINITY;     // dBTP, 4x oversampled
+    float samplePeak = -INFINITY;   // dBFS
+    uint32_t clipRuns = 0;          // runs of 3+ samples at full scale
+
+    // Peak-to-loudness ratio, TP - I
+    float plr() const { return truePeak - integrated; }
+};
+
 struct WaveformData {
-    static const size_t BUCKET_COUNT = 2048;
+    uint32_t channelCount = 0;      // 1 = mono, 2 = stereo (first two channels of anything wider)
+    uint32_t sampleRate = 0;
+    double duration = 0.0;          // seconds
 
-    // Per-channel peak data (supports up to 2 channels)
-    std::vector<float> min[2];   // Minimum sample value per bucket [-1.0, 0.0]
-    std::vector<float> max[2];   // Maximum sample value per bucket [0.0, 1.0]
-    std::vector<float> rms[2];   // RMS energy per bucket [0.0, 1.0]
+    // Fine blocks (blockFrames each, the last one may be shorter): drawing.
+    uint32_t blockFrames = 0;
+    std::vector<float> blockMin[2];     // sample minimum, -1..0
+    std::vector<float> blockMax[2];     // sample maximum, 0..1
+    std::vector<float> blockRms[2];     // RMS amplitude, 0..1
 
-    uint32_t channelCount = 0;   // 1 = mono, 2 = stereo
-    uint32_t sampleRate = 0;     // Original sample rate
-    double duration = 0.0;       // Track duration in seconds
+    // Hops (100 ms each, the last one may be shorter): loudness gates,
+    // readout and band split. Mean squares, i.e. power per frame.
+    uint32_t hopFrames = 0;
+    std::vector<float> hopKms[2];       // K-weighted (BS.1770) mean square per channel
+    std::vector<float> hopMs[2];        // plain mean square per channel
+    std::vector<float> hopLR;           // mean of L*R (correlation numerator); empty for mono
+    std::vector<float> hopBand[3];      // Lo / Mid / Hi mean square, channels summed
 
-    // Construction
-    WaveformData() = default;
-    void initialize(uint32_t channels, uint32_t rate, double dur);
+    // Start frame of each clip run (3+ consecutive samples at full scale on
+    // any channel; overlapping runs on several channels count once).
+    std::vector<uint64_t> clipRunFrames;
 
-    // Serialization (little-endian)
-    void serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const uint8_t* data, size_t size);
+    LoudnessSummary summary;
 
-    // Compression (zlib)
-    std::vector<uint8_t> compress() const;
-    static std::optional<WaveformData> decompress(const uint8_t* data, size_t size);
+    size_t blockCount() const { return blockMin[0].size(); }
+    size_t hopCount() const { return hopKms[0].size(); }
 
-    // Utility
     bool isValid() const;
     size_t memorySize() const;
 
-    // Access helpers for rendering
-    float getMinAt(uint32_t channel, double normalizedPosition) const;
-    float getMaxAt(uint32_t channel, double normalizedPosition) const;
-    float getRmsAt(uint32_t channel, double normalizedPosition) const;
-
-private:
-    // Serialization format version
-    static const uint32_t SERIALIZATION_VERSION = 1;
-
-    // Helper for little-endian serialization
-    template<typename T>
-    static void writeLE(std::vector<uint8_t>& out, T value);
-
-    template<typename T>
-    static T readLE(const uint8_t* data);
+    // Cache blob: zlib-compressed, levels quantized to 0.01 dB steps and
+    // samples to 16 bits.
+    std::vector<uint8_t> compress() const;
+    static std::optional<WaveformData> decompress(const uint8_t* data, size_t size);
 };

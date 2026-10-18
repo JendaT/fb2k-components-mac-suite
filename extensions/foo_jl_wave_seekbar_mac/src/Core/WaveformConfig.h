@@ -75,46 +75,29 @@ static const GUID guid_preferences_page = {
     {0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}
 };
 
-// Display modes
-enum DisplayMode {
-    DisplayModeStereo = 0,
-    DisplayModeMono = 1
+// Waveform styles
+enum Style {
+    StyleLayered = 0,   // peak envelope around a loudness body, one dBFS axis
+    StyleTwoTone = 1,   // Simple: split L/R lanes, linear, flat peak and RMS core
+    StyleGlow = 2,      // Simple: peaks fade to the tips, hot RMS core
+    StyleHeat = 3,      // Simple: colour by amplitude, deep -> accent -> hot
+    StyleCount
 };
 
-// Cursor effects at playback position
-enum CursorEffect {
-    CursorEffectNone = 0,      // Sharp transition, no effect
-    CursorEffectGradient = 1,  // Fade gradient at edge
-    CursorEffectGlow = 2,      // Pulsing halo/bloom
-    CursorEffectScanline = 3,  // Multiple thin vertical lines
-    CursorEffectPulse = 4,     // Breathing cursor line
-    CursorEffectTrail = 5,     // Motion blur trail behind cursor
-    CursorEffectShimmer = 6    // Oscillating brightness bands
-};
-
-// Waveform rendering styles
-enum WaveformStyle {
-    WaveformStyleSolid = 0,    // Single color (uses waveform color setting)
-    WaveformStyleHeatMap = 1,  // Amplitude mapped to color gradient (blue→green→yellow→red)
-    WaveformStyleRainbow = 2   // Position-based rainbow gradient across track
-};
-
-// What the waveform height shows
-enum AmplitudeScale {
-    AmplitudeScalePeak = 0,      // Sample peaks
-    AmplitudeScaleLoudness = 1   // RMS relative to the track's loud parts: shows its structure
+// Channels shown
+enum ChannelMode {
+    ChannelsStereo = 0, // L and R apart (Layered: up / down; Simple: two lanes)
+    ChannelsMono = 1    // mixed to one
 };
 
 // Default values
-constexpr int kDefaultDisplayMode = DisplayModeStereo;
-constexpr bool kDefaultShadePlayedPortion = true;
-constexpr int kDefaultPlayedDimming = 50;  // 0-100 percent opacity for played portion dimming
-constexpr int kDefaultCursorEffect = CursorEffectGradient;  // Default to gradient (current behavior)
-constexpr int kDefaultWaveformStyle = WaveformStyleSolid;   // Default to solid color
-constexpr int kDefaultAmplitudeScale = AmplitudeScaleLoudness;
-constexpr int kDefaultGradientBands = 8;                    // Number of gradient bands for solid style (2-32)
-constexpr bool kDefaultBpmSync = false;                     // Sync cursor animations to track BPM
-constexpr bool kDefaultGlassBackground = false;             // Opaque background by default
+constexpr int kDefaultStyle = StyleLayered;
+constexpr int kDefaultChannelMode = ChannelsStereo;
+constexpr int kDefaultPlayedOpacity = 50;       // percent; the part still to play is at 100
+constexpr int kMinPlayedOpacity = 20;
+constexpr int kMaxPlayedOpacity = 100;
+constexpr bool kDefaultCursorTime = true;       // elapsed time chip beside the cursor
+constexpr bool kDefaultGlassBackground = false; // Opaque background by default
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 
@@ -124,10 +107,6 @@ constexpr uint32_t kDefaultBgColorLight = 0xFFF0F4F9;
 
 constexpr uint32_t kDefaultWaveColorDark = 0xFF6FB7FF;
 constexpr uint32_t kDefaultBgColorDark = 0xFF0A0E15;
-
-// Waveform constants
-constexpr size_t kWaveformBucketCount = 2048;
-constexpr int kDefaultScanResolution = 200;  // Peaks per second during scan
 
 } // namespace waveform_config
 

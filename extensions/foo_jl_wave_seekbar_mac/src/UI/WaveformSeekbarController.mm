@@ -13,6 +13,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
 #include "../Core/WaveformGeometry.h"
+#include <cmath>
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -187,12 +188,10 @@
             if (pc->get_now_playing(track) && track.is_valid()) {
                 file_info_impl info;
                 double duration = 0;
-                double bpm = 0;
                 if (track->get_info_async(info)) {
                     duration = info.get_length();
-                    bpm = extractBpmFromInfo(info);
                 }
-                [self handleNewTrack:track duration:duration bpm:bpm];
+                [self handleNewTrack:track duration:duration];
 
                 // Sync position
                 double position = pc->playback_get_position();
@@ -212,13 +211,12 @@
 
 #pragma mark - Playback Event Handlers
 
-- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm {
+- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration {
     _currentTrack = track;
     _isPaused = NO;
     _storedWaveform.reset();  // Clear previous waveform
 
     self.waveformView.trackDuration = duration;
-    self.waveformView.trackBpm = bpm;  // Set BPM for animation sync
     self.waveformView.playbackPosition = 0.0;
     self.waveformView.playing = YES;
     self.waveformView.waveformData = nil;
@@ -378,26 +376,14 @@ static const int kAnalysisMaxRetries = 1;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
-                    // Redraw once the cursor moves at least a quarter pixel
+                    // Redraw once the cursor moves at least a quarter pixel, or
+                    // the time chip reaches the next second
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
                     double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
+                    const bool nextSecond = std::floor(position) != std::floor(oldTime);
 
-                    // Animated cursor effects need continuous redraw to stay smooth
-                    BOOL animatedEffect = NO;
-                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
-                        switch (self.waveformView.cursorEffect) {
-                            case WaveformCursorEffectGlow:
-                            case WaveformCursorEffectScanline:
-                            case WaveformCursorEffectPulse:
-                            case WaveformCursorEffectShimmer:
-                                animatedEffect = YES;
-                                break;
-                            default:
-                                break;
-                        }
-                    }
-
-                    if (animatedEffect || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
+                    if (nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
                         [self.waveformView refreshDisplay];
                     }
