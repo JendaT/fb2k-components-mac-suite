@@ -28,7 +28,7 @@ using namespace spectrum_config;
 
 namespace {
 
-constexpr CGFloat kPageWidth = 460;
+constexpr CGFloat kPageWidth = 500;   // fits the preferences pane, with room for the longest note
 constexpr CGFloat kLabelX = 30;
 constexpr CGFloat kControlX = 160;
 constexpr CGFloat kValueX = kControlX + 160;   // slider value / note
