@@ -179,7 +179,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
     if (_gridOpacity <= 0) return [NSColor clearColor];
     NSColor *bg = [[self bgColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!bg) return NSColor.secondaryLabelColor;
-    return [bg blendedColorWithFraction:0.62 ofColor:[self inkColor]];
+    return [bg blendedColorWithFraction:0.62 ofColor:[self inkColor]] ?: NSColor.secondaryLabelColor;
 }
 
 // Labels at the decades (100, 1k, 10k), brighter so they are easy to find.
@@ -187,7 +187,7 @@ static NSColor *colorFromARGB(uint32_t argb) {
     if (_gridOpacity <= 0) return [NSColor clearColor];
     NSColor *bg = [[self bgColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
     if (!bg) return NSColor.labelColor;
-    return [bg blendedColorWithFraction:0.92 ofColor:[self inkColor]];
+    return [bg blendedColorWithFraction:0.92 ofColor:[self inkColor]] ?: NSColor.labelColor;
 }
 
 // White on a dark background, black on a light one.
@@ -231,7 +231,20 @@ static const NSFontWeight kLabelWeight = NSFontWeightRegular;
 static const NSFontWeight kDecadeLabelWeight = NSFontWeightSemibold;
 
 static NSFont *labelFont(NSFontWeight weight) {
-    return [NSFont monospacedSystemFontOfSize:kLabelFontSize weight:weight];
+    NSFont *f = [NSFont monospacedSystemFontOfSize:kLabelFontSize weight:weight];
+    if (!f) f = [NSFont monospacedDigitSystemFontOfSize:kLabelFontSize weight:weight];
+    return f ?: [NSFont systemFontOfSize:kLabelFontSize];
+}
+
+// Text attributes that tolerate a nil font or color. A nil value in a
+// dictionary literal throws, and an exception thrown while AppKit draws the
+// view is swallowed mid-transaction, which can corrupt memory and crash the
+// app later on.
+static NSDictionary *textAttrs(NSFont *font, NSColor *color) {
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithCapacity:2];
+    d[NSFontAttributeName] = font ?: [NSFont systemFontOfSize:kLabelFontSize];
+    if (color) d[NSForegroundColorAttributeName] = color;
+    return d;
 }
 
 // The magnitude axis needs a wide margin for "-80" labels; the frequency
@@ -297,7 +310,20 @@ static const CGFloat kPeakLineAlpha = 0.45;
 
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
+    // An exception must not leave drawRect: - AppKit swallows it in the middle
+    // of its display transaction, which can corrupt memory and crash
+    // foobar2000 later. Log it and skip the frame instead.
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    CGContextSaveGState(ctx);
+    @try {
+        [self drawSpectrum];
+    } @catch (NSException *e) {
+        NSLog(@"foo_jl_spectrum: drawing failed: %@", e);
+    }
+    CGContextRestoreGState(ctx);
+}
 
+- (void)drawSpectrum {
     CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
     const CGRect bounds = self.bounds;
     // The layout below works inside the outer margin.
@@ -350,9 +376,10 @@ static const CGFloat kPeakLineAlpha = 0.45;
 
     NSColor *base = [self barColor];
     const BOOL dark = fb2k_ui::isDarkMode();
-    NSColor *shadowColor = [base blendedColorWithFraction:0.6 ofColor:[NSColor grayColor]];
-    NSColor *capColor = dark ? [base blendedColorWithFraction:0.7 ofColor:[NSColor whiteColor]]
-                             : [base blendedColorWithFraction:0.5 ofColor:[NSColor blackColor]];
+    // blendedColorWithFraction: returns nil when it cannot convert the colors.
+    NSColor *shadowColor = [base blendedColorWithFraction:0.6 ofColor:[NSColor grayColor]] ?: base;
+    NSColor *capColor = (dark ? [base blendedColorWithFraction:0.7 ofColor:[NSColor whiteColor]]
+                              : [base blendedColorWithFraction:0.5 ofColor:[NSColor blackColor]]) ?: base;
 
     if (_drawMode == spectrum_config::DrawModeCurve) {
         [self drawCurveBase:base shadow:shadowColor cap:capColor context:ctx];
@@ -416,8 +443,8 @@ static const CGFloat kPeakLineAlpha = 0.45;
     }
 
     if (_barStyle == BarStyleGradient) {
-        NSColor *lo = [base blendedColorWithFraction:0.55 ofColor:[NSColor blackColor]];
-        NSColor *hi = [base blendedColorWithFraction:0.25 ofColor:[NSColor whiteColor]];
+        NSColor *lo = [base blendedColorWithFraction:0.55 ofColor:[NSColor blackColor]] ?: base;
+        NSColor *hi = [base blendedColorWithFraction:0.25 ofColor:[NSColor whiteColor]] ?: base;
         NSGradient *grad = [[NSGradient alloc] initWithStartingColor:lo endingColor:hi];
         const CGFloat angle = _vertical ? 0.0 : 90.0;  // along the magnitude axis
         for (NSInteger i = 0; i < n; ++i) {
@@ -528,10 +555,7 @@ static const CGFloat kPeakLineAlpha = 0.45;
 // corner, so nothing has to be guessed. Left out where it would crowd.
 - (void)drawLegendBase:(NSColor *)base {
     if (!_showLegend || _pFreq < 280.0 || _pMag < 120.0) return;
-    NSDictionary *attrs = @{
-        NSFontAttributeName: labelFont(kLabelWeight),
-        NSForegroundColorAttributeName: [self gridLabelColor]
-    };
+    NSDictionary *attrs = textAttrs(labelFont(kLabelWeight), [self gridLabelColor]);
     const CGFloat swatch = 16.0, gap = 6.0, spacing = 18.0;
     const CGFloat lineH = [@"Live" sizeWithAttributes:attrs].height;
     // Just below the loud end of the plot.
@@ -678,10 +702,7 @@ static CGFloat colorBarStrength(CGFloat level) {
     if (range <= 0) return;
 
     const int step = range > 90 ? 20 : 10;
-    NSDictionary *attrs = @{
-        NSFontAttributeName: dbLabelFont(),
-        NSForegroundColorAttributeName: [self gridLabelColor]
-    };
+    NSDictionary *attrs = textAttrs(dbLabelFont(), [self gridLabelColor]);
     CGContextSetLineWidth(ctx, 1.0);
     NSColor *lineColor = [self gridLineColor];
 
@@ -721,14 +742,8 @@ static CGFloat colorBarStrength(CGFloat level) {
 
 // Frequency axis: lines of constant frequency across the magnitude axis.
 - (void)drawFreqAxisInContext:(CGContextRef)ctx {
-    NSDictionary *attrs = @{
-        NSFontAttributeName: labelFont(kLabelWeight),
-        NSForegroundColorAttributeName: [self gridLabelColor]
-    };
-    NSDictionary *decadeAttrs = @{
-        NSFontAttributeName: labelFont(kDecadeLabelWeight),
-        NSForegroundColorAttributeName: [self decadeLabelColor]
-    };
+    NSDictionary *attrs = textAttrs(labelFont(kLabelWeight), [self gridLabelColor]);
+    NSDictionary *decadeAttrs = textAttrs(labelFont(kDecadeLabelWeight), [self decadeLabelColor]);
     CGContextSetLineWidth(ctx, 1.0);
     NSColor *full = [self gridLineColor];
     NSColor *major = [full colorWithAlphaComponent:full.alphaComponent * kDecadeGridAlpha];
@@ -862,10 +877,7 @@ static NSString *compactHz(double f) {
 }
 
 - (NSDictionary *)barLabelAttrs {
-    return @{
-        NSFontAttributeName: [NSFont systemFontOfSize:kLabelFontSize - 1 weight:kLabelWeight],
-        NSForegroundColorAttributeName: [self gridLabelColor]
-    };
+    return textAttrs([NSFont systemFontOfSize:kLabelFontSize - 1 weight:kLabelWeight], [self gridLabelColor]);
 }
 
 // Label text matches the analyzer's band centres: geometric mean of the band
@@ -1013,8 +1025,8 @@ static NSString *noteName(double f) {
 
     // Box: "702 Hz  F5 +9¢  -21.6 dB", the note in the theme colour.
     NSFont *font = labelFont(NSFontWeightMedium);
-    NSDictionary *inkAttrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: ink};
-    NSDictionary *noteAttrs = @{NSFontAttributeName: font, NSForegroundColorAttributeName: base};
+    NSDictionary *inkAttrs = textAttrs(font, ink);
+    NSDictionary *noteAttrs = textAttrs(font, base);
     NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
         initWithString:[readoutHz(hz) stringByAppendingString:@"   "] attributes:inkAttrs];
     [text appendAttributedString:[[NSAttributedString alloc]
@@ -1044,7 +1056,7 @@ static NSString *noteName(double f) {
     if (!_showFreqAxis || _drawMode != spectrum_config::DrawModeCurve) return;
     NSString *tag = hz >= 1000.0 ? [NSString stringWithFormat:@"%.2fk", hz / 1000.0]
                                  : [NSString stringWithFormat:@"%.0f", hz];
-    NSDictionary *tagAttrs = @{NSFontAttributeName: labelFont(NSFontWeightSemibold), NSForegroundColorAttributeName: bg};
+    NSDictionary *tagAttrs = textAttrs(labelFont(NSFontWeightSemibold), bg);
     const NSSize ts = [tag sizeWithAttributes:tagAttrs];
     const CGFloat tw = std::ceil(ts.width) + 10.0, th = std::ceil(ts.height) + 2.0;
     CGRect pill;
@@ -1062,10 +1074,7 @@ static NSString *noteName(double f) {
 
 - (void)drawPlaceholder:(CGRect)bounds {
     NSString *msg = @"Spectrum Analyzer";
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont systemFontOfSize:11],
-        NSForegroundColorAttributeName: [NSColor tertiaryLabelColor]
-    };
+    NSDictionary *attrs = textAttrs([NSFont systemFontOfSize:11], [NSColor tertiaryLabelColor]);
     NSSize sz = [msg sizeWithAttributes:attrs];
     NSPoint p = NSMakePoint((bounds.size.width - sz.width) / 2,
                             (bounds.size.height - sz.height) / 2);
