@@ -9,6 +9,7 @@
 #include "../fb2k_sdk.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
+#include "../Core/WaveformThemes.h"
 #include "../Core/WaveformService.h"
 #include "../Core/WaveformColorMap.h"
 #include "../Core/GradientBandTable.h"
@@ -29,6 +30,9 @@
     NSPopUpButton *_gradientBandsPopup;
     NSButton *_shadePlayedCheckbox;
     NSButton *_glassBackgroundCheckbox;
+
+    // Color preset
+    NSPopUpButton *_themePopup;
 
     // Light mode colors
     NSColorWell *_waveColorLightWell;
@@ -67,7 +71,7 @@
 }
 
 - (void)loadView {
-    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 450)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 530)];
     self.view = view;
 
     // Allow transparent colors (alpha slider in the color panel)
@@ -151,6 +155,19 @@
     [_glassBackgroundCheckbox setTarget:self];
     [_glassBackgroundCheckbox setAction:@selector(checkboxChanged:)];
     [self.view addSubview:_glassBackgroundCheckbox];
+    y += 32;
+
+    // Theme (a preset for all four colors below)
+    [self.view addSubview:[self createLabel:@"Theme:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _themePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 160, 25)];
+    for (int index : waveform_config::kThemeMenuOrder) {
+        [_themePopup addItemWithTitle:[NSString stringWithUTF8String:waveform_config::kThemes[index].name]];
+        _themePopup.lastItem.tag = index;
+    }
+    _themePopup.toolTip = @"A color preset for the waveform and background (Solid style)";
+    [_themePopup setTarget:self];
+    [_themePopup setAction:@selector(themeChanged:)];
+    [self.view addSubview:_themePopup];
     y += 32;
 
     // Colors section - Light Mode
@@ -301,13 +318,7 @@
     _shadePlayedCheckbox.state = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassBackgroundCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
-    // Light mode colors
-    _waveColorLightWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight))];
-    _bgColorLightWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyBgColorLight, kDefaultBgColorLight))];
-
-    // Dark mode colors
-    _waveColorDarkWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyWaveColorDark, kDefaultWaveColorDark))];
-    _bgColorDarkWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyBgColorDark, kDefaultBgColorDark))];
+    [self loadColors];
 
     // Played dimming opacity (0-100)
     int64_t opacity = getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming);
@@ -323,6 +334,21 @@
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
     _retentionField.integerValue = getConfigInt(kKeyCacheRetentionDays, kDefaultCacheRetentionDays);
+}
+
+// Color wells and the theme popup, which shows the preset matching them
+- (void)loadColors {
+    using namespace waveform_config;
+
+    // Light mode colors
+    _waveColorLightWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight))];
+    _bgColorLightWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyBgColorLight, kDefaultBgColorLight))];
+
+    // Dark mode colors
+    _waveColorDarkWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyWaveColorDark, kDefaultWaveColorDark))];
+    _bgColorDarkWell.color = [self colorFromARGB:static_cast<uint32_t>(getConfigInt(kKeyBgColorDark, kDefaultBgColorDark))];
+
+    [_themePopup selectItemWithTag:themeMatchingConfig()];
 }
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
@@ -391,6 +417,12 @@
     [self notifySettingsChanged];
 }
 
+- (void)themeChanged:(id)sender {
+    waveform_config::applyThemeToConfig((int)_themePopup.selectedTag);   // no-op for Custom
+    [self loadColors];
+    [self notifySettingsChanged];
+}
+
 - (void)colorChanged:(id)sender {
     using namespace waveform_config;
     if (sender == _waveColorLightWell) {
@@ -402,6 +434,7 @@
     } else if (sender == _bgColorDarkWell) {
         setConfigInt(kKeyBgColorDark, [self argbFromColor:_bgColorDarkWell.color]);
     }
+    [_themePopup selectItemWithTag:themeMatchingConfig()];
     [self notifySettingsChanged];
 }
 

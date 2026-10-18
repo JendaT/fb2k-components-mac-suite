@@ -111,12 +111,12 @@ constexpr bool kDefaultGlassBackground = false;             // Opaque background
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 
-// Default colors (ARGB format)
-constexpr uint32_t kDefaultWaveColorLight = 0xFF3380CC;    // Blue
-constexpr uint32_t kDefaultBgColorLight = 0xFFF2F2F2;      // Light gray
+// Default colors (ARGB): the P7 blue theme, as in Spectrum Analyzer
+constexpr uint32_t kDefaultWaveColorLight = 0xFF2D6CC0;
+constexpr uint32_t kDefaultBgColorLight = 0xFFF0F4F9;
 
-constexpr uint32_t kDefaultWaveColorDark = 0xFF4D99E6;     // Lighter blue
-constexpr uint32_t kDefaultBgColorDark = 0xFF1A1A1A;       // Dark gray
+constexpr uint32_t kDefaultWaveColorDark = 0xFF6FB7FF;
+constexpr uint32_t kDefaultBgColorDark = 0xFF0A0E15;
 
 // Waveform constants
 constexpr size_t kWaveformBucketCount = 2048;
