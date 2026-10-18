@@ -90,8 +90,18 @@ enum ChannelMode {
     ChannelsMono = 1    // mixed to one
 };
 
+// When the loudness summary badge shows
+enum SummaryMode {
+    SummaryOff = 0,
+    SummaryOnHover = 1,
+    SummaryAlways = 2
+};
+
 // Default values
 constexpr int kDefaultStyle = StyleLayered;
+constexpr bool kDefaultHoverReadout = true;
+constexpr int kDefaultSummaryMode = SummaryOnHover;
+constexpr bool kDefaultClipMarkers = true;
 constexpr int kDefaultChannelMode = ChannelsStereo;
 constexpr int kDefaultPlayedOpacity = 50;       // percent; the part still to play is at 100
 constexpr int kMinPlayedOpacity = 20;

@@ -47,6 +47,11 @@
     NSTextField *_playedOpacityLabel;
     NSButton *_cursorTimeCheckbox;
 
+    // Overlays
+    NSButton *_readoutCheckbox;
+    NSPopUpButton *_summaryPopup;
+    NSButton *_clipMarkersCheckbox;
+
     // Cache settings
     NSTextField *_cacheSizeField;
     NSTextField *_retentionField;
@@ -68,7 +73,7 @@
 }
 
 - (void)loadView {
-    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 545)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 655)];
     self.view = view;
 
     // Allow transparent colors (alpha slider in the color panel)
@@ -203,6 +208,39 @@
     [self.view addSubview:_bgColorDarkWell];
     y += 32;
 
+    // Overlays section
+    [self.view addSubview:[self createLabel:@"Overlays" at:NSMakePoint(labelX, y)]];
+    y += 22;
+
+    _readoutCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 300, 20)];
+    _readoutCheckbox.buttonType = NSButtonTypeSwitch;
+    _readoutCheckbox.title = @"Readout on hover";
+    _readoutCheckbox.toolTip = @"Time, LUFS-S, peak, crest, correlation, band split";
+    [_readoutCheckbox setTarget:self];
+    [_readoutCheckbox setAction:@selector(checkboxChanged:)];
+    [self.view addSubview:_readoutCheckbox];
+    y += 26;
+
+    [self.view addSubview:[self createLabel:@"Loudness summary:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _summaryPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX + 20, y, 130, 25)];
+    [_summaryPopup addItemWithTitle:@"Off"];
+    [_summaryPopup addItemWithTitle:@"On hover"];
+    [_summaryPopup addItemWithTitle:@"Always"];
+    _summaryPopup.toolTip = @"Integrated, LRA, true peak, PLR, clip count";
+    [_summaryPopup setTarget:self];
+    [_summaryPopup setAction:@selector(summaryChanged:)];
+    [self.view addSubview:_summaryPopup];
+    y += 30;
+
+    _clipMarkersCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 300, 20)];
+    _clipMarkersCheckbox.buttonType = NSButtonTypeSwitch;
+    _clipMarkersCheckbox.title = @"Clip markers";
+    _clipMarkersCheckbox.toolTip = @"Runs of 3+ samples at full scale";
+    [_clipMarkersCheckbox setTarget:self];
+    [_clipMarkersCheckbox setAction:@selector(checkboxChanged:)];
+    [self.view addSubview:_clipMarkersCheckbox];
+    y += 32;
+
     // Cache section
     [self.view addSubview:[self createLabel:@"Cache" at:NSMakePoint(labelX, y)]];
     y += 22;
@@ -287,6 +325,11 @@
     _playedOpacityLabel.stringValue = [NSString stringWithFormat:@"%lld%%", opacity];
     _cursorTimeCheckbox.state = getConfigBool(kKeyCursorTime, kDefaultCursorTime) ? NSControlStateValueOn : NSControlStateValueOff;
 
+    // Overlays
+    _readoutCheckbox.state = getConfigBool(kKeyHoverReadout, kDefaultHoverReadout) ? NSControlStateValueOn : NSControlStateValueOff;
+    [_summaryPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways)];
+    _clipMarkersCheckbox.state = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
+
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
     _retentionField.integerValue = getConfigInt(kKeyCacheRetentionDays, kDefaultCacheRetentionDays);
@@ -365,12 +408,22 @@
     [self notifySettingsChanged];
 }
 
+- (void)summaryChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeySummaryMode, _summaryPopup.indexOfSelectedItem);
+    [self notifySettingsChanged];
+}
+
 - (void)checkboxChanged:(id)sender {
     using namespace waveform_config;
     if (sender == _glassBackgroundCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
     } else if (sender == _cursorTimeCheckbox) {
         setConfigBool(kKeyCursorTime, _cursorTimeCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _readoutCheckbox) {
+        setConfigBool(kKeyHoverReadout, _readoutCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _clipMarkersCheckbox) {
+        setConfigBool(kKeyClipMarkers, _clipMarkersCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }

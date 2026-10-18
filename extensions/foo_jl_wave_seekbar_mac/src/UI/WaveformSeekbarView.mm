@@ -20,6 +20,7 @@
 #include "../Core/ColumnAggregator.h"
 #include "../Core/LayeredShape.h"
 #include "../Core/SimpleShape.h"
+#include "../Core/OverlayText.h"
 #include "../Core/ThemeTokens.h"
 #include <algorithm>
 #include <cmath>
@@ -106,14 +107,42 @@ void setStroke(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
     CGContextSetRGBStrokeColor(ctx, c.r, c.g, c.b, alpha);
 }
 
-// m:ss, or h:mm:ss from an hour on
-NSString *formatTime(double seconds) {
-    const long total = (long)std::max(0.0, std::floor(seconds));
-    if (total >= 3600) {
-        return [NSString stringWithFormat:@"%ld:%02ld:%02ld", total / 3600, (total / 60) % 60, total % 60];
-    }
-    return [NSString stringWithFormat:@"%ld:%02ld", total / 60, total % 60];
+NSString *str(const std::string& s) {
+    return [NSString stringWithUTF8String:s.c_str()] ?: @"";
 }
+
+NSColor *srgb(uint32_t rgb, CGFloat alpha = 1.0) {
+    return [NSColor colorWithSRGBRed:((rgb >> 16) & 0xFF) / 255.0 green:((rgb >> 8) & 0xFF) / 255.0
+                                blue:(rgb & 0xFF) / 255.0 alpha:alpha];
+}
+
+// Overlays keep their own dark palette in every theme
+const uint32_t kOverlayBackground = 0x13110C;
+const CGFloat kOverlayBackgroundAlpha = 0.95;
+const uint32_t kOverlayBorder = 0x3A3326;
+const uint32_t kOverlayValue = 0xF2E9D6;
+const uint32_t kOverlayLabel = 0x9A907D;
+const uint32_t kOverlayAlert = 0xF0603F;     // TP above 0, clips
+const uint32_t kBandColors[3] = { 0xC7772A, 0xD9C26A, 0xA8D4F2 };   // Lo, Mid, Hi
+
+// Hover readout layout, points from the box's top
+const CGFloat kReadoutPadX = 10.0;
+const CGFloat kReadoutHeaderY = 7.0;
+const CGFloat kReadoutRowsY = 27.0;
+const CGFloat kReadoutRowStep = 14.0;
+const CGFloat kReadoutBarY = 86.0;
+const CGFloat kReadoutBarHeight = 4.0;
+const CGFloat kReadoutBandsY = 94.0;
+const CGFloat kReadoutHeight = 111.0;
+const CGFloat kReadoutRadius = 4.0;
+
+// Loudness summary badge and clip markers
+const CGFloat kBadgeInset = 6.0;
+const CGFloat kBadgePadX = 6.0;
+const CGFloat kBadgePadY = 3.0;
+const CGFloat kBadgeRadius = 3.0;
+const CGFloat kClipMarkerWidth = 2.0;
+const CGFloat kClipMarkerHeight = 5.0;
 
 // Greyscale mask: black hides, white shows
 CGContextRef createMaskContext(size_t width, size_t height) {
@@ -163,6 +192,18 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
+    NSFont *_overlayFont;
+    NSFont *_overlayBoldFont;
+
+    // Mouse over the view, for the readout and the summary badge
+    BOOL _hovering;
+    CGFloat _hoverX;
+    BOOL _showReadout;
+    int _summaryMode;
+    BOOL _showClipMarkers;
+
+    // Per-column readout values at the masks' pixel width
+    analysis::Columns _readout;
     NSDictionary *_placeholderAttributes;
     NSFont *_chipFont;
     theme::Tokens _tokens;
@@ -205,6 +246,10 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         NSFontAttributeName: [NSFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
     };
+    _overlayFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular]
+        ?: [NSFont systemFontOfSize:10];
+    _overlayBoldFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightSemibold]
+        ?: [NSFont boldSystemFontOfSize:10];
     _chipFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightBold]
         ?: [NSFont boldSystemFontOfSize:10];
 
@@ -252,6 +297,9 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     const int64_t opacity = getConfigInt(kKeyPlayedOpacity, kDefaultPlayedOpacity);
     _playedOpacity = std::clamp<int64_t>(opacity, kMinPlayedOpacity, kMaxPlayedOpacity) / 100.0;
     _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
+    _showReadout = getConfigBool(kKeyHoverReadout, kDefaultHoverReadout);
+    _summaryMode = (int)std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways);
+    _showClipMarkers = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers);
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
@@ -266,7 +314,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
     _trackingArea = [[NSTrackingArea alloc]
         initWithRect:self.bounds
-        options:(NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveInKeyWindow)
+        options:(NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveInActiveApp)
         owner:self
         userInfo:nil];
     [self addTrackingArea:_trackingArea];
@@ -332,6 +380,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         mask = NULL;
     }
     _maskWidth = _maskHeight = 0;
+    _readout = analysis::Columns();
     [self invalidateComposite];
 }
 
@@ -344,6 +393,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     [self invalidateMasks];
     analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width);
     if (cols.count != width) return NO;
+    _readout = cols;
     if (_mono) cols = analysis::mixdown(cols);
     const CGFloat scale = (CGFloat)height / std::max<CGFloat>(1.0, self.bounds.size.height);
 
@@ -533,7 +583,9 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
             [self drawPlaceholderInContext:context rect:bounds];
         }
 
+        if (hasWaveform && _showClipMarkers) [self drawClipMarkersInContext:context rect:bounds];
         [self drawCursorInContext:context rect:bounds];
+        if (hasWaveform) [self drawOverlaysInContext:context rect:bounds];
     } @catch (NSException *e) {
         // An exception out of drawRect: takes foobar2000 down
         FB2K_console_formatter() << "[WaveSeek] Drawing failed: " << (e.reason ? e.reason.UTF8String : "?");
@@ -644,7 +696,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
                                                              blue:_tokens.cursorText.b
                                                             alpha:1.0]
     };
-    NSString *time = formatTime(self.playbackPosition * self.trackDuration);
+    NSString *time = str(overlay::formatClock(self.playbackPosition * self.trackDuration));
     const NSSize textSize = [time sizeWithAttributes:attrs];
     const CGFloat chipW = std::ceil(textSize.width + 2 * kChipPadX);
     const CGFloat chipH = std::ceil(textSize.height + 2 * kChipPadY);
@@ -665,13 +717,196 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     [time drawAtPoint:NSMakePoint(chip.origin.x + kChipPadX, chip.origin.y + kChipPadY) withAttributes:attrs];
 }
 
+#pragma mark - Overlays
+
+// 2 x 5 pt ticks on the top edge, one per clip run (one per pixel at most)
+- (void)drawClipMarkersInContext:(CGContextRef)context rect:(CGRect)rect {
+    const WaveformData& data = *self.waveformData;
+    const double totalFrames = data.duration * data.sampleRate;
+    if (data.clipRunFrames.empty() || totalFrames <= 0) return;
+
+    const CGFloat scale = [self backingScale];
+    CGContextSaveGState(context);
+    [srgb(kOverlayAlert) setFill];
+    long lastPixel = -1;
+    for (uint64_t frame : data.clipRunFrames) {
+        const CGFloat x = rect.origin.x + rect.size.width * (CGFloat)(frame / totalFrames);
+        const long pixel = std::lround(x * scale);
+        if (pixel == lastPixel) continue;
+        lastPixel = pixel;
+        const CGFloat left = std::round((x - kClipMarkerWidth / 2) * scale) / scale;
+        CGContextFillRect(context, CGRectMake(left, CGRectGetMaxY(rect) - kClipMarkerHeight,
+                                              kClipMarkerWidth, kClipMarkerHeight));
+    }
+    CGContextRestoreGState(context);
+}
+
+- (void)drawOverlaysInContext:(CGContextRef)context rect:(CGRect)rect {
+    using namespace waveform_config;
+    if (_summaryMode == SummaryAlways || (_summaryMode == SummaryOnHover && _hovering)) {
+        [self drawSummaryInContext:context rect:rect];
+    }
+    if (_showReadout && _hovering && _readout.count > 0) {
+        [self drawReadoutInContext:context rect:rect];
+    }
+}
+
+- (void)fillOverlayBox:(CGRect)box radius:(CGFloat)radius context:(CGContextRef)context {
+    CGContextSaveGState(context);
+    const CGRect inner = CGRectInset(box, 0.5, 0.5);
+    CGPathRef shape = CGPathCreateWithRoundedRect(inner, radius, radius, NULL);
+    [srgb(kOverlayBackground, kOverlayBackgroundAlpha) setFill];
+    CGContextAddPath(context, shape);
+    CGContextFillPath(context);
+    [srgb(kOverlayBorder) setStroke];
+    CGContextSetLineWidth(context, 1.0);
+    CGContextAddPath(context, shape);
+    CGContextStrokePath(context);
+    CGPathRelease(shape);
+    CGContextRestoreGState(context);
+}
+
+- (NSAttributedString *)text:(NSString *)s color:(uint32_t)color bold:(BOOL)bold {
+    return [[NSAttributedString alloc] initWithString:s attributes:@{
+        NSFontAttributeName: bold ? _overlayBoldFont : _overlayFont,
+        NSForegroundColorAttributeName: srgb(color)
+    }];
+}
+
+// `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips`, bottom right
+- (void)drawSummaryInContext:(CGContextRef)context rect:(CGRect)rect {
+    const LoudnessSummary& s = self.waveformData->summary;
+    NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
+    auto add = [&](NSString *text, uint32_t color) { [line appendAttributedString:[self text:text color:color bold:NO]]; };
+    add(@"I ", kOverlayLabel);
+    add(str(overlay::formatNumber(s.integrated, 1)), kOverlayValue);
+    add(@" LUFS  LRA ", kOverlayLabel);
+    add(str(overlay::formatNumber(s.range, 1)), kOverlayValue);
+    add(@" LU  TP ", kOverlayLabel);
+    add(str(overlay::formatNumber(s.truePeak, 1, true)), s.truePeak > 0.0f ? kOverlayAlert : kOverlayValue);
+    add(@" dBTP  PLR ", kOverlayLabel);
+    add(str(overlay::formatNumber(s.plr(), 1)), kOverlayValue);
+    if (s.clipRuns > 0) {
+        add([NSString stringWithFormat:@"  %u %@", s.clipRuns, s.clipRuns == 1 ? @"clip" : @"clips"], kOverlayAlert);
+    }
+
+    const NSSize size = line.size;
+    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(rect) - kBadgeInset - size.width - 2 * kBadgePadX),
+                                  rect.origin.y + kBadgeInset,
+                                  std::ceil(size.width + 2 * kBadgePadX), std::ceil(size.height + 2 * kBadgePadY));
+    if (box.origin.x < rect.origin.x) return;   // narrower than the badge
+    [self fillOverlayBox:box radius:kBadgeRadius context:context];
+    [line drawAtPoint:NSMakePoint(box.origin.x + kBadgePadX, box.origin.y + kBadgePadY)];
+}
+
+// Dashed line at the mouse, and the readout for that column
+- (void)drawReadoutInContext:(CGContextRef)context rect:(CGRect)rect {
+    const CGFloat scale = [self backingScale];
+    const CGFloat mouseX = std::clamp(_hoverX, rect.origin.x, CGRectGetMaxX(rect) - 1.0 / scale);
+    const CGFloat lineX = (std::floor(mouseX * scale) + 0.5) / scale;
+
+    CGContextSaveGState(context);
+    setStroke(context, _tokens.cursor, 0.8);
+    CGContextSetLineWidth(context, 1.0);
+    const CGFloat dash[2] = { 3.0, 3.0 };
+    CGContextSetLineDash(context, 0, dash, 2);
+    CGContextMoveToPoint(context, lineX, rect.origin.y);
+    CGContextAddLineToPoint(context, lineX, CGRectGetMaxY(rect));
+    CGContextStrokePath(context);
+    CGContextRestoreGState(context);
+
+    const analysis::Columns& r = _readout;
+    const size_t c = std::min(r.count - 1, (size_t)std::max<CGFloat>(0.0, (mouseX - rect.origin.x) * scale));
+    const double seconds = (mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width) * self.trackDuration;
+
+    const CGFloat width = overlay::kReadoutWidth;
+    const CGFloat left = std::round(rect.origin.x + overlay::readoutX(mouseX - rect.origin.x, rect.size.width));
+    // 10 pt from the top, less in views too short for that
+    const CGFloat topInset = std::clamp<CGFloat>((rect.size.height - kReadoutHeight) / 2, 0.0, overlay::kReadoutTop);
+    const CGFloat top = CGRectGetMaxY(rect) - topInset;
+    [self fillOverlayBox:CGRectMake(left, top - kReadoutHeight, width, kReadoutHeight) radius:kReadoutRadius context:context];
+
+    // Text rows hang from `y` points under the box's top
+    auto drawLeft = [&](NSAttributedString *s, CGFloat y) {
+        [s drawAtPoint:NSMakePoint(left + kReadoutPadX, top - y - s.size.height)];
+    };
+    auto drawRight = [&](NSAttributedString *s, CGFloat y) {
+        [s drawAtPoint:NSMakePoint(left + width - kReadoutPadX - s.size.width, top - y - s.size.height)];
+    };
+    auto drawCentre = [&](NSAttributedString *s, CGFloat y) {
+        [s drawAtPoint:NSMakePoint(std::round(left + (width - s.size.width) / 2), top - y - s.size.height)];
+    };
+
+    drawLeft([self text:str(overlay::formatClock(seconds, true)) color:kOverlayValue bold:YES], kReadoutHeaderY);
+    drawRight([self text:@"click to seek" color:kOverlayLabel bold:NO], kReadoutHeaderY);
+
+    struct Row { NSString *label; std::string value; NSString *unit; };
+    const Row rows[4] = {
+        { @"LUFS-S", overlay::formatNumber(r.lufs[c], 1), @"" },
+        { @"Peak", overlay::formatNumber(r.peakDb[c], 1), @" dBFS" },
+        { @"Crest", overlay::formatNumber(r.crestDb[c], 1), @" dB" },
+        { @"Corr", overlay::formatNumber(r.correlation[c], 2, true), @"" },
+    };
+    for (int i = 0; i < 4; ++i) {
+        const CGFloat y = kReadoutRowsY + i * kReadoutRowStep;
+        drawLeft([self text:rows[i].label color:kOverlayLabel bold:NO], y);
+        drawRight([self text:[str(rows[i].value) stringByAppendingString:rows[i].unit] color:kOverlayValue bold:NO], y);
+    }
+
+    // Lo / Mid / Hi: stacked bar, then the shares
+    const CGRect bar = CGRectMake(left + kReadoutPadX, top - kReadoutBarY - kReadoutBarHeight,
+                                  width - 2 * kReadoutPadX, kReadoutBarHeight);
+    CGContextSaveGState(context);
+    [srgb(kOverlayBorder) setFill];
+    CGContextFillRect(context, bar);
+    int percent[3] = { 0, 0, 0 };
+    const bool known = !std::isnan(r.bandShare[0][c]);
+    if (known) {
+        CGFloat x = bar.origin.x;
+        for (int b = 0; b < 3; ++b) {
+            const CGFloat w = bar.size.width * r.bandShare[b][c];
+            [srgb(kBandColors[b]) setFill];
+            CGContextFillRect(context, CGRectMake(x, bar.origin.y, w, bar.size.height));
+            x += w;
+            percent[b] = (int)std::lround(r.bandShare[b][c] * 100.0);
+        }
+    }
+    CGContextRestoreGState(context);
+
+    auto band = [&](NSString *name, int b, NSString *suffix) {
+        NSString *value = known ? [NSString stringWithFormat:@"%d", percent[b]] : str(overlay::formatNumber(NAN, 0));
+        return [self text:[NSString stringWithFormat:@"%@ %@%@", name, value, suffix] color:kOverlayLabel bold:NO];
+    };
+    drawLeft(band(@"Lo", 0, @""), kReadoutBandsY);
+    drawCentre(band(@"Mid", 1, @""), kReadoutBandsY);
+    drawRight(band(@"Hi", 2, @" %"), kReadoutBandsY);
+}
+
 #pragma mark - Mouse Events
+
+- (void)mouseEntered:(NSEvent *)event {
+    _hovering = YES;
+    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    _hovering = YES;
+    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
+    if (_showReadout || _summaryMode == waveform_config::SummaryOnHover) [self setNeedsDisplay:YES];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    _hovering = NO;
+    [self setNeedsDisplay:YES];
+}
 
 - (void)mouseDown:(NSEvent *)event {
     [self handleSeekWithEvent:event];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
     [self handleSeekWithEvent:event];
 }
 
