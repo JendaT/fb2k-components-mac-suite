@@ -2,14 +2,18 @@
 //  WaveformScanner.cpp
 //  foo_wave_seekbar_mac
 //
-//  Async audio scanning with peak extraction
+//  Async decode of a track through the TrackAnalyzer
 //
 
 #include "WaveformScanner.h"
-#include "PeakBinner.h"
+#include "TrackAnalyzer.h"
+#include <chrono>
 #include <dispatch/dispatch.h>
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <limits>
+#include <vector>
 
 // Construct-on-first-use singleton to avoid static initialization order issues
 WaveformScanner& getWaveformScanner() {
@@ -125,40 +129,6 @@ std::optional<WaveformData> WaveformScanner::scanSync(const metadb_handle_ptr& t
     return performScan(track, abort);
 }
 
-namespace {
-
-// Long tracks are split into segments of at least this length, decoded in parallel
-constexpr double kMinSegmentDuration = 30.0;
-// More segments than workers so a worker stuck on an efficiency core delays
-// the result less; 64 measured ~30% faster than one segment per core
-constexpr size_t kMaxSegments = 64;
-
-// Decodes one segment of the track into the binner. Bucket boundaries and
-// the peak math live in PeakBinner; this only seeks and feeds it chunks.
-void scanSegment(input_helper& decoder, waveseek::PeakBinner::Segment segment,
-                 uint32_t sampleRate, abort_callback& abort) {
-    if (segment.startSample() > 0) {
-        decoder.seek(static_cast<double>(segment.startSample()) / sampleRate, abort);
-    }
-
-    audio_chunk_impl_temporary chunk;
-    while (!segment.done() && decoder.run(chunk, abort)) {
-        abort.check();
-
-        // Segment boundaries are sample counts at the nominal rate; a rate
-        // change would shift them, so let the caller fall back to one pass
-        if (!segment.isWholeTrack() && chunk.get_sample_rate() != sampleRate) {
-            throw exception_unexpected_audio_format_change();
-        }
-
-        segment.addInterleaved(chunk.get_data(),
-                               chunk.get_sample_count(),
-                               chunk.get_channel_count());
-    }
-}
-
-}  // namespace
-
 std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr& track, abort_callback& abort) {
     if (!track.is_valid()) {
         return std::nullopt;
@@ -182,61 +152,39 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
         if (channels == 0) channels = 2;
         if (sampleRate == 0) sampleRate = 44100;
 
-        // Cap channels at 2
-        channels = std::min(channels, 2u);
-
-        // Open decoder. Seeking stays allowed (no input_flag_no_seeking) since
-        // segments seek; some inputs skip building seek tables otherwise
+        // Open decoder
         input_helper decoder;
         decoder.open(nullptr, track, input_flag_no_looping, abort);
 
-        // One decoder on one core took ~4s for a 2h mix. Split long tracks
-        // into segments decoded in parallel, unless seeking is unavailable or
-        // slow, or the file is remote (parallel reads multiply traffic)
-        size_t segments = 1;
-        if (decoder.can_seek() && !decoder.extended_param(input_params::seeking_expensive) &&
-            !filesystem::g_is_remote_or_unrecognized(track->get_path())) {
-            segments = std::clamp<size_t>(static_cast<size_t>(duration / kMinSegmentDuration), 1, kMaxSegments);
-        }
+        // The first chunk tells the real format; the analyser is built for it
+        std::optional<analysis::TrackAnalyzer> analyzer;
+        const auto started = std::chrono::steady_clock::now();
+        audio_chunk_impl_temporary chunk;
 
-        waveseek::PeakBinner binner(channels, sampleRate, duration);
-
-        bool parallelDone = false;
-        if (segments > 1) {
-            // Workers take segments from a shared counter, each reusing its own decoder
-            std::atomic<size_t> nextSegment{0};
-            std::atomic<bool> failed{false};
-            const size_t workers = std::min<size_t>(segments, pfc::getOptimalWorkerThreadCount());
-
-            fb2k::cpuThreadPool::runMultiHelper([&] {
-                try {
-                    input_helper segmentDecoder;
-                    segmentDecoder.open(nullptr, track, input_flag_no_looping, abort);
-                    for (size_t seg; !failed && (seg = nextSegment++) < segments;) {
-                        scanSegment(segmentDecoder,
-                                    binner.segment(seg * WaveformData::BUCKET_COUNT / segments,
-                                                   (seg + 1) * WaveformData::BUCKET_COUNT / segments),
-                                    sampleRate, abort);
-                    }
-                } catch (...) {
-                    failed = true;
-                }
-            }, workers);
-
+        while (decoder.run(chunk, abort)) {
             abort.check();
-            parallelDone = !failed;
-        }
-
-        // Single pass for short or unsegmentable tracks, and when a segment
-        // failed to seek or decode
-        if (!parallelDone) {
-            if (segments > 1) {
-                binner.reset();
+            if (!analyzer) {
+                if (chunk.get_sample_rate() > 0) sampleRate = chunk.get_sample_rate();
+                if (chunk.get_channel_count() > 0) channels = chunk.get_channel_count();
+                analyzer.emplace(sampleRate, std::min(channels, 2u),
+                                 static_cast<uint64_t>(duration * sampleRate));
             }
-            scanSegment(decoder, binner.wholeTrack(), sampleRate, abort);
+            analyzer->process(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count());
         }
+        if (!analyzer) return std::nullopt;
 
-        return binner.finish();
+        WaveformData waveform = analyzer->finish();
+        if (!waveform.isValid()) return std::nullopt;
+
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        const LoudnessSummary& sum = waveform.summary;
+        FB2K_console_formatter() << "[WaveSeek] Analysed " << track->get_path() << " in "
+            << pfc::format_float(seconds, 0, 2) << " s: I " << pfc::format_float(sum.integrated, 0, 1)
+            << " LUFS, LRA " << pfc::format_float(sum.range, 0, 1)
+            << " LU, TP " << pfc::format_float(sum.truePeak, 0, 1)
+            << " dBTP, PLR " << pfc::format_float(sum.plr(), 0, 1)
+            << ", " << sum.clipRuns << " clip runs";
+        return waveform;
 
     } catch (const exception_aborted&) {
         throw; // Rethrow abort

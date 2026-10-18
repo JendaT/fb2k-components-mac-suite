@@ -15,6 +15,7 @@
 #include "../Core/GradientBandTable.h"
 #import "../../../../shared/PreferencesCommon.h"
 #include "../Integration/ComponentInfo.h"
+#include <algorithm>
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
 @interface WaveformFlippedView : NSView
@@ -25,11 +26,9 @@
 
 @interface WaveformPreferences () {
     // Display settings
-    NSPopUpButton *_displayModePopup;
-    NSPopUpButton *_waveformStylePopup;
-    NSPopUpButton *_amplitudeScalePopup;
-    NSPopUpButton *_gradientBandsPopup;
-    NSButton *_shadePlayedCheckbox;
+    NSPopUpButton *_stylePopup;
+    NSTextField *_styleHint;
+    NSPopUpButton *_channelsPopup;
     NSButton *_glassBackgroundCheckbox;
 
     // Color preset
@@ -43,13 +42,10 @@
     NSColorWell *_waveColorDarkWell;
     NSColorWell *_bgColorDarkWell;
 
-    // Played dimming
+    // Played part and cursor
     NSSlider *_playedOpacitySlider;
     NSTextField *_playedOpacityLabel;
-
-    // Cursor effect
-    NSPopUpButton *_cursorEffectPopup;
-    NSButton *_bpmSyncCheckbox;
+    NSButton *_cursorTimeCheckbox;
 
     // Cache settings
     NSTextField *_cacheSizeField;
@@ -72,7 +68,7 @@
 }
 
 - (void)loadView {
-    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 560)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 545)];
     self.view = view;
 
     // Allow transparent colors (alpha slider in the color panel)
@@ -101,62 +97,61 @@
     [self.view addSubview:displayHeader];
     y += 22;
 
-    // Display Mode
-    [self.view addSubview:[self createLabel:@"Display Mode:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _displayModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
-    [_displayModePopup addItemWithTitle:@"Stereo (L/R)"];
-    [_displayModePopup addItemWithTitle:@"Mono"];
-    [_displayModePopup setTarget:self];
-    [_displayModePopup setAction:@selector(displayModeChanged:)];
-    [self.view addSubview:_displayModePopup];
+    // Style, with a one-line description under it
+    [self.view addSubview:[self createLabel:@"Style:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _stylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 250, 25)];
+    for (NSString *title in @[ @"Layered — peak + loudness (dBFS)", @"Simple — Two-tone",
+                               @"Simple — Glow", @"Simple — Heat" ]) {
+        [_stylePopup addItemWithTitle:title];
+    }
+    [_stylePopup setTarget:self];
+    [_stylePopup setAction:@selector(styleChanged:)];
+    [self.view addSubview:_stylePopup];
+    y += 28;
+
+    _styleHint = [self createLabel:@"" at:NSMakePoint(controlX + 3, y)];
+    _styleHint.frame = NSMakeRect(controlX + 3, y, 300, 17);
+    _styleHint.textColor = [NSColor secondaryLabelColor];
+    [self.view addSubview:_styleHint];
+    y += 26;
+
+    // Channels
+    [self.view addSubview:[self createLabel:@"Channels:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _channelsPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
+    [_channelsPopup addItemWithTitle:@"Stereo (L / R)"];
+    [_channelsPopup addItemWithTitle:@"Mono (mixed)"];
+    _channelsPopup.toolTip = @"Left and right apart, or both mixed into one waveform";
+    [_channelsPopup setTarget:self];
+    [_channelsPopup setAction:@selector(channelsChanged:)];
+    [self.view addSubview:_channelsPopup];
+    y += 32;
+
+    // Played part opacity (the part still to play is opaque)
+    [self.view addSubview:[self createLabel:@"Played opacity:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _playedOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
+    _playedOpacitySlider.minValue = waveform_config::kMinPlayedOpacity;
+    _playedOpacitySlider.maxValue = waveform_config::kMaxPlayedOpacity;
+    _playedOpacitySlider.continuous = YES;
+    _playedOpacitySlider.toolTip = @"How strongly the part already played is drawn";
+    [_playedOpacitySlider setTarget:self];
+    [_playedOpacitySlider setAction:@selector(opacityChanged:)];
+    [self.view addSubview:_playedOpacitySlider];
+
+    _playedOpacityLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX + 160, y + 2, 40, 17)];
+    _playedOpacityLabel.editable = NO;
+    _playedOpacityLabel.bordered = NO;
+    _playedOpacityLabel.backgroundColor = [NSColor clearColor];
+    _playedOpacityLabel.font = [NSFont systemFontOfSize:11];
+    [self.view addSubview:_playedOpacityLabel];
     y += 30;
 
-    // Waveform Style
-    [self.view addSubview:[self createLabel:@"Waveform style:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _waveformStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
-    [_waveformStylePopup addItemWithTitle:@"Solid"];
-    [_waveformStylePopup addItemWithTitle:@"Heat map"];
-    [_waveformStylePopup addItemWithTitle:@"Rainbow"];
-    [_waveformStylePopup setTarget:self];
-    [_waveformStylePopup setAction:@selector(waveformStyleChanged:)];
-    [self.view addSubview:_waveformStylePopup];
-    y += 30;
-
-    // Amplitude scale
-    [self.view addSubview:[self createLabel:@"Scale:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _amplitudeScalePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
-    [_amplitudeScalePopup addItemWithTitle:@"Peak"];
-    [_amplitudeScalePopup addItemWithTitle:@"Loudness"];
-    _amplitudeScalePopup.toolTip = @"Peak: sample peaks. Loudness: average level relative to the track, which shows quiet and loud sections.";
-    [_amplitudeScalePopup setTarget:self];
-    [_amplitudeScalePopup setAction:@selector(amplitudeScaleChanged:)];
-    [self.view addSubview:_amplitudeScalePopup];
-    y += 30;
-
-    // Gradient Bands (only applies to Solid style)
-    [self.view addSubview:[self createLabel:@"Gradient bands:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _gradientBandsPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 80, 25)];
-    // Add options: 0 (none), 2, 4, 8, 12, 16, 24, 32
-    [_gradientBandsPopup addItemWithTitle:@"0"];
-    [_gradientBandsPopup addItemWithTitle:@"2"];
-    [_gradientBandsPopup addItemWithTitle:@"4"];
-    [_gradientBandsPopup addItemWithTitle:@"8"];
-    [_gradientBandsPopup addItemWithTitle:@"12"];
-    [_gradientBandsPopup addItemWithTitle:@"16"];
-    [_gradientBandsPopup addItemWithTitle:@"24"];
-    [_gradientBandsPopup addItemWithTitle:@"32"];
-    [_gradientBandsPopup setTarget:self];
-    [_gradientBandsPopup setAction:@selector(gradientBandsChanged:)];
-    [self.view addSubview:_gradientBandsPopup];
-    y += 30;
-
-    // Shade played portion
-    _shadePlayedCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 250, 20)];
-    _shadePlayedCheckbox.buttonType = NSButtonTypeSwitch;
-    _shadePlayedCheckbox.title = @"Shade played portion";
-    [_shadePlayedCheckbox setTarget:self];
-    [_shadePlayedCheckbox setAction:@selector(checkboxChanged:)];
-    [self.view addSubview:_shadePlayedCheckbox];
+    // Elapsed time on the cursor
+    _cursorTimeCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 250, 20)];
+    _cursorTimeCheckbox.buttonType = NSButtonTypeSwitch;
+    _cursorTimeCheckbox.title = @"Elapsed time on the cursor";
+    [_cursorTimeCheckbox setTarget:self];
+    [_cursorTimeCheckbox setAction:@selector(checkboxChanged:)];
+    [self.view addSubview:_cursorTimeCheckbox];
     y += 26;
 
     // Glass background
@@ -176,7 +171,7 @@
         [_themePopup addItemWithTitle:[NSString stringWithUTF8String:waveform_config::kThemes[index].name]];
         _themePopup.lastItem.tag = index;
     }
-    _themePopup.toolTip = @"A color preset for the waveform and background (Solid style)";
+    _themePopup.toolTip = @"A color preset for the waveform and background";
     [_themePopup setTarget:self];
     [_themePopup setAction:@selector(themeChanged:)];
     [self.view addSubview:_themePopup];
@@ -206,48 +201,6 @@
     [self.view addSubview:[self createLabel:@"Background:" at:NSMakePoint(200, y + 3)]];
     _bgColorDarkWell = [self createColorWellAt:NSMakePoint(280, y)];
     [self.view addSubview:_bgColorDarkWell];
-    y += 32;
-
-    // Played portion opacity
-    [self.view addSubview:[self createLabel:@"Played dimming:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _playedOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _playedOpacitySlider.minValue = 0;
-    _playedOpacitySlider.maxValue = 100;
-    _playedOpacitySlider.continuous = YES;
-    [_playedOpacitySlider setTarget:self];
-    [_playedOpacitySlider setAction:@selector(opacityChanged:)];
-    [self.view addSubview:_playedOpacitySlider];
-
-    _playedOpacityLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX + 160, y + 2, 40, 17)];
-    _playedOpacityLabel.editable = NO;
-    _playedOpacityLabel.bordered = NO;
-    _playedOpacityLabel.backgroundColor = [NSColor clearColor];
-    _playedOpacityLabel.font = [NSFont systemFontOfSize:11];
-    [self.view addSubview:_playedOpacityLabel];
-    y += 30;
-
-    // Cursor effect
-    [self.view addSubview:[self createLabel:@"Cursor effect:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _cursorEffectPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 140, 25) pullsDown:NO];
-    [_cursorEffectPopup addItemWithTitle:@"None"];
-    [_cursorEffectPopup addItemWithTitle:@"Gradient"];
-    [_cursorEffectPopup addItemWithTitle:@"Glow"];
-    [_cursorEffectPopup addItemWithTitle:@"Scanline"];
-    [_cursorEffectPopup addItemWithTitle:@"Pulse"];
-    [_cursorEffectPopup addItemWithTitle:@"Trail"];
-    [_cursorEffectPopup addItemWithTitle:@"Shimmer"];
-    [_cursorEffectPopup setTarget:self];
-    [_cursorEffectPopup setAction:@selector(cursorEffectChanged:)];
-    [self.view addSubview:_cursorEffectPopup];
-    y += 30;
-
-    // BPM sync checkbox
-    _bpmSyncCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(labelX + 10, y, 250, 20)];
-    _bpmSyncCheckbox.buttonType = NSButtonTypeSwitch;
-    _bpmSyncCheckbox.title = @"Sync animations to track BPM";
-    [_bpmSyncCheckbox setTarget:self];
-    [_bpmSyncCheckbox setAction:@selector(bpmSyncChanged:)];
-    [self.view addSubview:_bpmSyncCheckbox];
     y += 32;
 
     // Cache section
@@ -316,35 +269,23 @@
 - (void)loadSettings {
     using namespace waveform_config;
 
-    // Display mode
-    [_displayModePopup selectItemAtIndex:getConfigInt(kKeyDisplayMode, kDefaultDisplayMode)];
-
-    // Waveform style
-    [_waveformStylePopup selectItemAtIndex:getConfigInt(kKeyWaveformStyle, kDefaultWaveformStyle)];
-
-    // Amplitude scale
-    [_amplitudeScalePopup selectItemAtIndex:getConfigInt(kKeyAmplitudeScale, kDefaultAmplitudeScale)];
-
-    // Gradient bands - map value to popup index (see GradientBandTable.h)
-    int64_t bands = getConfigInt(kKeyGradientBands, kDefaultGradientBands);
-    [_gradientBandsPopup selectItemAtIndex:waveseek::gradientBandIndexForValue(static_cast<int>(bands))];
-
     // Checkboxes
-    _shadePlayedCheckbox.state = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassBackgroundCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
     [self loadColors];
 
-    // Played dimming opacity (0-100)
-    int64_t opacity = getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming);
+    // Style
+    const int64_t style = getConfigInt(kKeyStyle, kDefaultStyle);
+    [_stylePopup selectItemAtIndex:(style >= 0 && style < StyleCount) ? style : kDefaultStyle];
+    [self updateStyleHint];
+    [_channelsPopup selectItemAtIndex:getConfigInt(kKeyChannelMode, kDefaultChannelMode) == ChannelsMono ? 1 : 0];
+
+    // Played part opacity and cursor time
+    const int64_t opacity = std::clamp<int64_t>(getConfigInt(kKeyPlayedOpacity, kDefaultPlayedOpacity),
+                                                kMinPlayedOpacity, kMaxPlayedOpacity);
     _playedOpacitySlider.integerValue = opacity;
     _playedOpacityLabel.stringValue = [NSString stringWithFormat:@"%lld%%", opacity];
-
-    // Cursor effect
-    [_cursorEffectPopup selectItemAtIndex:getConfigInt(kKeyCursorEffect, kDefaultCursorEffect)];
-
-    // BPM sync
-    _bpmSyncCheckbox.state = getConfigBool(kKeyBpmSync, kDefaultBpmSync) ? NSControlStateValueOn : NSControlStateValueOff;
+    _cursorTimeCheckbox.state = getConfigBool(kKeyCursorTime, kDefaultCursorTime) ? NSControlStateValueOn : NSControlStateValueOff;
 
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
@@ -400,40 +341,36 @@
                                                         object:nil];
 }
 
-- (void)displayModeChanged:(id)sender {
+- (void)updateStyleHint {
+    static NSString *const hints[] = {
+        @"Peak envelope around a short-term loudness body, one dBFS axis.",
+        @"Split L/R lanes, linear peak at 50 % with an RMS core.",
+        @"Split L/R lanes, peaks fade to the tips, hot RMS core.",
+        @"Split L/R lanes, colour by amplitude: deep → accent → hot.",
+    };
+    const NSInteger i = _stylePopup.indexOfSelectedItem;
+    _styleHint.stringValue = (i >= 0 && i < waveform_config::StyleCount) ? hints[i] : @"";
+}
+
+- (void)styleChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyDisplayMode, [_displayModePopup indexOfSelectedItem]);
+    setConfigInt(kKeyStyle, _stylePopup.indexOfSelectedItem);
+    [self updateStyleHint];
     [self notifySettingsChanged];
 }
 
-- (void)waveformStyleChanged:(id)sender {
+- (void)channelsChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyWaveformStyle, [_waveformStylePopup indexOfSelectedItem]);
+    setConfigInt(kKeyChannelMode, _channelsPopup.indexOfSelectedItem == 1 ? ChannelsMono : ChannelsStereo);
     [self notifySettingsChanged];
-}
-
-- (void)amplitudeScaleChanged:(id)sender {
-    using namespace waveform_config;
-    setConfigInt(kKeyAmplitudeScale, [_amplitudeScalePopup indexOfSelectedItem]);
-    [self notifySettingsChanged];
-}
-
-- (void)gradientBandsChanged:(id)sender {
-    using namespace waveform_config;
-    // Map popup index to actual value (see GradientBandTable.h)
-    int index = static_cast<int>([_gradientBandsPopup indexOfSelectedItem]);
-    if (waveseek::isValidGradientBandIndex(index)) {
-        setConfigInt(kKeyGradientBands, waveseek::gradientBandValueForIndex(index));
-        [self notifySettingsChanged];
-    }
 }
 
 - (void)checkboxChanged:(id)sender {
     using namespace waveform_config;
-    if (sender == _shadePlayedCheckbox) {
-        setConfigBool(kKeyShadePlayedPortion, _shadePlayedCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _glassBackgroundCheckbox) {
+    if (sender == _glassBackgroundCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _cursorTimeCheckbox) {
+        setConfigBool(kKeyCursorTime, _cursorTimeCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }
@@ -462,20 +399,8 @@
 - (void)opacityChanged:(id)sender {
     using namespace waveform_config;
     NSInteger value = _playedOpacitySlider.integerValue;
-    setConfigInt(kKeyPlayedDimming, value);
+    setConfigInt(kKeyPlayedOpacity, value);
     _playedOpacityLabel.stringValue = [NSString stringWithFormat:@"%ld%%", (long)value];
-    [self notifySettingsChanged];
-}
-
-- (void)cursorEffectChanged:(id)sender {
-    using namespace waveform_config;
-    setConfigInt(kKeyCursorEffect, [_cursorEffectPopup indexOfSelectedItem]);
-    [self notifySettingsChanged];
-}
-
-- (void)bpmSyncChanged:(id)sender {
-    using namespace waveform_config;
-    setConfigBool(kKeyBpmSync, _bpmSyncCheckbox.state == NSControlStateValueOn);
     [self notifySettingsChanged];
 }
 

@@ -2,7 +2,14 @@
 //  WaveformSeekbarView.mm
 //  foo_wave_seekbar_mac
 //
-//  Custom NSView for rendering the waveform seekbar
+//  Custom NSView for rendering the waveform seekbar.
+//
+//  Rendering model: the waveform's layers are cached as greyscale alpha
+//  masks per track and pixel size, and coloured into one composite image
+//  per theme and style. A frame draws that composite twice under two clip
+//  rects (played at playedOpacity, the rest opaque), then the cursor. A
+//  theme change, or a change between the Simple styles, recolours the
+//  masks; only a new track, size or style family rebuilds them.
 //
 
 #import "WaveformSeekbarView.h"
@@ -10,15 +17,165 @@
 #include "../Core/WaveformData.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
+#include "../Core/ColumnAggregator.h"
+#include "../Core/LayeredShape.h"
+#include "../Core/SimpleShape.h"
+#include "../Core/ThemeTokens.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
 
+namespace {
+
+// Style Layered: peak envelope fill and edge, then the loudness body
+const CGFloat kPeakFillAlpha = 0.26;
+const CGFloat kPeakEdgeAlpha = 0.55;
+const CGFloat kHalfInset = 2.0;         // pt left free at each half's outer edge
+
+// Styles Simple: two lanes with a gap, peaks reaching almost to the lane edge
+const CGFloat kLaneGap = 2.0;
+const CGFloat kLaneInset = 1.0;
+const float kSimpleCentreLineMix = 0.85f;   // accent towards black
+const float kTwoTonePeakMix = 0.5f;
+const float kGlowPeakMix[3] = { 0.82f, 0.55f, 0.20f };   // edge, mid, centre
+
+// Cursor time chip
+const CGFloat kChipOffset = 4.0;        // from the cursor line and the top edge
+const CGFloat kChipPadX = 4.0;
+const CGFloat kChipPadY = 1.5;
+const CGFloat kChipRadius = 2.0;
+
+// Mask slots. Layered: peak fill, peak edge, body. Simple: peaks, RMS core.
+enum MaskIndex { MaskPeakFill = 0, MaskPeakEdge, MaskBody, MaskCount };
+enum MaskIndexSimple { MaskSimplePeak = 0, MaskSimpleCore };
+
+bool isSimple(int style) {
+    return style != waveform_config::StyleLayered;
+}
+
+const theme::RGB kBlack = { 0, 0, 0 };
+
+// Lanes of the Simple styles in a rect `height` high, `unit` per point:
+// [0] = L on top, [1] = R below; one lane fills the rect
+struct Lanes {
+    int count;
+    CGFloat bottom[2], center[2];
+    CGFloat height, amplitude;
+};
+
+Lanes lanesFor(CGFloat height, CGFloat unit, int count) {
+    Lanes l;
+    l.count = count == 1 ? 1 : 2;
+    l.height = l.count == 1 ? height : std::max<CGFloat>(0.0, (height - kLaneGap * unit) / 2.0);
+    l.bottom[0] = height - l.height;
+    l.bottom[1] = 0.0;
+    for (int i = 0; i < l.count; ++i) l.center[i] = l.bottom[i] + l.height / 2.0;
+    l.amplitude = std::max<CGFloat>(0.0, l.height / 2.0 - kLaneInset * unit);
+    return l;
+}
+
+// Area between two signed outlines around a lane centre, one vertex per
+// column centre
+void addBand(CGMutablePathRef path, const std::vector<float>& top, const std::vector<float>& bottom,
+             CGFloat centerY, CGFloat amplitude) {
+    const size_t n = top.size();
+    if (n == 0) return;
+    CGPathMoveToPoint(path, NULL, 0, centerY + top[0] * amplitude);
+    for (size_t c = 0; c < n; ++c) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + top[c] * amplitude);
+    CGPathAddLineToPoint(path, NULL, n, centerY + top[n - 1] * amplitude);
+    CGPathAddLineToPoint(path, NULL, n, centerY + bottom[n - 1] * amplitude);
+    for (size_t c = n; c-- > 0;) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + bottom[c] * amplitude);
+    CGPathAddLineToPoint(path, NULL, 0, centerY + bottom[0] * amplitude);
+    CGPathCloseSubpath(path);
+}
+
+// How one mask is coloured: flat, or a vertical gradient mirrored around
+// each lane's centre (edge, mid, centre, mid, edge)
+struct Paint {
+    int mask;
+    theme::RGB edge, mid, centre;
+    CGFloat alpha;
+    bool laneGradient;
+};
+
+void setFill(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
+    CGContextSetRGBFillColor(ctx, c.r, c.g, c.b, alpha);
+}
+
+void setStroke(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
+    CGContextSetRGBStrokeColor(ctx, c.r, c.g, c.b, alpha);
+}
+
+// m:ss, or h:mm:ss from an hour on
+NSString *formatTime(double seconds) {
+    const long total = (long)std::max(0.0, std::floor(seconds));
+    if (total >= 3600) {
+        return [NSString stringWithFormat:@"%ld:%02ld:%02ld", total / 3600, (total / 60) % 60, total % 60];
+    }
+    return [NSString stringWithFormat:@"%ld:%02ld", total / 60, total % 60];
+}
+
+// Greyscale mask: black hides, white shows
+CGContextRef createMaskContext(size_t width, size_t height) {
+    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+    CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, 0, gray, kCGImageAlphaNone);
+    CGColorSpaceRelease(gray);
+    if (!ctx) return NULL;
+    CGContextSetGrayFillColor(ctx, 0.0, 1.0);
+    CGContextFillRect(ctx, CGRectMake(0, 0, width, height));
+    CGContextSetGrayFillColor(ctx, 1.0, 1.0);
+    CGContextSetGrayStrokeColor(ctx, 1.0, 1.0);
+    return ctx;
+}
+
+// Area between the centre line and the heights, one vertex per column
+// centre; `dir` +1 grows up, -1 down
+void addHalfShape(CGMutablePathRef path, const std::vector<float>& frac, CGFloat centerY,
+                  CGFloat amplitude, CGFloat dir) {
+    const size_t n = frac.size();
+    if (n == 0) return;
+    CGPathMoveToPoint(path, NULL, 0, centerY);
+    CGPathAddLineToPoint(path, NULL, 0, centerY + dir * frac[0] * amplitude);
+    for (size_t c = 0; c < n; ++c) {
+        CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + dir * frac[c] * amplitude);
+    }
+    CGPathAddLineToPoint(path, NULL, n, centerY + dir * frac[n - 1] * amplitude);
+    CGPathAddLineToPoint(path, NULL, n, centerY);
+    CGPathCloseSubpath(path);
+}
+
+// The outline of the heights, broken where they drop under half a pixel so
+// silence leaves only the centre line
+void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat centerY,
+             CGFloat amplitude, CGFloat dir) {
+    bool open = false;
+    for (size_t c = 0; c < frac.size(); ++c) {
+        const CGFloat h = frac[c] * amplitude;
+        if (h < 0.5) { open = false; continue; }
+        const CGPoint p = CGPointMake(c + 0.5, centerY + dir * h);
+        if (open) CGPathAddLineToPoint(path, NULL, p.x, p.y);
+        else CGPathMoveToPoint(path, NULL, p.x, p.y);
+        open = true;
+    }
+}
+
+} // namespace
+
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
-    CGImageRef _waveformImage;                   // Rendered waveform, see drawWaveformInContext
-    CGColorSpaceRef _deviceRGBColorSpace;       // Cached for reuse across frames
-    NSDictionary *_placeholderAttributes;        // Cached placeholder text attributes
+    NSDictionary *_placeholderAttributes;
+    NSFont *_chipFont;
+    theme::Tokens _tokens;
+
+    // Masks per track, pixel size and style family; coloured composite per
+    // theme and style
+    CGImageRef _masks[MaskCount];
+    CGImageRef _composite;
+    size_t _maskWidth, _maskHeight;
+    bool _maskSimple;
+    bool _maskMono;
+    int _style;
+    bool _mono;
 }
 
 @end
@@ -44,14 +201,12 @@
 }
 
 - (void)commonInit {
-    // Cache color space for reuse across draw calls
-    _deviceRGBColorSpace = CGColorSpaceCreateDeviceRGB();
-
-    // Cache placeholder text attributes
     _placeholderAttributes = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
     };
+    _chipFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightBold]
+        ?: [NSFont boldSystemFontOfSize:10];
 
     // Default display settings from config
     [self reloadSettings];
@@ -60,9 +215,6 @@
     _playbackPosition = 0.0;
     _trackDuration = 0.0;
     _playing = NO;
-
-    // Default colors (will be updated based on appearance)
-    [self updateColorsForAppearance];
 
     // Enable layer backing for better performance
     self.wantsLayer = YES;
@@ -83,10 +235,7 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    if (_deviceRGBColorSpace) {
-        CGColorSpaceRelease(_deviceRGBColorSpace);
-    }
-    CGImageRelease(_waveformImage);
+    [self invalidateMasks];
 }
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
@@ -95,17 +244,16 @@
 
 - (void)reloadSettings {
     using namespace waveform_config;
-    _displayMode = static_cast<WaveformDisplayMode>(getConfigInt(kKeyDisplayMode, kDefaultDisplayMode));
-    _shadePlayedPortion = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion);
-    _playedDimming = getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming) / 100.0;  // Convert 0-100 to 0.0-1.0
-    _cursorEffect = static_cast<WaveformCursorEffect>(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect));
-    _waveformStyle = static_cast<WaveformRenderStyle>(getConfigInt(kKeyWaveformStyle, kDefaultWaveformStyle));
-    _gradientBands = static_cast<int>(getConfigInt(kKeyGradientBands, kDefaultGradientBands));
-    _amplitudeScale = static_cast<WaveformAmplitudeScale>(getConfigInt(kKeyAmplitudeScale, kDefaultAmplitudeScale));
-    _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
+    const int64_t style = getConfigInt(kKeyStyle, kDefaultStyle);
+    const int newStyle = style >= 0 && style < StyleCount ? (int)style : kDefaultStyle;
+    if (isSimple(newStyle) != isSimple(_style)) [self invalidateMasks];
+    _style = newStyle;
+    _mono = getConfigInt(kKeyChannelMode, kDefaultChannelMode) == ChannelsMono;
+    const int64_t opacity = getConfigInt(kKeyPlayedOpacity, kDefaultPlayedOpacity);
+    _playedOpacity = std::clamp<int64_t>(opacity, kMinPlayedOpacity, kMaxPlayedOpacity) / 100.0;
+    _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     [self updateColorsForAppearance];
-    [self invalidateWaveformImage];
     [self setNeedsDisplay:YES];
 }
 
@@ -129,39 +277,224 @@
 - (void)viewDidChangeEffectiveAppearance {
     [super viewDidChangeEffectiveAppearance];
     [self updateColorsForAppearance];
-    [self invalidateWaveformImage];
     [self setNeedsDisplay:YES];
+}
+
+- (BOOL)isDarkAppearance {
+    NSAppearanceName name = [self.effectiveAppearance
+        bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    return [name isEqualToString:NSAppearanceNameDarkAqua];
 }
 
 - (void)updateColorsForAppearance {
     using namespace waveform_config;
 
-    NSAppearanceName appearanceName = [self.effectiveAppearance
-        bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    const BOOL dark = [self isDarkAppearance];
+    const uint32_t waveARGB = static_cast<uint32_t>(dark
+        ? getConfigInt(kKeyWaveColorDark, kDefaultWaveColorDark)
+        : getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight));
+    const uint32_t bgARGB = static_cast<uint32_t>(dark
+        ? getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)
+        : getConfigInt(kKeyBgColorLight, kDefaultBgColorLight));
 
-    BOOL isDarkMode = [appearanceName isEqualToString:NSAppearanceNameDarkAqua];
+    auto color = [](uint32_t argb) {
+        return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
+                                   green:((argb >> 8) & 0xFF) / 255.0
+                                    blue:(argb & 0xFF) / 255.0
+                                   alpha:((argb >> 24) & 0xFF) / 255.0];
+    };
+    _waveformColor = color(waveARGB);
+    _backgroundColor = color(bgARGB);
 
-    // Get colors from config
-    uint32_t waveARGB, bgARGB;
-
-    if (isDarkMode) {
-        waveARGB = static_cast<uint32_t>(getConfigInt(kKeyWaveColorDark, kDefaultWaveColorDark));
-        bgARGB = static_cast<uint32_t>(getConfigInt(kKeyBgColorDark, kDefaultBgColorDark));
-    } else {
-        waveARGB = static_cast<uint32_t>(getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight));
-        bgARGB = static_cast<uint32_t>(getConfigInt(kKeyBgColorLight, kDefaultBgColorLight));
+    // The Simple styles draw on black. Over glass (or a see-through
+    // colour) the guides are derived against the appearance instead.
+    theme::RGB background = theme::RGB::fromARGB(bgARGB);
+    if (isSimple(_style)) {
+        background = kBlack;
+    } else if (_glassBackground || ((bgARGB >> 24) & 0xFF) < 128) {
+        background = dark ? kBlack : theme::RGB{ 1, 1, 1 };
     }
+    _tokens = theme::deriveTokens(theme::RGB::fromARGB(waveARGB), background);
 
-    // Convert ARGB to NSColor
-    _waveformColor = [NSColor colorWithRed:((waveARGB >> 16) & 0xFF) / 255.0
-                                     green:((waveARGB >> 8) & 0xFF) / 255.0
-                                      blue:(waveARGB & 0xFF) / 255.0
-                                     alpha:((waveARGB >> 24) & 0xFF) / 255.0];
+    [self invalidateComposite];
+}
 
-    _backgroundColor = [NSColor colorWithRed:((bgARGB >> 16) & 0xFF) / 255.0
-                                       green:((bgARGB >> 8) & 0xFF) / 255.0
-                                        blue:(bgARGB & 0xFF) / 255.0
-                                       alpha:((bgARGB >> 24) & 0xFF) / 255.0];
+#pragma mark - Caches
+
+- (void)invalidateComposite {
+    CGImageRelease(_composite);
+    _composite = NULL;
+}
+
+- (void)invalidateMasks {
+    for (auto& mask : _masks) {
+        CGImageRelease(mask);
+        mask = NULL;
+    }
+    _maskWidth = _maskHeight = 0;
+    [self invalidateComposite];
+}
+
+- (void)setWaveformData:(const WaveformData *)waveformData {
+    _waveformData = waveformData;
+    [self invalidateMasks];
+}
+
+- (BOOL)buildMasksWidth:(size_t)width height:(size_t)height {
+    [self invalidateMasks];
+    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width);
+    if (cols.count != width) return NO;
+    if (_mono) cols = analysis::mixdown(cols);
+    const CGFloat scale = (CGFloat)height / std::max<CGFloat>(1.0, self.bounds.size.height);
+
+    const BOOL built = isSimple(_style)
+        ? [self buildSimpleMasks:cols width:width height:height scale:scale]
+        : [self buildLayeredMasks:cols width:width height:height scale:scale];
+    if (!built) {
+        [self invalidateMasks];
+        return NO;
+    }
+    _maskWidth = width;
+    _maskHeight = height;
+    _maskSimple = isSimple(_style);
+    _maskMono = _mono;
+    return YES;
+}
+
+// Layered: L up, R down on one dBFS axis; peak envelope (fill and edge)
+// around the short-term loudness body
+- (BOOL)buildLayeredMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
+                    scale:(CGFloat)scale {
+    const layered::Shape shape = layered::shapeFor(cols);
+    const CGFloat centerY = height / 2.0;
+    const CGFloat amplitude = std::max<CGFloat>(0.0, height / 2.0 - kHalfInset * scale);
+    const CGFloat dirs[2] = { 1.0, -1.0 };
+
+    for (int m = 0; m < MaskCount; ++m) {
+        CGContextRef ctx = createMaskContext(width, height);
+        if (!ctx) return NO;
+        CGMutablePathRef path = CGPathCreateMutable();
+        for (int half = 0; half < 2; ++half) {
+            switch (m) {
+                case MaskPeakFill: addHalfShape(path, shape.peak[half], centerY, amplitude, dirs[half]); break;
+                case MaskPeakEdge: addEdge(path, shape.peak[half], centerY, amplitude, dirs[half]); break;
+                case MaskBody:     addHalfShape(path, shape.body[half], centerY, amplitude, dirs[half]); break;
+            }
+        }
+        CGContextAddPath(ctx, path);
+        if (m == MaskPeakEdge) {
+            CGContextSetLineWidth(ctx, scale);
+            CGContextSetLineJoin(ctx, kCGLineJoinRound);
+            CGContextStrokePath(ctx);
+        } else {
+            CGContextFillPath(ctx);
+        }
+        CGPathRelease(path);
+        _masks[m] = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        if (!_masks[m]) return NO;
+    }
+    return YES;
+}
+
+// Simple: L and R in their own lanes, linear; sample min/max around an RMS core
+- (BOOL)buildSimpleMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
+                   scale:(CGFloat)scale {
+    const simple::Shape shape = simple::shapeFor(cols, _mono ? 1 : 2);
+    const Lanes lanes = lanesFor(height, scale, shape.lanes);
+
+    for (int m : { (int)MaskSimplePeak, (int)MaskSimpleCore }) {
+        CGContextRef ctx = createMaskContext(width, height);
+        if (!ctx) return NO;
+        CGMutablePathRef path = CGPathCreateMutable();
+        for (int l = 0; l < shape.lanes; ++l) {
+            const simple::Lane& lane = shape.lane[l];
+            if (m == MaskSimplePeak) addBand(path, lane.top, lane.bottom, lanes.center[l], lanes.amplitude);
+            else addBand(path, lane.coreTop, lane.coreBottom, lanes.center[l], lanes.amplitude);
+        }
+        CGContextAddPath(ctx, path);
+        CGContextFillPath(ctx);
+        CGPathRelease(path);
+        _masks[m] = CGBitmapContextCreateImage(ctx);
+        CGContextRelease(ctx);
+        if (!_masks[m]) return NO;
+    }
+    return YES;
+}
+
+// What each style paints through which mask
+- (std::vector<Paint>)paints {
+    using namespace waveform_config;
+    const theme::Tokens& t = _tokens;
+    auto flat = [](int mask, const theme::RGB& c, CGFloat alpha) {
+        return Paint{ mask, c, c, c, alpha, false };
+    };
+    auto lanes = [](int mask, const theme::RGB& edge, const theme::RGB& mid, const theme::RGB& centre) {
+        return Paint{ mask, edge, mid, centre, 1.0, true };
+    };
+    switch (_style) {
+        case StyleTwoTone:
+            return { flat(MaskSimplePeak, theme::mix(t.accent, kBlack, kTwoTonePeakMix), 1.0),
+                     flat(MaskSimpleCore, t.accent, 1.0) };
+        case StyleGlow:
+            return { lanes(MaskSimplePeak, theme::mix(t.accent, kBlack, kGlowPeakMix[0]),
+                                           theme::mix(t.accent, kBlack, kGlowPeakMix[1]),
+                                           theme::mix(t.accent, kBlack, kGlowPeakMix[2])),
+                     lanes(MaskSimpleCore, t.accent, t.accent, t.hot) };
+        case StyleHeat:
+            return { lanes(MaskSimplePeak, t.hot, t.accent, t.deep) };
+        default:
+            return { flat(MaskPeakFill, t.accent, kPeakFillAlpha),
+                     flat(MaskPeakEdge, t.accent, kPeakEdgeAlpha),
+                     flat(MaskBody, t.accent, 1.0) };
+    }
+}
+
+- (BOOL)buildComposite {
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef ctx = CGBitmapContextCreate(NULL, _maskWidth, _maskHeight, 8, 0, srgb,
+                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
+    CGColorSpaceRelease(srgb);
+    if (!ctx) return NO;
+
+    const CGRect full = CGRectMake(0, 0, _maskWidth, _maskHeight);
+    const CGFloat scale = (CGFloat)_maskHeight / std::max<CGFloat>(1.0, self.bounds.size.height);
+    const Lanes lanes = lanesFor(_maskHeight, scale, _maskMono ? 1 : 2);
+    CGColorSpaceRef gradientSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+
+    for (const Paint& p : [self paints]) {
+        if (!_masks[p.mask]) continue;
+        CGContextSaveGState(ctx);
+        CGContextClipToMask(ctx, full, _masks[p.mask]);
+        if (!p.laneGradient) {
+            setFill(ctx, p.centre, p.alpha);
+            CGContextFillRect(ctx, full);
+        } else {
+            const theme::RGB stops[5] = { p.edge, p.mid, p.centre, p.mid, p.edge };
+            CGFloat components[20];
+            for (int i = 0; i < 5; ++i) {
+                components[i * 4] = stops[i].r;
+                components[i * 4 + 1] = stops[i].g;
+                components[i * 4 + 2] = stops[i].b;
+                components[i * 4 + 3] = p.alpha;
+            }
+            const CGFloat locations[5] = { 0.0, 0.25, 0.5, 0.75, 1.0 };
+            CGGradientRef gradient = CGGradientCreateWithColorComponents(gradientSpace, components, locations, 5);
+            for (int l = 0; gradient && l < lanes.count; ++l) {
+                CGContextSaveGState(ctx);
+                CGContextClipToRect(ctx, CGRectMake(0, lanes.bottom[l], _maskWidth, lanes.height));
+                CGContextDrawLinearGradient(ctx, gradient, CGPointMake(0, lanes.bottom[l]),
+                                            CGPointMake(0, lanes.bottom[l] + lanes.height), 0);
+                CGContextRestoreGState(ctx);
+            }
+            CGGradientRelease(gradient);
+        }
+        CGContextRestoreGState(ctx);
+    }
+    CGColorSpaceRelease(gradientSpace);
+    _composite = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    return _composite != NULL;
 }
 
 #pragma mark - Drawing
@@ -172,629 +505,164 @@
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    [super drawRect:dirtyRect];
-
     CGContextRef context = [[NSGraphicsContext currentContext] CGContext];
     if (!context) return;
 
-    CGRect bounds = self.bounds;
+    @try {
+        const CGRect bounds = self.bounds;
 
-    // Draw background - in glass mode skip an opaque color so the blur shows
-    // through, but let a translucent color act as a tint over the blur
-    CGFloat bgAlpha = self.backgroundColor.alphaComponent;
-    if (!self.glassBackground || (bgAlpha > 0.0 && bgAlpha < 1.0)) {
-        CGContextSetFillColorWithColor(context, self.backgroundColor.CGColor);
-        CGContextFillRect(context, bounds);
-    }
+        // In glass mode skip an opaque colour so the blur shows through, but
+        // let a translucent colour act as a tint over the blur. The Simple
+        // styles draw on black.
+        const CGFloat bgAlpha = self.backgroundColor.alphaComponent;
+        if (!self.glassBackground) {
+            if (isSimple(_style)) setFill(context, kBlack, 1.0);
+            else CGContextSetFillColorWithColor(context, self.backgroundColor.CGColor);
+            CGContextFillRect(context, bounds);
+        } else if (bgAlpha > 0.0 && bgAlpha < 1.0) {
+            CGContextSetFillColorWithColor(context, self.backgroundColor.CGColor);
+            CGContextFillRect(context, bounds);
+        }
 
-    // Draw waveform or placeholder
-    if (self.waveformData && self.waveformData->isValid()) {
-        [self drawWaveformInContext:context bounds:bounds];
-    } else {
-        [self drawPlaceholderInContext:context bounds:bounds];
-    }
+        const bool hasWaveform = self.waveformData && self.waveformData->isValid();
+        [self drawGuidesInContext:context rect:bounds full:hasWaveform];
 
-    // Draw played portion overlay (works even without waveform)
-    if (self.shadePlayedPortion && self.playbackPosition > 0.0) {
-        [self drawPlayedOverlayInContext:context bounds:bounds];
-    }
+        if (hasWaveform) {
+            [self drawWaveformInContext:context rect:bounds];
+        } else {
+            [self drawPlaceholderInContext:context rect:bounds];
+        }
 
-    // Draw position indicator (works even without waveform)
-    [self drawPositionIndicatorInContext:context bounds:bounds];
-}
-
-- (void)drawPlaceholderInContext:(CGContextRef)context bounds:(CGRect)bounds {
-    // Draw a placeholder message using cached attributes
-    NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
-    NSSize textSize = [text sizeWithAttributes:_placeholderAttributes];
-
-    NSPoint point = NSMakePoint(
-        (bounds.size.width - textSize.width) / 2,
-        (bounds.size.height - textSize.height) / 2
-    );
-
-    [text drawAtPoint:point withAttributes:_placeholderAttributes];
-}
-
-// Helper: Get color for heat map based on amplitude (0-1)
-// Blue (cold/quiet) → Cyan → Green → Yellow → Red (hot/loud)
-- (void)getHeatMapColorForAmplitude:(CGFloat)amplitude r:(CGFloat*)r g:(CGFloat*)g b:(CGFloat*)b {
-    // Clamp to 0-1
-    amplitude = MAX(0.0, MIN(1.0, amplitude));
-
-    if (amplitude < 0.25) {
-        // Blue to Cyan (0.0 - 0.25)
-        CGFloat t = amplitude / 0.25;
-        *r = 0.0;
-        *g = t;
-        *b = 1.0;
-    } else if (amplitude < 0.5) {
-        // Cyan to Green (0.25 - 0.5)
-        CGFloat t = (amplitude - 0.25) / 0.25;
-        *r = 0.0;
-        *g = 1.0;
-        *b = 1.0 - t;
-    } else if (amplitude < 0.75) {
-        // Green to Yellow (0.5 - 0.75)
-        CGFloat t = (amplitude - 0.5) / 0.25;
-        *r = t;
-        *g = 1.0;
-        *b = 0.0;
-    } else {
-        // Yellow to Red (0.75 - 1.0)
-        CGFloat t = (amplitude - 0.75) / 0.25;
-        *r = 1.0;
-        *g = 1.0 - t;
-        *b = 0.0;
+        [self drawCursorInContext:context rect:bounds];
+    } @catch (NSException *e) {
+        // An exception out of drawRect: takes foobar2000 down
+        FB2K_console_formatter() << "[WaveSeek] Drawing failed: " << (e.reason ? e.reason.UTF8String : "?");
     }
 }
 
-// Helper: Get rainbow color for position (0-1)
-- (void)getRainbowColorForPosition:(CGFloat)position r:(CGFloat*)r g:(CGFloat*)g b:(CGFloat*)b {
-    // HSV to RGB with hue cycling through rainbow
-    CGFloat hue = fmod(position, 1.0);
-    CGFloat saturation = 1.0;
-    CGFloat value = 1.0;
-
-    int hi = (int)(hue * 6.0) % 6;
-    CGFloat f = hue * 6.0 - (int)(hue * 6.0);
-    CGFloat p = value * (1.0 - saturation);
-    CGFloat q = value * (1.0 - f * saturation);
-    CGFloat t = value * (1.0 - (1.0 - f) * saturation);
-
-    switch (hi) {
-        case 0: *r = value; *g = t; *b = p; break;
-        case 1: *r = q; *g = value; *b = p; break;
-        case 2: *r = p; *g = value; *b = t; break;
-        case 3: *r = p; *g = q; *b = value; break;
-        case 4: *r = t; *g = p; *b = value; break;
-        default: *r = value; *g = p; *b = q; break;
-    }
+- (CGFloat)backingScale {
+    const CGFloat scale = self.window.backingScaleFactor;
+    return scale > 0 ? scale : 2.0;
 }
 
-// Envelope of one channel (0/1) or both mixed (-1), one value per pixel
-// column. Wide views interpolate between buckets; narrow views merge them
-// (max peak, RMS of RMS) so no bucket is lost or overdrawn.
-static void computeColumns(const WaveformData& w, int channel, size_t cols,
-                           std::vector<float>& peak, std::vector<float>& rms) {
-    const size_t n = WaveformData::BUCKET_COUNT;
-    peak.assign(cols, 0.0f);
-    rms.assign(cols, 0.0f);
-    if (cols == 0) return;
+// Layered: centre line, and the -12 / -24 dB gridlines in each half.
+// Simple: each lane's centre line.
+- (void)drawGuidesInContext:(CGContextRef)context rect:(CGRect)rect full:(bool)full {
+    const CGFloat scale = [self backingScale];
+    auto snap = [&](CGFloat y) { return (std::floor(y * scale) + 0.5) / scale; };
 
-    auto bucketPeak = [&](size_t i) {
-        auto p = [&](int ch) { return std::max(std::abs(w.min[ch][i]), std::abs(w.max[ch][i])); };
-        if (channel >= 0) return p(channel);
-        return w.channelCount == 2 ? std::max(p(0), p(1)) : p(0);
-    };
-    auto bucketRmsSq = [&](size_t i) {
-        if (channel >= 0) return w.rms[channel][i] * w.rms[channel][i];
-        if (w.channelCount == 2) return (w.rms[0][i] * w.rms[0][i] + w.rms[1][i] * w.rms[1][i]) * 0.5f;
-        return w.rms[0][i] * w.rms[0][i];
-    };
+    if (isSimple(_style)) {
+        const Lanes lanes = lanesFor(rect.size.height, 1.0, _mono ? 1 : 2);
+        CGContextSaveGState(context);
+        CGContextSetLineWidth(context, 1.0);
+        setStroke(context, theme::mix(_tokens.accent, kBlack, kSimpleCentreLineMix), 1.0);
+        for (int l = 0; l < lanes.count; ++l) {
+            const CGFloat y = snap(rect.origin.y + lanes.center[l]);
+            CGContextMoveToPoint(context, rect.origin.x, y);
+            CGContextAddLineToPoint(context, CGRectGetMaxX(rect), y);
+        }
+        CGContextStrokePath(context);
+        CGContextRestoreGState(context);
+        return;
+    }
 
-    const double bucketsPerCol = (double)n / cols;
-    for (size_t c = 0; c < cols; ++c) {
-        float p = 0.0f, r = 0.0f;
-        if (bucketsPerCol >= 1.0) {
-            const size_t b0 = (size_t)(c * bucketsPerCol);
-            const size_t b1 = std::min(n, std::max(b0 + 1, (size_t)std::ceil((c + 1) * bucketsPerCol)));
-            float sumSq = 0.0f;
-            for (size_t i = b0; i < b1; ++i) {
-                p = std::max(p, bucketPeak(i));
-                sumSq += bucketRmsSq(i);
+    const CGFloat centerY = CGRectGetMidY(rect);
+    const CGFloat amplitude = std::max<CGFloat>(0.0, rect.size.height / 2.0 - kHalfInset);
+
+    CGContextSaveGState(context);
+    CGContextSetLineWidth(context, 1.0);
+    if (full) {
+        setStroke(context, _tokens.grid, 1.0);
+        for (float db : layered::kGridDb) {
+            const CGFloat h = layered::fraction(db) * amplitude;
+            for (CGFloat y : { centerY + h, centerY - h }) {
+                CGContextMoveToPoint(context, rect.origin.x, snap(y));
+                CGContextAddLineToPoint(context, CGRectGetMaxX(rect), snap(y));
             }
-            r = std::sqrt(sumSq / (b1 - b0));
-        } else {
-            const double t = std::clamp((c + 0.5) * bucketsPerCol - 0.5, 0.0, (double)(n - 1));
-            const size_t i0 = (size_t)t, i1 = std::min(n - 1, i0 + 1);
-            const float f = (float)(t - i0);
-            p = bucketPeak(i0) + (bucketPeak(i1) - bucketPeak(i0)) * f;
-            r = std::sqrt(bucketRmsSq(i0) + (bucketRmsSq(i1) - bucketRmsSq(i0)) * f);
         }
-        peak[c] = std::min(1.0f, p);
-        rms[c] = std::min(p, std::min(1.0f, r));   // RMS never exceeds the peak
+        CGContextStrokePath(context);
     }
+    setStroke(context, _tokens.centre, 1.0);
+    CGContextMoveToPoint(context, rect.origin.x, snap(centerY));
+    CGContextAddLineToPoint(context, CGRectGetMaxX(rect), snap(centerY));
+    CGContextStrokePath(context);
+    CGContextRestoreGState(context);
 }
 
-// Closed shape symmetric about centerY, one vertex per column center
-static CGPathRef createEnvelopePath(const std::vector<float>& v, CGFloat centerY, CGFloat amplitude) {
-    // Half a pixel minimum, so silence still reads as a 1 px center line
-    const CGFloat minHalf = 0.5;
-    CGMutablePathRef path = CGPathCreateMutable();
-    const size_t cols = v.size();
-    CGPathMoveToPoint(path, NULL, 0, centerY + std::max(minHalf, v[0] * amplitude));
-    for (size_t c = 0; c < cols; ++c) {
-        CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + std::max(minHalf, v[c] * amplitude));
-    }
-    CGPathAddLineToPoint(path, NULL, cols, centerY + std::max(minHalf, v[cols - 1] * amplitude));
-    CGPathAddLineToPoint(path, NULL, cols, centerY - std::max(minHalf, v[cols - 1] * amplitude));
-    for (size_t c = cols; c-- > 0;) {
-        CGPathAddLineToPoint(path, NULL, c + 0.5, centerY - std::max(minHalf, v[c] * amplitude));
-    }
-    CGPathAddLineToPoint(path, NULL, 0, centerY - std::max(minHalf, v[0] * amplitude));
-    CGPathCloseSubpath(path);
-    return path;
-}
-
-// Loudness scale: the RMS level that fills the full height, the track's 98th
-// percentile, so a few loud moments don't flatten everything else. Taken over
-// every channel drawn so stereo halves share one scale.
-static float loudnessReference(const WaveformData& w, bool stereo) {
-    std::vector<float> levels;
-    levels.reserve(WaveformData::BUCKET_COUNT * 2);
-    for (size_t i = 0; i < WaveformData::BUCKET_COUNT; ++i) {
-        if (stereo) {
-            levels.push_back(w.rms[0][i]);
-            levels.push_back(w.rms[1][i]);
-        } else if (w.channelCount == 2) {
-            levels.push_back(std::sqrt((w.rms[0][i] * w.rms[0][i] + w.rms[1][i] * w.rms[1][i]) * 0.5f));
-        } else {
-            levels.push_back(w.rms[0][i]);
-        }
-    }
-    auto nth = levels.begin() + levels.size() * 98 / 100;
-    std::nth_element(levels.begin(), nth, levels.end());
-    return std::max(1e-4f, *nth);
-}
-
-- (void)drawWaveformInContext:(CGContextRef)context bounds:(CGRect)bounds {
-    const WaveformData* waveform = self.waveformData;
-    if (!waveform || !waveform->isValid()) return;
-
-    // Rendered once per track/size/settings; frames only redraw the overlay
-    const CGSize pixelSize = [self convertSizeToBacking:bounds.size];
+- (void)drawWaveformInContext:(CGContextRef)context rect:(CGRect)rect {
+    const CGSize pixelSize = [self convertSizeToBacking:rect.size];
     const size_t pixelW = (size_t)std::lround(pixelSize.width);
     const size_t pixelH = (size_t)std::lround(pixelSize.height);
     if (pixelW == 0 || pixelH == 0) return;
 
-    if (!_waveformImage || CGImageGetWidth(_waveformImage) != pixelW || CGImageGetHeight(_waveformImage) != pixelH) {
-        CGImageRelease(_waveformImage);
-        _waveformImage = [self createWaveformImageWidth:pixelW height:pixelH];
+    if (pixelW != _maskWidth || pixelH != _maskHeight || !_masks[0] || _maskSimple != isSimple(_style) || _maskMono != _mono) {
+        if (![self buildMasksWidth:pixelW height:pixelH]) return;
     }
-    if (_waveformImage) {
-        CGContextDrawImage(context, bounds, _waveformImage);
-    }
-}
+    if (!_composite && ![self buildComposite]) return;
 
-- (void)invalidateWaveformImage {
-    CGImageRelease(_waveformImage);
-    _waveformImage = NULL;
-}
-
-- (void)setWaveformData:(const WaveformData *)waveformData {
-    _waveformData = waveformData;
-    [self invalidateWaveformImage];
-}
-
-- (CGImageRef)createWaveformImageWidth:(size_t)width height:(size_t)height {
-    const WaveformData& waveform = *self.waveformData;
-
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, 0, colorSpace,
-                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
-    CGColorSpaceRelease(colorSpace);
-    if (!ctx) return NULL;
-
-    const CGFloat scale = (CGFloat)height / std::max<CGFloat>(1.0, self.bounds.size.height);
-    const CGFloat padding = 4.0 * scale;
-    const bool isStereo = (waveform.channelCount == 2 && self.displayMode == WaveformDisplayModeStereo);
-    const float loudnessRef = self.amplitudeScale == WaveformAmplitudeScaleLoudness
-        ? loudnessReference(waveform, isStereo) : 0.0f;
-
-    if (isStereo) {
-        // Left channel on top, right below, each in its own half
-        const CGFloat amplitude = height / 4.0 - padding;
-        [self drawChannel:0 waveform:waveform loudnessRef:loudnessRef context:ctx width:width
-                  centerY:height * 0.75 amplitude:amplitude];
-        [self drawChannel:1 waveform:waveform loudnessRef:loudnessRef context:ctx width:width
-                  centerY:height * 0.25 amplitude:amplitude];
-    } else {
-        [self drawChannel:-1 waveform:waveform loudnessRef:loudnessRef context:ctx width:width
-                  centerY:height / 2.0 amplitude:height / 2.0 - padding];
-    }
-
-    CGImageRef image = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    return image;
-}
-
-// Peak scale: sample peaks, 1.0 = full scale. Loudness scale: RMS relative to
-// loudnessRef, square-rooted so quiet passages keep visible height.
-- (void)drawChannel:(int)channel waveform:(const WaveformData&)waveform loudnessRef:(float)loudnessRef
-            context:(CGContextRef)ctx width:(size_t)width centerY:(CGFloat)centerY amplitude:(CGFloat)amplitude {
-    std::vector<float> levels, rms;
-    computeColumns(waveform, channel, width, levels, rms);
-    if (loudnessRef > 0.0f) {
-        for (size_t c = 0; c < width; ++c) levels[c] = std::sqrt(std::min(1.0f, rms[c] / loudnessRef));
-    }
-
-    if (self.waveformStyle == WaveformRenderStyleSolid) {
-        NSColor *base = [self.waveformColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-        if (!base) return;
-        CGFloat rgb[3] = { base.redComponent, base.greenComponent, base.blueComponent };
-        CGPathRef path = createEnvelopePath(levels, centerY, amplitude);
-        [self fillPath:path context:ctx rgb:rgb alpha:base.alphaComponent centerY:centerY amplitude:amplitude];
-        CGPathRelease(path);
-        return;
-    }
-
-    // Heat map and Rainbow: a color per column
-    for (size_t c = 0; c < width; ++c) {
-        CGFloat r, g, b;
-        if (self.waveformStyle == WaveformRenderStyleHeatMap) {
-            [self getHeatMapColorForAmplitude:levels[c] r:&r g:&g b:&b];
-        } else {
-            [self getRainbowColorForPosition:(c + 0.5) / width r:&r g:&g b:&b];
-        }
-        const CGFloat half = std::max<CGFloat>(0.5, levels[c] * amplitude);
-        CGContextSetRGBFillColor(ctx, r, g, b, 1.0);
-        CGContextFillRect(ctx, CGRectMake(c, centerY - half, 1, half * 2));
-    }
-}
-
-// Flat fill, or with gradient bands: alpha steps down from the center line
-// to 40% at full amplitude, one step per band
-- (void)fillPath:(CGPathRef)path context:(CGContextRef)ctx rgb:(const CGFloat *)rgb alpha:(CGFloat)alpha
-         centerY:(CGFloat)centerY amplitude:(CGFloat)amplitude {
-    const int bands = std::min(32, self.gradientBands);
-    if (bands <= 0) {
-        CGContextSetRGBFillColor(ctx, rgb[0], rgb[1], rgb[2], alpha);
-        CGContextAddPath(ctx, path);
-        CGContextFillPath(ctx);
-        return;
-    }
-
-    // Symmetric stepped stops across [centerY - amplitude, centerY + amplitude]:
-    // band k covers distance [k, k+1)/bands from the center
-    std::vector<CGFloat> components, locations;
-    auto addStop = [&](CGFloat location, CGFloat a) {
-        components.insert(components.end(), { rgb[0], rgb[1], rgb[2], a });
-        locations.push_back(location);
-    };
-    for (int k = bands - 1; k >= 0; --k) {           // bottom edge up to center
-        const CGFloat a = alpha * (1.0 - (CGFloat)k / bands * 0.6);
-        addStop(0.5 - (CGFloat)(k + 1) / bands * 0.5, a);
-        addStop(0.5 - (CGFloat)k / bands * 0.5, a);
-    }
-    for (int k = 0; k < bands; ++k) {                // center up to top edge
-        const CGFloat a = alpha * (1.0 - (CGFloat)k / bands * 0.6);
-        addStop(0.5 + (CGFloat)k / bands * 0.5, a);
-        addStop(0.5 + (CGFloat)(k + 1) / bands * 0.5, a);
-    }
-
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components.data(),
-                                                                 locations.data(), locations.size());
-    CGColorSpaceRelease(colorSpace);
-    if (!gradient) return;
-
-    CGContextSaveGState(ctx);
-    CGContextAddPath(ctx, path);
-    CGContextClip(ctx);
-    CGContextDrawLinearGradient(ctx, gradient, CGPointMake(0, centerY - amplitude), CGPointMake(0, centerY + amplitude),
-                                kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
-    CGContextRestoreGState(ctx);
-    CGGradientRelease(gradient);
-}
-
-// Get animation frequency: uses BPM if sync enabled, otherwise returns default
-- (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
-    if (self.bpmSync && self.trackBpm > 0) {
-        // Convert BPM to Hz: BPM / 60 = beats per second
-        return self.trackBpm / 60.0;
-    }
-    return defaultHz;
-}
-
-- (void)drawPlayedOverlayInContext:(CGContextRef)context bounds:(CGRect)bounds {
-    if (self.playedDimming <= 0.0) return;  // No dimming
-
-    CGFloat playedWidth = bounds.size.width * self.playbackPosition;
-    if (playedWidth <= 0) return;
-
-    // Over glass, dim with a neutral appearance-matched shade so the blur stays
-    // visible instead of painting the configured background color
-    NSColor *dimBase = self.backgroundColor;
-    if (self.glassBackground) {
-        NSAppearanceName appearanceName = [self.effectiveAppearance
-            bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
-        BOOL isDark = [appearanceName isEqualToString:NSAppearanceNameDarkAqua];
-        dimBase = isDark ? [NSColor blackColor] : [NSColor whiteColor];
-    }
-
-    NSColor *bgDeviceColor = [dimBase colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!bgDeviceColor) return;
-
-    CGFloat dimOpacity = self.playedDimming;
-
-    // Draw solid dimming for played portion based on cursor effect
-    switch (self.cursorEffect) {
-        case WaveformCursorEffectNone:
-            [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                 bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectGradient:
-            [self drawGradientEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                     bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectGlow:
-            [self drawGlowEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                 bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectScanline:
-            [self drawScanlineEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                     bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectPulse:
-            [self drawPulseEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                  bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectTrail:
-            [self drawTrailEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                  bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-        case WaveformCursorEffectShimmer:
-            [self drawShimmerEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                    bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
-    }
-}
-
-#pragma mark - Cursor Effects
-
-// Effect 0: None - Sharp transition, uniform dimming
-- (void)drawNoneEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                    playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent
-                                        green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent
-                                        alpha:dimOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-}
-
-// Effect 1: Gradient - Fade at the edge
-- (void)drawGradientEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    CGFloat fadeWidth = MIN(bounds.size.width * 0.02, 10.0);
-
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    CGFloat components[8] = {
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    // Solid portion
-    if (playedWidth > fadeWidth) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
-        CGContextSetFillColorWithColor(context, dimColor.CGColor);
-        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - fadeWidth, bounds.size.height));
-    }
-
-    // Gradient fade
+    // Same image twice: played at playedOpacity, the rest opaque
+    const CGFloat split = rect.origin.x + rect.size.width * std::clamp(self.playbackPosition, 0.0, 1.0);
     CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(MAX(0, playedWidth - fadeWidth), 0, fadeWidth, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth - fadeWidth, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextClipToRect(context, CGRectMake(rect.origin.x, rect.origin.y, split - rect.origin.x, rect.size.height));
+    CGContextSetAlpha(context, self.playedOpacity);
+    CGContextDrawImage(context, rect, _composite);
     CGContextRestoreGState(context);
 
-    CGGradientRelease(gradient);
-}
-
-// Effect 2: Glow - Pulsing halo at cursor position
-- (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                    playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-
-    // Pulsing glow at cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
-    CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
-    CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
-
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    // Glow uses waveform color
-    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) return;
-
-    CGFloat glowAlpha = 0.3 + pulse * 0.4;  // 0.3-0.7 alpha
-    CGFloat components[8] = {
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, glowAlpha,
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    // Draw glow on both sides of cursor
     CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(playedWidth - glowWidth, 0, glowWidth * 2, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth - glowWidth, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth + glowWidth, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextClipToRect(context, CGRectMake(split, rect.origin.y, CGRectGetMaxX(rect) - split, rect.size.height));
+    CGContextDrawImage(context, rect, _composite);
     CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
 }
 
-// Effect 3: Scanline - Animated lines traveling near cursor
-- (void)drawScanlineEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-
-    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) return;
-
-    // Animated scanlines traveling near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat scanRange = 30.0;  // Lines travel within 30px of cursor
-    CGFloat baseFreq = [self animationFrequencyWithDefault:1.0];  // Base frequency
-
-    // 4 lines with different speeds and phases (multipliers of base frequency)
-    CGFloat speeds[] = {baseFreq * 2.5, -baseFreq * 1.8, baseFreq * 3.2, -baseFreq * 2.1};
-    CGFloat phases[] = {0.0, 1.57, 3.14, 4.71};  // Different phase offsets
-    CGFloat alphas[] = {0.3, 0.25, 0.35, 0.2};  // More subtle/transparent
-
-    CGContextSetLineWidth(context, 1.5);
-
-    for (int i = 0; i < 4; i++) {
-        // Calculate position using sine wave for smooth back-and-forth motion
-        CGFloat offset = sin(time * speeds[i] + phases[i]) * scanRange;
-        CGFloat x = playedWidth + offset;
-
-        if (x < 0 || x > bounds.size.width) continue;
-
-        // Fade alpha based on distance from cursor
-        CGFloat distanceFade = 1.0 - (fabs(offset) / scanRange) * 0.5;
-        CGFloat alpha = alphas[i] * distanceFade;
-
-        CGContextSetRGBStrokeColor(context,
-            waveDeviceColor.redComponent, waveDeviceColor.greenComponent,
-            waveDeviceColor.blueComponent, alpha);
-        CGContextBeginPath(context);
-        CGContextMoveToPoint(context, x, 0);
-        CGContextAddLineToPoint(context, x, bounds.size.height);
-        CGContextStrokePath(context);
-    }
+- (void)drawPlaceholderInContext:(CGContextRef)context rect:(CGRect)rect {
+    NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
+    const NSSize size = [text sizeWithAttributes:_placeholderAttributes];
+    [text drawAtPoint:NSMakePoint(CGRectGetMidX(rect) - size.width / 2, CGRectGetMidY(rect) - size.height / 2)
+       withAttributes:_placeholderAttributes];
 }
 
-// Effect 4: Pulse - Entire played area breathes in opacity
-- (void)drawPulseEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Breathing opacity for the entire played area
-    CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat freq = [self animationFrequencyWithDefault:1.5] * 2.0 * M_PI;  // Default 1.5Hz
-    CGFloat breath = 0.5 + 0.5 * sin(time * freq);
+// 1 pt line, and the time in a chip beside it at the top
+- (void)drawCursorInContext:(CGContextRef)context rect:(CGRect)rect {
+    if (self.trackDuration <= 0.0 || (self.playbackPosition <= 0.0 && !self.playing)) return;
 
-    // Modulate dimOpacity: ranges from dimOpacity*0.3 to dimOpacity*1.0
-    CGFloat pulsingOpacity = dimOpacity * (0.3 + breath * 0.7);
+    const CGFloat scale = [self backingScale];
+    const CGFloat x = (std::floor((rect.origin.x + rect.size.width * self.playbackPosition) * scale) + 0.5) / scale;
 
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:pulsingOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-}
-
-// Effect 5: Trail - Motion blur trail behind cursor
-- (void)drawTrailEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    CGFloat trailLength = 40.0;  // Trail extends 40px behind cursor
-
-    // Draw solid dimming for area before trail
-    if (playedWidth > trailLength) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
-        CGContextSetFillColorWithColor(context, dimColor.CGColor);
-        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
-    }
-
-    // Draw gradient trail
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    CGFloat components[8] = {
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    CGFloat trailStart = MAX(0, playedWidth - trailLength);
     CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(trailStart, 0, trailLength, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(trailStart, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
-}
-
-// Effect 6: Shimmer - Oscillating brightness bands
-- (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                       playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Draw base dimming
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity * 0.7];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-
-    // Draw shimmering bands near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat shimmerWidth = 30.0;
-    CGFloat bandCount = 5;
-    CGFloat baseFreq = [self animationFrequencyWithDefault:2.5];  // Default 2.5Hz
-
-    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) return;
-
-    for (int i = 0; i < bandCount; i++) {
-        CGFloat phase = time * baseFreq * 2.0 * M_PI + i * 0.8;  // Different phase per band
-        CGFloat shimmer = 0.5 + 0.5 * sin(phase);
-        CGFloat bandAlpha = shimmer * 0.3;  // 0-0.3 alpha
-
-        CGFloat bandX = playedWidth - shimmerWidth + (i * shimmerWidth / bandCount);
-        CGFloat bandW = shimmerWidth / bandCount;
-
-        if (bandX < 0) continue;
-
-        CGContextSetRGBFillColor(context,
-            waveDeviceColor.redComponent, waveDeviceColor.greenComponent,
-            waveDeviceColor.blueComponent, bandAlpha);
-        CGContextFillRect(context, CGRectMake(bandX, 0, bandW, bounds.size.height));
-    }
-}
-
-- (void)drawPositionIndicatorInContext:(CGContextRef)context bounds:(CGRect)bounds {
-    if (self.playbackPosition <= 0.0) return;
-
-    CGFloat x = bounds.size.width * self.playbackPosition;
-
-    CGContextSetStrokeColorWithColor(context, [NSColor whiteColor].CGColor);
+    setStroke(context, _tokens.cursor, 1.0);
     CGContextSetLineWidth(context, 1.0);
-
-    CGContextBeginPath(context);
-    CGContextMoveToPoint(context, x, 0);
-    CGContextAddLineToPoint(context, x, bounds.size.height);
+    CGContextMoveToPoint(context, x, rect.origin.y);
+    CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
     CGContextStrokePath(context);
+    CGContextRestoreGState(context);
+
+    if (!self.showCursorTime) return;
+    NSDictionary *attrs = @{
+        NSFontAttributeName: _chipFont,
+        NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:_tokens.cursorText.r
+                                                            green:_tokens.cursorText.g
+                                                             blue:_tokens.cursorText.b
+                                                            alpha:1.0]
+    };
+    NSString *time = formatTime(self.playbackPosition * self.trackDuration);
+    const NSSize textSize = [time sizeWithAttributes:attrs];
+    const CGFloat chipW = std::ceil(textSize.width + 2 * kChipPadX);
+    const CGFloat chipH = std::ceil(textSize.height + 2 * kChipPadY);
+    if (chipH + 2 * kChipOffset > rect.size.height) return;
+
+    CGFloat chipX = x + kChipOffset;
+    if (chipX + chipW > CGRectGetMaxX(rect)) chipX = x - kChipOffset - chipW;   // flip near the right edge
+    const CGRect chip = CGRectMake(std::round(chipX), CGRectGetMaxY(rect) - kChipOffset - chipH, chipW, chipH);
+
+    CGContextSaveGState(context);
+    setFill(context, _tokens.cursor, 1.0);
+    CGPathRef shape = CGPathCreateWithRoundedRect(chip, kChipRadius, kChipRadius, NULL);
+    CGContextAddPath(context, shape);
+    CGContextFillPath(context);
+    CGPathRelease(shape);
+    CGContextRestoreGState(context);
+
+    [time drawAtPoint:NSMakePoint(chip.origin.x + kChipPadX, chip.origin.y + kChipPadY) withAttributes:attrs];
 }
 
 #pragma mark - Mouse Events
@@ -809,13 +677,8 @@ static float loudnessReference(const WaveformData& w, bool stereo) {
 
 - (void)rightMouseDown:(NSEvent *)event {
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
-    FB2K_console_formatter() << "[WaveSeek] rightMouseDown triggered at " << location.x << "," << location.y;
-
     if ([self.delegate respondsToSelector:@selector(waveformSeekbarViewRequestsContextMenu:atPoint:)]) {
-        FB2K_console_formatter() << "[WaveSeek] Calling delegate";
         [self.delegate waveformSeekbarViewRequestsContextMenu:self atPoint:location];
-    } else {
-        FB2K_console_formatter() << "[WaveSeek] No delegate or delegate doesn't respond";
     }
 }
 
