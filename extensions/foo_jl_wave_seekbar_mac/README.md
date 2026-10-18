@@ -133,9 +133,10 @@ Access settings in **Preferences > Display > Waveform Seekbar**
 | Display Mode | Stereo (separate L/R) or Mono (combined) | Stereo |
 | Shade Played | Dim the portion already played | On |
 | Flip Display | Reverse waveform direction | Off |
-| Waveform Color | Color for the waveform peaks | Blue |
+| Theme | Color preset for waveform and background (the Spectrum Analyzer themes); editing a color switches to Custom | P7 blue |
+| Waveform Color | Color for the waveform peaks (light and dark mode) | From theme |
 | Played Color | Overlay color for played portion | Semi-transparent |
-| Background | Background color | Theme-dependent |
+| Background | Background color (light and dark mode) | From theme |
 | Cache Size | Maximum disk space for waveform cache | 2048 MB |
 | Cache Retention | Days to keep unused waveform data | 180 days |
 
