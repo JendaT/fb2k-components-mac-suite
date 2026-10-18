@@ -55,6 +55,9 @@ inline void setConfigBool(const char* key, bool value) {
 // Config keys
 static const char* const kKeyStyle = "style";                       // Style enum
 static const char* const kKeyChannelMode = "channel_mode";          // ChannelMode enum
+static const char* const kKeyHoverReadout = "hover_readout";        // readout and dashed line on hover
+static const char* const kKeySummaryMode = "loudness_summary";      // SummaryMode enum
+static const char* const kKeyClipMarkers = "clip_markers";          // ticks on the top edge
 static const char* const kKeyPlayedOpacity = "played_opacity";      // 20-100 percent
 static const char* const kKeyCursorTime = "cursor_time";            // elapsed time chip on the cursor
 static const char* const kKeyGlassBackground = "glass_background";  // Translucent blur background
