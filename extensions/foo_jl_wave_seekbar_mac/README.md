@@ -128,18 +128,23 @@ xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar cl
 
 Access settings in **Preferences > Display > Waveform Seekbar**
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Display Mode | Stereo (separate L/R) or Mono (combined) | Stereo |
-| Scale | Loudness (average level relative to the track, shows quiet and loud sections) or Peak (sample peaks) | Loudness |
-| Shade Played | Dim the portion already played | On |
-| Flip Display | Reverse waveform direction | Off |
-| Theme | Color preset for waveform and background (the Spectrum Analyzer themes); editing a color switches to Custom | P7 blue |
-| Waveform Color | Color for the waveform peaks (light and dark mode) | From theme |
-| Played Color | Overlay color for played portion | Semi-transparent |
-| Background | Background color (light and dark mode) | From theme |
-| Cache Size | Maximum disk space for waveform cache | 2048 MB |
-| Cache Retention | Days to keep unused waveform data | 180 days |
+Settings sit on three cards, plus the cache:
+
+| Card | Setting | Description | Default |
+|------|---------|-------------|---------|
+| Appearance | Style | Layered (peak envelope around a short-term loudness body, one dBFS axis) or Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear) | Layered |
+| Appearance | Channels | Stereo (L / R apart) or Mono (mixed into one) | Stereo |
+| Appearance | Colours | Theme preset (the Spectrum Analyzer themes) and its light / dark waveform and background colours; editing a colour switches to Custom | P7 blue |
+| Appearance | Played opacity | How strongly the part already played is drawn (20-100 %) | 50 % |
+| Appearance | Glass background | Translucent blur instead of the background colour | Off |
+| Overlays | Text size | Readout, summary, cursor time and scale labels: 10, 12, 14 or 16 pt | 12 pt |
+| Overlays | Readout on hover | Time, LUFS-S, peak, crest, correlation and Lo/Mid/Hi split under the mouse; click seeks | On |
+| Overlays | Elapsed time on the cursor | m:ss chip beside the playback cursor | On |
+| Overlays | Loudness summary | Integrated, LRA, true peak, PLR, clip count: Off, On hover, Always | On hover |
+| Overlays | Clip markers | Ticks on the top edge for runs of 3+ samples at full scale | On |
+| Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | On |
+| Scales | Level scale on the right | dB labels in a gutter; off gives the waveform full width | On |
+| Cache | Max size / Keep for | Disk space and days to keep unused analysis | 2048 MB, 180 days |
 
 ## Project Structure
 
@@ -147,8 +152,15 @@ Access settings in **Preferences > Display > Waveform Seekbar**
 foo_jl_wave_seekbar_mac/
 ├── src/
 │   ├── Core/                        # Platform-agnostic logic
-│   │   ├── WaveformData.h/cpp       # Peak data structure (2048 buckets)
-│   │   ├── WaveformScanner.h/cpp    # Audio scanning with vDSP
+│   │   ├── WaveformData.h/cpp       # Cached per-track analysis (blocks, hops, summary)
+│   │   ├── TrackAnalyzer.h/cpp      # Analysis pass: loudness, LRA, true peak, bands, clips
+│   │   ├── ColumnAggregator.h/cpp   # Per-column values for a view width
+│   │   ├── LayeredShape.h           # Layered style geometry
+│   │   ├── SimpleShape.h            # Simple styles' lane geometry
+│   │   ├── ThemeTokens.h/cpp        # OKLCH colour tokens
+│   │   ├── OverlayText.h            # Overlay / scale formatting
+│   │   ├── WaveformThemes.h         # Theme presets
+│   │   ├── WaveformScanner.h/cpp    # Async decode through the analyser
 │   │   ├── WaveformCache.h/cpp      # SQLite persistence (WAL mode)
 │   │   ├── WaveformService.h/cpp    # Coordination layer
 │   │   ├── WaveformConfig.h/cpp     # Configuration (cfg_var)
@@ -165,9 +177,11 @@ foo_jl_wave_seekbar_mac/
 │   └── Prefix.pch                   # Precompiled header
 ├── Resources/
 │   └── Info.plist                   # Bundle metadata
+├── Tests/                           # Standalone unit tests for src/Core
 ├── Scripts/
 │   ├── generate_xcode_project.rb    # Project generator
-│   ├── build.sh                     # Build script
+│   ├── build.sh                     # Build script (runs the unit tests first)
+│   ├── run_tests.sh                 # Unit tests
 │   ├── install.sh                   # Install script
 │   ├── clean.sh                     # Clean script
 │   └── test_install.sh              # Build + install for testing
@@ -178,12 +192,15 @@ foo_jl_wave_seekbar_mac/
 
 ## Technical Details
 
-### Waveform Data
+### Analysis
 
-- Fixed resolution of 2048 buckets per track
-- Stores min/max/RMS values per channel (up to stereo)
-- Compressed with zlib for storage (~10-15KB per stereo track)
-- Little-endian serialization for portability
+One decode pass per track (`TrackAnalyzer`), cached:
+- Fine blocks of ~1024 frames (fewer, larger blocks past ~6 min): sample min/max and RMS per channel
+- 100 ms hops: K-weighted (BS.1770) power, plain power and L*R per channel, Lo/Mid/Hi band power (250 Hz / 2 kHz Linkwitz-Riley, as the Vectorscope)
+- Clip runs: 3+ consecutive samples at |x| >= 0.9999
+- Summary: integrated loudness (BS.1770-4 gating), LRA (EBU Tech 3342), true peak (4x oversampled), PLR, clip count
+- Per-column values are aggregated from the blocks at draw time, so a resize never re-decodes
+- Stored zlib-compressed with levels in 0.01 dB steps and samples in 16 bits (~100-300 KB per track)
 
 ### Scanning Performance
 
@@ -193,7 +210,7 @@ foo_jl_wave_seekbar_mac/
 | 10 min (FLAC)  | ~1.5-2.5 sec |
 | 3 min (MP3)    | ~0.3-0.5 sec |
 
-- Uses Apple Accelerate framework (vDSP) for SIMD optimization
+- Analysis adds about 0.9 s per 10 minutes of stereo on top of decoding
 - Background scanning with GCD
 - Cancellation support for track changes
 
@@ -207,13 +224,11 @@ foo_jl_wave_seekbar_mac/
 
 ### Rendering
 
-- Core Graphics (Quartz 2D) for native performance
-- Scale: Loudness (default) draws RMS relative to the track's 98th-percentile level, square-rooted so quiet passages stay visible; Peak draws sample peaks
-- Resampled to one column per screen pixel (max peak per column on narrow views, interpolated on wide ones)
-- Waveform rendered once per track, size and settings into a cached image; frames only redraw the played overlay and cursor
-- Layer-backed view for smooth animation
-- 60 FPS timer for position updates
-- Retina display support via `backingScaleFactor`
+- The waveform's layers are cached as greyscale masks per track, pixel size and style family, then coloured into one composite per theme and style; a theme change recolours without re-analysis
+- Frames draw the composite twice under two clip rects (played part at Played opacity), then guides, cursor and overlays
+- One column per screen pixel (merged blocks on narrow views, interpolated on wide ones)
+- Deep / hot / guide colours derive from the theme accent in OKLCH
+- Unit tests (`Scripts/run_tests.sh`, run by `build.sh`) cover the analysis, column aggregation, shapes, colour tokens and overlay formatting
 
 ## Troubleshooting
 

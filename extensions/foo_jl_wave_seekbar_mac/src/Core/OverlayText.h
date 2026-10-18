@@ -15,11 +15,11 @@
 
 namespace overlay {
 
-// Hover readout box, in points
+// Hover readout box, in points at the 10 pt text size (scaled with the text)
 constexpr double kReadoutWidth = 186.0;
 constexpr double kReadoutTop = 10.0;        // from the top edge
 constexpr double kReadoutGap = 10.0;        // from the mouse
-constexpr double kReadoutFlipZone = 210.0;  // this close to the right edge, it goes left
+constexpr double kReadoutFlipMargin = 24.0; // past the box: it goes left this close to the right edge
 
 // "−12.4", "+0.72" with `plus`, "0.0" for anything that rounds to zero,
 // "−∞" / "+∞", and "—" for NaN (undefined, e.g. correlation of silence).
@@ -53,11 +53,27 @@ inline std::string formatClock(double seconds, bool tenths = false) {
     return buf;
 }
 
+// Time ruler: the smallest major interval (seconds) that keeps labels at
+// least kRulerLabelSpacing points apart. Minor ticks go at a quarter of it.
+// Past the spec's 10 min, longer intervals keep long mixes readable.
+constexpr double kRulerLabelSpacing = 110.0;
+constexpr double kRulerIntervals[] = { 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600 };
+
+inline double rulerInterval(double durationSeconds, double widthPoints) {
+    if (!(durationSeconds > 0.0) || !(widthPoints > 0.0)) return kRulerIntervals[0];
+    const double pointsPerSecond = widthPoints / durationSeconds;
+    for (double interval : kRulerIntervals) {
+        if (interval * pointsPerSecond >= kRulerLabelSpacing) return interval;
+    }
+    return kRulerIntervals[sizeof kRulerIntervals / sizeof kRulerIntervals[0] - 1];
+}
+
 // Left edge of the readout box: right of the mouse, or left of it near the
-// right edge, and never off the view's left.
-inline double readoutX(double mouseX, double viewWidth) {
-    double x = mouseX > viewWidth - kReadoutFlipZone ? mouseX - kReadoutGap - kReadoutWidth
-                                                     : mouseX + kReadoutGap;
+// right edge (within the box's width plus a margin), and never off the
+// view's left.
+inline double readoutX(double mouseX, double viewWidth, double boxWidth = kReadoutWidth) {
+    const double flipZone = boxWidth + kReadoutFlipMargin;
+    double x = mouseX > viewWidth - flipZone ? mouseX - kReadoutGap - boxWidth : mouseX + kReadoutGap;
     return std::fmax(0.0, x);
 }
 

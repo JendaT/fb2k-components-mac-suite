@@ -56,6 +56,21 @@ void testPlacement() {
     CHECK_FLOAT_EQ(readoutX(800, 1000), 604, "flips within 210 pt of the right edge");
     CHECK_FLOAT_EQ(readoutX(789, 1000), 799, "still right just outside the zone");
     CHECK_FLOAT_EQ(readoutX(150, 300), 0, "never off the left edge");
+    CHECK_FLOAT_EQ(readoutX(700, 1000, 279), 411, "a larger box flips earlier");
+    CHECK_FLOAT_EQ(readoutX(690, 1000, 279), 700, "and stays right outside its zone");
+}
+
+void testRuler() {
+    g_context = "ruler";
+    // The handoff's mock: 21:18 over 1392 pt gives labels every 2 min
+    CHECK_FLOAT_EQ(rulerInterval(1278, 1392), 120, "2 min on the mock");
+    CHECK_FLOAT_EQ(rulerInterval(180, 1200), 30, "3 min track, wide view");
+    CHECK_FLOAT_EQ(rulerInterval(60, 2000), 10, "short track: the smallest step");
+    CHECK_FLOAT_EQ(rulerInterval(7200, 800), 1800, "2 h mix in 800 pt");
+    CHECK_FLOAT_EQ(rulerInterval(86400, 100), 3600, "longest step caps");
+    CHECK_FLOAT_EQ(rulerInterval(0, 1000), 10, "no duration");
+    const double interval = rulerInterval(425, 1915);
+    CHECK(interval * 1915 / 425 >= kRulerLabelSpacing, "labels at least 110 pt apart");
 }
 
 } // namespace
@@ -64,5 +79,6 @@ int main() {
     testNumbers();
     testClock();
     testPlacement();
+    testRuler();
     TEST_MAIN_END();
 }

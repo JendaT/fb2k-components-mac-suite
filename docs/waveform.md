@@ -13,20 +13,34 @@ Shows the entire track waveform at a glance - not just the current audio buffer.
 
 ### Interactive Seeking
 
-Click anywhere on the waveform to seek to that position. The playback position is clearly indicated with a visual marker.
+Click anywhere on the waveform to seek to that position. The playback cursor carries an optional elapsed-time chip.
 
-### Display Modes
+### Styles
 
-| Mode | Description |
-|------|-------------|
-| **Stereo** | Left and right channels displayed separately |
-| **Mono** | Combined single waveform |
+| Style | Description |
+|-------|-------------|
+| **Layered** (default) | L up, R down on one dBFS axis: the peak envelope around a short-term loudness body. The gap between them is the crest factor, so compression is visible. |
+| **Two-tone** | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
+| **Glow** | Peaks fade to the tips, RMS core runs to a hot centre |
+| **Heat** | One layer coloured by amplitude, deep to hot |
 
-<!-- Screenshot: Stereo vs mono comparison -->
+Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one).
 
-### Played Position Indicator
+### Loudness Analysis
 
-Visual indication of playback progress with subtle gradient fade showing what has been played.
+Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 3342 loudness range, 4x oversampled true peak, PLR, clip runs, per-moment short-term loudness, correlation and Lo/Mid/Hi energy.
+
+- **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse
+- **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
+- **Clip markers**: ticks on the top edge for runs of 3+ samples at full scale
+
+### Scales
+
+Optional time ruler under the waveform and a dB gutter on the right.
+
+### Played Part
+
+The part already played is drawn at a configurable opacity (default 50 %).
 
 ### Waveform Caching
 
@@ -36,19 +50,9 @@ SQLite-based cache stores analyzed waveforms for instant loading:
 - Automatic LRU eviction when limit reached
 - WAL mode for concurrent access
 
-### Customizable Colors
+### Colours
 
-Configure colors to match your theme:
-- Waveform color
-- Played area color
-- Background color
-
-### BPM Sync
-
-Automatically reads BPM from track metadata for potential beat-aligned features. Supports common tags:
-- BPM
-- TBPM
-- TEMPO
+Theme presets shared with Spectrum Analyzer (P31 / P3 / P4 / P7 phosphors, Nord, Dracula, ...) or custom light / dark colours. Darker and brighter shades for gradients are derived from the theme in OKLCH.
 
 ### Dark Mode Support
 
@@ -67,14 +71,12 @@ Access settings via **Preferences > Display > Waveform Seekbar**
 
 ### Available Settings
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Display Mode | Stereo or Mono | Stereo |
-| Waveform Color | Color of the waveform | System accent |
-| Played Color | Color of played portion | Dimmed accent |
-| Background Color | Background color | Window background |
-| Cache Size | Maximum cache size in MB | 2048 |
-| Cache Retention | Days to keep unused data | 180 |
+| Card | Setting | Default |
+|------|---------|---------|
+| Appearance | Style, Channels, Colours, Played opacity, Glass background | Layered, Stereo, P7 blue, 50 %, off |
+| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 12 pt, on, on, on hover, on |
+| Scales | Time ruler, Level scale | on, on |
+| Cache | Max size, Keep for | 2048 MB, 180 days |
 
 ### Cache Location
 
@@ -102,17 +104,15 @@ splitter vertical
 
 ### Audio Analysis
 
-- Uses Apple Accelerate framework (vDSP) for SIMD-optimized processing
+- One decode pass per track in the background (Grand Central Dispatch), cancelled on track change
+- Fine blocks (~1024 frames) of sample min/max/RMS and 100 ms hops of K-weighted power, band power and L*R
 - Long local tracks decoded in parallel segments on the foobar2000 CPU thread pool
-- Background scanning with Grand Central Dispatch
-- Cancellation support for track changes
-- 2048 peak buckets per track for detailed visualization
+- Per-column values are aggregated from the cached blocks, so resizing never re-decodes
 
 ### Rendering
 
-- Core Graphics (Quartz 2D) for native performance
-- Layer-backed view for smooth animation
-- 60 FPS timer for position updates
+- Core Graphics: layers cached as alpha masks per track and size, coloured per theme
+- Frames redraw only the played boundary, cursor and overlays (60 FPS timer)
 
 ## Requirements
 
