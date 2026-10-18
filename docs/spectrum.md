@@ -6,18 +6,18 @@ A real-time spectrum analyzer UI element for foobar2000 macOS. Contributed by [S
 
 ### Real-Time FFT Bars
 
-Frequency bars driven by PCM from the core `visualisation_manager` stream, updated once per display frame. The component runs its own Hann-windowed FFT (Apple vDSP) and maps it into a configurable number of bars over a dB window set by Top and Range (default 0 dB to -90 dB). A full-scale sine reads 0 dB. The Hann window's far sidelobes fall away fast, so steep roll-offs (e.g. a CD master's cut-off just below 20 kHz) show as a cliff instead of a leakage floor; the core's own spectrum uses a Gauss window, which leaves a floor only 45-70 dB below the music.
+Frequency bars driven by PCM from the core `visualisation_manager` stream, updated once per display frame. The component runs its own FFT (Apple vDSP, Hann or Blackman-Harris window) and maps it into a configurable number of bars over a dB window set by Top and Range (default 0 dB to -80 dB). A full-scale sine reads 0 dB. Both windows' far sidelobes fall away fast, so steep roll-offs (e.g. a CD master's cut-off just below 20 kHz) show as a cliff instead of a leakage floor; the core's own spectrum uses a Gauss window, which leaves a floor only 45-70 dB below the music.
 
-At the low end, where several log-scale bands fall inside a single FFT bin, each band is sampled at its centre frequency, interpolated in dB between neighbouring bins, so the curve runs straight from bin to bin instead of reading the same bin as flat steps.
+At the low end, where several log-scale bands fall inside a single FFT bin, each band is sampled at its centre frequency, interpolated in dB along a monotone cubic through the neighbouring bins (Steffen's tangents), instead of reading the same bin as flat steps. The cubic rounds the corners the coarse bin spacing of the bass would otherwise show, and never overshoots a bin's level.
 
 ### Draw Modes
 
 | Mode | Description |
 |------|-------------|
 | **Bars** | Discrete frequency bars with configurable gap and fill style |
-| **Curve** | Smooth curve spanning the full plot width, in one of four curve styles; always drawn at full resolution (one point per point of panel width, up to 2048), so the Bars setting does not apply. **Curve detail** sets how much of the FFT's detail it shows |
+| **Curve** | Smooth curve spanning the full plot width, in one of four curve styles; always drawn at full resolution (one point per point of panel width, up to 2048), so the Bars setting does not apply. **Curve detail** sets how much of the FFT's detail it shows. The live curve is the strong line; the peak line is a thinner, fainter line in the same colour, and a small **Live / Peak hold** legend names them (**Show legend** hides it) |
 
-**Curve detail** takes the Bars setting's place in Curve mode. **Full** draws every FFT bin. **1/24**, **1/12**, **1/6** or **1/3 octave** averages the signal power over that fraction of an octave around each point (fractional-octave smoothing, as measurement analyzers offer), for a calmer curve with less detail; the peak and side lines follow it. At the low end, where the window is narrower than an FFT bin, the curve keeps reading the bins directly and blends into the average as the window widens.
+**Curve detail** (Curve mode only) sets how much of the FFT's detail the curve shows. **Full** draws every FFT bin. **1/24** (the default, close to studio analyzers), **1/12**, **1/6** or **1/3 octave** averages the signal power over that fraction of an octave around each point (fractional-octave smoothing, as measurement analyzers offer), for a calmer curve with less detail; the peak and side lines follow it. At the low end, where the window is narrower than an FFT bin, the curve keeps reading the bins directly and blends into the average as the window widens.
 
 The curve uses monotone cubic interpolation (Steffen), so it never overshoots between bands: peaks stay where the data puts them and the curve stays inside the 0..1 range.
 
@@ -34,7 +34,7 @@ Curve mode can be drawn four ways:
 | **Color bars** | Stripes over the full height of the plot, more opaque where a frequency is louder; no line |
 | **Line + color bars** | Stroked line, with the stripes filling only the area under it |
 
-Color bars use the peak-line color, so dominant frequencies stand out at a glance while mid-level bands stay visible. **Color bar brightness** sets how strong the loudest stripe gets. The shadow fill is not drawn in the two color-bar styles, and the peak line is not drawn in **Color bars**.
+Color bars use the theme colour, with each stripe's strength following the square of its level (as on MiniMeters), so dominant frequencies stand out at a glance while mid-level bands stay visible. **Color bar brightness** sets how strong the loudest stripe gets. The shadow fill is not drawn in the two color-bar styles, and the peak line is not drawn in **Color bars**.
 
 Filled:
 
@@ -107,14 +107,15 @@ By default the curve uses RMS averaging at 270 ms (falling up to about 16 dB/s),
 
 ### Grid
 
-- **dB scale**: guide lines every 10 dB (20 dB at 120 dB range) with labels, positioned against the same Top / Range window the bars use
-- **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz, with extra ticks where there is room (filling 10-20 kHz) and de-cluttered labels; the linear scale uses round steps
+- **dB scale**: guide lines every 10 dB (20 dB at 120 dB range), labelled with numbers only (the top line names the unit), positioned against the same Top / Range window the bars use; the top label always stays whole, sitting just below the top line
+- **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz; decades (100 Hz, 1 kHz, 10 kHz) are drawn at 70% of the grid opacity, the lines between at 45%. Only 1-2-5 values are labelled, decades bolder and brighter, in a monospaced font; the linear scale uses round steps
+- **Labels** take the background colour blended 70% towards white (or black on light backgrounds), so they stay readable with a theme's deliberately dim grid
 - **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
 
 ### Color Themes
 
-Ten presets stamp bar, background, and grid colors for both light and dark appearance at once: Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. Editing any color well switches the theme selector to Custom.
+Fourteen presets stamp level, background, and grid colors for both light and dark appearance at once. Four are named after CRT phosphors, one colour each with a near-black background tinted towards it and a pale grid: P31 green, P3 amber, P4 white and P7 blue (the default). They are listed first; the others are Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai and Sunset. Editing any color well switches the theme selector to Custom.
 
 ### Glass Background
 
@@ -122,7 +123,7 @@ Optional translucent behind-window blur instead of a solid background color (sam
 
 ### Frequency Readout
 
-Click and hold the left mouse button to show a marker and the exact frequency under the cursor; drag to scrub.
+Hover over the plot to read the spectrum under the mouse: a dashed crosshair through the live curve, a dot on it, and a box with the frequency, the nearest note with its offset in cents, and the level in dB. In Curve mode the frequency is also marked on the axis.
 
 ### Dark Mode Support
 
@@ -130,58 +131,72 @@ Separate bar, background, and grid colors for light and dark appearance; the vie
 
 ## Configuration
 
-Access settings via **Preferences > Display > Spectrum Analyzer**, or right-click the element and choose **Preferences...**. Changes apply live.
+Access settings via **Preferences > Display > Spectrum Analyzer**, or right-click the element and choose **Preferences...**. Changes apply live. The page is laid out like P31 Spectrum's settings page: settings that do not apply to the current ones are hidden (for example the Bars rows in Curve mode), or disabled with a note saying why. It scrolls when the preferences window is shorter than the page.
 
 ![Spectrum Settings](images/spectrum-settings.png)
+
+### Presets
+
+**Preset** replaces every setting, colors included, with a factory preset (the Glass background setting is left alone):
+
+| Preset | Description |
+|--------|-------------|
+| **Default** | All defaults |
+| **Classic bars** | 48 bars, attack / decay smoothing at 60, logarithmic scale |
+| **RTA, 1/3 octave** | Filled curve at 1/3-octave detail, logarithmic scale, FFT 8192, 500 ms averaging |
+| **Fine detail** | Line at full detail, FFT 16384, Blackman-Harris window, logarithmic scale, 120 dB range |
+| **Mid + side** | Mid + side lines at 1/12-octave detail |
+
+### Display
+
+| Setting | Description | Range | Default |
+|---------|-------------|-------|---------|
+| Draw mode | Curve or Bars | Curve, Bars | Curve |
+| Curve style | Curve mode only | Filled, Line, Color bars, Line + color bars | Line + color bars |
+| Curve detail | Curve mode only: Full draws every FFT bin, an octave fraction averages power over that band around each point | Full, 1/24, 1/12, 1/6, 1/3 octave | 1/24 octave |
+| Color bar brightness | Strength of the loudest color bar (Curve mode; color-bar styles only) | 10-100% | 85% |
+| Bars | Bars mode only; Auto draws one bar per 2 points of panel width (up to 2048) | Auto, 16-512 | Auto |
+| Bar style | Bars mode only | Solid, Gradient, Spectrum | Gradient |
+| Bar gap | Bars mode only, % of slot width | 0-80% | 12% |
+| Orientation | | Horizontal, Vertical | Horizontal |
+| Top | Level at the top of the display | 0 to -60 dB | 0 dB |
+| Range | dB from the top of the display to the bottom | 60, 80, 90, 120 dB | 80 dB |
+| Show peaks | Peak caps in Bars mode, a peak line in Curve mode | | On |
+| Shadow fill | Dim, slow-falling fill behind the levels; not drawn (and disabled) in the color-bar styles | | On |
+| Show dB scale | dB guide lines and labels | | On |
+| Show frequency axis | Frequency gridlines and labels | | On |
+| Show legend | Curve mode only: the Live / Peak hold key in the plot's top-left corner | | On |
 
 ### Analysis
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Bars | Number of frequency bars in Bars mode; Auto draws one bar per 2 points of panel width (up to 2048). Replaced by Curve detail in Curve mode | Auto, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512 | Auto |
-| FFT size | FFT window length | 1024, 2048, 4096, 8192, 16384 | 2048 |
+| FFT size | Larger sizes resolve low frequencies better but react more slowly | 1024-32768 | 2048 |
+| Window | Blackman-Harris keeps loud tones from spilling into quiet neighbours, at the cost of wider peaks | Hann, Blackman-Harris | Hann |
 | Stereo | Mono, or Mid + side (side channel as a second line) | Mono, Mid + side | Mono |
-| Curve detail | Curve mode only, in the Bars row: Full draws every FFT bin, an octave fraction averages power over that band around each point | Full, 1/24, 1/12, 1/6, 1/3 octave | Full |
 | Frequency scale | Band mapping | Logarithmic, Linear, Logarithmic (compact bass) | Logarithmic (compact bass) |
-| Range (Hz) | Lowest and highest displayed frequency | 10-2000 to 1000-24000 | 20 to 20000 |
-| Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | RMS average |
-| Smoothing | Attack / decay: temporal smoothing (higher = smoother). RMS average: the averaging time. Stored per mode | 0-100 / 0-500 ms | 82 / 270 ms |
-| Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 0 |
-| Top | Level at the top of the display | 0 to -60 dB | 0 dB |
-| Range | dB from the top of the display to the bottom | 60, 80, 90, 120 dB | 90 dB |
+| Lowest / Highest frequency | Displayed range; the top is limited to half the sample rate | 10-2000 / 1000-24000 Hz | 20 / 20000 Hz |
+| Slope | Tilt around 1 kHz, in 0.1 steps | 0-6 dB/octave | 2.0 |
 
-### Dynamics
+### Motion
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Shadow fall | How fast the shadow band falls; disabled while the shadow is not drawn | 0-100 | 76 |
-| Peak fall | How fast the peak line falls after its hold | 1-60 dB/s | 12 dB/s |
-| Peak hold | How long the peak line stays before falling | 0-2000 ms | 920 ms |
+| Smoothing mode | How levels are smoothed over time | Attack / decay, RMS average | RMS average |
+| Smoothing | Attack / decay only (higher = smoother) | 0-100 | 82 |
+| Averaging time | RMS average only, in 5 ms steps | 0-500 ms | 270 ms |
+| Shadow fall | How fast the shadow falls; disabled while the shadow is not drawn | 0-100 | 76 |
+| Peak fall | How fast peaks fall after their hold; disabled while peaks are off | 1-60 dB/s | 12 dB/s |
+| Peak hold | How long a peak stays before it falls; disabled while peaks are off | 0-2000 ms | 920 ms |
 
 ### Appearance
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Theme | Color preset (Custom + 10 presets) | Default (Blue) |
-| Draw mode | Bars or Curve | Curve |
-| Curve style | Filled, Line, Color bars, Line + color bars (Curve mode only) | Line + color bars |
-| Color bar brightness | Strength of the loudest color bar, 10-100% (color-bar styles only) | 69% |
-| Orientation | Horizontal or Vertical | Horizontal |
-| Bar style | Solid, Gradient, Spectrum | Gradient |
-| Bar gap | Gap between bars, % of slot width | 12% |
-| Show peak caps | Falling peak line | On |
-| Shadow fill | Slow-decaying dim fill behind bars; not drawn (and disabled) in the color-bar curve styles | On |
-| Show dB scale | dB guide lines and labels | On |
-| Show frequency axis | Frequency gridlines and labels | On |
+| Theme | Color preset (Custom + 14 presets, phosphors first) | P7 blue |
+| Grid opacity | Grid line opacity (0% hides the grid) | 60% |
+| Levels / Background / Grid | Light and dark color for each | P7 blue colors |
 | Glass background | Translucent blur instead of solid color | Off |
-| Colors (Light / Dark) | Bar and background color per appearance | Blue on gray / lighter blue on near-black |
-
-### Grid
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Opacity | Grid line and label opacity (0% hides) | 84% |
-| Color (light / dark) | Grid color per appearance | Neutral gray |
 
 ## Layout Editor
 
@@ -204,8 +219,8 @@ splitter vertical
 
 ### Audio Analysis
 
-- `visualisation_stream_v2::get_chunk_absolute` with a 0.5 s backlog, all channels; one FFT-size frame centred on the playback position (falling back to the frame ending or starting there right after a start or seek)
-- Mid is the channel average, side half the difference of the first two channels; each gets a Hann window and a vDSP real FFT, scaled by `1 / sum(window)` so a full-scale sine reads 1.0
+- `visualisation_stream_v2::get_chunk_absolute` with a 1 s backlog (room for a centred 32768-sample frame), all channels; one FFT-size frame centred on the playback position (falling back to the frame ending or starting there right after a start or seek)
+- Mid is the channel average, side half the difference of the first two channels; each gets the analysis window (periodic Hann, or 4-term Blackman-Harris) and a vDSP real FFT, scaled by `1 / sum(window)` so a full-scale sine reads 1.0
 - Band edges recomputed when the stream's sample rate changes; the DC bin is skipped
 - Peak magnitude across each band's bins (reads punchier than the average)
 - RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 16 dB/s at 270 ms); the shadow fall slider maps to 15-90% of that rate
@@ -219,6 +234,7 @@ splitter vertical
 - On macOS 14 and later, updates come from the view's `CADisplayLink`, in step with the screen's refresh; on fast displays every second or third refresh is used (60-90 fps). macOS 12-13 uses a 60 fps `NSTimer` on the main run loop (common modes)
 - Redraws only while audio is live or bars are still settling, and not while the window is fully covered
 - Color bars are a single gradient along the frequency axis with a stop at each band centre
+- The plot and its labels run edge to edge, with no margin around the panel; a dB label on the very top line sits just below it so it stays whole
 - Stream released when the view goes off-screen; recreated lazily on the next tick (a fresh stream returns no data for its first reads, so it is not released per idle frame)
 
 ### Lifecycle

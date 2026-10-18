@@ -22,6 +22,7 @@ public:
     struct Settings {
         int    barCount   = 48;
         int    fftSize    = 4096;    // power of 2
+        int    window     = 0;       // spectrum_config::WindowType
         int    minHz      = 40;
         int    maxHz      = 18000;
         int    smoothing  = 60;      // attack/decay: 0-100, higher = smoother
@@ -97,7 +98,7 @@ private:
     // FFT
     OpaqueFFTSetup* _fftSetup = nullptr;
     int _fftLog2 = 0;
-    std::vector<float> _window;      // Hann, fftSize
+    std::vector<float> _window;      // analysis window, fftSize
     float _windowSum = 1.0f;
     std::vector<float> _windowed;    // scratch, fftSize
     std::vector<float> _re, _im;     // split-complex scratch, fftSize/2

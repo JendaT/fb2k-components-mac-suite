@@ -65,18 +65,30 @@ float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, const st
     const float gain = _barGain[i];
     const float topDb = _settings.topDb, rangeDb = _settings.rangeDb;
 
-    // Unsmoothed level: interpolated at the centre when the bar is narrower
-    // than a bin (in dB, so the curve runs straight between bins instead of
-    // sagging towards the quieter one), else the peak across its bins (reads
-    // punchier than the average).
+    // Unsmoothed level. A bar narrower than a bin is interpolated at its
+    // centre, in dB (so the curve does not sag towards the quieter bin), along
+    // a monotone cubic through the neighbouring bins: straight segments would
+    // show the coarse bin spacing of the bass as corners, and Steffen's
+    // tangents round them without ever overshooting a bin's level. A wider bar
+    // reads the peak across its bins (punchier than the average).
     const auto plain = [&]() {
         const float centre = _binCenter[i];
         if (centre >= 1.0f && centre < (float)(binCount - 1)) {
             const int b0 = (int)centre;
             const float t = centre - (float)b0;
-            const float d0 = magnitudeToDisplay(mag[b0] * gain, topDb, rangeDb);
-            const float d1 = magnitudeToDisplay(mag[b0 + 1] * gain, topDb, rangeDb);
-            return d0 * (1.0f - t) + d1 * t;
+            const auto at = [&](int b) { return magnitudeToDisplay(mag[b] * gain, topDb, rangeDb); };
+            const float d0 = at(b0), d1 = at(b0 + 1);
+            const float dPrev = b0 > 1 ? at(b0 - 1) : d0;          // bin 0 is DC
+            const float dNext = b0 + 2 < binCount ? at(b0 + 2) : d1;
+            const auto tangent = [](float s0, float s1) {
+                if (s0 * s1 <= 0.0f) return 0.0f;                   // extremum or flat
+                const float limit = std::min({std::fabs(s0), std::fabs(s1), 0.25f * std::fabs(s0 + s1)});
+                return (s0 > 0.0f ? 2.0f : -2.0f) * limit;
+            };
+            const float m0 = tangent(d0 - dPrev, d1 - d0);
+            const float m1 = tangent(d1 - d0, dNext - d1);
+            const float t2 = t * t, t3 = t2 * t;
+            return (2 * t3 - 3 * t2 + 1) * d0 + (t3 - 2 * t2 + t) * m0 + (-2 * t3 + 3 * t2) * d1 + (t3 - t2) * m1;
         }
         float m = 0.0f;
         for (int b = lo; b <= hi; ++b) {
@@ -107,6 +119,7 @@ float SpectrumAnalyzer::barTarget(int i, const std::vector<float>& mag, const st
 
 void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     const int oldFftSize = _settings.fftSize;
+    const int oldWindow = _settings.window;
     _settings = settings;
 
     // Sanitize
@@ -123,14 +136,21 @@ void SpectrumAnalyzer::configure(const SpectrumAnalyzer::Settings& settings) {
     if (_settings.peakHoldSec < 0.0f) _settings.peakHoldSec = 0.0f;
     if (_settings.rangeDb < 10.0f) _settings.rangeDb = 10.0f;
 
-    // FFT setup and Hann window for the current size.
-    if (!_fftSetup || _settings.fftSize != oldFftSize) {
+    // FFT setup and analysis window for the current size.
+    if (!_fftSetup || _settings.fftSize != oldFftSize || _settings.window != oldWindow) {
         const int n = _settings.fftSize;
         if (_fftSetup) vDSP_destroy_fftsetup(_fftSetup);
         _fftLog2 = (int)std::lround(std::log2((double)n));
         _fftSetup = vDSP_create_fftsetup((vDSP_Length)_fftLog2, kFFTRadix2);
         _window.resize((size_t)n);
-        vDSP_hann_window(_window.data(), (vDSP_Length)n, vDSP_HANN_DENORM);
+        // Periodic (DFT-even) window. Blackman-Harris (4-term, -92 dB
+        // sidelobes) gives a cleaner floor than Hann at the cost of wider peaks.
+        for (int k = 0; k < n; ++k) {
+            const double x = 2.0 * M_PI * k / n;
+            _window[(size_t)k] = (float)(_settings.window == spectrum_config::WindowBlackmanHarris
+                ? 0.35875 - 0.48829 * std::cos(x) + 0.14128 * std::cos(2 * x) - 0.01168 * std::cos(3 * x)
+                : 0.5 - 0.5 * std::cos(x));
+        }
         _windowSum = 0.0f;
         for (float w : _window) _windowSum += w;
         _windowed.resize((size_t)n);
@@ -441,7 +461,7 @@ bool SpectrumAnalyzer::tick(double dt) {
                 vm->create_stream(_stream, 0);
                 if (_stream.is_valid()) {
                     _stream->set_channel_mode(visualisation_stream_v2::channel_mode_default);
-                    _stream->request_backlog(0.5);  // room for a centred frame at the largest FFT size
+                    _stream->request_backlog(1.0);  // room for a centred frame at the largest FFT size (32768)
                 }
             }
         }

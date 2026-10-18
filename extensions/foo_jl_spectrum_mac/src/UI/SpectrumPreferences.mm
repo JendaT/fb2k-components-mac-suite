@@ -2,12 +2,20 @@
 //  SpectrumPreferences.mm
 //  foo_jl_spectrum_mac
 //
+//  Preferences page laid out like P31 Spectrum's settings page: Display,
+//  Analysis, Motion and Appearance sections of rows, where rows that do not
+//  apply to the current settings are hidden (and the page closes up) or
+//  disabled with a note saying why. Factory presets sit at the top.
+//
 
 #import "SpectrumPreferences.h"
 #include "../fb2k_sdk.h"
 #include "../Core/SpectrumConfig.h"
 #include "../Core/SpectrumThemes.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include <functional>
+#include <string>
+#include <vector>
 
 // Uniquely-named flipped view (avoids ObjC runtime clashes across components)
 @interface SpectrumFlippedView : NSView
@@ -16,52 +24,142 @@
 - (BOOL)isFlipped { return YES; }
 @end
 
+using namespace spectrum_config;
+
+namespace {
+
+constexpr CGFloat kPageWidth = 460;
+constexpr CGFloat kLabelX = 30;
+constexpr CGFloat kControlX = 160;
+constexpr CGFloat kValueX = kControlX + 160;   // slider value / note
+constexpr CGFloat kRowHeight = 30;
+constexpr CGFloat kCheckboxHeight = 26;
+
+enum class RowKind { Section, Popup, Slider, Checkbox, Number, ColorPair };
+
+struct Choice {
+    NSString *title;
+    int value;
+};
+
+// One row of the page. get/set read and write config; the optional blocks
+// decide whether the row shows, whether it can be changed, and the note shown
+// in place of its value while it cannot.
+struct Row {
+    RowKind kind = RowKind::Section;
+    NSTextField *label = nil;
+    NSControl *control = nil;       // popup, slider, checkbox, number field, or light color well
+    NSColorWell *darkWell = nil;    // color pair
+    NSTextField *value = nil;       // slider value, number unit, or note
+    NSTextField *lightCaption = nil, *darkCaption = nil;
+    CGFloat controlWidth = 150;
+    int step = 1;
+    std::function<int()> get;
+    std::function<void(int)> set;
+    std::function<NSString *(int)> format;
+    std::function<bool()> visible;
+    std::function<bool()> enabled;
+    std::function<NSString *()> note;
+    const char *keyLight = nullptr, *keyDark = nullptr;    // color pair
+};
+
+NSString *fmt(NSString *format, int v) { return [NSString stringWithFormat:format, v]; }
+
+int configInt(const char *key, int def) { return (int)getConfigInt(key, def); }
+bool configBool(const char *key, bool def) { return getConfigBool(key, def); }
+
+bool curveMode() { return configInt(kKeyDrawMode, kDefaultDrawMode) == DrawModeCurve; }
+bool colorBarStyle() {
+    const int style = configInt(kKeyCurveStyle, kDefaultCurveStyle);
+    return curveMode() && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
+}
+
+// --- Factory presets (P31 Spectrum's) ---
+
+// Every setting to its default. Glass background is left alone: it is a
+// window effect, not part of the analyzer's look the presets describe.
+void writeDefaults() {
+    setConfigInt(kKeyDrawMode, kDefaultDrawMode);
+    setConfigInt(kKeyCurveStyle, kDefaultCurveStyle);
+    setConfigInt(kKeyCurveOctaveFraction, kDefaultCurveOctaveFraction);
+    setConfigInt(kKeyColorBarBrightness, kDefaultColorBarBrightness);
+    setConfigInt(kKeyBarCount, kDefaultBarCount);
+    setConfigInt(kKeyBarStyle, kDefaultBarStyle);
+    setConfigInt(kKeyGapPercent, kDefaultGapPercent);
+    setConfigInt(kKeyOrientation, kDefaultOrientation);
+    setConfigInt(kKeyTopDb, kDefaultTopDb);
+    setConfigInt(kKeyRangeDb, kDefaultRangeDb);
+    setConfigBool(kKeyPeakHold, kDefaultPeakHold);
+    setConfigBool(kKeyShadowFill, kDefaultShadowFill);
+    setConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
+    setConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
+    setConfigBool(kKeyShowLegend, kDefaultShowLegend);
+    setConfigInt(kKeyFftSize, kDefaultFftSize);
+    setConfigInt(kKeyWindow, kDefaultWindow);
+    setConfigInt(kKeyStereoMode, kDefaultStereoMode);
+    setConfigInt(kKeyFreqScale, kDefaultFreqScale);
+    setConfigInt(kKeyMinHz, kDefaultMinHz);
+    setConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    setConfigInt(kKeySlopeTenths, kDefaultSlopeTenths);
+    setConfigInt(kKeySmoothingMode, kDefaultSmoothingMode);
+    setConfigInt(kKeySmoothing, kDefaultSmoothing);
+    setConfigInt(kKeyRmsMs, kDefaultRmsMs);
+    setConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
+    setConfigInt(kKeyPeakFallDbPerSec, kDefaultPeakFallDbPerSec);
+    setConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
+    setConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
+    setConfigInt(kKeyTheme, kDefaultTheme);
+    setConfigInt(kKeyBarColorLight, kDefaultBarColorLight);
+    setConfigInt(kKeyBgColorLight, kDefaultBgColorLight);
+    setConfigInt(kKeyGridColorLight, kDefaultGridColorLight);
+    setConfigInt(kKeyBarColorDark, kDefaultBarColorDark);
+    setConfigInt(kKeyBgColorDark, kDefaultBgColorDark);
+    setConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
+}
+
+struct Preset {
+    NSString *name;
+    void (*apply)();   // runs after writeDefaults()
+};
+
+const Preset kPresets[] = {
+    {@"Default", [] {}},
+    {@"Classic bars", [] {
+        setConfigInt(kKeyDrawMode, DrawModeBars);
+        setConfigInt(kKeyBarCount, 48);
+        setConfigInt(kKeySmoothingMode, SmoothingAttackDecay);
+        setConfigInt(kKeySmoothing, 60);
+        setConfigInt(kKeyFreqScale, FreqScaleLog);
+    }},
+    {@"RTA, 1/3 octave", [] {
+        setConfigInt(kKeyCurveStyle, CurveStyleFilled);
+        setConfigInt(kKeyCurveOctaveFraction, 3);
+        setConfigInt(kKeyFreqScale, FreqScaleLog);
+        setConfigInt(kKeyFftSize, 8192);
+        setConfigInt(kKeyRmsMs, 500);
+    }},
+    {@"Fine detail", [] {
+        setConfigInt(kKeyCurveStyle, CurveStyleLine);
+        setConfigInt(kKeyCurveOctaveFraction, 0);
+        setConfigInt(kKeyFftSize, 16384);
+        setConfigInt(kKeyWindow, WindowBlackmanHarris);
+        setConfigInt(kKeyFreqScale, FreqScaleLog);
+        setConfigInt(kKeyRangeDb, 120);
+    }},
+    {@"Mid + side", [] {
+        setConfigInt(kKeyStereoMode, StereoMidSide);
+        setConfigInt(kKeyCurveStyle, CurveStyleLine);
+        setConfigInt(kKeyCurveOctaveFraction, 12);
+    }},
+};
+
+} // namespace
+
 @interface SpectrumPreferences () {
-    NSPopUpButton *_themePopup;
-    NSPopUpButton *_drawModePopup;
-    NSPopUpButton *_curveStylePopup;
-    NSSlider      *_colorBarBrightnessSlider;
-    NSTextField   *_colorBarBrightnessLabel;
-    NSPopUpButton *_orientationPopup;
-    NSPopUpButton *_barCountPopup;
-    NSTextField   *_barCountLabel;      // "Bars:" or "Curve detail:" with the draw mode
-    NSPopUpButton *_curveDetailPopup;   // takes the Bars popup's place in Curve mode
-    NSPopUpButton *_fftSizePopup;
-    NSPopUpButton *_stereoPopup;
-    NSPopUpButton *_barStylePopup;
-    NSPopUpButton *_freqScalePopup;
-    NSTextField   *_minHzField;
-    NSTextField   *_maxHzField;
-    NSSlider      *_gapSlider;
-    NSTextField   *_gapLabel;
-    NSPopUpButton *_smoothingModePopup;
-    NSSlider      *_smoothingSlider;
-    NSTextField   *_smoothingLabel;
-    NSSlider      *_slopeSlider;
-    NSTextField   *_slopeLabel;
-    NSSlider      *_topDbSlider;
-    NSTextField   *_topDbLabel;
-    NSPopUpButton *_rangeDbPopup;
-    NSSlider      *_shadowFallSlider;
-    NSTextField   *_shadowFallLabel;
-    NSTextField   *_shadowFallNote;
-    NSSlider      *_peakFallSlider;
-    NSTextField   *_peakFallLabel;
-    NSSlider      *_peakHoldSlider;
-    NSTextField   *_peakHoldLabel;
-    NSButton      *_peakHoldCheckbox;
-    NSButton      *_shadowFillCheckbox;
-    NSButton      *_dbGuidesCheckbox;
-    NSButton      *_freqAxisCheckbox;
-    NSButton      *_glassCheckbox;
-    NSColorWell   *_barColorLightWell;
-    NSColorWell   *_bgColorLightWell;
-    NSColorWell   *_barColorDarkWell;
-    NSColorWell   *_bgColorDarkWell;
-    NSSlider      *_gridOpacitySlider;
-    NSTextField   *_gridOpacityLabel;
-    NSColorWell   *_gridColorLightWell;
-    NSColorWell   *_gridColorDarkWell;
+    SpectrumFlippedView *_page;
+    NSPopUpButton *_presetPopup;
+    std::vector<Row> _rows;
+    NSInteger _themeRow;
 }
 @end
 
@@ -74,459 +172,409 @@
 - (NSString *)preferencesTitle { return @"Spectrum Analyzer"; }
 
 - (void)loadView {
-    SpectrumFlippedView *view = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 1050)];
-    self.view = view;
+    // The rows live in a flipped page inside a scroll view, so a preferences
+    // window shorter than the page can scroll.
+    _page = [[SpectrumFlippedView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 1000)];
+    _page.autoresizingMask = 0;
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 600)];
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.borderType = NSNoBorder;
+    scroll.drawsBackground = NO;
+    scroll.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    scroll.documentView = _page;
+    self.view = scroll;
+
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
-    [self buildUI];
-    [self loadSettings];
+    [self buildRows];
+    [self loadValues];
+    [self refresh];
 }
 
-- (void)buildUI {
-    CGFloat y = 10;
-    const CGFloat labelX = 20;
-    const CGFloat controlX = 150;
+#pragma mark - Rows
 
-    NSTextField *title = JLCreatePreferencesTitle(@"Spectrum Analyzer");
-    title.frame = NSMakeRect(labelX, y, 400, 20);
-    [self.view addSubview:title];
-    y += 30;
-
-    // --- Analysis section ---
-    NSTextField *analysisHeader = JLCreateSectionHeader(@"Analysis");
-    analysisHeader.frame = NSMakeRect(labelX, y, 200, 17);
-    [self.view addSubview:analysisHeader];
-    y += 22;
-
-    // One row, two settings: Bars in Bars mode, Curve detail in Curve mode.
-    _barCountLabel = [self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)];
-    [self.view addSubview:_barCountLabel];
-    _barCountPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
-    // Item tags hold the stored value; "Auto" (0) fits the bar count to the panel.
-    [_barCountPopup addItemWithTitle:@"Auto"];
-    _barCountPopup.lastItem.tag = spectrum_config::kBarCountAuto;
-    for (NSNumber *n in @[@16, @24, @32, @48, @64, @96, @128, @192, @256, @384, @512]) {
-        [_barCountPopup addItemWithTitle:n.stringValue];
-        _barCountPopup.lastItem.tag = n.integerValue;
-    }
-    _barCountPopup.toolTip = @"Auto draws one bar per 2 points of panel width";
-    _barCountPopup.target = self; _barCountPopup.action = @selector(barCountChanged:);
-    [self.view addSubview:_barCountPopup];
-    _curveDetailPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
-    // Item tags hold the stored octave fraction (0 = full detail).
-    for (int fraction : spectrum_config::kCurveOctaveFractions) {
-        [_curveDetailPopup addItemWithTitle:fraction == 0 ? @"Full"
-                                           : [NSString stringWithFormat:@"1/%d octave", fraction]];
-        _curveDetailPopup.lastItem.tag = fraction;
-    }
-    _curveDetailPopup.toolTip = @"Full draws every FFT bin; an octave fraction averages the power over that band around each point for a smoother curve";
-    _curveDetailPopup.target = self; _curveDetailPopup.action = @selector(curveDetailChanged:);
-    [self.view addSubview:_curveDetailPopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"FFT size:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _fftSizePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
-    for (NSNumber *n in @[@1024, @2048, @4096, @8192, @16384]) {
-        [_fftSizePopup addItemWithTitle:n.stringValue];
-    }
-    _fftSizePopup.target = self; _fftSizePopup.action = @selector(fftSizeChanged:);
-    [self.view addSubview:_fftSizePopup];
-    [self.view addSubview:[self label:@"Stereo:" at:NSMakePoint(controlX + 112, y + 3)]];
-    _stereoPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX + 165, y, 125, 25)];
-    [_stereoPopup addItemWithTitle:@"Mono"];          // order = StereoMode
-    [_stereoPopup addItemWithTitle:@"Mid + side"];
-    _stereoPopup.toolTip = @"Mid + side adds the stereo difference (L-R) as a second line; mono content leaves it at the bottom";
-    _stereoPopup.target = self; _stereoPopup.action = @selector(stereoModeChanged:);
-    [self.view addSubview:_stereoPopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Frequency scale:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _freqScalePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 210, 25)];
-    [_freqScalePopup addItemWithTitle:@"Logarithmic"];
-    [_freqScalePopup addItemWithTitle:@"Linear"];
-    [_freqScalePopup addItemWithTitle:@"Logarithmic (compact bass)"];  // order = FreqScale
-    _freqScalePopup.target = self; _freqScalePopup.action = @selector(freqScaleChanged:);
-    [self.view addSubview:_freqScalePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Range (Hz):" at:NSMakePoint(labelX + 10, y + 3)]];
-    _minHzField = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX, y, 70, 22)];
-    _minHzField.formatter = [self intFormatterMin:10 max:2000];
-    _minHzField.target = self; _minHzField.action = @selector(rangeChanged:);
-    [self.view addSubview:_minHzField];
-    [self.view addSubview:[self label:@"to" at:NSMakePoint(controlX + 78, y + 3)]];
-    _maxHzField = [[NSTextField alloc] initWithFrame:NSMakeRect(controlX + 100, y, 70, 22)];
-    _maxHzField.formatter = [self intFormatterMin:1000 max:24000];
-    _maxHzField.target = self; _maxHzField.action = @selector(rangeChanged:);
-    [self.view addSubview:_maxHzField];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Smoothing mode:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _smoothingModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
-    [_smoothingModePopup addItemWithTitle:@"Attack / decay"];   // order = SmoothingMode
-    [_smoothingModePopup addItemWithTitle:@"RMS average"];
-    _smoothingModePopup.target = self; _smoothingModePopup.action = @selector(smoothingModeChanged:);
-    _smoothingModePopup.toolTip = @"RMS average: averages signal power over the smoothing time, so levels rise and fall evenly like a real-time analyzer";
-    [self.view addSubview:_smoothingModePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Smoothing:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _smoothingSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _smoothingSlider.minValue = 0; _smoothingSlider.maxValue = 100; _smoothingSlider.continuous = YES;
-    _smoothingSlider.target = self; _smoothingSlider.action = @selector(smoothingChanged:);
-    [self.view addSubview:_smoothingSlider];
-    _smoothingLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_smoothingLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Slope:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _slopeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _slopeSlider.minValue = 0; _slopeSlider.maxValue = spectrum_config::kMaxSlopeTenths; _slopeSlider.continuous = YES;
-    _slopeSlider.target = self; _slopeSlider.action = @selector(slopeChanged:);
-    _slopeSlider.toolTip = @"Tilts the spectrum around 1 kHz (dB per octave) so high frequencies read higher";
-    [self.view addSubview:_slopeSlider];
-    _slopeLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    _slopeLabel.frame = NSMakeRect(controlX + 160, y + 2, 90, 17);
-    [self.view addSubview:_slopeLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Top:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _topDbSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _topDbSlider.minValue = spectrum_config::kMinTopDb; _topDbSlider.maxValue = spectrum_config::kMaxTopDb;
-    _topDbSlider.continuous = YES;
-    _topDbSlider.target = self; _topDbSlider.action = @selector(topDbChanged:);
-    _topDbSlider.toolTip = @"Level at the top of the display; lower it to fill the height with quiet music";
-    [self.view addSubview:_topDbSlider];
-    _topDbLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_topDbLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Range:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _rangeDbPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 100, 25)];
-    // Item tags hold the stored value in dB.
-    for (int range : spectrum_config::kRangeDbChoices) {
-        [_rangeDbPopup addItemWithTitle:[NSString stringWithFormat:@"%d dB", range]];
-        _rangeDbPopup.lastItem.tag = range;
-    }
-    _rangeDbPopup.target = self; _rangeDbPopup.action = @selector(rangeDbChanged:);
-    _rangeDbPopup.toolTip = @"dB from the top of the display to the bottom";
-    [self.view addSubview:_rangeDbPopup];
-    y += 34;
-
-    // --- Dynamics section ---
-    NSTextField *dynamicsHeader = JLCreateSectionHeader(@"Dynamics");
-    dynamicsHeader.frame = NSMakeRect(labelX, y, 200, 17);
-    [self.view addSubview:dynamicsHeader];
-    y += 22;
-
-    [self.view addSubview:[self label:@"Shadow fall:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _shadowFallSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _shadowFallSlider.minValue = 0; _shadowFallSlider.maxValue = 100; _shadowFallSlider.continuous = YES;
-    _shadowFallSlider.target = self; _shadowFallSlider.action = @selector(shadowFallChanged:);
-    _shadowFallSlider.toolTip = @"How fast the shadow band falls (higher = faster)";
-    [self.view addSubview:_shadowFallSlider];
-    _shadowFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_shadowFallLabel];
-    // Takes the value label's place while the slider is disabled, saying why.
-    _shadowFallNote = [self label:@"" at:NSMakePoint(controlX + 160, y + 2)];
-    _shadowFallNote.frame = NSMakeRect(controlX + 160, y + 2, 145, 17);  // ends inside the 460 pt page
-    _shadowFallNote.textColor = [NSColor secondaryLabelColor];
-    [self.view addSubview:_shadowFallNote];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Peak fall:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _peakFallSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _peakFallSlider.minValue = spectrum_config::kMinPeakFallDbPerSec;
-    _peakFallSlider.maxValue = spectrum_config::kMaxPeakFallDbPerSec;
-    _peakFallSlider.continuous = YES;
-    _peakFallSlider.target = self; _peakFallSlider.action = @selector(peakFallChanged:);
-    _peakFallSlider.toolTip = @"How fast the peak line falls after its hold, in dB per second";
-    [self.view addSubview:_peakFallSlider];
-    _peakFallLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_peakFallLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Peak hold:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _peakHoldSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _peakHoldSlider.minValue = 0; _peakHoldSlider.maxValue = 2000; _peakHoldSlider.continuous = YES;
-    _peakHoldSlider.target = self; _peakHoldSlider.action = @selector(peakHoldMsChanged:);
-    _peakHoldSlider.toolTip = @"How long the peak line stays before it starts to fall";
-    [self.view addSubview:_peakHoldSlider];
-    _peakHoldLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_peakHoldLabel];
-    y += 34;
-
-    // --- Appearance section ---
-    NSTextField *appearanceHeader = JLCreateSectionHeader(@"Appearance");
-    appearanceHeader.frame = NSMakeRect(labelX, y, 200, 17);
-    [self.view addSubview:appearanceHeader];
-    y += 22;
-
-    [self.view addSubview:[self label:@"Theme:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _themePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 160, 25)];
-    for (int i = 0; i < spectrum_config::kThemeCount; ++i) {
-        [_themePopup addItemWithTitle:[NSString stringWithUTF8String:spectrum_config::kThemes[i].name]];
-    }
-    _themePopup.target = self; _themePopup.action = @selector(themeChanged:);
-    _themePopup.toolTip = @"Apply a color preset to bars, background, and grid";
-    [self.view addSubview:_themePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Draw mode:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _drawModePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
-    [_drawModePopup addItemWithTitle:@"Bars"];
-    [_drawModePopup addItemWithTitle:@"Curve"];
-    _drawModePopup.target = self; _drawModePopup.action = @selector(drawModeChanged:);
-    [self.view addSubview:_drawModePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Curve style:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _curveStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 170, 25)];
-    [_curveStylePopup addItemWithTitle:@"Filled"];              // order = CurveStyle
-    [_curveStylePopup addItemWithTitle:@"Line"];
-    [_curveStylePopup addItemWithTitle:@"Color bars"];
-    [_curveStylePopup addItemWithTitle:@"Line + color bars"];
-    _curveStylePopup.target = self; _curveStylePopup.action = @selector(curveStyleChanged:);
-    _curveStylePopup.toolTip = @"Curve draw mode only. Color bars are stripes that get brighter where a frequency is louder";
-    [self.view addSubview:_curveStylePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Color bar brightness:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _colorBarBrightnessSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _colorBarBrightnessSlider.minValue = 10; _colorBarBrightnessSlider.maxValue = 100; _colorBarBrightnessSlider.continuous = YES;
-    _colorBarBrightnessSlider.target = self; _colorBarBrightnessSlider.action = @selector(colorBarBrightnessChanged:);
-    _colorBarBrightnessSlider.toolTip = @"How strong the loudest color bar gets";
-    [self.view addSubview:_colorBarBrightnessSlider];
-    _colorBarBrightnessLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_colorBarBrightnessLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Orientation:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _orientationPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
-    [_orientationPopup addItemWithTitle:@"Horizontal"];
-    [_orientationPopup addItemWithTitle:@"Vertical"];
-    _orientationPopup.target = self; _orientationPopup.action = @selector(orientationChanged:);
-    [self.view addSubview:_orientationPopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Bar style:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _barStylePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 130, 25)];
-    [_barStylePopup addItemWithTitle:@"Solid"];
-    [_barStylePopup addItemWithTitle:@"Gradient"];
-    [_barStylePopup addItemWithTitle:@"Spectrum"];
-    _barStylePopup.target = self; _barStylePopup.action = @selector(barStyleChanged:);
-    [self.view addSubview:_barStylePopup];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Bar gap:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _gapSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _gapSlider.minValue = 0; _gapSlider.maxValue = 80; _gapSlider.continuous = YES;
-    _gapSlider.target = self; _gapSlider.action = @selector(gapChanged:);
-    [self.view addSubview:_gapSlider];
-    _gapLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_gapLabel];
-    y += 30;
-
-    _peakHoldCheckbox = [self checkbox:@"Show peak caps" at:NSMakePoint(labelX + 10, y)];
-    [self.view addSubview:_peakHoldCheckbox];
-    y += 26;
-
-    _shadowFillCheckbox = [self checkbox:@"Shadow fill" at:NSMakePoint(labelX + 10, y)];
-    _shadowFillCheckbox.toolTip = @"Dim, slow-decaying fill behind bars for depth";
-    [self.view addSubview:_shadowFillCheckbox];
-    y += 26;
-
-    _dbGuidesCheckbox = [self checkbox:@"Show dB scale" at:NSMakePoint(labelX + 10, y)];
-    _dbGuidesCheckbox.toolTip = @"Draw decibel guide lines and labels on the right edge";
-    [self.view addSubview:_dbGuidesCheckbox];
-    y += 26;
-
-    _freqAxisCheckbox = [self checkbox:@"Show frequency axis" at:NSMakePoint(labelX + 10, y)];
-    _freqAxisCheckbox.toolTip = @"Draw frequency gridlines and labels (in Bars mode, label each bar with its centre frequency)";
-    [self.view addSubview:_freqAxisCheckbox];
-    y += 26;
-
-    _glassCheckbox = [self checkbox:@"Glass background" at:NSMakePoint(labelX + 10, y)];
-    _glassCheckbox.toolTip = @"Translucent blur background instead of a solid color";
-    [self.view addSubview:_glassCheckbox];
-    y += 32;
-
-    // Colors - light
-    [self.view addSubview:[self label:@"Colors (Light Mode)" at:NSMakePoint(labelX, y)]];
-    y += 22;
-    [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _barColorLightWell = [self colorWellAt:NSMakePoint(controlX, y)];
-    [self.view addSubview:_barColorLightWell];
-    [self.view addSubview:[self label:@"Background:" at:NSMakePoint(controlX + 60, y + 3)]];
-    _bgColorLightWell = [self colorWellAt:NSMakePoint(controlX + 150, y)];
-    [self.view addSubview:_bgColorLightWell];
-    y += 32;
-
-    // Colors - dark
-    [self.view addSubview:[self label:@"Colors (Dark Mode)" at:NSMakePoint(labelX, y)]];
-    y += 22;
-    [self.view addSubview:[self label:@"Bars:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _barColorDarkWell = [self colorWellAt:NSMakePoint(controlX, y)];
-    [self.view addSubview:_barColorDarkWell];
-    [self.view addSubview:[self label:@"Background:" at:NSMakePoint(controlX + 60, y + 3)]];
-    _bgColorDarkWell = [self colorWellAt:NSMakePoint(controlX + 150, y)];
-    [self.view addSubview:_bgColorDarkWell];
-    y += 32;
-
-    // --- Grid section (dB scale + frequency axis) ---
-    NSTextField *gridHeader = JLCreateSectionHeader(@"Grid (dB scale & frequency axis)");
-    gridHeader.frame = NSMakeRect(labelX, y, 300, 17);
-    [self.view addSubview:gridHeader];
-    y += 22;
-
-    [self.view addSubview:[self label:@"Opacity:" at:NSMakePoint(labelX + 10, y + 3)]];
-    _gridOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(controlX, y, 150, 22)];
-    _gridOpacitySlider.minValue = 0; _gridOpacitySlider.maxValue = 100; _gridOpacitySlider.continuous = YES;
-    _gridOpacitySlider.target = self; _gridOpacitySlider.action = @selector(gridOpacityChanged:);
-    [self.view addSubview:_gridOpacitySlider];
-    _gridOpacityLabel = [self valueLabelAt:NSMakePoint(controlX + 160, y + 2)];
-    [self.view addSubview:_gridOpacityLabel];
-    y += 30;
-
-    [self.view addSubview:[self label:@"Color (light):" at:NSMakePoint(labelX + 10, y + 3)]];
-    _gridColorLightWell = [self colorWellAt:NSMakePoint(controlX, y)];
-    [self.view addSubview:_gridColorLightWell];
-    [self.view addSubview:[self label:@"Color (dark):" at:NSMakePoint(controlX + 60, y + 3)]];
-    _gridColorDarkWell = [self colorWellAt:NSMakePoint(controlX + 150, y)];
-    [self.view addSubview:_gridColorDarkWell];
-    y += 32;
-}
-
-#pragma mark - Control factory helpers
-
-- (NSTextField *)label:(NSString *)text at:(NSPoint)p {
-    NSTextField *l = [[NSTextField alloc] initWithFrame:NSMakeRect(p.x, p.y, 200, 17)];
-    l.stringValue = text; l.editable = NO; l.bordered = NO;
+- (NSTextField *)labelWithText:(NSString *)text {
+    NSTextField *l = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 17)];
+    l.stringValue = text; l.editable = NO; l.bordered = NO; l.selectable = NO;
     l.backgroundColor = [NSColor clearColor];
     l.font = [NSFont systemFontOfSize:11];
     return l;
 }
 
-- (NSTextField *)valueLabelAt:(NSPoint)p {
-    NSTextField *l = [[NSTextField alloc] initWithFrame:NSMakeRect(p.x, p.y, 50, 17)];
-    l.editable = NO; l.bordered = NO;
-    l.backgroundColor = [NSColor clearColor];
-    l.font = [NSFont systemFontOfSize:11];
-    return l;
+- (NSInteger)addRow:(Row)row {
+    const NSInteger index = (NSInteger)_rows.size();
+    if (row.control) {
+        row.control.tag = index;
+        row.control.target = self;
+        row.control.action = @selector(rowChanged:);
+        [_page addSubview:row.control];
+    }
+    if (row.darkWell) {
+        row.darkWell.tag = index;
+        row.darkWell.target = self;
+        row.darkWell.action = @selector(rowChanged:);
+        [_page addSubview:row.darkWell];
+    }
+    for (NSView *v in @[row.label ?: [NSNull null], row.value ?: [NSNull null],
+                        row.lightCaption ?: [NSNull null], row.darkCaption ?: [NSNull null]]) {
+        if ([v isKindOfClass:[NSView class]]) [_page addSubview:v];
+    }
+    _rows.push_back(std::move(row));
+    return index;
 }
 
-- (NSButton *)checkbox:(NSString *)title at:(NSPoint)p {
-    NSButton *b = [[NSButton alloc] initWithFrame:NSMakeRect(p.x, p.y, 260, 20)];
+- (void)section:(NSString *)title {
+    Row r;
+    r.kind = RowKind::Section;
+    r.label = JLCreateSectionHeader(title);
+    [self addRow:std::move(r)];
+}
+
+- (Row)popup:(NSString *)label choices:(std::vector<Choice>)choices width:(CGFloat)width
+         get:(std::function<int()>)get set:(std::function<void(int)>)set tooltip:(NSString *)tooltip {
+    Row r;
+    r.kind = RowKind::Popup;
+    r.label = [self labelWithText:[label stringByAppendingString:@":"]];
+    NSPopUpButton *p = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, width, 25)];
+    for (const Choice &c : choices) {   // item tags hold the stored value
+        [p addItemWithTitle:c.title];
+        p.lastItem.tag = c.value;
+    }
+    p.toolTip = tooltip;
+    r.control = p;
+    r.controlWidth = width;
+    r.get = std::move(get);
+    r.set = std::move(set);
+    return r;
+}
+
+- (Row)slider:(NSString *)label min:(int)lo max:(int)hi
+          get:(std::function<int()>)get set:(std::function<void(int)>)set
+       format:(std::function<NSString *(int)>)format tooltip:(NSString *)tooltip {
+    Row r;
+    r.kind = RowKind::Slider;
+    r.label = [self labelWithText:[label stringByAppendingString:@":"]];
+    NSSlider *s = [[NSSlider alloc] initWithFrame:NSMakeRect(0, 0, 150, 22)];
+    s.minValue = lo; s.maxValue = hi; s.continuous = YES;
+    s.toolTip = tooltip;
+    r.control = s;
+    r.value = [self labelWithText:@""];
+    r.get = std::move(get);
+    r.set = std::move(set);
+    r.format = std::move(format);
+    return r;
+}
+
+- (Row)checkbox:(NSString *)title get:(std::function<int()>)get set:(std::function<void(int)>)set
+        tooltip:(NSString *)tooltip {
+    Row r;
+    r.kind = RowKind::Checkbox;
+    NSButton *b = [[NSButton alloc] initWithFrame:NSMakeRect(0, 0, 260, 20)];
     b.buttonType = NSButtonTypeSwitch;
     b.title = title;
-    b.target = self; b.action = @selector(checkboxChanged:);
-    return b;
+    b.toolTip = tooltip;
+    r.control = b;
+    r.get = std::move(get);
+    r.set = std::move(set);
+    return r;
 }
 
-- (NSColorWell *)colorWellAt:(NSPoint)p {
-    NSColorWell *w = [[NSColorWell alloc] initWithFrame:NSMakeRect(p.x, p.y, 40, 24)];
-    w.target = self; w.action = @selector(colorChanged:);
+- (Row)number:(NSString *)label min:(int)lo max:(int)hi unit:(NSString *)unit
+          get:(std::function<int()>)get set:(std::function<void(int)>)set tooltip:(NSString *)tooltip {
+    Row r;
+    r.kind = RowKind::Number;
+    r.label = [self labelWithText:[label stringByAppendingString:@":"]];
+    NSTextField *f = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 70, 22)];
+    NSNumberFormatter *nf = [[NSNumberFormatter alloc] init];
+    nf.numberStyle = NSNumberFormatterNoStyle;
+    nf.minimum = @(lo); nf.maximum = @(hi);
+    nf.allowsFloats = NO;
+    f.formatter = nf;
+    f.toolTip = tooltip;
+    r.control = f;
+    r.value = [self labelWithText:unit];
+    r.get = std::move(get);
+    r.set = std::move(set);
+    return r;
+}
+
+- (NSColorWell *)colorWell {
+    NSColorWell *w = [[NSColorWell alloc] initWithFrame:NSMakeRect(0, 0, 40, 24)];
     if (@available(macOS 13.0, *)) { w.colorWellStyle = NSColorWellStyleMinimal; }
     return w;
 }
 
-- (NSNumberFormatter *)intFormatterMin:(int)lo max:(int)hi {
-    NSNumberFormatter *f = [[NSNumberFormatter alloc] init];
-    f.numberStyle = NSNumberFormatterNoStyle;
-    f.minimum = @(lo); f.maximum = @(hi);
-    f.allowsFloats = NO;
-    return f;
+- (void)colorPair:(NSString *)label light:(const char *)keyLight dark:(const char *)keyDark {
+    Row r;
+    r.kind = RowKind::ColorPair;
+    r.label = [self labelWithText:[label stringByAppendingString:@":"]];
+    r.control = [self colorWell];
+    r.darkWell = [self colorWell];
+    r.lightCaption = [self labelWithText:@"Light"];
+    r.darkCaption = [self labelWithText:@"Dark"];
+    r.lightCaption.textColor = r.darkCaption.textColor = [NSColor secondaryLabelColor];
+    r.keyLight = keyLight;
+    r.keyDark = keyDark;
+    [self addRow:std::move(r)];
 }
 
-#pragma mark - Load / persist
+- (void)buildRows {
+    NSTextField *title = JLCreatePreferencesTitle(@"Spectrum Analyzer");
+    title.frame = NSMakeRect(20, 10, 400, 20);
+    [_page addSubview:title];
 
-- (void)loadSettings {
-    using namespace spectrum_config;
+    // Presets: a pull-down, so it always reads "Apply preset" rather than
+    // claiming the current settings match one.
+    [_page addSubview:({
+        NSTextField *l = [self labelWithText:@"Preset:"];
+        l.frame = NSMakeRect(kLabelX, 43, 120, 17);
+        l;
+    })];
+    _presetPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(kControlX, 40, 170, 25) pullsDown:YES];
+    [_presetPopup addItemWithTitle:@"Apply preset…"];
+    for (const Preset &preset : kPresets) [_presetPopup addItemWithTitle:preset.name];
+    _presetPopup.toolTip = @"Replaces every setting (colors included) with the preset's; Default restores all defaults";
+    _presetPopup.target = self; _presetPopup.action = @selector(presetChosen:);
+    [_page addSubview:_presetPopup];
 
-    if (![_barCountPopup selectItemWithTag:getConfigInt(kKeyBarCount, kDefaultBarCount)])
-        [_barCountPopup selectItemWithTag:kDefaultBarCount];
-    [self selectPopup:_fftSizePopup value:(int)getConfigInt(kKeyFftSize, kDefaultFftSize)];
-    [self selectIndexPopup:_stereoPopup index:getConfigInt(kKeyStereoMode, kDefaultStereoMode)];
-    [_curveDetailPopup selectItemWithTag:getCurveOctaveFraction()];
-    [self selectIndexPopup:_freqScalePopup index:getConfigInt(kKeyFreqScale, kDefaultFreqScale)];
-    [self selectIndexPopup:_barStylePopup index:getConfigInt(kKeyBarStyle, kDefaultBarStyle)];
-    [self selectIndexPopup:_drawModePopup index:getConfigInt(kKeyDrawMode, kDefaultDrawMode)];
-    [self selectIndexPopup:_curveStylePopup index:getConfigInt(kKeyCurveStyle, kDefaultCurveStyle)];
-    int colorBarBrightness = (int)getConfigInt(kKeyColorBarBrightness, kDefaultColorBarBrightness);
-    _colorBarBrightnessSlider.integerValue = colorBarBrightness;
-    _colorBarBrightnessLabel.stringValue = [NSString stringWithFormat:@"%d%%", colorBarBrightness];
-    [self selectIndexPopup:_orientationPopup index:getConfigInt(kKeyOrientation, kDefaultOrientation)];
+    const auto intKey = [](const char *key, int def) {
+        return std::make_pair([key, def] { return configInt(key, def); }, [key](int v) { setConfigInt(key, v); });
+    };
+    const auto boolKey = [](const char *key, bool def) {
+        return std::make_pair([key, def] { return configBool(key, def) ? 1 : 0; }, [key](int v) { setConfigBool(key, v != 0); });
+    };
+    const auto curve = [] { return curveMode(); };
+    const auto bars = [] { return !curveMode(); };
 
-    _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
-    _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    // --- Display ---
+    [self section:@"Display"];
+    {
+        auto [g, s] = intKey(kKeyDrawMode, kDefaultDrawMode);
+        [self addRow:[self popup:@"Draw mode" choices:{{@"Curve", DrawModeCurve}, {@"Bars", DrawModeBars}}
+                           width:130 get:g set:s tooltip:nil]];
+    }
+    {
+        auto [g, s] = intKey(kKeyCurveStyle, kDefaultCurveStyle);
+        Row r = [self popup:@"Curve style"
+                    choices:{{@"Filled", CurveStyleFilled}, {@"Line", CurveStyleLine},
+                             {@"Color bars", CurveStyleColorBars}, {@"Line + color bars", CurveStyleLineColorBars}}
+                      width:170 get:g set:s
+                    tooltip:@"Color bars are stripes that get brighter where a frequency is louder"];
+        r.visible = curve;
+        [self addRow:std::move(r)];
+    }
+    {
+        std::vector<Choice> detail;
+        for (int fraction : kCurveOctaveFractions) {
+            detail.push_back({fraction == 0 ? @"Full" : [NSString stringWithFormat:@"1/%d octave", fraction], fraction});
+        }
+        Row r = [self popup:@"Curve detail" choices:detail width:130
+                        get:[] { return getCurveOctaveFraction(); }
+                        set:[](int v) { setConfigInt(kKeyCurveOctaveFraction, v); }
+                    tooltip:@"Full draws every FFT bin; an octave fraction averages the power around each point for a smoother curve"];
+        r.visible = curve;
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyColorBarBrightness, kDefaultColorBarBrightness);
+        Row r = [self slider:@"Color bar brightness" min:10 max:100 get:g set:s
+                      format:[](int v) { return fmt(@"%d%%", v); } tooltip:@"How strong the loudest color bar gets"];
+        r.visible = curve;
+        r.enabled = [] { return colorBarStyle(); };
+        r.note = [] { return @"Color bar styles only"; };
+        [self addRow:std::move(r)];
+    }
+    {
+        std::vector<Choice> counts{{@"Auto", kBarCountAuto}};
+        for (int n : {16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512}) counts.push_back({fmt(@"%d", n), n});
+        auto [g, s] = intKey(kKeyBarCount, kDefaultBarCount);
+        Row r = [self popup:@"Bars" choices:counts width:100 get:g set:s
+                    tooltip:@"Auto draws one bar per 2 points of panel width"];
+        r.visible = bars;
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyBarStyle, kDefaultBarStyle);
+        Row r = [self popup:@"Bar style"
+                    choices:{{@"Solid", BarStyleSolid}, {@"Gradient", BarStyleGradient}, {@"Spectrum", BarStyleSpectrum}}
+                      width:130 get:g set:s tooltip:nil];
+        r.visible = bars;
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyGapPercent, kDefaultGapPercent);
+        Row r = [self slider:@"Bar gap" min:0 max:80 get:g set:s format:[](int v) { return fmt(@"%d%%", v); } tooltip:nil];
+        r.visible = bars;
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyOrientation, kDefaultOrientation);
+        [self addRow:[self popup:@"Orientation" choices:{{@"Horizontal", OrientationHorizontal}, {@"Vertical", OrientationVertical}}
+                           width:130 get:g set:s tooltip:nil]];
+    }
+    [self addRow:[self slider:@"Top" min:kMinTopDb max:kMaxTopDb
+                          get:[] { return getTopDb(); } set:[](int v) { setConfigInt(kKeyTopDb, v); }
+                       format:[](int v) { return fmt(@"%d dB", v); }
+                      tooltip:@"Level at the top of the display; lower it to fill the height with quiet music"]];
+    {
+        std::vector<Choice> ranges;
+        for (int range : kRangeDbChoices) ranges.push_back({fmt(@"%d dB", range), range});
+        [self addRow:[self popup:@"Range" choices:ranges width:100
+                             get:[] { return getRangeDb(); } set:[](int v) { setConfigInt(kKeyRangeDb, v); }
+                         tooltip:@"dB from the top of the display to the bottom"]];
+    }
+    {
+        auto [g, s] = boolKey(kKeyPeakHold, kDefaultPeakHold);
+        [self addRow:[self checkbox:@"Show peaks" get:g set:s tooltip:@"Peak caps in Bars mode, a peak line in Curve mode"]];
+    }
+    {
+        auto [g, s] = boolKey(kKeyShadowFill, kDefaultShadowFill);
+        Row r = [self checkbox:@"Shadow fill" get:g set:s tooltip:@"Dim, slow-falling fill behind the levels; not drawn with color bars"];
+        r.enabled = [] { return !colorBarStyle(); };
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = boolKey(kKeyShowDbGuides, kDefaultShowDbGuides);
+        [self addRow:[self checkbox:@"Show dB scale" get:g set:s tooltip:nil]];
+    }
+    {
+        auto [g, s] = boolKey(kKeyShowFreqAxis, kDefaultShowFreqAxis);
+        [self addRow:[self checkbox:@"Show frequency axis" get:g set:s
+                            tooltip:@"Frequency gridlines and labels (in Bars mode, each bar's centre frequency)"]];
+    }
+    {
+        auto [g, s] = boolKey(kKeyShowLegend, kDefaultShowLegend);
+        Row r = [self checkbox:@"Show legend" get:g set:s tooltip:@"The Live / Peak hold key in the plot's top-left corner"];
+        r.visible = curve;
+        [self addRow:std::move(r)];
+    }
 
-    [self selectIndexPopup:_smoothingModePopup index:getConfigInt(kKeySmoothingMode, kDefaultSmoothingMode)];
-    [self loadSmoothingSlider];
+    // --- Analysis ---
+    [self section:@"Analysis"];
+    {
+        std::vector<Choice> sizes;
+        for (int n : kFftSizes) sizes.push_back({fmt(@"%d", n), n});
+        auto [g, s] = intKey(kKeyFftSize, kDefaultFftSize);
+        [self addRow:[self popup:@"FFT size" choices:sizes width:100 get:g set:s
+                         tooltip:@"Larger sizes resolve low frequencies better but react more slowly"]];
+    }
+    [self addRow:[self popup:@"Window" choices:{{@"Hann", WindowHann}, {@"Blackman-Harris", WindowBlackmanHarris}}
+                       width:150 get:[] { return getWindowType(); } set:[](int v) { setConfigInt(kKeyWindow, v); }
+                     tooltip:@"Blackman-Harris keeps loud tones from spilling into quiet neighbours, at the cost of wider peaks"]];
+    {
+        auto [g, s] = intKey(kKeyStereoMode, kDefaultStereoMode);
+        [self addRow:[self popup:@"Stereo" choices:{{@"Mono", StereoMono}, {@"Mid + side", StereoMidSide}}
+                           width:130 get:g set:s tooltip:@"Mid + side adds the stereo difference (L-R) as a second line"]];
+    }
+    {
+        auto [g, s] = intKey(kKeyFreqScale, kDefaultFreqScale);
+        [self addRow:[self popup:@"Frequency scale"
+                         choices:{{@"Logarithmic", FreqScaleLog}, {@"Linear", FreqScaleLinear},
+                                  {@"Logarithmic (compact bass)", FreqScaleSoftLog}}
+                           width:210 get:g set:s tooltip:nil]];
+    }
+    [self addRow:[self number:@"Lowest frequency" min:10 max:2000 unit:@"Hz"
+                          get:[] { return configInt(kKeyMinHz, kDefaultMinHz); }
+                          set:[](int v) {
+                              setConfigInt(kKeyMinHz, v);
+                              if (configInt(kKeyMaxHz, kDefaultMaxHz) < v + 100) setConfigInt(kKeyMaxHz, v + 100);
+                          }
+                      tooltip:nil]];
+    [self addRow:[self number:@"Highest frequency" min:1000 max:24000 unit:@"Hz"
+                          get:[] { return configInt(kKeyMaxHz, kDefaultMaxHz); }
+                          set:[](int v) {
+                              setConfigInt(kKeyMaxHz, std::max(v, configInt(kKeyMinHz, kDefaultMinHz) + 100));
+                          }
+                      tooltip:@"Limited to half the sample rate"]];
+    {
+        auto [g, s] = intKey(kKeySlopeTenths, kDefaultSlopeTenths);
+        [self addRow:[self slider:@"Slope" min:0 max:kMaxSlopeTenths get:g set:s
+                           format:[](int v) { return [NSString stringWithFormat:@"%.1f dB/oct", v / 10.0]; }
+                          tooltip:@"Tilts the spectrum around 1 kHz so high frequencies read higher"]];
+    }
 
-    int slope = (int)getConfigInt(kKeySlopeTenths, kDefaultSlopeTenths);
-    _slopeSlider.integerValue = slope;
-    _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", slope / 10.0];
+    // --- Motion ---
+    [self section:@"Motion"];
+    {
+        auto [g, s] = intKey(kKeySmoothingMode, kDefaultSmoothingMode);
+        [self addRow:[self popup:@"Smoothing mode"
+                         choices:{{@"Attack / decay", SmoothingAttackDecay}, {@"RMS average", SmoothingRms}}
+                           width:150 get:g set:s
+                         tooltip:@"RMS average averages signal power over time, so levels rise and fall evenly like a real-time analyzer"]];
+    }
+    const auto rms = [] { return configInt(kKeySmoothingMode, kDefaultSmoothingMode) == SmoothingRms; };
+    {
+        auto [g, s] = intKey(kKeySmoothing, kDefaultSmoothing);
+        Row r = [self slider:@"Smoothing" min:0 max:100 get:g set:s format:[](int v) { return fmt(@"%d", v); } tooltip:nil];
+        r.visible = [rms] { return !rms(); };
+        [self addRow:std::move(r)];
+    }
+    {
+        Row r = [self slider:@"Averaging time" min:0 max:kMaxRmsMs
+                         get:[] { return getRmsMs(); } set:[](int v) { setConfigInt(kKeyRmsMs, v); }
+                      format:[](int v) { return fmt(@"%d ms", v); } tooltip:nil];
+        r.step = 5;
+        r.visible = rms;
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
+        Row r = [self slider:@"Shadow fall" min:0 max:100 get:g set:s format:[](int v) { return fmt(@"%d", v); }
+                     tooltip:@"How fast the shadow falls (higher = faster)"];
+        r.enabled = [] { return !colorBarStyle() && configBool(kKeyShadowFill, kDefaultShadowFill); };
+        r.note = [] { return colorBarStyle() ? @"Not drawn with color bars" : @"Shadow fill is off"; };
+        [self addRow:std::move(r)];
+    }
+    const auto peaksOn = [] { return configBool(kKeyPeakHold, kDefaultPeakHold); };
+    {
+        Row r = [self slider:@"Peak fall" min:kMinPeakFallDbPerSec max:kMaxPeakFallDbPerSec
+                         get:[] { return getPeakFallDbPerSec(); } set:[](int v) { setConfigInt(kKeyPeakFallDbPerSec, v); }
+                      format:[](int v) { return fmt(@"%d dB/s", v); } tooltip:@"How fast peaks fall after their hold"];
+        r.enabled = peaksOn;
+        r.note = [] { return @"Show peaks is off"; };
+        [self addRow:std::move(r)];
+    }
+    {
+        auto [g, s] = intKey(kKeyPeakHoldMs, kDefaultPeakHoldMs);
+        Row r = [self slider:@"Peak hold" min:0 max:2000 get:g set:s format:[](int v) { return fmt(@"%d ms", v); }
+                     tooltip:@"How long a peak stays before it falls"];
+        r.step = 10;
+        r.enabled = peaksOn;
+        r.note = [] { return @"Show peaks is off"; };
+        [self addRow:std::move(r)];
+    }
 
-    int topDb = getTopDb();
-    _topDbSlider.integerValue = topDb;
-    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", topDb];
-    [_rangeDbPopup selectItemWithTag:getRangeDb()];
-
-    int shadowFall = (int)getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed);
-    _shadowFallSlider.integerValue = shadowFall;
-    _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", shadowFall];
-
-    int peakFall = getPeakFallDbPerSec();
-    _peakFallSlider.integerValue = peakFall;
-    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d dB/s", peakFall];
-
-    int peakHoldMs = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
-    _peakHoldSlider.integerValue = peakHoldMs;
-    _peakHoldLabel.stringValue = [NSString stringWithFormat:@"%dms", peakHoldMs];
-
-    int gap = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
-    _gapSlider.integerValue = gap;
-    _gapLabel.stringValue = [NSString stringWithFormat:@"%d%%", gap];
-
-    _peakHoldCheckbox.state = getConfigBool(kKeyPeakHold, kDefaultPeakHold) ? NSControlStateValueOn : NSControlStateValueOff;
-    _shadowFillCheckbox.state = getConfigBool(kKeyShadowFill, kDefaultShadowFill) ? NSControlStateValueOn : NSControlStateValueOff;
-    _dbGuidesCheckbox.state = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides) ? NSControlStateValueOn : NSControlStateValueOff;
-    _freqAxisCheckbox.state = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis) ? NSControlStateValueOn : NSControlStateValueOff;
-    _glassCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
-    [self updateDependentControlsEnabled];
-
-    int gridOpacity = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
-    _gridOpacitySlider.integerValue = gridOpacity;
-    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", gridOpacity];
-
-    int theme = (int)getConfigInt(kKeyTheme, kDefaultTheme);
-    if (theme < 0 || theme >= kThemeCount) theme = 0;
-    [_themePopup selectItemAtIndex:theme];
-
-    [self reloadColorWells];
+    // --- Appearance ---
+    [self section:@"Appearance"];
+    {
+        std::vector<Choice> themes;
+        for (int index : kThemeMenuOrder) themes.push_back({[NSString stringWithUTF8String:kThemes[index].name], index});
+        _themeRow = [self addRow:[self popup:@"Theme" choices:themes width:160
+                                         get:[] {
+                                             const int t = configInt(kKeyTheme, kDefaultTheme);
+                                             return t >= 0 && t < kThemeCount ? t : 0;
+                                         }
+                                         set:[](int v) {
+                                             setConfigInt(kKeyTheme, v);
+                                             applyThemeToConfig(v);   // no-op for Custom
+                                         }
+                                     tooltip:@"A color preset for levels, background and grid"]];
+    }
+    {
+        auto [g, s] = intKey(kKeyGridOpacity, kDefaultGridOpacity);
+        [self addRow:[self slider:@"Grid opacity" min:0 max:100 get:g set:s format:[](int v) { return fmt(@"%d%%", v); } tooltip:nil]];
+    }
+    [self colorPair:@"Levels" light:kKeyBarColorLight dark:kKeyBarColorDark];
+    [self colorPair:@"Background" light:kKeyBgColorLight dark:kKeyBgColorDark];
+    [self colorPair:@"Grid" light:kKeyGridColorLight dark:kKeyGridColorDark];
+    {
+        auto [g, s] = boolKey(kKeyGlassBackground, kDefaultGlassBackground);
+        [self addRow:[self checkbox:@"Glass background" get:g set:s tooltip:@"Translucent blur background instead of a solid color"]];
+    }
 }
 
-- (void)reloadColorWells {
-    using namespace spectrum_config;
-    _barColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight)];
-    _bgColorLightWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight)];
-    _barColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBarColorDark, kDefaultBarColorDark)];
-    _bgColorDarkWell.color   = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)];
-    _gridColorLightWell.color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight)];
-    _gridColorDarkWell.color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark)];
-}
-
-- (void)selectPopup:(NSPopUpButton *)popup value:(int)value {
-    NSInteger idx = [popup indexOfItemWithTitle:[@(value) stringValue]];
-    if (idx >= 0) [popup selectItemAtIndex:idx];
-}
-
-// Config values index these popups directly; an out-of-range value from a
-// corrupted config store would raise NSRangeException, so clamp first.
-- (void)selectIndexPopup:(NSPopUpButton *)popup index:(NSInteger)idx {
-    if (idx < 0 || idx >= popup.numberOfItems) idx = 0;
-    [popup selectItemAtIndex:idx];
-}
+#pragma mark - Values and layout
 
 - (NSColor *)colorFromARGB:(uint32_t)argb {
     return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
@@ -545,237 +593,156 @@
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
+// Default colors for a color-pair key.
+- (uint32_t)defaultColorForKey:(const char *)key {
+    const std::string k(key);
+    if (k == kKeyBarColorLight) return kDefaultBarColorLight;
+    if (k == kKeyBarColorDark) return kDefaultBarColorDark;
+    if (k == kKeyBgColorLight) return kDefaultBgColorLight;
+    if (k == kKeyBgColorDark) return kDefaultBgColorDark;
+    if (k == kKeyGridColorLight) return kDefaultGridColorLight;
+    return kDefaultGridColorDark;
+}
+
+- (void)loadValueOfRow:(Row &)r {
+    switch (r.kind) {
+        case RowKind::Section: break;
+        case RowKind::Popup: {
+            NSPopUpButton *p = (NSPopUpButton *)r.control;
+            if (![p selectItemWithTag:r.get()]) [p selectItemAtIndex:0];
+            break;
+        }
+        case RowKind::Slider:
+            ((NSSlider *)r.control).integerValue = r.get();
+            break;
+        case RowKind::Checkbox:
+            ((NSButton *)r.control).state = r.get() ? NSControlStateValueOn : NSControlStateValueOff;
+            break;
+        case RowKind::Number:
+            ((NSTextField *)r.control).integerValue = r.get();
+            break;
+        case RowKind::ColorPair:
+            ((NSColorWell *)r.control).color =
+                [self colorFromARGB:(uint32_t)getConfigInt(r.keyLight, [self defaultColorForKey:r.keyLight])];
+            r.darkWell.color = [self colorFromARGB:(uint32_t)getConfigInt(r.keyDark, [self defaultColorForKey:r.keyDark])];
+            break;
+    }
+}
+
+- (void)loadValues {
+    for (Row &r : _rows) [self loadValueOfRow:r];
+}
+
+// Show, hide, enable and position every row for the current settings; hidden
+// rows take no space.
+- (void)refresh {
+    CGFloat y = 76;
+    bool first = true;
+    for (Row &r : _rows) {
+        const bool shown = !r.visible || r.visible();
+        for (NSView *v in @[r.label ?: [NSNull null], r.control ?: [NSNull null], r.darkWell ?: [NSNull null],
+                            r.value ?: [NSNull null], r.lightCaption ?: [NSNull null], r.darkCaption ?: [NSNull null]]) {
+            if ([v isKindOfClass:[NSView class]]) v.hidden = !shown;
+        }
+        if (!shown) continue;
+
+        const bool enabled = !r.enabled || r.enabled();
+        switch (r.kind) {
+            case RowKind::Section:
+                if (!first) y += 12;
+                r.label.frame = NSMakeRect(20, y, 300, 17);
+                y += 24;
+                break;
+            case RowKind::Popup:
+                r.label.frame = NSMakeRect(kLabelX, y + 4, kControlX - kLabelX - 6, 17);
+                r.control.frame = NSMakeRect(kControlX, y, r.controlWidth, 25);
+                y += kRowHeight;
+                break;
+            case RowKind::Slider: {
+                r.label.frame = NSMakeRect(kLabelX, y + 3, kControlX - kLabelX - 6, 17);
+                r.control.frame = NSMakeRect(kControlX, y, 150, 22);
+                r.value.frame = NSMakeRect(kValueX, y + 3, kPageWidth - kValueX - 6, 17);
+                // While disabled the value gives way to a note saying why.
+                const bool showNote = !enabled && r.note;
+                r.value.stringValue = showNote ? r.note() : r.format((int)((NSSlider *)r.control).integerValue);
+                r.value.textColor = showNote ? [NSColor secondaryLabelColor] : [NSColor labelColor];
+                y += kRowHeight;
+                break;
+            }
+            case RowKind::Checkbox:
+                r.control.frame = NSMakeRect(kLabelX, y, kPageWidth - kLabelX - 10, 20);
+                y += kCheckboxHeight;
+                break;
+            case RowKind::Number:
+                r.label.frame = NSMakeRect(kLabelX, y + 3, kControlX - kLabelX - 6, 17);
+                r.control.frame = NSMakeRect(kControlX, y, 70, 22);
+                r.value.frame = NSMakeRect(kControlX + 76, y + 3, 40, 17);
+                y += kRowHeight;
+                break;
+            case RowKind::ColorPair:
+                r.label.frame = NSMakeRect(kLabelX, y + 4, kControlX - kLabelX - 6, 17);
+                r.control.frame = NSMakeRect(kControlX, y, 40, 24);
+                r.lightCaption.frame = NSMakeRect(kControlX + 46, y + 4, 40, 17);
+                r.darkWell.frame = NSMakeRect(kControlX + 100, y, 40, 24);
+                r.darkCaption.frame = NSMakeRect(kControlX + 146, y + 4, 40, 17);
+                y += kRowHeight + 2;
+                break;
+        }
+        r.control.enabled = enabled;
+        first = false;
+    }
+    [_page setFrameSize:NSMakeSize(kPageWidth, y + 20)];
+}
+
 - (void)notifyChanged {
-    [[NSNotificationCenter defaultCenter] postNotificationName:spectrum_config::kSettingsChangedNotification object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsChangedNotification object:nil];
 }
 
 #pragma mark - Actions
 
-- (void)barCountChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyBarCount, _barCountPopup.selectedItem.tag);
-    [self notifyChanged];
-}
-
-- (void)curveDetailChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyCurveOctaveFraction, _curveDetailPopup.selectedItem.tag);
-    [self notifyChanged];
-}
-
-- (void)stereoModeChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyStereoMode, _stereoPopup.indexOfSelectedItem);
-    [self notifyChanged];
-}
-
-- (void)fftSizeChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyFftSize, _fftSizePopup.titleOfSelectedItem.intValue);
-    [self notifyChanged];
-}
-
-- (void)freqScaleChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyFreqScale, _freqScalePopup.indexOfSelectedItem);
-    [self notifyChanged];
-}
-
-- (void)barStyleChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyBarStyle, _barStylePopup.indexOfSelectedItem);
-    [self notifyChanged];
-}
-
-- (void)drawModeChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyDrawMode, _drawModePopup.indexOfSelectedItem);
-    [self updateDependentControlsEnabled];
-    [self notifyChanged];
-}
-
-- (void)curveStyleChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyCurveStyle, _curveStylePopup.indexOfSelectedItem);
-    [self updateDependentControlsEnabled];
-    [self notifyChanged];
-}
-
-- (void)colorBarBrightnessChanged:(id)sender {
-    int v = (int)_colorBarBrightnessSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyColorBarBrightness, v);
-    _colorBarBrightnessLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
-    [self notifyChanged];
-}
-
-// The first row is Bars in Bars mode and Curve detail in Curve mode; curve
-// style applies to the Curve draw mode, brightness to its color-bar styles. The shadow
-// is not drawn in the color-bar styles, and its fall speed only matters while
-// it is shown.
-- (void)updateDependentControlsEnabled {
-    using namespace spectrum_config;
-    const BOOL curve = _drawModePopup.indexOfSelectedItem == DrawModeCurve;
-    const NSInteger style = _curveStylePopup.indexOfSelectedItem;
-    const BOOL colorBars = curve && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
-    _barCountLabel.stringValue = curve ? @"Curve detail:" : @"Bars:";
-    _barCountPopup.hidden = curve;
-    _curveDetailPopup.hidden = !curve;
-    _curveStylePopup.enabled = curve;
-    _colorBarBrightnessSlider.enabled = colorBars;
-    _shadowFillCheckbox.enabled = !colorBars;
-    const BOOL shadowOn = _shadowFillCheckbox.state == NSControlStateValueOn;
-    _shadowFallSlider.enabled = !colorBars && shadowOn;
-    _shadowFallNote.stringValue = colorBars ? @"Not drawn with color bars" : @"Shadow fill is off";
-    _shadowFallNote.hidden = _shadowFallSlider.enabled;
-    _shadowFallLabel.hidden = !_shadowFallSlider.enabled;
-}
-
-- (void)orientationChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyOrientation, _orientationPopup.indexOfSelectedItem);
-    [self notifyChanged];
-}
-
-- (void)rangeChanged:(id)sender {
-    using namespace spectrum_config;
-    int lo = _minHzField.intValue;
-    int hi = _maxHzField.intValue;
-    if (hi <= lo + 100) { hi = lo + 100; _maxHzField.integerValue = hi; }
-    setConfigInt(kKeyMinHz, lo);
-    setConfigInt(kKeyMaxHz, hi);
-    [self notifyChanged];
-}
-
-- (BOOL)rmsSelected {
-    return _smoothingModePopup.indexOfSelectedItem == spectrum_config::SmoothingRms;
-}
-
-- (void)smoothingChanged:(id)sender {
-    using namespace spectrum_config;
-    if ([self rmsSelected]) {
-        // 5 ms steps: the slider is ~3 ms per point over 0-500 ms.
-        const int ms = (int)std::lround(_smoothingSlider.doubleValue / 5.0) * 5;
-        setConfigInt(kKeyRmsMs, ms);
-    } else {
-        setConfigInt(kKeySmoothing, _smoothingSlider.integerValue);
+- (void)rowChanged:(NSControl *)sender {
+    if (sender.tag < 0 || sender.tag >= (NSInteger)_rows.size()) return;
+    Row &r = _rows[(size_t)sender.tag];
+    switch (r.kind) {
+        case RowKind::Section: return;
+        case RowKind::Popup:
+            r.set((int)((NSPopUpButton *)r.control).selectedItem.tag);
+            break;
+        case RowKind::Slider: {
+            NSSlider *s = (NSSlider *)r.control;
+            const int v = (int)std::lround(s.doubleValue / r.step) * r.step;
+            r.set(v);
+            break;
+        }
+        case RowKind::Checkbox:
+            r.set(((NSButton *)r.control).state == NSControlStateValueOn ? 1 : 0);
+            break;
+        case RowKind::Number:
+            r.set(((NSTextField *)r.control).intValue);
+            break;
+        case RowKind::ColorPair:
+            setConfigInt(sender == r.control ? r.keyLight : r.keyDark,
+                         [self argbFromColor:((NSColorWell *)sender).color]);
+            // A manual color edit means the palette no longer matches a theme.
+            setConfigInt(kKeyTheme, 0);
+            break;
     }
-    [self updateSmoothingLabel];
-    [self notifyChanged];
-}
-
-- (void)smoothingModeChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeySmoothingMode, _smoothingModePopup.indexOfSelectedItem);
-    [self loadSmoothingSlider];
-    [self notifyChanged];
-}
-
-// Each mode keeps its own value: RMS an averaging time in ms, attack/decay a
-// 0-100 amount. The one slider takes the range and value of the selected mode.
-- (void)loadSmoothingSlider {
-    using namespace spectrum_config;
-    if ([self rmsSelected]) {
-        _smoothingSlider.maxValue = kMaxRmsMs;
-        _smoothingSlider.integerValue = getRmsMs();
-    } else {
-        _smoothingSlider.maxValue = 100;
-        _smoothingSlider.integerValue = getConfigInt(kKeySmoothing, kDefaultSmoothing);
+    // A setting can change others (theme colors, frequency limits) and which
+    // rows apply, so reload everything except the control being dragged.
+    for (size_t i = 0; i < _rows.size(); ++i) {
+        if ((NSInteger)i != sender.tag || r.kind == RowKind::Number) [self loadValueOfRow:_rows[i]];
     }
-    [self updateSmoothingLabel];
-}
-
-- (void)updateSmoothingLabel {
-    if ([self rmsSelected]) {
-        const int ms = (int)std::lround(_smoothingSlider.doubleValue / 5.0) * 5;
-        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d ms", ms];
-    } else {
-        _smoothingLabel.stringValue = [NSString stringWithFormat:@"%d%%", (int)_smoothingSlider.integerValue];
-    }
-}
-
-- (void)slopeChanged:(id)sender {
-    int v = (int)std::lround(_slopeSlider.doubleValue);   // 0.1 dB/oct steps
-    spectrum_config::setConfigInt(spectrum_config::kKeySlopeTenths, v);
-    _slopeLabel.stringValue = [NSString stringWithFormat:@"%.1f dB/oct", v / 10.0];
+    [self refresh];
     [self notifyChanged];
 }
 
-- (void)topDbChanged:(id)sender {
-    int v = (int)std::lround(_topDbSlider.doubleValue);
-    spectrum_config::setConfigInt(spectrum_config::kKeyTopDb, v);
-    _topDbLabel.stringValue = [NSString stringWithFormat:@"%d dB", v];
-    [self notifyChanged];
-}
-
-- (void)rangeDbChanged:(id)sender {
-    spectrum_config::setConfigInt(spectrum_config::kKeyRangeDb, _rangeDbPopup.selectedItem.tag);
-    [self notifyChanged];
-}
-
-- (void)shadowFallChanged:(id)sender {
-    int v = (int)_shadowFallSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyShadowFallSpeed, v);
-    _shadowFallLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
-    [self notifyChanged];
-}
-
-- (void)peakFallChanged:(id)sender {
-    int v = (int)_peakFallSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyPeakFallDbPerSec, v);
-    _peakFallLabel.stringValue = [NSString stringWithFormat:@"%d dB/s", v];
-    [self notifyChanged];
-}
-
-- (void)peakHoldMsChanged:(id)sender {
-    int v = (int)_peakHoldSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyPeakHoldMs, v);
-    _peakHoldLabel.stringValue = [NSString stringWithFormat:@"%dms", v];
-    [self notifyChanged];
-}
-
-- (void)gapChanged:(id)sender {
-    int v = (int)_gapSlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyGapPercent, v);
-    _gapLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
-    [self notifyChanged];
-}
-
-- (void)checkboxChanged:(id)sender {
-    using namespace spectrum_config;
-    if (sender == _peakHoldCheckbox) {
-        setConfigBool(kKeyPeakHold, _peakHoldCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _shadowFillCheckbox) {
-        setConfigBool(kKeyShadowFill, _shadowFillCheckbox.state == NSControlStateValueOn);
-        [self updateDependentControlsEnabled];
-    } else if (sender == _dbGuidesCheckbox) {
-        setConfigBool(kKeyShowDbGuides, _dbGuidesCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _freqAxisCheckbox) {
-        setConfigBool(kKeyShowFreqAxis, _freqAxisCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _glassCheckbox) {
-        setConfigBool(kKeyGlassBackground, _glassCheckbox.state == NSControlStateValueOn);
-    }
-    [self notifyChanged];
-}
-
-- (void)themeChanged:(id)sender {
-    using namespace spectrum_config;
-    NSInteger idx = _themePopup.indexOfSelectedItem;
-    setConfigInt(kKeyTheme, idx);
-    if (idx > 0) {
-        applyThemeToConfig((int)idx);
-        [self reloadColorWells];
-    }
-    [self notifyChanged];
-}
-
-- (void)gridOpacityChanged:(id)sender {
-    int v = (int)_gridOpacitySlider.integerValue;
-    spectrum_config::setConfigInt(spectrum_config::kKeyGridOpacity, v);
-    _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", v];
-    [self notifyChanged];
-}
-
-- (void)colorChanged:(id)sender {
-    using namespace spectrum_config;
-    if (sender == _barColorLightWell)      setConfigInt(kKeyBarColorLight, [self argbFromColor:_barColorLightWell.color]);
-    else if (sender == _bgColorLightWell)  setConfigInt(kKeyBgColorLight, [self argbFromColor:_bgColorLightWell.color]);
-    else if (sender == _barColorDarkWell)  setConfigInt(kKeyBarColorDark, [self argbFromColor:_barColorDarkWell.color]);
-    else if (sender == _bgColorDarkWell)   setConfigInt(kKeyBgColorDark, [self argbFromColor:_bgColorDarkWell.color]);
-    else if (sender == _gridColorLightWell) setConfigInt(kKeyGridColorLight, [self argbFromColor:_gridColorLightWell.color]);
-    else if (sender == _gridColorDarkWell)  setConfigInt(kKeyGridColorDark, [self argbFromColor:_gridColorDarkWell.color]);
-    // A manual color edit means the palette no longer matches a preset.
-    setConfigInt(kKeyTheme, 0);
-    [_themePopup selectItemAtIndex:0];
+- (void)presetChosen:(id)sender {
+    const NSInteger index = _presetPopup.indexOfSelectedItem - 1;   // item 0 is the title
+    if (index < 0 || index >= (NSInteger)(sizeof(kPresets) / sizeof(kPresets[0]))) return;
+    writeDefaults();
+    kPresets[index].apply();
+    [self loadValues];
+    [self refresh];
     [self notifyChanged];
 }
 

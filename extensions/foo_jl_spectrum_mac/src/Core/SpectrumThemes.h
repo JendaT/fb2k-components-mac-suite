@@ -54,9 +54,29 @@ static const Theme kThemes[] = {
 
     { "Sunset",
       0xFFE8551A, 0xFFFFF3EC, 0xFFD8B8A0,   0xFFFF6B35, 0xFF1A0F0A, 0xFF4D3326 },
+
+    // Named after CRT phosphors. Added after the older themes so a saved theme
+    // index keeps its meaning; the menu lists them first (kThemeMenuOrder). One
+    // colour per theme: the level colour, a near-black background tinted
+    // towards it, and a pale grid.
+    { "P31 green",
+      0xFF1B8A3A, 0xFFF1F5F2, 0xFF5F7A66,   0xFF4CFF7C, 0xFF0C120E, 0xFFB8E6C4 },
+
+    { "P3 amber",
+      0xFFB86A00, 0xFFF7F3EA, 0xFF7D6E55,   0xFFFFB000, 0xFF130F07, 0xFFE8D4AE },
+
+    { "P4 white",
+      0xFF3C434B, 0xFFF4F5F6, 0xFF6E767E,   0xFFE6EDF2, 0xFF0F1113, 0xFFD5DCE2 },
+
+    { "P7 blue",
+      0xFF2D6CC0, 0xFFF0F4F9, 0xFF64748A,   0xFF6FB7FF, 0xFF0A0E15, 0xFFC4D6EC },
 };
 
 static const int kThemeCount = (int)(sizeof(kThemes) / sizeof(kThemes[0]));
+static_assert(sizeof(kThemes) / sizeof(kThemes[0]) == 15, "update kThemeMenuOrder");
+
+// Theme menu order: Custom, the phosphors, then the rest.
+static const int kThemeMenuOrder[] = { 0, 11, 12, 13, 14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
 
 // Write a preset's colors into config. No-op for index 0 (Custom) or invalid.
 inline void applyThemeToConfig(int index) {

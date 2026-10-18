@@ -84,6 +84,12 @@ enum Orientation {
     OrientationVertical = 1    // Frequency along Y, magnitude grows sideways
 };
 
+// FFT analysis window
+enum WindowType {
+    WindowHann = 0,             // Good all-round choice; -31 dB first sidelobe
+    WindowBlackmanHarris = 1    // 4-term, -92 dB sidelobes: clean floor, wider peaks
+};
+
 // Which channels the spectrum shows
 enum StereoMode {
     StereoMono = 0,     // Mid (L+R)/2 only
@@ -101,7 +107,7 @@ constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleSoftLog;
 constexpr int      kDefaultDrawMode   = DrawModeCurve;
 constexpr int      kDefaultCurveStyle = CurveStyleLineColorBars;
-constexpr int      kDefaultColorBarBrightness = 69; // Strength of the loudest color bar, % (10-100)
+constexpr int      kDefaultColorBarBrightness = 85; // Strength of the loudest color bar, % (10-100)
 constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
@@ -110,7 +116,7 @@ constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100
 constexpr int      kDefaultSmoothingMode = SmoothingRms;
 constexpr int      kDefaultRmsMs      = 270;     // RMS mode: power averaging time constant (ms); falls up to ~16 dB/s
 constexpr int      kMaxRmsMs          = 500;
-constexpr int      kDefaultSlopeTenths = 0;      // Spectral slope around 1 kHz, in 0.1 dB/octave
+constexpr int      kDefaultSlopeTenths = 20;      // Spectral slope around 1 kHz, in 0.1 dB/octave
 constexpr int      kMaxSlopeTenths    = 60;
 constexpr int      kDefaultShadowFallSpeed = 76; // Shadow band fall speed 0-100 (higher = faster)
 constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after its hold (dB/s)
@@ -120,17 +126,20 @@ constexpr int      kDefaultPeakHoldMs = 920;     // Peak line hold time before i
 constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
 constexpr int      kMinTopDb          = -60;
 constexpr int      kMaxTopDb          = 0;
-constexpr int      kDefaultRangeDb    = 90;      // dB from the top of the display to the bottom
+constexpr int      kDefaultRangeDb    = 80;      // dB from the top of the display to the bottom
 constexpr int      kRangeDbChoices[]  = { 60, 80, 90, 120 };
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
+constexpr bool     kDefaultShowLegend = true;    // Live / Peak hold legend in Curve mode
 constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
-constexpr int      kDefaultGridOpacity = 84;     // Grid line opacity 0-100
-constexpr int      kDefaultTheme = 1;            // Color preset index (0 = Custom, 1 = Default)
+constexpr int      kDefaultGridOpacity = 60;     // Grid line opacity 0-100
+constexpr int      kDefaultTheme = 14;           // Color preset index (0 = Custom, 14 = P7 blue)
 constexpr bool     kDefaultGlassBackground = false;
 constexpr int      kDefaultStereoMode = StereoMono;
-constexpr int      kDefaultCurveOctaveFraction = 0;  // Curve detail: 0 = full, N = 1/N-octave smoothing
+constexpr int      kDefaultWindow     = WindowHann;
+constexpr int      kFftSizes[]        = { 1024, 2048, 4096, 8192, 16384, 32768 };
+constexpr int      kDefaultCurveOctaveFraction = 24; // Curve detail: 0 = full, N = 1/N-octave smoothing
 constexpr int      kCurveOctaveFractions[] = { 0, 24, 12, 6, 3 };  // popup order
 
 // The fixed dB window up to 0.3.0, before Top and Range were settings. Only the
@@ -138,13 +147,13 @@ constexpr int      kCurveOctaveFractions[] = { 0, 24, 12, 6, 3 };  // popup orde
 constexpr float    kDisplayFloorDb = -80.0f;     // mapped to bar height 0
 constexpr float    kDisplayCeilDb  = 0.0f;       // mapped to bar height 1
 
-// Default colors (ARGB)
-constexpr uint32_t kDefaultBarColorLight = 0xFF2E7DD1;  // Blue
-constexpr uint32_t kDefaultBgColorLight  = 0xFFF2F2F2;  // Light gray
-constexpr uint32_t kDefaultBarColorDark  = 0xFF4DA3F0;  // Lighter blue
-constexpr uint32_t kDefaultBgColorDark   = 0xFF161616;  // Near-black
-constexpr uint32_t kDefaultGridColorLight = 0xFF808080; // Neutral gray
-constexpr uint32_t kDefaultGridColorDark  = 0xFF909090; // Neutral gray
+// Default colors (ARGB): the P7 blue theme
+constexpr uint32_t kDefaultBarColorLight = 0xFF2D6CC0;
+constexpr uint32_t kDefaultBgColorLight  = 0xFFF0F4F9;
+constexpr uint32_t kDefaultBarColorDark  = 0xFF6FB7FF;
+constexpr uint32_t kDefaultBgColorDark   = 0xFF0A0E15;
+constexpr uint32_t kDefaultGridColorLight = 0xFF64748A;
+constexpr uint32_t kDefaultGridColorDark  = 0xFFC4D6EC;
 
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix     = "foo_jl_spectrum.";
@@ -157,6 +166,7 @@ static const char* const kKeyCurveStyle     = "curve_style";
 static const char* const kKeyColorBarBrightness = "color_bar_brightness";
 static const char* const kKeyOrientation    = "orientation";
 static const char* const kKeyStereoMode     = "stereo_mode";
+static const char* const kKeyWindow         = "window";
 static const char* const kKeyCurveOctaveFraction = "curve_octave_fraction";
 static const char* const kKeyMinHz          = "min_hz";
 static const char* const kKeyMaxHz          = "max_hz";
@@ -174,6 +184,7 @@ static const char* const kKeyTopDb          = "top_db";
 static const char* const kKeyRangeDb        = "range_db";
 static const char* const kKeyShowDbGuides   = "show_db_guides";
 static const char* const kKeyShowFreqAxis   = "show_freq_axis";
+static const char* const kKeyShowLegend     = "show_legend";
 static const char* const kKeyShadowFill     = "shadow_fill";
 static const char* const kKeyGridOpacity    = "grid_opacity";
 static const char* const kKeyGridColorLight = "grid_color_light";
@@ -265,6 +276,11 @@ inline int getRangeDb() {
         if (range == choice) return choice;
     }
     return kDefaultRangeDb;
+}
+
+// FFT window type, limited to the known windows.
+inline int getWindowType() {
+    return getConfigInt(kKeyWindow, kDefaultWindow) == WindowBlackmanHarris ? WindowBlackmanHarris : WindowHann;
 }
 
 // Curve detail as an octave fraction (0 = full detail), limited to the choices.
