@@ -27,6 +27,7 @@
     // Display settings
     NSPopUpButton *_displayModePopup;
     NSPopUpButton *_waveformStylePopup;
+    NSPopUpButton *_amplitudeScalePopup;
     NSPopUpButton *_gradientBandsPopup;
     NSButton *_shadePlayedCheckbox;
     NSButton *_glassBackgroundCheckbox;
@@ -71,7 +72,7 @@
 }
 
 - (void)loadView {
-    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 530)];
+    WaveformFlippedView *view = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 450, 560)];
     self.view = view;
 
     // Allow transparent colors (alpha slider in the color panel)
@@ -119,6 +120,17 @@
     [_waveformStylePopup setTarget:self];
     [_waveformStylePopup setAction:@selector(waveformStyleChanged:)];
     [self.view addSubview:_waveformStylePopup];
+    y += 30;
+
+    // Amplitude scale
+    [self.view addSubview:[self createLabel:@"Scale:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _amplitudeScalePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
+    [_amplitudeScalePopup addItemWithTitle:@"Peak"];
+    [_amplitudeScalePopup addItemWithTitle:@"Loudness"];
+    _amplitudeScalePopup.toolTip = @"Peak: sample peaks. Loudness: average level relative to the track, which shows quiet and loud sections.";
+    [_amplitudeScalePopup setTarget:self];
+    [_amplitudeScalePopup setAction:@selector(amplitudeScaleChanged:)];
+    [self.view addSubview:_amplitudeScalePopup];
     y += 30;
 
     // Gradient Bands (only applies to Solid style)
@@ -310,6 +322,9 @@
     // Waveform style
     [_waveformStylePopup selectItemAtIndex:getConfigInt(kKeyWaveformStyle, kDefaultWaveformStyle)];
 
+    // Amplitude scale
+    [_amplitudeScalePopup selectItemAtIndex:getConfigInt(kKeyAmplitudeScale, kDefaultAmplitudeScale)];
+
     // Gradient bands - map value to popup index (see GradientBandTable.h)
     int64_t bands = getConfigInt(kKeyGradientBands, kDefaultGradientBands);
     [_gradientBandsPopup selectItemAtIndex:waveseek::gradientBandIndexForValue(static_cast<int>(bands))];
@@ -394,6 +409,12 @@
 - (void)waveformStyleChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeyWaveformStyle, [_waveformStylePopup indexOfSelectedItem]);
+    [self notifySettingsChanged];
+}
+
+- (void)amplitudeScaleChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeyAmplitudeScale, [_amplitudeScalePopup indexOfSelectedItem]);
     [self notifySettingsChanged];
 }
 

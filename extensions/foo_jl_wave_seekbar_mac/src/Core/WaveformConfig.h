@@ -99,12 +99,19 @@ enum WaveformStyle {
     WaveformStyleRainbow = 2   // Position-based rainbow gradient across track
 };
 
+// What the waveform height shows
+enum AmplitudeScale {
+    AmplitudeScalePeak = 0,      // Sample peaks
+    AmplitudeScaleLoudness = 1   // RMS relative to the track's loud parts: shows its structure
+};
+
 // Default values
 constexpr int kDefaultDisplayMode = DisplayModeStereo;
 constexpr bool kDefaultShadePlayedPortion = true;
 constexpr int kDefaultPlayedDimming = 50;  // 0-100 percent opacity for played portion dimming
 constexpr int kDefaultCursorEffect = CursorEffectGradient;  // Default to gradient (current behavior)
 constexpr int kDefaultWaveformStyle = WaveformStyleSolid;   // Default to solid color
+constexpr int kDefaultAmplitudeScale = AmplitudeScaleLoudness;
 constexpr int kDefaultGradientBands = 8;                    // Number of gradient bands for solid style (2-32)
 constexpr bool kDefaultBpmSync = false;                     // Sync cursor animations to track BPM
 constexpr bool kDefaultGlassBackground = false;             // Opaque background by default
