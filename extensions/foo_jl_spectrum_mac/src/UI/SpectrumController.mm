@@ -205,6 +205,7 @@ namespace {
     s.octaveFraction = curve ? getCurveOctaveFraction() : 0;
     if (_autoBars) s.barCount = (int)[self.spectrumView autoBarCount];
     s.fftSize   = (int)getConfigInt(kKeyFftSize, kDefaultFftSize);
+    s.window    = getWindowType();
     s.minHz     = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     s.maxHz     = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
     s.smoothing = (int)getConfigInt(kKeySmoothing, kDefaultSmoothing);
