@@ -134,7 +134,27 @@ const CGFloat kReadoutBarY = 86.0;
 const CGFloat kReadoutBarHeight = 4.0;
 const CGFloat kReadoutBandsY = 94.0;
 const CGFloat kReadoutHeight = 111.0;
+const CGFloat kReadoutCompactHeight = 86.0;  // without the Lo / Mid / Hi section
 const CGFloat kReadoutRadius = 4.0;
+
+// Scales: time ruler under the waveform, level gutter on its right. Each
+// gives way when the view is too small to keep a usable waveform.
+const CGFloat kRulerHeight = 22.0;
+const CGFloat kRulerMajorTick = 8.0;
+const CGFloat kRulerMinorTick = 4.0;
+const CGFloat kRulerLabelGap = 3.0;
+const CGFloat kRulerLabelTop = 6.0;
+const CGFloat kGutterWidth = 48.0;
+const CGFloat kGutterLabelX = 6.0;
+const CGFloat kGutterChannelX = 4.0;     // L / R, from the gutter's right edge
+const CGFloat kMinWaveformHeight = 40.0;
+const CGFloat kMinWaveformWidth = 200.0;
+const uint32_t kScaleBorder = 0x2C271D;
+const uint32_t kScaleLabel = 0x8A8170;
+
+// Text-dependent sizes above are for 10 pt text and scale with the
+// configured size
+#define TS(v) ((v) * _textScale)
 
 // Loudness summary badge and clip markers
 const CGFloat kBadgeInset = 6.0;
@@ -194,6 +214,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     NSTrackingArea *_trackingArea;
     NSFont *_overlayFont;
     NSFont *_overlayBoldFont;
+    CGFloat _textScale;          // overlay text size / 10 pt
 
     // Mouse over the view, for the readout and the summary badge
     BOOL _hovering;
@@ -201,6 +222,8 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     BOOL _showReadout;
     int _summaryMode;
     BOOL _showClipMarkers;
+    BOOL _showTimeRuler;
+    BOOL _showLevelScale;
 
     // Per-column readout values at the masks' pixel width
     analysis::Columns _readout;
@@ -246,12 +269,6 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         NSFontAttributeName: [NSFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
     };
-    _overlayFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular]
-        ?: [NSFont systemFontOfSize:10];
-    _overlayBoldFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightSemibold]
-        ?: [NSFont boldSystemFontOfSize:10];
-    _chipFont = [NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightBold]
-        ?: [NSFont boldSystemFontOfSize:10];
 
     // Default display settings from config
     [self reloadSettings];
@@ -300,6 +317,21 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     _showReadout = getConfigBool(kKeyHoverReadout, kDefaultHoverReadout);
     _summaryMode = (int)std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways);
     _showClipMarkers = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers);
+
+    // Overlay and scale text
+    int64_t textSize = getConfigInt(kKeyTextSize, kDefaultTextSize);
+    if (std::find(std::begin(kTextSizes), std::end(kTextSizes), textSize) == std::end(kTextSizes)) {
+        textSize = kDefaultTextSize;
+    }
+    _textScale = textSize / 10.0;
+    _overlayFont = [NSFont monospacedSystemFontOfSize:textSize weight:NSFontWeightRegular]
+        ?: [NSFont systemFontOfSize:textSize];
+    _overlayBoldFont = [NSFont monospacedSystemFontOfSize:textSize weight:NSFontWeightSemibold]
+        ?: [NSFont boldSystemFontOfSize:textSize];
+    _chipFont = [NSFont monospacedSystemFontOfSize:textSize weight:NSFontWeightBold]
+        ?: [NSFont boldSystemFontOfSize:textSize];
+    _showTimeRuler = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler);
+    _showLevelScale = getConfigBool(kKeyLevelScale, kDefaultLevelScale);
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
@@ -395,7 +427,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (cols.count != width) return NO;
     _readout = cols;
     if (_mono) cols = analysis::mixdown(cols);
-    const CGFloat scale = (CGFloat)height / std::max<CGFloat>(1.0, self.bounds.size.height);
+    const CGFloat scale = [self backingScale];
 
     const BOOL built = isSimple(_style)
         ? [self buildSimpleMasks:cols width:width height:height scale:scale]
@@ -508,7 +540,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (!ctx) return NO;
 
     const CGRect full = CGRectMake(0, 0, _maskWidth, _maskHeight);
-    const CGFloat scale = (CGFloat)_maskHeight / std::max<CGFloat>(1.0, self.bounds.size.height);
+    const CGFloat scale = [self backingScale];
     const Lanes lanes = lanesFor(_maskHeight, scale, _maskMono ? 1 : 2);
     CGColorSpaceRef gradientSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 
@@ -575,21 +607,38 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         }
 
         const bool hasWaveform = self.waveformData && self.waveformData->isValid();
-        [self drawGuidesInContext:context rect:bounds full:hasWaveform];
+        const CGRect wave = [self waveformRect];
+        [self drawGuidesInContext:context rect:wave full:hasWaveform];
 
         if (hasWaveform) {
-            [self drawWaveformInContext:context rect:bounds];
+            [self drawWaveformInContext:context rect:wave];
         } else {
-            [self drawPlaceholderInContext:context rect:bounds];
+            [self drawPlaceholderInContext:context rect:wave];
         }
 
-        if (hasWaveform && _showClipMarkers) [self drawClipMarkersInContext:context rect:bounds];
-        [self drawCursorInContext:context rect:bounds];
-        if (hasWaveform) [self drawOverlaysInContext:context rect:bounds];
+        if (wave.origin.y > bounds.origin.y) [self drawRulerInContext:context wave:wave];
+        if (CGRectGetMaxX(wave) < CGRectGetMaxX(bounds)) [self drawLevelScaleInContext:context wave:wave];
+
+        if (hasWaveform && _showClipMarkers) [self drawClipMarkersInContext:context rect:wave];
+        [self drawCursorInContext:context rect:wave];
+        if (hasWaveform) [self drawOverlaysInContext:context rect:wave];
     } @catch (NSException *e) {
         // An exception out of drawRect: takes foobar2000 down
         FB2K_console_formatter() << "[WaveSeek] Drawing failed: " << (e.reason ? e.reason.UTF8String : "?");
     }
+}
+
+// The waveform's part of the view, after the scales that are on and fit
+- (CGRect)waveformRect {
+    CGRect r = self.bounds;
+    if (_showTimeRuler && r.size.height >= TS(kRulerHeight) + kMinWaveformHeight) {
+        r.origin.y += TS(kRulerHeight);
+        r.size.height -= TS(kRulerHeight);
+    }
+    if (_showLevelScale && r.size.width >= TS(kGutterWidth) + kMinWaveformWidth) {
+        r.size.width -= TS(kGutterWidth);
+    }
+    return r;
 }
 
 - (CGFloat)backingScale {
@@ -698,8 +747,8 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     };
     NSString *time = str(overlay::formatClock(self.playbackPosition * self.trackDuration));
     const NSSize textSize = [time sizeWithAttributes:attrs];
-    const CGFloat chipW = std::ceil(textSize.width + 2 * kChipPadX);
-    const CGFloat chipH = std::ceil(textSize.height + 2 * kChipPadY);
+    const CGFloat chipW = std::ceil(textSize.width + 2 * TS(kChipPadX));
+    const CGFloat chipH = std::ceil(textSize.height + 2 * TS(kChipPadY));
     if (chipH + 2 * kChipOffset > rect.size.height) return;
 
     CGFloat chipX = x + kChipOffset;
@@ -714,7 +763,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     CGPathRelease(shape);
     CGContextRestoreGState(context);
 
-    [time drawAtPoint:NSMakePoint(chip.origin.x + kChipPadX, chip.origin.y + kChipPadY) withAttributes:attrs];
+    [time drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
 }
 
 #pragma mark - Overlays
@@ -746,7 +795,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (_summaryMode == SummaryAlways || (_summaryMode == SummaryOnHover && _hovering)) {
         [self drawSummaryInContext:context rect:rect];
     }
-    if (_showReadout && _hovering && _readout.count > 0) {
+    if (_showReadout && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect)) {
         [self drawReadoutInContext:context rect:rect];
     }
 }
@@ -791,12 +840,12 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     }
 
     const NSSize size = line.size;
-    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(rect) - kBadgeInset - size.width - 2 * kBadgePadX),
+    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(rect) - kBadgeInset - size.width - 2 * TS(kBadgePadX)),
                                   rect.origin.y + kBadgeInset,
-                                  std::ceil(size.width + 2 * kBadgePadX), std::ceil(size.height + 2 * kBadgePadY));
+                                  std::ceil(size.width + 2 * TS(kBadgePadX)), std::ceil(size.height + 2 * TS(kBadgePadY)));
     if (box.origin.x < rect.origin.x) return;   // narrower than the badge
     [self fillOverlayBox:box radius:kBadgeRadius context:context];
-    [line drawAtPoint:NSMakePoint(box.origin.x + kBadgePadX, box.origin.y + kBadgePadY)];
+    [line drawAtPoint:NSMakePoint(box.origin.x + TS(kBadgePadX), box.origin.y + TS(kBadgePadY))];
 }
 
 // Dashed line at the mouse, and the readout for that column
@@ -819,26 +868,30 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     const size_t c = std::min(r.count - 1, (size_t)std::max<CGFloat>(0.0, (mouseX - rect.origin.x) * scale));
     const double seconds = (mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width) * self.trackDuration;
 
-    const CGFloat width = overlay::kReadoutWidth;
-    const CGFloat left = std::round(rect.origin.x + overlay::readoutX(mouseX - rect.origin.x, rect.size.width));
-    // 10 pt from the top, less in views too short for that
-    const CGFloat topInset = std::clamp<CGFloat>((rect.size.height - kReadoutHeight) / 2, 0.0, overlay::kReadoutTop);
-    const CGFloat top = CGRectGetMaxY(rect) - topInset;
-    [self fillOverlayBox:CGRectMake(left, top - kReadoutHeight, width, kReadoutHeight) radius:kReadoutRadius context:context];
+    const CGFloat width = TS(overlay::kReadoutWidth);
+    const CGFloat left = std::round(rect.origin.x + overlay::readoutX(mouseX - rect.origin.x, rect.size.width, width));
+    // 10 pt from the top, less in views too short for that; it may reach
+    // over the ruler, and drops the band section when even that is too short
+    const CGRect room = self.bounds;
+    const bool bands = TS(kReadoutHeight) <= room.size.height;
+    const CGFloat height = bands ? TS(kReadoutHeight) : TS(kReadoutCompactHeight);
+    const CGFloat topInset = std::clamp<CGFloat>((room.size.height - height) / 2, 0.0, overlay::kReadoutTop);
+    const CGFloat top = CGRectGetMaxY(room) - topInset;
+    [self fillOverlayBox:CGRectMake(left, top - height, width, height) radius:kReadoutRadius context:context];
 
     // Text rows hang from `y` points under the box's top
     auto drawLeft = [&](NSAttributedString *s, CGFloat y) {
-        [s drawAtPoint:NSMakePoint(left + kReadoutPadX, top - y - s.size.height)];
+        [s drawAtPoint:NSMakePoint(left + TS(kReadoutPadX), top - y - s.size.height)];
     };
     auto drawRight = [&](NSAttributedString *s, CGFloat y) {
-        [s drawAtPoint:NSMakePoint(left + width - kReadoutPadX - s.size.width, top - y - s.size.height)];
+        [s drawAtPoint:NSMakePoint(left + width - TS(kReadoutPadX) - s.size.width, top - y - s.size.height)];
     };
     auto drawCentre = [&](NSAttributedString *s, CGFloat y) {
         [s drawAtPoint:NSMakePoint(std::round(left + (width - s.size.width) / 2), top - y - s.size.height)];
     };
 
-    drawLeft([self text:str(overlay::formatClock(seconds, true)) color:kOverlayValue bold:YES], kReadoutHeaderY);
-    drawRight([self text:@"click to seek" color:kOverlayLabel bold:NO], kReadoutHeaderY);
+    drawLeft([self text:str(overlay::formatClock(seconds, true)) color:kOverlayValue bold:YES], TS(kReadoutHeaderY));
+    drawRight([self text:@"click to seek" color:kOverlayLabel bold:NO], TS(kReadoutHeaderY));
 
     struct Row { NSString *label; std::string value; NSString *unit; };
     const Row rows[4] = {
@@ -848,14 +901,16 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         { @"Corr", overlay::formatNumber(r.correlation[c], 2, true), @"" },
     };
     for (int i = 0; i < 4; ++i) {
-        const CGFloat y = kReadoutRowsY + i * kReadoutRowStep;
+        const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep);
         drawLeft([self text:rows[i].label color:kOverlayLabel bold:NO], y);
         drawRight([self text:[str(rows[i].value) stringByAppendingString:rows[i].unit] color:kOverlayValue bold:NO], y);
     }
 
+    if (!bands) return;
+
     // Lo / Mid / Hi: stacked bar, then the shares
-    const CGRect bar = CGRectMake(left + kReadoutPadX, top - kReadoutBarY - kReadoutBarHeight,
-                                  width - 2 * kReadoutPadX, kReadoutBarHeight);
+    const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - TS(kReadoutBarHeight),
+                                  width - 2 * TS(kReadoutPadX), TS(kReadoutBarHeight));
     CGContextSaveGState(context);
     [srgb(kOverlayBorder) setFill];
     CGContextFillRect(context, bar);
@@ -877,9 +932,119 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         NSString *value = known ? [NSString stringWithFormat:@"%d", percent[b]] : str(overlay::formatNumber(NAN, 0));
         return [self text:[NSString stringWithFormat:@"%@ %@%@", name, value, suffix] color:kOverlayLabel bold:NO];
     };
-    drawLeft(band(@"Lo", 0, @""), kReadoutBandsY);
-    drawCentre(band(@"Mid", 1, @""), kReadoutBandsY);
-    drawRight(band(@"Hi", 2, @" %"), kReadoutBandsY);
+    drawLeft(band(@"Lo", 0, @""), TS(kReadoutBandsY));
+    drawCentre(band(@"Mid", 1, @""), TS(kReadoutBandsY));
+    drawRight(band(@"Hi", 2, @" %"), TS(kReadoutBandsY));
+}
+
+#pragma mark - Scales
+
+- (NSAttributedString *)scaleText:(NSString *)s {
+    return [[NSAttributedString alloc] initWithString:s attributes:@{
+        NSFontAttributeName: _overlayFont,
+        NSForegroundColorAttributeName: srgb(kScaleLabel)
+    }];
+}
+
+// Strip under the waveform: border, major ticks with m:ss labels, minor
+// ticks at a quarter of the major interval
+- (void)drawRulerInContext:(CGContextRef)context wave:(CGRect)wave {
+    const CGFloat scale = [self backingScale];
+    const CGFloat top = wave.origin.y;
+    CGContextSaveGState(context);
+
+    [srgb(kScaleBorder) setStroke];
+    CGContextSetLineWidth(context, 1.0);
+    const CGFloat borderY = (std::floor(top * scale) - 0.5) / scale;
+    CGContextMoveToPoint(context, self.bounds.origin.x, borderY);
+    CGContextAddLineToPoint(context, CGRectGetMaxX(self.bounds), borderY);
+    CGContextStrokePath(context);
+
+    const double duration = self.trackDuration;
+    if (duration <= 0.0) {
+        CGContextRestoreGState(context);
+        return;
+    }
+    const double major = overlay::rulerInterval(duration, wave.size.width);
+    const double minor = major / 4.0;
+    [srgb(kScaleLabel, 0.6) setStroke];
+    for (long i = 0; i * minor <= duration; ++i) {
+        const CGFloat x = (std::floor((wave.origin.x + wave.size.width * (i * minor / duration)) * scale) + 0.5) / scale;
+        const CGFloat length = (i % 4 == 0) ? kRulerMajorTick : kRulerMinorTick;
+        CGContextMoveToPoint(context, x, top);
+        CGContextAddLineToPoint(context, x, top - length);
+    }
+    CGContextStrokePath(context);
+
+    for (long i = 0; i * major <= duration; ++i) {
+        NSAttributedString *label = [self scaleText:str(overlay::formatClock(i * major))];
+        const CGFloat x = wave.origin.x + wave.size.width * (i * major / duration) + TS(kRulerLabelGap);
+        if (x + label.size.width > CGRectGetMaxX(wave)) break;
+        [label drawAtPoint:NSMakePoint(std::round(x), top - TS(kRulerLabelTop) - label.size.height)];
+    }
+    CGContextRestoreGState(context);
+}
+
+// Gutter on the right. Layered: 0 / -12 / -24 / -inf mirrored, with the
+// unit. Simple: per lane 0 / -6 / -inf / -6 (-6 dB = half amplitude) and L / R.
+- (void)drawLevelScaleInContext:(CGContextRef)context wave:(CGRect)wave {
+    const CGFloat gutterX = CGRectGetMaxX(wave);
+    const CGFloat gutterRight = CGRectGetMaxX(self.bounds);
+    struct Mark { CGFloat y; NSString *text; };
+    std::vector<Mark> marks;
+    NSString *minus = @"\u2212";
+    NSString *minusInf = [minus stringByAppendingString:@"\u221E"];
+
+    if (isSimple(_style)) {
+        const Lanes lanes = lanesFor(wave.size.height, 1.0, _mono ? 1 : 2);
+        for (int l = 0; l < lanes.count; ++l) {
+            const CGFloat c = wave.origin.y + lanes.center[l], a = lanes.amplitude;
+            marks.push_back({ c + a, @"0" });
+            marks.push_back({ c + a / 2, [minus stringByAppendingString:@"6"] });
+            marks.push_back({ c, minusInf });
+            marks.push_back({ c - a / 2, [minus stringByAppendingString:@"6"] });
+        }
+        marks.push_back({ wave.origin.y + lanes.center[lanes.count - 1] - lanes.amplitude, @"0" });
+    } else {
+        const CGFloat c = CGRectGetMidY(wave);
+        const CGFloat a = std::max<CGFloat>(0.0, wave.size.height / 2.0 - kHalfInset);
+        marks.push_back({ c + a, @"0" });
+        for (float db : layered::kGridDb) {
+            marks.push_back({ c + layered::fraction(db) * a, str(overlay::formatNumber(db, 0)) });
+        }
+        marks.push_back({ c, minusInf });
+        for (auto it = std::rbegin(layered::kGridDb); it != std::rend(layered::kGridDb); ++it) {
+            marks.push_back({ c - layered::fraction(*it) * a, str(overlay::formatNumber(*it, 0)) });
+        }
+        marks.push_back({ c - a, @"0" });
+    }
+
+    // Top to bottom, centred on their level, kept inside the waveform's
+    // height, skipping any that would overlap the one above
+    CGFloat lastBottom = CGFLOAT_MAX;
+    for (const Mark& m : marks) {
+        NSAttributedString *label = [self scaleText:m.text];
+        const CGFloat h = label.size.height;
+        const CGFloat y = std::clamp(m.y - h / 2, wave.origin.y, CGRectGetMaxY(wave) - h);
+        if (y + h > lastBottom) continue;
+        [label drawAtPoint:NSMakePoint(gutterX + TS(kGutterLabelX), y)];
+        lastBottom = y;
+    }
+
+    // Unit (Layered) on the top row; channel names (Simple, stereo) at the lane centres
+    if (!isSimple(_style)) {
+        NSAttributedString *unit = [self scaleText:@"dBFS"];
+        [unit drawAtPoint:NSMakePoint(gutterRight - TS(kGutterChannelX) - unit.size.width,
+                                      CGRectGetMaxY(wave) - unit.size.height)];
+    } else if (!_mono) {
+        const Lanes lanes = lanesFor(wave.size.height, 1.0, 2);
+        NSString *names[2] = { @"L", @"R" };
+        for (int l = 0; l < 2; ++l) {
+            NSAttributedString *name = [self scaleText:names[l]];
+            [name drawAtPoint:NSMakePoint(gutterRight - TS(kGutterChannelX) - name.size.width,
+                                          wave.origin.y + lanes.center[l] - name.size.height / 2)];
+        }
+    }
 }
 
 #pragma mark - Mouse Events
@@ -921,7 +1086,8 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (self.trackDuration <= 0.0) return;
 
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
-    CGFloat normalizedPosition = location.x / self.bounds.size.width;
+    const CGRect wave = [self waveformRect];
+    CGFloat normalizedPosition = (location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
     normalizedPosition = MAX(0.0, MIN(1.0, normalizedPosition));
 
     double seekTime = normalizedPosition * self.trackDuration;
