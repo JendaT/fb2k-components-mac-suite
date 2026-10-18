@@ -48,6 +48,11 @@ typedef NS_ENUM(NSInteger, WaveformRenderStyle) {
     WaveformRenderStyleRainbow = 2     // Position-based rainbow
 };
 
+typedef NS_ENUM(NSInteger, WaveformAmplitudeScale) {
+    WaveformAmplitudeScalePeak = 0,     // Sample peaks
+    WaveformAmplitudeScaleLoudness = 1  // RMS relative to the track
+};
+
 @interface WaveformSeekbarView : NSView
 
 // Delegate for context menu events
@@ -60,6 +65,7 @@ typedef NS_ENUM(NSInteger, WaveformRenderStyle) {
 @property (nonatomic, assign) WaveformCursorEffect cursorEffect;
 @property (nonatomic, assign) WaveformRenderStyle waveformStyle;
 @property (nonatomic, assign) int gradientBands;  // 2-32, only applies to Solid style
+@property (nonatomic, assign) WaveformAmplitudeScale amplitudeScale;
 @property (nonatomic, assign) BOOL bpmSync;       // Sync cursor animations to BPM
 @property (nonatomic, assign) BOOL glassBackground;  // Skip background fill so blur behind shows through
 @property (nonatomic, assign) double trackBpm;    // Current track's BPM (0 if unknown)

@@ -131,6 +131,7 @@ Access settings in **Preferences > Display > Waveform Seekbar**
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Display Mode | Stereo (separate L/R) or Mono (combined) | Stereo |
+| Scale | Loudness (average level relative to the track, shows quiet and loud sections) or Peak (sample peaks) | Loudness |
 | Shade Played | Dim the portion already played | On |
 | Flip Display | Reverse waveform direction | Off |
 | Theme | Color preset for waveform and background (the Spectrum Analyzer themes); editing a color switches to Custom | P7 blue |
@@ -207,6 +208,9 @@ foo_jl_wave_seekbar_mac/
 ### Rendering
 
 - Core Graphics (Quartz 2D) for native performance
+- Scale: Loudness (default) draws RMS relative to the track's 98th-percentile level, square-rooted so quiet passages stay visible; Peak draws sample peaks
+- Resampled to one column per screen pixel (max peak per column on narrow views, interpolated on wide ones)
+- Waveform rendered once per track, size and settings into a cached image; frames only redraw the played overlay and cursor
 - Layer-backed view for smooth animation
 - 60 FPS timer for position updates
 - Retina display support via `backingScaleFactor`

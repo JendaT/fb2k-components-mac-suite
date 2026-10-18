@@ -58,6 +58,7 @@ static const char* const kKeyShadePlayedPortion = "shade_played";
 static const char* const kKeyPlayedDimming = "played_dimming";  // 0-100 percent
 static const char* const kKeyCursorEffect = "cursor_effect";    // 0-6 (CursorEffect enum)
 static const char* const kKeyWaveformStyle = "waveform_style";  // 0-2 (WaveformStyle enum)
+static const char* const kKeyAmplitudeScale = "amplitude_scale";  // 0-1 (AmplitudeScale enum)
 static const char* const kKeyGradientBands = "gradient_bands";  // 2-32 bands for solid style
 static const char* const kKeyBpmSync = "bpm_sync";              // Sync animations to BPM
 static const char* const kKeyGlassBackground = "glass_background";  // Translucent blur background
