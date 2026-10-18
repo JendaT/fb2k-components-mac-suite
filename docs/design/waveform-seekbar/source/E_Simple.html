@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Seekbar E · Simple on black</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#E8B547}a:hover{color:#F5D58A}
+.pk{-webkit-mask-image:url(assets/E_simple_mask.png);mask-image:url(assets/E_simple_mask.png);-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+.rm{-webkit-mask-image:url(assets/E_rms_mask.png);mask-image:url(assets/E_rms_mask.png);-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat}
+</style>
+</helmet>
+<div style="width: 1440px; height: 624px; box-sizing: border-box; padding: 12px 0; background: #000000; color: #CFC6B4; font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 10px; display: flex; flex-direction: column; gap: 24px">
+<sc-for list="{{styles}}" as="st" hint-placeholder-count="3">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<div style="height: 18px; display: flex; align-items: center; gap: 10px; padding-left: 4px; color: #9A907D">
+<span style="width: 28px; height: 10px; border-radius: 2px; background: {{st.swatch}}"></span>
+<span style="color: #CFC6B4">{{st.name}}</span>
+<span>{{st.note}}</span>
+</div>
+<div style="position: relative; width: 1440px; height: 160px; background: #000000">
+<div style="position: absolute; left: 0; top: 39px; width: 1392px; height: 1px; background: {{st.center}}"></div>
+<div style="position: absolute; left: 0; top: 120px; width: 1392px; height: 1px; background: {{st.center}}"></div>
+
+<div style="position: absolute; left: 262.5px; top: 0; width: 1129.5px; height: 160px; overflow: hidden; opacity: {{dim}}">
+<div class="pk" style="position: absolute; left: -262.5px; top: 0; width: 1392px; height: 160px; background: {{st.peakBg}}"></div>
+<div class="rm" style="position: absolute; left: -262.5px; top: 0; width: 1392px; height: 160px; background: {{st.rmsBg}}; opacity: {{st.rmsOn}}"></div>
+</div>
+<div style="position: absolute; left: 0; top: 0; width: 262.5px; height: 160px; overflow: hidden">
+<div class="pk" style="position: absolute; left: 0; top: 0; width: 1392px; height: 160px; background: {{st.peakBg}}"></div>
+<div class="rm" style="position: absolute; left: 0; top: 0; width: 1392px; height: 160px; background: {{st.rmsBg}}; opacity: {{st.rmsOn}}"></div>
+</div>
+
+<div style="position: absolute; left: 262px; top: 0; width: 1px; height: 160px; background: #F5EFE2"></div>
+<div style="position: absolute; left: 266px; top: 4px; padding: 1px 5px; border-radius: 2px; background: #F5EFE2; color: #000000; font-weight: 600">4:01</div>
+<span style="position: absolute; left: 1398px; top: 33px; color: #6B6352">L</span>
+<span style="position: absolute; left: 1398px; top: 114px; color: #6B6352">R</span>
+</div>
+</div>
+</sc-for>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["amber","blue"],"default":"amber","section":"Theme"},"dimUnplayed":{"editor":"range","default":0.5,"min":0.2,"max":1,"step":0.05,"section":"Playback"},"$preview":{"width":1440,"height":624}}'>
+class Component extends DCLogic {
+  renderVals() {
+    function hex(h) { h = h.replace('#', ''); return [0, 2, 4].map(function (i) { return parseInt(h.substr(i, 2), 16); }); }
+    function mix(a, b, t) {
+      var x = hex(a), y = hex(b);
+      return '#' + x.map(function (v, i) { return Math.round(v * (1 - t) + y[i] * t).toString(16).padStart(2, '0'); }).join('');
+    }
+    // vertical gradient mirrored around each lane's own centre line (L: 0–79px, R: 81–160px)
+    function lanes(edge, mid, ctr) {
+      return 'linear-gradient(180deg, ' + edge + ' 0%, ' + mid + ' 12.3%, ' + ctr + ' 24.7%, ' + mid + ' 37%, ' + edge + ' 49.4%, ' +
+        edge + ' 50.6%, ' + mid + ' 63%, ' + ctr + ' 75.3%, ' + mid + ' 87.7%, ' + edge + ' 100%)';
+    }
+    var themes = {
+      amber: { accent: '#E8B547', deep: '#7A4A12', hot: '#FFF2C8' },
+      blue: { accent: '#8C9EEB', deep: '#2E3A8C', hot: '#EEF1FF' }
+    };
+    var t = themes[this.props.theme ?? 'amber'] || themes.amber;
+    var K = '#000000';
+    var styles = [
+      {
+        name: 'Two-tone',
+        note: 'peak = accent at 50 %, RMS core = accent (Bitwig-like)',
+        swatch: 'linear-gradient(90deg, ' + mix(t.accent, K, 0.5) + ' 50%, ' + t.accent + ' 50%)',
+        peakBg: mix(t.accent, K, 0.5), rmsBg: t.accent, rmsOn: 1,
+        center: mix(t.accent, K, 0.85)
+      },
+      {
+        name: 'Glow',
+        note: 'peak fades toward the tips, RMS core runs to a hot centre',
+        swatch: 'linear-gradient(90deg, ' + mix(t.accent, K, 0.75) + ', ' + t.accent + ', ' + t.hot + ')',
+        peakBg: lanes(mix(t.accent, K, 0.82), mix(t.accent, K, 0.55), mix(t.accent, K, 0.2)),
+        rmsBg: lanes(t.accent, t.accent, t.hot), rmsOn: 1,
+        center: mix(t.accent, K, 0.85)
+      },
+      {
+        name: 'Heat',
+        note: 'single peak layer, colour by amplitude: deep → accent → hot tips',
+        swatch: 'linear-gradient(90deg, ' + t.deep + ', ' + t.accent + ', ' + t.hot + ')',
+        peakBg: lanes(t.hot, t.accent, t.deep), rmsBg: t.accent, rmsOn: 0,
+        center: mix(t.deep, K, 0.5)
+      }
+    ];
+    return { styles: styles, dim: this.props.dimUnplayed ?? 0.5 };
+  }
+}
+</script>
+</body>
+</html>
