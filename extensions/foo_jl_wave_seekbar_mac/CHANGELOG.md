@@ -4,9 +4,14 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 ## [1.2.1] - 2026-10-19
 
+### Added
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
 ### Changed
 - **Minimum macOS**: Raised to 12.0 (Monterey).
 - **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s.
+- **About**: Shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
 
 ### Fixed
 - **Analyzing state**: The seekbar no longer stays on "Analyzing..." after a layout change; it re-requests the waveform when it reappears, and a 30s watchdog retries once, then gives up.

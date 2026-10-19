@@ -346,9 +346,14 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ### [1.2.1] - 2026-10-19
 
+#### Added
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
 #### Changed
 - **Minimum macOS**: Raised to 12.0 (Monterey).
 - **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s.
+- **About**: Shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
 
 #### Fixed
 - **Analyzing state**: No longer stuck on "Analyzing..." after a layout change.
