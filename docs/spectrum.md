@@ -108,10 +108,11 @@ By default the curve uses RMS averaging at 270 ms (falling up to about 16 dB/s),
 ### Grid
 
 - **dB scale**: guide lines every 10 dB (20 dB at 120 dB range), labelled with numbers only (the top line names the unit), positioned against the same Top / Range window the bars use; the top label always stays whole, sitting just below the top line
-- **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz; decades (100 Hz, 1 kHz, 10 kHz) are drawn at 70% of the grid opacity, the lines between at 45%. Only 1-2-5 values are labelled, decades bolder and brighter, in a monospaced font; the linear scale uses round steps
+- **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz; decades (100 Hz, 1 kHz, 10 kHz) are drawn at 70% of the grid opacity, the lines between at 45%. Labels go to decades first, then 2x and 5x, then 3x, 4x, 6x and 8x (20 30 40 50 60 80 100 200 ...), each only where it clears its neighbours; decades are bolder and brighter, in a monospaced font; the linear scale uses round steps
 - **Labels** take the background colour blended 70% towards white (or black on light backgrounds), so they stay readable with a theme's deliberately dim grid
 - **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
+- **Idle**: in Curve mode a line (live, peak or side) whose every point sits on the floor is not drawn, so silence or a stopped player leaves only the grid
 
 ### Color Themes
 

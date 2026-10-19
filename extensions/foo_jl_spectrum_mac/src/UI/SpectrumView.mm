@@ -152,8 +152,14 @@ static NSColor *colorFromARGB(uint32_t argb) {
     return [NSColor colorWithHue:h saturation:MAX(s, 0.55) brightness:MAX(b, 0.75) alpha:1.0];
 }
 
+// True when every value sits on the floor (idle or silence): a line drawn
+// then would only trace the bottom edge of the plot.
+static bool atFloor(const std::vector<float> &v) {
+    return std::all_of(v.begin(), v.end(), [](float x) { return x <= 0.001f; });
+}
+
 - (void)drawSideLine {
-    if (_side.size() != _bars.size() || _side.empty()) return;
+    if (_side.size() != _bars.size() || _side.empty() || atFloor(_side)) return;
     NSBezierPath *line = [self linePathForValues:_side];
     line.lineWidth = 1.5;
     [[self sideColor] setStroke];
@@ -535,18 +541,20 @@ static const CGFloat kPeakLineAlpha = 0.45;
 
     // Peak hold first, thin and faded, so the live curve on top is the one
     // the eye follows.
-    if (_peakHold) {
+    if (_peakHold && !atFloor(_peaks)) {
         NSBezierPath *peak = [self linePathForValues:_peaks];
         peak.lineWidth = kPeakLineWidth;
         [[base colorWithAlphaComponent:kPeakLineAlpha] setStroke];
         [peak stroke];
     }
 
-    NSBezierPath *line = [self linePathForValues:_bars];
-    line.lineWidth = kLiveLineWidth;
-    line.lineJoinStyle = NSLineJoinStyleRound;
-    [base setStroke];
-    [line stroke];
+    if (!atFloor(_bars)) {
+        NSBezierPath *line = [self linePathForValues:_bars];
+        line.lineWidth = kLiveLineWidth;
+        line.lineJoinStyle = NSLineJoinStyleRound;
+        [base setStroke];
+        [line stroke];
+    }
 
     [self drawLegendBase:base];
 }
@@ -770,9 +778,10 @@ static CGFloat colorBarStrength(CGFloat level) {
     }
 
     // Labels are centred on their line but clamped inside the plot, so the
-    // range ends stay labelled. On log scales only 1-2-5 values are labelled
-    // (20, 50, 100, 200 ... 20k): decades first, then 2x and 5x; a label that
-    // would come too close to one already placed is left out.
+    // range ends stay labelled. On log scales decades go first, then 2x and
+    // 5x, then 3x, 4x, 6x and 8x (20 30 40 50 60 80 100 200 ... 20k); a label
+    // that would come too close to one already placed is left out, so narrow
+    // panels and the squeezed bass of the soft-log scale keep only the first tiers.
     struct Placed { NSString *label; NSSize size; CGFloat start, ext; bool decade; };
     const auto mantissaOf = [](double f) { return f / std::pow(10.0, std::floor(std::log10(f) + 1e-9)); };
     auto place = [&](double f) -> Placed {
@@ -798,10 +807,12 @@ static CGFloat colorBarStrength(CGFloat level) {
         const double m = mantissaOf(ticks[i]);
         if (std::fabs(m - 1.0) < 1e-6) return 1;
         if (std::fabs(m - 2.0) < 1e-6 || std::fabs(m - 5.0) < 1e-6) return 2;
-        return 3;   // gridline only
+        for (double k : {3.0, 4.0, 6.0, 8.0})
+            if (std::fabs(m - k) < 1e-6) return 3;
+        return 4;   // gridline only
     };
     std::vector<Placed> placed;
-    for (int tier = 1; tier <= 2; ++tier) {
+    for (int tier = 1; tier <= 3; ++tier) {
         for (size_t i = 0; i < ticks.size(); ++i) {
             if (rank(i) != tier) continue;
             const Placed p = place(ticks[i]);
