@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -276,6 +277,112 @@ void testCacheRoundTrip() {
     CHECK(!WaveformData::decompress(v1.data(), v1.size()).has_value(), "corrupt blob rejected");
 }
 
+void testPlanSegments() {
+    g_context = "plan";
+    const uint32_t sr = 44100;
+    const uint64_t total = (uint64_t)sr * 7200;   // a 2 h mix
+    const std::vector<Segment> segs = planSegments(total, sr);
+    CHECK(segs.size() > 1 && segs.size() <= kMaxSegments, "split into at most kMaxSegments");
+    const uint64_t unit = std::lcm<uint64_t>(blockFramesFor(total), hopFramesFor(sr));
+    bool aligned = true, longEnough = true, contiguous = true;
+    for (size_t i = 0; i < segs.size(); ++i) {
+        aligned &= segs[i].start % unit == 0;
+        if (i + 1 < segs.size()) {
+            longEnough &= segs[i].end - segs[i].start >= (uint64_t)(kMinSegmentSeconds * sr);
+            contiguous &= segs[i].end == segs[i + 1].start;
+        }
+    }
+    CHECK(aligned, "boundaries on the block and hop grid");
+    CHECK(longEnough, "segments at least 30 s");
+    CHECK(contiguous, "segments meet");
+    CHECK(segs.front().start == 0 && segs.back().end == UINT64_MAX, "cover the whole track");
+
+    CHECK_EQ(planSegments((uint64_t)sr * 40, sr).size(), 1, "short tracks stay whole");
+    CHECK_EQ(planSegments(0, sr).size(), 1, "empty track");
+    CHECK_EQ(planSegments(total, sr, 1).size(), 1, "one segment allowed");
+}
+
+// Analyses `lr` (interleaved stereo) the way the scanner does in parallel:
+// each segment with its own analyser, pre-roll before it and the clip-run
+// tail after it, then joined
+WaveformData analyseSegmented(const std::vector<float>& lr, uint32_t sr, const std::vector<Segment>& segs) {
+    const uint64_t total = lr.size() / 2;
+    const uint64_t preroll = (uint64_t)(kSegmentPrerollSeconds * sr);
+    std::vector<WaveformData> parts;
+    for (const Segment& seg : segs) {
+        TrackAnalyzer a(sr, 2, total);
+        a.setRange(seg.start, seg.end);
+        const uint64_t from = seg.start > preroll ? seg.start - preroll : 0;
+        const uint64_t to = seg.end == UINT64_MAX ? total : std::min(total, seg.end + kClipRunLength - 1);
+        a.setPosition(from);
+        for (uint64_t pos = from; pos < to; pos += 3000) {   // uneven chunks against the grid
+            const uint64_t n = std::min<uint64_t>(3000, to - pos);
+            a.process(lr.data() + pos * 2, (size_t)n, 2);
+        }
+        parts.push_back(a.finish());
+    }
+    return TrackAnalyzer::merge(std::move(parts));
+}
+
+void testSegmentsMatchOnePass() {
+    g_context = "segments";
+    const uint32_t sr = 8000;
+    const uint64_t total = (uint64_t)sr * 40;
+    std::mt19937 rng(7);
+    std::normal_distribution<float> noise(0.0f, 0.05f);
+    std::vector<float> lr(total * 2);
+    for (uint64_t i = 0; i < total; ++i) {
+        const double t = (double)i / sr;
+        const float env = 0.2f + 0.6f * (float)std::fabs(std::sin(t * 0.3));
+        lr[2 * i] = env * (float)std::sin(2.0 * kPi * (60.0 + 40.0 * t) * t) + noise(rng);
+        lr[2 * i + 1] = 0.7f * lr[2 * i] + noise(rng);
+    }
+
+    const std::vector<Segment> segs = planSegments(total, sr, kMaxSegments, 5.0);
+    CHECK(segs.size() >= 4, "several segments");
+    // Clip runs right at the first boundary: one straddling it, one starting
+    // two frames before it (it only reaches three frames after), one inside
+    const uint64_t b = segs[1].start;
+    for (uint64_t f : { b - 1, b, b + 1, b + 2 }) lr[2 * f] = 1.0f;
+    for (uint64_t f : { b + 50, b + 51, b + 52 }) lr[2 * f + 1] = -1.0f;
+    const uint64_t b2 = segs[2].start;
+    for (uint64_t f : { b2 - 2, b2 - 1, b2 }) lr[2 * f] = 1.0f;
+
+    const WaveformData one = analyse(lr, sr);
+    const WaveformData joined = analyseSegmented(lr, sr, segs);
+    CHECK(joined.isValid(), "valid");
+    CHECK_EQ(joined.blockCount(), one.blockCount(), "same blocks");
+    CHECK_EQ(joined.hopCount(), one.hopCount(), "same hops");
+    CHECK_NEAR(joined.duration, one.duration, 1e-9, "same duration");
+
+    double blockDiff = 0.0, hopDiff = 0.0;
+    for (int ch = 0; ch < 2; ++ch) {
+        for (size_t i = 0; i < one.blockCount() && i < joined.blockCount(); ++i) {
+            blockDiff = std::max<double>(blockDiff, std::fabs(one.blockMax[ch][i] - joined.blockMax[ch][i]));
+            blockDiff = std::max<double>(blockDiff, std::fabs(one.blockRms[ch][i] - joined.blockRms[ch][i]));
+        }
+        for (size_t i = 0; i < one.hopCount() && i < joined.hopCount(); ++i) {
+            const double a = one.hopKms[ch][i], c = joined.hopKms[ch][i];
+            hopDiff = std::max(hopDiff, std::fabs(a - c) / std::max(a, 1e-12));
+        }
+    }
+    CHECK(blockDiff < 1e-6, "sample blocks identical");
+    CHECK(hopDiff < 1e-4, "K-weighted hops match once the filters settle");
+
+    CHECK_EQ(one.clipRunFrames.size(), 3, "the three planted runs");
+    CHECK_EQ(joined.clipRunFrames.size(), one.clipRunFrames.size(), "same clip runs");
+    if (joined.clipRunFrames.size() == one.clipRunFrames.size()) {
+        CHECK(joined.clipRunFrames == one.clipRunFrames, "at the same frames");
+    }
+    CHECK_NEAR(joined.summary.integrated, one.summary.integrated, 0.01, "integrated");
+    CHECK_NEAR(joined.summary.range, one.summary.range, 0.01, "LRA");
+    CHECK_NEAR(joined.summary.truePeak, one.summary.truePeak, 0.001, "true peak");
+    CHECK_NEAR(joined.summary.samplePeak, one.summary.samplePeak, 1e-6, "sample peak");
+
+    const Columns a = aggregateColumns(one, 300), c = aggregateColumns(joined, 300);
+    CHECK_NEAR(a.lufs[150], c.lufs[150], 0.01, "readout");
+}
+
 } // namespace
 
 int main() {
@@ -289,5 +396,7 @@ int main() {
     testMixdown();
     testMonoAndBlocks();
     testCacheRoundTrip();
+    testPlanSegments();
+    testSegmentsMatchOnePass();
     TEST_MAIN_END();
 }

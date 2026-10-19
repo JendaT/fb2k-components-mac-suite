@@ -196,7 +196,7 @@ foo_jl_wave_seekbar_mac/
 
 ### Analysis
 
-One decode pass per track (`TrackAnalyzer`), cached:
+One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks), cached:
 - Fine blocks of ~1024 frames (fewer, larger blocks past ~6 min): sample min/max and RMS per channel
 - 100 ms hops: K-weighted (BS.1770) power, plain power and L*R per channel, Lo/Mid/Hi band power (250 Hz / 2 kHz Linkwitz-Riley, as the Vectorscope)
 - Clip runs: 3+ consecutive samples at |x| >= 0.9999
@@ -212,7 +212,8 @@ One decode pass per track (`TrackAnalyzer`), cached:
 | 10 min (FLAC)  | ~1.5-2.5 sec |
 | 3 min (MP3)    | ~0.3-0.5 sec |
 
-- Analysis adds about 0.9 s per 10 minutes of stereo on top of decoding
+- Local tracks longer than about a minute are analysed in up to 64 segments in parallel on the foobar2000 CPU thread pool, one decoder per worker; each segment starts 1 s early so the filters settle, and segments join into exactly one sequential pass (unit-tested)
+- Remote, non-seekable and slow-seeking inputs, and any segment failure, use one sequential pass (about 0.9 s of analysis per 10 minutes of stereo on top of decoding)
 - Background scanning with GCD
 - Cancellation support for track changes
 

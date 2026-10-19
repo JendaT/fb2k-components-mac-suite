@@ -6,6 +6,7 @@
 #include "TrackAnalyzer.h"
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 namespace analysis {
 
@@ -155,15 +156,44 @@ float loudnessRange(const std::vector<float> kms[2], uint32_t channels, size_t h
     return high - low;
 }
 
+#pragma mark - Segments
+
+uint32_t blockFramesFor(uint64_t expectedFrames) {
+    return std::max<uint32_t>(kMinBlockFrames, (uint32_t)((expectedFrames + kMaxBlocks - 1) / kMaxBlocks));
+}
+
+uint32_t hopFramesFor(uint32_t sampleRate) {
+    return std::max<uint32_t>(1, (uint32_t)std::lround(std::max(sampleRate, 1u) / 10.0));
+}
+
+std::vector<Segment> planSegments(uint64_t totalFrames, uint32_t sampleRate, size_t maxSegments, double minSeconds) {
+    const std::vector<Segment> whole = { { 0, UINT64_MAX } };
+    if (totalFrames == 0 || sampleRate == 0 || maxSegments < 2) return whole;
+
+    // Boundaries on both grids
+    const uint64_t unit = std::lcm<uint64_t>(blockFramesFor(totalFrames), hopFramesFor(sampleRate));
+    const uint64_t minLength = std::max<uint64_t>((uint64_t)std::ceil(minSeconds * sampleRate),
+                                                  (totalFrames + maxSegments - 1) / maxSegments);
+    const uint64_t length = (minLength + unit - 1) / unit * unit;
+    if (length == 0 || length >= totalFrames) return whole;
+
+    std::vector<Segment> segments;
+    for (uint64_t start = 0; start < totalFrames; start += length) {
+        segments.push_back({ start, start + length });
+    }
+    segments.back().end = UINT64_MAX;
+    if (segments.size() < 2) return whole;
+    return segments;
+}
+
 #pragma mark - TrackAnalyzer
 
 TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames)
     : _channels(std::clamp(channels, 1u, 2u)) {
     _data.channelCount = _channels;
     _data.sampleRate = std::max(sampleRate, 1u);
-    _data.blockFrames = std::max<uint32_t>(kMinBlockFrames,
-                                           (uint32_t)((expectedFrames + kMaxBlocks - 1) / kMaxBlocks));
-    _data.hopFrames = std::max<uint32_t>(1, (uint32_t)std::lround(_data.sampleRate / 10.0));
+    _data.blockFrames = blockFramesFor(expectedFrames);
+    _data.hopFrames = hopFramesFor(_data.sampleRate);
 
     const double fs = _data.sampleRate;
     for (int ch = 0; ch < 2; ++ch) {
@@ -202,10 +232,16 @@ TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t ex
     }
 }
 
-void TrackAnalyzer::updateTruePeak(int ch, float x) {
+void TrackAnalyzer::setRange(uint64_t start, uint64_t end) {
+    _rangeStart = start;
+    _rangeEnd = std::max(start, end);
+}
+
+void TrackAnalyzer::updateTruePeak(int ch, float x, bool counted) {
     float* hist = _tpHistory[ch];
     std::copy_backward(hist, hist + kTpTaps - 1, hist + kTpTaps);
     hist[0] = x;
+    if (!counted) return;
 
     const float a = std::fabs(x);
     if (a > _samplePeak) _samplePeak = a;   // NaN compares false and is ignored
@@ -242,44 +278,53 @@ void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t
         x[0] = (float)frame[0];
         x[1] = (float)(stride > 1 ? frame[1] : frame[0]);
 
+        // Outside the range the filters, true-peak history and clip runs
+        // still run, so a segment starts and ends as a sequential pass would
+        const bool counted = _frame >= _rangeStart && _frame < _rangeEnd;
+
         bool anyClipRun = false;
         for (uint32_t ch = 0; ch < _channels; ++ch) {
             const float s = std::isfinite(x[ch]) ? x[ch] : 0.0f;
 
-            if (_blockCount == 0) {
-                _blockMin[ch] = _blockMax[ch] = s;
-            } else {
-                _blockMin[ch] = std::min(_blockMin[ch], s);
-                _blockMax[ch] = std::max(_blockMax[ch], s);
-            }
-            _blockSumSq[ch] += (double)s * s;
-            _hopMs[ch] += (double)s * s;
-
             const double k = _kWeight[ch][1].process(_kWeight[ch][0].process(s));
-            _hopK[ch] += k * k;
-
             const double lo = _low[ch][1].process(_low[ch][0].process(s));
             const double mid = _midLp[ch][1].process(_midLp[ch][0].process(
                                _midHp[ch][1].process(_midHp[ch][0].process(s))));
             const double hi = _high[ch][1].process(_high[ch][0].process(s));
-            _hopBand[0] += lo * lo;
-            _hopBand[1] += mid * mid;
-            _hopBand[2] += hi * hi;
 
-            updateTruePeak((int)ch, s);
+            if (counted) {
+                if (_blockCount == 0) {
+                    _blockMin[ch] = _blockMax[ch] = s;
+                } else {
+                    _blockMin[ch] = std::min(_blockMin[ch], s);
+                    _blockMax[ch] = std::max(_blockMax[ch], s);
+                }
+                _blockSumSq[ch] += (double)s * s;
+                _hopMs[ch] += (double)s * s;
+                _hopK[ch] += k * k;
+                _hopBand[0] += lo * lo;
+                _hopBand[1] += mid * mid;
+                _hopBand[2] += hi * hi;
+            }
+
+            updateTruePeak((int)ch, s, counted);
 
             _clipRun[ch] = std::fabs(s) >= kClipLevel ? _clipRun[ch] + 1 : 0;
             if (_clipRun[ch] >= kClipRunLength) anyClipRun = true;
             x[ch] = s;
         }
-        if (_channels == 2) _hopLR += (double)x[0] * x[1];
 
+        // A run belongs to the segment it starts in
         if (anyClipRun && !_clipActive) {
-            _data.clipRunFrames.push_back(_frame + 1 - kClipRunLength);
+            const uint64_t runStart = _frame + 1 - kClipRunLength;
+            if (runStart >= _rangeStart && runStart < _rangeEnd) _data.clipRunFrames.push_back(runStart);
         }
         _clipActive = anyClipRun;
-
         ++_frame;
+
+        if (!counted) continue;
+        if (_channels == 2) _hopLR += (double)x[0] * x[1];
+        ++_counted;
         if (++_blockCount >= _data.blockFrames) flushBlock();
         if (++_hopCount >= _data.hopFrames) flushHop();
     }
@@ -325,7 +370,7 @@ WaveformData TrackAnalyzer::finish() {
     flushBlock();
     flushHop();
 
-    _data.duration = (double)_frame / _data.sampleRate;
+    _data.duration = (double)_counted / _data.sampleRate;
 
     // A short last hop would skew the gated blocks it falls into
     const size_t gatedHops = _data.hopCount() - (_lastHopPartial ? 1 : 0);
@@ -337,6 +382,49 @@ WaveformData TrackAnalyzer::finish() {
     s.clipRuns = (uint32_t)_data.clipRunFrames.size();
 
     return std::move(_data);
+}
+
+WaveformData TrackAnalyzer::merge(std::vector<WaveformData> parts) {
+    if (parts.empty()) return WaveformData();
+    if (parts.size() == 1) return std::move(parts[0]);
+
+    WaveformData out;
+    out.channelCount = parts[0].channelCount;
+    out.sampleRate = parts[0].sampleRate;
+    out.blockFrames = parts[0].blockFrames;
+    out.hopFrames = parts[0].hopFrames;
+
+    auto append = [](std::vector<float>& to, const std::vector<float>& from) {
+        to.insert(to.end(), from.begin(), from.end());
+    };
+    uint64_t frames = 0;
+    float truePeak = -INFINITY, samplePeak = -INFINITY;
+    for (const WaveformData& p : parts) {
+        for (uint32_t ch = 0; ch < out.channelCount; ++ch) {
+            append(out.blockMin[ch], p.blockMin[ch]);
+            append(out.blockMax[ch], p.blockMax[ch]);
+            append(out.blockRms[ch], p.blockRms[ch]);
+            append(out.hopKms[ch], p.hopKms[ch]);
+            append(out.hopMs[ch], p.hopMs[ch]);
+        }
+        append(out.hopLR, p.hopLR);
+        for (int b = 0; b < 3; ++b) append(out.hopBand[b], p.hopBand[b]);
+        out.clipRunFrames.insert(out.clipRunFrames.end(), p.clipRunFrames.begin(), p.clipRunFrames.end());
+        frames += (uint64_t)std::llround(p.duration * p.sampleRate);
+        truePeak = std::max(truePeak, p.summary.truePeak);
+        samplePeak = std::max(samplePeak, p.summary.samplePeak);
+    }
+    out.duration = (double)frames / out.sampleRate;
+
+    // As finish(): a short last hop stays out of the gates
+    const size_t gatedHops = out.hopCount() - (frames % out.hopFrames != 0 ? 1 : 0);
+    LoudnessSummary& s = out.summary;
+    s.integrated = integratedLoudness(out.hopKms, out.channelCount, gatedHops);
+    s.range = loudnessRange(out.hopKms, out.channelCount, gatedHops);
+    s.truePeak = truePeak;
+    s.samplePeak = samplePeak;
+    s.clipRuns = (uint32_t)out.clipRunFrames.size();
+    return out;
 }
 
 } // namespace analysis
