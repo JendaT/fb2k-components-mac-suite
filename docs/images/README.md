@@ -13,8 +13,9 @@ Place screenshots in this directory with the following filenames:
 - `plorg-settings.png` - Preferences page
 
 ## Waveform Seekbar
-- `waveform-overview.png` - Seekbar with waveform visualization
-- `waveform-settings.png` - Preferences page with color/style options
+- `waveform-overview-v2.png` - Seekbar with waveform visualization
+- `waveform-settings-v2.png` - Preferences page with color/style options
+- `waveform-overview.png`, `waveform-settings.png` - Previous screenshots, no longer referenced; kept so links from older forum threads still resolve
 
 ## Spectrum Analyzer
 - `spectrum-overview.png` - Spectrum panel (curve mode) below the waveform seekbar

@@ -64,7 +64,7 @@ Audio visualization seekbar with real-time waveform display and visual effects. 
 
 | Overview | Settings |
 |----------|----------|
-| ![Waveform Seekbar](docs/images/waveform-overview.png) | ![Waveform Settings](docs/images/waveform-settings.png) |
+| ![Waveform Seekbar](docs/images/waveform-overview-v2.png) | ![Waveform Settings](docs/images/waveform-settings-v2.png) |
 
 **Features:**
 - Real-time waveform visualization

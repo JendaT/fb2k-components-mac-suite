@@ -9,7 +9,7 @@ An interactive waveform display and seekbar for foobar2000 macOS.
 Shows the entire track waveform at a glance - not just the current audio buffer. See the full structure of your music including quiet intros, build-ups, and loud sections.
 
 <!-- Screenshot: Waveform overview -->
-![Waveform Seekbar Overview](images/waveform-overview.png)
+![Waveform Seekbar Overview](images/waveform-overview-v2.png)
 
 ### Interactive Seeking
 
@@ -63,7 +63,7 @@ Crisp rendering on high-DPI displays using native `backingScaleFactor`.
 Access settings via **Preferences > Display > Waveform Seekbar**
 
 <!-- Screenshot: Settings panel -->
-![Waveform Settings](images/waveform-settings.png)
+![Waveform Settings](images/waveform-settings-v2.png)
 
 ### Available Settings
 
@@ -103,6 +103,7 @@ splitter vertical
 ### Audio Analysis
 
 - Uses Apple Accelerate framework (vDSP) for SIMD-optimized processing
+- Long local tracks decoded in parallel segments on the foobar2000 CPU thread pool
 - Background scanning with Grand Central Dispatch
 - Cancellation support for track changes
 - 2048 peak buckets per track for detailed visualization
