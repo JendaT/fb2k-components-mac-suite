@@ -112,7 +112,7 @@ By default the curve uses RMS averaging at 270 ms (falling up to about 16 dB/s),
 - **Labels** take the background colour blended 70% towards white (or black on light backgrounds), so they stay readable with a theme's deliberately dim grid
 - **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
-- **Idle**: in Curve mode a line (live, peak or side) whose every point sits on the floor is not drawn, so silence or a stopped player leaves only the grid
+- **Floor**: in Curve mode a line (live, peak or side) is not drawn where it lies on the floor: it meets the bottom and stops, so silence, a stopped player or a track without highs leaves only the grid there
 
 ### Color Themes
 

@@ -152,14 +152,8 @@ static NSColor *colorFromARGB(uint32_t argb) {
     return [NSColor colorWithHue:h saturation:MAX(s, 0.55) brightness:MAX(b, 0.75) alpha:1.0];
 }
 
-// True when every value sits on the floor (idle or silence): a line drawn
-// then would only trace the bottom edge of the plot.
-static bool atFloor(const std::vector<float> &v) {
-    return std::all_of(v.begin(), v.end(), [](float x) { return x <= 0.001f; });
-}
-
 - (void)drawSideLine {
-    if (_side.size() != _bars.size() || _side.empty() || atFloor(_side)) return;
+    if (_side.size() != _bars.size() || _side.empty()) return;
     NSBezierPath *line = [self linePathForValues:_side];
     line.lineWidth = 1.5;
     [[self sideColor] setStroke];
@@ -568,20 +562,18 @@ static const CGFloat kPeakLineAlpha = 0.45;
 
     // Peak hold first, thin and faded, so the live curve on top is the one
     // the eye follows.
-    if (_peakHold && !atFloor(_peaks)) {
+    if (_peakHold) {
         NSBezierPath *peak = [self linePathForValues:_peaks];
         peak.lineWidth = kPeakLineWidth;
         [[base colorWithAlphaComponent:kPeakLineAlpha] setStroke];
         [peak stroke];
     }
 
-    if (!atFloor(_bars)) {
-        NSBezierPath *line = [self linePathForValues:_bars];
-        line.lineWidth = kLiveLineWidth;
-        line.lineJoinStyle = NSLineJoinStyleRound;
-        [base setStroke];
-        [line stroke];
-    }
+    NSBezierPath *line = [self linePathForValues:_bars];
+    line.lineWidth = kLiveLineWidth;
+    line.lineJoinStyle = NSLineJoinStyleRound;
+    [base setStroke];
+    [line stroke];
 
     [self drawLegendBase:base];
 }
@@ -677,8 +669,13 @@ static CGFloat colorBarStrength(CGFloat level) {
 // Append a smooth curve through the knots, assuming the path's current point
 // is already at k[0]. Uses Steffen's monotone cubic tangents: the curve never
 // overshoots past neighbouring knots, so peaks stay where the data puts them
-// and the curve cannot leave the 0..1 magnitude range.
-- (void)appendSmoothCurve:(const std::vector<CGPoint> &)k toPath:(NSBezierPath *)p {
+// and the curve cannot leave the 0..1 magnitude range. It also lies flat
+// between two knots on the floor, so with `liftAtFloor` those spans are left
+// out: a line meets the floor and stops instead of tracing the plot's bottom
+// edge where (or while) there is no signal.
+- (void)appendSmoothCurve:(const std::vector<CGPoint> &)k
+                   toPath:(NSBezierPath *)p
+              liftAtFloor:(BOOL)liftAtFloor {
     const size_t n = k.size();
     if (n < 2) return;
 
@@ -698,7 +695,11 @@ static CGFloat colorBarStrength(CGFloat level) {
         tangent[i] = (s0 > 0 ? 2.0 : -2.0) * lim;
     }
 
+    static const CGFloat kFloor = 0.001;
+    bool lifted = false;
     for (size_t i = 0; i + 1 < n; ++i) {
+        if (liftAtFloor && k[i].y <= kFloor && k[i + 1].y <= kFloor) { lifted = true; continue; }
+        if (lifted) { [p moveToPoint:[self mapF:k[i].x mag:k[i].y]]; lifted = false; }
         const CGFloat h3 = (k[i + 1].x - k[i].x) / 3.0;
         [p curveToPoint:[self mapF:k[i + 1].x mag:k[i + 1].y]
           controlPoint1:[self mapF:k[i].x + h3 mag:k[i].y + tangent[i] * h3]
@@ -712,7 +713,7 @@ static CGFloat colorBarStrength(CGFloat level) {
     if (k.empty()) return p;
     [p moveToPoint:[self mapF:0.0 mag:0.0]];
     [p lineToPoint:[self mapF:k[0].x mag:k[0].y]];
-    [self appendSmoothCurve:k toPath:p];
+    [self appendSmoothCurve:k toPath:p liftAtFloor:NO];
     [p lineToPoint:[self mapF:1.0 mag:0.0]];
     [p closePath];
     return p;
@@ -723,7 +724,7 @@ static CGFloat colorBarStrength(CGFloat level) {
     const std::vector<CGPoint> k = [self curveKnotsForValues:v];
     if (k.empty()) return p;
     [p moveToPoint:[self mapF:k[0].x mag:k[0].y]];
-    [self appendSmoothCurve:k toPath:p];
+    [self appendSmoothCurve:k toPath:p liftAtFloor:YES];
     return p;
 }
 
