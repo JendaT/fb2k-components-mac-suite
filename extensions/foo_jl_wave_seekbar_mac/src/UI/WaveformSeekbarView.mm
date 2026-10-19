@@ -280,6 +280,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     float _tintStrength;
     int _summaryMode;
     BOOL _showClipMarkers;
+    CGFloat _clipMarkerOpacity;
     BOOL _showTimeRuler;
     BOOL _showLevelScale;
 
@@ -391,6 +392,8 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
                                                 ReadoutFollowsMouse, ReadoutBottomRight);
     _summaryMode = (int)std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways);
     _showClipMarkers = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers);
+    _clipMarkerOpacity = std::clamp<int64_t>(getConfigInt(kKeyClipMarkerOpacity, kDefaultClipMarkerOpacity),
+                                             kMinClipMarkerOpacity, kMaxClipMarkerOpacity) / 100.0;
 
     // Overlay and scale text
     int64_t textSize = getConfigInt(kKeyTextSize, kDefaultTextSize);
@@ -1029,7 +1032,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
     const CGFloat scale = [self backingScale];
     CGContextSaveGState(context);
-    [srgb(kOverlayAlert) setFill];
+    [srgb(kOverlayAlert, _clipMarkerOpacity) setFill];
     long lastPixel = -1;
     for (uint64_t frame : data.clipRunFrames) {
         const CGFloat x = rect.origin.x + rect.size.width * (CGFloat)(frame / totalFrames);
