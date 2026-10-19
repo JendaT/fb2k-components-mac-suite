@@ -237,8 +237,10 @@
 
     [self.view addSubview:[self label:@"Theme:" at:NSMakePoint(labelX + 10, y + 3)]];
     _themePopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 200, 25)];
-    for (int i = 0; i < kThemeCount; ++i) {
-        [_themePopup addItemWithTitle:[NSString stringWithUTF8String:kThemes[i].name]];
+    // Item tags hold the theme index; the menu lists the phosphors first.
+    for (int index : kThemeMenuOrder) {
+        [_themePopup addItemWithTitle:[NSString stringWithUTF8String:kThemes[index].name]];
+        _themePopup.lastItem.tag = index;
     }
     _themePopup.target = self; _themePopup.action = @selector(themeChanged:);
     _themePopup.toolTip = @"Apply a color preset to trace, background, grid, and band colors";
@@ -415,10 +417,6 @@
     _labelsCheckbox.state = getConfigBool(kKeyShowLabels, kDefaultShowLabels) ? NSControlStateValueOn : NSControlStateValueOff;
     _glassCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
 
-    int theme = (int)getConfigInt(kKeyTheme, kDefaultTheme);
-    if (theme < 0 || theme >= kThemeCount) theme = 0;
-    [_themePopup selectItemAtIndex:theme];
-
     [self reloadColorWells];
     [self updateEnabledStates];
 }
@@ -435,6 +433,7 @@
         _bandColorLightWells[b].color = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBandColorLight[b], kDefaultBandColorLight[b])];
         _bandColorDarkWells[b].color  = [self colorFromARGB:(uint32_t)getConfigInt(kKeyBandColorDark[b], kDefaultBandColorDark[b])];
     }
+    [_themePopup selectItemWithTag:themeMatchingConfig()];
 }
 
 // Grey out controls that have no effect in the current setup.
@@ -601,12 +600,8 @@
 
 - (void)themeChanged:(id)sender {
     using namespace vectorscope_config;
-    NSInteger idx = _themePopup.indexOfSelectedItem;
-    setConfigInt(kKeyTheme, idx);
-    if (idx > 0) {
-        applyThemeToConfig((int)idx);
-        [self reloadColorWells];
-    }
+    applyThemeToConfig((int)_themePopup.selectedTag);   // no-op for Custom
+    [self reloadColorWells];
     [self notifyChanged];
 }
 
@@ -625,9 +620,7 @@
     else if (sender == _traceColorDarkWell)  setConfigInt(kKeyTraceColorDark, [self argbFromColor:_traceColorDarkWell.color]);
     else if (sender == _bgColorDarkWell)     setConfigInt(kKeyBgColorDark, [self argbFromColor:_bgColorDarkWell.color]);
     else if (sender == _gridColorDarkWell)   setConfigInt(kKeyGridColorDark, [self argbFromColor:_gridColorDarkWell.color]);
-    // A manual color edit means the palette no longer matches a preset.
-    setConfigInt(kKeyTheme, 0);
-    [_themePopup selectItemAtIndex:0];
+    [_themePopup selectItemWithTag:themeMatchingConfig()];
     [self notifyChanged];
 }
 
@@ -637,9 +630,7 @@
         if (sender == _bandColorLightWells[b])     setConfigInt(kKeyBandColorLight[b], [self argbFromColor:_bandColorLightWells[b].color]);
         else if (sender == _bandColorDarkWells[b]) setConfigInt(kKeyBandColorDark[b], [self argbFromColor:_bandColorDarkWells[b].color]);
     }
-    // A manual color edit means the palette no longer matches a preset.
-    setConfigInt(kKeyTheme, 0);
-    [_themePopup selectItemAtIndex:0];
+    [_themePopup selectItemWithTag:themeMatchingConfig()];
     [self notifyChanged];
 }
 
