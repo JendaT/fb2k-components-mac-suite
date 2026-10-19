@@ -2,12 +2,15 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
-## [Unreleased]
+## [1.2.1] - 2026-10-19
 
 ### Changed
+- **Minimum macOS**: Raised to 12.0 (Monterey).
 - **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s.
 
 ### Fixed
+- **Analyzing state**: The seekbar no longer stays on "Analyzing..." after a layout change; it re-requests the waveform when it reappears, and a 30s watchdog retries once, then gives up.
+- **Scan cancellation**: Each scan owns its abort object, so starting a scan no longer clears the abort of the one it replaces (skipping tracks left every earlier decode running); a superseded scan no longer marks the current one finished.
 - Colors could drift one step darker each time preferences were saved and reloaded (ARGB conversion truncated instead of rounding)
 - `WaveformData` position accessors invoked undefined behaviour on a negative or NaN position; the index is now clamped before the cast
 
@@ -15,7 +18,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 - Segments run on the foobar2000 CPU thread pool and seek by absolute sample position, so the result matches a sequential scan exactly; remote, non-seekable and expensive-seek inputs stay sequential, and a segment failure (including a mid-stream sample rate change) falls back to one sequential pass.
 - Buckets split the track proportionally; the old fixed bucket size dropped up to 2047 trailing samples.
 - Bucket min/max/RMS computed with vDSP; RMS accumulates in double instead of float.
-- Peak binning extracted from the decode loop into `PeakBinner`, so the min/max/RMS math is unit-tested without a decoder or the SDK
+- Peak binning and the segment bucket layout live in `PeakBinner`, so the min/max/RMS math is unit-tested without a decoder or the SDK
 - Render geometry and colour ramps extracted into `WaveformGeometry` and `WaveformColorMap`; the four near-duplicate drawing paths in the view collapse to two helpers and `drawRect` only emits Core Graphics calls
 - Gradient-band choices now come from one table (`GradientBandTable`) instead of an if/else ladder and a parallel array that could drift apart
 - ARGB conversion deduplicated between the view and preferences

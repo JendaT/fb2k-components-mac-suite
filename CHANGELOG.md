@@ -344,18 +344,17 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Waveform Seekbar
 
-### [Unreleased]
+### [1.2.1] - 2026-10-19
 
 #### Changed
+- **Minimum macOS**: Raised to 12.0 (Monterey).
 - **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s.
 
 #### Fixed
+- **Analyzing state**: No longer stuck on "Analyzing..." after a layout change.
+- **Scan cancellation**: Skipping tracks stops the previous track's analysis instead of leaving it running.
 - Colors drifted one step darker on each preferences save/reload cycle (ARGB truncation)
 - Undefined behaviour in `WaveformData` position accessors for negative/NaN positions
-
-#### Technical
-- Pure logic extracted to SDK-free Core modules (`PeakBinner`, `WaveformGeometry`, `WaveformColorMap`, `GradientBandTable`, `CachePolicy`) with unit tests gating the build
-- View's four near-duplicate drawing paths collapsed to two helpers; banded rendering no longer recomputes peaks per band
 
 ### [1.2.0] - 2026-07-02
 
