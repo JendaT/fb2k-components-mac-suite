@@ -14,4 +14,5 @@ Initial release.
 - **Uncertain results**: Estimates without a clear beat are marked and left unchecked.
 - **Double BPM / Halve BPM**: Scale the existing BPM tag of the selected tracks.
 - **Tag format**: Whole numbers, the only form ID3 TBPM and MP4 tmpo can hold.
+- **Progress**: The bar moves with the decoded share of every track in flight, not only between tracks.
 - Universal binary (arm64 + x86_64).

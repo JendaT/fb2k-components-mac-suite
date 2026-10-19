@@ -153,8 +153,10 @@ bool askTidal(const std::shared_ptr<AnalysisJob> &job, const jl_tidal_lookup::pt
 // Phase 2: local analysis
 // ---------------------------------------------------------------------------
 
-void analyzeRow(TrackRow &row, abort_callback &abort) {
+// `progress` receives the decoded share of the track (0..1) for the dialog.
+void analyzeRow(TrackRow &row, abort_callback &abort, std::atomic<double> &progress) {
     try {
+        const double length = row.handle->get_length();  // <= 0 when unknown
         input_helper decoder;
         decoder.open(nullptr, row.handle, input_flag_simpledecode, abort);
 
@@ -170,6 +172,7 @@ void analyzeRow(TrackRow &row, abort_callback &abort) {
                 return;
             }
             envelope->addInterleaved(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count());
+            if (length > 0.0) progress = std::min(1.0, envelope->secondsAdded() / length);
             if (envelope->secondsAdded() > kMaxDecodeSeconds) break;
         }
         if (!envelope) {
@@ -215,9 +218,10 @@ bool analyzeLocally(const std::shared_ptr<AnalysisJob> &job, threaded_process_st
     std::atomic<size_t> finished{0};
     std::atomic<size_t> current{todo.front()};
     std::atomic<unsigned> running{workers};
+    std::vector<std::atomic<double>> inFlight(workers);  // decoded share of each worker's track
 
     // Each worker takes the next track; rows are never shared between workers.
-    auto work = [&] {
+    auto work = [&](unsigned slot) {
         pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
         for (;;) {
             if (abort.is_aborting()) break;
@@ -227,12 +231,13 @@ bool analyzeLocally(const std::shared_ptr<AnalysisJob> &job, threaded_process_st
             bool aborted = false;
             @autoreleasepool {  // decoders may autorelease; std::thread has no pool
                 try {
-                    analyzeRow(job->rows[todo[k]], abort);
+                    analyzeRow(job->rows[todo[k]], abort, inFlight[slot]);
                 } catch (...) {
                     aborted = true;
                 }
             }
             if (aborted) break;
+            inFlight[slot] = 0.0;
             finished++;
         }
         running--;
@@ -240,12 +245,16 @@ bool analyzeLocally(const std::shared_ptr<AnalysisJob> &job, threaded_process_st
 
     std::vector<std::thread> threads;
     threads.reserve(workers);
-    for (unsigned i = 0; i < workers; i++) threads.emplace_back(work);
+    for (unsigned i = 0; i < workers; i++) threads.emplace_back(work, i);
 
+    // Finished tracks plus the decoded share of the ones in flight, so the bar
+    // moves within long tracks instead of only between them.
     status.set_progress(0, todo.size());
     while (running.load() > 0) {
         std::this_thread::sleep_for(kPollInterval);
-        status.set_progress(finished.load(), todo.size());
+        double done = static_cast<double>(finished.load());
+        for (const auto &share : inFlight) done += share.load();
+        status.set_progress_float(std::min(1.0, done / static_cast<double>(todo.size())));
         status.set_item_path(job->rows[current.load()].handle->get_path());
     }
     for (auto &t : threads) t.join();

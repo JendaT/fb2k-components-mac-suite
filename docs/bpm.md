@@ -60,3 +60,5 @@ The method follows librosa's tempo estimator; the code is a new implementation o
 | Uncertain | 35 | 14% | 14% |
 
 Where the estimate agrees with the tag, the median difference is 0.15 BPM. The analysis itself takes about 1 ms per track; decoding the file is nearly all of the time.
+
+The tags are not a reliable reference. Traktor-written tags in this library read 0.85% low: for three Saint Cole tracks tagged 128.96, 129.88 and 122.93, the plugin found 129.98, 130.96 and 124.01, and a whole-track phase check found exactly 130.00, 131.00 and 124.00. Some of the "different" results above are the same offset.
