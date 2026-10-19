@@ -49,4 +49,11 @@ struct Tokens {
 // lightness towards the other end, tinted with the accent hue.
 Tokens deriveTokens(const RGB& accent, const RGB& background);
 
+// Layered body colour for a tint position: 0 = the track's most bass-heavy
+// passages, 0.5 = the accent, 1 = its brightest. Built in OKLCH around the
+// accent so it never loses saturation. At full `strength`: lightness
+// -0.10 .. +0.07, chroma up to 10 % higher at the ends, hue turned
+// -14 .. +14 degrees; 0 gives the accent everywhere.
+RGB tintColor(const RGB& accent, float position, float strength = 1.0f);
+
 } // namespace theme

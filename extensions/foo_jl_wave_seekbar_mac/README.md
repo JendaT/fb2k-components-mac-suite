@@ -132,17 +132,19 @@ Settings sit on three cards, plus the cache:
 
 | Card | Setting | Description | Default |
 |------|---------|-------------|---------|
-| Appearance | Style | Layered (peak envelope around a short-term loudness body, one dBFS axis) or Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear) | Layered |
+| Appearance | Style | Layered (peak envelope around a momentary loudness body tinted by the spectral balance, one dBFS axis); Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear); Classic: Heat map, Rainbow, Solid (the original styles) | Layered |
+| Appearance | Body tint | Layered: the body darker where bass dominates, lighter where highs do: Off, Subtle, Strong | Subtle |
+| Appearance | Gradient bands | Classic Solid: steps from the centre out (0 = flat, up to 32) | 8 |
 | Appearance | Channels | Stereo (L / R apart) or Mono (mixed into one) | Stereo |
-| Appearance | Colours | Theme preset (the Spectrum Analyzer themes) and its light / dark waveform and background colours; editing a colour switches to Custom | P7 blue |
-| Appearance | Played opacity | How strongly the part already played is drawn (20-100 %) | 50 % |
+| Appearance | Colours | Theme preset (the Spectrum Analyzer themes) and its light / dark waveform and background colours; editing a colour switches to Custom | P4 white |
+| Appearance | Played opacity | How strongly the part already played is drawn (20-100 %) | 72 % |
 | Appearance | Glass background | Translucent blur instead of the background colour | Off |
 | Overlays | Text size | Readout, summary, cursor time and scale labels: 10, 12, 14 or 16 pt | 12 pt |
-| Overlays | Readout on hover | Time, LUFS-S, peak, crest, correlation and Lo/Mid/Hi split under the mouse; click seeks | On |
-| Overlays | Elapsed time on the cursor | m:ss chip beside the playback cursor | On |
+| Overlays | Readout on hover | Time, LUFS-S, peak, crest, correlation and Lo/Mid/Hi split under the mouse; click seeks. Follows the mouse, or sits top right, or bottom right above the summary | On, follows the mouse |
+| Overlays | Elapsed time on the cursor | m:ss chip beside the playback cursor | Off |
 | Overlays | Loudness summary | Integrated, LRA, true peak, PLR, clip count: Off, On hover, Always | On hover |
 | Overlays | Clip markers | Ticks on the top edge for runs of 3+ samples at full scale | On |
-| Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | On |
+| Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | Off |
 | Scales | Level scale on the right | dB labels in a gutter; off gives the waveform full width | On |
 | Cache | Max size / Keep for | Disk space and days to keep unused analysis | 2048 MB, 180 days |
 

@@ -149,6 +149,7 @@ void testBandsAndCorrelation() {
         appendSine(lr, sr, cs.hz, 4.0, -12.0);
         const Columns cols = aggregateColumns(analyse(lr, sr), 8);
         CHECK(cols.bandShare[cs.band][4] > 0.9f, "energy in the expected band");
+        CHECK(cols.tintShare[cs.band][4] > 0.9f, "tint share in the expected band");
         CHECK_NEAR(cols.correlation[4], 1.0, 0.01, "identical channels");
     }
 
@@ -181,6 +182,7 @@ void testColumns() {
         CHECK_NEAR(c.peakDb[mid], -6.02, 0.1, "peak dBFS");
         CHECK_NEAR(c.crestDb[mid], 3.01, 0.1, "crest of a sine");
         CHECK_NEAR(c.lufs[mid], w.summary.integrated, 0.2, "short-term matches a steady tone");
+        CHECK_NEAR(c.momentary[0][mid], c.level[0][mid], 0.1, "momentary equals short-term on a steady tone");
     }
 
     g_context = "silence";
@@ -209,6 +211,8 @@ void testMixdown() {
     CHECK_NEAR(mono.min[0][8], -0.5, 0.01, "widest minimum");
     CHECK_NEAR(mono.rms[0][8], stereo.rms[0][8] / std::sqrt(2.0), 0.002, "power mean of RMS");
     CHECK_NEAR(mono.level[0][8], stereo.level[0][8] - 3.01, 0.05, "level 3 dB down");
+    CHECK_NEAR(mono.momentary[0][8], stereo.momentary[0][8] - 3.01, 0.05, "momentary 3 dB down");
+    CHECK(mono.momentary[1].empty(), "second momentary dropped");
     CHECK(mono.max[1].empty(), "second channel dropped");
     CHECK_EQ(mixdown(mono).count, mono.count, "mono passes through");
 }

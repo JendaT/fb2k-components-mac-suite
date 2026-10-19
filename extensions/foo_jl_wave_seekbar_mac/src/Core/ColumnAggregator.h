@@ -23,9 +23,15 @@ struct Columns {
     // views merge them (min of minima, max of maxima, power mean of RMS).
     std::vector<float> min[2], max[2], rms[2];
 
-    // Per channel K-weighted short-term (3 s, centred) level in dB, i.e.
-    // 10 log10 of mean square, the loudest within the column. -inf = silence.
+    // Per channel K-weighted level in dB (10 log10 of mean square), the
+    // loudest within the column: short-term (3 s, centred) and momentary
+    // (400 ms, centred). -inf = silence.
     std::vector<float> level[2];
+    std::vector<float> momentary[2];
+
+    // Lo / Mid / Hi share of band power over 10 s around the column's centre,
+    // all channels: the spectral balance of the passage. NaN where silent.
+    std::vector<float> tintShare[3];
 
     // Readout, all channels together. NaN where silent / undefined.
     std::vector<float> lufs;            // short-term loudness, LUFS
@@ -38,8 +44,8 @@ struct Columns {
 Columns aggregateColumns(const WaveformData& data, size_t columns);
 
 // Both channels as one (channels = 1): the widest min / max, the power mean
-// of RMS and level. Readout values are already for all channels and copy
-// over. Mono input comes back unchanged.
+// of RMS and levels. Readout and tint values are already for all channels
+// and copy over. Mono input comes back unchanged.
 Columns mixdown(const Columns& stereo);
 
 } // namespace analysis

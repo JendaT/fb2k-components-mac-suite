@@ -12,6 +12,8 @@ namespace analysis {
 
 namespace {
     const size_t kShortTermHalf = 15;      // 3 s window, centred: 15 hops each side
+    const size_t kMomentaryHalf = 2;       // 400 ms window, centred
+    const size_t kTintHalf = 50;           // spectral balance over 10 s, centred: sections, not beats
     const size_t kMinReadoutHops = 4;      // correlation and bands over at least 400 ms
     const double kSilencePower = 1e-10;    // -100 dB
 
@@ -48,16 +50,24 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
         out.max[ch].resize(columns);
         out.rms[ch].resize(columns);
         out.level[ch].resize(columns);
+        out.momentary[ch].resize(columns);
     }
     out.lufs.resize(columns);
     out.peakDb.resize(columns);
     out.crestDb.resize(columns);
     out.correlation.resize(columns);
     for (auto& b : out.bandShare) b.resize(columns);
+    for (auto& b : out.tintShare) b.resize(columns);
 
     // Short-term powers per hop, per channel and summed
     std::vector<double> shortTerm[2];
-    for (uint32_t ch = 0; ch < chans; ++ch) shortTerm[ch] = centredMeans(data.hopKms[ch], kShortTermHalf);
+    std::vector<double> momentary[2];
+    for (uint32_t ch = 0; ch < chans; ++ch) {
+        shortTerm[ch] = centredMeans(data.hopKms[ch], kShortTermHalf);
+        momentary[ch] = centredMeans(data.hopKms[ch], kMomentaryHalf);
+    }
+    std::vector<double> tintBands[3];
+    for (int b = 0; b < 3; ++b) tintBands[b] = centredMeans(data.hopBand[b], kTintHalf);
 
     const double framesPerColumn = totalFrames / columns;
     const double blocksPerColumn = framesPerColumn / data.blockFrames;
@@ -107,18 +117,31 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
         size_t h0 = std::min(hops - 1, (size_t)(f0 / data.hopFrames));
         size_t h1 = std::min(hops, std::max(h0 + 1, (size_t)std::ceil(f1 / data.hopFrames)));
 
-        // Short-term level: the loudest hop in the column
-        double loudest = 0.0, loudestCh[2] = { 0.0, 0.0 };
+        // Short-term and momentary levels: the loudest hop in the column
+        double loudest = 0.0, loudestCh[2] = { 0.0, 0.0 }, momentaryCh[2] = { 0.0, 0.0 };
         for (size_t h = h0; h < h1; ++h) {
             double sum = 0.0;
             for (uint32_t ch = 0; ch < chans; ++ch) {
                 loudestCh[ch] = std::max(loudestCh[ch], shortTerm[ch][h]);
+                momentaryCh[ch] = std::max(momentaryCh[ch], momentary[ch][h]);
                 sum += shortTerm[ch][h];
             }
             loudest = std::max(loudest, sum);
         }
-        for (uint32_t ch = 0; ch < chans; ++ch) out.level[ch][c] = powerDb(loudestCh[ch]);
+        for (uint32_t ch = 0; ch < chans; ++ch) {
+            out.level[ch][c] = powerDb(loudestCh[ch]);
+            out.momentary[ch][c] = powerDb(momentaryCh[ch]);
+        }
         out.lufs[c] = loudest > kSilencePower ? loudnessOf(loudest) : NAN;
+
+        // Spectral balance around the column's centre
+        {
+            const size_t centre = (h0 + h1) / 2;
+            const double total = tintBands[0][centre] + tintBands[1][centre] + tintBands[2][centre];
+            for (int b = 0; b < 3; ++b) {
+                out.tintShare[b][c] = total > kSilencePower ? (float)(tintBands[b][centre] / total) : NAN;
+            }
+        }
 
         // Correlation and bands: widen narrow columns to 400 ms around the centre
         if (h1 - h0 < kMinReadoutHops) {
@@ -160,10 +183,13 @@ Columns mixdown(const Columns& in) {
         out.min[0][c] = std::min(in.min[0][c], in.min[1][c]);
         out.max[0][c] = std::max(in.max[0][c], in.max[1][c]);
         out.rms[0][c] = std::sqrt((in.rms[0][c] * in.rms[0][c] + in.rms[1][c] * in.rms[1][c]) * 0.5f);
-        const double power = (std::pow(10.0, in.level[0][c] / 10.0) + std::pow(10.0, in.level[1][c] / 10.0)) * 0.5;
-        out.level[0][c] = powerDb(power);
+        auto powerMean = [](float a, float b) {
+            return powerDb((std::pow(10.0, a / 10.0) + std::pow(10.0, b / 10.0)) * 0.5);
+        };
+        out.level[0][c] = powerMean(in.level[0][c], in.level[1][c]);
+        out.momentary[0][c] = powerMean(in.momentary[0][c], in.momentary[1][c]);
     }
-    for (auto* v : { &out.min[1], &out.max[1], &out.rms[1], &out.level[1] }) v->clear();
+    for (auto* v : { &out.min[1], &out.max[1], &out.rms[1], &out.level[1], &out.momentary[1] }) v->clear();
     return out;
 }
 

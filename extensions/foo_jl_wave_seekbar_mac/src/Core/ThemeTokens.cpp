@@ -123,4 +123,17 @@ Tokens deriveTokens(const RGB& accent, const RGB& background) {
     return t;
 }
 
+RGB tintColor(const RGB& accent, float position, float strength) {
+    const float u = (std::clamp(position, 0.0f, 1.0f) - 0.5f) * 2.0f * std::clamp(strength, 0.0f, 1.0f);
+    if (u == 0.0f) return accent;
+    const Oklch a = toOklch(accent);
+    Oklch c = a;
+    c.L = a.L + u * (u < 0.0f ? 0.10f : 0.07f);
+    c.C = a.C * (1.0f + 0.1f * std::fabs(u));
+    c.h = a.h + 14.0f * u;
+    if (c.h < 0.0f) c.h += 360.0f;
+    if (c.h >= 360.0f) c.h -= 360.0f;
+    return fromOklch(c);
+}
+
 } // namespace theme
