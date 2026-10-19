@@ -255,7 +255,9 @@ static NSDictionary *textAttrs(NSFont *font, NSColor *color) {
 
 // The magnitude axis needs a wide margin for "-80" labels; the frequency
 // axis a thinner one. Which screen edge holds which depends on orientation.
+// Beside a horizontal plot the dB column widens to its widest label.
 static const CGFloat kDbThick = 42.0;    // along the magnitude axis
+static const CGFloat kDbLabelGap = 6.0;  // plot edge to dB label
 static const CGFloat kFreqThick = 22.0;  // along the frequency axis
 // Empty border on each side of the view. None: in a foobar2000 layout the
 // panel sits flush against its neighbours, so the plot and its labels run
@@ -294,7 +296,32 @@ static const CGFloat kPeakLineAlpha = 0.45;
     }
     *drawDb   = _showDbGuides && (W > 80.0);       // dB labels along the right
     *drawFreq = _showFreqAxis && (H > 50.0);       // freq labels along the bottom
-    return W - (*drawDb ? kDbThick : 0.0);
+    return W - (*drawDb ? [self dbColumnWidth] : 0.0);
+}
+
+// The dB guides, top line first: (level, label). Numbers only, as on studio
+// analyzers; the topmost line names the unit.
+- (std::vector<std::pair<int, NSString *>>)dbGuides {
+    std::vector<std::pair<int, NSString *>> guides;
+    const float range = _rangeDb;
+    if (range <= 0) return guides;
+    const float floorDb = _topDb - range;
+    const int step = range > 90 ? 20 : 10;
+    const int startDb = (int)(std::floor(_topDb / step) * step);
+    for (int db = startDb; db > (int)floorDb; db -= step) {
+        guides.emplace_back(db, db == startDb ? [NSString stringWithFormat:@"%d dB", db]
+                                              : [NSString stringWithFormat:@"%d", db]);
+    }
+    return guides;
+}
+
+// Wide enough for every label beside the horizontal plot, the unit included.
+- (CGFloat)dbColumnWidth {
+    NSDictionary *attrs = textAttrs(dbLabelFont(), NSColor.labelColor);
+    CGFloat widest = 0;
+    for (const auto &g : [self dbGuides])
+        widest = std::max(widest, [g.second sizeWithAttributes:attrs].width);
+    return std::max(kDbThick, std::ceil(kDbLabelGap + widest + 2.0));
 }
 
 - (NSInteger)autoBarCount {
@@ -704,24 +731,18 @@ static CGFloat colorBarStrength(CGFloat level) {
 
 // dB guides: lines of constant magnitude across the frequency axis.
 - (void)drawDbGuidesInContext:(CGContextRef)ctx {
-    const float ceilDb  = _topDb;
     const float range   = _rangeDb;
-    const float floorDb = ceilDb - range;
+    const float floorDb = _topDb - range;
     if (range <= 0) return;
 
-    const int step = range > 90 ? 20 : 10;
     NSDictionary *attrs = textAttrs(dbLabelFont(), [self gridLabelColor]);
     CGContextSetLineWidth(ctx, 1.0);
     NSColor *lineColor = [self gridLineColor];
 
-    // Numbers only, as on studio analyzers; the topmost line names the unit.
-    int startDb = (int)(std::floor(ceilDb / step) * step);
-    for (int db = startDb; db > (int)floorDb; db -= step) {
+    for (const auto &[db, label] : [self dbGuides]) {
         CGFloat v = (db - floorDb) / range;
         // Per line: drawing a label sets the context's colors to its own.
         CGContextSetStrokeColorWithColor(ctx, lineColor.CGColor);
-        NSString *label = db == startDb ? [NSString stringWithFormat:@"%d dB", db]
-                                        : [NSString stringWithFormat:@"%d", db];
         NSSize sz = [label sizeWithAttributes:attrs];
 
         if (_vertical) {
@@ -743,7 +764,7 @@ static CGFloat colorBarStrength(CGFloat level) {
             // Centred on the line, but kept whole at the view's edges: the
             // label of a line at the very top sits just below it.
             const CGFloat ly = std::clamp<CGFloat>(y - sz.height / 2, 0.0, self.bounds.size.height - sz.height);
-            [label drawAtPoint:NSMakePoint(_pOx + _pFreq + 6, ly) withAttributes:attrs];
+            [label drawAtPoint:NSMakePoint(_pOx + _pFreq + kDbLabelGap, ly) withAttributes:attrs];
         }
     }
 }
