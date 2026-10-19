@@ -108,11 +108,18 @@ Use shared utilities from `shared/PreferencesCommon.h`:
 - (void)loadView {
     JLFlippedView *container = [[JLFlippedView alloc] initWithFrame:...];
 
-    // Page title (non-bold, matches foobar2000 style)
+    // Page title (15pt regular, matches foobar2000 style)
     NSTextField *title = JLCreatePreferencesTitle(@"My Extension");
+
+    // "?" button on the title row; shows the names from ComponentInfo.h
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // Section headers
     NSTextField *section = JLCreateSectionHeader(@"Options");
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 ```
 
@@ -137,20 +144,45 @@ foo_myext_mac/
 
 ### Component Registration
 
-Use the shared branding macro in Main.mm:
+Define the component's names in `src/Integration/ComponentInfo.h`. The About text, the layout element's `match_name` and the preferences info popover all read them from there:
+
+```cpp
+#pragma once
+#include "../../../../shared/version.h"
+
+#define JL_COMPONENT_FILE "foo_jl_myext"
+#define JL_COMPONENT_VERSION MYEXT_VERSION
+#define JL_LAYOUT_NAME "myext"                     // recommended layout editor name
+#define JL_LAYOUT_ALIASES "My Extension", "jl_myext" // never drop one: saved layouts use them
+#define JL_LAYOUT_PARAMETERS ""                    // e.g. "type=front|back"
+#define JL_PREFERENCES_PATH "Display > My Extension" // or "none"
+
+#include "../../../../shared/component_info.h"
+```
+
+Use the shared branding macro in Main.mm. The description is a one-line summary, the layout element and preferences path, then the features:
 
 ```cpp
 #include "common_about.h"
+#include "ComponentInfo.h"
 
 JL_COMPONENT_ABOUT(
     "My Extension",
-    "1.0.0",
+    MYEXT_VERSION,
     "Description of the extension.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Feature 1\n"
     "- Feature 2"
 );
+
+bool match_name(const char* name) override {
+    return JLMatchesLayoutName(name);
+}
 ```
+
+`JL_COMPONENT_ABOUT_BY(name, version, author, description)` credits a contributor as the author.
 
 ## Versioning
 

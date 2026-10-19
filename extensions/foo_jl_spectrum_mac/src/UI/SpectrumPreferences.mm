@@ -13,6 +13,7 @@
 #include "../Core/SpectrumConfig.h"
 #include "../Core/SpectrumThemes.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -323,6 +324,7 @@ const Preset kPresets[] = {
     NSTextField *title = JLCreatePreferencesTitle(@"Spectrum Analyzer");
     title.frame = NSMakeRect(20, 10, 400, 20);
     [_page addSubview:title];
+    JLAddPreferencesInfoButton(_page, title, self, @selector(showComponentInfo:));
 
     // Presets: a pull-down, so it always reads "Apply preset" rather than
     // claiming the current settings match one.
@@ -744,6 +746,10 @@ const Preset kPresets[] = {
     [self loadValues];
     [self refresh];
     [self notifyChanged];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

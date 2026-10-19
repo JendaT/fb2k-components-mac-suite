@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #import "../Core/PlaybackControlsConfig.h"
 #import "../UI/PlaybackControlsController.h"
@@ -16,14 +17,16 @@ JL_COMPONENT_ABOUT(
     "Playback Controls",
     PLAYBACK_CONTROLS_VERSION,
     "Customizable playback controls panel for foobar2000.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "(playback-controls with a hyphen is the built-in element)\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Transport buttons (play/pause, stop, previous, next)\n"
     "- Volume slider with mute toggle\n"
-    "- Configurable track info display\n"
+    "- Now playing info: artist, title and playback time\n"
     "- Click track info to navigate to playing item\n"
-    "- Drag-to-reorder editing mode\n"
-    "- Compact and full display modes\n\n"
-    "Use 'Playback Controls' in layout editor to add this element."
+    "- Drag-to-reorder buttons (long-press or right-click)\n"
+    "- Compact and full display modes"
 );
 
 // Validate bundle filename
@@ -84,11 +87,7 @@ public:
     }
 
     bool match_name(const char* name) override {
-        return strcmp(name, "Playback Controls") == 0 ||
-               strcmp(name, "playback_controls") == 0 ||
-               strcmp(name, "transport") == 0 ||
-               strcmp(name, "transport_controls") == 0 ||
-               strcmp(name, "PlaybackControls") == 0;
+        return JLMatchesLayoutName(name);
     }
 
     fb2k::stringRef get_name() override {

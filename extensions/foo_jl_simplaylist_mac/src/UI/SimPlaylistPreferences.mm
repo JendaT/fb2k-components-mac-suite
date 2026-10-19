@@ -14,6 +14,7 @@
 #import "../Core/TitleFormatHelper.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
 @interface SimPlaylistFlippedView : NSView
@@ -92,6 +93,7 @@
     NSTextField *title = JLCreatePreferencesTitle(@"SimPlaylist Settings");
     title.frame = NSMakeRect(leftMargin, y, 400, 20);
     [container addSubview:title];
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
     y += 35;
 
     // ==================== GROUPING SETTINGS ====================
@@ -1100,6 +1102,10 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
     NSString *value = _finderOpenTargetPopup.titleOfSelectedItem ?: @"";
     simplaylist_config::setConfigString(simplaylist_config::kFinderOpenTargetPlaylist,
                                         [value UTF8String]);
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

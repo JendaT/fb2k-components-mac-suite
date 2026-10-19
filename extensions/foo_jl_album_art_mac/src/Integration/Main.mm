@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/AlbumArtController.h"
@@ -17,13 +18,17 @@ JL_COMPONENT_ABOUT(
     "Album Art (Extended)",
     ALBUMART_VERSION,
     "Extended album art viewer for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Layout parameters: " JL_LAYOUT_PARAMETERS "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
-    "- Display front, back, disc, icon, and artist artwork\n"
-    "- Fetch missing artwork from online sources\n"
-    "- Right-click context menu to switch artwork type\n"
-    "- Navigation arrows on hover\n"
-    "- Per-instance configuration\n"
-    "- Layout parameters: type, square, zoomable"
+    "- Front, back, disc, icon and artist artwork\n"
+    "- Shows the selected track, falls back to now playing\n"
+    "- Hover arrows cycle through the available types\n"
+    "- Right-click menu to switch artwork type\n"
+    "- Fetch missing artwork: Cover Art Archive, iTunes, Deezer\n"
+    "- Preview results in a lightbox, pick several at once\n"
+    "- Save to the album folder and/or embed in file tags"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_album_art.component");
@@ -55,12 +60,7 @@ namespace {
 
         // Layout editor recognizes components by name - use unique names to avoid clash with built-in
         bool match_name(const char* name) override {
-            return strcmp(name, "Album Art (Extended)") == 0 ||
-                   strcmp(name, "albumart_ext") == 0 ||
-                   strcmp(name, "foo_jl_album_art") == 0 ||
-                   strcmp(name, "jl_album_art") == 0 ||
-                   strcmp(name, "jl_albumart") == 0 ||
-                   strcmp(name, "jl_albumart_ext") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {

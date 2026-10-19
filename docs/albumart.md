@@ -96,8 +96,8 @@ splitter horizontal
 
 Add Album Art to your layout using any of these names:
 - `albumart_ext` (recommended)
-- `album_art_ext`
 - `foo_jl_album_art`
+- `jl_album_art`
 
 ### Layout Examples
 

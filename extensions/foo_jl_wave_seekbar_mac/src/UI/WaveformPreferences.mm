@@ -13,6 +13,7 @@
 #include "../Core/WaveformColorMap.h"
 #include "../Core/GradientBandTable.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
 @interface WaveformFlippedView : NSView
@@ -86,6 +87,7 @@
     NSTextField *title = JLCreatePreferencesTitle(@"Waveform Seekbar");
     title.frame = NSMakeRect(labelX, y, 400, 20);
     [self.view addSubview:title];
+    JLAddPreferencesInfoButton(self.view, title, self, @selector(showComponentInfo:));
     y += 28;
 
     // Display section header
@@ -443,6 +445,10 @@
         getWaveformService().clearCache();
         [self updateCacheStatus];
     }
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

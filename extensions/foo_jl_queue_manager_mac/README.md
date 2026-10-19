@@ -45,14 +45,14 @@ Use these names in the layout editor:
 
 | Recommended | Also Accepted |
 |-------------|---------------|
-| `Queue Manager` | `queue_manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
+| `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
 
 ### Example Layout
 
 ```
 splitter vertical
   simplaylist
-  Queue Manager
+  queue_manager
 ```
 
 ### Interaction

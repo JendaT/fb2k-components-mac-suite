@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/PlaylistOrganizerController.h"
@@ -17,14 +18,17 @@ JL_COMPONENT_ABOUT(
     "Playlist Organizer",
     PLORG_VERSION,
     "Playlist Organizer for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Hierarchical playlist organization with folders\n"
-    "- Drag and drop reordering\n"
-    "- Customizable node display formatting\n"
+    "- Drag and drop reordering of playlists and folders\n"
+    "- Drop tracks from SimPlaylist or Finder onto a playlist\n"
     "- Automatic sync with playlist changes\n"
-    "- FTH theme import from Windows foo_plorg theme files\n"
+    "- Import from Windows foo_plorg, Strawberry, DeaDBeeF, Vox\n"
+    "- Folder tree export and import as YAML\n"
     "- Corrupted playlist detection and safe removal\n"
-    "- Automatic volume UUID sync for network-share playlists\n\n"
+    "- Volume UUID repair for playlists on network shares\n\n"
     "Based on foo_plorg by Holger Stenger."
 );
 
@@ -56,15 +60,7 @@ namespace {
         // Layout editor recognizes components by name - support all variations
         // This ensures backward compatibility when renaming components
         bool match_name(const char* name) override {
-            return strcmp(name, "Playlist Organizer") == 0 ||
-                   strcmp(name, "playlist_organizer") == 0 ||
-                   strcmp(name, "playlist-organizer") == 0 ||
-                   strcmp(name, "plorg") == 0 ||
-                   // Legacy names (pre-jl prefix)
-                   strcmp(name, "foo_plorg") == 0 ||
-                   // New jl-prefixed names
-                   strcmp(name, "foo_jl_plorg") == 0 ||
-                   strcmp(name, "jl_plorg") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {

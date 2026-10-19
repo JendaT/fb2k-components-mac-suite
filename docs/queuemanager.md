@@ -76,8 +76,8 @@ Access settings via **Preferences > Display > Queue Manager**.
 ## Layout Editor
 
 Add Queue Manager to your layout using any of these names:
-- `Queue Manager` (recommended)
-- `queue_manager`
+- `queue_manager` (recommended)
+- `Queue Manager`
 - `QueueManager`
 - `Queue`
 - `foo_jl_queue_manager`
@@ -86,7 +86,7 @@ Example layout:
 ```
 splitter vertical
   simplaylist
-  Queue Manager
+  queue_manager
 ```
 
 ## Requirements

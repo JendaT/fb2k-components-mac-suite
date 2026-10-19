@@ -307,13 +307,14 @@ Use these names in the layout editor or when editing the layout text file direct
 
 | Component | Recommended | Also Accepted |
 |-----------|-------------|---------------|
-| SimPlaylist | `simplaylist` | `SimPlaylist`, `foo_jl_simplaylist`, `jl_simplaylist` |
-| Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
+| SimPlaylist | `simplaylist` | `SimPlaylist`, `sim_playlist`, `foo_jl_simplaylist`, `jl_simplaylist` |
+| Playlist Organizer | `plorg` | `playlist-organizer`, `playlist_organizer`, `foo_jl_plorg`, `jl_plorg` |
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
 | Spectrum Analyzer | `spectrum` | `Spectrum Analyzer`, `spectrum_analyzer`, `foo_jl_spectrum`, `jl_spectrum` |
 | Vectorscope | `vectorscope` | `Vectorscope`, `vector_scope`, `goniometer`, `foo_jl_vectorscope`, `jl_vectorscope` |
-| Album Art (Extended) | `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art` |
-| Queue Manager | `Queue Manager` | `queue_manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager` |
+| Album Art (Extended) | `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
+| Queue Manager | `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
+| Last.fm Scrobbler (stats widget) | `lastfm_scrobbler` | `lastfm-scrobbler`, `scrobbler`, `foo_jl_scrobble`, `jl_scrobble` |
 
 ### Example Layout
 

@@ -57,20 +57,17 @@ bool match_name(const char* name) override {
 
 ### 1.5 Example from JL Components
 
-All JL components support both legacy (pre-jl prefix) and new naming:
+JL components list their names once, in `src/Integration/ComponentInfo.h`. `match_name` checks them with `JLMatchesLayoutName` (`shared/component_info.h`), and the About text and the preferences "?" popover show the same list, so the documented names cannot drift from the accepted ones:
 
 ```cpp
+// foo_jl_plorg_mac/src/Integration/ComponentInfo.h
+#define JL_LAYOUT_NAME "plorg"
+#define JL_LAYOUT_ALIASES "Playlist Organizer", "playlist_organizer", "playlist-organizer", \
+    "foo_plorg", "foo_jl_plorg", "jl_plorg"
+
 // foo_jl_plorg_mac/src/Integration/Main.mm
 bool match_name(const char* name) override {
-    return strcmp(name, "Playlist Organizer") == 0 ||
-           strcmp(name, "playlist_organizer") == 0 ||
-           strcmp(name, "playlist-organizer") == 0 ||
-           strcmp(name, "plorg") == 0 ||
-           // Legacy names (pre-jl prefix)
-           strcmp(name, "foo_plorg") == 0 ||
-           // New jl-prefixed names
-           strcmp(name, "foo_jl_plorg") == 0 ||
-           strcmp(name, "jl_plorg") == 0;
+    return JLMatchesLayoutName(name);
 }
 ```
 

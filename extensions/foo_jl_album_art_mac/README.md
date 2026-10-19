@@ -41,7 +41,7 @@ Use these names in the layout editor:
 
 | Recommended | Also Accepted |
 |-------------|---------------|
-| `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art`, `jl_albumart` |
+| `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
 
 ### Layout Parameters
 

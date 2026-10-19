@@ -7,6 +7,7 @@
 #import "../Core/TreeModel.h"
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 @interface OrganizerPreferencesController ()
 @property (nonatomic, strong) NSButton *singleClickActivateCheckbox;
@@ -69,6 +70,7 @@
     // Title (non-bold, matches foobar2000 style)
     NSTextField *title = JLCreatePreferencesTitle(@"Playlist Organizer Settings");
     addRow(title, 28);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // Behavior section
     NSTextField *behaviorLabel = [NSTextField labelWithString:@"Behavior:"];
@@ -351,6 +353,10 @@
 
     // Notify that settings changed
     [[NSNotificationCenter defaultCenter] postNotificationName:@"PlorgSettingsChanged" object:nil];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

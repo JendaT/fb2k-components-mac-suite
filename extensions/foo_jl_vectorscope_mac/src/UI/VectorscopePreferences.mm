@@ -8,6 +8,7 @@
 #include "../Core/VectorscopeConfig.h"
 #include "../Core/VectorscopeThemes.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Uniquely-named flipped view (avoids ObjC runtime clashes across components)
 @interface VectorscopeFlippedView : NSView
@@ -83,6 +84,7 @@
     NSTextField *title = JLCreatePreferencesTitle(@"Vectorscope");
     title.frame = NSMakeRect(labelX, y, 400, 20);
     [self.view addSubview:title];
+    JLAddPreferencesInfoButton(self.view, title, self, @selector(showComponentInfo:));
     y += 30;
 
     // --- Scope section ---
@@ -632,6 +634,10 @@
     }
     [_themePopup selectItemWithTag:themeMatchingConfig()];
     [self notifyChanged];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

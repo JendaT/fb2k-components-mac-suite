@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #include "../Core/CloudConfig.h"
 #include "../Core/StreamCache.h"
@@ -32,7 +33,17 @@ JL_COMPONENT_ABOUT(
     "Cloud Streamer",
     CLOUD_STREAMER_VERSION,
     "Stream Mixcloud and SoundCloud content directly in your playlist.\n"
-    "Requires yt-dlp to be installed (via Homebrew)."
+    "Requires yt-dlp (a Homebrew install is detected automatically).\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
+    "Features:\n"
+    "- Plays Mixcloud and SoundCloud track and mix links\n"
+    "- Search panel for SoundCloud and Mixcloud\n"
+    "- Add results by double-click, Enter or drag to a playlist\n"
+    "- Title, artist, date, genre and duration tags\n"
+    "- Cover art from track thumbnails\n"
+    "- Mixcloud tracklists stored as a CUE sheet\n"
+    "- Cached stream URLs, metadata and thumbnails"
 );
 
 // Validate bundle filename
@@ -141,13 +152,7 @@ public:
 
     // Match by name for layout editor
     bool match_name(const char* name) override {
-        return strcmp(name, "Cloud Browser") == 0 ||
-               strcmp(name, "cloud_browser") == 0 ||
-               strcmp(name, "CloudBrowser") == 0 ||
-               strcmp(name, "Cloud browser") == 0 ||
-               strcmp(name, "cloud browser") == 0 ||
-               strcmp(name, "foo_jl_cloud_browser") == 0 ||
-               strcmp(name, "jl_cloud_browser") == 0;
+        return JLMatchesLayoutName(name);
     }
 
     // Display name in layout editor

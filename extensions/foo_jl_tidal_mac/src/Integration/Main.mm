@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #include "../Core/TidalConfig.h"
 #include "../Core/KeychainHelper.h"
@@ -34,8 +35,20 @@ namespace {
 JL_COMPONENT_ABOUT(
     "Tidal Integration",
     TIDAL_VERSION,
-    "Stream Tidal content directly in your playlist.\n"
-    "Supports HiFi and lossless audio quality with automatic DRM fallback."
+    "Stream Tidal tracks in your playlists and browse the Tidal catalog.\n"
+    "Requires a Tidal account; quality depends on your subscription.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
+    "Features:\n"
+    "- Sign in with a device code; tokens stored in Keychain\n"
+    "- Plays tidal:// and tidal.com track links\n"
+    "- Quality from 96 kbps AAC up to 16-bit lossless FLAC\n"
+    "- Steps down in quality on DRM or subscription limits\n"
+    "- Prefetches the next track to cut lossless start delay\n"
+    "- Search tracks, albums and artists\n"
+    "- Browse favorite tracks, albums and playlists\n"
+    "- Playlist import and pull/push sync with Tidal\n"
+    "- Track tags (ISRC, date, copyright) and cover art"
 );
 
 // Validate bundle filename
@@ -146,11 +159,7 @@ public:
     }
 
     bool match_name(const char* name) override {
-        return strcmp(name, "Tidal Browser") == 0 ||
-               strcmp(name, "tidal-browser") == 0 ||
-               strcmp(name, "tidal_browser") == 0 ||
-               strcmp(name, "TidalBrowser") == 0 ||
-               strcmp(name, "foo_jl_tidal_browser") == 0;
+        return JLMatchesLayoutName(name);
     }
 
     fb2k::stringRef get_name() override {

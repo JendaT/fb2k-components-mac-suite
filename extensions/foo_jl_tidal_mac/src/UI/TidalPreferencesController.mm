@@ -11,6 +11,7 @@
 #import "../Core/StreamCache.h"
 #import "../API/TidalConstants.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Single source of truth for the quality popup: index in this array ==
 // popup item index. Used by both loadSettings and qualityChanged: so the
@@ -131,6 +132,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     // ===== Title =====
     NSTextField *title = JLCreatePreferencesTitle(@"Tidal Integration");
     addRow(title, 30);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // ===== Account Section =====
     NSTextField *accountLabel = [NSTextField labelWithString:@"Account"];
@@ -624,6 +626,10 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     // Stream cache may hold pre-DASH entries — clear so the next play re-resolves
     // and picks up DASH-vs-direct selection based on the new setting.
     tidal::StreamCache::shared().clear();
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/SimPlaylistView.h"
@@ -18,14 +19,17 @@ JL_COMPONENT_ABOUT(
     "SimPlaylist",
     SIMPLAYLIST_VERSION,
     "Simple playlist view for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
-    "- Album grouping with cover art display\n"
-    "- Three header display styles\n"
-    "- Subgroup support (disc numbers)\n"
-    "- Virtual scrolling for large playlists\n"
-    "- Keyboard navigation\n"
-    "- Now playing highlighting\n"
-    "- Drag & drop reordering\n"
+    "- Album grouping with cover art, configurable patterns\n"
+    "- Four header display styles, disc subgroups\n"
+    "- Built-in, component-provided and custom columns\n"
+    "- Queue column; Q queues the selected tracks\n"
+    "- Drag & drop reordering, drops from Finder and album list\n"
+    "- Sort and Remove in the context menu, undo/redo\n"
+    "- Remembers the scroll position of each playlist\n"
+    "- Now playing highlight and Focus Playing Now\n"
     "- Keeps playback in its playlist while browsing the library"
 );
 
@@ -51,15 +55,7 @@ namespace {
         // Layout editor recognizes components by name - support all variations
         // This ensures backward compatibility when renaming components
         bool match_name(const char* name) override {
-            return strcmp(name, "SimPlaylist") == 0 ||
-                   strcmp(name, "simplaylist") == 0 ||
-                   strcmp(name, "sim_playlist") == 0 ||
-                   strcmp(name, "Simple Playlist") == 0 ||
-                   // Legacy names (pre-jl prefix)
-                   strcmp(name, "foo_simplaylist") == 0 ||
-                   // New jl-prefixed names
-                   strcmp(name, "foo_jl_simplaylist") == 0 ||
-                   strcmp(name, "jl_simplaylist") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {

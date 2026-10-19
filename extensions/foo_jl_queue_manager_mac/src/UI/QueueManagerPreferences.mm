@@ -11,6 +11,7 @@
 #include "../Core/ConfigHelper.h"
 #import "../Integration/StopAfterQueue.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
 @interface QueueManagerFlippedView : NSView
@@ -60,6 +61,7 @@
     NSTextField *title = JLCreatePreferencesTitle(@"Queue Manager");
     title.frame = NSMakeRect(labelX, y, 400, 20);
     [self.view addSubview:title];
+    JLAddPreferencesInfoButton(self.view, title, self, @selector(showComponentInfo:));
     y += 28;
 
     // Display section header
@@ -161,6 +163,10 @@
 
 - (void)stopAfterQueueOnceChanged:(id)sender {
     stop_after_queue::setOnlyOnce(_stopAfterQueueOnceCheckbox.state == NSControlStateValueOn);
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

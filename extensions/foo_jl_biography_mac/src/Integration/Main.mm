@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/BiographyController.h"
@@ -17,12 +18,15 @@ JL_COMPONENT_ABOUT(
     "Artist Biography",
     BIOGRAPHY_VERSION,
     "Artist biography viewer for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
-    "- Display artist biography from Last.fm\n"
-    "- Show artist images from multiple sources\n"
-    "- Similar artists and tags display\n"
-    "- Automatic caching for offline use\n"
-    "- Layout parameters: mode"
+    "- Artist biography from Last.fm, Wikipedia as fallback\n"
+    "- Follows the selected track, else the playing track\n"
+    "- Artist images from Fanart.tv, TheAudioDB and Deezer\n"
+    "- Full-size image viewer with keyboard navigation\n"
+    "- Artist tags and biography source\n"
+    "- Automatic caching for offline use"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_biography.component");
@@ -55,12 +59,7 @@ namespace {
 
         // Layout editor recognizes components by name - support all variations
         bool match_name(const char* name) override {
-            return strcmp(name, "Artist Biography") == 0 ||
-                   strcmp(name, "biography") == 0 ||
-                   strcmp(name, "Biography") == 0 ||
-                   strcmp(name, "artist_biography") == 0 ||
-                   strcmp(name, "foo_jl_biography") == 0 ||
-                   strcmp(name, "jl_biography") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {
