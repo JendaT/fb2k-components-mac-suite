@@ -13,13 +13,16 @@ SimPlaylist automatically groups tracks by album and displays album artwork alon
 
 ### Header Display Styles
 
-Three configurable header display modes to match your preference:
+Four configurable header display modes to match your preference:
 
 | Style | Description |
 |-------|-------------|
 | **Above tracks** | Header row appears above track rows with separator line |
 | **Album art aligned** | Header text starts at left edge, aligned with album art |
-| **Inline** | Compact header style with smaller text, no separator line |
+| **Inline** | Header is the album's first row, beside the top of the album art, no separator line |
+| **Under album art** | Header text is drawn in the art column, below the album art |
+
+With **Inline**, **Album Spacing** (Close / One row / Two rows) replaces Group Header Spacing. The spacing follows whichever ends lower, the tracks or the album art, so every album is separated by the same gap. The art is sized to whole rows for this, within half a row of the Album Art Size setting.
 
 <!-- Screenshot: Comparison of header styles -->
 
@@ -87,7 +90,8 @@ Access settings via **Preferences > Display > SimPlaylist**
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Album Art Size | Size of album artwork in pixels | 80 |
-| Header Display | Header style (Above/Aligned/Inline) | Above tracks |
+| Header Display | Header style (Above/Aligned/Inline/Under art) | Above tracks |
+| Album Spacing | Inline only: empty rows between albums (Close/One row/Two rows) | One row |
 | Highlight Now Playing | Show yellow highlight on playing track | Off |
 | Keep playback in its playlist | Prevent library browsing (ReFacets) from changing what plays next | On |
 

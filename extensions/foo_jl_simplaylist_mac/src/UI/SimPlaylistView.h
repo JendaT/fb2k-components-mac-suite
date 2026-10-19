@@ -70,6 +70,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect
 @property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = compact, 1 = normal, 2 = larger
+@property (nonatomic, assign) NSInteger inlineAlbumSpacing;  // Inline style: empty rows between albums (0-2)
 
 // Row decorator providers (intake doc 04 Part A). Set once by the controller
 // at panel init. When NO (zero providers registered — the common case) the

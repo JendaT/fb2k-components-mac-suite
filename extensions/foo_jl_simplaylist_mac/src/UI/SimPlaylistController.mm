@@ -18,6 +18,7 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
 #import "../Core/ImportSorter.h"
+#include "../Core/GroupPadding.h"
 #import "../Core/SubgroupDetector.h"
 #import "../Core/GroupBuilder.h"
 #import "../Core/DecorationStore.h"
@@ -1148,22 +1149,6 @@ struct ReloadOperation {
     [_scrollView reflectScrolledClipView:clipView];
 }
 
-// Shared padding calculation for album art minimum group height
-static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgroupsInGroup,
-                                           CGFloat albumArtSize, CGFloat rowHeight,
-                                           NSInteger headerStyle) {
-    // Clamp albumArtSize to prevent overflow with extreme config values
-    albumArtSize = MIN(MAX(albumArtSize, 0.0), 1000.0);
-    CGFloat padding = 6.0;
-    NSInteger minContentRows = (rowHeight > 0) ? (NSInteger)ceil((albumArtSize + padding * 2) / rowHeight) : 0;
-
-    NSInteger minPadding = (headerStyle == 3) ? 1 : 0;
-    NSInteger extraHeaderSpace = (headerStyle == 2) ? 1 : 0;
-    NSInteger extraTextSpace = (headerStyle == 3) ? 1 : 0;
-
-    return MAX(minPadding, minContentRows - trackCount - subgroupsInGroup - extraHeaderSpace + extraTextSpace);
-}
-
 // Drops the view back to an ungrouped flat list. The derived caches are rebuilt
 // from the now-empty arrays rather than hand-cleared, which is what the rebuild
 // methods do for empty input anyway. Callers own itemCount.
@@ -1207,6 +1192,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     CGFloat rowHeight = _playlistView.rowHeight;
     CGFloat albumArtSize = _playlistView.albumArtSize;
     NSInteger headerStyle = _playlistView.headerDisplayStyle;
+    NSInteger inlineSpacing = _playlistView.inlineAlbumSpacing;
 
     NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
     for (NSUInteger g = 0; g < groupStarts.count; g++) {
@@ -1215,8 +1201,8 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         NSInteger trackCount = groupEnd - groupStart;
         NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
             ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-        [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                          albumArtSize, rowHeight, headerStyle))];
+        [paddingRows addObject:@(simplaylist::paddingRowsForGroup(trackCount, subgroupsInGroup, albumArtSize,
+                                                                  rowHeight, headerStyle, inlineSpacing))];
     }
     _playlistView.groupPaddingRows = paddingRows;
     [_playlistView rebuildPaddingCache];

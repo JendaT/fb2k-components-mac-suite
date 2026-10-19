@@ -43,6 +43,9 @@
 @property (nonatomic, strong) NSPopUpButton *headerSizePopup;
 @property (nonatomic, strong) NSPopUpButton *headerAccentPopup;
 @property (nonatomic, strong) NSPopUpButton *groupHeaderSpacingPopup;
+@property (nonatomic, strong) NSTextField *groupHeaderSpacingLabel;
+@property (nonatomic, strong) NSPopUpButton *inlineAlbumSpacingPopup;  // shown instead of the above for Inline
+@property (nonatomic, strong) NSTextField *inlineAlbumSpacingLabel;
 @property (nonatomic, strong) NSButton *glassBackgroundCheckbox;
 @property (nonatomic, strong) NSButton *debugRenderingCheckbox;
 @property (nonatomic, strong) NSButton *dragToFinderMoveCheckbox;
@@ -341,10 +344,10 @@
     [displayContent addSubview:_headerAccentPopup];
     displayContentY += rowHeight + 4;
 
-    // Group Header Spacing
-    NSTextField *groupHeaderSpacingLabel = [NSTextField labelWithString:@"Group Header Spacing:"];
-    groupHeaderSpacingLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
-    [displayContent addSubview:groupHeaderSpacingLabel];
+    // Group Header Spacing (Inline shows Album Spacing in the same place)
+    _groupHeaderSpacingLabel = [NSTextField labelWithString:@"Group Header Spacing:"];
+    _groupHeaderSpacingLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
+    [displayContent addSubview:_groupHeaderSpacingLabel];
 
     _groupHeaderSpacingPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, displayContentY, 150, 26) pullsDown:NO];
     [_groupHeaderSpacingPopup addItemWithTitle:@"Compact"];
@@ -353,6 +356,19 @@
     _groupHeaderSpacingPopup.target = self;
     _groupHeaderSpacingPopup.action = @selector(groupHeaderSpacingChanged:);
     [displayContent addSubview:_groupHeaderSpacingPopup];
+
+    _inlineAlbumSpacingLabel = [NSTextField labelWithString:@"Album Spacing:"];
+    _inlineAlbumSpacingLabel.frame = _groupHeaderSpacingLabel.frame;
+    [displayContent addSubview:_inlineAlbumSpacingLabel];
+
+    _inlineAlbumSpacingPopup = [[NSPopUpButton alloc] initWithFrame:_groupHeaderSpacingPopup.frame pullsDown:NO];
+    [_inlineAlbumSpacingPopup addItemWithTitle:@"Close"];
+    [_inlineAlbumSpacingPopup addItemWithTitle:@"One row"];
+    [_inlineAlbumSpacingPopup addItemWithTitle:@"Two rows"];
+    _inlineAlbumSpacingPopup.toolTip = @"Empty rows between albums, after the tracks or the album art, whichever ends lower";
+    _inlineAlbumSpacingPopup.target = self;
+    _inlineAlbumSpacingPopup.action = @selector(inlineAlbumSpacingChanged:);
+    [displayContent addSubview:_inlineAlbumSpacingPopup];
     displayContentY += rowHeight + 4;
 
     // Glass Background
@@ -546,6 +562,13 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
         simplaylist_config::kHeaderDisplayStyle,
         simplaylist_config::kDefaultHeaderDisplayStyle);
     selectClampedItem(_headerStylePopup, headerStyle);
+
+    // Load inline album spacing (0=close, 1=one row, 2=two rows)
+    int64_t inlineAlbumSpacing = simplaylist_config::getConfigInt(
+        simplaylist_config::kInlineAlbumSpacing,
+        simplaylist_config::kDefaultInlineAlbumSpacing);
+    selectClampedItem(_inlineAlbumSpacingPopup, inlineAlbumSpacing);
+    [self updateSpacingControlsForHeaderStyle:headerStyle];
 
     // Load now playing shading
     bool nowPlayingShading = simplaylist_config::getConfigBool(
@@ -920,9 +943,29 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
                                                         object:nil];
 }
 
+// Inline has no use for Group Header Spacing (its header is a plain row) and
+// takes Album Spacing in the same place instead.
+- (void)updateSpacingControlsForHeaderStyle:(NSInteger)style {
+    const BOOL isInline = (style == 2);
+    _groupHeaderSpacingLabel.hidden = isInline;
+    _groupHeaderSpacingPopup.hidden = isInline;
+    _inlineAlbumSpacingLabel.hidden = !isInline;
+    _inlineAlbumSpacingPopup.hidden = !isInline;
+}
+
+- (void)inlineAlbumSpacingChanged:(id)sender {
+    NSInteger spacing = _inlineAlbumSpacingPopup.indexOfSelectedItem;
+    simplaylist_config::setConfigInt(simplaylist_config::kInlineAlbumSpacing, spacing);
+
+    // Group padding changes, so the groups are rebuilt
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
+                                                        object:nil];
+}
+
 - (void)headerStyleChanged:(id)sender {
     NSInteger style = _headerStylePopup.indexOfSelectedItem;
     simplaylist_config::setConfigInt(simplaylist_config::kHeaderDisplayStyle, style);
+    [self updateSpacingControlsForHeaderStyle:style];
 
     // Notify views to refresh
     [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification

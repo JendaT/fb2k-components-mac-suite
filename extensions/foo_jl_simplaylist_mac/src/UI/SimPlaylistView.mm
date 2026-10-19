@@ -9,6 +9,7 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
+#include "../Core/GroupPadding.h"
 #import "../Core/SimPlaylistNotifications.h"
 #import "../Core/PlaylistLayoutModel.h"
 #import "../Core/PlaylistSelectionModel.h"
@@ -231,6 +232,9 @@ static NSString *formatGroupDuration(double seconds) {
     _groupHeaderSpacing = simplaylist_config::getConfigInt(
         simplaylist_config::kGroupHeaderSpacing,
         simplaylist_config::kDefaultGroupHeaderSpacing);
+    _inlineAlbumSpacing = simplaylist_config::getConfigInt(
+        simplaylist_config::kInlineAlbumSpacing,
+        simplaylist_config::kDefaultInlineAlbumSpacing);
 
     [self updateHeaderHeightForSpacing];
 
@@ -350,6 +354,7 @@ static NSString *formatGroupDuration(double seconds) {
     _showGroupDuration = getConfigBool(kShowGroupDuration, kDefaultShowGroupDuration);
     _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
+    _inlineAlbumSpacing = getConfigInt(kInlineAlbumSpacing, kDefaultInlineAlbumSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
 
     [self updateHeaderHeightForSpacing];
@@ -358,8 +363,14 @@ static NSString *formatGroupDuration(double seconds) {
     [self reloadData];
 }
 
-// Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
+// Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12.
+// The Inline header is a plain row: its title sits right above the tracks, and
+// the space between albums comes from Album Spacing instead (GroupPadding.h).
 - (void)updateHeaderHeightForSpacing {
+    if (_layout.headerDisplayStyle == 2) {
+        _layout.headerHeight = _layout.rowHeight;
+        return;
+    }
     switch (_groupHeaderSpacing) {
         case 0:  _layout.headerHeight = _layout.rowHeight; break;      // Compact - same as track rows
         case 2:  _layout.headerHeight = _layout.rowHeight + 12; break; // Larger - generous padding
@@ -787,9 +798,9 @@ static NSString *formatGroupDuration(double seconds) {
         lineStartX = textX + textSize.width + 12;
         lineY = rect.origin.y + rect.size.height / 2;
     } else if (_layout.headerDisplayStyle == 2) {
-        // Style 2 (Inline): text at top of row
+        // Style 2 (Inline): a plain row, text centred like the tracks below it
         textX = _groupColumnWidth + _decorationGutterWidth + 8;
-        textY = rect.origin.y + 2;
+        textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = lineEndX + 1;  // No line for style 2
         lineY = 0;
     } else {
@@ -1231,15 +1242,22 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
         // Style 3: No header row, album art at group top
         CGFloat headerOffset = (_layout.headerDisplayStyle == 0 || _layout.headerDisplayStyle == 1) ? _layout.headerHeight : 0;
 
+        // Style 2 sizes the art to whole rows (GroupPadding.h), so it ends the
+        // same distance above the next album whatever the configured size.
+        const BOOL inlineStyle = (_layout.headerDisplayStyle == 2);
+        CGFloat inset = inlineStyle ? simplaylist::kInlineArtInset : padding;
+        CGFloat configuredSize = inlineStyle ? simplaylist::inlineArtSize(_albumArtSize, _layout.rowHeight)
+                                             : _albumArtSize;
+
         // Calculate available height for album art (below header if present, minus padding)
-        CGFloat availableHeight = groupHeight - headerOffset - padding * 2;
+        CGFloat availableHeight = groupHeight - headerOffset - inset * 2;
 
         // Use configured size, bounded only by available height
-        CGFloat artSize = MIN(_albumArtSize, availableHeight);
+        CGFloat artSize = MIN(configuredSize, availableHeight);
         artSize = MAX(artSize, 32);  // Minimum 32px
 
         // Album art position - below header row if present, otherwise at group top
-        CGFloat artY = groupTop + headerOffset + padding;
+        CGFloat artY = groupTop + headerOffset + inset;
         CGFloat artX = (_groupColumnWidth - artSize) / 2;  // Center horizontally
         if (artX < padding) artX = padding;
         NSRect artRect = NSMakeRect(artX, artY, artSize, artSize);

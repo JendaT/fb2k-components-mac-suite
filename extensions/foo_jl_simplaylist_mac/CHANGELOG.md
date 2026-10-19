@@ -4,6 +4,10 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Inline header**: The album title sits right above its tracks instead of leaving the extra header space under it.
+- **Inline album spacing**: Every album is followed by the same gap, whether the tracks or the album art end lower; new **Album Spacing** setting (Close / One row / Two rows) replaces Group Header Spacing for Inline.
+
 ## [1.6.0] - 2026-10-12
 
 Adds Sort and Remove to the right-click menu and accepts drops from the album

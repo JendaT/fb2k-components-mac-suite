@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
+#### Fixed
+- **Inline header**: Title sits right above its tracks; same gap after every album; new Album Spacing setting (Close / One row / Two rows).
+
 ### [1.6.0] - 2026-10-12
 
 Sort and Remove in the right-click menu, album list drops, and a large bug-fix pass. Requires macOS 12.

@@ -66,6 +66,10 @@ static const char* const kGlassBackground = "glass_background";
 // (matches kDefaultGroupHeaderSpacing below and the preferences popup)
 static const char* const kGroupHeaderSpacing = "group_header_spacing";
 
+// Inline header style only: empty rows between albums, 0 = close, 1, 2.
+// Replaces Group Header Spacing there (the Inline header row is a plain row).
+static const char* const kInlineAlbumSpacing = "inline_album_spacing";
+
 // Debug rendering: show diagnostic text on rendering anomalies
 static const char* const kDebugRendering = "debug_rendering";
 
@@ -109,6 +113,7 @@ static const int64_t kDefaultColumnHeaderSize = 1;  // 0=compact, 1=normal, 2=la
 static const int64_t kDefaultHeaderAccentColor = 0;  // 0=none, 1=tinted
 static const bool kDefaultGlassBackground = false;   // Opaque background by default
 static const int64_t kDefaultGroupHeaderSpacing = 1; // 0=compact, 1=normal, 2=larger
+static const int64_t kDefaultInlineAlbumSpacing = 1; // empty rows between albums (Inline style)
 static const bool kDefaultDebugRendering = false;     // Hide debug diagnostics by default
 static const bool kDefaultDragToFinderMove = false;   // Copy files by default when dragging to Finder
 static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
