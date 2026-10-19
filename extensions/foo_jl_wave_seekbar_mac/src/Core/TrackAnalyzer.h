@@ -29,6 +29,14 @@ constexpr double kHighCrossoverHz = 2000.0;
 constexpr uint32_t kMinBlockFrames = 1024;
 constexpr size_t kMaxBlocks = 16384;
 
+// Long tracks are analysed in segments decoded in parallel: at least this
+// long, at most this many (more segments than cores, so a worker on an
+// efficiency core holds the result up less), each decoded from this far
+// before its start so the filters settle.
+constexpr double kMinSegmentSeconds = 30.0;
+constexpr size_t kMaxSegments = 64;
+constexpr double kSegmentPrerollSeconds = 1.0;
+
 // |x| at or above this counts as full scale (float sources overshoot 1.0).
 constexpr float kClipLevel = 0.9999f;
 constexpr int kClipRunLength = 3;
@@ -70,6 +78,22 @@ float integratedLoudness(const std::vector<float> kms[2], uint32_t channels, siz
 // nothing passes the gates.
 float loudnessRange(const std::vector<float> kms[2], uint32_t channels, size_t hops);
 
+uint32_t blockFramesFor(uint64_t expectedFrames);
+uint32_t hopFramesFor(uint32_t sampleRate);
+
+// A run of frames [start, end); the last segment's end is UINT64_MAX (to
+// the end of the track, whatever its real length).
+struct Segment {
+    uint64_t start;
+    uint64_t end;
+};
+
+// Splits a track into segments of at least `minSeconds` whose boundaries
+// fall on both the block and the hop grid, so segments analysed separately
+// join into exactly one sequential pass. One segment when it can't split.
+std::vector<Segment> planSegments(uint64_t totalFrames, uint32_t sampleRate,
+                                  size_t maxSegments = kMaxSegments, double minSeconds = kMinSegmentSeconds);
+
 class TrackAnalyzer {
 public:
     // `channels` is 1 or 2 (the first two of the source are analysed).
@@ -81,20 +105,36 @@ public:
     void process(const float* samples, size_t frames, uint32_t stride);
     void process(const double* samples, size_t frames, uint32_t stride);   // fb2k audio_sample
 
+    // Segment mode. setPosition() names the absolute frame of the next
+    // sample passed to process() (after a seek). Only frames in
+    // [start, end) count; frames before it settle the filters and the
+    // true-peak history, and a few frames after it finish clip runs that
+    // began inside.
+    void setRange(uint64_t start, uint64_t end);
+    void setPosition(uint64_t frame) { _frame = frame; }
+    uint64_t position() const { return _frame; }
+
     // Flush the partial block and hop and compute the summary. The duration
-    // is that of the decoded audio. The result is invalid (isValid() false)
+    // is that of the counted audio. The result is invalid (isValid() false)
     // when no audio was processed.
     WaveformData finish();
+
+    // Joins segment results, in track order, into the whole track's data and
+    // recomputes the summary over it.
+    static WaveformData merge(std::vector<WaveformData> parts);
 
 private:
     template <typename Sample> void processFrames(const Sample* samples, size_t frames, uint32_t stride);
     void flushBlock();
     void flushHop();
-    void updateTruePeak(int ch, float x);
+    void updateTruePeak(int ch, float x, bool counted);
 
     WaveformData _data;
     uint32_t _channels;
-    uint64_t _frame = 0;
+    uint64_t _frame = 0;                // absolute position of the next frame
+    uint64_t _rangeStart = 0;
+    uint64_t _rangeEnd = UINT64_MAX;
+    uint64_t _counted = 0;              // frames inside the range
 
     // Current fine block
     uint32_t _blockCount = 0;
