@@ -107,16 +107,16 @@ constexpr int      kDefaultBarStyle   = BarStyleGradient;
 constexpr int      kDefaultFreqScale  = FreqScaleSoftLog;
 constexpr int      kDefaultDrawMode   = DrawModeCurve;
 constexpr int      kDefaultCurveStyle = CurveStyleLineColorBars;
-constexpr int      kDefaultColorBarBrightness = 85; // Strength of the loudest color bar, % (10-100)
+constexpr int      kDefaultColorBarBrightness = 76; // Strength of the loudest color bar, % (10-100)
 constexpr int      kDefaultOrientation = OrientationHorizontal;
 constexpr int      kDefaultMinHz      = 20;      // Lowest displayed frequency
 constexpr int      kDefaultMaxHz      = 20000;   // Highest displayed frequency
 constexpr int      kDefaultGapPercent = 2;       // Gap between bars, % of slot width
 constexpr int      kDefaultSmoothing  = 82;      // Attack/decay smoothing 0-100 (higher = smoother)
 constexpr int      kDefaultSmoothingMode = SmoothingRms;
-constexpr int      kDefaultRmsMs      = 270;     // RMS mode: power averaging time constant (ms); falls up to ~16 dB/s
+constexpr int      kDefaultRmsMs      = 255;     // RMS mode: power averaging time constant (ms); falls up to ~17 dB/s
 constexpr int      kMaxRmsMs          = 500;
-constexpr int      kDefaultSlopeTenths = 20;      // Spectral slope around 1 kHz, in 0.1 dB/octave
+constexpr int      kDefaultSlopeTenths = 10;      // Spectral slope around 1 kHz, in 0.1 dB/octave
 constexpr int      kMaxSlopeTenths    = 60;
 constexpr int      kDefaultShadowFallSpeed = 76; // Shadow band fall speed 0-100 (higher = faster)
 constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after its hold (dB/s)
@@ -126,20 +126,20 @@ constexpr int      kDefaultPeakHoldMs = 920;     // Peak line hold time before i
 constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
 constexpr int      kMinTopDb          = -60;
 constexpr int      kMaxTopDb          = 0;
-constexpr int      kDefaultRangeDb    = 80;      // dB from the top of the display to the bottom
+constexpr int      kDefaultRangeDb    = 90;      // dB from the top of the display to the bottom
 constexpr int      kRangeDbChoices[]  = { 60, 80, 90, 120 };
 constexpr bool     kDefaultPeakHold   = true;    // Show falling peak caps
 constexpr bool     kDefaultShowDbGuides = true;  // Show dB scale on the right edge
 constexpr bool     kDefaultShowFreqAxis = true;  // Show frequency labels/gridlines
-constexpr bool     kDefaultShowLegend = true;    // Live / Peak hold legend in Curve mode
+constexpr bool     kDefaultShowLegend = false;   // Live / Peak hold legend in Curve mode
 constexpr bool     kDefaultShadowFill = true;    // Slow-decaying dim fill behind bars
 constexpr int      kDefaultGridOpacity = 60;     // Grid line opacity 0-100
-constexpr int      kDefaultTheme = 14;           // Color preset index (0 = Custom, 14 = P7 blue)
+constexpr int      kDefaultTheme = 12;           // Color preset index (0 = Custom, 12 = P3 amber)
 constexpr bool     kDefaultGlassBackground = false;
 constexpr int      kDefaultStereoMode = StereoMono;
-constexpr int      kDefaultWindow     = WindowHann;
+constexpr int      kDefaultWindow     = WindowBlackmanHarris;
 constexpr int      kFftSizes[]        = { 1024, 2048, 4096, 8192, 16384, 32768 };
-constexpr int      kDefaultCurveOctaveFraction = 24; // Curve detail: 0 = full, N = 1/N-octave smoothing
+constexpr int      kDefaultCurveOctaveFraction = 0;  // Curve detail: 0 = full, N = 1/N-octave smoothing
 constexpr int      kCurveOctaveFractions[] = { 0, 24, 12, 6, 3 };  // popup order
 
 // The fixed dB window up to 0.3.0, before Top and Range were settings. Only the
@@ -147,13 +147,13 @@ constexpr int      kCurveOctaveFractions[] = { 0, 24, 12, 6, 3 };  // popup orde
 constexpr float    kDisplayFloorDb = -80.0f;     // mapped to bar height 0
 constexpr float    kDisplayCeilDb  = 0.0f;       // mapped to bar height 1
 
-// Default colors (ARGB): the P7 blue theme
-constexpr uint32_t kDefaultBarColorLight = 0xFF2D6CC0;
-constexpr uint32_t kDefaultBgColorLight  = 0xFFF0F4F9;
-constexpr uint32_t kDefaultBarColorDark  = 0xFF6FB7FF;
-constexpr uint32_t kDefaultBgColorDark   = 0xFF0A0E15;
-constexpr uint32_t kDefaultGridColorLight = 0xFF64748A;
-constexpr uint32_t kDefaultGridColorDark  = 0xFFC4D6EC;
+// Default colors (ARGB): the P3 amber theme
+constexpr uint32_t kDefaultBarColorLight = 0xFFB86A00;
+constexpr uint32_t kDefaultBgColorLight  = 0xFFF7F3EA;
+constexpr uint32_t kDefaultBarColorDark  = 0xFFFFB000;
+constexpr uint32_t kDefaultBgColorDark   = 0xFF130F07;
+constexpr uint32_t kDefaultGridColorLight = 0xFF7D6E55;
+constexpr uint32_t kDefaultGridColorDark  = 0xFFE8D4AE;
 
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix     = "foo_jl_spectrum.";
