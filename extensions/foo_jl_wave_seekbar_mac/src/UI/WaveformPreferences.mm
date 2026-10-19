@@ -62,6 +62,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_cursorTimeCheckbox;
     NSPopUpButton *_summaryPopup;
     NSButton *_clipMarkersCheckbox;
+    NSSlider *_clipMarkerOpacitySlider;
+    NSTextField *_clipMarkerOpacityLabel;
 
     // Scales
     NSButton *_timeRulerCheckbox;
@@ -330,8 +332,28 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y += kRowGap;
 
     _clipMarkersCheckbox = [self addCheckbox:@"Clip markers"
-                                        hint:@"Runs of 3+ samples at full scale, as ticks on the top edge."
+                                        hint:@"Red ticks on the top edge where the audio hits full scale "
+                                              "(0 dBFS) for 3+ samples in a row: clipping in the master."
                                            x:x y:&y width:w];
+
+    // Their brightness, value at the right of its label
+    y -= kRowGap - 4;
+    [self addSmallLabel:@"Brightness" frame:NSMakeRect(x + kHintIndent, y + 3, 70, 15)];
+    _clipMarkerOpacityLabel = [NSTextField labelWithString:@""];
+    _clipMarkerOpacityLabel.font = [NSFont systemFontOfSize:11];
+    _clipMarkerOpacityLabel.textColor = [NSColor secondaryLabelColor];
+    _clipMarkerOpacityLabel.alignment = NSTextAlignmentRight;
+    _clipMarkerOpacityLabel.frame = NSMakeRect(x + w - 40, y + 3, 40, 15);
+    [_page addSubview:_clipMarkerOpacityLabel];
+    _clipMarkerOpacitySlider = [NSSlider sliderWithValue:waveform_config::kDefaultClipMarkerOpacity
+                                                minValue:waveform_config::kMinClipMarkerOpacity
+                                                maxValue:waveform_config::kMaxClipMarkerOpacity
+                                                  target:self action:@selector(clipMarkerOpacityChanged:)];
+    _clipMarkerOpacitySlider.continuous = YES;
+    _clipMarkerOpacitySlider.controlSize = NSControlSizeSmall;
+    _clipMarkerOpacitySlider.frame = NSMakeRect(x + kHintIndent + 72, y, w - kHintIndent - 72 - 46, 20);
+    [_page addSubview:_clipMarkerOpacitySlider];
+    y += 24 + kRowGap;
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -429,6 +451,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _readoutPositionPopup.enabled = _readoutCheckbox.state == NSControlStateValueOn;
     [_summaryPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways)];
     _clipMarkersCheckbox.state = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
+    const int64_t clipOpacity = std::clamp<int64_t>(getConfigInt(kKeyClipMarkerOpacity, kDefaultClipMarkerOpacity),
+                                                    kMinClipMarkerOpacity, kMaxClipMarkerOpacity);
+    _clipMarkerOpacitySlider.integerValue = clipOpacity;
+    _clipMarkerOpacityLabel.stringValue = [NSString stringWithFormat:@"%lld%%", clipOpacity];
+    _clipMarkerOpacitySlider.enabled = _clipMarkersCheckbox.state == NSControlStateValueOn;
 
     // Scales
     _timeRulerCheckbox.state = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -541,6 +568,14 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self notifySettingsChanged];
 }
 
+- (void)clipMarkerOpacityChanged:(id)sender {
+    using namespace waveform_config;
+    const NSInteger value = _clipMarkerOpacitySlider.integerValue;
+    setConfigInt(kKeyClipMarkerOpacity, value);
+    _clipMarkerOpacityLabel.stringValue = [NSString stringWithFormat:@"%ld%%", (long)value];
+    [self notifySettingsChanged];
+}
+
 - (void)summaryChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeySummaryMode, _summaryPopup.indexOfSelectedItem);
@@ -558,6 +593,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         _readoutPositionPopup.enabled = _readoutCheckbox.state == NSControlStateValueOn;
     } else if (sender == _clipMarkersCheckbox) {
         setConfigBool(kKeyClipMarkers, _clipMarkersCheckbox.state == NSControlStateValueOn);
+        _clipMarkerOpacitySlider.enabled = _clipMarkersCheckbox.state == NSControlStateValueOn;
     } else if (sender == _timeRulerCheckbox) {
         setConfigBool(kKeyTimeRuler, _timeRulerCheckbox.state == NSControlStateValueOn);
     } else if (sender == _levelScaleCheckbox) {

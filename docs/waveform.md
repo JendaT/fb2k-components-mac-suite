@@ -35,7 +35,7 @@ Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 
 
 - **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse; next to the mouse, top right, or bottom right above the summary
 - **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
-- **Clip markers**: ticks on the top edge for runs of 3+ samples at full scale
+- **Clip markers**: red ticks on the top edge where the audio hits full scale (0 dBFS) for 3+ samples in a row, i.e. clipping in the master; adjustable brightness
 
 ### Scales
 

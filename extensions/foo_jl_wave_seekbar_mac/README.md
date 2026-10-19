@@ -143,7 +143,7 @@ Settings sit on three cards, plus the cache:
 | Overlays | Readout on hover | Time, LUFS-S, peak, crest, correlation and Lo/Mid/Hi split under the mouse; click seeks. Follows the mouse, or sits top right, or bottom right above the summary | On, follows the mouse |
 | Overlays | Elapsed time on the cursor | m:ss chip beside the playback cursor | Off |
 | Overlays | Loudness summary | Integrated, LRA, true peak, PLR, clip count: Off, On hover, Always | On hover |
-| Overlays | Clip markers | Ticks on the top edge for runs of 3+ samples at full scale | On |
+| Overlays | Clip markers | Red ticks on the top edge where the audio hits full scale (0 dBFS) for 3+ samples in a row; Brightness 20-100 % | On, 100 % |
 | Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | Off |
 | Scales | Level scale on the right | dB labels in a gutter; off gives the waveform full width | On |
 | Cache | Max size / Keep for | Disk space and days to keep unused analysis | 2048 MB, 180 days |

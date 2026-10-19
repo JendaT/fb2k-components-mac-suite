@@ -61,6 +61,7 @@ static const char* const kKeyHoverReadout = "hover_readout";        // readout a
 static const char* const kKeyReadoutPosition = "readout_position";  // ReadoutPosition enum
 static const char* const kKeySummaryMode = "loudness_summary";      // SummaryMode enum
 static const char* const kKeyClipMarkers = "clip_markers";          // ticks on the top edge
+static const char* const kKeyClipMarkerOpacity = "clip_marker_opacity";  // 20-100 percent
 static const char* const kKeyTextSize = "overlay_text_size";        // pt, one of kTextSizes
 static const char* const kKeyTimeRuler = "time_ruler";              // strip under the waveform
 static const char* const kKeyLevelScale = "level_scale";            // dB gutter on the right
