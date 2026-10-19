@@ -78,7 +78,7 @@ Full-scale outline (diamond, or square in the Lissajous style), dashed level gui
 
 ### Color Themes
 
-Eleven presets stamp trace, background, grid, and band colors for both light and dark appearance at once: Default (Phosphor Green), Blue, Amber, Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. Editing any color well switches the theme selector to Custom.
+Fourteen presets stamp trace, background, grid, and band colors for both light and dark appearance at once. They share names and trace/background/grid colors with the Spectrum Analyzer and Waveform Seekbar themes: the CRT phosphors P31 green, P3 amber, P4 white, and P7 blue (listed first), then Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. The phosphor themes take their band colors from the other phosphors (amber low, green mid, blue high). The selector shows whichever preset matches the current colors, so editing any color well switches it to Custom.
 
 ### Glass Background
 
@@ -101,9 +101,9 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Style | What the scope plots | Goniometer (Mid / Side), Lissajous (Left / Right) | Goniometer |
 | Trace | How samples are drawn | Lines, Dots | Lines |
 | Dot size | Diameter of each dot in Dots mode | Auto, 1.0-8.0 pt | Auto |
-| Trace color | One color, or one per frequency band | Single, Low / Mid / High | Single |
-| Afterglow | How long the trace takes to fade | 20-2000 ms | 300 ms |
-| Brightness | Trace brightness | 0-100 | 60 |
+| Trace color | One color, or one per frequency band | Single, Low / Mid / High | Low / Mid / High |
+| Afterglow | How long the trace takes to fade | 20-2000 ms | 101 ms |
+| Brightness | Trace brightness | 0-100 | 74 |
 | Auto gain | Scale the picture to the track's level | On / Off | On |
 | Gain | Fixed gain used when auto gain is off | 0 to +36 dB | 0 dB |
 
@@ -112,24 +112,24 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | Show correlation meter | Bar(s) beside the scope | On / Off | On |
-| Bands | One broadband bar or three band bars | Single, Low / Mid / High | Single |
-| Position | Side of the scope the meter sits on; Auto picks below or right, whichever leaves the larger scope | Auto, Bottom, Top, Left, Right | Auto |
-| Bar thickness | Thickness of each bar | 4-24 pt | 6 pt |
-| Response time | Window the reading is averaged over | 100-3000 ms | 500 ms |
+| Bands | One broadband bar or three band bars | Single, Low / Mid / High | Low / Mid / High |
+| Position | Side of the scope the meter sits on; Auto picks below or right, whichever leaves the larger scope | Auto, Bottom, Top, Left, Right | Right |
+| Bar thickness | Thickness of each bar | 4-24 pt | 12 pt |
+| Response time | Window the reading is averaged over | 100-3000 ms | 284 ms |
 | Range hold | How long each end of the recent-range band is held | Off, 0.1-5.0 s | 0.2 s |
-| Crossovers (Hz) | Low / mid and mid / high splits, for the band meters and the band-colored trace | 40-1000 and 1000-12000 | 250 and 2000 |
+| Crossovers (Hz) | Low / mid and mid / high splits, for the band meters and the band-colored trace | 40-1000 and 1000-12000 | 160 and 2000 |
 
 ### Appearance
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Theme | Color preset (Custom + 11 presets) | Default (Phosphor Green) |
+| Theme | Color preset (Custom + 14 presets) | P4 white |
 | Show grid | Outline, level guides, and axes | On |
 | Show labels | L / R / M / S and the correlation scale and readouts | On |
 | Glass background | Translucent blur instead of solid color | Off |
-| Grid opacity | Grid line and label opacity (0% hides) | 40% |
-| Colors (Light / Dark) | Trace, background, and grid color per appearance | Green on light gray / phosphor green on near-black |
-| Band colors (Light / Dark) | Low, mid, and high color of the band-colored trace; set by the theme | Amber, green, blue |
+| Grid opacity | Grid line and label opacity (0% hides) | 32% |
+| Colors (Light / Dark) | Trace, background, and grid color per appearance | Slate on off-white / P4 white on near-black, pale gray grid |
+| Band colors (Light / Dark) | Low, mid, and high color of the band-colored trace; set by the theme | Amber, white, blue |
 
 ## Layout Editor
 

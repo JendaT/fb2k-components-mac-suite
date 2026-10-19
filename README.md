@@ -104,7 +104,7 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 
 | Overview | Settings |
 |----------|----------|
-| ![Vectorscope in a layout](docs/images/vectorscope-overview.png) | ![Vectorscope Settings](docs/images/vectorscope-settings.png) |
+| ![Vectorscope with band colors and the three-band correlation meter](docs/images/vectorscope-scope.png) | ![Vectorscope Settings](docs/images/vectorscope-settings.png) |
 
 **Features:**
 - Goniometer display (mono is a vertical line, out-of-phase material spreads horizontally) or Lissajous display (left against right)
