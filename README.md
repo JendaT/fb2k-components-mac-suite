@@ -81,7 +81,7 @@ Real-time spectrum analyzer panel, running its own FFT on the audio from foobar2
 
 | Curve and bars | Settings |
 |----------------|----------|
-| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png)<br>![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
+| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png)<br>![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png)<br>![Spectrum Analyzer in bars mode with dense bars](docs/images/spectrum-bars-dense.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
 
 **Features:**
 - Curve or bars, horizontal or vertical, edge to edge in the panel
