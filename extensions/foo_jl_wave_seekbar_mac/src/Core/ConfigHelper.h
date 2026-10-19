@@ -54,8 +54,11 @@ inline void setConfigBool(const char* key, bool value) {
 
 // Config keys
 static const char* const kKeyStyle = "style";                       // Style enum
+static const char* const kKeyGradientBands = "gradient_bands";     // Classic Solid, one of kGradientBandChoices
+static const char* const kKeyBodyTint = "body_tint";               // BodyTint enum (Layered)
 static const char* const kKeyChannelMode = "channel_mode";          // ChannelMode enum
 static const char* const kKeyHoverReadout = "hover_readout";        // readout and dashed line on hover
+static const char* const kKeyReadoutPosition = "readout_position";  // ReadoutPosition enum
 static const char* const kKeySummaryMode = "loudness_summary";      // SummaryMode enum
 static const char* const kKeyClipMarkers = "clip_markers";          // ticks on the top edge
 static const char* const kKeyTextSize = "overlay_text_size";        // pt, one of kTextSizes

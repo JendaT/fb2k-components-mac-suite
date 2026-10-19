@@ -59,10 +59,43 @@ void testShape() {
     CHECK_FLOAT_EQ(ms.peak[0][5], ms.peak[1][5], "mono fills both halves alike");
 }
 
+void testTint() {
+    // 10 s of bass, then 10 s of treble: tint positions run from 0 to 1
+    g_context = "tint";
+    const double sr = 48000.0, kPi = 3.14159265358979323846;
+    std::vector<float> lr;
+    for (size_t i = 0; i < (size_t)(sr * 20); ++i) {
+        const double hz = i < sr * 10 ? 80.0 : 6000.0;
+        const float s = 0.3f * (float)std::sin(2.0 * kPi * hz * i / sr);
+        lr.push_back(s);
+        lr.push_back(s);
+    }
+    analysis::TrackAnalyzer a((uint32_t)sr, 2, lr.size() / 2);
+    a.process(lr.data(), lr.size() / 2, 2);
+    const std::vector<float> t = layered::tintPositions(analysis::aggregateColumns(a.finish(), 100));
+    CHECK_EQ(t.size(), 100, "one per column");
+    CHECK(t[20] < 0.05f, "bass section at the dark end");
+    CHECK(t[80] > 0.95f, "treble section at the bright end");
+    CHECK(t[49] <= t[51], "rises through the change");
+
+    g_context = "flat tint";
+    std::vector<float> steady;
+    for (size_t i = 0; i < (size_t)(sr * 6); ++i) {
+        const float s = 0.3f * (float)std::sin(2.0 * kPi * 440.0 * i / sr);
+        steady.push_back(s);
+        steady.push_back(s);
+    }
+    analysis::TrackAnalyzer b((uint32_t)sr, 2, steady.size() / 2);
+    b.process(steady.data(), steady.size() / 2, 2);
+    const std::vector<float> f = layered::tintPositions(analysis::aggregateColumns(b.finish(), 20));
+    CHECK_FLOAT_EQ(f[10], 0.5, "an unchanging track sits on the accent");
+}
+
 } // namespace
 
 int main() {
     testFraction();
     testShape();
+    testTint();
     TEST_MAIN_END();
 }

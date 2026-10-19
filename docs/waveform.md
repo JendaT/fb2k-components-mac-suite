@@ -19,10 +19,13 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 
 | Style | Description |
 |-------|-------------|
-| **Layered** (default) | L up, R down on one dBFS axis: the peak envelope around a short-term loudness body. The gap between them is the crest factor, so compression is visible. |
+| **Layered** (default) | L up, R down on one dBFS axis: the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
 | **Two-tone** | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
 | **Glow** | Peaks fade to the tips, RMS core runs to a hot centre |
 | **Heat** | One layer coloured by amplitude, deep to hot |
+| **Heat map** (classic) | Each column coloured by its peak, blue → green → yellow → red |
+| **Rainbow** (classic) | Hue runs through the rainbow across the track |
+| **Solid** (classic) | The theme colour fading from the centre out in steps (Gradient bands: none to 32) |
 
 Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one).
 
@@ -30,7 +33,7 @@ Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one
 
 Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 3342 loudness range, 4x oversampled true peak, PLR, clip runs, per-moment short-term loudness, correlation and Lo/Mid/Hi energy.
 
-- **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse
+- **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse; next to the mouse, top right, or bottom right above the summary
 - **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
 - **Clip markers**: ticks on the top edge for runs of 3+ samples at full scale
 
@@ -40,7 +43,7 @@ Optional time ruler under the waveform and a dB gutter on the right.
 
 ### Played Part
 
-The part already played is drawn at a configurable opacity (default 50 %).
+The part already played is drawn at a configurable opacity (default 72 %).
 
 ### Waveform Caching
 
@@ -73,9 +76,9 @@ Access settings via **Preferences > Display > Waveform Seekbar**
 
 | Card | Setting | Default |
 |------|---------|---------|
-| Appearance | Style, Channels, Colours, Played opacity, Glass background | Layered, Stereo, P7 blue, 50 %, off |
-| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 12 pt, on, on, on hover, on |
-| Scales | Time ruler, Level scale | on, on |
+| Appearance | Style, Body tint, Channels, Colours, Played opacity, Glass background | Layered, Subtle, Stereo, P4 white, 72 %, off |
+| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 12 pt, on, off, on hover, on |
+| Scales | Time ruler, Level scale | off, on |
 | Cache | Max size, Keep for | 2048 MB, 180 days |
 
 ### Cache Location

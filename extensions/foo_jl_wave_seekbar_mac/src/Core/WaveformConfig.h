@@ -81,6 +81,9 @@ enum Style {
     StyleTwoTone = 1,   // Simple: split L/R lanes, linear, flat peak and RMS core
     StyleGlow = 2,      // Simple: peaks fade to the tips, hot RMS core
     StyleHeat = 3,      // Simple: colour by amplitude, deep -> accent -> hot
+    StyleHeatMap = 4,   // Classic: colour per column by peak, blue -> green -> yellow -> red
+    StyleRainbow = 5,   // Classic: hue runs through the rainbow across the track
+    StyleSolid = 6,     // Classic: theme colour fading from the centre out in 8 steps
     StyleCount
 };
 
@@ -97,30 +100,49 @@ enum SummaryMode {
     SummaryAlways = 2
 };
 
+// How strongly Layered's body follows the spectral balance
+enum BodyTint {
+    BodyTintOff = 0,
+    BodyTintSubtle = 1,
+    BodyTintStrong = 2
+};
+constexpr float kBodyTintStrength[] = { 0.0f, 0.5f, 1.0f };
+
+// Where the hover readout sits
+enum ReadoutPosition {
+    ReadoutFollowsMouse = 0,
+    ReadoutTopRight = 1,
+    ReadoutBottomRight = 2      // above the loudness summary when that shows
+};
+
 // Default values
 constexpr int kDefaultStyle = StyleLayered;
+constexpr int kDefaultReadoutPosition = ReadoutFollowsMouse;
+constexpr int kDefaultBodyTint = BodyTintSubtle;
+constexpr int kDefaultGradientBands = 8;        // Classic Solid
+constexpr int kGradientBandChoices[] = { 0, 2, 4, 8, 12, 16, 24, 32 };
 constexpr bool kDefaultHoverReadout = true;
 constexpr int kDefaultSummaryMode = SummaryOnHover;
 constexpr bool kDefaultClipMarkers = true;
 constexpr int kDefaultTextSize = 12;            // overlay and scale text, pt
 constexpr int kTextSizes[] = { 10, 12, 14, 16 };
-constexpr bool kDefaultTimeRuler = true;
+constexpr bool kDefaultTimeRuler = false;
 constexpr bool kDefaultLevelScale = true;
 constexpr int kDefaultChannelMode = ChannelsStereo;
-constexpr int kDefaultPlayedOpacity = 50;       // percent; the part still to play is at 100
+constexpr int kDefaultPlayedOpacity = 72;       // percent; the part still to play is at 100
 constexpr int kMinPlayedOpacity = 20;
 constexpr int kMaxPlayedOpacity = 100;
-constexpr bool kDefaultCursorTime = true;       // elapsed time chip beside the cursor
+constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the cursor
 constexpr bool kDefaultGlassBackground = false; // Opaque background by default
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 
-// Default colors (ARGB): the P7 blue theme, as in Spectrum Analyzer
-constexpr uint32_t kDefaultWaveColorLight = 0xFF2D6CC0;
-constexpr uint32_t kDefaultBgColorLight = 0xFFF0F4F9;
+// Default colors (ARGB): the P4 white theme
+constexpr uint32_t kDefaultWaveColorLight = 0xFF3C434B;
+constexpr uint32_t kDefaultBgColorLight = 0xFFF4F5F6;
 
-constexpr uint32_t kDefaultWaveColorDark = 0xFF6FB7FF;
-constexpr uint32_t kDefaultBgColorDark = 0xFF0A0E15;
+constexpr uint32_t kDefaultWaveColorDark = 0xFFE6EDF2;
+constexpr uint32_t kDefaultBgColorDark = 0xFF0F1113;
 
 } // namespace waveform_config
 

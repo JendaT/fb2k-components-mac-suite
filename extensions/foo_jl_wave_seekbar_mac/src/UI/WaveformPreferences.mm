@@ -43,6 +43,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     // Appearance
     NSPopUpButton *_stylePopup;
     NSTextField *_styleHint;
+    NSPopUpButton *_bodyTintPopup;
+    NSPopUpButton *_gradientBandsPopup;
     NSPopUpButton *_channelsPopup;
     NSPopUpButton *_themePopup;
     NSColorWell *_waveColorLightWell;
@@ -56,6 +58,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     // Overlays
     NSPopUpButton *_textSizePopup;
     NSButton *_readoutCheckbox;
+    NSPopUpButton *_readoutPositionPopup;
     NSButton *_cursorTimeCheckbox;
     NSPopUpButton *_summaryPopup;
     NSButton *_clipMarkersCheckbox;
@@ -212,9 +215,27 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
     y = [self addHeading:@"Style" x:x y:y width:w];
     _stylePopup = [self addPopup:@[ @"Layered — peak + loudness (dBFS)", @"Simple — Two-tone",
-                                    @"Simple — Glow", @"Simple — Heat" ]
+                                    @"Simple — Glow", @"Simple — Heat",
+                                    @"Classic — Heat map", @"Classic — Rainbow", @"Classic — Solid" ]
                           action:@selector(styleChanged:) x:x y:&y width:w];
     _styleHint = [self addHint:@"" x:x y:&y width:w lines:2];
+    y += kRowGap;
+
+    y = [self addHeading:@"Body tint" x:x y:y width:w];
+    _bodyTintPopup = [self addPopup:@[ @"Off", @"Subtle", @"Strong" ]
+                             action:@selector(bodyTintChanged:) x:x y:&y width:w];
+    [self addHint:@"Layered: the body darker where bass dominates, lighter where highs do."
+                x:x y:&y width:w lines:1];
+    y += kRowGap;
+
+    y = [self addHeading:@"Gradient bands" x:x y:y width:w];
+    _gradientBandsPopup = [self addPopup:@[] action:@selector(gradientBandsChanged:) x:x y:&y width:w];
+    for (int bands : waveform_config::kGradientBandChoices) {
+        [_gradientBandsPopup addItemWithTitle:bands == 0 ? @"None (flat)" : [NSString stringWithFormat:@"%d", bands]];
+        _gradientBandsPopup.lastItem.tag = bands;
+    }
+    [self addHint:@"Classic Solid: steps from the centre out; more steps fade more smoothly."
+                x:x y:&y width:w lines:1];
     y += kRowGap;
 
     y = [self addHeading:@"Channels" x:x y:y width:w];
@@ -293,6 +314,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _readoutCheckbox = [self addCheckbox:@"Readout on hover"
                                     hint:@"Time, LUFS-S, peak, crest, correlation, band split; click to seek."
                                        x:x y:&y width:w];
+    y -= kRowGap - 4;
+    _readoutPositionPopup = [self addPopup:@[ @"Follows the mouse", @"Top right", @"Bottom right, above the summary" ]
+                                    action:@selector(readoutPositionChanged:) x:x + kHintIndent y:&y
+                                     width:w - kHintIndent];
+    y += kRowGap - 4;
     _cursorTimeCheckbox = [self addCheckbox:@"Elapsed time on the cursor"
                                        hint:@"m:ss chip beside the playback cursor."
                                           x:x y:&y width:w];
@@ -381,6 +407,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const int64_t style = getConfigInt(kKeyStyle, kDefaultStyle);
     [_stylePopup selectItemAtIndex:(style >= 0 && style < StyleCount) ? style : kDefaultStyle];
     [self updateStyleHint];
+    [_gradientBandsPopup selectItemWithTag:getConfigInt(kKeyGradientBands, kDefaultGradientBands)];
+    if (_gradientBandsPopup.indexOfSelectedItem < 0) [_gradientBandsPopup selectItemWithTag:kDefaultGradientBands];
+    [_bodyTintPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeyBodyTint, kDefaultBodyTint),
+                                                          BodyTintOff, BodyTintStrong)];
     [_channelsPopup selectItemAtIndex:getConfigInt(kKeyChannelMode, kDefaultChannelMode) == ChannelsMono ? 1 : 0];
 
     // Played part opacity and cursor time
@@ -394,6 +424,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [_textSizePopup selectItemWithTag:getConfigInt(kKeyTextSize, kDefaultTextSize)];
     if (_textSizePopup.indexOfSelectedItem < 0) [_textSizePopup selectItemWithTag:kDefaultTextSize];
     _readoutCheckbox.state = getConfigBool(kKeyHoverReadout, kDefaultHoverReadout) ? NSControlStateValueOn : NSControlStateValueOff;
+    [_readoutPositionPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeyReadoutPosition, kDefaultReadoutPosition),
+                                                                 ReadoutFollowsMouse, ReadoutBottomRight)];
+    _readoutPositionPopup.enabled = _readoutCheckbox.state == NSControlStateValueOn;
     [_summaryPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeySummaryMode, kDefaultSummaryMode), SummaryOff, SummaryAlways)];
     _clipMarkersCheckbox.state = getConfigBool(kKeyClipMarkers, kDefaultClipMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
 
@@ -457,19 +490,36 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)updateStyleHint {
     static NSString *const hints[] = {
-        @"Peak envelope around a short-term loudness body, one dBFS axis.",
+        @"Peak envelope around a loudness body tinted by the music's spectral balance, one dBFS axis.",
         @"Split L/R lanes, linear peak at 50 % with an RMS core.",
         @"Split L/R lanes, peaks fade to the tips, hot RMS core.",
         @"Split L/R lanes, colour by amplitude: deep → accent → hot.",
+        @"Split L/R, each column coloured by its peak: blue → green → yellow → red.",
+        @"Split L/R, colour runs through the rainbow across the track.",
+        @"Split L/R, the theme colour fading from the centre out in steps.",
     };
     const NSInteger i = _stylePopup.indexOfSelectedItem;
     _styleHint.stringValue = (i >= 0 && i < waveform_config::StyleCount) ? hints[i] : @"";
+    _bodyTintPopup.enabled = i == waveform_config::StyleLayered;
+    _gradientBandsPopup.enabled = i == waveform_config::StyleSolid;
 }
 
 - (void)styleChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeyStyle, _stylePopup.indexOfSelectedItem);
     [self updateStyleHint];
+    [self notifySettingsChanged];
+}
+
+- (void)gradientBandsChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeyGradientBands, _gradientBandsPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)bodyTintChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeyBodyTint, _bodyTintPopup.indexOfSelectedItem);
     [self notifySettingsChanged];
 }
 
@@ -482,6 +532,12 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 - (void)textSizeChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeyTextSize, _textSizePopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)readoutPositionChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeyReadoutPosition, _readoutPositionPopup.indexOfSelectedItem);
     [self notifySettingsChanged];
 }
 
@@ -499,6 +555,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyCursorTime, _cursorTimeCheckbox.state == NSControlStateValueOn);
     } else if (sender == _readoutCheckbox) {
         setConfigBool(kKeyHoverReadout, _readoutCheckbox.state == NSControlStateValueOn);
+        _readoutPositionPopup.enabled = _readoutCheckbox.state == NSControlStateValueOn;
     } else if (sender == _clipMarkersCheckbox) {
         setConfigBool(kKeyClipMarkers, _clipMarkersCheckbox.state == NSControlStateValueOn);
     } else if (sender == _timeRulerCheckbox) {

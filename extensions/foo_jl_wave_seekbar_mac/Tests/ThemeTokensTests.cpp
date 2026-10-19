@@ -87,10 +87,30 @@ void testTokens() {
     CHECK(isDark(hex(0x0A0E15)) && !isDark(hex(0xF0F4F9)), "isDark");
 }
 
+void testTint() {
+    g_context = "tint";
+    for (uint32_t c : { 0xFFB000u, 0x6FB7FFu, 0x4CFF7Cu }) {
+        const RGB accent = hex(c);
+        const Oklch a = toOklch(accent), mid = toOklch(tintColor(accent, 0.5f));
+        const Oklch bass = toOklch(tintColor(accent, 0.0f)), bright = toOklch(tintColor(accent, 1.0f));
+        CHECK_NEAR(mid.L, a.L, 0.003, "the middle is the accent");
+        CHECK(bass.L < a.L - 0.08f, "bass-heavy is darker");
+        CHECK(bright.L > a.L + 0.03f, "bright is lighter");
+        CHECK(bass.C > a.C * 0.95f, "bass-heavy keeps its saturation");
+        CHECK(hueDistance(bass.h, a.h) > 8.0f && hueDistance(bass.h, a.h) < 20.0f, "hue turns one way");
+        CHECK(toOklch(tintColor(accent, 0.25f)).L < a.L && toOklch(tintColor(accent, 0.75f)).L > a.L, "monotonic");
+        CHECK(toOklch(tintColor(accent, -1.0f)).L == bass.L, "clamped");
+        const Oklch half = toOklch(tintColor(accent, 0.0f, 0.5f));
+        CHECK(half.L < a.L && half.L > bass.L, "half strength sits between");
+        CHECK(tintColor(accent, 0.0f, 0.0f) == accent, "no strength gives the accent");
+    }
+}
+
 } // namespace
 
 int main() {
     testConversion();
     testTokens();
+    testTint();
     TEST_MAIN_END();
 }
