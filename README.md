@@ -17,7 +17,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
-| [LAN Remote](#lan-remote) | Control playback and fine dB volume from a phone on your local network | 0.1.0 | – |
+| [LAN Remote](#lan-remote) | Phone web remote: playback, playlists and fine dB volume over your local network | 0.1.0 | – |
 
 ---
 
@@ -195,12 +195,18 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 
 Control foobar2000 from your phone's browser. The component runs a small web server on your Mac; open its address on any phone, tablet or computer on the same Wi-Fi. No app to install.
 
+| Now Playing | Playlists | Now Playing (Light) | Playlists (Light) |
+|-------------|-----------|---------------------|-------------------|
+| ![LAN Remote Now Playing screen, dark theme](docs/images/remote-now-playing-dark.png) | ![LAN Remote playlist list, dark theme](docs/images/remote-playlists-dark.png) | ![LAN Remote Now Playing screen, light theme](docs/images/remote-now-playing-light.png) | ![LAN Remote playlist list, light theme](docs/images/remote-playlists-light.png) |
+
 **Features:**
 - Now playing (title, artist, album) with a progress bar; tap it to seek
 - Play/pause, stop, previous and next
 - Fine volume control in dB: a slider over an adjustable range, and −/+ buttons with a selectable step (0.1 to 2 dB) that repeat when held
 - Volume ceiling: + never goes above the slider's top, so a quiet setting can't jump loud by accident
-- Dark, Dim and Red themes for use at night
+- The playing playlist under the controls: tap a track to play it
+- Playlist browser: all playlists, their tracks, tap to play; the playing one is highlighted
+- Themes: System, Dark, Light, High contrast, plus Dim and Red for use at night
 - Local network only: outside addresses and foreign websites are refused
 
 **Setup:**
