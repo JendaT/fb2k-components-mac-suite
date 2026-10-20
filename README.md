@@ -211,9 +211,13 @@ Control foobar2000 from your phone's browser. The component runs a small web ser
 **Setup:**
 1. Open Preferences > Tools > LAN Remote and check that it says "Listening on port 8890"
 2. Scan the QR code with your phone, or type the address shown
-3. Optional: in Chrome on Android, use ⋮ > Add to Home screen for an app icon
+3. Add the page to your home screen so the remote is one tap away, like an app:
+   - **Android (Chrome):** ⋮ menu > **Add to Home screen**
+   - **iPhone / iPad (Safari):** Share button > **Add to Home Screen**
 
 The first time it starts, macOS may ask whether foobar2000 may accept incoming network connections. Click Allow.
+
+> **Tip:** Give your Mac a fixed address on your router (a DHCP reservation). The home screen shortcut stores the address, so it stops working if the Mac's address changes.
 
 ---
 
