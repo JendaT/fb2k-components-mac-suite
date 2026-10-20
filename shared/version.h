@@ -56,3 +56,7 @@
 // Vectorscope
 #define VECTORSCOPE_VERSION "1.0.0"
 #define VECTORSCOPE_VERSION_INT 100
+
+// LAN Remote
+#define REMOTE_VERSION "0.1.0"
+#define REMOTE_VERSION_INT 010
