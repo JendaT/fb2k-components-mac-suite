@@ -17,6 +17,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
+| [LAN Remote](#lan-remote) | Control playback and fine dB volume from a phone on your local network | 0.1.0 | – |
 
 ---
 
@@ -189,6 +190,27 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 
 ---
 
+### LAN Remote
+
+Control foobar2000 from your phone's browser. The component runs a small web server on your Mac; open its address on any phone, tablet or computer on the same Wi-Fi. No app to install.
+
+**Features:**
+- Now playing (title, artist, album) with a progress bar; tap it to seek
+- Play/pause, stop, previous and next
+- Fine volume control in dB: a slider over an adjustable range, and −/+ buttons with a selectable step (0.1 to 2 dB) that repeat when held
+- Volume ceiling: + never goes above the slider's top, so a quiet setting can't jump loud by accident
+- Dark, Dim and Red themes for use at night
+- Local network only: outside addresses and foreign websites are refused
+
+**Setup:**
+1. Open Preferences > Tools > LAN Remote and check that it says "Listening on port 8890"
+2. Scan the QR code with your phone, or type the address shown
+3. Optional: in Chrome on Android, use ⋮ > Add to Home screen for an app icon
+
+The first time it starts, macOS may ask whether foobar2000 may accept incoming network connections. Click Allow.
+
+---
+
 ## Downloads
 
 | Component | Download | Forum |
@@ -202,6 +224,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
 | Effects DSP | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=effects-dsp) | TBD |
+| LAN Remote | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=remote) | TBD |
 
 ## Installation
 
