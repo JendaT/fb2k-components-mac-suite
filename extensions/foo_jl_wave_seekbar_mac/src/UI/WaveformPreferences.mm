@@ -250,7 +250,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
     y = [self addHeading:@"Gradient bands" x:x y:y width:w];
     _gradientBandsPopup = [self addPopup:@[] action:@selector(gradientBandsChanged:) x:x y:&y width:w];
-    for (int bands : waveform_config::kGradientBandChoices) {
+    for (int bands : waveseek::kGradientBandValues) {
         [_gradientBandsPopup addItemWithTitle:bands == 0 ? @"None (flat)" : [NSString stringWithFormat:@"%d", bands]];
         _gradientBandsPopup.lastItem.tag = bands;
     }

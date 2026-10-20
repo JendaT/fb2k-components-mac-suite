@@ -121,8 +121,7 @@ enum ReadoutPosition {
 constexpr int kDefaultStyle = StyleTwoTone;
 constexpr int kDefaultReadoutPosition = ReadoutFollowsMouse;
 constexpr int kDefaultBodyTint = BodyTintOff;
-constexpr int kDefaultGradientBands = 8;        // Classic Solid
-constexpr int kGradientBandChoices[] = { 0, 2, 4, 8, 12, 16, 24, 32 };
+constexpr int kDefaultGradientBands = 8;        // Classic Solid; choices in GradientBandTable.h
 constexpr bool kDefaultHoverReadout = true;
 constexpr int kDefaultSummaryMode = SummaryOnHover;
 constexpr bool kDefaultClipMarkers = true;
