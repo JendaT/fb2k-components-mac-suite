@@ -33,6 +33,9 @@ const RouteEntry kRoutes[] = {
     { "/api/volume",      "POST", Route::Volume },
     { "/api/mute",        "POST", Route::Mute },
     { "/api/seek",        "POST", Route::Seek },
+    { "/api/playlists",      "GET",  Route::Playlists },
+    { "/api/playlist_items", "GET",  Route::PlaylistItems },
+    { "/api/play_item",      "POST", Route::PlayItem },
 };
 
 Decision fail(int status) {
@@ -110,6 +113,60 @@ bool parseSeekPosition(const std::map<std::string, std::string>& query, double& 
     if (!parseNumber(it->second, v) || v < 0.0) return false;
     seconds = v;
     return true;
+}
+
+bool parseIndex(const std::string& text, size_t& out) {
+    if (text.empty() || text.size() > 9) return false;
+    size_t v = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+        v = v * 10 + (size_t)(c - '0');
+    }
+    out = v;
+    return true;
+}
+
+ItemsQuery parseItemsQuery(const std::map<std::string, std::string>& query) {
+    ItemsQuery q;
+    const auto playlist = query.find("playlist");
+    if (playlist == query.end() || !parseIndex(playlist->second, q.playlist)) return q;
+
+    const auto offset = query.find("offset");
+    if (offset != query.end() && !parseIndex(offset->second, q.offset)) return q;
+
+    const auto limit = query.find("limit");
+    if (limit != query.end()) {
+        if (!parseIndex(limit->second, q.limit)) return q;
+        if (q.limit < 1) q.limit = 1;
+        if (q.limit > kMaxPageSize) q.limit = kMaxPageSize;
+    }
+
+    q.valid = true;
+    return q;
+}
+
+ItemRef parseItemRef(const std::map<std::string, std::string>& query) {
+    ItemRef ref;
+    const auto playlist = query.find("playlist");
+    const auto item = query.find("item");
+    if (playlist == query.end() || item == query.end()) return ref;
+    if (!parseIndex(playlist->second, ref.playlist) || !parseIndex(item->second, ref.item)) return ref;
+
+    const auto count = query.find("count");
+    if (count != query.end()) {
+        if (!parseIndex(count->second, ref.count)) return ref;
+        ref.hasCount = true;
+    }
+
+    ref.valid = true;
+    return ref;
+}
+
+PageRange pageRange(size_t total, size_t offset, size_t limit) {
+    PageRange r;
+    r.begin = offset < total ? offset : total;
+    r.end = (total - r.begin) < limit ? total : r.begin + limit;
+    return r;
 }
 
 } // namespace remote_api

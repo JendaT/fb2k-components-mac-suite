@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#000000" id="themeColor">
 <meta name="mobile-web-app-capable" content="yes">
 <title>foobar2000 Remote</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23000'/%3E%3Cpath d='M12 9v14l11-7z' fill='%23b38a4a'/%3E%3C/svg%3E">
 <style>
   /* Dark: black background, readable text. Dim and Red are lower-luminance
-     night variants; none of them use pure white. */
+     night variants. Light and High contrast are for daytime and low vision;
+     "System" picks Dark or Light from the phone's setting. */
   :root, [data-theme="dark"] {
     --bg: #000;
     --panel: #121212;
@@ -30,6 +31,26 @@
     --accent-dim: #3d2f1a;
     --danger: #d06a5e;
   }
+  [data-theme="light"] {
+    --bg: #f3f3f1;
+    --panel: #ffffff;
+    --line: #d4d4d0;
+    --text: #1c1c1c;
+    --muted: #5e5e5e;
+    --accent: #9a5c00;
+    --accent-dim: #f1dfbf;
+    --danger: #b3261e;
+  }
+  [data-theme="contrast"] {
+    --bg: #000;
+    --panel: #000;
+    --line: #8a8a8a;
+    --text: #ffffff;
+    --muted: #d6d6d6;
+    --accent: #ffd23f;
+    --accent-dim: #4a3d00;
+    --danger: #ff8a80;
+  }
   [data-theme="red"] {
     --bg: #000;
     --panel: #0d0302;
@@ -49,11 +70,13 @@
     touch-action: manipulation;
     user-select: none; -webkit-user-select: none;
   }
+  [hidden] { display: none !important; }
   main {
     max-width: 520px; margin: 0 auto; min-height: 100%;
-    padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+    padding: max(16px, env(safe-area-inset-top)) 16px calc(84px + env(safe-area-inset-bottom));
     display: flex; flex-direction: column; gap: 22px;
   }
+  .view { display: flex; flex-direction: column; gap: 22px; }
   button {
     font: inherit; color: var(--text); background: var(--panel);
     border: 1px solid var(--line); border-radius: 14px;
@@ -90,12 +113,18 @@
 
   .volume {
     border: 1px solid var(--line); border-radius: 18px; background: var(--panel);
-    padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 16px;
+    padding: 12px 12px 6px; display: flex; flex-direction: column; gap: 4px;
   }
-  .readout { text-align: center; font-variant-numeric: tabular-nums; }
-  .readout .db { font-size: 46px; font-weight: 300; color: var(--accent); letter-spacing: -1px; }
-  .readout .unit { font-size: 18px; color: var(--muted); margin-left: 4px; }
-  .readout .note { font-size: 14px; color: var(--muted); min-height: 18px; }
+  .vol-row { display: grid; grid-template-columns: 68px 1fr 68px 52px; gap: 8px; align-items: center; }
+  .vol-row button { height: 56px; }
+  .vol-row .step { font-size: 26px; }
+  .vol-row .mute svg { width: 24px; height: 24px; }
+  .vol-row .mute.on { color: var(--accent); border-color: var(--accent-dim); }
+  .readout { text-align: center; font-variant-numeric: tabular-nums; min-width: 0; }
+  .readout .db { font-size: 32px; font-weight: 300; color: var(--accent); letter-spacing: -0.5px; }
+  .readout .unit { font-size: 15px; color: var(--muted); margin-left: 3px; }
+  .readout .note { font-size: 12px; line-height: 1.2; color: var(--muted); }
+  .readout .note:empty { display: none; }
 
   input[type=range] {
     -webkit-appearance: none; appearance: none; width: 100%; height: 44px; background: transparent; margin: 0;
@@ -107,12 +136,47 @@
     border-radius: 50%; background: var(--accent); border: 0;
   }
   input[type=range]::-moz-range-thumb { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); border: 0; }
-  .range-labels { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin-top: -10px; font-variant-numeric: tabular-nums; }
+  .range-labels { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: -10px; font-variant-numeric: tabular-nums; }
 
-  .steps { display: grid; grid-template-columns: 1fr 0.8fr 1fr; gap: 10px; }
-  .steps button { height: 76px; font-size: 26px; }
-  .steps .mute { font-size: 15px; }
-  .steps .mute.on { color: var(--accent); border-color: var(--accent-dim); }
+  /* Tracks around the playing one, under the volume panel */
+  .section-head { display: flex; align-items: center; gap: 10px; }
+  .section-title { flex: 1; min-width: 0; font-size: 15px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link-btn { height: 36px; padding: 0 12px; font-size: 14px; color: var(--accent); background: transparent; }
+  .upnext .list { margin-top: 0; }
+
+  /* Bottom tab bar */
+  .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+    display: grid; grid-template-columns: 1fr 1fr;
+    background: var(--bg); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabs button {
+    height: 60px; border: 0; border-radius: 0; background: transparent;
+    color: var(--muted); font-size: 16px; gap: 8px;
+  }
+  .tabs button svg { width: 22px; height: 22px; }
+  .tabs button.on { color: var(--accent); }
+
+  /* Playlist browser */
+  .list-head {
+    position: sticky; top: 0; z-index: 1; background: var(--bg);
+    display: flex; align-items: center; gap: 10px; padding: 6px 0 10px;
+  }
+  .list-title { flex: 1; min-width: 0; font-size: 19px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list { display: flex; flex-direction: column; margin-top: -12px; }
+  .row {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-height: 62px;
+    padding: 10px 4px; text-align: left; background: transparent;
+    border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  }
+  .row-text { flex: 1; min-width: 0; }
+  .row-main { font-size: 16px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-sub { font-size: 14px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .row-side { flex: none; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row.playing::before { content: ""; flex: none; align-self: stretch; width: 4px; border-radius: 2px; background: var(--accent); }
+  .row.playing .row-main { color: var(--accent); }
+  .list-status { padding: 18px 4px; text-align: center; font-size: 14px; color: var(--muted); min-height: 1px; }
 
   dialog {
     background: var(--panel); color: var(--text); border: 1px solid var(--line);
@@ -124,7 +188,17 @@
   .field label { color: var(--muted); font-size: 15px; }
   .field input, .field select {
     font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-    border-radius: 10px; padding: 8px 10px; width: 110px; text-align: right;
+    border-radius: 10px; padding: 8px 20px 8px 10px; width: 110px; text-align: right;
+  }
+  /* Own chevron instead of the native arrow, which Chrome draws against the
+     right edge regardless of padding. */
+  .field select { -webkit-appearance: none; appearance: none; padding-right: 36px; }
+  .field #setTheme { width: 168px; }
+  .select { position: relative; display: inline-block; }
+  .select::after {
+    content: ""; position: absolute; right: 16px; top: 50%; width: 7px; height: 7px;
+    border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+    transform: translateY(-70%) rotate(45deg); pointer-events: none;
   }
   .hint { font-size: 14px; color: var(--muted); margin: 4px 0 14px; }
   .dialog-actions { display: flex; justify-content: flex-end; }
@@ -133,6 +207,9 @@
 </head>
 <body>
 <main>
+  <div class="banner" id="banner">Not connected to foobar2000. Retrying&hellip;</div>
+
+  <div class="view" id="viewNow">
   <header>
     <div class="track">
       <div class="title" id="title">Not playing</div>
@@ -142,8 +219,6 @@
       <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.3 7.3 0 0 0-1.7-1L15 3h-4l-.4 2.7a7.3 7.3 0 0 0-1.7 1l-2.5-1-2 3.5L6.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.3 7.3 0 0 0 1.7 1L11 21h4l.4-2.7a7.3 7.3 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
     </button>
   </header>
-
-  <div class="banner" id="banner">Not connected to foobar2000. Retrying&hellip;</div>
 
   <section class="progress">
     <div class="bar" id="bar"><div class="bar-track"><div class="bar-fill" id="barFill"></div></div></div>
@@ -160,40 +235,77 @@
   </section>
 
   <section class="volume" aria-label="Volume">
-    <div class="readout">
-      <span class="db" id="db">&ndash;</span><span class="unit">dB</span>
-      <div class="note" id="note"></div>
+    <div class="vol-row">
+      <button class="step" id="downBtn" aria-label="Volume down">&minus;</button>
+      <div class="readout">
+        <span class="db" id="db">&ndash;</span><span class="unit">dB</span>
+        <div class="note" id="note"></div>
+      </div>
+      <button class="step" id="upBtn" aria-label="Volume up">+</button>
+      <button class="mute" id="muteBtn" aria-label="Mute">
+        <svg viewBox="0 0 24 24" id="muteIcon"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+      </button>
     </div>
     <input type="range" id="slider" min="-70" max="0" step="0.05" aria-label="Volume in dB">
     <div class="range-labels"><span id="rangeMinLabel"></span><span id="rangeMaxLabel"></span></div>
-    <div class="steps">
-      <button id="downBtn" aria-label="Volume down">&minus;</button>
-      <button class="mute" id="muteBtn" aria-label="Mute">Mute</button>
-      <button id="upBtn" aria-label="Volume up">+</button>
+  </section>
+
+  <section class="upnext" id="upNext" hidden aria-label="Playing playlist">
+    <div class="section-head">
+      <div class="section-title" id="upNextTitle"></div>
+      <button class="link-btn" id="upNextAll">All tracks</button>
     </div>
+    <div class="list" id="upNextList"></div>
+  </section>
+  </div>
+
+  <section class="view" id="viewLists" hidden aria-label="Playlists">
+    <div class="list-head">
+      <button class="icon-btn" id="backBtn" aria-label="Back to playlists" hidden>
+        <svg viewBox="0 0 24 24"><path d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+      </button>
+      <div class="list-title" id="listTitle">Playlists</div>
+      <button class="icon-btn" id="jumpBtn" aria-label="Show the playing track" hidden>
+        <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm9 3h-2.1A7 7 0 0 0 13 5.1V3h-2v2.1A7 7 0 0 0 5.1 11H3v2h2.1a7 7 0 0 0 5.9 5.9V21h2v-2.1a7 7 0 0 0 5.9-5.9H21zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10z"/></svg>
+      </button>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="list-status" id="listStatus"></div>
   </section>
 </main>
+
+<nav class="tabs">
+  <button id="tabNow" class="on">
+    <svg viewBox="0 0 24 24"><path d="M12 3v10.6A4 4 0 1 0 14 17V7h4V3z"/></svg>Now Playing
+  </button>
+  <button id="tabLists">
+    <svg viewBox="0 0 24 24"><path d="M3 6h12v2H3zm0 4h12v2H3zm0 4h8v2H3zm14-4v6.2A3 3 0 1 0 19 19v-7h3v-2z"/></svg>Playlists
+  </button>
+</nav>
 
 <dialog id="settings">
   <h2>Remote settings</h2>
   <div class="field"><label for="setStep">Button step (dB)</label>
-    <select id="setStep">
+    <span class="select"><select id="setStep">
       <option value="0.1">0.1</option>
       <option value="0.25">0.25</option>
       <option value="0.5">0.5</option>
       <option value="1">1</option>
       <option value="2">2</option>
-    </select>
+    </select></span>
   </div>
   <div class="field"><label for="setMin">Slider bottom (dB)</label><input id="setMin" type="number" inputmode="decimal" step="1" min="-100" max="-1"></div>
   <div class="field"><label for="setMax">Slider top (dB)</label><input id="setMax" type="number" inputmode="decimal" step="1" min="-99" max="0"></div>
   <p class="hint">The slider spans only this range, so small finger movements make small changes. + never raises the volume above the slider top.</p>
   <div class="field"><label for="setTheme">Colors</label>
-    <select id="setTheme">
+    <span class="select"><select id="setTheme">
+      <option value="system">System</option>
       <option value="dark">Dark</option>
+      <option value="light">Light</option>
+      <option value="contrast">High contrast</option>
       <option value="dim">Dim (night)</option>
       <option value="red">Red (night)</option>
-    </select>
+    </select></span>
   </div>
   <div class="dialog-actions"><button id="settingsDone">Done</button></div>
 </dialog>
@@ -206,6 +318,7 @@ const DEFAULTS = { step: 0.5, min: -70, max: 0, theme: "dark" };
 // Bump when DEFAULTS change so phones pick up the new ones.
 const SETTINGS_KEY = "fb2kRemote.v2";
 const MIN_DB = -100, MAX_DB = 0;
+const THEMES = ["system", "dark", "light", "contrast", "dim", "red"];
 
 function loadSettings() {
   let s = {};
@@ -215,7 +328,7 @@ function loadSettings() {
   out.min = clamp(Number(out.min), MIN_DB, MAX_DB - 1);
   out.max = clamp(Number(out.max), out.min + 1, MAX_DB);
   if (isNaN(out.min) || isNaN(out.max)) { out.min = DEFAULTS.min; out.max = DEFAULTS.max; }
-  if (!["dark", "dim", "red"].includes(out.theme)) out.theme = DEFAULTS.theme;
+  if (!THEMES.includes(out.theme)) out.theme = DEFAULTS.theme;
   return out;
 }
 function saveSettings() {
@@ -250,11 +363,19 @@ async function api(path, method) {
     headers: method === "POST" ? { "X-Fb2k-Remote": "1" } : {},
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(res.status + " " + (await res.text()));
+  if (!res.ok) {
+    const err = new Error(res.status + " " + (await res.text()));
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
 function setConnected(ok) { $("banner").classList.toggle("show", !ok); }
+
+// An HTTP error status means the server answered: only a failed fetch is a
+// lost connection.
+function onError(e) { setConnected(!!e.status); }
 
 function applyState(s) {
   const keepVolume = performance.now() < localVolumeUntil && state;
@@ -264,16 +385,18 @@ function applyState(s) {
   if (keepVolume) state.volumeDb = localVol;
   setConnected(true);
   render();
+  updatePlayingRow();
+  loadUpNext(false);
 }
 
 async function refresh() {
   try { applyState(await api("/api/state")); }
-  catch (e) { setConnected(false); }
+  catch (e) { onError(e); }
 }
 
 async function command(name, query) {
   try { applyState(await api("/api/" + name + (query ? "?" + query : ""), "POST")); }
-  catch (e) { setConnected(false); }
+  catch (e) { onError(e); }
 }
 
 // Volume requests are coalesced: one in flight, only the latest target queued.
@@ -289,7 +412,7 @@ function sendVolume(db) {
       try {
         const s = await api("/api/volume?db=" + target.toFixed(2), "POST");
         if (volumePending === null) applyState(s);
-      } catch (e) { setConnected(false); }
+      } catch (e) { onError(e); }
     }
     volumeInFlight = false;
   })();
@@ -353,6 +476,9 @@ function renderVolume() {
   else if (!state.muted && state.volumeDb < settings.min) note = "Below the slider range";
   $("note").textContent = note;
   $("muteBtn").classList.toggle("on", !!state.muted);
+  $("muteIcon").innerHTML = state.muted
+    ? '<path d="M3 9v6h4l5 5V4L7 9zm18.6 6.2-1.4 1.4L17 13.4l-3.2 3.2-1.4-1.4 3.2-3.2-3.2-3.2 1.4-1.4 3.2 3.2 3.2-3.2 1.4 1.4-3.2 3.2z"/>'
+    : '<path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4z"/>';
   $("upBtn").disabled = !custom && !state.muted && state.volumeDb >= settings.max - 0.001;
 }
 
@@ -409,7 +535,14 @@ holdRepeat($("upBtn"), +1);
 holdRepeat($("downBtn"), -1);
 
 // ---------- Settings dialog ----------
-function applyTheme() { document.documentElement.dataset.theme = settings.theme; }
+const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
+function applyTheme() {
+  const theme = settings.theme === "system" ? (prefersLight.matches ? "light" : "dark") : settings.theme;
+  document.documentElement.dataset.theme = theme;
+  // Browser bar color follows the page background.
+  $("themeColor").content = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+}
+prefersLight.addEventListener("change", applyTheme);
 $("settingsBtn").onclick = () => {
   $("setStep").value = String(settings.step);
   $("setMin").value = settings.min;
@@ -422,11 +555,267 @@ $("settingsDone").onclick = () => {
   const max = clamp(Number($("setMax").value), MIN_DB + 1, MAX_DB);
   settings.step = Number($("setStep").value) || DEFAULTS.step;
   if (isFinite(min) && isFinite(max) && min < max) { settings.min = min; settings.max = max; }
-  settings.theme = ["dark", "dim", "red"].includes($("setTheme").value) ? $("setTheme").value : "dark";
+  settings.theme = THEMES.includes($("setTheme").value) ? $("setTheme").value : DEFAULTS.theme;
   saveSettings();
   applyTheme();
   $("settings").close();
   renderVolume();
+};
+
+// ---------- Views ----------
+let view = "now";
+function showView(v) {
+  view = v;
+  $("viewNow").hidden = v !== "now";
+  $("viewLists").hidden = v !== "lists";
+  $("tabNow").classList.toggle("on", v === "now");
+  $("tabLists").classList.toggle("on", v === "lists");
+  if (v === "lists" && !browser.playlist) loadPlaylists();
+}
+$("tabNow").onclick = () => showView("now");
+$("tabLists").onclick = () => showView("lists");
+
+// ---------- Playlist browser ----------
+const PAGE_SIZE = 200;
+const JUMP_LIMIT = 5000;    // Load at most this far to reach the playing track
+const browser = {
+  playlists: null,          // Last /api/playlists answer
+  playlist: null,           // Open playlist: { index, name, total, items, loading, done }
+  listScroll: 0,            // Scroll position of the playlist list, restored on Back
+};
+let playingRow = null;
+
+function setListStatus(text) { $("listStatus").textContent = text; }
+
+function makeRow(main, sub, side) {
+  const row = document.createElement("button");
+  row.className = "row";
+  const text = document.createElement("div");
+  text.className = "row-text";
+  const m = document.createElement("div");
+  m.className = "row-main";
+  m.textContent = main;
+  const s = document.createElement("div");
+  s.className = "row-sub";
+  s.textContent = sub || "\u00a0";
+  text.append(m, s);
+  row.append(text);
+  if (side) {
+    const d = document.createElement("div");
+    d.className = "row-side";
+    d.textContent = side;
+    row.append(d);
+  }
+  return row;
+}
+
+async function loadPlaylists() {
+  if (!browser.playlists) setListStatus("Loading\u2026");
+  try {
+    browser.playlists = await api("/api/playlists");
+    if (!browser.playlist) renderPlaylists();
+  } catch (e) {
+    onError(e);
+    if (!browser.playlists) setListStatus("Could not load playlists");
+  }
+}
+
+function renderPlaylists() {
+  $("backBtn").hidden = true;
+  $("jumpBtn").hidden = true;
+  $("listTitle").textContent = "Playlists";
+  const list = $("list");
+  list.replaceChildren();
+  playingRow = null;
+  const lists = browser.playlists ? browser.playlists.playlists : [];
+  lists.forEach((p, i) => {
+    const row = makeRow(p.name || "Untitled", p.count === 1 ? "1 track" : p.count + " tracks", "");
+    row.onclick = () => openPlaylist(i);
+    list.append(row);
+  });
+  setListStatus(browser.playlists && lists.length === 0 ? "No playlists" : "");
+  updatePlayingRow();
+  window.scrollTo(0, browser.listScroll);
+}
+
+function openPlaylist(index) {
+  // Only the playlist list's own scroll position is worth restoring on Back.
+  browser.listScroll = view === "lists" && !browser.playlist ? window.scrollY : 0;
+  history.pushState({ playlist: index }, "");
+  showPlaylist(index);
+}
+
+async function showPlaylist(index) {
+  const known = browser.playlists && browser.playlists.playlists[index];
+  const pl = { index, name: known ? known.name : "", total: known ? known.count : 0, items: [], loading: false, done: false };
+  browser.playlist = pl;
+  $("backBtn").hidden = false;
+  $("jumpBtn").hidden = true;
+  $("listTitle").textContent = pl.name || "Playlist";
+  $("list").replaceChildren();
+  playingRow = null;
+  window.scrollTo(0, 0);
+
+  await loadMore();
+  const p = state && state.playing;
+  if (p && p.playlist === index && p.item >= 0) jumpTo(p.item, "center");
+}
+
+function closePlaylist() {
+  browser.playlist = null;
+  renderPlaylists();
+  loadPlaylists();          // Counts may have changed while the playlist was open
+}
+
+async function loadMore() {
+  const pl = browser.playlist;
+  if (!pl || pl.loading || pl.done) return;
+  pl.loading = true;
+  setListStatus("Loading\u2026");
+  try {
+    const r = await api(`/api/playlist_items?playlist=${pl.index}&offset=${pl.items.length}&limit=${PAGE_SIZE}`);
+    if (pl !== browser.playlist) return;    // Navigated away meanwhile
+    pl.name = r.name;
+    pl.total = r.total;
+    $("listTitle").textContent = pl.name || "Playlist";
+
+    const list = $("list");
+    const start = pl.items.length;
+    r.items.forEach((it, k) => {
+      const i = start + k;
+      pl.items.push(it);
+      const sub = [it.artist, it.album].filter(Boolean).join(" \u2014 ");
+      const row = makeRow(it.title || "Untitled", sub, it.length > 0 ? fmtTime(it.length) : "");
+      row.onclick = () => playItem(i);
+      list.append(row);
+    });
+    pl.done = pl.items.length >= pl.total || r.items.length === 0;
+    setListStatus(pl.total === 0 ? "Empty playlist" : "");
+    updatePlayingRow();
+  } catch (e) {
+    onError(e);
+    if (pl === browser.playlist) {
+      if (e.status === 404) { history.back(); return; }   // Playlist was deleted
+      setListStatus("Could not load tracks");
+    }
+  } finally {
+    pl.loading = false;
+  }
+  // A short page can leave the end of the list on screen: keep loading.
+  if (pl === browser.playlist && !pl.done && statusVisible()) loadMore();
+}
+
+function statusVisible() {
+  const r = $("listStatus").getBoundingClientRect();
+  return r.top < window.innerHeight + 400;
+}
+
+// Loads pages until the item is present, then scrolls it into view.
+async function jumpTo(item, block) {
+  const pl = browser.playlist;
+  if (!pl || item >= JUMP_LIMIT) return;
+  while (pl === browser.playlist && pl.items.length <= item && !pl.done) {
+    if (pl.loading) { await new Promise((res) => setTimeout(res, 50)); continue; }
+    await loadMore();
+  }
+  const row = pl === browser.playlist ? $("list").children[item] : null;
+  if (row) row.scrollIntoView({ block: block || "center" });
+}
+
+// Plays an item; count is the playlist size the caller saw. Returns false
+// when the playlist changed on the Mac (409), so the caller reloads its list
+// rather than guessing.
+async function playAt(playlist, item, count) {
+  try {
+    applyState(await api(`/api/play_item?playlist=${playlist}&item=${item}&count=${count}`, "POST"));
+  } catch (e) {
+    onError(e);
+    if (e.status === 409) return false;
+  }
+  return true;
+}
+
+async function playItem(item) {
+  const pl = browser.playlist;
+  if (!pl) return;
+  if (!(await playAt(pl.index, item, pl.total)) && pl === browser.playlist) showPlaylist(pl.index);
+}
+
+// Highlights the playing playlist (list view) or track (playlist view).
+function updatePlayingRow() {
+  const p = state && state.playing;
+  const pl = browser.playlist;
+  let target = null;
+  if (pl) {
+    const here = !!p && p.playlist === pl.index && p.item >= 0;
+    $("jumpBtn").hidden = !here || p.item >= JUMP_LIMIT;
+    if (here) target = $("list").children[p.item] || null;
+  } else if (browser.playlists && p) {
+    target = $("list").children[p.playlist] || null;
+  }
+  if (target === playingRow) return;
+  if (playingRow) playingRow.classList.remove("playing");
+  if (target) target.classList.add("playing");
+  playingRow = target;
+}
+
+$("backBtn").onclick = () => history.back();
+$("jumpBtn").onclick = () => {
+  const p = state && state.playing;
+  if (p && browser.playlist && p.playlist === browser.playlist.index) jumpTo(p.item, "center");
+};
+// Android's Back button closes an open playlist instead of leaving the page.
+window.addEventListener("popstate", () => { if (browser.playlist) closePlaylist(); });
+window.addEventListener("scroll", () => {
+  if (view === "lists" && browser.playlist && statusVisible()) loadMore();
+}, { passive: true });
+// A reload starts at the playlist list, so drop a stale "open playlist" entry.
+if (history.state && history.state.playlist !== undefined) history.replaceState(null, "");
+
+// ---------- Playing playlist (Now Playing tab) ----------
+// Shows a few tracks before the playing one and more after it.
+const UPNEXT_BEFORE = 2, UPNEXT_COUNT = 22;
+const upNext = { key: "", playlist: -1, offset: 0, total: 0, gen: 0 };
+
+function upNextKey(p) { return p && p.item >= 0 ? p.playlist + ":" + p.item : ""; }
+
+async function loadUpNext(force) {
+  const p = state && state.playing;
+  const key = upNextKey(p);
+  if (!force && key === upNext.key) return;
+  upNext.key = key;
+  const gen = ++upNext.gen;
+  if (!key) { $("upNext").hidden = true; return; }
+
+  const offset = Math.max(0, p.item - UPNEXT_BEFORE);
+  try {
+    const r = await api(`/api/playlist_items?playlist=${p.playlist}&offset=${offset}&limit=${UPNEXT_COUNT}`);
+    if (gen !== upNext.gen) return;     // A newer track started meanwhile
+    Object.assign(upNext, { playlist: p.playlist, offset: r.offset, total: r.total });
+    $("upNextTitle").textContent = r.name || "Playlist";
+    const list = $("upNextList");
+    list.replaceChildren();
+    r.items.forEach((it, k) => {
+      const item = r.offset + k;
+      const sub = [it.artist, it.album].filter(Boolean).join(" \u2014 ");
+      const row = makeRow(it.title || "Untitled", sub, it.length > 0 ? fmtTime(it.length) : "");
+      if (item === r.playingItem) row.classList.add("playing");
+      row.onclick = async () => {
+        if (!(await playAt(upNext.playlist, item, upNext.total))) loadUpNext(true);
+      };
+      list.append(row);
+    });
+    $("upNext").hidden = r.items.length === 0;
+  } catch (e) {
+    onError(e);
+    if (gen === upNext.gen) upNext.key = "";    // Retry on the next poll
+  }
+}
+
+$("upNextAll").onclick = () => {
+  if (upNext.playlist < 0) return;
+  openPlaylist(upNext.playlist);
+  showView("lists");
 };
 
 // ---------- Polling ----------
