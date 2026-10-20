@@ -12,7 +12,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.0.0 | [📖](docs/spectrum.md) |
-| [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 0.1.0 | [📖](docs/vectorscope.md) |
+| [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.0.0 | [📖](docs/vectorscope.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
