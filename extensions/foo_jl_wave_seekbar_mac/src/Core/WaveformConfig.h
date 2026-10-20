@@ -76,18 +76,20 @@ static const GUID guid_preferences_page = {
 };
 
 // Waveform styles
+// Stored under waveform_style. 0-2 are the original styles with their
+// original values, so a style chosen before the redesign carries over.
 enum Style {
-    StyleLayered = 0,   // peak envelope around a loudness body, one dBFS axis
-    StyleTwoTone = 1,   // Simple: split L/R lanes, linear, flat peak and RMS core
-    StyleGlow = 2,      // Simple: peaks fade to the tips, hot RMS core
-    StyleHeat = 3,      // Simple: colour by amplitude, deep -> accent -> hot
-    StyleHeatMap = 4,   // Classic: colour per column by peak, blue -> green -> yellow -> red
-    StyleRainbow = 5,   // Classic: hue runs through the rainbow across the track
-    StyleSolid = 6,     // Classic: theme colour fading from the centre out in 8 steps
+    StyleSolid = 0,     // Classic: theme colour fading from the centre out in gradient bands
+    StyleHeatMap = 1,   // Classic: colour per column by peak, blue -> green -> yellow -> red
+    StyleRainbow = 2,   // Classic: hue runs through the rainbow across the track
+    StyleLayered = 3,   // peak envelope around a loudness body, one dBFS axis
+    StyleTwoTone = 4,   // Simple: split L/R lanes, linear, flat peak and RMS core
+    StyleGlow = 5,      // Simple: peaks fade to the tips, hot RMS core
+    StyleHeat = 6,      // Simple: colour by amplitude, deep -> accent -> hot
     StyleCount
 };
 
-// Channels shown
+// Channels shown, stored under display_mode with the original values
 enum ChannelMode {
     ChannelsStereo = 0, // L and R apart (Layered: up / down; Simple: two lanes)
     ChannelsMono = 1    // mixed to one
@@ -116,25 +118,37 @@ enum ReadoutPosition {
 };
 
 // Default values
-constexpr int kDefaultStyle = StyleLayered;
+constexpr int kDefaultStyle = StyleTwoTone;
 constexpr int kDefaultReadoutPosition = ReadoutFollowsMouse;
-constexpr int kDefaultBodyTint = BodyTintSubtle;
+constexpr int kDefaultBodyTint = BodyTintOff;
 constexpr int kDefaultGradientBands = 8;        // Classic Solid
 constexpr int kGradientBandChoices[] = { 0, 2, 4, 8, 12, 16, 24, 32 };
 constexpr bool kDefaultHoverReadout = true;
 constexpr int kDefaultSummaryMode = SummaryOnHover;
 constexpr bool kDefaultClipMarkers = true;
-constexpr int kDefaultClipMarkerOpacity = 100;  // percent
+constexpr int kDefaultClipMarkerOpacity = 67;  // percent
 constexpr int kMinClipMarkerOpacity = 20;
 constexpr int kMaxClipMarkerOpacity = 100;
-constexpr int kDefaultTextSize = 12;            // overlay and scale text, pt
+constexpr int kDefaultTextSize = 14;            // overlay and scale text, pt
 constexpr int kTextSizes[] = { 10, 12, 14, 16 };
 constexpr bool kDefaultTimeRuler = false;
 constexpr bool kDefaultLevelScale = true;
 constexpr int kDefaultChannelMode = ChannelsStereo;
-constexpr int kDefaultPlayedOpacity = 72;       // percent; the part still to play is at 100
-constexpr int kMinPlayedOpacity = 20;
-constexpr int kMaxPlayedOpacity = 100;
+// Played part: dimmed by an overlay of the background, shaped at the cursor
+enum CursorEffect {
+    CursorEffectNone = 0,      // Sharp transition, no effect
+    CursorEffectGradient = 1,  // Fade gradient at edge
+    CursorEffectGlow = 2,      // Pulsing halo/bloom
+    CursorEffectScanline = 3,  // Multiple thin vertical lines
+    CursorEffectPulse = 4,     // Breathing played area
+    CursorEffectTrail = 5,     // Motion blur trail behind cursor
+    CursorEffectShimmer = 6,   // Oscillating brightness bands
+    CursorEffectCount
+};
+constexpr bool kDefaultShadePlayedPortion = true;
+constexpr int kDefaultPlayedDimming = 25;       // percent: 0 = as bright as the rest
+constexpr int kDefaultCursorEffect = CursorEffectNone;
+constexpr bool kDefaultBpmSync = false;         // sync animated cursor effects to the track's BPM
 constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the cursor
 constexpr bool kDefaultGlassBackground = false; // Opaque background by default
 constexpr int kDefaultCacheSizeMB = 2048;

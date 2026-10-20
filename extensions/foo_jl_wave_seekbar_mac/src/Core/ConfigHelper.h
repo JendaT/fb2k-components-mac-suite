@@ -53,10 +53,10 @@ inline void setConfigBool(const char* key, bool value) {
 }
 
 // Config keys
-static const char* const kKeyStyle = "style";                       // Style enum
+static const char* const kKeyWaveformStyle = "waveform_style";     // Style enum
 static const char* const kKeyGradientBands = "gradient_bands";     // Classic Solid, one of kGradientBandChoices
 static const char* const kKeyBodyTint = "body_tint";               // BodyTint enum (Layered)
-static const char* const kKeyChannelMode = "channel_mode";          // ChannelMode enum
+static const char* const kKeyDisplayMode = "display_mode";          // ChannelMode enum
 static const char* const kKeyHoverReadout = "hover_readout";        // readout and dashed line on hover
 static const char* const kKeyReadoutPosition = "readout_position";  // ReadoutPosition enum
 static const char* const kKeySummaryMode = "loudness_summary";      // SummaryMode enum
@@ -65,7 +65,10 @@ static const char* const kKeyClipMarkerOpacity = "clip_marker_opacity";  // 20-1
 static const char* const kKeyTextSize = "overlay_text_size";        // pt, one of kTextSizes
 static const char* const kKeyTimeRuler = "time_ruler";              // strip under the waveform
 static const char* const kKeyLevelScale = "level_scale";            // dB gutter on the right
-static const char* const kKeyPlayedOpacity = "played_opacity";      // 20-100 percent
+static const char* const kKeyShadePlayedPortion = "shade_played";   // dim the played part
+static const char* const kKeyPlayedDimming = "played_dimming";      // 0-100 percent
+static const char* const kKeyCursorEffect = "cursor_effect";        // CursorEffect enum
+static const char* const kKeyBpmSync = "bpm_sync";                  // animated effects follow the BPM tag
 static const char* const kKeyCursorTime = "cursor_time";            // elapsed time chip on the cursor
 static const char* const kKeyGlassBackground = "glass_background";  // Translucent blur background
 static const char* const kKeyCacheSizeMB = "cache_size_mb";

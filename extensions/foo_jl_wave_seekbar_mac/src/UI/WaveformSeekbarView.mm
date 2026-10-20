@@ -6,8 +6,9 @@
 //
 //  Rendering model: the waveform's layers are cached as greyscale alpha
 //  masks per track and pixel size, and coloured into one composite image
-//  per theme and style. A frame draws that composite twice under two clip
-//  rects (played at playedOpacity, the rest opaque), then the cursor. A
+//  per theme and style. A frame draws that composite, dims the played part
+//  with an overlay of the background shaped by the cursor effect, then the
+//  cursor and overlays. A
 //  theme change, or a change between the Simple styles, recolours the
 //  masks; only a new track, size or style family rebuilds them.
 //
@@ -268,6 +269,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
+    CGColorSpaceRef _deviceRGBColorSpace;       // Cached for the cursor effects' gradients
     NSFont *_overlayFont;
     NSFont *_overlayBoldFont;
     CGFloat _textScale;          // overlay text size / 10 pt
@@ -328,6 +330,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 }
 
 - (void)commonInit {
+    _deviceRGBColorSpace = CGColorSpaceCreateDeviceRGB();
     _placeholderAttributes = @{
         NSFontAttributeName: [NSFont systemFontOfSize:11],
         NSForegroundColorAttributeName: [NSColor secondaryLabelColor]
@@ -361,6 +364,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self invalidateMasks];
+    if (_deviceRGBColorSpace) CGColorSpaceRelease(_deviceRGBColorSpace);
 }
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
@@ -369,16 +373,19 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
 - (void)reloadSettings {
     using namespace waveform_config;
-    const int64_t style = getConfigInt(kKeyStyle, kDefaultStyle);
+    const int64_t style = getConfigInt(kKeyWaveformStyle, kDefaultStyle);
     const int newStyle = style >= 0 && style < StyleCount ? (int)style : kDefaultStyle;
     // Classic styles mix mono differently from each other
     if (familyOf(newStyle) != familyOf(_style) || (familyOf(newStyle) == FamilyClassic && newStyle != _style)) {
         [self invalidateMasks];
     }
     _style = newStyle;
-    _mono = getConfigInt(kKeyChannelMode, kDefaultChannelMode) == ChannelsMono;
-    const int64_t opacity = getConfigInt(kKeyPlayedOpacity, kDefaultPlayedOpacity);
-    _playedOpacity = std::clamp<int64_t>(opacity, kMinPlayedOpacity, kMaxPlayedOpacity) / 100.0;
+    _mono = getConfigInt(kKeyDisplayMode, kDefaultChannelMode) == ChannelsMono;
+    _shadePlayedPortion = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion);
+    _playedDimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100) / 100.0;
+    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
+    _cursorEffect = (WaveformCursorEffect)(effect >= 0 && effect < CursorEffectCount ? effect : kDefaultCursorEffect);
+    _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
     _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
     _gradientBands = (int)getConfigInt(kKeyGradientBands, kDefaultGradientBands);
     if (std::find(std::begin(kGradientBandChoices), std::end(kGradientBandChoices), _gradientBands)
@@ -857,6 +864,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         if ([self rulerHeight] > 0) [self drawRulerInContext:context wave:wave];
         if (CGRectGetMaxX(wave) < CGRectGetMaxX(bounds)) [self drawLevelScaleInContext:context wave:wave];
 
+        [self drawPlayedOverlayInContext:context rect:[self cursorRectFor:wave]];
         if (hasWaveform && _showClipMarkers) [self drawClipMarkersInContext:context rect:[self cursorRectFor:wave]];
         // The cursor runs through the margins too
         [self drawCursorInContext:context rect:[self cursorRectFor:wave]];
@@ -957,19 +965,299 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     }
     if (!_composite && ![self buildComposite]) return;
 
-    // Same image twice: played at playedOpacity, the rest opaque
-    const CGFloat split = rect.origin.x + rect.size.width * std::clamp(self.playbackPosition, 0.0, 1.0);
-    CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(rect.origin.x, rect.origin.y, split - rect.origin.x, rect.size.height));
-    CGContextSetAlpha(context, self.playedOpacity);
     CGContextDrawImage(context, rect, _composite);
-    CGContextRestoreGState(context);
+}
+
+#pragma mark - Played Part
+
+// Dims the played part with an overlay of the background the style draws
+// on, its edge at the cursor shaped by the cursor effect. The effects work
+// in a rect at the origin, as they did before the redesign.
+- (void)drawPlayedOverlayInContext:(CGContextRef)context rect:(CGRect)rect {
+    if (!self.shadePlayedPortion || self.playedDimming <= 0.0 || self.playbackPosition <= 0.0) return;
+
+    NSColor *dimBase = self.backgroundColor;
+    if (self.glassBackground) {
+        dimBase = [self isDarkAppearance] ? [NSColor blackColor] : [NSColor whiteColor];
+    } else if (familyOf(_style) == FamilySimple) {
+        dimBase = [NSColor blackColor];
+    }
+    NSColor *bgDeviceColor = [dimBase colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!bgDeviceColor) return;
+
+    const CGRect bounds = CGRectMake(0, 0, rect.size.width, rect.size.height);
+    const CGFloat playedWidth = bounds.size.width * std::clamp(self.playbackPosition, 0.0, 1.0);
+    const CGFloat dimOpacity = self.playedDimming;
 
     CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(split, rect.origin.y, CGRectGetMaxX(rect) - split, rect.size.height));
-    CGContextDrawImage(context, rect, _composite);
+    CGContextClipToRect(context, rect);
+    CGContextTranslateCTM(context, rect.origin.x, rect.origin.y);
+    switch (self.cursorEffect) {
+        case WaveformCursorEffectNone:
+            [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                  bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectGradient:
+            [self drawGradientEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectGlow:
+            [self drawGlowEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                  bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectScanline:
+            [self drawScanlineEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectPulse:
+            [self drawPulseEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                   bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectTrail:
+            [self drawTrailEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                   bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectShimmer:
+            [self drawShimmerEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                     bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+    }
     CGContextRestoreGState(context);
 }
+
+// Get animation frequency: uses BPM if sync enabled, otherwise returns default
+- (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
+    if (self.bpmSync && self.trackBpm > 0) {
+        // Convert BPM to Hz: BPM / 60 = beats per second
+        return self.trackBpm / 60.0;
+    }
+    return defaultHz;
+}
+
+#pragma mark - Cursor Effects (as before the redesign)
+
+// Effect 0: None - Sharp transition, uniform dimming
+- (void)drawNoneEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                    playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent
+                                        green:bgColor.greenComponent
+                                         blue:bgColor.blueComponent
+                                        alpha:dimOpacity];
+    CGContextSetFillColorWithColor(context, dimColor.CGColor);
+    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
+}
+
+// Effect 1: Gradient - Fade at the edge
+- (void)drawGradientEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    CGFloat fadeWidth = MIN(bounds.size.width * 0.02, 10.0);
+
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
+    if (!colorSpace) return;
+
+    CGFloat components[8] = {
+        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
+        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
+    };
+
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
+    if (!gradient) return;
+
+    // Solid portion
+    if (playedWidth > fadeWidth) {
+        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        CGContextSetFillColorWithColor(context, dimColor.CGColor);
+        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - fadeWidth, bounds.size.height));
+    }
+
+    // Gradient fade
+    CGContextSaveGState(context);
+    CGContextClipToRect(context, CGRectMake(MAX(0, playedWidth - fadeWidth), 0, fadeWidth, bounds.size.height));
+    CGContextDrawLinearGradient(context, gradient,
+        CGPointMake(playedWidth - fadeWidth, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextRestoreGState(context);
+
+    CGGradientRelease(gradient);
+}
+
+// Effect 2: Glow - Pulsing halo at cursor position
+- (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                    playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    // Draw solid dimming first
+    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    CGContextSetFillColorWithColor(context, dimColor.CGColor);
+    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
+
+    // Pulsing glow at cursor
+    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
+    CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
+    CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
+
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
+    if (!colorSpace) return;
+
+    // Glow uses waveform color
+    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!waveDeviceColor) return;
+
+    CGFloat glowAlpha = 0.3 + pulse * 0.4;  // 0.3-0.7 alpha
+    CGFloat components[8] = {
+        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, glowAlpha,
+        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, 0.0
+    };
+
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
+    if (!gradient) return;
+
+    // Draw glow on both sides of cursor
+    CGContextSaveGState(context);
+    CGContextClipToRect(context, CGRectMake(playedWidth - glowWidth, 0, glowWidth * 2, bounds.size.height));
+    CGContextDrawLinearGradient(context, gradient,
+        CGPointMake(playedWidth - glowWidth, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextDrawLinearGradient(context, gradient,
+        CGPointMake(playedWidth + glowWidth, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextRestoreGState(context);
+
+    CGGradientRelease(gradient);
+}
+
+// Effect 3: Scanline - Animated lines traveling near cursor
+- (void)drawScanlineEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    // Draw solid dimming first
+    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    CGContextSetFillColorWithColor(context, dimColor.CGColor);
+    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
+
+    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!waveDeviceColor) return;
+
+    // Animated scanlines traveling near cursor
+    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat scanRange = 30.0;  // Lines travel within 30px of cursor
+    CGFloat baseFreq = [self animationFrequencyWithDefault:1.0];  // Base frequency
+
+    // 4 lines with different speeds and phases (multipliers of base frequency)
+    CGFloat speeds[] = {baseFreq * 2.5, -baseFreq * 1.8, baseFreq * 3.2, -baseFreq * 2.1};
+    CGFloat phases[] = {0.0, 1.57, 3.14, 4.71};  // Different phase offsets
+    CGFloat alphas[] = {0.3, 0.25, 0.35, 0.2};  // More subtle/transparent
+
+    CGContextSetLineWidth(context, 1.5);
+
+    for (int i = 0; i < 4; i++) {
+        // Calculate position using sine wave for smooth back-and-forth motion
+        CGFloat offset = sin(time * speeds[i] + phases[i]) * scanRange;
+        CGFloat x = playedWidth + offset;
+
+        if (x < 0 || x > bounds.size.width) continue;
+
+        // Fade alpha based on distance from cursor
+        CGFloat distanceFade = 1.0 - (fabs(offset) / scanRange) * 0.5;
+        CGFloat alpha = alphas[i] * distanceFade;
+
+        CGContextSetRGBStrokeColor(context,
+            waveDeviceColor.redComponent, waveDeviceColor.greenComponent,
+            waveDeviceColor.blueComponent, alpha);
+        CGContextBeginPath(context);
+        CGContextMoveToPoint(context, x, 0);
+        CGContextAddLineToPoint(context, x, bounds.size.height);
+        CGContextStrokePath(context);
+    }
+}
+
+// Effect 4: Pulse - Entire played area breathes in opacity
+- (void)drawPulseEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    // Breathing opacity for the entire played area
+    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat freq = [self animationFrequencyWithDefault:1.5] * 2.0 * M_PI;  // Default 1.5Hz
+    CGFloat breath = 0.5 + 0.5 * sin(time * freq);
+
+    // Modulate dimOpacity: ranges from dimOpacity*0.3 to dimOpacity*1.0
+    CGFloat pulsingOpacity = dimOpacity * (0.3 + breath * 0.7);
+
+    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                         blue:bgColor.blueComponent alpha:pulsingOpacity];
+    CGContextSetFillColorWithColor(context, dimColor.CGColor);
+    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
+}
+
+// Effect 5: Trail - Motion blur trail behind cursor
+- (void)drawTrailEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    CGFloat trailLength = 40.0;  // Trail extends 40px behind cursor
+
+    // Draw solid dimming for area before trail
+    if (playedWidth > trailLength) {
+        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        CGContextSetFillColorWithColor(context, dimColor.CGColor);
+        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
+    }
+
+    // Draw gradient trail
+    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
+    if (!colorSpace) return;
+
+    CGFloat components[8] = {
+        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
+        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
+    };
+
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
+    if (!gradient) return;
+
+    CGFloat trailStart = MAX(0, playedWidth - trailLength);
+    CGContextSaveGState(context);
+    CGContextClipToRect(context, CGRectMake(trailStart, 0, trailLength, bounds.size.height));
+    CGContextDrawLinearGradient(context, gradient,
+        CGPointMake(trailStart, 0), CGPointMake(playedWidth, 0), 0);
+    CGContextRestoreGState(context);
+
+    CGGradientRelease(gradient);
+}
+
+// Effect 6: Shimmer - Oscillating brightness bands
+- (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
+                       playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    // Draw base dimming
+    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
+                                         blue:bgColor.blueComponent alpha:dimOpacity * 0.7];
+    CGContextSetFillColorWithColor(context, dimColor.CGColor);
+    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
+
+    // Draw shimmering bands near cursor
+    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat shimmerWidth = 30.0;
+    CGFloat bandCount = 5;
+    CGFloat baseFreq = [self animationFrequencyWithDefault:2.5];  // Default 2.5Hz
+
+    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    if (!waveDeviceColor) return;
+
+    for (int i = 0; i < bandCount; i++) {
+        CGFloat phase = time * baseFreq * 2.0 * M_PI + i * 0.8;  // Different phase per band
+        CGFloat shimmer = 0.5 + 0.5 * sin(phase);
+        CGFloat bandAlpha = shimmer * 0.3;  // 0-0.3 alpha
+
+        CGFloat bandX = playedWidth - shimmerWidth + (i * shimmerWidth / bandCount);
+        CGFloat bandW = shimmerWidth / bandCount;
+
+        if (bandX < 0) continue;
+
+        CGContextSetRGBFillColor(context,
+            waveDeviceColor.redComponent, waveDeviceColor.greenComponent,
+            waveDeviceColor.blueComponent, bandAlpha);
+        CGContextFillRect(context, CGRectMake(bandX, 0, bandW, bounds.size.height));
+    }
+}
+
+
+
 
 - (void)drawPlaceholderInContext:(CGContextRef)context rect:(CGRect)rect {
     NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";

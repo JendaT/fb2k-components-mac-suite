@@ -19,8 +19,8 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 
 | Style | Description |
 |-------|-------------|
-| **Layered** (default) | L up, R down on one dBFS axis: the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
-| **Two-tone** | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
+| **Layered** | L up, R down on one dBFS axis: the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
+| **Two-tone** (default) | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
 | **Glow** | Peaks fade to the tips, RMS core runs to a hot centre |
 | **Heat** | One layer coloured by amplitude, deep to hot |
 | **Heat map** (classic) | Each column coloured by its peak, blue → green → yellow → red |
@@ -43,7 +43,7 @@ Optional time ruler under the waveform and a dB gutter on the right.
 
 ### Played Part
 
-The part already played is drawn at a configurable opacity (default 72 %).
+The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow, Scanline, Pulse, Trail or Shimmer. The animated ones can follow the track's BPM tag.
 
 ### Waveform Caching
 
@@ -76,9 +76,10 @@ Access settings via **Preferences > Display > Waveform Seekbar**
 
 | Card | Setting | Default |
 |------|---------|---------|
-| Appearance | Style, Body tint, Channels, Colours, Played opacity, Glass background | Layered, Subtle, Stereo, P4 white, 72 %, off |
-| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 12 pt, on, off, on hover, on |
+| Appearance | Style, Body tint, Gradient bands, Channels, Colours, Glass background | Two-tone, off, 8, Stereo, P4 white, off |
 | Scales | Time ruler, Level scale | off, on |
+| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 14 pt, on, off, on hover, on (67 %) |
+| Played part | Shade played portion, Dimming, Cursor effect, Sync animations to track BPM | on, 25 %, None, off |
 | Cache | Max size, Keep for | 2048 MB, 180 days |
 
 ### Cache Location

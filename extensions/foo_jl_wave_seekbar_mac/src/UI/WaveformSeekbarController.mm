@@ -188,10 +188,12 @@
             if (pc->get_now_playing(track) && track.is_valid()) {
                 file_info_impl info;
                 double duration = 0;
+                double bpm = 0;
                 if (track->get_info_async(info)) {
                     duration = info.get_length();
+                    bpm = extractBpmFromInfo(info);
                 }
-                [self handleNewTrack:track duration:duration];
+                [self handleNewTrack:track duration:duration bpm:bpm];
 
                 // Sync position
                 double position = pc->playback_get_position();
@@ -211,12 +213,13 @@
 
 #pragma mark - Playback Event Handlers
 
-- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration {
+- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm {
     _currentTrack = track;
     _isPaused = NO;
     _storedWaveform.reset();  // Clear previous waveform
 
     self.waveformView.trackDuration = duration;
+    self.waveformView.trackBpm = bpm;  // Set BPM for animation sync
     self.waveformView.playbackPosition = 0.0;
     self.waveformView.playing = YES;
     self.waveformView.waveformData = nil;
@@ -383,7 +386,22 @@ static const int kAnalysisMaxRetries = 1;
                     const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
                     const bool nextSecond = std::floor(position) != std::floor(oldTime);
 
-                    if (nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
+                    // Animated cursor effects need continuous redraw to stay smooth
+                    BOOL animatedEffect = NO;
+                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
+                        switch (self.waveformView.cursorEffect) {
+                            case WaveformCursorEffectGlow:
+                            case WaveformCursorEffectScanline:
+                            case WaveformCursorEffectPulse:
+                            case WaveformCursorEffectShimmer:
+                                animatedEffect = YES;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
                         [self.waveformView refreshDisplay];
                     }
