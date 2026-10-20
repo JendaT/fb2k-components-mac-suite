@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<title>foobar2000 Remote</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23000'/%3E%3Cpath d='M12 9v14l11-7z' fill='%23b38a4a'/%3E%3C/svg%3E">
+<style>
+  /* Dark: black background, readable text. Dim and Red are lower-luminance
+     night variants; none of them use pure white. */
+  :root, [data-theme="dark"] {
+    --bg: #000;
+    --panel: #121212;
+    --line: #333;
+    --text: #e2e2e2;
+    --muted: #a6a6a6;
+    --accent: #f0b65e;
+    --accent-dim: #4d3a1c;
+    --danger: #ff7a6b;
+  }
+  [data-theme="dim"] {
+    --bg: #000;
+    --panel: #0c0c0c;
+    --line: #2a2a2a;
+    --text: #b4b4b4;
+    --muted: #808080;
+    --accent: #c99a52;
+    --accent-dim: #3d2f1a;
+    --danger: #d06a5e;
+  }
+  [data-theme="red"] {
+    --bg: #000;
+    --panel: #0d0302;
+    --line: #3a120d;
+    --text: #e0604a;
+    --muted: #a8473a;
+    --accent: #ff5a3c;
+    --accent-dim: #4a1810;
+    --danger: #ff5a3c;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+    user-select: none; -webkit-user-select: none;
+  }
+  main {
+    max-width: 520px; margin: 0 auto; min-height: 100%;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; gap: 22px;
+  }
+  button {
+    font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  button:active { background: var(--accent-dim); }
+  button:disabled { opacity: .35; }
+  svg { width: 28px; height: 28px; fill: currentColor; }
+
+  header { display: flex; align-items: flex-start; gap: 12px; }
+  .track { flex: 1; min-width: 0; }
+  .title { font-size: 19px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sub { font-size: 15px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .icon-btn { width: 44px; height: 44px; border-radius: 12px; flex: none; }
+  .icon-btn svg { width: 22px; height: 22px; }
+
+  .banner {
+    display: none; padding: 10px 14px; border: 1px solid var(--danger);
+    border-radius: 12px; color: var(--danger); font-size: 14px;
+  }
+  .banner.show { display: block; }
+
+  .progress { display: flex; flex-direction: column; gap: 6px; }
+  .bar { height: 28px; display: flex; align-items: center; }
+  .bar-track { position: relative; width: 100%; height: 4px; border-radius: 2px; background: var(--line); }
+  .bar-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 2px; background: var(--muted); }
+  .times { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .transport { display: grid; grid-template-columns: 1fr 1fr 1.4fr 1fr; gap: 10px; }
+  .transport button { height: 64px; }
+  .transport .play { height: 64px; }
+  .transport .play svg { width: 34px; height: 34px; }
+
+  .volume {
+    border: 1px solid var(--line); border-radius: 18px; background: var(--panel);
+    padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 16px;
+  }
+  .readout { text-align: center; font-variant-numeric: tabular-nums; }
+  .readout .db { font-size: 46px; font-weight: 300; color: var(--accent); letter-spacing: -1px; }
+  .readout .unit { font-size: 18px; color: var(--muted); margin-left: 4px; }
+  .readout .note { font-size: 14px; color: var(--muted); min-height: 18px; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 44px; background: transparent; margin: 0;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--line); }
+  input[type=range]::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 30px; height: 30px; margin-top: -12px;
+    border-radius: 50%; background: var(--accent); border: 0;
+  }
+  input[type=range]::-moz-range-thumb { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); border: 0; }
+  .range-labels { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); margin-top: -10px; font-variant-numeric: tabular-nums; }
+
+  .steps { display: grid; grid-template-columns: 1fr 0.8fr 1fr; gap: 10px; }
+  .steps button { height: 76px; font-size: 26px; }
+  .steps .mute { font-size: 15px; }
+  .steps .mute.on { color: var(--accent); border-color: var(--accent-dim); }
+
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 18px; padding: 18px; width: min(92vw, 420px);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.7); }
+  dialog h2 { margin: 0 0 14px; font-size: 17px; font-weight: 500; }
+  .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; }
+  .field label { color: var(--muted); font-size: 15px; }
+  .field input, .field select {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 10px; width: 110px; text-align: right;
+  }
+  .hint { font-size: 14px; color: var(--muted); margin: 4px 0 14px; }
+  .dialog-actions { display: flex; justify-content: flex-end; }
+  .dialog-actions button { padding: 10px 20px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="track">
+      <div class="title" id="title">Not playing</div>
+      <div class="sub" id="sub">&nbsp;</div>
+    </div>
+    <button class="icon-btn" id="settingsBtn" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.3 7.3 0 0 0-1.7-1L15 3h-4l-.4 2.7a7.3 7.3 0 0 0-1.7 1l-2.5-1-2 3.5L6.5 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1a7.3 7.3 0 0 0 1.7 1L11 21h4l.4-2.7a7.3 7.3 0 0 0 1.7-1l2.5 1 2-3.5zM13 15.5A3.5 3.5 0 1 1 13 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+    </button>
+  </header>
+
+  <div class="banner" id="banner">Not connected to foobar2000. Retrying&hellip;</div>
+
+  <section class="progress">
+    <div class="bar" id="bar"><div class="bar-track"><div class="bar-fill" id="barFill"></div></div></div>
+    <div class="times"><span id="pos">0:00</span><span id="len">0:00</span></div>
+  </section>
+
+  <section class="transport">
+    <button id="prevBtn" aria-label="Previous"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+    <button id="stopBtn" aria-label="Stop"><svg viewBox="0 0 24 24"><path d="M7 7h10v10H7z"/></svg></button>
+    <button class="play" id="playBtn" aria-label="Play or pause">
+      <svg viewBox="0 0 24 24" id="playIcon"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+    <button id="nextBtn" aria-label="Next"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6zm10-12v12h2V6z"/></svg></button>
+  </section>
+
+  <section class="volume" aria-label="Volume">
+    <div class="readout">
+      <span class="db" id="db">&ndash;</span><span class="unit">dB</span>
+      <div class="note" id="note"></div>
+    </div>
+    <input type="range" id="slider" min="-70" max="0" step="0.05" aria-label="Volume in dB">
+    <div class="range-labels"><span id="rangeMinLabel"></span><span id="rangeMaxLabel"></span></div>
+    <div class="steps">
+      <button id="downBtn" aria-label="Volume down">&minus;</button>
+      <button class="mute" id="muteBtn" aria-label="Mute">Mute</button>
+      <button id="upBtn" aria-label="Volume up">+</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="settings">
+  <h2>Remote settings</h2>
+  <div class="field"><label for="setStep">Button step (dB)</label>
+    <select id="setStep">
+      <option value="0.1">0.1</option>
+      <option value="0.25">0.25</option>
+      <option value="0.5">0.5</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+    </select>
+  </div>
+  <div class="field"><label for="setMin">Slider bottom (dB)</label><input id="setMin" type="number" inputmode="decimal" step="1" min="-100" max="-1"></div>
+  <div class="field"><label for="setMax">Slider top (dB)</label><input id="setMax" type="number" inputmode="decimal" step="1" min="-99" max="0"></div>
+  <p class="hint">The slider spans only this range, so small finger movements make small changes. + never raises the volume above the slider top.</p>
+  <div class="field"><label for="setTheme">Colors</label>
+    <select id="setTheme">
+      <option value="dark">Dark</option>
+      <option value="dim">Dim (night)</option>
+      <option value="red">Red (night)</option>
+    </select>
+  </div>
+  <div class="dialog-actions"><button id="settingsDone">Done</button></div>
+</dialog>
+
+<script>
+"use strict";
+
+// ---------- Settings (per phone, kept in localStorage) ----------
+const DEFAULTS = { step: 0.5, min: -70, max: 0, theme: "dark" };
+// Bump when DEFAULTS change so phones pick up the new ones.
+const SETTINGS_KEY = "fb2kRemote.v2";
+const MIN_DB = -100, MAX_DB = 0;
+
+function loadSettings() {
+  let s = {};
+  try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {}; } catch (e) {}
+  const out = Object.assign({}, DEFAULTS, s);
+  out.step = Number(out.step) || DEFAULTS.step;
+  out.min = clamp(Number(out.min), MIN_DB, MAX_DB - 1);
+  out.max = clamp(Number(out.max), out.min + 1, MAX_DB);
+  if (isNaN(out.min) || isNaN(out.max)) { out.min = DEFAULTS.min; out.max = DEFAULTS.max; }
+  if (!["dark", "dim", "red"].includes(out.theme)) out.theme = DEFAULTS.theme;
+  return out;
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+}
+let settings = loadSettings();
+
+// ---------- Helpers ----------
+const $ = (id) => document.getElementById(id);
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+function fmtDb(v) {
+  let s = Math.abs(v).toFixed(2);
+  if (s.endsWith("0")) s = s.slice(0, -1);
+  return (v < 0 ? "−" : "") + s;
+}
+function fmtTime(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60, s = sec % 60;
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+// ---------- Server ----------
+let state = null;           // Last state from the server
+let stateAt = 0;            // performance.now() when it arrived
+let localVolumeUntil = 0;   // Ignore server volume until then (user is adjusting)
+
+async function api(path, method) {
+  const res = await fetch(path, {
+    method: method || "GET",
+    headers: method === "POST" ? { "X-Fb2k-Remote": "1" } : {},
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(res.status + " " + (await res.text()));
+  return res.json();
+}
+
+function setConnected(ok) { $("banner").classList.toggle("show", !ok); }
+
+function applyState(s) {
+  const keepVolume = performance.now() < localVolumeUntil && state;
+  const localVol = keepVolume ? state.volumeDb : null;
+  state = s;
+  stateAt = performance.now();
+  if (keepVolume) state.volumeDb = localVol;
+  setConnected(true);
+  render();
+}
+
+async function refresh() {
+  try { applyState(await api("/api/state")); }
+  catch (e) { setConnected(false); }
+}
+
+async function command(name, query) {
+  try { applyState(await api("/api/" + name + (query ? "?" + query : ""), "POST")); }
+  catch (e) { setConnected(false); }
+}
+
+// Volume requests are coalesced: one in flight, only the latest target queued.
+let volumeInFlight = false, volumePending = null;
+function sendVolume(db) {
+  volumePending = db;
+  if (volumeInFlight) return;
+  (async () => {
+    volumeInFlight = true;
+    while (volumePending !== null) {
+      const target = volumePending;
+      volumePending = null;
+      try {
+        const s = await api("/api/volume?db=" + target.toFixed(2), "POST");
+        if (volumePending === null) applyState(s);
+      } catch (e) { setConnected(false); }
+    }
+    volumeInFlight = false;
+  })();
+}
+
+function setLocalVolume(db) {
+  if (!state) return;
+  state.volumeDb = clamp(db, MIN_DB, MAX_DB);
+  state.muted = state.volumeDb <= MIN_DB;
+  localVolumeUntil = performance.now() + 800;
+  renderVolume();
+  sendVolume(state.volumeDb);
+}
+
+// ---------- Rendering ----------
+function render() {
+  if (!state) return;
+  const t = state.track;
+  $("title").textContent = t ? (t.title || "Untitled") : "Not playing";
+  $("sub").textContent = t ? [t.artist, t.album].filter(Boolean).join(" — ") || " " : " ";
+  $("playIcon").innerHTML = state.state === "playing"
+    ? '<path d="M7 5h4v14H7zm6 0h4v14h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+  $("stopBtn").disabled = state.state === "stopped";
+  renderProgress();
+  renderVolume();
+}
+
+function currentPosition() {
+  const t = state && state.track;
+  if (!t) return 0;
+  let pos = t.position;
+  if (state.state === "playing") pos += (performance.now() - stateAt) / 1000;
+  return t.length > 0 ? Math.min(pos, t.length) : pos;
+}
+
+function renderProgress() {
+  const t = state && state.track;
+  const pos = currentPosition();
+  $("pos").textContent = fmtTime(pos);
+  $("len").textContent = t && t.length > 0 ? fmtTime(t.length) : "0:00";
+  $("barFill").style.width = t && t.length > 0 ? (100 * pos / t.length) + "%" : "0";
+}
+
+function renderVolume() {
+  if (!state) return;
+  const slider = $("slider");
+  slider.min = settings.min;
+  slider.max = settings.max;
+  $("rangeMinLabel").textContent = fmtDb(settings.min);
+  $("rangeMaxLabel").textContent = fmtDb(settings.max);
+
+  const custom = state.customVolume;
+  slider.disabled = custom;
+  if (!sliderDragging) slider.value = clamp(state.volumeDb, settings.min, settings.max);
+
+  $("db").textContent = custom ? "–" : state.muted ? "Muted" : fmtDb(state.volumeDb);
+  let note = "";
+  if (custom) note = "Output device controls volume: buttons step it";
+  else if (!state.muted && state.volumeDb > settings.max) note = "Above the slider range";
+  else if (!state.muted && state.volumeDb < settings.min) note = "Below the slider range";
+  $("note").textContent = note;
+  $("muteBtn").classList.toggle("on", !!state.muted);
+  $("upBtn").disabled = !custom && !state.muted && state.volumeDb >= settings.max - 0.001;
+}
+
+// ---------- Controls ----------
+$("playBtn").onclick = () => command("play_pause");
+$("stopBtn").onclick = () => command("stop");
+$("prevBtn").onclick = () => command("previous");
+$("nextBtn").onclick = () => command("next");
+$("muteBtn").onclick = () => command("mute");
+
+$("bar").onclick = (e) => {
+  const t = state && state.track;
+  if (!t || !t.canSeek || !(t.length > 0)) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  const frac = clamp((e.clientX - r.left) / r.width, 0, 1);
+  command("seek", "position=" + (frac * t.length).toFixed(1));
+};
+
+// Slider: live updates while dragging, final value on release.
+let sliderDragging = false;
+const slider = $("slider");
+slider.addEventListener("pointerdown", () => { sliderDragging = true; });
+slider.addEventListener("input", () => setLocalVolume(Number(slider.value)));
+const endDrag = () => { sliderDragging = false; };
+slider.addEventListener("pointerup", endDrag);
+slider.addEventListener("pointercancel", endDrag);
+slider.addEventListener("change", () => { endDrag(); setLocalVolume(Number(slider.value)); });
+
+// +/- step from the current value; hold to repeat. + stops at the slider top.
+function step(dir) {
+  if (!state) return;
+  if (state.customVolume) { command("volume", "delta=" + (dir > 0 ? "1" : "-1")); return; }
+  const cur = state.volumeDb;
+  if (dir > 0) {
+    if (cur >= settings.max) return;
+    setLocalVolume(Math.min(cur + settings.step, settings.max));
+  } else {
+    setLocalVolume(Math.max(cur - settings.step, MIN_DB));
+  }
+}
+function holdRepeat(btn, dir) {
+  let timer = null;
+  const stop = () => { clearTimeout(timer); clearInterval(timer); timer = null; };
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    stop();
+    step(dir);
+    timer = setTimeout(() => { timer = setInterval(() => step(dir), 180); }, 450);
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => btn.addEventListener(ev, stop));
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+holdRepeat($("upBtn"), +1);
+holdRepeat($("downBtn"), -1);
+
+// ---------- Settings dialog ----------
+function applyTheme() { document.documentElement.dataset.theme = settings.theme; }
+$("settingsBtn").onclick = () => {
+  $("setStep").value = String(settings.step);
+  $("setMin").value = settings.min;
+  $("setMax").value = settings.max;
+  $("setTheme").value = settings.theme;
+  $("settings").showModal();
+};
+$("settingsDone").onclick = () => {
+  const min = clamp(Number($("setMin").value), MIN_DB, MAX_DB - 1);
+  const max = clamp(Number($("setMax").value), MIN_DB + 1, MAX_DB);
+  settings.step = Number($("setStep").value) || DEFAULTS.step;
+  if (isFinite(min) && isFinite(max) && min < max) { settings.min = min; settings.max = max; }
+  settings.theme = ["dark", "dim", "red"].includes($("setTheme").value) ? $("setTheme").value : "dark";
+  saveSettings();
+  applyTheme();
+  $("settings").close();
+  renderVolume();
+};
+
+// ---------- Polling ----------
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) return;
+  refresh();
+  pollTimer = setInterval(refresh, 1000);
+}
+function stopPolling() { clearInterval(pollTimer); pollTimer = null; }
+document.addEventListener("visibilitychange", () => document.hidden ? stopPolling() : startPolling());
+setInterval(() => { if (state && state.state === "playing") renderProgress(); }, 250);
+
+applyTheme();
+startPolling();
+</script>
+</body>
+</html>
