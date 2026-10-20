@@ -2,6 +2,17 @@
 
 All notable changes to Vectorscope will be documented in this file.
 
+## [1.0.0] - 2026-10-20
+
+Contributed by [Scannou](https://github.com/Scannou).
+
+### Added
+- **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first; theme names and colors match the Spectrum Analyzer.
+
+### Changed
+- **Themes**: "Default (Phosphor Green)" is now "Classic (Green)", "Blue" is "Default (Blue)", and Amber gives way to P3 amber; the selector shows the preset matching the current colors, so edited colors read as Custom.
+- **Defaults**: P4 white with a band-colored trace and a band correlation meter on the right; afterglow 101 ms, brightness 74%, bar thickness 12 pt, response time 284 ms, low crossover 160 Hz, grid opacity 32%; settings that were never changed take them too.
+
 ## [0.1.0] - 2026-10-12
 
 Initial release. Contributed by [Scannou](https://github.com/Scannou).

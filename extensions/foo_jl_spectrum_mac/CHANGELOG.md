@@ -2,6 +2,32 @@
 
 All notable changes to Spectrum Analyzer will be documented in this file.
 
+## [1.0.0] - 2026-10-20
+
+Contributed by [Scannou](https://github.com/Scannou).
+
+### Added
+- **Own FFT**: Analyses PCM from the visualisation stream with its own vDSP FFT (Blackman-Harris or Hann window, 1024-32768); steep roll-offs such as a CD master's cut-off show as a cliff instead of a leakage floor.
+- **Mid + side**: Stereo setting that adds the side channel as a second line in the complementary hue.
+- **Curve detail**: Full detail or 1/24 to 1/3 octave smoothing; Curve mode draws one point per point of panel width.
+- **Top and Range**: Fixed dB window; Top 0 to -60 dB, Range 60, 80, 90 or 120 dB.
+- **Hover readout**: Crosshair with frequency, nearest note with cents, and level; replaces click and hold.
+- **Presets**: Default, Classic bars, RTA 1/3 octave, Fine detail and Mid + side.
+- **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first.
+- **Legend**: Optional Live / Peak hold key in Curve mode.
+
+### Changed
+- **Defaults**: Curve with line and color bars, P3 amber, 90 dB range, FFT 2048, compact-bass log scale, RMS averaging at 255 ms, 1.0 dB/oct slope; settings that were never changed take them too.
+- **Peak line**: Holds 920 ms, then falls at a steady 12 dB/s (setting now in dB/s); 0.3.0 values convert.
+- **RMS averaging**: Own Averaging time setting (0-500 ms); 0.3.0 values carry over.
+- **Frequency labels**: More labels (2x and 5x, then 3x, 4x, 6x and 8x) where they fit; decades bolder.
+- **Preferences**: Display, Analysis, Motion and Appearance sections; rows that do not apply are hidden or say why they are disabled; the page scrolls.
+
+### Fixed
+- **Drawing exceptions**: A nil font or color can no longer throw inside drawing and crash foobar2000 later.
+- **Low sample rates**: Grid, labels and readout stop at half the sample rate, like the spectrum.
+- **Bar edges**: Wide bars read the FFT bins whose centre lies inside them, not the bin below.
+
 ## [0.3.0] - 2026-10-12
 
 Contributed by [Scannou](https://github.com/Scannou).
