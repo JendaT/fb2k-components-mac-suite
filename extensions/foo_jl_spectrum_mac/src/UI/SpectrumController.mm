@@ -220,7 +220,7 @@ namespace {
 
     // Map friendly 0-100 sliders / ms to concrete per-frame rates (60fps timer).
     double shadowSpeed = getConfigInt(kKeyShadowFallSpeed, kDefaultShadowFallSpeed) / 100.0;
-    int    peakHoldMs  = (int)getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs);
+    int    peakHoldMs  = (int)std::clamp<int64_t>(getConfigInt(kKeyPeakHoldMs, kDefaultPeakHoldMs), 0, kMaxPeakHoldMs);
     s.shadowFall     = (float)(0.001 + shadowSpeed * 0.0275);   // ~0.001 (slow) .. 0.0285 (fast)
     if (s.smoothingMode == SmoothingRms && s.rmsMs > 0) {
         // An RMS curve falls at most 10*log10(e)/tau dB/s (power decaying with
@@ -327,6 +327,7 @@ static const CFTimeInterval kMinTickInterval = 0.0105;
 
         bool live = _analyzer->tick(dt);
         self.spectrumView.playing = live;
+        if (live) [self.spectrumView setSampleRate:_analyzer->sampleRate()];
 
         // Redraw while there is live audio or bars/peaks are still settling.
         if (live || _analyzer->isActive()) {

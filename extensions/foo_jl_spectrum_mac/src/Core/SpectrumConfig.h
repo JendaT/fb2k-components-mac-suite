@@ -123,6 +123,7 @@ constexpr int      kDefaultPeakFallDbPerSec = 12; // Peak line steady fall after
 constexpr int      kMinPeakFallDbPerSec = 1;
 constexpr int      kMaxPeakFallDbPerSec = 60;
 constexpr int      kDefaultPeakHoldMs = 920;     // Peak line hold time before it starts falling (ms)
+constexpr int      kMaxPeakHoldMs     = 2000;
 constexpr int      kDefaultTopDb      = 0;       // Level at the top of the display (dB)
 constexpr int      kMinTopDb          = -60;
 constexpr int      kMaxTopDb          = 0;

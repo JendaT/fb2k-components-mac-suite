@@ -2,11 +2,11 @@
 //  SpectrumAnalyzer.h
 //  foo_jl_spectrum_mac
 //
-//  Reads PCM from the foobar2000 visualisation stream, runs a Hann-windowed
-//  FFT on it (vDSP) and maps the result into a fixed number of frequency
-//  bars, with temporal smoothing and falling peak caps. Pure C++ (no Cocoa),
-//  driven once per display frame; all dynamics scale with the frame's
-//  duration, so any refresh rate works.
+//  Reads PCM from the foobar2000 visualisation stream, runs a windowed FFT
+//  on it (vDSP; Hann or Blackman-Harris) and maps the result into a fixed
+//  number of frequency bars, with temporal smoothing and falling peak caps.
+//  Pure C++ (no Cocoa), driven once per display frame; all dynamics scale
+//  with the frame's duration, so any refresh rate works.
 //
 
 #pragma once
@@ -76,6 +76,9 @@ public:
     // True while any bar or peak is still above zero (view keeps redrawing).
     bool isActive() const { return _active; }
 
+    // Sample rate the bands are laid out for (44.1 kHz until audio is read).
+    double sampleRate() const { return _lastSampleRate > 0 ? _lastSampleRate : 44100.0; }
+
 private:
     void rebuildBands();
     // Display level (0..1) of one bar, read off the first `binCount` bins of
@@ -84,7 +87,7 @@ private:
     void releaseStream();
     // Fill _mid (and _side) with fftSize samples around stream time `t`.
     bool readAudio(double t);
-    // Hann-windowed amplitude spectrum of `in` (fftSize samples) into `mag`.
+    // Windowed amplitude spectrum of `in` (fftSize samples) into `mag`.
     void computeSpectrum(const std::vector<float>& in, std::vector<float>& mag);
     // Advance one bar layer (bars or side) from its bin magnitudes.
     void updateLayer(std::vector<float>& layer, std::vector<float>& mag, std::vector<float>& pow,
@@ -94,6 +97,8 @@ private:
 
     Settings _settings;
     service_ptr_t<visualisation_stream_v2> _stream;
+    double _backlogSec = 0.0;     // history requested from the stream
+    audio_chunk_impl _chunk;      // reused by readAudio (up to fftSize x channels)
 
     // FFT
     OpaqueFFTSetup* _fftSetup = nullptr;

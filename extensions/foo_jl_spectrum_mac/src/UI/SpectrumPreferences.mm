@@ -74,6 +74,10 @@ bool colorBarStyle() {
     const int style = configInt(kKeyCurveStyle, kDefaultCurveStyle);
     return curveMode() && (style == CurveStyleColorBars || style == CurveStyleLineColorBars);
 }
+// Color bars without a line: no peak line and no legend either.
+bool colorBarsOnly() {
+    return curveMode() && configInt(kKeyCurveStyle, kDefaultCurveStyle) == CurveStyleColorBars;
+}
 
 // --- Factory presets (P31 Spectrum's) ---
 
@@ -428,7 +432,10 @@ const Preset kPresets[] = {
     }
     {
         auto [g, s] = boolKey(kKeyPeakHold, kDefaultPeakHold);
-        [self addRow:[self checkbox:@"Show peaks" get:g set:s tooltip:@"Peak caps in Bars mode, a peak line in Curve mode"]];
+        Row r = [self checkbox:@"Show peaks" get:g set:s
+                       tooltip:@"Peak caps in Bars mode, a peak line in Curve mode; not drawn with color bars alone"];
+        r.enabled = [] { return !colorBarsOnly(); };
+        [self addRow:std::move(r)];
     }
     {
         auto [g, s] = boolKey(kKeyShadowFill, kDefaultShadowFill);
@@ -449,6 +456,7 @@ const Preset kPresets[] = {
         auto [g, s] = boolKey(kKeyShowLegend, kDefaultShowLegend);
         Row r = [self checkbox:@"Show legend" get:g set:s tooltip:@"The Live / Peak hold key in the plot's top-left corner"];
         r.visible = curve;
+        r.enabled = [] { return !colorBarsOnly(); };
         [self addRow:std::move(r)];
     }
 
@@ -528,22 +536,23 @@ const Preset kPresets[] = {
         r.note = [] { return colorBarStyle() ? @"Not drawn with color bars" : @"Shadow fill is off"; };
         [self addRow:std::move(r)];
     }
-    const auto peaksOn = [] { return configBool(kKeyPeakHold, kDefaultPeakHold); };
+    const auto peaksOn = [] { return configBool(kKeyPeakHold, kDefaultPeakHold) && !colorBarsOnly(); };
+    const auto peaksOffNote = [] { return colorBarsOnly() ? @"Not drawn with color bars" : @"Show peaks is off"; };
     {
         Row r = [self slider:@"Peak fall" min:kMinPeakFallDbPerSec max:kMaxPeakFallDbPerSec
                          get:[] { return getPeakFallDbPerSec(); } set:[](int v) { setConfigInt(kKeyPeakFallDbPerSec, v); }
                       format:[](int v) { return fmt(@"%d dB/s", v); } tooltip:@"How fast peaks fall after their hold"];
         r.enabled = peaksOn;
-        r.note = [] { return @"Show peaks is off"; };
+        r.note = peaksOffNote;
         [self addRow:std::move(r)];
     }
     {
         auto [g, s] = intKey(kKeyPeakHoldMs, kDefaultPeakHoldMs);
-        Row r = [self slider:@"Peak hold" min:0 max:2000 get:g set:s format:[](int v) { return fmt(@"%d ms", v); }
+        Row r = [self slider:@"Peak hold" min:0 max:kMaxPeakHoldMs get:g set:s format:[](int v) { return fmt(@"%d ms", v); }
                      tooltip:@"How long a peak stays before it falls"];
         r.step = 10;
         r.enabled = peaksOn;
-        r.note = [] { return @"Show peaks is off"; };
+        r.note = peaksOffNote;
         [self addRow:std::move(r)];
     }
 
@@ -666,7 +675,8 @@ const Preset kPresets[] = {
                 r.value.frame = NSMakeRect(kValueX, y + 3, kPageWidth - kValueX - 6, 17);
                 // While disabled the value gives way to a note saying why.
                 const bool showNote = !enabled && r.note;
-                r.value.stringValue = showNote ? r.note() : r.format((int)((NSSlider *)r.control).integerValue);
+                // The stored value: a stepped slider can sit between steps while dragged.
+                r.value.stringValue = showNote ? r.note() : r.format(r.get());
                 r.value.textColor = showNote ? [NSColor secondaryLabelColor] : [NSColor labelColor];
                 y += kRowHeight;
                 break;

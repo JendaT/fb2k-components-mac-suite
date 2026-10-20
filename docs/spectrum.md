@@ -61,7 +61,7 @@ Bars, gridlines, labels and the frequency readout all follow the selected scale.
 | **Attack / decay** | Fast rise and slower fall, applied to the displayed dB value |
 | **RMS average** | Running average of signal power per FFT bin; levels rise and fall at one even rate, like a real-time analyzer |
 
-In **RMS average** the Smoothing slider sets the averaging time (0-500 ms, in 5 ms steps) and its label shows milliseconds. Each mode keeps its own Smoothing value, so switching modes does not carry an amount over that means something else in the other mode. Settings from 0.3.0, where RMS used the shared value at 2 ms per step, carry over until the slider is moved.
+In **RMS average** an **Averaging time** slider (0-500 ms, in 5 ms steps) takes the place of Smoothing. Each mode keeps its own value, so switching modes does not carry an amount over that means something else in the other mode. Settings from 0.3.0, where RMS used the shared Smoothing value at 2 ms per step, carry over until the slider is moved.
 
 ### Spectral Slope
 
@@ -109,7 +109,7 @@ By default the curve uses RMS averaging at 255 ms (falling up to about 17 dB/s),
 
 - **dB scale**: guide lines every 10 dB (20 dB at 120 dB range), labelled with numbers only (the top line names the unit), positioned against the same Top / Range window the bars use; the top label always stays whole, sitting just below the top line
 - **Frequency axis**: on both logarithmic scales, gridlines at 1..9 x 10^n Hz; decades (100 Hz, 1 kHz, 10 kHz) are drawn at 70% of the grid opacity, the lines between at 45%. Labels go to decades first, then 2x and 5x, then 3x, 4x, 6x and 8x (20 30 40 50 60 80 100 200 ...), each only where it clears its neighbours; decades are bolder and brighter, in a monospaced font; the linear scale uses round steps
-- **Labels** take the background colour blended 70% towards white (or black on light backgrounds), so they stay readable with a theme's deliberately dim grid
+- **Labels** take the background colour blended 62% towards white (or black on light backgrounds), decade labels 92%, so they stay readable with a theme's deliberately dim grid; dB labels that would overlap in a short panel are left out, their lines stay
 - **Per-bar labels**: in Bars mode each bar is labelled with its centre frequency, on one or two staggered rows depending on density
 - Both auto-hide when the view is too small; color and opacity are configurable (0% hides the grid)
 - **Floor**: in Curve mode a line (live, peak or side) is not drawn where it lies on the floor: it meets the bottom and stops, so silence, a stopped player or a track without highs leaves only the grid there
@@ -124,7 +124,7 @@ Optional translucent behind-window blur instead of a solid background color (sam
 
 ### Frequency Readout
 
-Hover over the plot to read the spectrum under the mouse: a dashed crosshair through the live curve, a dot on it, and a box with the frequency, the nearest note with its offset in cents, and the level in dB. In Curve mode the frequency is also marked on the axis.
+Hover over the plot to read the spectrum under the mouse: a dashed crosshair through the live curve, a dot on it, and a box with the frequency, the nearest note with its offset in cents, and the level in dB. In Bars mode it reads the bar under the mouse at its centre frequency. In Curve mode the frequency is also marked on the axis.
 
 ### Dark Mode Support
 
@@ -146,7 +146,7 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 | **Classic bars** | 48 bars, attack / decay smoothing at 60, logarithmic scale |
 | **RTA, 1/3 octave** | Filled curve at 1/3-octave detail, logarithmic scale, FFT 8192, 500 ms averaging |
 | **Fine detail** | Line at full detail, FFT 16384, Blackman-Harris window, logarithmic scale, 120 dB range |
-| **Mid + side** | Mid + side lines at 1/12-octave detail |
+| **Mid + side** | Mid + side lines (Line style) at 1/12-octave detail |
 
 ### Display
 
@@ -220,8 +220,8 @@ splitter vertical
 
 ### Audio Analysis
 
-- `visualisation_stream_v2::get_chunk_absolute` with a 1 s backlog (room for a centred 32768-sample frame), all channels; one FFT-size frame centred on the playback position (falling back to the frame ending or starting there right after a start or seek)
-- Mid is the channel average, side half the difference of the first two channels; each gets the analysis window (periodic Hann, or 4-term Blackman-Harris) and a vDSP real FFT, scaled by `1 / sum(window)` so a full-scale sine reads 1.0
+- `visualisation_stream_v2::get_chunk_absolute` with a backlog of at least 1 s, more when one frame is longer (large FFT sizes at low sample rates), all channels; one FFT-size frame centred on the playback position, falling back to the frame ending there (no look-ahead) or starting there (no history, right after a start or seek)
+- Mid is the channel average, side half the difference of the first two channels; non-finite or absurd samples read as silence; each frame has its window-weighted mean (DC) removed, then gets the analysis window (periodic Hann, or 4-term Blackman-Harris) and a vDSP real FFT, scaled by `1 / sum(window)` so a full-scale sine reads 1.0
 - Band edges recomputed when the stream's sample rate changes; the DC bin is skipped
 - Peak magnitude across each band's bins (reads punchier than the average)
 - RMS average keeps a one-pole average of power for every FFT bin and reads the bars off the averaged spectrum. With nothing coming in, the curve falls at most `10 x log10(e) / tau` dB/s (about 17 dB/s at 255 ms); the shadow fall slider maps to 15-90% of that rate

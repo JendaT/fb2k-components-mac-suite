@@ -94,7 +94,7 @@ foo_jl_spectrum_mac/
 - Spectrum data comes from `visualisation_stream_v2::get_spectrum_absolute` with `KStreamFlagNewFFT` (0..1 normalized, Gauss window), mono channel mode.
 - Bars are driven by a 60 fps `NSTimer`; the timer pauses when the view is hidden and the stream is released so the core can stop the visualisation backend.
 - An `initquit` service releases all live streams before service teardown; holding a stream through shutdown aborts the app.
-- Display window is 0 dB (top) to -80 dB (bottom); bars and grid share the constants so guides line up.
+- Display window is set by Top and Range (default 0 dB to -90 dB); bars and grid share the settings so guides line up.
 - Settings persist through `fb2k::configStore` under the `foo_jl_spectrum.` prefix.
 
 ## License

@@ -40,6 +40,10 @@ NS_ASSUME_NONNULL_BEGIN
 // one bar per kAutoBarPitch points.
 - (NSInteger)autoBarCount;
 
+// Sample rate of the audio shown. The analyzer stops at half of it, and so do
+// the frequency grid, labels and readout.
+- (void)setSampleRate:(double)rate;
+
 // Provide the latest bar magnitudes, shadow fill, peak positions and, in
 // Mid + side mode, the side channel (nil otherwise); each 0..1 with `count`
 // entries. Redraws.

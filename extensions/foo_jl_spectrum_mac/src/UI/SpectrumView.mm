@@ -24,8 +24,11 @@
     bool     _vertical;
     bool     _autoBars;
     int      _gapPercent;
-    int      _minHz;
-    int      _maxHz;
+    int      _cfgMinHz;    // configured range
+    int      _cfgMaxHz;
+    double   _sampleRate;  // of the audio shown; 0 until known
+    double   _minHz;       // range drawn: the configured one, limited to Nyquist
+    double   _maxHz;
     int      _freqScale;   // spectrum_config::FreqScale
 
     // Transient plot geometry (set each drawRect). Frequency runs along one
@@ -58,6 +61,8 @@
     NSInteger _blStride;   // label every Nth bar
     CGFloat  _blLaneSize;  // row height (horizontal) or column width (vertical)
 
+    BOOL     _freqAxisDrawn;  // frequency labels drawn this frame
+
     // Readout under the mouse while it is over the plot.
     BOOL     _hovering;
     NSPoint  _hoverPoint;
@@ -84,12 +89,13 @@
     _vertical      = getConfigInt(kKeyOrientation, kDefaultOrientation) == OrientationVertical;
     _autoBars      = getConfigInt(kKeyBarCount, kDefaultBarCount) == kBarCountAuto;
     _gapPercent    = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
-    _minHz         = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
-    _maxHz         = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    _cfgMinHz      = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
+    _cfgMaxHz      = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
     // Same clamps as SpectrumAnalyzer::configure(), so fractionForHz: cannot
     // divide by zero or take log10 of a non-positive bound.
-    if (_minHz < 10) _minHz = 10;
-    if (_maxHz <= _minHz + 100) _maxHz = _minHz + 100;
+    if (_cfgMinHz < 10) _cfgMinHz = 10;
+    if (_cfgMaxHz <= _cfgMinHz + 100) _cfgMaxHz = _cfgMinHz + 100;
+    [self updateFrequencyRange];
     _freqScale     = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
     _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
     _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
@@ -107,6 +113,22 @@
     _gridColorLight = (uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight);
     _gridColorDark  = (uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
     _barLabels = nil;  // frequency range or scale may have changed
+    [self setNeedsDisplay:YES];
+}
+
+// The analyzer stops at half the sample rate (SpectrumAnalyzer::rebuildBands);
+// the grid, labels and readout follow it so they line up with the curve.
+- (void)updateFrequencyRange {
+    const double nyquist = (_sampleRate > 0 ? _sampleRate : 44100.0) * 0.5;
+    _minHz = std::min<double>(_cfgMinHz, nyquist - 1);
+    _maxHz = std::min<double>(_cfgMaxHz, nyquist);
+}
+
+- (void)setSampleRate:(double)rate {
+    if (rate == _sampleRate) return;
+    _sampleRate = rate;
+    [self updateFrequencyRange];
+    _barLabels = nil;
     [self setNeedsDisplay:YES];
 }
 
@@ -301,7 +323,7 @@ static const CGFloat kPeakLineAlpha = 0.45;
     if (range <= 0) return guides;
     const float floorDb = _topDb - range;
     const int step = range > 90 ? 20 : 10;
-    const int startDb = (int)(std::floor(_topDb / step) * step);
+    const int startDb = (int)(std::floor((double)_topDb / step) * step);   // at or below Top
     for (int db = startDb; db > (int)floorDb; db -= step) {
         guides.emplace_back(db, db == startDb ? [NSString stringWithFormat:@"%d dB", db]
                                               : [NSString stringWithFormat:@"%d", db]);
@@ -397,6 +419,7 @@ static const CGFloat kPeakLineAlpha = 0.45;
 
     // Grid behind the spectrum. In bars mode the bars themselves mark the
     // frequency axis, so each gets a label instead of frequency gridlines.
+    _freqAxisDrawn = drawFreq;
     if (barLabels)     [self drawBarLabelsCount:n];
     else if (drawFreq) [self drawFreqAxisInContext:ctx];
     if (drawDb)        [self drawDbGuidesInContext:ctx];
@@ -581,7 +604,7 @@ static const CGFloat kPeakLineAlpha = 0.45;
 // "Live" and "Peak hold" with their line styles, in the plot's top-left
 // corner, so nothing has to be guessed. Left out where it would crowd.
 - (void)drawLegendBase:(NSColor *)base {
-    if (!_showLegend || _pFreq < 280.0 || _pMag < 120.0) return;
+    if (!_showLegend || _gridOpacity <= 0 || _pFreq < 280.0 || _pMag < 120.0) return;
     NSDictionary *attrs = textAttrs(labelFont(kLabelWeight), [self gridLabelColor]);
     const CGFloat swatch = 16.0, gap = 6.0, spacing = 18.0;
     const CGFloat lineH = [@"Live" sizeWithAttributes:attrs].height;
@@ -739,6 +762,13 @@ static CGFloat colorBarStrength(CGFloat level) {
     NSDictionary *attrs = textAttrs(dbLabelFont(), [self gridLabelColor]);
     CGContextSetLineWidth(ctx, 1.0);
     NSColor *lineColor = [self gridLineColor];
+    // Labels go top line first; one that would overlap the previous label is
+    // left out (its line stays), so short or narrow panels keep every other one.
+    CGFloat lastLabelEdge = CGFLOAT_MAX;
+    const CGFloat labelGap = 2.0;
+    const auto clampStart = [](CGFloat start, CGFloat size, CGFloat length) {
+        return std::max<CGFloat>(0.0, std::min<CGFloat>(start, length - size));
+    };
 
     for (const auto &[db, label] : [self dbGuides]) {
         CGFloat v = (db - floorDb) / range;
@@ -752,8 +782,11 @@ static CGFloat colorBarStrength(CGFloat level) {
             CGContextMoveToPoint(ctx, x, _pOy);
             CGContextAddLineToPoint(ctx, x, _pOy + _pFreq);
             CGContextStrokePath(ctx);
-            // Centred on the line, but kept whole at the view's edges.
-            const CGFloat lx = std::clamp<CGFloat>(x - sz.width / 2, 0.0, self.bounds.size.width - sz.width);
+            // Centred on the line, but kept whole at the view's edges. Lower
+            // levels run to the left.
+            const CGFloat lx = clampStart(x - sz.width / 2, sz.width, self.bounds.size.width);
+            if (lx + sz.width + labelGap > lastLabelEdge) continue;
+            lastLabelEdge = lx;
             [label drawAtPoint:NSMakePoint(lx, kMarginBottom + (_pOy - kMarginBottom - sz.height) / 2)
                 withAttributes:attrs];
         } else {
@@ -764,7 +797,9 @@ static CGFloat colorBarStrength(CGFloat level) {
             CGContextStrokePath(ctx);
             // Centred on the line, but kept whole at the view's edges: the
             // label of a line at the very top sits just below it.
-            const CGFloat ly = std::clamp<CGFloat>(y - sz.height / 2, 0.0, self.bounds.size.height - sz.height);
+            const CGFloat ly = clampStart(y - sz.height / 2, sz.height, self.bounds.size.height);
+            if (ly + sz.height + labelGap > lastLabelEdge) continue;
+            lastLabelEdge = ly;
             [label drawAtPoint:NSMakePoint(_pOx + _pFreq + kDbLabelGap, ly) withAttributes:attrs];
         }
     }
@@ -1020,8 +1055,17 @@ static NSString *noteName(double f) {
     const CGFloat along = _vertical ? _hoverPoint.y - _pOy : _hoverPoint.x - _pOx;
     const CGFloat across = _vertical ? _hoverPoint.x - _pOx : _hoverPoint.y - _pOy;
     if (along < 0 || along > _pFreq || across < 0 || across > _pMag) return;   // over the labels
-    const CGFloat t = along / _pFreq;
-    const CGFloat m = [self levelAtFraction:t];
+    CGFloat t = along / _pFreq;
+    CGFloat m;
+    if (_drawMode == spectrum_config::DrawModeBars) {
+        // The bar under the mouse: its level, at its centre frequency.
+        const NSInteger n = (NSInteger)_bars.size();
+        const NSInteger i = std::clamp<NSInteger>((NSInteger)(t * n), 0, n - 1);
+        t = ((CGFloat)i + 0.5) / (CGFloat)n;
+        m = std::clamp<CGFloat>(_bars[(size_t)i], 0.0, 1.0);
+    } else {
+        m = [self levelAtFraction:t];
+    }
     const double hz = [self hzForFraction:t];
     const double db = (_topDb - _rangeDb) + m * _rangeDb;
 
@@ -1086,7 +1130,7 @@ static NSString *noteName(double f) {
     [text drawAtPoint:NSMakePoint(x + padX, y + padY)];
 
     // The frequency on the axis, over the labels there.
-    if (!_showFreqAxis || _drawMode != spectrum_config::DrawModeCurve) return;
+    if (!_freqAxisDrawn || _drawMode != spectrum_config::DrawModeCurve) return;
     NSString *tag = hz >= 1000.0 ? [NSString stringWithFormat:@"%.2fk", hz / 1000.0]
                                  : [NSString stringWithFormat:@"%.0f", hz];
     NSDictionary *tagAttrs = textAttrs(labelFont(NSFontWeightSemibold), bg);
@@ -1094,9 +1138,11 @@ static NSString *noteName(double f) {
     const CGFloat tw = std::ceil(ts.width) + 10.0, th = std::ceil(ts.height) + 2.0;
     CGRect pill;
     if (_vertical) {
-        pill = CGRectMake(_pOx + _pMag + 3.0, std::round(a.y - th / 2.0), tw, th);
+        // Kept inside the view: the label column can be narrower than the tag.
+        const CGFloat px = std::min<CGFloat>(_pOx + _pMag + 3.0, self.bounds.size.width - tw);
+        pill = CGRectMake(px, std::round(a.y - th / 2.0), tw, th);
     } else {
-        const CGFloat px = std::clamp<CGFloat>(std::round(a.x - tw / 2.0), _pOx, _pOx + _pFreq - tw);
+        const CGFloat px = std::max<CGFloat>(_pOx, std::min<CGFloat>(std::round(a.x - tw / 2.0), _pOx + _pFreq - tw));
         pill = CGRectMake(px, kMarginBottom + (_pOy - kMarginBottom - th) / 2.0 + 1.0, tw, th);
     }
     NSBezierPath *pillPath = [NSBezierPath bezierPathWithRoundedRect:pill xRadius:4 yRadius:4];
@@ -1118,9 +1164,15 @@ static NSString *noteName(double f) {
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+    _hovering = NO;   // no mouseExited: when the view changes windows (full screen)
     if ([self.delegate respondsToSelector:@selector(spectrumViewDidMoveToWindow:)]) {
         [self.delegate spectrumViewDidMoveToWindow:self];
     }
+}
+
+- (void)viewDidHide {
+    [super viewDidHide];
+    _hovering = NO;   // nor when it is hidden (tab switch)
 }
 
 #pragma mark - Appearance changes
@@ -1158,6 +1210,12 @@ static NSString *noteName(double f) {
                owner:self
             userInfo:nil];
     [self addTrackingArea:_tracking];
+    // Rebuilt after layout changes, which can move the view from under a
+    // still mouse without a mouseExited:.
+    if (_hovering && self.window) {
+        const NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+        if (!NSPointInRect(p, self.bounds)) _hovering = NO;
+    }
 }
 
 - (void)mouseEntered:(NSEvent *)event {
