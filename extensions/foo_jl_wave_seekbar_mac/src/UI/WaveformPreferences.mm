@@ -51,8 +51,12 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSColorWell *_bgColorLightWell;
     NSColorWell *_waveColorDarkWell;
     NSColorWell *_bgColorDarkWell;
-    NSSlider *_playedOpacitySlider;
-    NSTextField *_playedOpacityLabel;
+    // Played part
+    NSButton *_shadePlayedCheckbox;
+    NSSlider *_playedDimmingSlider;
+    NSTextField *_playedDimmingLabel;
+    NSPopUpButton *_cursorEffectPopup;
+    NSButton *_bpmSyncCheckbox;
     NSButton *_glassBackgroundCheckbox;
 
     // Overlays
@@ -200,10 +204,13 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     JLAddPreferencesInfoButton(_page, title, self, @selector(showComponentInfo:));
     y += 32;
 
+    // Appearance and Scales on the left, Overlays and Played part on the
+    // right: the two columns come out about equally tall
     const CGFloat rightX = kMargin + kColumnWidth + kColumnGap;
-    const CGFloat left = [self buildAppearanceAtX:kMargin y:y];
+    CGFloat left = [self buildAppearanceAtX:kMargin y:y];
+    left = [self buildScalesAtX:kMargin y:left + kCardGap];
     CGFloat right = [self buildOverlaysAtX:rightX y:y];
-    right = [self buildScalesAtX:rightX y:right + kCardGap];
+    right = [self buildPlayedAtX:rightX y:right + kCardGap];
     y = std::max(left, right) + kCardGap;
     y = [self buildCacheAtX:kMargin y:y width:kPageWidth - 2 * kMargin];
 
@@ -216,10 +223,21 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     CGFloat y = [self addCardTitle:@"Appearance" x:x y:top + kCardPad];
 
     y = [self addHeading:@"Style" x:x y:y width:w];
-    _stylePopup = [self addPopup:@[ @"Layered — peak + loudness (dBFS)", @"Simple — Two-tone",
-                                    @"Simple — Glow", @"Simple — Heat",
-                                    @"Classic — Heat map", @"Classic — Rainbow", @"Classic — Solid" ]
-                          action:@selector(styleChanged:) x:x y:&y width:w];
+    // Tags are the stored values: the classic styles keep their original 0-2
+    _stylePopup = [self addPopup:@[] action:@selector(styleChanged:) x:x y:&y width:w];
+    {
+        using namespace waveform_config;
+        const std::pair<NSString *, int> styles[] = {
+            { @"Layered — peak + loudness (dBFS)", StyleLayered }, { @"Simple — Two-tone", StyleTwoTone },
+            { @"Simple — Glow", StyleGlow }, { @"Simple — Heat", StyleHeat },
+            { @"Classic — Solid", StyleSolid }, { @"Classic — Heat map", StyleHeatMap },
+            { @"Classic — Rainbow", StyleRainbow },
+        };
+        for (const auto& st : styles) {
+            [_stylePopup addItemWithTitle:st.first];
+            _stylePopup.lastItem.tag = st.second;
+        }
+    }
     _styleHint = [self addHint:@"" x:x y:&y width:w lines:2];
     y += kRowGap;
 
@@ -269,27 +287,6 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         y += 28;
     }
     [self addHint:@"Editing a colour switches Colours to Custom." x:x y:&y width:w lines:1];
-    y += kRowGap;
-
-    // Played part opacity, value at the right of its heading
-    [self addHeading:@"Played opacity" x:x y:y width:w];
-    _playedOpacityLabel = [NSTextField labelWithString:@""];
-    _playedOpacityLabel.font = [NSFont systemFontOfSize:13];
-    _playedOpacityLabel.textColor = [NSColor secondaryLabelColor];
-    _playedOpacityLabel.alignment = NSTextAlignmentRight;
-    _playedOpacityLabel.frame = NSMakeRect(x + w - 60, y, 60, 17);
-    [_page addSubview:_playedOpacityLabel];
-    y += 21;
-    _playedOpacitySlider = [NSSlider sliderWithValue:waveform_config::kDefaultPlayedOpacity
-                                            minValue:waveform_config::kMinPlayedOpacity
-                                            maxValue:waveform_config::kMaxPlayedOpacity
-                                              target:self action:@selector(opacityChanged:)];
-    _playedOpacitySlider.continuous = YES;
-    _playedOpacitySlider.frame = NSMakeRect(x, y, w, 22);
-    [_page addSubview:_playedOpacitySlider];
-    y += 26;
-    [self addHint:@"How strongly the part already played is drawn; the rest is at full strength."
-                x:x y:&y width:w lines:1];
     y += kRowGap;
 
     _glassBackgroundCheckbox = [self addCheckbox:@"Glass background"
@@ -370,6 +367,45 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
+// Dimming of the part already played and the effect at its edge, as before
+// the redesign
+- (CGFloat)buildPlayedAtX:(CGFloat)cardX y:(CGFloat)top {
+    using namespace waveform_config;
+    const CGFloat x = cardX + kCardPad, w = kColumnWidth - 2 * kCardPad;
+    CGFloat y = [self addCardTitle:@"Played part" x:x y:top + kCardPad];
+
+    _shadePlayedCheckbox = [self addCheckbox:@"Shade played portion"
+                                        hint:@"Dim the part already played with the background colour."
+                                           x:x y:&y width:w];
+
+    [self addHeading:@"Dimming" x:x y:y width:w];
+    _playedDimmingLabel = [NSTextField labelWithString:@""];
+    _playedDimmingLabel.font = [NSFont systemFontOfSize:13];
+    _playedDimmingLabel.textColor = [NSColor secondaryLabelColor];
+    _playedDimmingLabel.alignment = NSTextAlignmentRight;
+    _playedDimmingLabel.frame = NSMakeRect(x + w - 60, y, 60, 17);
+    [_page addSubview:_playedDimmingLabel];
+    y += 21;
+    _playedDimmingSlider = [NSSlider sliderWithValue:kDefaultPlayedDimming minValue:0 maxValue:100
+                                              target:self action:@selector(dimmingChanged:)];
+    _playedDimmingSlider.continuous = YES;
+    _playedDimmingSlider.frame = NSMakeRect(x, y, w, 22);
+    [_page addSubview:_playedDimmingSlider];
+    y += 26 + kRowGap;
+
+    y = [self addHeading:@"Cursor effect" x:x y:y width:w];
+    _cursorEffectPopup = [self addPopup:@[ @"None", @"Gradient", @"Glow", @"Scanline", @"Pulse", @"Trail", @"Shimmer" ]
+                                 action:@selector(cursorEffectChanged:) x:x y:&y width:w];
+    [self addHint:@"How the dimming meets the cursor; Glow, Scanline, Pulse and Shimmer animate."
+                x:x y:&y width:w lines:1];
+    y += kRowGap;
+
+    _bpmSyncCheckbox = [self addCheckbox:@"Sync animations to track BPM"
+                                    hint:@"Animated effects follow the track's BPM tag when it has one."
+                                       x:x y:&y width:w];
+    return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
+}
+
 - (CGFloat)buildCacheAtX:(CGFloat)cardX y:(CGFloat)top width:(CGFloat)width {
     const CGFloat x = cardX + kCardPad, w = width - 2 * kCardPad;
     CGFloat y = [self addCardTitle:@"Cache" x:x y:top + kCardPad];
@@ -426,20 +462,25 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self loadColors];
 
     // Style
-    const int64_t style = getConfigInt(kKeyStyle, kDefaultStyle);
-    [_stylePopup selectItemAtIndex:(style >= 0 && style < StyleCount) ? style : kDefaultStyle];
+    const int64_t style = getConfigInt(kKeyWaveformStyle, kDefaultStyle);
+    [_stylePopup selectItemWithTag:(style >= 0 && style < StyleCount) ? style : kDefaultStyle];
     [self updateStyleHint];
     [_gradientBandsPopup selectItemWithTag:getConfigInt(kKeyGradientBands, kDefaultGradientBands)];
     if (_gradientBandsPopup.indexOfSelectedItem < 0) [_gradientBandsPopup selectItemWithTag:kDefaultGradientBands];
     [_bodyTintPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeyBodyTint, kDefaultBodyTint),
                                                           BodyTintOff, BodyTintStrong)];
-    [_channelsPopup selectItemAtIndex:getConfigInt(kKeyChannelMode, kDefaultChannelMode) == ChannelsMono ? 1 : 0];
+    [_channelsPopup selectItemAtIndex:getConfigInt(kKeyDisplayMode, kDefaultChannelMode) == ChannelsMono ? 1 : 0];
 
     // Played part opacity and cursor time
-    const int64_t opacity = std::clamp<int64_t>(getConfigInt(kKeyPlayedOpacity, kDefaultPlayedOpacity),
-                                                kMinPlayedOpacity, kMaxPlayedOpacity);
-    _playedOpacitySlider.integerValue = opacity;
-    _playedOpacityLabel.stringValue = [NSString stringWithFormat:@"%lld%%", opacity];
+    // Played part
+    _shadePlayedCheckbox.state = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion) ? NSControlStateValueOn : NSControlStateValueOff;
+    const int64_t dimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100);
+    _playedDimmingSlider.integerValue = dimming;
+    _playedDimmingLabel.stringValue = [NSString stringWithFormat:@"%lld%%", dimming];
+    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
+    [_cursorEffectPopup selectItemAtIndex:(effect >= 0 && effect < CursorEffectCount) ? effect : kDefaultCursorEffect];
+    _bpmSyncCheckbox.state = getConfigBool(kKeyBpmSync, kDefaultBpmSync) ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updatePlayedControls];
     _cursorTimeCheckbox.state = getConfigBool(kKeyCursorTime, kDefaultCursorTime) ? NSControlStateValueOn : NSControlStateValueOff;
 
     // Overlays
@@ -516,24 +557,25 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 }
 
 - (void)updateStyleHint {
-    static NSString *const hints[] = {
-        @"Peak envelope around a loudness body tinted by the music's spectral balance, one dBFS axis.",
-        @"Split L/R lanes, linear peak at 50 % with an RMS core.",
-        @"Split L/R lanes, peaks fade to the tips, hot RMS core.",
-        @"Split L/R lanes, colour by amplitude: deep → accent → hot.",
-        @"Split L/R, each column coloured by its peak: blue → green → yellow → red.",
-        @"Split L/R, colour runs through the rainbow across the track.",
-        @"Split L/R, the theme colour fading from the centre out in steps.",
-    };
-    const NSInteger i = _stylePopup.indexOfSelectedItem;
-    _styleHint.stringValue = (i >= 0 && i < waveform_config::StyleCount) ? hints[i] : @"";
-    _bodyTintPopup.enabled = i == waveform_config::StyleLayered;
-    _gradientBandsPopup.enabled = i == waveform_config::StyleSolid;
+    using namespace waveform_config;
+    NSString *hint = @"";
+    switch (_stylePopup.selectedTag) {
+        case StyleLayered: hint = @"Peak envelope around a loudness body tinted by the music's spectral balance, one dBFS axis."; break;
+        case StyleTwoTone: hint = @"Split L/R lanes, linear peak at 50 % with an RMS core."; break;
+        case StyleGlow:    hint = @"Split L/R lanes, peaks fade to the tips, hot RMS core."; break;
+        case StyleHeat:    hint = @"Split L/R lanes, colour by amplitude: deep → accent → hot."; break;
+        case StyleSolid:   hint = @"The original style: the theme colour fading from the centre out in steps."; break;
+        case StyleHeatMap: hint = @"The original style: each column coloured by its peak, blue → green → yellow → red."; break;
+        case StyleRainbow: hint = @"The original style: colour runs through the rainbow across the track."; break;
+    }
+    _styleHint.stringValue = hint;
+    _bodyTintPopup.enabled = _stylePopup.selectedTag == StyleLayered;
+    _gradientBandsPopup.enabled = _stylePopup.selectedTag == StyleSolid;
 }
 
 - (void)styleChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyStyle, _stylePopup.indexOfSelectedItem);
+    setConfigInt(kKeyWaveformStyle, _stylePopup.selectedTag);
     [self updateStyleHint];
     [self notifySettingsChanged];
 }
@@ -552,7 +594,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)channelsChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyChannelMode, _channelsPopup.indexOfSelectedItem == 1 ? ChannelsMono : ChannelsStereo);
+    setConfigInt(kKeyDisplayMode, _channelsPopup.indexOfSelectedItem == 1 ? ChannelsMono : ChannelsStereo);
     [self notifySettingsChanged];
 }
 
@@ -588,6 +630,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
     } else if (sender == _cursorTimeCheckbox) {
         setConfigBool(kKeyCursorTime, _cursorTimeCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _shadePlayedCheckbox) {
+        setConfigBool(kKeyShadePlayedPortion, _shadePlayedCheckbox.state == NSControlStateValueOn);
+        [self updatePlayedControls];
+    } else if (sender == _bpmSyncCheckbox) {
+        setConfigBool(kKeyBpmSync, _bpmSyncCheckbox.state == NSControlStateValueOn);
     } else if (sender == _readoutCheckbox) {
         setConfigBool(kKeyHoverReadout, _readoutCheckbox.state == NSControlStateValueOn);
         _readoutPositionPopup.enabled = _readoutCheckbox.state == NSControlStateValueOn;
@@ -623,12 +670,30 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self notifySettingsChanged];
 }
 
-- (void)opacityChanged:(id)sender {
+- (void)dimmingChanged:(id)sender {
     using namespace waveform_config;
-    NSInteger value = _playedOpacitySlider.integerValue;
-    setConfigInt(kKeyPlayedOpacity, value);
-    _playedOpacityLabel.stringValue = [NSString stringWithFormat:@"%ld%%", (long)value];
+    const NSInteger value = _playedDimmingSlider.integerValue;
+    setConfigInt(kKeyPlayedDimming, value);
+    _playedDimmingLabel.stringValue = [NSString stringWithFormat:@"%ld%%", (long)value];
     [self notifySettingsChanged];
+}
+
+- (void)cursorEffectChanged:(id)sender {
+    using namespace waveform_config;
+    setConfigInt(kKeyCursorEffect, _cursorEffectPopup.indexOfSelectedItem);
+    [self updatePlayedControls];
+    [self notifySettingsChanged];
+}
+
+// Dimming and the effect apply while shading is on; BPM sync to the animated effects
+- (void)updatePlayedControls {
+    using namespace waveform_config;
+    const bool shade = _shadePlayedCheckbox.state == NSControlStateValueOn;
+    _playedDimmingSlider.enabled = shade;
+    _cursorEffectPopup.enabled = shade;
+    const NSInteger effect = _cursorEffectPopup.indexOfSelectedItem;
+    _bpmSyncCheckbox.enabled = shade && (effect == CursorEffectGlow || effect == CursorEffectScanline ||
+                                         effect == CursorEffectPulse || effect == CursorEffectShimmer);
 }
 
 - (void)cacheSettingChanged:(id)sender {

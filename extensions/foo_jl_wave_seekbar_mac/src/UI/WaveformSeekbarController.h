@@ -20,7 +20,7 @@ struct WaveformData;
 @property (nonatomic, readonly) WaveformSeekbarView *waveformView;
 
 // Playback event handlers (called from PlaybackCallback)
-- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration;
+- (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm;
 - (void)handlePlaybackStop;
 - (void)handleSeekToTime:(double)time;
 - (void)handlePlaybackTime:(double)time;

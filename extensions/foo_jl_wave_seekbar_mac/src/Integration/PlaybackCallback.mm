@@ -47,12 +47,14 @@ void PlaybackCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
     // Note: waveform request is done by the controller in handleNewTrack
     // to avoid duplicate requests
 
-    // Get track duration
+    // Get track duration and BPM
     double duration = 0;
+    double bpm = 0;
     if (track.is_valid()) {
         file_info_impl info;
         if (track->get_info_async(info)) {
             duration = info.get_length();
+            bpm = extractBpmFromInfo(info);
         }
     }
 
@@ -63,7 +65,7 @@ void PlaybackCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
         for (__weak WaveformSeekbarController* weak : g_controllers) {
             WaveformSeekbarController* controller = weak;
             if (controller) {
-                [controller handleNewTrack:track duration:duration];
+                [controller handleNewTrack:track duration:duration bpm:bpm];
             }
         }
     });
