@@ -10,7 +10,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 |-----------|-------------|---------|------|
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.0 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
-| [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
+| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 1.2.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.0.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.0.0 | [📖](docs/vectorscope.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
@@ -60,18 +60,19 @@ Tree-based playlist management with folder organization and smart import. Necesi
 
 ### Waveform Seekbar
 
-Audio visualization seekbar with real-time waveform display and visual effects. This one was my favorite, a neat way to navigate through tracks.
+Waveform seekbar with per-track loudness analysis. This one was my favorite, a neat way to navigate through tracks.
 
 | Overview | Settings |
 |----------|----------|
-| ![Waveform Seekbar](docs/images/waveform-overview-v2.png) | ![Waveform Settings](docs/images/waveform-settings-v2.png) |
+| ![Waveform Seekbar in the Layered style](docs/images/waveform-overview-v3.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings-v3.png) |
 
 **Features:**
-- Real-time waveform visualization
-- Multiple display modes (bars, lines, filled)
-- Customizable colors and effects
-- Click-to-seek functionality
-- Downmix/channel selection
+- Layered style: peak envelope around a momentary loudness body on a dBFS axis, tinted by the spectral balance
+- Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo or mono
+- Hover readout (LUFS-S, peak, crest, correlation, Lo/Mid/Hi) and click-to-seek
+- Loudness summary: integrated, LRA, true peak, PLR, clip count; clip markers
+- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Trail, Shimmer), optionally synced to the track's BPM
+- Optional time ruler and level scale; themes shared with Spectrum Analyzer
 
 ---
 

@@ -75,52 +75,90 @@ static const GUID guid_preferences_page = {
     {0xDE, 0xF0, 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC}
 };
 
-// Display modes
-enum DisplayMode {
-    DisplayModeStereo = 0,
-    DisplayModeMono = 1
+// Waveform styles
+// Stored under waveform_style. 0-2 are the original styles with their
+// original values, so a style chosen before the redesign carries over.
+enum Style {
+    StyleSolid = 0,     // Classic: theme colour fading from the centre out in gradient bands
+    StyleHeatMap = 1,   // Classic: colour per column by peak, blue -> green -> yellow -> red
+    StyleRainbow = 2,   // Classic: hue runs through the rainbow across the track
+    StyleLayered = 3,   // peak envelope around a loudness body, one dBFS axis
+    StyleTwoTone = 4,   // Simple: split L/R lanes, linear, flat peak and RMS core
+    StyleGlow = 5,      // Simple: peaks fade to the tips, hot RMS core
+    StyleHeat = 6,      // Simple: colour by amplitude, deep -> accent -> hot
+    StyleCount
 };
 
-// Cursor effects at playback position
+// Channels shown, stored under display_mode with the original values
+enum ChannelMode {
+    ChannelsStereo = 0, // L and R apart (Layered: up / down; Simple: two lanes)
+    ChannelsMono = 1    // mixed to one
+};
+
+// When the loudness summary badge shows
+enum SummaryMode {
+    SummaryOff = 0,
+    SummaryOnHover = 1,
+    SummaryAlways = 2
+};
+
+// How strongly Layered's body follows the spectral balance
+enum BodyTint {
+    BodyTintOff = 0,
+    BodyTintSubtle = 1,
+    BodyTintStrong = 2
+};
+constexpr float kBodyTintStrength[] = { 0.0f, 0.5f, 1.0f };
+
+// Where the hover readout sits
+enum ReadoutPosition {
+    ReadoutFollowsMouse = 0,
+    ReadoutTopRight = 1,
+    ReadoutBottomRight = 2      // above the loudness summary when that shows
+};
+
+// Default values
+constexpr int kDefaultStyle = StyleTwoTone;
+constexpr int kDefaultReadoutPosition = ReadoutFollowsMouse;
+constexpr int kDefaultBodyTint = BodyTintOff;
+constexpr int kDefaultGradientBands = 8;        // Classic Solid; choices in GradientBandTable.h
+constexpr bool kDefaultHoverReadout = true;
+constexpr int kDefaultSummaryMode = SummaryOnHover;
+constexpr bool kDefaultClipMarkers = true;
+constexpr int kDefaultClipMarkerOpacity = 67;  // percent
+constexpr int kMinClipMarkerOpacity = 20;
+constexpr int kMaxClipMarkerOpacity = 100;
+constexpr int kDefaultTextSize = 14;            // overlay and scale text, pt
+constexpr int kTextSizes[] = { 10, 12, 14, 16 };
+constexpr bool kDefaultTimeRuler = false;
+constexpr bool kDefaultLevelScale = true;
+constexpr int kDefaultChannelMode = ChannelsStereo;
+// Played part: dimmed by an overlay of the background, shaped at the cursor
 enum CursorEffect {
     CursorEffectNone = 0,      // Sharp transition, no effect
     CursorEffectGradient = 1,  // Fade gradient at edge
     CursorEffectGlow = 2,      // Pulsing halo/bloom
     CursorEffectScanline = 3,  // Multiple thin vertical lines
-    CursorEffectPulse = 4,     // Breathing cursor line
+    CursorEffectPulse = 4,     // Breathing played area
     CursorEffectTrail = 5,     // Motion blur trail behind cursor
-    CursorEffectShimmer = 6    // Oscillating brightness bands
+    CursorEffectShimmer = 6,   // Oscillating brightness bands
+    CursorEffectCount
 };
-
-// Waveform rendering styles
-enum WaveformStyle {
-    WaveformStyleSolid = 0,    // Single color (uses waveform color setting)
-    WaveformStyleHeatMap = 1,  // Amplitude mapped to color gradient (blue→green→yellow→red)
-    WaveformStyleRainbow = 2   // Position-based rainbow gradient across track
-};
-
-// Default values
-constexpr int kDefaultDisplayMode = DisplayModeStereo;
 constexpr bool kDefaultShadePlayedPortion = true;
-constexpr int kDefaultPlayedDimming = 50;  // 0-100 percent opacity for played portion dimming
-constexpr int kDefaultCursorEffect = CursorEffectGradient;  // Default to gradient (current behavior)
-constexpr int kDefaultWaveformStyle = WaveformStyleSolid;   // Default to solid color
-constexpr int kDefaultGradientBands = 8;                    // Number of gradient bands for solid style (2-32)
-constexpr bool kDefaultBpmSync = false;                     // Sync cursor animations to track BPM
-constexpr bool kDefaultGlassBackground = false;             // Opaque background by default
+constexpr int kDefaultPlayedDimming = 25;       // percent: 0 = as bright as the rest
+constexpr int kDefaultCursorEffect = CursorEffectNone;
+constexpr bool kDefaultBpmSync = false;         // sync animated cursor effects to the track's BPM
+constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the cursor
+constexpr bool kDefaultGlassBackground = false; // Opaque background by default
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 
-// Default colors (ARGB format)
-constexpr uint32_t kDefaultWaveColorLight = 0xFF3380CC;    // Blue
-constexpr uint32_t kDefaultBgColorLight = 0xFFF2F2F2;      // Light gray
+// Default colors (ARGB): the P4 white theme
+constexpr uint32_t kDefaultWaveColorLight = 0xFF3C434B;
+constexpr uint32_t kDefaultBgColorLight = 0xFFF4F5F6;
 
-constexpr uint32_t kDefaultWaveColorDark = 0xFF4D99E6;     // Lighter blue
-constexpr uint32_t kDefaultBgColorDark = 0xFF1A1A1A;       // Dark gray
-
-// Waveform constants
-constexpr size_t kWaveformBucketCount = 2048;
-constexpr int kDefaultScanResolution = 200;  // Peaks per second during scan
+constexpr uint32_t kDefaultWaveColorDark = 0xFFE6EDF2;
+constexpr uint32_t kDefaultBgColorDark = 0xFF0F1113;
 
 } // namespace waveform_config
 

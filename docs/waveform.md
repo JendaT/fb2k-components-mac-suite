@@ -9,24 +9,41 @@ An interactive waveform display and seekbar for foobar2000 macOS.
 Shows the entire track waveform at a glance - not just the current audio buffer. See the full structure of your music including quiet intros, build-ups, and loud sections.
 
 <!-- Screenshot: Waveform overview -->
-![Waveform Seekbar Overview](images/waveform-overview-v2.png)
+![Waveform Seekbar Overview](images/waveform-overview-v3.png)
 
 ### Interactive Seeking
 
-Click anywhere on the waveform to seek to that position. The playback position is clearly indicated with a visual marker.
+Click anywhere on the waveform to seek to that position. The playback cursor carries an optional elapsed-time chip.
 
-### Display Modes
+### Styles
 
-| Mode | Description |
-|------|-------------|
-| **Stereo** | Left and right channels displayed separately |
-| **Mono** | Combined single waveform |
+| Style | Description |
+|-------|-------------|
+| **Layered** | L up, R down on one dBFS axis: the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
+| **Two-tone** (default) | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
+| **Glow** | Peaks fade to the tips, RMS core runs to a hot centre |
+| **Heat** | One layer coloured by amplitude, deep to hot |
+| **Heat map** (classic) | Each column coloured by its peak, blue → green → yellow → red |
+| **Rainbow** (classic) | Hue runs through the rainbow across the track |
+| **Solid** (classic) | The theme colour fading from the centre out in steps (Gradient bands: none to 32) |
 
-<!-- Screenshot: Stereo vs mono comparison -->
+Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one).
 
-### Played Position Indicator
+### Loudness Analysis
 
-Visual indication of playback progress with subtle gradient fade showing what has been played.
+Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 3342 loudness range, 4x oversampled true peak, PLR, clip runs, per-moment short-term loudness, correlation and Lo/Mid/Hi energy.
+
+- **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse; next to the mouse, top right, or bottom right above the summary
+- **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
+- **Clip markers**: red ticks on the top edge where the audio hits full scale (0 dBFS) for 3+ samples in a row, i.e. clipping in the master; adjustable brightness
+
+### Scales
+
+Optional time ruler under the waveform and a dB gutter on the right.
+
+### Played Part
+
+The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow, Scanline, Pulse, Trail or Shimmer. The animated ones can follow the track's BPM tag.
 
 ### Waveform Caching
 
@@ -36,19 +53,9 @@ SQLite-based cache stores analyzed waveforms for instant loading:
 - Automatic LRU eviction when limit reached
 - WAL mode for concurrent access
 
-### Customizable Colors
+### Colours
 
-Configure colors to match your theme:
-- Waveform color
-- Played area color
-- Background color
-
-### BPM Sync
-
-Automatically reads BPM from track metadata for potential beat-aligned features. Supports common tags:
-- BPM
-- TBPM
-- TEMPO
+Theme presets shared with Spectrum Analyzer (P31 / P3 / P4 / P7 phosphors, Nord, Dracula, ...) or custom light / dark colours. Darker and brighter shades for gradients are derived from the theme in OKLCH.
 
 ### Dark Mode Support
 
@@ -63,18 +70,17 @@ Crisp rendering on high-DPI displays using native `backingScaleFactor`.
 Access settings via **Preferences > Display > Waveform Seekbar**
 
 <!-- Screenshot: Settings panel -->
-![Waveform Settings](images/waveform-settings-v2.png)
+![Waveform Settings](images/waveform-settings-v3.png)
 
 ### Available Settings
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Display Mode | Stereo or Mono | Stereo |
-| Waveform Color | Color of the waveform | System accent |
-| Played Color | Color of played portion | Dimmed accent |
-| Background Color | Background color | Window background |
-| Cache Size | Maximum cache size in MB | 2048 |
-| Cache Retention | Days to keep unused data | 180 |
+| Card | Setting | Default |
+|------|---------|---------|
+| Appearance | Style, Body tint, Gradient bands, Channels, Colours, Glass background | Two-tone, off, 8, Stereo, P4 white, off |
+| Scales | Time ruler, Level scale | off, on |
+| Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 14 pt, on, off, on hover, on (67 %) |
+| Played part | Shade played portion, Dimming, Cursor effect, Sync animations to track BPM | on, 25 %, None, off |
+| Cache | Max size, Keep for | 2048 MB, 180 days |
 
 ### Cache Location
 
@@ -102,17 +108,15 @@ splitter vertical
 
 ### Audio Analysis
 
-- Uses Apple Accelerate framework (vDSP) for SIMD-optimized processing
+- One decode pass per track in the background (Grand Central Dispatch), cancelled on track change
+- Fine blocks (~1024 frames) of sample min/max/RMS and 100 ms hops of K-weighted power, band power and L*R
 - Long local tracks decoded in parallel segments on the foobar2000 CPU thread pool
-- Background scanning with Grand Central Dispatch
-- Cancellation support for track changes
-- 2048 peak buckets per track for detailed visualization
+- Per-column values are aggregated from the cached blocks, so resizing never re-decodes
 
 ### Rendering
 
-- Core Graphics (Quartz 2D) for native performance
-- Layer-backed view for smooth animation
-- 60 FPS timer for position updates
+- Core Graphics: layers cached as alpha masks per track and size, coloured per theme
+- Frames redraw only the played boundary, cursor and overlays (60 FPS timer)
 
 ## Requirements
 

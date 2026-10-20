@@ -13,6 +13,7 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
 #include "../Core/WaveformGeometry.h"
+#include <cmath>
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -378,9 +379,12 @@ static const int kAnalysisMaxRetries = 1;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
-                    // Redraw once the cursor moves at least a quarter pixel
+                    // Redraw once the cursor moves at least a quarter pixel, or
+                    // the time chip reaches the next second
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
                     double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
+                    const bool nextSecond = std::floor(position) != std::floor(oldTime);
 
                     // Animated cursor effects need continuous redraw to stay smooth
                     BOOL animatedEffect = NO;
@@ -397,7 +401,7 @@ static const int kAnalysisMaxRetries = 1;
                         }
                     }
 
-                    if (animatedEffect || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
+                    if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
                         [self.waveformView refreshDisplay];
                     }
