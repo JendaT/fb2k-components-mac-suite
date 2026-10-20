@@ -54,7 +54,7 @@ inline void setConfigBool(const char* key, bool value) {
 
 // Config keys
 static const char* const kKeyWaveformStyle = "waveform_style";     // Style enum
-static const char* const kKeyGradientBands = "gradient_bands";     // Classic Solid, one of kGradientBandChoices
+static const char* const kKeyGradientBands = "gradient_bands";     // Classic Solid, one of GradientBandTable.h kGradientBandValues
 static const char* const kKeyBodyTint = "body_tint";               // BodyTint enum (Layered)
 static const char* const kKeyDisplayMode = "display_mode";          // ChannelMode enum
 static const char* const kKeyHoverReadout = "hover_readout";        // readout and dashed line on hover

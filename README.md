@@ -64,7 +64,7 @@ Waveform seekbar with per-track loudness analysis. This one was my favorite, a n
 
 | Overview | Settings |
 |----------|----------|
-| ![Waveform Seekbar in the Layered style](docs/images/waveform-overview.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings.png) |
+| ![Waveform Seekbar in the Layered style](docs/images/waveform-overview-v3.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings-v3.png) |
 
 **Features:**
 - Layered style: peak envelope around a momentary loudness body on a dBFS axis, tinted by the spectral balance

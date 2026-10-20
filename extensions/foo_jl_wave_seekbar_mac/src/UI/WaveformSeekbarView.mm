@@ -22,6 +22,9 @@
 #include "../Core/LayeredShape.h"
 #include "../Core/SimpleShape.h"
 #include "../Core/OverlayText.h"
+#include "../Core/WaveformColorMap.h"
+#include "../Core/WaveformGeometry.h"
+#include "../Core/GradientBandTable.h"
 #include "../Core/ThemeTokens.h"
 #include <algorithm>
 #include <cmath>
@@ -70,39 +73,24 @@ bool usesLanes(int style) {
     return familyOf(style) != FamilyLayered;
 }
 
-// Classic colours, as the original Heat map and Rainbow styles drew them.
-// Heat map: blue (quiet) -> cyan -> green -> yellow -> red (loud).
+// Classic colours, as the original Heat map and Rainbow styles drew them
+// (WaveformColorMap.h): blue (quiet) -> cyan -> green -> yellow -> red (loud)
 theme::RGB heatMapColor(float amplitude) {
-    const float a = std::clamp(amplitude, 0.0f, 1.0f);
-    if (a < 0.25f) return { 0.0f, a / 0.25f, 1.0f };
-    if (a < 0.5f)  return { 0.0f, 1.0f, 1.0f - (a - 0.25f) / 0.25f };
-    if (a < 0.75f) return { (a - 0.5f) / 0.25f, 1.0f, 0.0f };
-    return { 1.0f, 1.0f - (a - 0.75f) / 0.25f, 0.0f };
+    const waveseek::Rgb c = waveseek::heatMapColor(amplitude);
+    return { (float)c.r, (float)c.g, (float)c.b };
 }
 
 // Classic styles draw as the original did: 2048 one-point strokes at their
 // bucket positions (the antialiasing gives them their fine texture), halves
-// without a gap, peaks 4 pt from the edges
+// without a gap, peaks 4 pt from the edges (WaveformGeometry.h). Solid's
+// gradient bands step down to 40 % at full amplitude (bandAlpha).
 const size_t kClassicBuckets = 2048;
-const CGFloat kClassicPadding = 4.0;
-
-// Solid: the original gradient bands, alpha stepping down from the centre
-// line to 40 % at full amplitude
-const CGFloat kSolidEdgeAlpha = 0.4;
+const CGFloat kClassicPadding = waveseek::kWaveformPadding;
 
 // Rainbow: fully saturated hue by position across the track, 0..1
 theme::RGB rainbowColor(float position) {
-    const float hue = std::fmod(std::max(0.0f, position), 1.0f) * 6.0f;
-    const int sector = (int)hue % 6;
-    const float f = hue - std::floor(hue);
-    switch (sector) {
-        case 0: return { 1.0f, f, 0.0f };
-        case 1: return { 1.0f - f, 1.0f, 0.0f };
-        case 2: return { 0.0f, 1.0f, f };
-        case 3: return { 0.0f, 1.0f - f, 1.0f };
-        case 4: return { f, 0.0f, 1.0f };
-        default: return { 1.0f, 0.0f, 1.0f - f };
-    }
+    const waveseek::Rgb c = waveseek::rainbowColor(position);
+    return { (float)c.r, (float)c.g, (float)c.b };
 }
 
 const theme::RGB kBlack = { 0, 0, 0 };
@@ -388,8 +376,8 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
     _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
     _gradientBands = (int)getConfigInt(kKeyGradientBands, kDefaultGradientBands);
-    if (std::find(std::begin(kGradientBandChoices), std::end(kGradientBandChoices), _gradientBands)
-        == std::end(kGradientBandChoices)) {
+    if (std::find(std::begin(waveseek::kGradientBandValues), std::end(waveseek::kGradientBandValues), _gradientBands)
+        == std::end(waveseek::kGradientBandValues)) {
         _gradientBands = kDefaultGradientBands;
     }
     _tintStrength = kBodyTintStrength[std::clamp<int64_t>(getConfigInt(kKeyBodyTint, kDefaultBodyTint),
@@ -783,12 +771,12 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
             locations.push_back(location);
         };
         for (int k = kSolidBands - 1; k >= 0; --k) {        // bottom edge up to the centre
-            const CGFloat a = 1.0 - (CGFloat)k / kSolidBands * (1.0 - kSolidEdgeAlpha);
+            const CGFloat a = waveseek::bandAlpha(k, kSolidBands);
             stop(0.5 - (CGFloat)(k + 1) / kSolidBands * 0.5, a);
             stop(0.5 - (CGFloat)k / kSolidBands * 0.5, a);
         }
         for (int k = 0; k < kSolidBands; ++k) {             // centre up to the top edge
-            const CGFloat a = 1.0 - (CGFloat)k / kSolidBands * (1.0 - kSolidEdgeAlpha);
+            const CGFloat a = waveseek::bandAlpha(k, kSolidBands);
             stop(0.5 + (CGFloat)k / kSolidBands * 0.5, a);
             stop(0.5 + (CGFloat)(k + 1) / kSolidBands * 0.5, a);
         }
@@ -1027,11 +1015,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
 // Get animation frequency: uses BPM if sync enabled, otherwise returns default
 - (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
-    if (self.bpmSync && self.trackBpm > 0) {
-        // Convert BPM to Hz: BPM / 60 = beats per second
-        return self.trackBpm / 60.0;
-    }
-    return defaultHz;
+    return waveseek::animationFrequency(self.bpmSync, self.trackBpm, defaultHz);
 }
 
 #pragma mark - Cursor Effects (as before the redesign)

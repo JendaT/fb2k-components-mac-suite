@@ -8,10 +8,11 @@ This document covers the technical architecture, data structures, and implementa
 
 > **Status (2026-08-11, updated 2026-10-19): parts of this document describe code that does not exist.**
 > It was written partly as a design sketch and has drifted from the source.
-> Confirmed inaccurate: the scanning loop in §3 (the real scanner decodes
-> long tracks in parallel segments and assigns samples to buckets by
-> absolute position; the bucket layout and the vDSP peak math live in
-> `src/Core/PeakBinner.h`), the `addObserver(void*, ...)` service API, and
+> Confirmed inaccurate: the 2048-bucket `WaveformData` and the scanning loop
+> in §2-3 (the scanner now runs the analysis pass in `src/Core/TrackAnalyzer.h`,
+> in parallel segments for long tracks, into the block-and-hop format in
+> `src/Core/WaveformData.h`; see the component README), the
+> `addObserver(void*, ...)` service API, and
 > `WaveformDataWrapper`. Some
 > configuration keys listed here (`flip_display`, `played_color`) do not
 > exist either. Treat the source as ground truth and verify any claim here
