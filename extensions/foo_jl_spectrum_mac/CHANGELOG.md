@@ -4,7 +4,7 @@ All notable changes to Spectrum Analyzer will be documented in this file.
 
 ## [1.0.0] - 2026-10-20
 
-Contributed by [Scannou](https://github.com/Scannou).
+Contributed by [Scannou](https://github.com/Scannou), apart from the Component details, About and Preferences title entries.
 
 ### Added
 - **Own FFT**: Analyses PCM from the visualisation stream with its own vDSP FFT (Blackman-Harris or Hann window, 1024-32768); steep roll-offs such as a CD master's cut-off show as a cliff instead of a leakage floor.
@@ -15,6 +15,7 @@ Contributed by [Scannou](https://github.com/Scannou).
 - **Presets**: Default, Classic bars, RTA 1/3 octave, Fine detail and Mid + side.
 - **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first.
 - **Legend**: Optional Live / Peak hold key in Curve mode.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
 
 ### Changed
 - **Defaults**: Curve with line and color bars, P3 amber, 90 dB range, FFT 2048, compact-bass log scale, RMS averaging at 255 ms, 1.0 dB/oct slope; settings that were never changed take them too.
@@ -22,6 +23,8 @@ Contributed by [Scannou](https://github.com/Scannou).
 - **RMS averaging**: Own Averaging time setting (0-500 ms); 0.3.0 values carry over.
 - **Frequency labels**: More labels (2x and 5x, then 3x, 4x, 6x and 8x) where they fit; decades bolder.
 - **Preferences**: Display, Analysis, Motion and Appearance sections; rows that do not apply are hidden or say why they are disabled; the page scrolls.
+- **About**: Shows the layout element name (`spectrum`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
 
 ### Fixed
 - **Drawing exceptions**: A nil font or color can no longer throw inside drawing and crash foobar2000 later.
