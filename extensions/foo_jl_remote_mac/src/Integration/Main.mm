@@ -20,6 +20,7 @@ JL_COMPONENT_ABOUT(
     "  in the phone's browser, or scan the QR code\n"
     "- Play, pause, stop, previous, next and seek\n"
     "- Fine volume control in dB with a configurable low-volume range\n"
+    "- Playlist browser and the playing playlist: tap a track to play it\n"
     "- Local network only: outside addresses are refused"
 );
 

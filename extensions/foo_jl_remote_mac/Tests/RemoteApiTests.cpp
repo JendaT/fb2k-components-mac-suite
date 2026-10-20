@@ -36,6 +36,7 @@ static void testRouting() {
         { "/api/next", Route::Next }, { "/api/previous", Route::Previous },
         { "/api/volume", Route::Volume }, { "/api/mute", Route::Mute },
         { "/api/seek", Route::Seek },
+        { "/api/play_item", Route::PlayItem },
     };
     for (const auto& p : posts) {
         g_context = std::string("routing ") + p.path;
@@ -43,6 +44,13 @@ static void testRouting() {
         CHECK(d.errorStatus == 0 && d.route == p.route, "POST routes");
         CHECK_EQ(decide(makeRequest("GET", p.path, true), phone).errorStatus, 405, "GET not allowed");
     }
+
+    g_context = "routing playlists";
+    d = decide(makeRequest("GET", "/api/playlists", false), phone);
+    CHECK(d.errorStatus == 0 && d.route == Route::Playlists, "playlists is a GET");
+    d = decide(makeRequest("GET", "/api/playlist_items", false), phone);
+    CHECK(d.errorStatus == 0 && d.route == Route::PlaylistItems, "playlist_items is a GET");
+    CHECK_EQ(decide(makeRequest("POST", "/api/playlists", true), phone).errorStatus, 405, "POST to playlists");
 
     g_context = "routing errors";
     CHECK_EQ(decide(makeRequest("GET", "/nope", false), phone).errorStatus, 404, "unknown path");
@@ -122,11 +130,78 @@ static void testSeek() {
     CHECK(!parseSeekPosition({}, s), "missing");
 }
 
+static void testParseIndex() {
+    g_context = "parseIndex";
+    size_t v = 99;
+    CHECK(parseIndex("0", v) && v == 0, "zero");
+    CHECK(parseIndex("17", v) && v == 17, "small");
+    CHECK(parseIndex("999999999", v) && v == 999999999, "nine digits");
+    CHECK(!parseIndex("1000000000", v), "ten digits");
+    CHECK(!parseIndex("", v), "empty");
+    CHECK(!parseIndex("-1", v), "negative");
+    CHECK(!parseIndex("+1", v), "plus sign");
+    CHECK(!parseIndex("1.0", v), "decimal");
+    CHECK(!parseIndex(" 1", v), "space");
+}
+
+static void testItemsQuery() {
+    g_context = "parseItemsQuery";
+    ItemsQuery q = parseItemsQuery({{"playlist", "2"}});
+    CHECK(q.valid && q.playlist == 2, "playlist only");
+    CHECK_EQ(q.offset, 0, "default offset");
+    CHECK_EQ(q.limit, kDefaultPageSize, "default limit");
+
+    q = parseItemsQuery({{"playlist", "0"}, {"offset", "400"}, {"limit", "50"}});
+    CHECK(q.valid && q.offset == 400 && q.limit == 50, "explicit page");
+
+    CHECK_EQ(parseItemsQuery({{"playlist", "0"}, {"limit", "100000"}}).limit, kMaxPageSize, "limit clamps high");
+    CHECK_EQ(parseItemsQuery({{"playlist", "0"}, {"limit", "0"}}).limit, 1, "limit clamps low");
+
+    CHECK(!parseItemsQuery({}).valid, "missing playlist");
+    CHECK(!parseItemsQuery({{"playlist", "x"}}).valid, "bad playlist");
+    CHECK(!parseItemsQuery({{"playlist", "1"}, {"offset", "-5"}}).valid, "bad offset");
+    CHECK(!parseItemsQuery({{"playlist", "1"}, {"limit", "lots"}}).valid, "bad limit");
+}
+
+static void testItemRef() {
+    g_context = "parseItemRef";
+    ItemRef ref = parseItemRef({{"playlist", "2"}, {"item", "17"}});
+    CHECK(ref.valid && ref.playlist == 2 && ref.item == 17 && !ref.hasCount, "without count");
+
+    ref = parseItemRef({{"playlist", "2"}, {"item", "17"}, {"count", "340"}});
+    CHECK(ref.valid && ref.hasCount && ref.count == 340, "with count");
+
+    CHECK(!parseItemRef({{"playlist", "2"}}).valid, "missing item");
+    CHECK(!parseItemRef({{"item", "2"}}).valid, "missing playlist");
+    CHECK(!parseItemRef({{"playlist", "2"}, {"item", "-1"}}).valid, "negative item");
+    CHECK(!parseItemRef({{"playlist", "2"}, {"item", "1"}, {"count", "many"}}).valid, "bad count");
+}
+
+static void testPageRange() {
+    g_context = "pageRange";
+    PageRange r = pageRange(1000, 0, 200);
+    CHECK(r.begin == 0 && r.end == 200, "first page");
+    r = pageRange(1000, 900, 200);
+    CHECK(r.begin == 900 && r.end == 1000, "last partial page");
+    r = pageRange(1000, 1000, 200);
+    CHECK(r.begin == 1000 && r.end == 1000, "offset at end");
+    r = pageRange(1000, 5000, 200);
+    CHECK(r.begin == 1000 && r.end == 1000, "offset past end");
+    r = pageRange(0, 0, 200);
+    CHECK(r.begin == 0 && r.end == 0, "empty playlist");
+    r = pageRange((size_t)-1, (size_t)-10, 500);
+    CHECK(r.end == (size_t)-1 && r.begin == (size_t)-10, "no overflow near SIZE_MAX");
+}
+
 int main() {
     testRouting();
     testAccess();
     testParseNumber();
     testVolume();
     testSeek();
+    testParseIndex();
+    testItemsQuery();
+    testItemRef();
+    testPageRange();
     TEST_MAIN_END();
 }

@@ -61,11 +61,43 @@ Response json(NSDictionary* dict) {
     return r;
 }
 
-Response badRequest(const char* message) {
+Response textError(int status, const char* message) {
     Response r;
-    r.status = 400;
+    r.status = status;
     r.body = message;
     return r;
+}
+
+Response badRequest(const char* message) {
+    return textError(400, message);
+}
+
+NSString* toNSString(const pfc::string8& s) {
+    return [NSString stringWithUTF8String:s.c_str()] ?: @"";
+}
+
+// JSON index: -1 stands for foobar2000's "none" (pfc_infinite).
+NSNumber* indexOrNone(size_t index) {
+    return index == pfc_infinite ? @(-1) : @(index);
+}
+
+struct ItemLocation {
+    size_t playlist = pfc_infinite;
+    size_t item = pfc_infinite;
+};
+
+ItemLocation playingLocation(const playlist_manager::ptr& pm) {
+    ItemLocation loc;
+    if (!pm->get_playing_item_location(&loc.playlist, &loc.item)) loc = ItemLocation{};
+    return loc;
+}
+
+NSString* formatItem(const playlist_manager::ptr& pm, size_t playlist, size_t item,
+                     const titleformat_object::ptr& script) {
+    pfc::string8 out;
+    pm->playlist_item_format_title(playlist, item, nullptr, out, script, nullptr,
+                                   playback_control::display_level_none);
+    return toNSString(out);
 }
 
 Response stateResponse() {
@@ -91,7 +123,82 @@ Response stateResponse() {
     } else {
         state[@"track"] = [NSNull null];
     }
+
+    const ItemLocation loc = playingLocation(playlist_manager::get());
+    state[@"playing"] = loc.playlist == pfc_infinite
+        ? (id)[NSNull null]
+        : @{ @"playlist": @(loc.playlist), @"item": indexOrNone(loc.item) };
     return json(state);
+}
+
+Response playlistsResponse() {
+    auto pm = playlist_manager::get();
+    const size_t count = pm->get_playlist_count();
+
+    NSMutableArray* lists = [NSMutableArray arrayWithCapacity:count];
+    for (size_t i = 0; i < count; ++i) {
+        pfc::string8 name;
+        pm->playlist_get_name(i, name);
+        [lists addObject:@{ @"name": toNSString(name), @"count": @(pm->playlist_get_item_count(i)) }];
+    }
+
+    return json(@{
+        @"playlists": lists,
+        @"active": indexOrNone(pm->get_active_playlist()),
+        @"playing": indexOrNone(playingLocation(pm).playlist),
+    });
+}
+
+Response playlistItemsResponse(const Request& request) {
+    const auto q = remote_api::parseItemsQuery(remote_http::parseQuery(request.query));
+    if (!q.valid) return badRequest("playlist_items needs ?playlist=<index>");
+
+    auto pm = playlist_manager::get();
+    if (q.playlist >= pm->get_playlist_count()) return textError(404, "no such playlist");
+
+    const size_t total = pm->playlist_get_item_count(q.playlist);
+    const remote_api::PageRange range = remote_api::pageRange(total, q.offset, q.limit);
+    const Scripts& s = scripts();
+
+    NSMutableArray* items = [NSMutableArray arrayWithCapacity:range.end - range.begin];
+    for (size_t i = range.begin; i < range.end; ++i) {
+        metadb_handle_ptr handle;
+        const double length = pm->playlist_get_item_handle(handle, q.playlist, i) ? handle->get_length() : 0;
+        [items addObject:@{
+            @"title": formatItem(pm, q.playlist, i, s.title),
+            @"artist": formatItem(pm, q.playlist, i, s.artist),
+            @"album": formatItem(pm, q.playlist, i, s.album),
+            @"length": rounded(length > 0 ? length : 0),
+        }];
+    }
+
+    pfc::string8 name;
+    pm->playlist_get_name(q.playlist, name);
+    const ItemLocation loc = playingLocation(pm);
+
+    return json(@{
+        @"playlist": @(q.playlist),
+        @"name": toNSString(name),
+        @"total": @(total),
+        @"offset": @(range.begin),
+        @"items": items,
+        @"playingItem": loc.playlist == q.playlist ? indexOrNone(loc.item) : @(-1),
+    });
+}
+
+// Plays the item the way a double-click in the playlist would. A playlist
+// that changed since the client loaded it answers 409, never a different track.
+Response playItem(const Request& request) {
+    const auto ref = remote_api::parseItemRef(remote_http::parseQuery(request.query));
+    if (!ref.valid) return badRequest("play_item needs ?playlist=<index>&item=<index>");
+
+    auto pm = playlist_manager::get();
+    if (ref.playlist >= pm->get_playlist_count()) return textError(409, "playlists changed");
+    const size_t total = pm->playlist_get_item_count(ref.playlist);
+    if (ref.item >= total || (ref.hasCount && ref.count != total)) return textError(409, "playlist changed");
+
+    pm->playlist_execute_default_action(ref.playlist, ref.item);
+    return stateResponse();
 }
 
 } // namespace
@@ -110,6 +217,10 @@ Response execute(Route route, const Request& request) {
         case Route::Next:      pc->next(); break;
         case Route::Previous:  pc->previous(); break;
         case Route::Mute:      pc->volume_mute_toggle(); break;
+
+        case Route::Playlists:     return playlistsResponse();
+        case Route::PlaylistItems: return playlistItemsResponse(request);
+        case Route::PlayItem:      return playItem(request);
 
         case Route::Volume: {
             const auto cmd = remote_api::parseVolumeCommand(remote_http::parseQuery(request.query));
