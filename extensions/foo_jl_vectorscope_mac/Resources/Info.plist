@@ -24,5 +24,14 @@
 	<string></string>
 	<key>NSAccessibilityRole</key>
 	<string>AXGroup</string>
+	<key>FB2KUpdateSource</key>
+	<dict>
+		<key>source</key>
+		<string>github</string>
+		<key>owner</key>
+		<string>JendaT</string>
+		<key>repo</key>
+		<string>fb2k-components-mac-suite</string>
+	</dict>
 </dict>
 </plist>
