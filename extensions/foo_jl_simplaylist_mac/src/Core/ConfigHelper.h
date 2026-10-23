@@ -94,6 +94,13 @@ static const char* const kFinderOpenTargetPlaylist = "finder_open_target_playlis
 // Last pattern entered in the context menu's "Sort by..." prompt.
 static const char* const kLastSortPattern = "last_sort_pattern";
 
+// Sort the library browser's selection playlist every time it is refilled.
+// Library viewers (ReFacets, Album List) rewrite the host's hidden
+// "Library Viewer Selection" playlist on each click, so a one-off Sort is lost
+// on the next click; this re-applies the pattern after each refill.
+static const char* const kLibrarySelectionSort = "library_selection_sort";
+static const char* const kLibrarySelectionSortPattern = "library_selection_sort_pattern";
+
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
 static const int64_t kDefaultSubgroupHeight = 24;
@@ -117,6 +124,11 @@ static const bool kDefaultKeepPlayingPlaylist = true;         // Default: guard 
 static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
 static const int64_t kDefaultFinderOpenBehavior = 0;  // 0=replace (default fb2k), 1=append, 2=named
 static const char* const kDefaultFinderOpenTargetPlaylist = "Inbox";
+static const bool kDefaultLibrarySelectionSort = false;  // Opt-in: keep the browser's order
+// Each artist's albums oldest first, then each album in disc/track order.
+// Zero-padded so disc 10 follows disc 9.
+static const char* const kDefaultLibrarySelectionSortPattern =
+    "%album artist%|%date%|%album%|$num(%discnumber%,3)|$num(%tracknumber%,4)";
 
 // Helper functions
 inline std::string getFullKey(const char* key) {
