@@ -49,6 +49,8 @@
 @property (nonatomic, strong) NSButton *preserveQueueCheckbox;
 @property (nonatomic, strong) NSButton *keepPlayingPlaylistCheckbox;
 @property (nonatomic, strong) NSPopover *keepPlayingHelpPopover;
+@property (nonatomic, strong) NSButton *librarySortCheckbox;
+@property (nonatomic, strong) NSTextField *librarySortPatternField;
 @property (nonatomic, strong) NSPopUpButton *queueDisplayStylePopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenBehaviorPopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenTargetPopup;
@@ -69,7 +71,7 @@
 - (void)loadView {
     // Build the preferences inside a flipped container, then wrap it in a scroll view
     // so users can scroll if their preferences window is shorter than the content.
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 960)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 1030)];
     container.autoresizingMask = 0;  // Fixed size so side-by-side layout stays intact
 
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 820, 600)];
@@ -392,12 +394,12 @@
     CGFloat behaviorBoxY = y;
     CGFloat behaviorContentY = 22;
 
-    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 230)];
+    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 300)];
     behaviorBox.title = @"Behavior";
     behaviorBox.titlePosition = NSAtTop;
     [container addSubview:behaviorBox];
 
-    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 200)];
+    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 270)];
     behaviorBox.contentView = behaviorContent;
 
     // Double-click preserves queue
@@ -434,6 +436,36 @@
     keepPlayingNote.lineBreakMode = NSLineBreakByWordWrapping;
     [behaviorContent addSubview:keepPlayingNote];
     behaviorContentY += 32;
+
+    // Keep the library browser's selection sorted
+    _librarySortCheckbox = [NSButton checkboxWithTitle:@"Sort library selection automatically"
+                                                target:self
+                                                action:@selector(librarySortChanged:)];
+    _librarySortCheckbox.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 20);
+    [behaviorContent addSubview:_librarySortCheckbox];
+    behaviorContentY += rowHeight;
+
+    // Not wired to the NSTextFieldDelegate methods: those save the group
+    // presets and rebuild every panel. Target/action fires on Return and when
+    // focus leaves the field.
+    _librarySortPatternField = [[NSTextField alloc] initWithFrame:
+        NSMakeRect(boxMargin + labelWidth, behaviorContentY, 290, 22)];
+    _librarySortPatternField.placeholderString =
+        [NSString stringWithUTF8String:simplaylist_config::kDefaultLibrarySelectionSortPattern];
+    _librarySortPatternField.font = [NSFont userFixedPitchFontOfSize:11];
+    _librarySortPatternField.target = self;
+    _librarySortPatternField.action = @selector(librarySortPatternChanged:);
+    [_librarySortPatternField.cell setSendsActionOnEndEditing:YES];
+    [behaviorContent addSubview:_librarySortPatternField];
+    behaviorContentY += 26;
+
+    NSTextField *librarySortNote = [NSTextField labelWithString:@"Re-sorts the tracks each time you click in a library browser (ReFacets, Album List). Empty field = default pattern"];
+    librarySortNote.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 28);
+    librarySortNote.font = [NSFont systemFontOfSize:10];
+    librarySortNote.textColor = [NSColor secondaryLabelColor];
+    librarySortNote.lineBreakMode = NSLineBreakByWordWrapping;
+    [behaviorContent addSubview:librarySortNote];
+    behaviorContentY += 34;
 
     // Queue column display style
     NSTextField *queueStyleLabel = [NSTextField labelWithString:@"Queue Column:"];
@@ -473,7 +505,7 @@
     // _finderOpenTargetPopupFrame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 220, 26);
     // _finderOpenTargetPopupParent = behaviorContent;
 
-    y = behaviorBoxY + 250;
+    y = behaviorBoxY + 320;
 
     // Help text — placed under the Pattern Help box on the right side
     CGFloat helpTextX = leftMargin + 460 + 20;
@@ -629,6 +661,20 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
         simplaylist_config::kKeepPlayingPlaylist,
         simplaylist_config::kDefaultKeepPlayingPlaylist);
     _keepPlayingPlaylistCheckbox.state = keepPlayingPlaylist ? NSControlStateValueOn : NSControlStateValueOff;
+
+    bool librarySort = simplaylist_config::getConfigBool(
+        simplaylist_config::kLibrarySelectionSort,
+        simplaylist_config::kDefaultLibrarySelectionSort);
+    _librarySortCheckbox.state = librarySort ? NSControlStateValueOn : NSControlStateValueOff;
+    // The stored value is always a usable pattern (see librarySortPatternChanged:);
+    // show it only when it differs from the placeholder's default.
+    std::string librarySortPattern = simplaylist_config::getConfigString(
+        simplaylist_config::kLibrarySelectionSortPattern,
+        simplaylist_config::kDefaultLibrarySelectionSortPattern);
+    _librarySortPatternField.stringValue =
+        (librarySortPattern == simplaylist_config::kDefaultLibrarySelectionSortPattern)
+            ? @"" : ([NSString stringWithUTF8String:librarySortPattern.c_str()] ?: @"");
+    _librarySortPatternField.enabled = librarySort;
 
     int64_t queueStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
@@ -1041,6 +1087,21 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 - (void)keepPlayingPlaylistChanged:(id)sender {
     bool enabled = (_keepPlayingPlaylistCheckbox.state == NSControlStateValueOn);
     simplaylist_config::setConfigBool(simplaylist_config::kKeepPlayingPlaylist, enabled);
+}
+
+- (void)librarySortChanged:(id)sender {
+    bool enabled = (_librarySortCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kLibrarySelectionSort, enabled);
+    _librarySortPatternField.enabled = enabled;
+}
+
+- (void)librarySortPatternChanged:(id)sender {
+    NSString *pattern = [_librarySortPatternField.stringValue
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // An empty field means the default, so the stored pattern is never empty.
+    const char *value = pattern.length ? pattern.UTF8String
+                                       : simplaylist_config::kDefaultLibrarySelectionSortPattern;
+    simplaylist_config::setConfigString(simplaylist_config::kLibrarySelectionSortPattern, value);
 }
 
 - (void)keepPlayingHelpClicked:(NSButton *)sender {
