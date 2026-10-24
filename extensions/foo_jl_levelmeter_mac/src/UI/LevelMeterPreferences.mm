@@ -105,6 +105,27 @@ bool analog() { return !digital(); }
     [self buildRows];
     [self loadValues];
     [self refresh];
+
+    // Settings can change from outside this page too (the meter's context
+    // menu switches the style), and foobar2000 keeps the page around.
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(settingsChangedElsewhere:)
+                                                 name:kSettingsChangedNotification object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewWillAppear {
+    [super viewWillAppear];
+    [self loadValues];
+    [self refresh];
+}
+
+- (void)settingsChangedElsewhere:(NSNotification *)note {
+    if (note.object == self) return;   // our own change: controls are already current
+    [self loadValues];
+    [self refresh];
 }
 
 #pragma mark - Rows
@@ -603,7 +624,7 @@ bool analog() { return !digital(); }
 }
 
 - (void)notifyChanged {
-    [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsChangedNotification object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:kSettingsChangedNotification object:self];
 }
 
 - (void)showComponentInfo:(NSButton *)sender {
