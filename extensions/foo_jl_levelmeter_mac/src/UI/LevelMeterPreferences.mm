@@ -390,6 +390,13 @@ bool analog() { return !digital(); }
         r.visible = isDigital;
         [self addRow:std::move(r)];
     }
+    {
+        auto [g, s] = boolKey(kKeyResetPeaksOnTrack, kDefaultResetPeaksOnTrack);
+        Row r = [self checkbox:@"Reset peaks and clip lights on track change" get:g set:s
+                       tooltip:@"Off: overs stay latched across tracks until you click the bars"];
+        r.visible = isDigital;
+        [self addRow:std::move(r)];
+    }
     const auto dbfsScale = [] { return digital() && configInt(kKeyScale, kDefaultScale) == (int)ScaleType::Dbfs; };
     {
         auto [g, s] = intKey(kKeyWarnDb, kDefaultWarnDb);
