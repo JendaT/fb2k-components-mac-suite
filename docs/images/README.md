@@ -36,6 +36,12 @@ Place screenshots in this directory with the following filenames:
 - `spectrogram-inferno.png`, `spectrogram-viridis.png`, `spectrogram-p3-amber.png` - Spectrogram panel (reassigned mode) with the Inferno, Viridis and P3 amber colormaps, cropped to the panel's right end
 - `spectrogram-settings.png` - Preferences page (cards: Analysis, Colours, Display, Layout, Labels)
 
+## Level Meter
+- `levelmeter-digital.png` - Digital meter with loudness bars, figures and stereo bars
+- `levelmeter-levels.png` - Digital meter showing only the level bars
+- `levelmeter-analog.png` - Two analog VU faces
+- `levelmeter-settings.png` - Preferences page
+
 ## Queue Manager
 - `queuemanager-overview.png` - Queue with queued tracks
 
