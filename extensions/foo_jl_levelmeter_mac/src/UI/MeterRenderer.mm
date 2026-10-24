@@ -5,6 +5,7 @@
 
 #import "MeterRenderer.h"
 #include "../Core/MeterScale.h"
+#include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
 
@@ -17,10 +18,8 @@ namespace {
 const double kPi = 3.14159265358979323846;
 
 NSColor *color(uint32_t argb, CGFloat alphaScale = 1.0) {
-    return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
-                               green:((argb >> 8) & 0xFF) / 255.0
-                                blue:(argb & 0xFF) / 255.0
-                               alpha:((argb >> 24) & 0xFF) / 255.0 * alphaScale];
+    NSColor *c = JLColorFromARGB(argb);
+    return alphaScale == 1.0 ? c : [c colorWithAlphaComponent:c.alphaComponent * alphaScale];
 }
 
 CGColorRef cg(uint32_t argb, CGFloat alphaScale = 1.0) {
@@ -522,7 +521,7 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
 
     // Backlight: brightest low in the middle, falling off to the edges.
     {
-        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorSpaceRef space = JLCreateThemeColorSpace();
         CGColorRef stops[2] = { cg(fc.faceCentre), cg(fc.faceEdge) };
         CFArrayRef arr = CFArrayCreate(NULL, (const void **)stops, 2, &kCFTypeArrayCallBacks);
         const CGFloat locs[2] = { 0.0, 1.0 };
@@ -673,7 +672,7 @@ void drawFace(CGContextRef ctx, CGRect cell, const DisplaySettings &s, const Sna
 
     // Glass glare over the upper half
     if (fc.glass > 0) {
-        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorSpaceRef space = JLCreateThemeColorSpace();
         CGColorRef stops[2] = { cg(0xFFFFFFFF, fc.glass), cg(0xFFFFFFFF, 0.0) };
         CFArrayRef arr = CFArrayCreate(NULL, (const void **)stops, 2, &kCFTypeArrayCallBacks);
         const CGFloat locs[2] = { 0.0, 1.0 };
