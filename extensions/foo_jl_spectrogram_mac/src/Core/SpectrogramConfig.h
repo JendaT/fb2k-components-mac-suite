@@ -26,6 +26,13 @@ enum Channel {
     ChannelSide = 3         // (L - R) / 2
 };
 
+// Which way the frequency axis runs, as in the Spectrum Analyzer: the same
+// setting on both panels lines up their frequency axes.
+enum Orientation {
+    OrientationHorizontal = 0,  // Frequency along X, time flows vertically
+    OrientationVertical = 1     // Frequency along Y, time flows sideways
+};
+
 // --- Defaults ---
 // Enum-valued settings (frequency scale, window) store the SpectrogramEngine
 // enum values directly; 0 is the default for both.
@@ -41,6 +48,8 @@ constexpr int      kDefaultRangeDb     = 90;     // dB span below the top level
 constexpr int      kDefaultSlopeTenths = 0;      // Tilt around 1 kHz, tenths of dB per octave
 constexpr int      kDefaultColormap    = 0;      // Index into spectrogram_colormap::kMaps, or kCustomMap
 constexpr int      kDefaultScrollSpeed = 120;    // Points per second
+constexpr int      kDefaultOrientation = OrientationVertical;
+constexpr bool     kDefaultReverseScroll = false; // New audio at the left (vertical) or bottom (horizontal)
 constexpr bool     kDefaultShowFreqAxis = true;  // Frequency labels right of the plot
 constexpr bool     kDefaultShowLegend  = true;   // Color/dB scale on the right edge
 constexpr int      kDefaultGridOpacity = 15;     // Frequency gridline opacity 0-100 (0 hides)
@@ -70,6 +79,8 @@ static const char* const kKeyRangeDb        = "range_db";
 static const char* const kKeySlopeTenths    = "slope_tenths";
 static const char* const kKeyColormap       = "colormap";
 static const char* const kKeyScrollSpeed    = "scroll_speed";
+static const char* const kKeyOrientation    = "orientation";
+static const char* const kKeyReverseScroll  = "reverse_scroll";
 static const char* const kKeyShowFreqAxis   = "show_freq_axis";
 static const char* const kKeyShowLegend     = "show_legend";
 static const char* const kKeyGridOpacity    = "grid_opacity";
