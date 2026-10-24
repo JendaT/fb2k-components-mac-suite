@@ -325,9 +325,16 @@ bool analog() { return !digital(); }
         [self addRow:std::move(r)];
     }
     {
-        auto [g, s] = boolKey(kKeyShowStereo, kDefaultShowStereo);
-        Row r = [self checkbox:@"Show correlation and balance" get:g set:s
-                       tooltip:@"+1 = mono, 0 = wide, below 0 = out of phase; balance shows which side is louder"];
+        Row r = [self checkbox:@"Show correlation" get:[] { return getShowCorrelation() ? 1 : 0; }
+                           set:[](int v) { setConfigBool(kKeyShowCorrelation, v != 0); }
+                       tooltip:@"Phase correlation: +1 = mono, 0 = wide, below 0 = out of phase"];
+        r.visible = isDigital;
+        [self addRow:std::move(r)];
+    }
+    {
+        Row r = [self checkbox:@"Show balance" get:[] { return getShowBalance() ? 1 : 0; }
+                           set:[](int v) { setConfigBool(kKeyShowBalance, v != 0); }
+                       tooltip:@"Which channel is louder, full scale at 12 dB difference"];
         r.visible = isDigital;
         [self addRow:std::move(r)];
     }

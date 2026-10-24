@@ -99,11 +99,31 @@ void testDegrade() {
     g_context = "switches";
     Input off = input(260, 420);
     off.loudness = false;
-    off.stereo = false;
+    off.correlation = false;
+    off.balance = false;
     off.readouts = false;
     Result bare = layout(off);
     CHECK(bare.bar[BarM].empty() && bare.stats.empty() && bare.correlation.empty(), "sections off");
     CHECK(bare.readout[BarL].empty(), "readouts off");
+
+    g_context = "stereo rows";
+    Input corrOnly = input(260, 420);
+    corrOnly.balance = false;
+    Result c = layout(corrOnly);
+    CHECK(!c.correlation.empty() && c.balance.empty(), "correlation alone");
+    Input balOnly = input(260, 420);
+    balOnly.correlation = false;
+    Result b = layout(balOnly);
+    CHECK(b.correlation.empty() && !b.balance.empty(), "balance alone");
+    CHECK(b.bar[BarL].h > full.bar[BarL].h, "one stereo row leaves the bars more room");
+    Input wideBal = input(760, 104);
+    wideBal.correlation = false;
+    CHECK(!layout(wideBal).balance.empty(), "horizontal: balance alone in the side column");
+
+    g_context = "stereo drop order";
+    // Just tall enough for one stereo row: balance goes first.
+    Result tight = layout(input(260, 60 + 14 + 9 + 16 + 32 + 15 + 12, meter::Orientation::Vertical));
+    CHECK(!tight.correlation.empty() && tight.balance.empty(), "balance dropped before correlation");
 
     g_context = "empty panel";
     Result none = layout(input(0, 0));
