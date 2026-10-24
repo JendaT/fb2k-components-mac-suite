@@ -74,6 +74,7 @@ struct DisplaySettings {
     ScaleSpacing spacing = ScaleSpacing::Extended;
     int floorDb = -60;              // bottom of the bar scale (dBFS)
     bool segments = false;          // LED-style segmented bars
+    double textScale = 1.0;         // digital text size relative to 10 pt readouts
     bool showReadouts = true;
     bool showLoudness = true;
     bool showCorrelation = true;

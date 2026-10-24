@@ -60,11 +60,30 @@ void checkSane(const Input &in, const char *what) {
 void testSizes() {
     const double sizes[][2] = { {260, 420}, {120, 200}, {60, 120}, {760, 104}, {400, 40}, {1200, 60},
                                 {300, 300}, {180, 600}, {900, 220} };
-    for (const auto &s : sizes) {
-        checkSane(input(s[0], s[1]), "auto");
-        checkSane(input(s[0], s[1], meter::Orientation::Vertical), "vertical");
-        checkSane(input(s[0], s[1], meter::Orientation::Horizontal), "horizontal");
+    for (double text : { 0.9, 1.0, 1.4 }) {
+        for (const auto &s : sizes) {
+            Input a = input(s[0], s[1]), v = input(s[0], s[1], meter::Orientation::Vertical),
+                  h = input(s[0], s[1], meter::Orientation::Horizontal);
+            a.text = v.text = h.text = text;
+            checkSane(a, "auto");
+            checkSane(v, "vertical");
+            checkSane(h, "horizontal");
+        }
     }
+}
+
+void testTextSize() {
+    g_context = "text size";
+    Input small = input(260, 420), large = input(260, 420);
+    large.text = 1.4;
+    const Result a = layout(small), b = layout(large);
+    CHECK(b.m.readoutHeight > a.m.readoutHeight, "readouts grow with the text");
+    CHECK(b.scale.w > a.scale.w, "scale column grows with the text");
+    CHECK(b.bar[BarL].h < a.bar[BarL].h, "bigger text leaves the bars less height");
+    CHECK(b.stats.h > a.stats.h, "stats rows grow with the text");
+    Input huge = input(260, 420);
+    huge.text = 10.0;
+    CHECK(layout(huge).m.text <= 2.0, "text scale is capped");
 }
 
 void testOrientation() {
@@ -134,6 +153,7 @@ void testDegrade() {
 
 int main() {
     testSizes();
+    testTextSize();
     testOrientation();
     testDegrade();
     TEST_MAIN_END();
