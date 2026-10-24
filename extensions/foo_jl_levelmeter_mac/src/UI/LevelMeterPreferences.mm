@@ -305,6 +305,18 @@ bool analog() { return !digital(); }
         [self addRow:std::move(r)];
     }
     {
+        static NSString *const kSizeNames[] = { @"Small", @"Medium", @"Large", @"Extra large" };
+        std::vector<Choice> sizes;
+        for (size_t i = 0; i < sizeof(kTextSizes) / sizeof(kTextSizes[0]); ++i) {
+            sizes.push_back({[NSString stringWithFormat:@"%@ (%d pt)", kSizeNames[i], kTextSizes[i]], kTextSizes[i]});
+        }
+        Row r = [self popup:@"Text size" choices:sizes width:170
+                        get:[] { return getTextSize(); } set:[](int v) { setConfigInt(kKeyTextSize, v); }
+                    tooltip:@"Readouts, scales, labels and loudness figures; the analog faces size their text to the face"];
+        r.visible = isDigital;
+        [self addRow:std::move(r)];
+    }
+    {
         auto [g, s] = boolKey(kKeySegments, kDefaultSegments);
         Row r = [self checkbox:@"LED segments" get:g set:s tooltip:@"Split the bars into segments like an LED meter"];
         r.visible = isDigital;

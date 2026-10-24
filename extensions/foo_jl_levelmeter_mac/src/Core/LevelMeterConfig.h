@@ -34,6 +34,8 @@ constexpr int kDefaultSpacing        = (int)ScaleSpacing::Extended;
 constexpr int kDefaultFloorDb        = -60;
 static const int kFloorChoices[]     = { -24, -40, -48, -60, -72, -80, -90, -120 };
 constexpr bool kDefaultSegments      = false;
+constexpr int kDefaultTextSize       = 10;   // readout size, pt; the rest of the text scales with it
+static const int kTextSizes[]        = { 9, 10, 12, 14 };
 constexpr bool kDefaultShowReadouts  = true;
 constexpr bool kDefaultShowLoudness  = true;
 constexpr bool kDefaultShowCorrelation = true;
@@ -76,6 +78,7 @@ static const char* const kKeyScale          = "scale";
 static const char* const kKeySpacing        = "scale_spacing";
 static const char* const kKeyFloorDb        = "floor_db";
 static const char* const kKeySegments       = "segments";
+static const char* const kKeyTextSize       = "text_size";
 static const char* const kKeyShowReadouts   = "show_readouts";
 static const char* const kKeyShowLoudness   = "show_loudness";
 static const char* const kKeyShowCorrelation = "show_correlation";
@@ -169,6 +172,13 @@ inline void applyThemeToConfig(int index) {
     }
 }
 
+// One of kTextSizes; anything else stored reads as the default.
+inline int getTextSize() {
+    const int64_t v = getConfigInt(kKeyTextSize, kDefaultTextSize);
+    for (int size : kTextSizes) if (size == v) return size;
+    return kDefaultTextSize;
+}
+
 inline bool getShowCorrelation() {
     return getConfigBool(kKeyShowCorrelation, getConfigBool(kKeyShowStereoLegacy, kDefaultShowCorrelation));
 }
@@ -202,6 +212,7 @@ inline DisplaySettings loadDisplaySettings(bool dark) {
     d.spacing = (ScaleSpacing)getConfigIntClamped(kKeySpacing, kDefaultSpacing, 0, 1);
     d.floorDb = getConfigIntClamped(kKeyFloorDb, kDefaultFloorDb, -120, -24);
     d.segments = getConfigBool(kKeySegments, kDefaultSegments);
+    d.textScale = getTextSize() / 10.0;
     d.showReadouts = getConfigBool(kKeyShowReadouts, kDefaultShowReadouts);
     d.showLoudness = getConfigBool(kKeyShowLoudness, kDefaultShowLoudness);
     d.showCorrelation = getShowCorrelation();
