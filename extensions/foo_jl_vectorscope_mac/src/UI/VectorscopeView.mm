@@ -9,6 +9,7 @@
 #include "../Core/ScopeLayout.h"
 #include "../Core/StereoAnalysis.h"
 #include "../../../../shared/UIStyles.h"
+#include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
 
@@ -80,7 +81,8 @@ namespace {
     self = [super initWithFrame:frameRect];
     if (self) {
         self.wantsLayer = YES;
-        _colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        // The afterglow image is built from theme colours: Display P3.
+        _colorSpace = JLCreateThemeColorSpace();
         _traceEmpty = true;
         for (int i = 0; i < kMaxRows; ++i) {
             _target[i] = _shown[i] = 0.0f;
@@ -215,11 +217,9 @@ namespace {
 
 #pragma mark - Color helpers
 
+// Theme colours are Display P3 (shared/ThemeColor.h).
 static NSColor *colorFromARGB(uint32_t argb) {
-    return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
-                               green:((argb >> 8) & 0xFF) / 255.0
-                                blue:(argb & 0xFF) / 255.0
-                               alpha:((argb >> 24) & 0xFF) / 255.0];
+    return JLColorFromARGB(argb);
 }
 
 - (uint32_t)traceARGB {

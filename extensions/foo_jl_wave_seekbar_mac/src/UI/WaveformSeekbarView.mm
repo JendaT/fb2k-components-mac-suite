@@ -12,7 +12,17 @@
 #include "../Core/ConfigHelper.h"
 #include "../Core/WaveformColorMap.h"
 #include "../Core/WaveformGeometry.h"
+#include "../../../../shared/ThemeColor.h"
 #include <cmath>
+
+// Theme colours are Display P3 (shared/ThemeColor.h), like the other
+// visualisers', so they show at full saturation on wide-gamut screens.
+static void setStrokeP3(CGContextRef ctx, CGFloat r, CGFloat g, CGFloat b, CGFloat a) {
+    static CGColorSpaceRef space = JLCreateThemeColorSpace();
+    const CGFloat comps[4] = { r, g, b, a };
+    CGContextSetStrokeColorSpace(ctx, space);
+    CGContextSetStrokeColor(ctx, comps);
+}
 
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
@@ -148,13 +158,8 @@
         bgARGB = static_cast<uint32_t>(getConfigInt(kKeyBgColorLight, kDefaultBgColorLight));
     }
 
-    // Convert ARGB to NSColor
-    waveseek::Rgba wave = waveseek::rgbaFromArgb(waveARGB);
-    waveseek::Rgba background = waveseek::rgbaFromArgb(bgARGB);
-
-    _waveformColor = [NSColor colorWithRed:wave.r green:wave.g blue:wave.b alpha:wave.a];
-    _backgroundColor = [NSColor colorWithRed:background.r green:background.g
-                                        blue:background.b alpha:background.a];
+    _waveformColor = JLColorFromARGB(waveARGB);
+    _backgroundColor = JLColorFromARGB(bgARGB);
 }
 
 #pragma mark - Drawing
@@ -257,7 +262,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
         return;
     }
 
-    NSColor *baseColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    NSColor *baseColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace displayP3ColorSpace]];
     if (!baseColor) baseColor = self.waveformColor;
     int bands = waveseek::clampGradientBands(self.gradientBands);
 
@@ -308,7 +313,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
             ? waveseek::heatMapColor(peak)
             : waveseek::rainbowColor(waveseek::bucketPosition(i, WaveformData::BUCKET_COUNT));
 
-        CGContextSetRGBStrokeColor(context, color.r, color.g, color.b, 1.0);
+        setStrokeP3(context, color.r, color.g, color.b, 1.0);
         CGContextBeginPath(context);
         CGContextMoveToPoint(context, x, layout.centerY - peak * layout.amplitude);
         CGContextAddLineToPoint(context, x, layout.centerY + peak * layout.amplitude);
@@ -333,7 +338,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
     CGContextSetLineWidth(context, 1.0);
 
     if (bands <= 0) {
-        CGContextSetRGBStrokeColor(context, r, g, b, 1.0);
+        setStrokeP3(context, r, g, b, 1.0);
         CGContextBeginPath(context);
         for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
             CGFloat x = waveseek::bucketX(i, WaveformData::BUCKET_COUNT, viewWidth);
@@ -347,7 +352,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 
     for (int band = 0; band < bands; band++) {
         waveseek::BandRange range = waveseek::bandRange(band, bands);
-        CGContextSetRGBStrokeColor(context, r, g, b, waveseek::bandAlpha(band, bands));
+        setStrokeP3(context, r, g, b, waveseek::bandAlpha(band, bands));
         CGContextBeginPath(context);
 
         for (size_t i = 0; i < WaveformData::BUCKET_COUNT; i++) {
@@ -431,10 +436,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 // Effect 0: None - Sharp transition, uniform dimming
 - (void)drawNoneEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent
-                                        green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent
-                                        alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
@@ -457,8 +459,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 
     // Solid portion
     if (playedWidth > fadeWidth) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
         CGContextSetFillColorWithColor(context, dimColor.CGColor);
         CGContextFillRect(context, CGRectMake(0, 0, playedWidth - fadeWidth, bounds.size.height));
     }
@@ -477,8 +478,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 - (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
@@ -519,8 +519,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 - (void)drawScanlineEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                         playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
@@ -570,8 +569,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
     // Modulate dimOpacity: ranges from dimOpacity*0.3 to dimOpacity*1.0
     CGFloat pulsingOpacity = dimOpacity * (0.3 + breath * 0.7);
 
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:pulsingOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:pulsingOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
@@ -583,8 +581,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 
     // Draw solid dimming for area before trail
     if (playedWidth > trailLength) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
         CGContextSetFillColorWithColor(context, dimColor.CGColor);
         CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
     }
@@ -615,8 +612,7 @@ static double monoPeak(const WaveformData *waveform, uint32_t channels, size_t b
 - (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw base dimming
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity * 0.7];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity * 0.7];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
