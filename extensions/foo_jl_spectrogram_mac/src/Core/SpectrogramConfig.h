@@ -34,10 +34,10 @@ enum Orientation {
 };
 
 // --- Defaults ---
-// Enum-valued settings (frequency scale, window) store the SpectrogramEngine
-// enum values directly; 0 is the default for both.
+// Enum-valued settings (analysis mode, frequency scale, window) store the
+// SpectrogramEngine enum values directly.
 constexpr int      kDefaultFftSize     = 4096;   // Base FFT window at 44.1/48 kHz (power of 2)
-constexpr bool     kDefaultMultiRes    = true;   // Longer window for bass, shorter for treble
+constexpr int      kDefaultAnalysisMode = 2;     // Reassigned: thin bass lines without time smear
 constexpr int      kDefaultWindow      = 0;      // Hann
 constexpr int      kDefaultChannel     = ChannelMid;
 constexpr int      kDefaultFreqScale   = 0;      // Logarithmic
@@ -68,7 +68,7 @@ constexpr uint32_t kDefaultGridColorDark  = 0xFF909090;
 // --- Config keys (stored under kConfigPrefix) ---
 static const char* const kConfigPrefix     = "foo_jl_spectrogram.";
 static const char* const kKeyFftSize        = "fft_size";
-static const char* const kKeyMultiRes       = "multi_res";
+static const char* const kKeyAnalysisMode   = "analysis_mode";
 static const char* const kKeyWindow         = "window";
 static const char* const kKeyChannel        = "channel";
 static const char* const kKeyFreqScale      = "freq_scale";
