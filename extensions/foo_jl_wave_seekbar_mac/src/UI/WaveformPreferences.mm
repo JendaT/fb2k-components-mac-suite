@@ -13,6 +13,7 @@
 #include "../Core/WaveformColorMap.h"
 #include "../Core/GradientBandTable.h"
 #import "../../../../shared/PreferencesCommon.h"
+#import "../../../../shared/ThemeColor.h"
 #include "../Integration/ComponentInfo.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
@@ -325,17 +326,13 @@
     _retentionField.integerValue = getConfigInt(kKeyCacheRetentionDays, kDefaultCacheRetentionDays);
 }
 
+// Stored colours are Display P3, matching how the seekbar draws them.
 - (NSColor *)colorFromARGB:(uint32_t)argb {
-    waveseek::Rgba color = waveseek::rgbaFromArgb(argb);
-    return [NSColor colorWithRed:color.r green:color.g blue:color.b alpha:color.a];
+    return JLColorFromARGB(argb);
 }
 
 - (uint32_t)argbFromColor:(NSColor *)color {
-    NSColor *rgbColor = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    if (!rgbColor) return 0xFF000000;
-
-    return waveseek::argbFromRgba({rgbColor.redComponent, rgbColor.greenComponent,
-                                   rgbColor.blueComponent, rgbColor.alphaComponent});
+    return JLARGBFromColor(color);
 }
 
 - (void)updateCacheStatus {
