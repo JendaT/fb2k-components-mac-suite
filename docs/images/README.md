@@ -22,6 +22,12 @@ Place screenshots in this directory with the following filenames:
 - `spectrum-overview.png` - Spectrum panel (curve mode) below the waveform seekbar
 - `spectrum-settings.png` - Preferences page with analysis, dynamics and appearance options
 
+## Level Meter
+- `levelmeter-digital.png` - Digital meter with loudness bars, figures and stereo bars
+- `levelmeter-levels.png` - Digital meter showing only the level bars
+- `levelmeter-analog.png` - Two analog VU faces
+- `levelmeter-settings.png` - Preferences page
+
 ## Last.fm Scrobbler
 - `scrobbler-settings.png` - Preferences page with account and options
 

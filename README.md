@@ -13,6 +13,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
+| [Level Meter](#level-meter) | Peak, RMS, loudness (LUFS) and analog VU meter | 0.1.0 | – |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
@@ -119,6 +120,25 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 
 ---
 
+### Level Meter
+
+Peak, RMS and loudness meter with an optional analog VU look, fed by foobar2000's visualisation stream.
+
+| Digital | Levels only | Analog VU | Settings |
+|---------|-------------|-----------|----------|
+| ![Level Meter with peak / RMS bars, loudness bars and figures](docs/images/levelmeter-digital.png) | ![Level Meter showing only the level bars](docs/images/levelmeter-levels.png) | ![Level Meter as two analog VU faces](docs/images/levelmeter-analog.png) | ![Level Meter Settings](docs/images/levelmeter-settings.png) |
+
+**Features:**
+- Level bars: RMS as the wide bar with the peak as a slim column above it, peak hold, latching clip lights and max peak readouts (click to reset)
+- True peak (4x oversampled) or sample peak, dBFS or K-20 / K-14 / K-12 scales, range from -24 to -120 dB, optional LED segments
+- Loudness after BS.1770 / EBU R128: momentary and short-term bars, integrated loudness, loudness range, true peak max and PLR, with a target marker (-9 to -24 LUFS)
+- Phase correlation and balance bars, each with its own switch
+- Analog VU faces (vintage, dark or theme colors) with VU or PPM ballistics, adjustable reference level and a peak LED
+- Vertical, horizontal or automatic layout; peaks and loudness can reset on each new track
+- Color themes matching the other visualisers, light/dark colors, text size and optional glass background
+
+---
+
 ### Album Art (Extended)
 
 Extended album art viewer with support for multiple artwork types and selection-based display. Unlike the built-in album art element, this one can show back covers, disc art, and more.
@@ -199,6 +219,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
+| Level Meter | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=levelmeter) | TBD |
 | Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
@@ -313,6 +334,7 @@ Use these names in the layout editor or when editing the layout text file direct
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
 | Spectrum Analyzer | `spectrum` | `Spectrum Analyzer`, `spectrum_analyzer`, `foo_jl_spectrum`, `jl_spectrum` |
 | Vectorscope | `vectorscope` | `Vectorscope`, `vector_scope`, `goniometer`, `foo_jl_vectorscope`, `jl_vectorscope` |
+| Level Meter | `level_meter` | `Level Meter`, `levelmeter`, `vu_meter`, `VU Meter`, `vumeter`, `peak_meter`, `loudness_meter`, `foo_jl_levelmeter`, `jl_levelmeter` |
 | Album Art (Extended) | `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
 | Queue Manager | `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
 | Last.fm Scrobbler (stats widget) | `lastfm_scrobbler` | `lastfm-scrobbler`, `scrobbler`, `foo_jl_scrobble`, `jl_scrobble` |
