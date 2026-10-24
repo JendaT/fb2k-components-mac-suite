@@ -21,17 +21,19 @@ The same setting as in the Spectrum Analyzer, so the two panels line up when pla
 
 **Reverse scroll direction** makes new audio enter at the left (vertical) or the bottom (horizontal) instead, for a panel placed on the other side of the spectrum. Changing either setting clears the picture.
 
-### Multi-Resolution Analysis
+### Resolution
 
-One FFT size cannot be sharp in both pitch and time. With **Multi-resolution** on, each column runs three FFTs centred on the same instant and each frequency region reads the one that suits it:
+One plain FFT cannot be sharp in both pitch and time: a window long enough to draw bass notes as thin lines smears every kick over a third of a second. Three modes trade this differently (window sizes at 44.1/48 kHz with FFT size 4096):
 
-| Region | Window (at 44.1/48 kHz, FFT size 4096) | Effect |
-|--------|------------------------------------------|--------|
-| Below 200 Hz | 4x (16384 samples) | Bass notes resolve as thin lines |
-| 400 Hz to 2 kHz | 1x (4096 samples) | Balanced |
-| Above 4 kHz | 1/4 (1024 samples) | Hi-hats and transients stay narrow in time |
+| Mode | Below 2 kHz | Above 4 kHz | Look |
+|------|-------------|-------------|------|
+| **Reassigned** (default) | 4096 samples, reassigned | 1024 samples, reassigned | Thin tonal lines and short kicks at the same time |
+| **Multi-resolution** | 16384 below 200 Hz, 4096 above | 1024 samples | Thin bass lines, kicks smeared over ~0.4 s |
+| **Standard** | 4096 samples | 4096 samples | One window everywhere |
 
-The octaves in between (200-400 Hz, 2-4 kHz) blend the two neighbours in dB. Windows are doubled at 88.2/96 kHz and quadrupled above, so resolution stays the same across sample rates.
+**Reassignment**: each column also runs an FFT through the window's derivative, which tells, per bin, the frequency the signal really has there. The bin's energy is moved to that frequency, so a tone's several-bin lobe collapses into a line while the window stays short enough for sharp transients (kick drums show as narrow streaks, with their pitch sweep). The standard spectrum is drawn 18 dB down underneath, so noise and texture stay visible.
+
+Crossovers (200-400 Hz in multi-resolution, 2-4 kHz in both split modes) blend the neighbouring windows in dB. Windows are doubled at 88.2/96 kHz and quadrupled above, so resolution stays the same across sample rates.
 
 Levels are calibrated in dBFS: a full-scale sine reads 0 dB.
 
@@ -88,7 +90,7 @@ Access settings via **Preferences > Display > Spectrogram**, or right-click the 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
 | FFT size | Base window length at 44.1/48 kHz | 1024, 2048, 4096, 8192, 16384 | 4096 |
-| Multi-resolution | 4x window for bass, 1/4 window for treble | On/Off | On |
+| Resolution | Reassigned, Multi-resolution or Standard (see above) | | Reassigned |
 | Window | Hann, or Blackman-Harris (cleaner at wide dB ranges, slightly broader lines) | | Hann |
 | Channel | Signal analysed | Mid (L + R), Left, Right, Side (L - R) | Mid |
 | Frequency scale | Axis mapping | Logarithmic, Mel, Linear | Logarithmic |

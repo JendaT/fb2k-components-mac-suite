@@ -17,7 +17,7 @@ JL_COMPONENT_ABOUT(
     "Scrolling spectrogram for foobar2000 macOS\n\n"
     "Features:\n"
     "- Frequency content over time from the playback stream\n"
-    "- Multi-resolution analysis: sharp bass pitch and sharp treble transients\n"
+    "- Reassigned analysis: thin tonal lines and sharp transients together\n"
     "- Logarithmic, mel, or linear frequency scale\n"
     "- Colormaps, including ramps matching the Spectrum Analyzer themes, with a dB color scale\n"
     "- Adjustable level range, slope, and scroll speed\n"

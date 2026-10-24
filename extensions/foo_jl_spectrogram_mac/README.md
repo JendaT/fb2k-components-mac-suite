@@ -6,7 +6,7 @@
 
 ---
 
-A scrolling spectrogram UI element for foobar2000 macOS. Reads raw PCM from the core `visualisation_manager`, runs multi-resolution FFTs with Accelerate, and scrolls the result as Core Animation tile layers.
+A scrolling spectrogram UI element for foobar2000 macOS. Reads raw PCM from the core `visualisation_manager`, runs reassigned or multi-resolution FFTs with Accelerate, and scrolls the result as Core Animation tile layers.
 
 Contributed by [Scannou](https://github.com/Scannou).
 
