@@ -126,7 +126,7 @@ Scrolling spectrogram panel: frequency over time, level as color.
 
 | Colormaps | Settings |
 |-----------|----------|
-| ![Spectrogram with the Ice colormap on a mel scale](docs/images/spectrogram-overview.png)<br>![Spectrogram with the Viridis colormap](docs/images/spectrogram-viridis.png)<br>![Spectrogram with the Inferno colormap](docs/images/spectrogram-inferno.png) | ![Spectrogram Settings](docs/images/spectrogram-settings.png) |
+| ![Spectrogram with the Inferno colormap](docs/images/spectrogram-inferno.png)<br>![Spectrogram with the Viridis colormap](docs/images/spectrogram-viridis.png)<br>![Spectrogram with the P3 amber theme ramp](docs/images/spectrogram-p3-amber.png) | ![Spectrogram Settings](docs/images/spectrogram-settings.png) |
 
 **Features:**
 - Reassigned analysis: thin tonal lines (bass notes included) and short kicks at the same time; multi-resolution and standard modes too

@@ -4,7 +4,7 @@ A scrolling spectrogram UI element for foobar2000 macOS: frequency on the vertic
 
 ## Features
 
-![Spectrogram with the Ice colormap on a mel scale](images/spectrogram-overview.png)
+![Spectrogram with the Inferno colormap](images/spectrogram-inferno.png)
 
 ### Scrolling Display
 
@@ -50,9 +50,10 @@ Levels are calibrated in dBFS: a full-scale sine reads 0 dB.
 Inferno, Magma, Classic (black, blue, purple, red, yellow, white), Ice, Heat, Plasma, Viridis, Turbo, Grayscale.
 
 ![Spectrogram with the Viridis colormap](images/spectrogram-viridis.png)
-![Spectrogram with the Inferno colormap](images/spectrogram-inferno.png)
 
 Below a separator, one ramp per Spectrum Analyzer color theme (Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset, P31 green, P3 amber, P4 white, P7 blue): the theme's dark background rising through its accent color to near white, so the two panels can match.
+
+![Spectrogram with the P3 amber theme ramp](images/spectrogram-p3-amber.png)
 
 **Custom**: every preset fills in four color wells (Floor, Low, Mid, Peak); editing one switches the colormap to Custom, a ramp through those four colors.
 

@@ -23,8 +23,7 @@ Place screenshots in this directory with the following filenames:
 - `spectrum-settings.png` - Preferences page with analysis, dynamics and appearance options
 
 ## Spectrogram
-- `spectrogram-overview.png` - Spectrogram panel (Ice colormap, mel scale) with frequency axis and dB color scale
-- `spectrogram-viridis.png`, `spectrogram-inferno.png` - Same panel with the Viridis and Inferno colormaps, cropped to the overview's size
+- `spectrogram-inferno.png`, `spectrogram-viridis.png`, `spectrogram-p3-amber.png` - Spectrogram panel (reassigned mode) with the Inferno, Viridis and P3 amber colormaps, cropped to the panel's right end
 - `spectrogram-settings.png` - Preferences page with analysis, display and panel options
 
 ## Last.fm Scrobbler
