@@ -10,6 +10,17 @@ A scrolling spectrogram UI element for foobar2000 macOS: frequency on the vertic
 
 New audio enters at the right edge and moves left at a fixed speed. Columns sit on a fixed time grid derived from the playback position (one per device pixel of travel), so the picture is the same whatever the frame timing. Pausing or stopping playback holds the picture; seeking carries on from the new position.
 
+### Orientation
+
+The same setting as in the Spectrum Analyzer, so the two panels line up when placed side by side or one above the other:
+
+| Orientation | Frequency axis | Time | Frequency labels |
+|-------------|----------------|------|------------------|
+| **Vertical** (default) | Along Y, low at the bottom | New audio enters at the right and moves left | Right of the plot |
+| **Horizontal** | Along X, low on the left | New audio enters at the top and moves down | Below the plot |
+
+**Reverse scroll direction** makes new audio enter at the left (vertical) or the bottom (horizontal) instead, for a panel placed on the other side of the spectrum. Changing either setting clears the picture.
+
 ### Multi-Resolution Analysis
 
 One FFT size cannot be sharp in both pitch and time. With **Multi-resolution** on, each column runs three FFTs centred on the same instant and each frequency region reads the one that suits it:
@@ -47,7 +58,7 @@ The plot starts out in the colormap's floor color; the margins around it use the
 
 ### Axis and Scale
 
-- **Frequency axis**: labels right of the plot, next to the dB color scale, de-cluttered to fit the height (round numbers first). Same style as the Spectrum Analyzer: monospaced, with the decades (100, 1k, 10k) brighter and bold
+- **Frequency axis**: labels right of the plot next to the dB color scale (vertical), or below it (horizontal), de-cluttered to fit (round numbers first). Same style as the Spectrum Analyzer: monospaced, with the decades (100, 1k, 10k) brighter and bold
 - **Grid lines**: lines across the plot at the labelled frequencies, with adjustable opacity
 - **dB color scale**: color bar on the right edge with the level each color stands for
 - The axis and the scale auto-hide when the panel is too small
@@ -94,8 +105,10 @@ Changing the frequency scale or range clears the picture, since older columns wo
 | Top level | Level shown in the brightest color | -40 to 0 dB | 0 dB |
 | Range | dB span below the top level | 40 to 140 dB | 90 dB |
 | Slope | Tilt around 1 kHz that brightens treble | Off, 1.5, 3, 4.5, 6 dB/octave | Off |
-| Scroll speed | Horizontal travel | 30, 60, 120, 240 pt/s | 120 pt/s |
-| Show frequency axis | Frequency labels right of the plot | On/Off | On |
+| Scroll speed | Travel along the time axis | 30, 60, 120, 240 pt/s | 120 pt/s |
+| Orientation | Frequency along Y (vertical) or X (horizontal), as in the Spectrum Analyzer | Horizontal, Vertical | Vertical |
+| Reverse scroll direction | New audio at the left / bottom instead of the right / top | On/Off | Off |
+| Show frequency axis | Frequency labels right of the plot (vertical) or below it (horizontal) | On/Off | On |
 | Show dB color scale | Color bar on the right | On/Off | On |
 | Frequency labels | Font size | 8-16 pt | 11 pt |
 | dB scale labels | Font size | 8-16 pt | 11 pt |
