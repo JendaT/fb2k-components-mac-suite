@@ -105,6 +105,10 @@ int main(int argc, const char **argv) {
         seg.barMode = BarMode::PeakAndRms;
         render(out + "/digital_k14_segments.png", 260, 420, seg, snap);
 
+        DisplaySettings deep = d;
+        deep.floorDb = -120;
+        render(out + "/digital_range_120.png", 260, 420, deep, snap);
+
         DisplaySettings light = d;
         light.palette = lightPalette();
         render(out + "/digital_vertical_light.png", 260, 420, light, snap);

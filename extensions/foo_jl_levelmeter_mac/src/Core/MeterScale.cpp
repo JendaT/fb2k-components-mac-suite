@@ -12,9 +12,9 @@ namespace meter {
 namespace {
 
 // Extended spacing: the IEC 60268-18 style piecewise scale, 0..100 over
-// -70..0 dB, with 2.5 units/dB over the top 20 dB.
+// -70..0 dB, with 2.5 units/dB over the top 20 dB. Below -70 the lowest
+// slope carries on, so deep ranges keep their bottom end.
 double extended(double db) {
-    if (db < -70.0) return 0.0;
     if (db < -60.0) return (db + 70.0) * 0.25;
     if (db < -50.0) return (db + 60.0) * 0.5 + 2.5;
     if (db < -40.0) return (db + 50.0) * 0.75 + 7.5;
