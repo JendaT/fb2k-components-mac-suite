@@ -176,6 +176,9 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
 - (void)handleNewTrack:(NSNotification *)note {
     using namespace levelmeter_config;
     if (getConfigBool(kKeyResetOnTrack, kDefaultResetOnTrack)) _engine->resetLoudness();
+    // Maxima, hold markers and clip lights start fresh for the new track.
+    if (getConfigBool(kKeyResetPeaksOnTrack, kDefaultResetPeaksOnTrack)) _engine->resetPeaks();
+    [self.meterView showSnapshot:_engine->snapshot()];
 }
 
 - (void)updateGlassBackground {
