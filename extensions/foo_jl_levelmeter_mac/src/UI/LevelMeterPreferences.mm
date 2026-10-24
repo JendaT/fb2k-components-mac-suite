@@ -11,6 +11,7 @@
 #include "../fb2k_sdk.h"
 #include "../Core/LevelMeterConfig.h"
 #import "../../../../shared/PreferencesCommon.h"
+#import "../../../../shared/ThemeColor.h"
 #include "../Integration/ComponentInfo.h"
 #include <functional>
 #include <vector>
@@ -592,21 +593,13 @@ bool analog() { return !digital(); }
 
 #pragma mark - Helpers
 
+// Stored colours are Display P3, matching how the meter draws them.
 - (NSColor *)colorFromARGB:(uint32_t)argb {
-    return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
-                               green:((argb >> 8) & 0xFF) / 255.0
-                                blue:(argb & 0xFF) / 255.0
-                               alpha:((argb >> 24) & 0xFF) / 255.0];
+    return JLColorFromARGB(argb);
 }
 
 - (uint32_t)argbFromColor:(NSColor *)color {
-    NSColor *c = [color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    if (!c) return 0xFF000000;
-    uint32_t a = (uint32_t)std::lround(c.alphaComponent * 255) & 0xFF;
-    uint32_t r = (uint32_t)std::lround(c.redComponent * 255) & 0xFF;
-    uint32_t g = (uint32_t)std::lround(c.greenComponent * 255) & 0xFF;
-    uint32_t b = (uint32_t)std::lround(c.blueComponent * 255) & 0xFF;
-    return (a << 24) | (r << 16) | (g << 8) | b;
+    return JLARGBFromColor(color);
 }
 
 - (void)notifyChanged {
