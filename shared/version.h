@@ -60,3 +60,7 @@
 // Spectrogram
 #define SPECTROGRAM_VERSION "0.1.0"
 #define SPECTROGRAM_VERSION_INT 010
+
+// Level Meter
+#define LEVELMETER_VERSION "0.1.0"
+#define LEVELMETER_VERSION_INT 010
