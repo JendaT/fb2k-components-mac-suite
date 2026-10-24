@@ -181,10 +181,11 @@ void drawBar(CGContextRef ctx, CGRect bar, bool vertical, const BarScale &scale,
 
 void drawScaleTicks(CGContextRef ctx, CGRect area, bool vertical, const BarScale &scale,
                     const DisplaySettings &s, bool bothSides) {
-    NSFont *font = monoFont(8.5);
+    const CGFloat ts = s.textScale;
+    NSFont *font = monoFont(8.5 * ts);
     NSColor *fg = color(s.palette.text, 0.62);
     const double length = vertical ? area.size.height : area.size.width;
-    const double labelPx = vertical ? 12.0 : 26.0;
+    const double labelPx = (vertical ? 12.0 : 26.0) * ts;
     CGContextSetFillColorWithColor(ctx, cg(s.palette.text, 0.35));
     // End labels are pulled inside the scale; skip any that would then
     // overlap the label drawn before them.
@@ -204,9 +205,10 @@ void drawScaleTicks(CGContextRef ctx, CGRect area, bool vertical, const BarScale
             CGContextFillRect(ctx, CGRectMake(area.origin.x, y - 0.5, tick, 1.0));
             if (bothSides) CGContextFillRect(ctx, CGRectMake(CGRectGetMaxX(area) - tick, y - 0.5, tick, 1.0));
             if (t.major) {
-                CGRect box = CGRectMake(area.origin.x + (bothSides ? 3 : 4), y - 6, area.size.width - (bothSides ? 6 : 4), 12);
+                const CGFloat boxH = 12.0 * ts;
+                CGRect box = CGRectMake(area.origin.x + (bothSides ? 3 : 4), y - boxH / 2, area.size.width - (bothSides ? 6 : 4), boxH);
                 // Keep the end labels inside the scale.
-                box.origin.y = std::max(area.origin.y - 6, std::min(CGRectGetMaxY(area) - 8, box.origin.y));
+                box.origin.y = std::max(area.origin.y - boxH / 2, std::min(CGRectGetMaxY(area) - boxH * 0.67, box.origin.y));
                 if (place(box)) drawText(label, box, font, fg, bothSides ? Align::Centre : Align::Left);
             }
         } else {
@@ -215,8 +217,8 @@ void drawScaleTicks(CGContextRef ctx, CGRect area, bool vertical, const BarScale
             CGContextFillRect(ctx, CGRectMake(x - 0.5, area.origin.y, 1.0, tick));
             CGContextFillRect(ctx, CGRectMake(x - 0.5, CGRectGetMaxY(area) - tick, 1.0, tick));
             if (t.major) {
-                CGRect box = CGRectMake(x - 14, area.origin.y, 28, area.size.height);
-                box.origin.x = std::max(area.origin.x - 4, std::min(CGRectGetMaxX(area) - 24, box.origin.x));
+                CGRect box = CGRectMake(x - 14 * ts, area.origin.y, 28 * ts, area.size.height);
+                box.origin.x = std::max(area.origin.x - 4, std::min(CGRectGetMaxX(area) - 24 * ts, box.origin.x));
                 if (place(box)) drawText(label, box, font, fg);
             }
         }
@@ -226,9 +228,10 @@ void drawScaleTicks(CGContextRef ctx, CGRect area, bool vertical, const BarScale
 // Correlation (-1..+1) or balance (L..R) strip.
 void drawStereoRow(CGContextRef ctx, CGRect row, double value, bool silent, bool balance, const DisplaySettings &s) {
     const Palette &p = s.palette;
-    NSFont *font = monoFont(8.5);
+    const CGFloat t = s.textScale;
+    NSFont *font = monoFont(8.5 * t);
     NSColor *dim = color(p.text, 0.62);
-    const CGFloat labelW = 22.0;
+    const CGFloat labelW = 22.0 * t;
     CGRect left = CGRectMake(row.origin.x, row.origin.y, labelW, row.size.height);
     CGRect right = CGRectMake(CGRectGetMaxX(row) - labelW, row.origin.y, labelW, row.size.height);
     drawText(balance ? @"L" : @"-1", left, font, dim);
@@ -259,10 +262,11 @@ void drawStereoRow(CGContextRef ctx, CGRect row, double value, bool silent, bool
 
 void drawStatCell(CGRect cell, NSString *label, NSString *value, NSString *unit, NSColor *valueColor,
                   const DisplaySettings &s) {
-    NSFont *labelFont = [NSFont systemFontOfSize:8.5 weight:NSFontWeightSemibold];
-    NSFont *valueFont = monoFont(11.0, NSFontWeightSemibold);
-    NSFont *unitFont = [NSFont systemFontOfSize:8.0];
-    const CGFloat labelW = 24.0, unitW = 30.0;
+    const CGFloat t = s.textScale;
+    NSFont *labelFont = [NSFont systemFontOfSize:8.5 * t weight:NSFontWeightSemibold];
+    NSFont *valueFont = monoFont(11.0 * t, NSFontWeightSemibold);
+    NSFont *unitFont = [NSFont systemFontOfSize:8.0 * t];
+    const CGFloat labelW = 24.0 * t, unitW = 30.0 * t;
     drawText(label, CGRectMake(cell.origin.x, cell.origin.y, labelW, cell.size.height), labelFont,
              color(s.palette.text, 0.55), Align::Left);
     drawText(value, CGRectMake(cell.origin.x + labelW, cell.origin.y, cell.size.width - labelW - unitW, cell.size.height),
@@ -308,6 +312,7 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     in.loudness = s.showLoudness;
     in.correlation = s.showCorrelation;
     in.balance = s.showBalance;
+    in.text = s.textScale;
     _layout = layout(in);
     const Result &L = _layout;
     const bool vertical = L.vertical;
@@ -352,7 +357,8 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     if (!L.loudnessScale.empty()) drawScaleTicks(ctx, toCG(L.loudnessScale), vertical, loudScale, s, false);
 
     // Labels under (or beside) the bars, and the scale unit
-    NSFont *labelFont = [NSFont systemFontOfSize:9 weight:NSFontWeightSemibold];
+    const CGFloat t = s.textScale;
+    NSFont *labelFont = [NSFont systemFontOfSize:9 * t weight:NSFontWeightSemibold];
     NSColor *labelColor = color(p.text, 0.6);
     static NSString *const kNames[BarCount] = { @"L", @"R", @"M", @"S" };
     for (int i = 0; i < BarCount; ++i) {
@@ -361,10 +367,10 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     if (vertical && !L.scale.empty()) {
         NSString *unit = s.scale == ScaleType::Dbfs ? @"dB" :
                          [NSString stringWithFormat:@"K-%d", (int)-s.kReference()];
-        drawText(unit, CGRectMake(L.scale.x, L.label[BarL].y, L.scale.w, kLabelSize), monoFont(8), color(p.text, 0.45));
+        drawText(unit, CGRectMake(L.scale.x, L.label[BarL].y, L.scale.w, L.m.labelSize), monoFont(8 * t), color(p.text, 0.45));
         if (!L.loudnessScale.empty()) {
-            drawText(@"LUFS", CGRectMake(L.loudnessScale.x, L.label[BarS].y, L.loudnessScale.w, kLabelSize),
-                     monoFont(8), color(p.text, 0.45));
+            drawText(@"LUFS", CGRectMake(L.loudnessScale.x, L.label[BarS].y, L.loudnessScale.w, L.m.labelSize),
+                     monoFont(8 * t), color(p.text, 0.45));
         }
     }
 
@@ -375,7 +381,7 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     }
 
     // Readouts: session peak for L / R, current loudness for M / S
-    NSFont *readoutFont = monoFont(10, NSFontWeightSemibold);
+    NSFont *readoutFont = monoFont(10 * t, NSFontWeightSemibold);
     for (int i = 0; i < BarCount; ++i) {
         if (L.readout[i].empty() || L.bar[i].empty()) continue;
         CGRect box = toCG(L.readout[i]);
@@ -403,7 +409,7 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
         NSString *tpLabel = s.truePeak ? @"TP" : @"PK";
         NSString *tpUnit = s.truePeak ? @"dBTP" : @"dBFS";
         NSColor *tpColor = snap.truePeakMaxDb > -1.0 ? color(p.over) : fg;
-        const CGFloat rowH = kStatsRow;
+        const CGFloat rowH = L.m.statsRow;
         if (L.statsTwoColumns) {
             const CGFloat colW = std::floor((st.size.width - 8.0) / 2.0);
             CGRect c00 = CGRectMake(st.origin.x, st.origin.y, colW, rowH);

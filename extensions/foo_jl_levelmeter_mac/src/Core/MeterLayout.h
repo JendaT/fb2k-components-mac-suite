@@ -31,6 +31,30 @@ struct Input {
     bool loudness = true;
     bool correlation = true;
     bool balance = true;
+    double text = 1.0;        // text size relative to the default (10 pt readouts)
+};
+
+// Sizes of the parts that hold text; they grow with the text size.
+struct Metrics {
+    double text = 1.0;
+    double readoutHeight = 14.0;
+    double readoutWidth = 40.0;
+    double labelSize = 12.0;
+    double scaleWidth = 26.0;     // vertical scale column
+    double scaleHeight = 12.0;    // horizontal scale row
+    double statsRow = 14.0;
+    double stereoRow = 13.0;      // one stereo bar plus its labels
+    double statsWidth = 190.0;    // horizontal layout stats column
+
+    static Metrics forText(double t) {
+        t = t < 0.5 ? 0.5 : (t > 2.0 ? 2.0 : t);
+        Metrics m;
+        m.text = t;
+        m.readoutHeight *= t; m.readoutWidth *= t; m.labelSize *= t;
+        m.scaleWidth *= t; m.scaleHeight *= t; m.statsRow *= t;
+        m.stereoRow *= t; m.statsWidth *= t;
+        return m;
+    }
 };
 
 struct Result {
@@ -45,19 +69,12 @@ struct Result {
     Rect correlation;
     Rect balance;
     bool statsTwoColumns = true;
+    Metrics m;                // the text-dependent sizes used
 };
 
-// Sizes shared with the renderer.
+// Fixed sizes (the text-dependent ones are in Metrics).
 constexpr double kPad = 6.0;
-constexpr double kReadoutHeight = 14.0;
-constexpr double kReadoutWidth = 40.0;
 constexpr double kClipSize = 6.0;
-constexpr double kLabelSize = 12.0;
-constexpr double kScaleWidth = 26.0;      // vertical scale column
-constexpr double kScaleHeight = 12.0;     // horizontal scale row
-constexpr double kStatsRow = 14.0;
-constexpr double kStereoRow = 13.0;       // one stereo bar plus its labels
-constexpr double kStatsWidth = 190.0;     // horizontal layout stats column
 constexpr double kMaxBarWidth = 56.0;
 constexpr double kMaxBarHeight = 18.0;    // horizontal bars
 
