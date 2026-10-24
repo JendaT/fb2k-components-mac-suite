@@ -31,6 +31,13 @@ void testPositions() {
         }
         CHECK(rising, "position rises with level");
     }
+    g_context = "deep extended";
+    // Below -70 the scale keeps rising instead of flattening at the floor.
+    BarScale deep(-120, ScaleSpacing::Extended);
+    CHECK(deep.position(-100) > 0.0, "-100 above the floor");
+    CHECK(deep.position(-80) > deep.position(-100), "-80 above -100");
+    CHECK(deep.position(-70) > deep.position(-80), "-70 above -80");
+
     g_context = "linear midpoint";
     CHECK_FLOAT_EQ(BarScale(-60, ScaleSpacing::Linear).position(-30), 0.5, "-30 halfway");
     g_context = "extended top";
@@ -62,6 +69,8 @@ void testTicks() {
     checkTicks(BarScale(-60, ScaleSpacing::Extended), 600, 12, "extended tall");
     checkTicks(BarScale(-60, ScaleSpacing::Extended), 120, 12, "extended short");
     checkTicks(BarScale(-90, ScaleSpacing::Linear), 300, 12, "linear -90");
+    checkTicks(BarScale(-120, ScaleSpacing::Extended), 400, 12, "extended -120");
+    checkTicks(BarScale(-80, ScaleSpacing::Linear), 250, 12, "linear -80");
     checkTicks(BarScale(-24, ScaleSpacing::Linear), 700, 26, "linear wide");
     checkTicks(BarScale(-60, ScaleSpacing::Extended, -20.0), 400, 12, "K-20");
 

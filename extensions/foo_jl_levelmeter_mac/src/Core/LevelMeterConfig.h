@@ -32,7 +32,7 @@ constexpr int kDefaultBarMode        = (int)BarMode::PeakAndRms;
 constexpr int kDefaultScale          = (int)ScaleType::Dbfs;
 constexpr int kDefaultSpacing        = (int)ScaleSpacing::Extended;
 constexpr int kDefaultFloorDb        = -60;
-static const int kFloorChoices[]     = { -24, -40, -48, -60, -72, -90 };
+static const int kFloorChoices[]     = { -24, -40, -48, -60, -72, -80, -90, -120 };
 constexpr bool kDefaultSegments      = false;
 constexpr bool kDefaultShowReadouts  = true;
 constexpr bool kDefaultShowLoudness  = true;
@@ -186,7 +186,7 @@ inline DisplaySettings loadDisplaySettings(bool dark) {
     d.barMode = (BarMode)getConfigIntClamped(kKeyBarMode, kDefaultBarMode, 0, 2);
     d.scale = (ScaleType)getConfigIntClamped(kKeyScale, kDefaultScale, 0, 3);
     d.spacing = (ScaleSpacing)getConfigIntClamped(kKeySpacing, kDefaultSpacing, 0, 1);
-    d.floorDb = getConfigIntClamped(kKeyFloorDb, kDefaultFloorDb, -90, -24);
+    d.floorDb = getConfigIntClamped(kKeyFloorDb, kDefaultFloorDb, -120, -24);
     d.segments = getConfigBool(kKeySegments, kDefaultSegments);
     d.showReadouts = getConfigBool(kKeyShowReadouts, kDefaultShowReadouts);
     d.showLoudness = getConfigBool(kKeyShowLoudness, kDefaultShowLoudness);
