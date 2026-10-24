@@ -32,6 +32,11 @@ Place screenshots in this directory with the following filenames:
 - `vectorscope-panel.png`, `vectorscope-bands.png` - Three-band correlation; band-colored trace
 - `vectorscope-settings.png` - Preferences page
 
+## Spectrogram
+- `spectrogram-overview.png` - Spectrogram panel (Ice colormap, mel scale) with frequency axis and dB color scale
+- `spectrogram-viridis.png`, `spectrogram-inferno.png` - Same panel with the Viridis and Inferno colormaps, cropped to the overview's size
+- `spectrogram-settings.png` - Preferences page with analysis, display and panel options
+
 ## Queue Manager
 - `queuemanager-overview.png` - Queue with queued tracks
 
