@@ -25,6 +25,7 @@ DISPLAY_NAMES=(
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
     [spectrogram]="Spectrogram"
+    [levelmeter]="Level Meter"
 )
 
 # Generate BACKLOG.md for a component

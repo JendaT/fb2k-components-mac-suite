@@ -22,6 +22,7 @@ COMPONENTS=(
     spectrum
     vectorscope
     spectrogram
+    levelmeter
 )
 
 echo "=== foobar2000 Worktree Setup ==="
