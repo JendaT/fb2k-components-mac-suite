@@ -24,6 +24,7 @@ DISPLAY_NAMES=(
     [playback-controls]="Playback Controls"
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
+    [spectrogram]="Spectrogram"
 )
 
 # Generate BACKLOG.md for a component
