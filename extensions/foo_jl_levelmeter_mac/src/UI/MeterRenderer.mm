@@ -306,7 +306,8 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     in.orientation = s.orientation;
     in.readouts = s.showReadouts;
     in.loudness = s.showLoudness;
-    in.stereo = s.showStereo;
+    in.correlation = s.showCorrelation;
+    in.balance = s.showBalance;
     _layout = layout(in);
     const Result &L = _layout;
     const bool vertical = L.vertical;

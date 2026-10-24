@@ -76,7 +76,8 @@ struct DisplaySettings {
     bool segments = false;          // LED-style segmented bars
     bool showReadouts = true;
     bool showLoudness = true;
-    bool showStereo = true;
+    bool showCorrelation = true;
+    bool showBalance = true;
     bool truePeak = true;           // label peaks dBTP rather than dBFS
     double loudnessTarget = -14.0;  // LUFS marker on the loudness bars
     double warnDb = -12.0;          // dBFS where the warning colour starts (dBFS scale)
