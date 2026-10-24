@@ -13,6 +13,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.0.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.0.0 | [📖](docs/vectorscope.md) |
+| [Spectrogram](#spectrogram) | Scrolling spectrogram with multi-resolution analysis | 0.1.0 | [📖](docs/spectrogram.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
@@ -118,6 +119,26 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 
 ---
 
+### Spectrogram
+
+Scrolling spectrogram panel: frequency over time, level as color.
+
+| Colormaps | Settings |
+|-----------|----------|
+| ![Spectrogram with the Ice colormap on a mel scale](docs/images/spectrogram-overview.png)<br>![Spectrogram with the Viridis colormap](docs/images/spectrogram-viridis.png)<br>![Spectrogram with the Inferno colormap](docs/images/spectrogram-inferno.png) | ![Spectrogram Settings](docs/images/spectrogram-settings.png) |
+
+**Features:**
+- Multi-resolution analysis: a long window keeps bass notes thin, a short one keeps treble transients sharp
+- Logarithmic, mel, or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
+- Colormaps (Inferno, Magma, Classic, Viridis, Turbo, ...) plus ramps matching the Spectrum Analyzer themes, with a dB color scale
+- Adjustable top level, dB range, slope and scroll speed; levels calibrated in dBFS
+- Mid, left, right, or side channel
+- Horizontal or vertical orientation (same meaning as in the Spectrum Analyzer, so the two line up), either scroll direction
+- Frequency axis and gridlines; click and hold to read the frequency and note under the cursor
+- Freeze and clear from the context menu
+
+---
+
 ### Album Art (Extended)
 
 Extended album art viewer with support for multiple artwork types and selection-based display. Unlike the built-in album art element, this one can show back covers, disc art, and more.
@@ -198,6 +219,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
+| Spectrogram | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrogram) | TBD |
 | Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
@@ -282,6 +304,7 @@ Or build all extensions at once:
 - [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
 - [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
 - [Vectorscope](docs/vectorscope.md) - Features, configuration, and usage
+- [Spectrogram](docs/spectrogram.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
@@ -315,6 +338,7 @@ Use these names in the layout editor or when editing the layout text file direct
 | Album Art (Extended) | `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
 | Queue Manager | `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
 | Last.fm Scrobbler (stats widget) | `lastfm_scrobbler` | `lastfm-scrobbler`, `scrobbler`, `foo_jl_scrobble`, `jl_scrobble` |
+| Spectrogram | `spectrogram` | `Spectrogram`, `foo_jl_spectrogram`, `jl_spectrogram` |
 
 ### Example Layout
 
