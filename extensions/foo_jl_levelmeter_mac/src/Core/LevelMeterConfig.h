@@ -36,7 +36,8 @@ static const int kFloorChoices[]     = { -24, -40, -48, -60, -72, -80, -90, -120
 constexpr bool kDefaultSegments      = false;
 constexpr bool kDefaultShowReadouts  = true;
 constexpr bool kDefaultShowLoudness  = true;
-constexpr bool kDefaultShowStereo    = true;
+constexpr bool kDefaultShowCorrelation = true;
+constexpr bool kDefaultShowBalance   = true;
 constexpr bool kDefaultTruePeak      = true;
 constexpr int kDefaultWarnDb         = -12;
 constexpr int kDefaultOverDb         = -3;
@@ -76,7 +77,10 @@ static const char* const kKeyFloorDb        = "floor_db";
 static const char* const kKeySegments       = "segments";
 static const char* const kKeyShowReadouts   = "show_readouts";
 static const char* const kKeyShowLoudness   = "show_loudness";
-static const char* const kKeyShowStereo     = "show_stereo";
+static const char* const kKeyShowCorrelation = "show_correlation";
+static const char* const kKeyShowBalance    = "show_balance";
+// Before correlation and balance had their own switches; seeds both.
+static const char* const kKeyShowStereoLegacy = "show_stereo";
 static const char* const kKeyTruePeak       = "true_peak";
 static const char* const kKeyWarnDb         = "warn_db";
 static const char* const kKeyOverDb         = "over_db";
@@ -163,6 +167,14 @@ inline void applyThemeToConfig(int index) {
     }
 }
 
+inline bool getShowCorrelation() {
+    return getConfigBool(kKeyShowCorrelation, getConfigBool(kKeyShowStereoLegacy, kDefaultShowCorrelation));
+}
+
+inline bool getShowBalance() {
+    return getConfigBool(kKeyShowBalance, getConfigBool(kKeyShowStereoLegacy, kDefaultShowBalance));
+}
+
 // --- Loaders ---
 
 inline EngineSettings loadEngineSettings() {
@@ -190,7 +202,8 @@ inline DisplaySettings loadDisplaySettings(bool dark) {
     d.segments = getConfigBool(kKeySegments, kDefaultSegments);
     d.showReadouts = getConfigBool(kKeyShowReadouts, kDefaultShowReadouts);
     d.showLoudness = getConfigBool(kKeyShowLoudness, kDefaultShowLoudness);
-    d.showStereo = getConfigBool(kKeyShowStereo, kDefaultShowStereo);
+    d.showCorrelation = getShowCorrelation();
+    d.showBalance = getShowBalance();
     d.truePeak = getConfigBool(kKeyTruePeak, kDefaultTruePeak);
     d.loudnessTarget = getConfigIntClamped(kKeyTargetLufs, kDefaultTargetLufs, -40, 0);
     d.warnDb = getConfigIntClamped(kKeyWarnDb, kDefaultWarnDb, kMinZoneDb, 0);

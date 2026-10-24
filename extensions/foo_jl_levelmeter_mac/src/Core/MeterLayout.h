@@ -3,9 +3,9 @@
 //  foo_jl_levelmeter_mac
 //
 //  Places the digital meter's parts in the panel. Top-left origin, points.
-//  Sections drop out in a fixed order when the panel is too small: stereo
-//  bars, then loudness figures, then readouts, then the loudness bars, so
-//  the level bars always get the room. Pure C++, no SDK.
+//  Sections drop out in a fixed order when the panel is too small: balance,
+//  correlation, loudness figures, readouts, then the loudness bars, so the
+//  level bars always get the room. Pure C++, no SDK.
 //
 
 #pragma once
@@ -29,7 +29,8 @@ struct Input {
     meter::Orientation orientation = meter::Orientation::Auto;
     bool readouts = true;
     bool loudness = true;
-    bool stereo = true;
+    bool correlation = true;
+    bool balance = true;
 };
 
 struct Result {

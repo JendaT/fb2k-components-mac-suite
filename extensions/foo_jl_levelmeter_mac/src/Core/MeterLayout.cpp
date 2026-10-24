@@ -16,7 +16,15 @@ const double kPairGap = 3.0;        // between M and S
 const double kMinBarsLength = 60.0;
 const double kMinHorizontalBars = 80.0;
 const double kStatsHeight = 2 * kStatsRow + 4.0;
-const double kStereoHeight = 2 * kStereoRow + 4.0;
+// Height of `rows` stereo bars (correlation, balance) with their spacing.
+double stereoHeight(int rows) { return rows > 0 ? rows * (kStereoRow + 2.0) : 0.0; }
+
+// Lay out the enabled stereo rows from y down: correlation, then balance.
+void placeStereo(Result &r, bool correlation, bool balance, double x, double y, double w) {
+    y += 2.0;
+    if (correlation) { r.correlation = { x, y, w, kStereoRow }; y += kStereoRow + 2.0; }
+    if (balance) r.balance = { x, y, w, kStereoRow };
+}
 
 Result vertical(const Input &in) {
     Result r;
@@ -24,15 +32,17 @@ Result vertical(const Input &in) {
     const double W = in.width - 2 * kPad, H = in.height - 2 * kPad;
     if (W <= 0 || H <= 0) return r;
 
-    bool readouts = in.readouts, stats = in.loudness, stereo = in.stereo, loudBars = in.loudness;
+    bool readouts = in.readouts, stats = in.loudness, loudBars = in.loudness;
+    bool correlation = in.correlation, balance = in.balance;
     const double clipH = kClipSize + 3.0;
     const double labelH = kLabelSize + 2.0;
     auto barsLength = [&] {
         return H - (readouts ? kReadoutHeight + 2.0 : 0.0) - clipH - labelH -
-               (stats ? kStatsHeight : 0.0) - (stereo ? kStereoHeight : 0.0);
+               (stats ? kStatsHeight : 0.0) - stereoHeight((int)correlation + (int)balance);
     };
     // Short panels give up the extras before the bars get too short.
-    if (barsLength() < kMinBarsLength) stereo = false;
+    if (barsLength() < kMinBarsLength) balance = false;
+    if (barsLength() < kMinBarsLength) correlation = false;
     if (barsLength() < kMinBarsLength) stats = false;
     if (barsLength() < kMinBarsLength) readouts = false;
     const double barsH = std::max(0.0, barsLength());
@@ -94,10 +104,7 @@ Result vertical(const Input &in) {
         r.statsTwoColumns = fullW >= 150.0;
         y += kStatsHeight;
     }
-    if (stereo) {
-        r.correlation = { fullX, y + 2.0, fullW, kStereoRow };
-        r.balance = { fullX, y + 2.0 + kStereoRow + 2.0, fullW, kStereoRow };
-    }
+    placeStereo(r, correlation, balance, fullX, y, fullW);
     return r;
 }
 
@@ -107,7 +114,7 @@ Result horizontal(const Input &in) {
     const double W = in.width - 2 * kPad, H = in.height - 2 * kPad;
     if (W <= 0 || H <= 0) return r;
 
-    bool readouts = in.readouts, side = in.loudness || in.stereo, loudBars = in.loudness;
+    bool readouts = in.readouts, side = in.loudness || in.correlation || in.balance, loudBars = in.loudness;
     const double labelW = kLabelSize;
     const double clipW = kClipSize + 4.0;
     auto barsLength = [&] {
@@ -158,10 +165,12 @@ Result horizontal(const Input &in) {
             r.statsTwoColumns = true;
             y += kStatsHeight;
         }
-        if (in.stereo && y + kStereoHeight <= kPad + H + 0.5) {
-            r.correlation = { sx, y + 2.0, kStatsWidth, kStereoRow };
-            r.balance = { sx, y + 2.0 + kStereoRow + 2.0, kStatsWidth, kStereoRow };
-        }
+        // Whichever stereo rows fit under the figures, correlation first.
+        bool correlation = in.correlation, balance = in.balance;
+        const double room = kPad + H + 0.5 - y;
+        if (stereoHeight((int)correlation + (int)balance) > room) balance = false;
+        if (stereoHeight((int)correlation + (int)balance) > room) correlation = false;
+        placeStereo(r, correlation, balance, sx, y, kStatsWidth);
     }
     return r;
 }
