@@ -73,6 +73,7 @@ void testWindowLength() {
     g_context = "window length";
     SpectrogramEngine engine;
     SpectrogramEngine::Settings s;
+    s.mode = SpectrogramEngine::ModeMultiRes;
     engine.configure(s);
     engine.setRows(kRows);
     CHECK_EQ(engine.windowLength(), 16384, "multi-res reads the 4x window");
@@ -81,10 +82,15 @@ void testWindowLength() {
     engine.setSampleRate(192000.0);
     CHECK_EQ(engine.windowLength(), 65536, "quadrupled at 192 kHz");
 
-    s.multiRes = false;
+    s.mode = SpectrogramEngine::ModeStandard;
     engine.configure(s);
     engine.setSampleRate(48000.0);
     CHECK_EQ(engine.windowLength(), 4096, "single resolution reads the base window");
+
+    s.mode = SpectrogramEngine::ModeReassigned;
+    engine.configure(s);
+    CHECK_EQ(engine.windowLength(), 4096, "reassigned mode needs no long window");
+    s.mode = SpectrogramEngine::ModeStandard;
 
     s.fftSize = 3000;  // not a power of two
     engine.configure(s);
@@ -94,13 +100,14 @@ void testWindowLength() {
 // A full-scale sine must read near the top of a 0 dB..-90 dB window at the
 // row of its own frequency, whichever FFT stage that row uses.
 void testCalibration() {
-    for (bool multi : {true, false}) {
+    for (int mode : {SpectrogramEngine::ModeStandard, SpectrogramEngine::ModeMultiRes, SpectrogramEngine::ModeReassigned}) {
+        const bool multi = mode == SpectrogramEngine::ModeMultiRes;
         for (int window : {SpectrogramEngine::WindowHann, SpectrogramEngine::WindowBlackmanHarris}) {
             SpectrogramEngine::Settings s;
-            s.multiRes = multi;
+            s.mode = mode;
             s.window = window;
             for (double hz : {40.0, 110.0, 290.0, 1000.0, 2900.0, 9000.0, 15000.0}) {
-                g_context = std::string(multi ? "multi" : "single") + " window " + std::to_string(window) +
+                g_context = "mode " + std::to_string(mode) + " window " + std::to_string(window) +
                             " " + std::to_string((int)hz) + " Hz";
                 const Peak p = peakOf(render(s, hz, 1.0));
                 const double db = (p.level - 1.0) * s.rangeDb;
@@ -172,17 +179,56 @@ void testNyquist() {
 // The point of multi-resolution: a bass tone covers fewer rows.
 void testBassResolution() {
     g_context = "bass resolution";
-    auto width = [](bool multi) {
+    auto width = [](int mode) {
         SpectrogramEngine::Settings s;
-        s.multiRes = multi;
+        s.mode = mode;
         const std::vector<float> column = render(s, 50.0, 0.5);
         const float cut = peakOf(column).level - 20.0f / s.rangeDb;
         int rows = 0;
         for (float v : column) rows += v > cut ? 1 : 0;
         return rows;
     };
-    const int multi = width(true), single = width(false);
+    const int multi = width(SpectrogramEngine::ModeMultiRes), single = width(SpectrogramEngine::ModeStandard);
+    const int reassigned = width(SpectrogramEngine::ModeReassigned);
     CHECK(multi * 2 < single, "50 Hz line at least twice as thin with the long window");
+    CHECK(reassigned * 2 < single, "50 Hz line at least twice as thin with reassignment, same window as standard");
+}
+
+// The point of reassigned mode over multi-resolution: a short bass event (a
+// kick) does not smear far in time. A 40 ms burst at 60 Hz, read by a column
+// centred 150 ms later, still shows through the 372 ms window but not through
+// the 93 ms one.
+void testBassTimeSmear() {
+    g_context = "bass time smear";
+    const double sr = 44100.0;
+    auto levelAt60Hz = [&](int mode) {
+        SpectrogramEngine::Settings s;
+        s.mode = mode;
+        SpectrogramEngine engine;
+        engine.configure(s);
+        engine.setRows(kRows);
+        engine.setSampleRate(sr);
+        // One shared timeline, longer than any window; the column is centred
+        // at its middle and the burst sits 150 ms earlier.
+        const int total = 65536, centre = total / 2;
+        std::vector<float> x((size_t)total, 0.0f);
+        const int burstStart = centre - (int)(0.150 * sr) - (int)(0.020 * sr);
+        for (int n = 0; n < (int)(0.040 * sr); ++n) {
+            x[(size_t)(burstStart + n)] = (float)(0.5 * std::sin(2.0 * M_PI * 60.0 * n / sr));
+        }
+        std::vector<float> column((size_t)kRows);
+        engine.renderColumn(x.data() + centre - engine.windowLength() / 2, column.data());
+        float peak = 0.0f;
+        for (int r = 0; r < kRows; ++r) {
+            const double hz = rowHz(s, r);
+            if (hz > 40.0 && hz < 90.0) peak = std::max(peak, column[(size_t)r]);
+        }
+        return (peak - 1.0f) * s.rangeDb;   // dBFS
+    };
+    const float multi = levelAt60Hz(SpectrogramEngine::ModeMultiRes);
+    const float reassigned = levelAt60Hz(SpectrogramEngine::ModeReassigned);
+    CHECK(multi > -50.0f, "the long window still shows the burst 150 ms later");
+    CHECK(reassigned < multi - 30.0f, "reassigned mode: the burst has faded 150 ms later");
 }
 
 void testRows() {
@@ -218,6 +264,7 @@ int main() {
     testSlope();
     testNyquist();
     testBassResolution();
+    testBassTimeSmear();
     testRows();
     TEST_MAIN_END();
 }
