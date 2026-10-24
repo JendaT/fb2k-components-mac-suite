@@ -8,6 +8,7 @@
 #include "../Core/SpectrogramConfig.h"
 #include "../Core/SpectrogramColormaps.h"
 #include "../Core/SpectrogramThemes.h"
+#include "../Core/SpectrogramEngine.h"
 #import "../../../../shared/PreferencesCommon.h"
 #import "../../../../shared/ThemeColor.h"
 
@@ -20,7 +21,7 @@
 
 @interface SpectrogramPreferences () {
     NSPopUpButton *_fftSizePopup;
-    NSButton      *_multiResCheckbox;
+    NSPopUpButton *_resolutionPopup;
     NSPopUpButton *_windowPopup;
     NSPopUpButton *_channelPopup;
     NSPopUpButton *_freqScalePopup;
@@ -91,10 +92,21 @@
     [self.view addSubview:_fftSizePopup];
     y += 30;
 
-    _multiResCheckbox = [self checkbox:@"Multi-resolution" at:NSMakePoint(labelX + 10, y)];
-    _multiResCheckbox.toolTip = @"Use a 4x longer window below ~300 Hz and a 4x shorter one above ~3 kHz";
-    [self.view addSubview:_multiResCheckbox];
-    y += 28;
+    [self.view addSubview:[self label:@"Resolution:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _resolutionPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
+    // Item tags hold the stored value (SpectrogramEngine::Mode).
+    [_resolutionPopup addItemWithTitle:@"Reassigned"];
+    _resolutionPopup.lastItem.tag = SpectrogramEngine::ModeReassigned;
+    [_resolutionPopup addItemWithTitle:@"Multi-resolution"];
+    _resolutionPopup.lastItem.tag = SpectrogramEngine::ModeMultiRes;
+    [_resolutionPopup addItemWithTitle:@"Standard"];
+    _resolutionPopup.lastItem.tag = SpectrogramEngine::ModeStandard;
+    _resolutionPopup.toolTip = @"Reassigned: thin tonal lines and short kicks (each bin moved to its true frequency), "
+                                "1/4 window above ~3 kHz. Multi-resolution: 4x window for bass (thin lines, longer smear), "
+                                "1/4 window above ~3 kHz. Standard: one window everywhere";
+    _resolutionPopup.target = self; _resolutionPopup.action = @selector(popupChanged:);
+    [self.view addSubview:_resolutionPopup];
+    y += 30;
 
     [self.view addSubview:[self label:@"Window:" at:NSMakePoint(labelX + 10, y + 3)]];
     _windowPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
@@ -387,7 +399,8 @@
     _gridOpacitySlider.integerValue = gridOpacity;
     _gridOpacityLabel.stringValue = [NSString stringWithFormat:@"%d%%", gridOpacity];
 
-    _multiResCheckbox.state = getConfigBool(kKeyMultiRes, kDefaultMultiRes) ? NSControlStateValueOn : NSControlStateValueOff;
+    if (![_resolutionPopup selectItemWithTag:getConfigInt(kKeyAnalysisMode, kDefaultAnalysisMode)])
+        [_resolutionPopup selectItemWithTag:kDefaultAnalysisMode];
     _freqAxisCheckbox.state = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis) ? NSControlStateValueOn : NSControlStateValueOff;
     _legendCheckbox.state = getConfigBool(kKeyShowLegend, kDefaultShowLegend) ? NSControlStateValueOn : NSControlStateValueOff;
 }
@@ -437,7 +450,8 @@
 
 - (void)popupChanged:(id)sender {
     using namespace spectrogram_config;
-    if (sender == _windowPopup)           setConfigInt(kKeyWindow, _windowPopup.indexOfSelectedItem);
+    if (sender == _resolutionPopup)       setConfigInt(kKeyAnalysisMode, _resolutionPopup.selectedItem.tag);
+    else if (sender == _windowPopup)      setConfigInt(kKeyWindow, _windowPopup.indexOfSelectedItem);
     else if (sender == _channelPopup)     setConfigInt(kKeyChannel, _channelPopup.indexOfSelectedItem);
     else if (sender == _freqScalePopup)   setConfigInt(kKeyFreqScale, _freqScalePopup.indexOfSelectedItem);
     else if (sender == _freqFontPopup)    setConfigInt(kKeyFreqFontSize, _freqFontPopup.selectedItem.tag);
@@ -506,9 +520,7 @@
 
 - (void)checkboxChanged:(id)sender {
     using namespace spectrogram_config;
-    if (sender == _multiResCheckbox) {
-        setConfigBool(kKeyMultiRes, _multiResCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _freqAxisCheckbox) {
+    if (sender == _freqAxisCheckbox) {
         setConfigBool(kKeyShowFreqAxis, _freqAxisCheckbox.state == NSControlStateValueOn);
     } else if (sender == _reverseCheckbox) {
         setConfigBool(kKeyReverseScroll, _reverseCheckbox.state == NSControlStateValueOn);

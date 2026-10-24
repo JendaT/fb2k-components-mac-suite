@@ -10,6 +10,12 @@
 //  resolves bass pitch, a short one keeps treble transients sharp, and rows in
 //  the crossover octaves blend the two in dB.
 //
+//  Reassigned mode gets thin tonal lines without the long window's time smear:
+//  each bin's energy is moved to the frequency the signal actually has there
+//  (estimated from a second FFT with the window's derivative), so a tone
+//  collapses from a several-bin lobe to a line while kicks stay short. A faint
+//  copy of the standard spectrum underneath keeps noise and texture visible.
+//
 
 #pragma once
 
@@ -25,6 +31,12 @@ public:
         ScaleLinear = 2
     };
 
+    enum Mode {
+        ModeStandard = 0,       // One window everywhere
+        ModeMultiRes = 1,       // 4x window for bass, 1/4 window for treble
+        ModeReassigned = 2      // Base window with frequency reassignment, 1/4 window for treble
+    };
+
     enum Window {
         WindowHann = 0,             // Narrow main lobe
         WindowBlackmanHarris = 1    // -92 dB sidelobes, for wide dB ranges
@@ -32,7 +44,7 @@ public:
 
     struct Settings {
         int    fftSize   = 4096;    // base window at 44.1/48 kHz, power of 2
-        bool   multiRes  = true;    // 4x window below ~300 Hz, 1/4 above ~3 kHz
+        int    mode      = ModeReassigned;
         int    window    = WindowHann;
         int    scale     = ScaleLog;
         double minHz     = 20.0;
@@ -76,6 +88,10 @@ private:
         int binLo = 0, binHi = -1;  // bins the row table reads (inclusive)
         std::vector<float> window;  // scaled so a full-scale sine reads 0 dB
         std::vector<float> db;      // per-bin level, valid within binLo..binHi
+        std::vector<float> dwindow; // derivative of `window`, for reassignment
+        float  lobe = 1.0f;         // energy of a tone's whole lobe over its peak bin
+        bool   reassign = false;
+        std::vector<float> rowDb;   // reassigned level per row (reassign only)
     };
 
     // How a row reads one stage: interpolate between bins lo and lo + 1 when
@@ -95,6 +111,7 @@ private:
     };
 
     void rebuild();
+    void reassignStage(Stage& stage);
     Tap makeTap(Stage& stage, double f0, double f1, double fc) const;
     float readTap(const Stage& stage, const Tap& tap) const;
 
@@ -108,4 +125,7 @@ private:
     Stage    _stages[3];            // long, base, short
     std::vector<Row> _rowTable;
     std::vector<float> _windowed, _re, _im, _power;
+    std::vector<float> _dRe, _dIm;   // derivative-window spectrum
+    std::vector<double> _rowPower;   // reassigned power accumulated per row
+    const float* _windowedSource = nullptr;  // samples of the column being rendered
 };

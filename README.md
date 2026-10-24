@@ -13,7 +13,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
-| [Spectrogram](#spectrogram) | Scrolling spectrogram with multi-resolution analysis | 0.1.0 | [📖](docs/spectrogram.md) |
+| [Spectrogram](#spectrogram) | Scrolling spectrogram with sharp bass lines and transients | 0.1.0 | [📖](docs/spectrogram.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
@@ -129,7 +129,7 @@ Scrolling spectrogram panel: frequency over time, level as color.
 | ![Spectrogram with the Ice colormap on a mel scale](docs/images/spectrogram-overview.png)<br>![Spectrogram with the Viridis colormap](docs/images/spectrogram-viridis.png)<br>![Spectrogram with the Inferno colormap](docs/images/spectrogram-inferno.png) | ![Spectrogram Settings](docs/images/spectrogram-settings.png) |
 
 **Features:**
-- Multi-resolution analysis: a long window keeps bass notes thin, a short one keeps treble transients sharp
+- Reassigned analysis: thin tonal lines (bass notes included) and short kicks at the same time; multi-resolution and standard modes too
 - Logarithmic, mel, or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
 - Colormaps (Inferno, Magma, Classic, Viridis, Turbo, ...) plus ramps matching the Spectrum Analyzer themes, with a dB color scale
 - Adjustable top level, dB range, slope and scroll speed; levels calibrated in dBFS

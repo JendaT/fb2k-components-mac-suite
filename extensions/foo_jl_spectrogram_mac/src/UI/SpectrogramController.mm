@@ -172,7 +172,7 @@ FB2K_SERVICE_FACTORY(spectrogram_initquit);
 
     SpectrogramEngine::Settings s;
     s.fftSize  = (int)getConfigInt(kKeyFftSize, kDefaultFftSize);
-    s.multiRes = getConfigBool(kKeyMultiRes, kDefaultMultiRes);
+    s.mode     = (int)getConfigInt(kKeyAnalysisMode, kDefaultAnalysisMode);
     s.window   = (int)getConfigInt(kKeyWindow, kDefaultWindow);
     s.scale    = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
     s.minHz    = (double)getConfigInt(kKeyMinHz, kDefaultMinHz);

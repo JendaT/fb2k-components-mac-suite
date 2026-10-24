@@ -18,6 +18,17 @@ namespace {
 
     constexpr float kSilenceDb = -200.0f;
 
+    // Reassigned mode: the standard spectrum shown underneath the lines, this
+    // far down, so noise and transients keep their texture.
+    constexpr float kUnderlayDb = 18.0f;
+
+    // Reassigned lines are softened over two rows each side, keeping their
+    // own level (a max, not an average): exp(-d^2 / 1.6) for d = 1, 2.
+    constexpr double kSoften[3] = {1.0, 0.535, 0.082};
+
+    // Bins quieter than this (dB) are not reassigned.
+    constexpr float kReassignFloorDb = -150.0f;
+
     inline int clampPow2(int v) {
         int p = kMinFft;
         while (p < v && p < kMaxFft) p <<= 1;
@@ -120,11 +131,15 @@ void SpectrogramEngine::rebuild() {
 
     const int rateScale = _sampleRate <= 64000.0 ? 1 : (_sampleRate <= 128000.0 ? 2 : 4);
     const int base = std::min(clampPow2(_settings.fftSize) * rateScale, kMaxFft);
-    const bool multi = _settings.multiRes;
+    const int mode = _settings.mode;
+    const bool multi = mode == ModeMultiRes;
+    // Reassigned mode keeps the short treble window but needs no long one:
+    // reassignment thins the bass lines instead.
+    const bool split = mode != ModeStandard;
     const int sizes[3] = {
         multi ? std::min(base * 4, kMaxFft) : base,
         base,
-        multi ? std::max(base / 4, kMinFft) : base
+        split ? std::max(base / 4, kMinFft) : base
     };
     _length = sizes[0];
 
@@ -132,32 +147,50 @@ void SpectrogramEngine::rebuild() {
         Stage& st = _stages[s];
         st.size = sizes[s];
         st.log2n = log2i(st.size);
-        st.offset = (_length - st.size) / 2;
         st.binLo = st.size;
         st.binHi = -1;
         st.db.assign(st.size / 2, kSilenceDb);
 
+        st.offset = (_length - st.size) / 2;
+        st.reassign = mode == ModeReassigned;
         st.window.resize(st.size);
-        double sum = 0.0;
+        st.dwindow.resize(st.size);
+        double sum = 0.0, sumSq = 0.0;
+        const bool bh = _settings.window == WindowBlackmanHarris;
+        const double dx = 2.0 * M_PI / st.size;   // d(x)/dn
         for (int n = 0; n < st.size; ++n) {
-            const double x = 2.0 * M_PI * n / st.size;
-            const double w = _settings.window == WindowBlackmanHarris
+            const double x = dx * n;
+            const double w = bh
                 ? 0.35875 - 0.48829 * std::cos(x) + 0.14128 * std::cos(2 * x) - 0.01168 * std::cos(3 * x)
                 : 0.5 - 0.5 * std::cos(x);
+            const double dw = bh
+                ? dx * (0.48829 * std::sin(x) - 2 * 0.14128 * std::sin(2 * x) + 3 * 0.01168 * std::sin(3 * x))
+                : dx * 0.5 * std::sin(x);
             st.window[n] = (float)w;
+            st.dwindow[n] = (float)dw;
             sum += w;
+            sumSq += w * w;
         }
         // vDSP's real FFT returns twice the mathematical DFT, so a sine of
         // amplitude A peaks at A * sum(window). Dividing by the sum up front
-        // makes the squared magnitude read directly in dBFS.
+        // makes the squared magnitude read directly in dBFS. The derivative
+        // window only enters as a ratio to it, so it gets the same factor.
         const float norm = (float)(1.0 / sum);
         vDSP_vsmul(st.window.data(), 1, &norm, st.window.data(), 1, st.size);
+        vDSP_vsmul(st.dwindow.data(), 1, &norm, st.dwindow.data(), 1, st.size);
+        // A tone's energy summed over its whole lobe, relative to its peak bin
+        // (Parseval): reassignment gathers the lobe into one row.
+        st.lobe = (float)(st.size * sumSq / (sum * sum));
     }
 
     _windowed.resize(_length);
     _re.resize(_length / 2);
     _im.resize(_length / 2);
     _power.resize(_length / 2);
+    _dRe.resize(_length / 2);
+    _dIm.resize(_length / 2);
+    _rowPower.assign(_rows, 0.0);
+    for (Stage& st : _stages) st.rowDb.assign(st.reassign ? _rows : 0, kSilenceDb);
 
     const double nyquist = _sampleRate * 0.5;
     const int scale = _settings.scale;
@@ -174,9 +207,9 @@ void SpectrogramEngine::rebuild() {
         Row& row = _rowTable[r];
         if (fc >= nyquist) continue;  // nothing to show above Nyquist
 
-        if (!multi) {
+        if (!split) {
             row.a = row.b = 1;
-        } else if (fc < kLowSplitHz * 2.0) {
+        } else if (fc < kLowSplitHz * 2.0 && multi) {
             row.a = 0; row.b = 1;
             row.mix = (float)std::max(0.0, std::min(1.0, std::log2(fc / kLowSplitHz)));
         } else {
@@ -208,6 +241,7 @@ float SpectrogramEngine::readTap(const Stage& stage, const Tap& tap) const {
 void SpectrogramEngine::renderColumn(const float* samples, float* out) {
     if (_dirty) rebuild();
     if (!_setup || _rows <= 0) return;
+    _windowedSource = samples;
 
     for (int s = 0; s < 3; ++s) {
         Stage& st = _stages[s];
@@ -227,6 +261,8 @@ void SpectrogramEngine::renderColumn(const float* samples, float* out) {
         const float eps = 1e-20f, ref = 1.0f;
         vDSP_vsadd(_power.data(), 1, &eps, _power.data(), 1, count);
         vDSP_vdbcon(_power.data(), 1, &ref, st.db.data() + lo, 1, count, 0);
+
+        if (st.reassign) reassignStage(st);
     }
 
     const float floorDb = _settings.topDb - _settings.rangeDb;
@@ -235,11 +271,65 @@ void SpectrogramEngine::renderColumn(const float* samples, float* out) {
         const Row& row = _rowTable[r];
         if (row.a < 0) { out[r] = 0.0f; continue; }
 
-        float db = readTap(_stages[row.a], row.tapA);
+        auto level = [&](int stage, const Tap& tap) {
+            const Stage& st = _stages[stage];
+            const float standard = readTap(st, tap);
+            return st.reassign ? std::max(st.rowDb[r], standard - kUnderlayDb) : standard;
+        };
+        float db = level(row.a, row.tapA);
         if (row.b != row.a) {
-            db += (readTap(_stages[row.b], row.tapB) - db) * row.mix;
+            db += (level(row.b, row.tapB) - db) * row.mix;
         }
         const float v = (db + row.tilt - floorDb) * invRange;
         out[r] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+    }
+}
+
+// Frequency reassignment for one stage. With X the spectrum through the window
+// and Xd through its derivative, a component in bin k really sits at
+//     k - Im(Xd * conj(X)) / |X|^2 * N / (2 pi)
+// bins. Every bin's power goes to the row of that frequency, so a tone's whole
+// lobe lands in one row: thin lines from a window short enough for sharp kicks.
+void SpectrogramEngine::reassignStage(Stage& st) {
+    const int half = st.size / 2;
+    vDSP_vmul(_windowedSource + st.offset, 1, st.dwindow.data(), 1, _windowed.data(), 1, st.size);
+    DSPSplitComplex dsplit = { _dRe.data(), _dIm.data() };
+    vDSP_ctoz((const DSPComplex*)_windowed.data(), 2, &dsplit, 1, half);
+    vDSP_fft_zrip(_setup, &dsplit, 1, st.log2n, kFFTDirection_Forward);
+    _dIm[0] = 0.0f;
+
+    std::fill(_rowPower.begin(), _rowPower.end(), 0.0);
+    const double binHz = _sampleRate / st.size;
+    const double toBins = st.size / (2.0 * M_PI);
+    const int scale = _settings.scale;
+    const double minHz = _settings.minHz, maxHz = _settings.maxHz;
+    const double floorPower = std::pow(10.0, kReassignFloorDb / 10.0);
+
+    // Only rows this stage serves matter; bins a little outside their range
+    // can still be reassigned into it.
+    const int lo = std::max(1, st.binLo - 4);
+    const int hi = std::min(half - 1, st.binHi + 4);
+    for (int k = lo; k <= hi; ++k) {
+        const double re = _re[k], im = _im[k];
+        const double p = re * re + im * im;
+        if (p < floorPower) continue;
+        const double cross = (double)_dIm[k] * re - (double)_dRe[k] * im;   // Im(Xd * conj(X))
+        const double hz = (k - cross / p * toBins) * binHz;
+        if (hz < minHz || hz >= maxHz) continue;
+        const double t = fractionForHz(scale, minHz, maxHz, hz);
+        const int r = (int)((1.0 - t) * _rows);
+        if (r >= 0 && r < _rows) _rowPower[r] += p;
+    }
+
+    // Soften each line over its neighbours (keeping its level), and express
+    // the gathered lobe energy as the tone's peak level.
+    const double invLobe = 1.0 / st.lobe;
+    for (int r = 0; r < _rows; ++r) {
+        double m = _rowPower[r];
+        for (int d = 1; d <= 2; ++d) {
+            if (r - d >= 0)    m = std::max(m, _rowPower[r - d] * kSoften[d]);
+            if (r + d < _rows) m = std::max(m, _rowPower[r + d] * kSoften[d]);
+        }
+        st.rowDb[r] = m > 0.0 ? (float)(10.0 * std::log10(m * invLobe)) : kSilenceDb;
     }
 }
