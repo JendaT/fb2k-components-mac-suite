@@ -105,7 +105,7 @@ Changing the frequency scale or range clears the picture, since older columns wo
 | Colormap | Color ramp | Custom, 9 colormaps, 14 theme ramps | Inferno |
 | Colors | Floor, Low, Mid, Peak of the ramp; filled in by the chosen preset, editing switches to Custom | | From Inferno |
 | Top level | Level shown in the brightest color | -40 to 0 dB | 0 dB |
-| Range | dB span below the top level | 40 to 140 dB | 90 dB |
+| Range | dB span below the top level | 40 to 140 dB | 60 dB |
 | Slope | Tilt around 1 kHz that brightens treble | Off, 1.5, 3, 4.5, 6 dB/octave | Off |
 | Scroll speed | Travel along the time axis | 30, 60, 120, 240 pt/s | 120 pt/s |
 | Orientation | Frequency along Y (vertical) or X (horizontal), as in the Spectrum Analyzer | Horizontal, Vertical | Vertical |
