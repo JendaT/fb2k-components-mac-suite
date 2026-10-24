@@ -33,6 +33,8 @@
     NSTextField   *_rangeDbLabel;
     NSPopUpButton *_slopePopup;
     NSPopUpButton *_scrollSpeedPopup;
+    NSPopUpButton *_orientationPopup;
+    NSButton      *_reverseCheckbox;
     NSButton      *_freqAxisCheckbox;
     NSButton      *_legendCheckbox;
     NSSlider      *_gridOpacitySlider;
@@ -56,7 +58,7 @@
 - (NSString *)preferencesTitle { return @"Spectrogram"; }
 
 - (void)loadView {
-    SpectrogramFlippedView *view = [[SpectrogramFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 730)];
+    SpectrogramFlippedView *view = [[SpectrogramFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 790)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [self buildUI];
@@ -217,7 +219,24 @@
     }
     _scrollSpeedPopup.target = self; _scrollSpeedPopup.action = @selector(popupChanged:);
     [self.view addSubview:_scrollSpeedPopup];
-    y += 32;
+    y += 30;
+
+    [self.view addSubview:[self label:@"Orientation:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _orientationPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
+    // Item tags hold the stored value; the same meaning as in the Spectrum Analyzer.
+    [_orientationPopup addItemWithTitle:@"Horizontal"];
+    _orientationPopup.lastItem.tag = spectrogram_config::OrientationHorizontal;
+    [_orientationPopup addItemWithTitle:@"Vertical"];
+    _orientationPopup.lastItem.tag = spectrogram_config::OrientationVertical;
+    _orientationPopup.toolTip = @"Horizontal: frequency along X, time flows down. Vertical: frequency along Y, time flows left. Matches the Spectrum Analyzer's setting of the same name";
+    _orientationPopup.target = self; _orientationPopup.action = @selector(popupChanged:);
+    [self.view addSubview:_orientationPopup];
+    y += 30;
+
+    _reverseCheckbox = [self checkbox:@"Reverse scroll direction" at:NSMakePoint(labelX + 10, y)];
+    _reverseCheckbox.toolTip = @"New audio enters at the bottom (horizontal) or the left (vertical) instead of the top or the right";
+    [self.view addSubview:_reverseCheckbox];
+    y += 30;
 
     _freqAxisCheckbox = [self checkbox:@"Show frequency axis" at:NSMakePoint(labelX + 10, y)];
     [self.view addSubview:_freqAxisCheckbox];
@@ -349,6 +368,9 @@
         [_slopePopup selectItemWithTag:kDefaultSlopeTenths];
     if (![_scrollSpeedPopup selectItemWithTag:getConfigInt(kKeyScrollSpeed, kDefaultScrollSpeed)])
         [_scrollSpeedPopup selectItemWithTag:kDefaultScrollSpeed];
+    if (![_orientationPopup selectItemWithTag:getConfigInt(kKeyOrientation, kDefaultOrientation)])
+        [_orientationPopup selectItemWithTag:kDefaultOrientation];
+    _reverseCheckbox.state = getConfigBool(kKeyReverseScroll, kDefaultReverseScroll) ? NSControlStateValueOn : NSControlStateValueOff;
 
     _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -422,6 +444,7 @@
     else if (sender == _dbFontPopup)      setConfigInt(kKeyDbFontSize, _dbFontPopup.selectedItem.tag);
     else if (sender == _slopePopup)       setConfigInt(kKeySlopeTenths, _slopePopup.selectedItem.tag);
     else if (sender == _scrollSpeedPopup) setConfigInt(kKeyScrollSpeed, _scrollSpeedPopup.selectedItem.tag);
+    else if (sender == _orientationPopup) setConfigInt(kKeyOrientation, _orientationPopup.selectedItem.tag);
     [self notifyChanged];
 }
 
@@ -487,6 +510,8 @@
         setConfigBool(kKeyMultiRes, _multiResCheckbox.state == NSControlStateValueOn);
     } else if (sender == _freqAxisCheckbox) {
         setConfigBool(kKeyShowFreqAxis, _freqAxisCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _reverseCheckbox) {
+        setConfigBool(kKeyReverseScroll, _reverseCheckbox.state == NSControlStateValueOn);
     } else if (sender == _legendCheckbox) {
         setConfigBool(kKeyShowLegend, _legendCheckbox.state == NSControlStateValueOn);
     }
