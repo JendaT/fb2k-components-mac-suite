@@ -27,6 +27,7 @@ namespace {
     const CGFloat kBarWidth = 7.0;
     const CGFloat kBarLabelGap = 5.0;  // color bar to its labels
     const CGFloat kEdgeGap = 4.0;      // labels to the panel's right edge
+    const CGFloat kAxisRowPad = 3.0;   // above and below the frequency labels (horizontal)
 
     // Label colors, as in the Spectrum Analyzer: the background pushed most
     // of the way to white (or black on a light background), decades further.
@@ -61,17 +62,21 @@ namespace {
         return std::fabs(e - std::round(e)) < 1e-9;
     }
 
-    // A new plot height is adopted once it has held this long. Until then the
+    // A new plot size along the frequency axis is adopted once it has held this long. Until then the
     // existing tiles stretch, instead of a new tile per resize step.
     const CFTimeInterval kResizeSettle = 0.25;
 
+    // "Columns" are lines across the frequency axis, one per time step; "rows"
+    // are pixels along the frequency axis (engine row 0 = highest frequency).
+    // A tile stores its columns one after another and is turned into an image
+    // for the current orientation when uploaded.
     struct Tile {
         CALayer *layer = nil;
         int64_t  start = 0;         // index of the first column
         int      count = 0;         // columns written
         int      rows = 0;
         bool     dirty = false;
-        std::vector<uint32_t> px;   // kTileColumns x rows, freed once the tile is full
+        std::vector<uint32_t> px;   // kTileColumns x rows, column-major; freed once full
     };
 
     void releasePixels(void *info, const void *data, size_t size) {
@@ -94,6 +99,10 @@ namespace {
         root.actions = @{ @"sublayers": [NSNull null] };
         self.layer = root;
         self.wantsLayer = YES;
+        // Views stopped clipping by default with the macOS 14 SDK, and the
+        // view's setting overrides the layer's: older tiles would draw over
+        // the labels beside or below the plot.
+        if (@available(macOS 14.0, *)) self.clipsToBounds = YES;
     }
     return self;
 }
@@ -129,6 +138,8 @@ namespace {
     CFTimeInterval _wantedSince;
 
     // Cached settings (refreshed via reloadSettings)
+    bool     _horizontal;           // frequency along X, time flows vertically
+    bool     _reverse;              // newest column at the left / bottom edge
     int      _scale;
     int      _minHz;
     int      _maxHz;
@@ -150,7 +161,8 @@ namespace {
     NSRect   _plotRect;
     BOOL     _drawAxis;
     BOOL     _drawLegend;
-    CGFloat  _axisWidth;            // gap plus frequency labels
+    CGFloat  _axisWidth;            // gap plus frequency labels (vertical: right of the plot)
+    CGFloat  _axisHeight;           // gap plus frequency labels (horizontal: below the plot)
     CGFloat  _legendWidth;          // color bar plus its labels
     std::vector<std::pair<int, NSString *>> _dbLabels;  // level and text, top first
 
@@ -182,7 +194,7 @@ namespace {
     if (_colorSpace) CGColorSpaceRelease(_colorSpace);
 }
 
-- (BOOL)isFlipped { return NO; }  // origin bottom-left: frequency grows upward
+- (BOOL)isFlipped { return NO; }  // origin bottom-left: frequency grows upward / rightward
 
 - (void)reloadSettings {
     using namespace spectrogram_config;
@@ -190,9 +202,17 @@ namespace {
     const int minHz = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     const int maxHz = std::max((int)getConfigInt(kKeyMaxHz, kDefaultMaxHz), minHz + 100);
 
-    // History drawn under another frequency mapping would sit at the wrong
-    // height against the new axis.
-    if (_scale >= 0 && (scale != _scale || minHz != _minHz || maxHz != _maxHz)) [self clear];
+    const bool horizontal = getConfigInt(kKeyOrientation, kDefaultOrientation) == OrientationHorizontal;
+    const bool reverse = getConfigBool(kKeyReverseScroll, kDefaultReverseScroll);
+
+    // History drawn under another frequency mapping or layout would sit at the
+    // wrong place against the new axis.
+    if (_scale >= 0 && (scale != _scale || minHz != _minHz || maxHz != _maxHz ||
+                        horizontal != _horizontal || reverse != _reverse)) {
+        [self clear];
+    }
+    _horizontal = horizontal;
+    _reverse = reverse;
     _scale = scale;
     _minHz = minHz;
     _maxHz = maxHz;
@@ -289,24 +309,36 @@ namespace {
 
 - (void)layoutPlot {
     const NSRect b = self.bounds;
-    const BOOL tall = b.size.height >= 60.0;
-    _drawAxis = _showFreqAxis && tall && b.size.width >= 200.0;
-    _drawLegend = _showLegend && tall && b.size.width >= 280.0;
+    NSDictionary *freqAttrs = @{NSFontAttributeName: labelFont(_freqFontSize, NSFontWeightSemibold)};
+    const NSSize freqLabel = [@"00k0" sizeWithAttributes:freqAttrs];
 
     // Frequency labels are at most four characters ("12k5"); the font is
-    // monospaced, so that width fits them all.
-    NSDictionary *freqAttrs = @{NSFontAttributeName: labelFont(_freqFontSize, NSFontWeightSemibold)};
-    _axisWidth = kAxisGap + std::ceil([@"00k0" sizeWithAttributes:freqAttrs].width);
-    [self layoutDbLabelsForHeight:b.size.height];
+    // monospaced, so that size fits them all. Vertical: a column right of the
+    // plot, before the dB scale. Horizontal: a row below the plot, as in the
+    // Spectrum Analyzer. The dB scale is right of the plot either way.
+    if (_horizontal) {
+        _drawAxis = _showFreqAxis && b.size.height >= 80.0 && b.size.width >= 120.0;
+        _drawLegend = _showLegend && b.size.height >= 60.0 && b.size.width >= 200.0;
+    } else {
+        const BOOL tall = b.size.height >= 60.0;
+        _drawAxis = _showFreqAxis && tall && b.size.width >= 200.0;
+        _drawLegend = _showLegend && tall && b.size.width >= 280.0;
+    }
+    _axisWidth = kAxisGap + std::ceil(freqLabel.width);
+    _axisHeight = std::ceil(freqLabel.height) + 2.0 * kAxisRowPad;
 
-    const CGFloat right = (_drawAxis ? _axisWidth : 0.0) + (_drawLegend ? _legendWidth : 0.0);
-    _plotRect = NSMakeRect(0.0, 0.0,
+    const CGFloat bottom = (_horizontal && _drawAxis) ? _axisHeight : 0.0;
+    const CGFloat plotH = std::floor(b.size.height - bottom);
+    [self layoutDbLabelsForHeight:plotH];
+
+    const CGFloat right = (!_horizontal && _drawAxis ? _axisWidth : 0.0) + (_drawLegend ? _legendWidth : 0.0);
+    _plotRect = NSMakeRect(0.0, bottom,
                            std::max<CGFloat>(0.0, std::floor(b.size.width - right)),
-                           std::floor(b.size.height));
+                           std::max<CGFloat>(0.0, plotH));
     _plotView.frame = _plotRect;
     _overlayView.frame = b;
 
-    const NSInteger wanted = (NSInteger)std::lround(_plotRect.size.height * [self columnsPerPoint]);
+    const NSInteger wanted = (NSInteger)std::lround([self frequencyLength] * [self columnsPerPoint]);
     if (wanted != _wantedRows) {
         _wantedRows = wanted;
         _wantedSince = CACurrentMediaTime();
@@ -315,6 +347,10 @@ namespace {
     [self positionTiles];
     [_overlayView setNeedsDisplay:YES];
 }
+
+// Plot size along the frequency axis and along the time axis, in points.
+- (CGFloat)frequencyLength { return _horizontal ? _plotRect.size.width : _plotRect.size.height; }
+- (CGFloat)timeLength      { return _horizontal ? _plotRect.size.height : _plotRect.size.width; }
 
 - (void)setFrameSize:(NSSize)newSize {
     [super setFrameSize:newSize];
@@ -375,33 +411,51 @@ namespace {
 
     Tile &tile = _tiles.back();
     const int last = spectrogram_colormap::kLutSize - 1;
-    uint32_t *px = tile.px.data() + tile.count;
+    uint32_t *px = tile.px.data() + (size_t)tile.count * (size_t)rows;
     for (NSInteger r = 0; r < rows; ++r) {
         const int idx = (int)(levels[r] * last + 0.5f);
-        px[(size_t)r * kTileColumns] = _lut[idx < 0 ? 0 : (idx > last ? last : idx)];
+        px[r] = _lut[idx < 0 ? 0 : (idx > last ? last : idx)];
     }
     tile.count++;
     tile.dirty = true;
     _columns++;
 }
 
-// Hand the tile's filled columns to its layer as an image.
+// Hand the tile's filled columns to its layer as an image, laid out for the
+// orientation: the newest column on the side where new audio enters, high
+// frequencies at the top (vertical) or on the right (horizontal).
 - (void)uploadTile:(Tile &)tile {
-    const size_t w = (size_t)tile.count, h = (size_t)tile.rows;
+    const size_t n = (size_t)tile.count, rows = (size_t)tile.rows;
+    const size_t w = _horizontal ? rows : n, h = _horizontal ? n : rows;
     const size_t bytes = w * h * sizeof(uint32_t);
-    uint32_t *copy = (uint32_t *)malloc(bytes);
-    if (!copy) return;
-    for (size_t r = 0; r < h; ++r) {
-        memcpy(copy + r * w, tile.px.data() + r * kTileColumns, w * sizeof(uint32_t));
+    uint32_t *image = (uint32_t *)malloc(bytes);
+    if (!image) return;
+    const uint32_t *px = tile.px.data();
+
+    if (_horizontal) {
+        // Image row i is one column, low frequencies on the left. New audio
+        // enters at the top (image row 0) unless reversed.
+        for (size_t i = 0; i < n; ++i) {
+            const uint32_t *column = px + (_reverse ? i : n - 1 - i) * rows;
+            uint32_t *out = image + i * w;
+            for (size_t x = 0; x < rows; ++x) out[x] = column[rows - 1 - x];
+        }
+    } else {
+        // Image column j is one column. New audio enters at the right unless
+        // reversed.
+        for (size_t j = 0; j < n; ++j) {
+            const uint32_t *column = px + (_reverse ? n - 1 - j : j) * rows;
+            for (size_t r = 0; r < rows; ++r) image[r * w + j] = column[r];
+        }
     }
 
-    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, copy, bytes, releasePixels);
-    CGImageRef image = CGImageCreate(w, h, 8, 32, w * sizeof(uint32_t), _colorSpace,
-                                     (CGBitmapInfo)kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little,
-                                     provider, NULL, false, kCGRenderingIntentDefault);
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, image, bytes, releasePixels);
+    CGImageRef cgImage = CGImageCreate(w, h, 8, 32, w * sizeof(uint32_t), _colorSpace,
+                                       (CGBitmapInfo)kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little,
+                                       provider, NULL, false, kCGRenderingIntentDefault);
     CGDataProviderRelease(provider);
-    tile.layer.contents = (__bridge id)image;
-    CGImageRelease(image);
+    tile.layer.contents = (__bridge id)cgImage;
+    CGImageRelease(cgImage);
 }
 
 - (void)flushWithPhase:(CGFloat)phase {
@@ -421,20 +475,28 @@ namespace {
     [CATransaction commit];
 }
 
-// The newest column sits at the plot's right edge, less the phase; everything
-// else follows from its distance in columns. Tiles that have left the plot are
-// dropped.
+// The newest column sits at the edge where new audio enters, less the phase;
+// everything else follows from its distance in columns. Tiles that have left
+// the plot are dropped.
 - (void)positionTiles {
     const CGFloat scale = [self columnsPerPoint];
-    const int64_t plotColumns = (int64_t)std::lround(_plotRect.size.width * scale);
+    const int64_t timeColumns = (int64_t)std::lround([self timeLength] * scale);
+    // New audio enters at the right / top (the far end of the time axis), or
+    // at the left / bottom when reversed.
+    const bool enterAtFarEnd = !_reverse;
 
-    while (!_tiles.empty() && _tiles.front().start + _tiles.front().count <= _columns - plotColumns) {
+    while (!_tiles.empty() && _tiles.front().start + _tiles.front().count <= _columns - timeColumns) {
         [_tiles.front().layer removeFromSuperlayer];
         _tiles.pop_front();
     }
     for (Tile &tile : _tiles) {
-        const CGFloat x = ((CGFloat)(plotColumns - (_columns - tile.start)) - _phase) / scale;
-        tile.layer.frame = CGRectMake(x, 0.0, (CGFloat)tile.count / scale, _plotRect.size.height);
+        // Distances from the entry edge to the tile's newer and older side.
+        const CGFloat nearDist = (CGFloat)(_columns - tile.start - tile.count) + _phase;
+        const CGFloat farDist = (CGFloat)(_columns - tile.start) + _phase;
+        const CGFloat pos = (enterAtFarEnd ? (CGFloat)timeColumns - farDist : nearDist) / scale;
+        const CGFloat len = (CGFloat)tile.count / scale;
+        tile.layer.frame = _horizontal ? CGRectMake(0.0, pos, _plotRect.size.width, len)
+                                       : CGRectMake(pos, 0.0, len, _plotRect.size.height);
     }
 }
 
@@ -458,12 +520,13 @@ namespace {
     return SpectrogramEngine::hzForFraction(_scale, _minHz, _maxHz, t);
 }
 
-// Frequencies to label, chosen so labels stay at least `gap` points apart.
-// Round numbers win: decades first, then 2 and 5, then the rest.
+// Frequencies to label, chosen so labels stay at least `gap` points apart
+// along the frequency axis. Round numbers win: decades first, then 2 and 5,
+// then the rest.
 - (std::vector<double>)labelFrequenciesWithGap:(CGFloat)gap {
     struct Candidate { double hz; int rank; };
     std::vector<Candidate> candidates;
-    const CGFloat h = _plotRect.size.height;
+    const CGFloat h = [self frequencyLength];
 
     if (_scale == SpectrogramEngine::ScaleLinear) {
         const double target = (_maxHz - _minHz) * (gap * 2.5) / h;  // Hz per label slot
@@ -542,28 +605,44 @@ static NSString *compactHz(double f) {
                             NSForegroundColorAttributeName: [self labelColorWithInk:kLabelInk]};
     NSDictionary *decadeAttrs = @{NSFontAttributeName: labelFont(_freqFontSize, NSFontWeightSemibold),
                                   NSForegroundColorAttributeName: [self labelColorWithInk:kDecadeInk]};
-    const CGFloat labelH = [@"0" sizeWithAttributes:attrs].height;
+    const NSSize labelSize = [@"00k0" sizeWithAttributes:decadeAttrs];
     const NSRect p = _plotRect;
-    const CGFloat maxLabelY = NSMaxY(self.bounds) - labelH;
     NSColor *lineColor = [self gridLineColor];
 
+    // Labels side by side need their width as the gap; stacked, their height.
+    const CGFloat gap = _horizontal ? labelSize.width + 8.0 : labelSize.height + 2.0;
     CGContextSetLineWidth(ctx, 1.0);
-    for (double hz : [self labelFrequenciesWithGap:labelH + 2.0]) {
-        const CGFloat y = NSMinY(p) + [self fractionForHz:hz] * p.size.height;
-        const CGFloat lineY = std::min(std::floor(y), NSMaxY(p) - 1.0) + 0.5;
+    for (double hz : [self labelFrequenciesWithGap:gap]) {
+        const CGFloat along = [self fractionForHz:hz] * [self frequencyLength];
 
         if (_gridOpacity > 0) {
             // Per line: drawing a label sets the context's colors to its own.
             CGContextSetStrokeColorWithColor(ctx, lineColor.CGColor);
             CGContextBeginPath(ctx);
-            CGContextMoveToPoint(ctx, NSMinX(p), lineY);
-            CGContextAddLineToPoint(ctx, NSMaxX(p), lineY);
+            if (_horizontal) {
+                const CGFloat x = std::min(std::floor(NSMinX(p) + along), NSMaxX(p) - 1.0) + 0.5;
+                CGContextMoveToPoint(ctx, x, NSMinY(p));
+                CGContextAddLineToPoint(ctx, x, NSMaxY(p));
+            } else {
+                const CGFloat y = std::min(std::floor(NSMinY(p) + along), NSMaxY(p) - 1.0) + 0.5;
+                CGContextMoveToPoint(ctx, NSMinX(p), y);
+                CGContextAddLineToPoint(ctx, NSMaxX(p), y);
+            }
             CGContextStrokePath(ctx);
         }
-        if (_drawAxis) {
-            const CGFloat ty = std::max<CGFloat>(0.0, std::min(y - labelH / 2.0, maxLabelY));
-            [compactHz(hz) drawAtPoint:NSMakePoint(NSMaxX(p) + kAxisGap, ty)
-                        withAttributes:isDecade(hz) ? decadeAttrs : attrs];
+        if (!_drawAxis) continue;
+
+        NSString *text = compactHz(hz);
+        NSDictionary *a = isDecade(hz) ? decadeAttrs : attrs;
+        if (_horizontal) {
+            // Centred under its frequency, kept whole within the plot's width.
+            const CGFloat w = [text sizeWithAttributes:a].width;
+            const CGFloat tx = std::max<CGFloat>(NSMinX(p), std::min(NSMinX(p) + along - w / 2.0, NSMaxX(p) - w));
+            [text drawAtPoint:NSMakePoint(tx, NSMinY(p) - _axisHeight + kAxisRowPad) withAttributes:a];
+        } else {
+            const CGFloat ty = std::max<CGFloat>(0.0, std::min(NSMinY(p) + along - labelSize.height / 2.0,
+                                                               NSMaxY(self.bounds) - labelSize.height));
+            [text drawAtPoint:NSMakePoint(NSMaxX(p) + kAxisGap, ty) withAttributes:a];
         }
     }
 }
@@ -598,7 +677,7 @@ static NSString *compactHz(double f) {
                             NSForegroundColorAttributeName: [self labelColorWithInk:kLabelInk]};
     const CGFloat labelH = [@"0" sizeWithAttributes:attrs].height;
     const CGFloat inset = std::ceil(labelH / 2.0) + 1.0;  // keeps the end labels inside
-    const CGFloat left = NSMaxX(_plotRect) + (_drawAxis ? _axisWidth : 0.0) + kLegendGap;
+    const CGFloat left = NSMaxX(_plotRect) + (!_horizontal && _drawAxis ? _axisWidth : 0.0) + kLegendGap;
     const NSRect bar = NSMakeRect(left, NSMinY(_plotRect) + inset,
                                   kBarWidth, _plotRect.size.height - 2.0 * inset);
     if (bar.size.height < 20.0) return;
@@ -643,7 +722,8 @@ static NSString *noteName(double f) {
 // beside the cursor (flipped to stay inside the view).
 - (void)drawProbeInContext:(CGContextRef)ctx {
     const NSRect p = _plotRect;
-    CGFloat t = (_probePoint.y - NSMinY(p)) / p.size.height;
+    const CGFloat along = _horizontal ? _probePoint.x - NSMinX(p) : _probePoint.y - NSMinY(p);
+    CGFloat t = along / [self frequencyLength];
     if (t < 0) t = 0; else if (t > 1) t = 1;
 
     // Marker in the colormap's accent, over a soft line of the panel
@@ -651,20 +731,26 @@ static NSString *noteName(double f) {
     NSColor *accent = [self lutColor:_accentColor];
     NSColor *bg = [self bgColor];
     NSColor *ink = [self inkColor];
-    const CGFloat lineY = std::min(std::floor(NSMinY(p) + t * p.size.height), NSMaxY(p) - 1.0) + 0.5;
+    CGPoint a, b;
+    if (_horizontal) {
+        const CGFloat x = std::min(std::floor(NSMinX(p) + t * p.size.width), NSMaxX(p) - 1.0) + 0.5;
+        a = CGPointMake(x, NSMinY(p)); b = CGPointMake(x, NSMaxY(p));
+    } else {
+        const CGFloat y = std::min(std::floor(NSMinY(p) + t * p.size.height), NSMaxY(p) - 1.0) + 0.5;
+        a = CGPointMake(NSMinX(p), y); b = CGPointMake(NSMaxX(p), y);
+    }
     CGContextBeginPath(ctx);
-    CGContextMoveToPoint(ctx, NSMinX(p), lineY);
-    CGContextAddLineToPoint(ctx, NSMaxX(p), lineY);
+    CGContextMoveToPoint(ctx, a.x, a.y);
+    CGContextAddLineToPoint(ctx, b.x, b.y);
     CGContextSetLineWidth(ctx, 3.0);
-    CGContextSetStrokeColorWithColor(ctx, [bg colorWithAlphaComponent:0.55].CGColor);
     CGContextReplacePathWithStrokedPath(ctx);
     CGContextSetFillColorWithColor(ctx, [bg colorWithAlphaComponent:0.55].CGColor);
     CGContextFillPath(ctx);
     CGContextSetLineWidth(ctx, 1.0);
     CGContextSetStrokeColorWithColor(ctx, accent.CGColor);
     CGContextBeginPath(ctx);
-    CGContextMoveToPoint(ctx, NSMinX(p), lineY);
-    CGContextAddLineToPoint(ctx, NSMaxX(p), lineY);
+    CGContextMoveToPoint(ctx, a.x, a.y);
+    CGContextAddLineToPoint(ctx, b.x, b.y);
     CGContextStrokePath(ctx);
 
     // Box as in the Spectrum Analyzer: "702 Hz   F5", the note in the accent.
