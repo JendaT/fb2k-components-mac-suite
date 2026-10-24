@@ -20,7 +20,7 @@ if [ -z "$COMPONENT" ]; then
     echo ""
     echo "Components: simplaylist plorg scrobble waveform albumart"
     echo "            queue-manager biography cloud-streamer playback-controls"
-    echo "            spectrum vectorscope"
+    echo "            spectrum vectorscope levelmeter"
     exit 1
 fi
 
