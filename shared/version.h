@@ -56,3 +56,7 @@
 // Vectorscope
 #define VECTORSCOPE_VERSION "1.1.0"
 #define VECTORSCOPE_VERSION_INT 110
+
+// Spectrogram
+#define SPECTROGRAM_VERSION "0.1.0"
+#define SPECTROGRAM_VERSION_INT 010
