@@ -19,6 +19,7 @@ namespace {
     const float kRelativeGateRange = -20.0f;        // LU
     const size_t kMomentaryHops = 4;            // 400 ms
     const size_t kShortTermHops = 30;           // 3 s
+    const uint64_t kFilterFlushFrames = 1024;   // decayed filter state is zeroed this often
 
     // Keep a crossover inside the range where the design stays stable.
     double clampCorner(double sampleRate, double hz) {
@@ -27,16 +28,11 @@ namespace {
 
     // Window means of the summed channel powers, `window` hops wide, one per
     // hop position from window-1 to hops-1.
-    std::vector<double> windowPowers(const std::vector<float> kms[2], uint32_t channels,
-                                     size_t hops, size_t window) {
+    std::vector<double> windowPowers(const std::vector<float>& kms, size_t hops, size_t window) {
         std::vector<double> powers;
         if (hops < window) return powers;
         std::vector<double> prefix(hops + 1, 0.0);
-        for (size_t i = 0; i < hops; ++i) {
-            double z = 0.0;
-            for (uint32_t ch = 0; ch < channels; ++ch) z += kms[ch][i];
-            prefix[i + 1] = prefix[i] + z;
-        }
+        for (size_t i = 0; i < hops; ++i) prefix[i + 1] = prefix[i] + kms[i];
         powers.reserve(hops - window + 1);
         for (size_t end = window; end <= hops; ++end) {
             powers.push_back((prefix[end] - prefix[end - window]) / window);
@@ -111,8 +107,8 @@ float loudnessOf(double power) {
     return power > 0.0 ? (float)(-0.691 + 10.0 * std::log10(power)) : -INFINITY;
 }
 
-float integratedLoudness(const std::vector<float> kms[2], uint32_t channels, size_t hops) {
-    const std::vector<double> blocks = windowPowers(kms, channels, hops, kMomentaryHops);
+float integratedLoudness(const std::vector<float>& kms, size_t hops) {
+    const std::vector<double> blocks = windowPowers(kms, hops, kMomentaryHops);
 
     double sum = 0.0;
     size_t count = 0;
@@ -131,8 +127,8 @@ float integratedLoudness(const std::vector<float> kms[2], uint32_t channels, siz
     return count > 0 ? loudnessOf(sum / count) : -INFINITY;
 }
 
-float loudnessRange(const std::vector<float> kms[2], uint32_t channels, size_t hops) {
-    const std::vector<double> blocks = windowPowers(kms, channels, hops, kShortTermHops);
+float loudnessRange(const std::vector<float>& kms, size_t hops) {
+    const std::vector<double> blocks = windowPowers(kms, hops, kShortTermHops);
 
     double sum = 0.0;
     size_t count = 0;
@@ -158,8 +154,22 @@ float loudnessRange(const std::vector<float> kms[2], uint32_t channels, size_t h
 
 #pragma mark - Segments
 
-uint32_t blockFramesFor(uint64_t expectedFrames) {
-    return std::max<uint32_t>(kMinBlockFrames, (uint32_t)((expectedFrames + kMaxBlocks - 1) / kMaxBlocks));
+uint32_t blockFramesFor(uint64_t expectedFrames, uint32_t sampleRate) {
+    const uint64_t hop = hopFramesFor(sampleRate);
+    const uint64_t needed = (expectedFrames + kMaxBlocks - 1) / kMaxBlocks;
+    // Long tracks: the smallest multiple of the hop that keeps kMaxBlocks
+    if (needed > hop) return (uint32_t)std::min<uint64_t>((needed + hop - 1) / hop * hop, UINT32_MAX / hop * hop);
+
+    // Otherwise the divisor of the hop nearest kTargetBlockFrames, by ratio,
+    // among those that keep kMaxBlocks
+    auto distance = [](uint64_t frames) { return std::fabs(std::log((double)frames / kTargetBlockFrames)); };
+    uint64_t best = hop;
+    for (uint64_t d = 2; d <= hop && hop / d >= needed; ++d) {
+        if (hop % d != 0) continue;
+        if (distance(hop / d) < distance(best)) best = hop / d;
+        if (hop / d < kTargetBlockFrames) break;   // smaller ones are further off
+    }
+    return (uint32_t)best;
 }
 
 uint32_t hopFramesFor(uint32_t sampleRate) {
@@ -170,8 +180,8 @@ std::vector<Segment> planSegments(uint64_t totalFrames, uint32_t sampleRate, siz
     const std::vector<Segment> whole = { { 0, UINT64_MAX } };
     if (totalFrames == 0 || sampleRate == 0 || maxSegments < 2) return whole;
 
-    // Boundaries on both grids
-    const uint64_t unit = std::lcm<uint64_t>(blockFramesFor(totalFrames), hopFramesFor(sampleRate));
+    // Boundaries on both grids (the larger of the two, see blockFramesFor)
+    const uint64_t unit = std::lcm<uint64_t>(blockFramesFor(totalFrames, sampleRate), hopFramesFor(sampleRate));
     const uint64_t minLength = std::max<uint64_t>((uint64_t)std::ceil(minSeconds * sampleRate),
                                                   (totalFrames + maxSegments - 1) / maxSegments);
     const uint64_t length = (minLength + unit - 1) / unit * unit;
@@ -192,13 +202,13 @@ TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t ex
     : _channels(std::clamp(channels, 1u, 2u)) {
     _data.channelCount = _channels;
     _data.sampleRate = std::max(sampleRate, 1u);
-    _data.blockFrames = blockFramesFor(expectedFrames);
+    _data.blockFrames = blockFramesFor(expectedFrames, _data.sampleRate);
     _data.hopFrames = hopFramesFor(_data.sampleRate);
 
     const double fs = _data.sampleRate;
+    _kShelf = Biquad::kShelf(fs);
+    _kHighpass = Biquad::kHighpass(fs);
     for (int ch = 0; ch < 2; ++ch) {
-        _kWeight[ch][0] = Biquad::kShelf(fs);
-        _kWeight[ch][1] = Biquad::kHighpass(fs);
         // Linkwitz-Riley 24 dB/oct: two Butterworth sections per edge
         for (int s = 0; s < 2; ++s) {
             _low[ch][s]   = Biquad::lowpass(fs, kLowCrossoverHz);
@@ -230,6 +240,10 @@ TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t ex
         }
         _tpGainBound = std::max(_tpGainBound, bound);
     }
+    // Float rounding in a phase's sum stays under this margin, so a skipped
+    // interpolation never hides a peak and the result doesn't depend on
+    // where a segment starts
+    _tpGainBound *= 1.0001f;
 }
 
 void TrackAnalyzer::setRange(uint64_t start, uint64_t end) {
@@ -237,56 +251,81 @@ void TrackAnalyzer::setRange(uint64_t start, uint64_t end) {
     _rangeEnd = std::max(start, end);
 }
 
-void TrackAnalyzer::updateTruePeak(int ch, float x, bool counted) {
-    float* hist = _tpHistory[ch];
+void TrackAnalyzer::updateTruePeak(float* hist, float x, bool counted) {
     std::copy_backward(hist, hist + kTpTaps - 1, hist + kTpTaps);
     hist[0] = x;
     if (!counted) return;
 
     const float a = std::fabs(x);
     if (a > _samplePeak) _samplePeak = a;   // NaN compares false and is ignored
-    if (a > _truePeak) _truePeak = a;
+    // Kept local: a store to the member might alias the history
+    float peak = _truePeak;
+    if (a > peak) peak = a;
 
     // Skip the interpolation when no phase can exceed the peak so far
     float local = 0.0f;
     for (int j = 0; j < kTpTaps; ++j) local = std::max(local, std::fabs(hist[j]));
-    if (local * _tpGainBound <= _truePeak) return;
-
-    for (int p = 0; p < kTpPhases; ++p) {
-        float y = 0.0f;
-        for (int j = 0; j < kTpTaps; ++j) y += hist[j] * _tpCoeffs[p][j];
-        y = std::fabs(y);
-        if (y > _truePeak) _truePeak = y;
+    if (local * _tpGainBound > peak) {
+        for (int p = 0; p < kTpPhases; ++p) {
+            float y = 0.0f;
+            for (int j = 0; j < kTpTaps; ++j) y += hist[j] * _tpCoeffs[p][j];
+            y = std::fabs(y);
+            if (y > peak) peak = y;
+        }
     }
+    _truePeak = peak;
 }
 
-void TrackAnalyzer::process(const float* samples, size_t frames, uint32_t stride) {
-    processFrames(samples, frames, stride);
+void TrackAnalyzer::process(const float* samples, size_t frames, uint32_t stride, const float* weights) {
+    processFrames(samples, frames, stride, weights);
 }
 
-void TrackAnalyzer::process(const double* samples, size_t frames, uint32_t stride) {
-    processFrames(samples, frames, stride);
+void TrackAnalyzer::process(const double* samples, size_t frames, uint32_t stride, const float* weights) {
+    processFrames(samples, frames, stride, weights);
 }
 
 template <typename Sample>
-void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t stride) {
+void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t stride, const float* weights) {
     if (!samples || stride == 0) return;
+    // A channel first seen here starts at rest, as at the start of the track
+    while (_sources.size() < stride) {
+        Source source;
+        source.kWeight[0] = _kShelf;
+        source.kWeight[1] = _kHighpass;
+        _sources.push_back(source);
+    }
 
     for (size_t i = 0; i < frames; ++i) {
         const Sample* frame = samples + i * stride;
-        float x[2];
-        x[0] = (float)frame[0];
-        x[1] = (float)(stride > 1 ? frame[1] : frame[0]);
 
         // Outside the range the filters, true-peak history and clip runs
         // still run, so a segment starts and ends as a sequential pass would
         const bool counted = _frame >= _rangeStart && _frame < _rangeEnd;
 
+        // Every source channel: weighted K power, true peak and clip runs.
+        // The first two are also drawn; a mono chunk draws on both lanes.
+        float x[2] = {};
+        double k[2] = {};
+        double kSum = 0.0;
         bool anyClipRun = false;
-        for (uint32_t ch = 0; ch < _channels; ++ch) {
-            const float s = std::isfinite(x[ch]) ? x[ch] : 0.0f;
+        for (uint32_t c = 0; c < stride; ++c) {
+            Source& source = _sources[c];
+            const float v = (float)frame[c];
+            const float s = std::isfinite(v) ? v : 0.0f;
+            const float weight = weights ? weights[c] : 1.0f;
+            if (c < 2 || weight > 0.0f) {
+                const double kc = source.kWeight[1].process(source.kWeight[0].process(s));
+                kSum += weight * kc * kc;
+                if (c < 2) { x[c] = s; k[c] = kc; }
+            }
+            updateTruePeak(source.tpHistory, s, counted);
+            source.clipRun = std::fabs(s) >= kClipLevel ? source.clipRun + 1 : 0;
+            if (source.clipRun >= kClipRunLength) anyClipRun = true;
+        }
+        if (stride == 1) { x[1] = x[0]; k[1] = k[0]; }
 
-            const double k = _kWeight[ch][1].process(_kWeight[ch][0].process(s));
+        for (uint32_t ch = 0; ch < _channels; ++ch) {
+            const float s = x[ch];
             const double lo = _low[ch][1].process(_low[ch][0].process(s));
             const double mid = _midLp[ch][1].process(_midLp[ch][0].process(
                                _midHp[ch][1].process(_midHp[ch][0].process(s))));
@@ -301,17 +340,11 @@ void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t
                 }
                 _blockSumSq[ch] += (double)s * s;
                 _hopMs[ch] += (double)s * s;
-                _hopK[ch] += k * k;
+                _hopK[ch] += k[ch] * k[ch];
                 _hopBand[0] += lo * lo;
                 _hopBand[1] += mid * mid;
                 _hopBand[2] += hi * hi;
             }
-
-            updateTruePeak((int)ch, s, counted);
-
-            _clipRun[ch] = std::fabs(s) >= kClipLevel ? _clipRun[ch] + 1 : 0;
-            if (_clipRun[ch] >= kClipRunLength) anyClipRun = true;
-            x[ch] = s;
         }
 
         // A run belongs to the segment it starts in
@@ -321,17 +354,26 @@ void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t
         }
         _clipActive = anyClipRun;
         ++_frame;
+        // On the frame grid rather than per call, so how the decoder chunks
+        // the audio can't change the result (segments join exactly)
+        if (_frame % kFilterFlushFrames == 0) flushFilters();
 
         if (!counted) continue;
+        _hopKSum += kSum;
         if (_channels == 2) _hopLR += (double)x[0] * x[1];
         ++_counted;
         if (++_blockCount >= _data.blockFrames) flushBlock();
         if (++_hopCount >= _data.hopFrames) flushHop();
     }
+}
 
+void TrackAnalyzer::flushFilters() {
+    for (Source& source : _sources) {
+        source.kWeight[0].flush();
+        source.kWeight[1].flush();
+    }
     for (uint32_t ch = 0; ch < _channels; ++ch) {
         for (int s = 0; s < 2; ++s) {
-            _kWeight[ch][s].flush();
             _low[ch][s].flush(); _midHp[ch][s].flush(); _midLp[ch][s].flush(); _high[ch][s].flush();
         }
     }
@@ -356,17 +398,27 @@ void TrackAnalyzer::flushHop() {
         _data.hopMs[ch].push_back((float)(_hopMs[ch] / n));
         _hopK[ch] = _hopMs[ch] = 0.0;
     }
+    _data.hopKmsSum.push_back((float)(_hopKSum / n));
     if (_channels == 2) _data.hopLR.push_back((float)(_hopLR / n));
     for (int b = 0; b < 3; ++b) {
         _data.hopBand[b].push_back((float)(_hopBand[b] / n));
         _hopBand[b] = 0.0;
     }
     _lastHopPartial = _hopCount < _data.hopFrames;
+    _hopKSum = 0.0;
     _hopLR = 0.0;
     _hopCount = 0;
 }
 
 WaveformData TrackAnalyzer::finish() {
+    // The interpolator reads about kTpTaps / 2 samples behind the newest one:
+    // at the real end of the track, run it over that much silence so the
+    // last samples count as they would before a pause
+    if (_rangeEnd == UINT64_MAX && _counted > 0) {
+        for (Source& source : _sources) {
+            for (int i = 0; i < kTpTaps / 2; ++i) updateTruePeak(source.tpHistory, 0.0f, true);
+        }
+    }
     flushBlock();
     flushHop();
 
@@ -375,8 +427,8 @@ WaveformData TrackAnalyzer::finish() {
     // A short last hop would skew the gated blocks it falls into
     const size_t gatedHops = _data.hopCount() - (_lastHopPartial ? 1 : 0);
     LoudnessSummary& s = _data.summary;
-    s.integrated = integratedLoudness(_data.hopKms, _channels, gatedHops);
-    s.range = loudnessRange(_data.hopKms, _channels, gatedHops);
+    s.integrated = integratedLoudness(_data.hopKmsSum, gatedHops);
+    s.range = loudnessRange(_data.hopKmsSum, gatedHops);
     s.truePeak = _truePeak > 0.0f ? 20.0f * std::log10(_truePeak) : -INFINITY;
     s.samplePeak = _samplePeak > 0.0f ? 20.0f * std::log10(_samplePeak) : -INFINITY;
     s.clipRuns = (uint32_t)_data.clipRunFrames.size();
@@ -407,6 +459,7 @@ WaveformData TrackAnalyzer::merge(std::vector<WaveformData> parts) {
             append(out.hopKms[ch], p.hopKms[ch]);
             append(out.hopMs[ch], p.hopMs[ch]);
         }
+        append(out.hopKmsSum, p.hopKmsSum);
         append(out.hopLR, p.hopLR);
         for (int b = 0; b < 3; ++b) append(out.hopBand[b], p.hopBand[b]);
         out.clipRunFrames.insert(out.clipRunFrames.end(), p.clipRunFrames.begin(), p.clipRunFrames.end());
@@ -419,8 +472,8 @@ WaveformData TrackAnalyzer::merge(std::vector<WaveformData> parts) {
     // As finish(): a short last hop stays out of the gates
     const size_t gatedHops = out.hopCount() - (frames % out.hopFrames != 0 ? 1 : 0);
     LoudnessSummary& s = out.summary;
-    s.integrated = integratedLoudness(out.hopKms, out.channelCount, gatedHops);
-    s.range = loudnessRange(out.hopKms, out.channelCount, gatedHops);
+    s.integrated = integratedLoudness(out.hopKmsSum, gatedHops);
+    s.range = loudnessRange(out.hopKmsSum, gatedHops);
     s.truePeak = truePeak;
     s.samplePeak = samplePeak;
     s.clipRuns = (uint32_t)out.clipRunFrames.size();

@@ -10,10 +10,15 @@
 
 namespace {
 
-// Version 1 was the fixed 2048-bucket peak/RMS format; those blobs fail to
+// Version 1 was the fixed 2048-bucket peak/RMS format, version 2 had no
+// summed loudness and samples clipped at full scale; those blobs fail to
 // decode and the track is simply analysed again.
-const uint32_t kSerializationVersion = 2;
+const uint32_t kSerializationVersion = 3;
 const uint32_t kMaxBlobSize = 64 * 1024 * 1024;
+
+// Stored sample levels span +-kSampleRange, so float sources past full scale
+// keep their peaks through the cache
+const double kSampleRange = 2.0;
 
 // Levels (mean squares) in 0.01 dB steps; INT16_MIN is silence.
 int16_t encodeLevel(float meanSquare) {
@@ -30,8 +35,20 @@ int16_t encodeSigned(float v) {
     return (int16_t)std::clamp(std::round((double)v * 32767.0), -32767.0, 32767.0);
 }
 
-uint16_t encodeUnsigned(float v) {
-    return (uint16_t)std::clamp(std::round((double)v * 65535.0), 0.0, 65535.0);
+int16_t encodeSample(float v) {
+    return encodeSigned((float)(v / kSampleRange));
+}
+
+float decodeSample(int16_t q) {
+    return (float)(q / 32767.0 * kSampleRange);
+}
+
+uint16_t encodeRms(float v) {
+    return (uint16_t)std::clamp(std::round((double)v / kSampleRange * 65535.0), 0.0, 65535.0);
+}
+
+float decodeRms(uint16_t q) {
+    return (float)(q / 65535.0 * kSampleRange);
 }
 
 class Writer {
@@ -64,9 +81,15 @@ private:
 
 bool WaveformData::isValid() const {
     if (channelCount < 1 || channelCount > 2) return false;
-    if (sampleRate == 0 || !(duration > 0.0) || blockFrames == 0 || hopFrames == 0) return false;
+    if (sampleRate == 0 || !std::isfinite(duration) || !(duration > 0.0) || blockFrames == 0 || hopFrames == 0) {
+        return false;
+    }
     const size_t blocks = blockCount(), hops = hopCount();
     if (blocks == 0 || hops == 0) return false;
+    // Positions taken from the duration index the arrays (ColumnAggregator)
+    const double frames = duration * sampleRate;
+    if (!(frames <= (double)blocks * blockFrames + 1.0) || !(frames <= (double)hops * hopFrames + 1.0)) return false;
+    if (hopKmsSum.size() != hops) return false;
     for (uint32_t ch = 0; ch < channelCount; ++ch) {
         if (blockMin[ch].size() != blocks || blockMax[ch].size() != blocks || blockRms[ch].size() != blocks) return false;
         if (hopKms[ch].size() != hops || hopMs[ch].size() != hops) return false;
@@ -79,7 +102,8 @@ bool WaveformData::isValid() const {
 }
 
 size_t WaveformData::memorySize() const {
-    size_t size = sizeof(*this) + hopLR.capacity() * sizeof(float) + clipRunFrames.capacity() * sizeof(uint64_t);
+    size_t size = sizeof(*this) + (hopKmsSum.capacity() + hopLR.capacity()) * sizeof(float)
+                + clipRunFrames.capacity() * sizeof(uint64_t);
     for (int ch = 0; ch < 2; ++ch) {
         size += (blockMin[ch].capacity() + blockMax[ch].capacity() + blockRms[ch].capacity()
                  + hopKms[ch].capacity() + hopMs[ch].capacity()) * sizeof(float);
@@ -108,9 +132,9 @@ std::vector<uint8_t> WaveformData::compress() const {
     w.put(summary.clipRuns);
 
     for (uint32_t ch = 0; ch < channelCount; ++ch) {
-        for (float v : blockMin[ch]) w.put(encodeSigned(v));
-        for (float v : blockMax[ch]) w.put(encodeSigned(v));
-        for (float v : blockRms[ch]) w.put(encodeUnsigned(v));
+        for (float v : blockMin[ch]) w.put(encodeSample(v));
+        for (float v : blockMax[ch]) w.put(encodeSample(v));
+        for (float v : blockRms[ch]) w.put(encodeRms(v));
     }
     for (uint32_t ch = 0; ch < channelCount; ++ch) {
         for (float v : hopKms[ch]) w.put(encodeLevel(v));
@@ -126,6 +150,7 @@ std::vector<uint8_t> WaveformData::compress() const {
     for (const auto& band : hopBand) {
         for (float v : band) w.put(encodeLevel(v));
     }
+    for (float v : hopKmsSum) w.put(encodeLevel(v));
     for (uint64_t frame : clipRunFrames) w.put(frame);
 
     // Original size, then the zlib stream
@@ -166,10 +191,16 @@ std::optional<WaveformData> WaveformData::decompress(const uint8_t* data, size_t
         return std::nullopt;
     }
     if (w.channelCount < 1 || w.channelCount > 2) return std::nullopt;
+    // -inf is a level (silence), NaN and +inf are not
+    auto isLevel = [](float v) { return !std::isnan(v) && v < INFINITY; };
+    if (!isLevel(w.summary.integrated) || !isLevel(w.summary.truePeak) || !isLevel(w.summary.samplePeak) ||
+        !std::isfinite(w.summary.range)) {
+        return std::nullopt;
+    }
 
     const size_t chans = w.channelCount;
     const size_t expected = chans * blocks * 6 + chans * hops * 4 + (chans == 2 ? hops * 2 : 0)
-                          + hops * 6 + (size_t)clips * 8;
+                          + hops * 8 + (size_t)clips * 8;
     if (!r.remaining(expected)) return std::nullopt;
 
     int16_t s16;
@@ -177,10 +208,10 @@ std::optional<WaveformData> WaveformData::decompress(const uint8_t* data, size_t
     for (size_t ch = 0; ch < chans; ++ch) {
         for (auto* v : { &w.blockMin[ch], &w.blockMax[ch] }) {
             v->resize(blocks);
-            for (auto& x : *v) { r.get(s16); x = s16 / 32767.0f; }
+            for (auto& x : *v) { r.get(s16); x = decodeSample(s16); }
         }
         w.blockRms[ch].resize(blocks);
-        for (auto& x : w.blockRms[ch]) { r.get(u16); x = u16 / 65535.0f; }
+        for (auto& x : w.blockRms[ch]) { r.get(u16); x = decodeRms(u16); }
     }
     for (size_t ch = 0; ch < chans; ++ch) {
         for (auto* v : { &w.hopKms[ch], &w.hopMs[ch] }) {
@@ -199,6 +230,8 @@ std::optional<WaveformData> WaveformData::decompress(const uint8_t* data, size_t
         band.resize(hops);
         for (auto& x : band) { r.get(s16); x = decodeLevel(s16); }
     }
+    w.hopKmsSum.resize(hops);
+    for (auto& x : w.hopKmsSum) { r.get(s16); x = decodeLevel(s16); }
     w.clipRunFrames.resize(clips);
     for (auto& frame : w.clipRunFrames) r.get(frame);
 

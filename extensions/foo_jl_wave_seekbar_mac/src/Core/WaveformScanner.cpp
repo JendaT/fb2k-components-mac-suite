@@ -131,6 +131,34 @@ std::optional<WaveformData> WaveformScanner::scanSync(const metadb_handle_ptr& t
 
 namespace {
 
+// Frames in the declared track length. The length only sizes the blocks and
+// plans the segments; a non-finite or absurd one must not reach the integer
+// cast, and counts as unknown (0: one pass, default blocks).
+uint64_t declaredFrames(double duration, uint32_t sampleRate) {
+    const double total = duration * static_cast<double>(sampleRate);
+    if (!std::isfinite(total) || total < 1.0 || total > 1e15) {
+        return 0;
+    }
+    return static_cast<uint64_t>(total);
+}
+
+// BS.1770 weight of each channel of `chunk` in the loudness sum: 0 for LFE,
+// 1.41 for the surround channels (back, side and top back, as ffmpeg's
+// ebur128 counts them), 1 for the rest, including channels the
+// configuration doesn't name.
+void loudnessWeights(const audio_chunk& chunk, std::vector<float>& weights) {
+    const unsigned surround = audio_chunk::channel_back_left | audio_chunk::channel_back_right |
+                              audio_chunk::channel_back_center | audio_chunk::channel_side_left |
+                              audio_chunk::channel_side_right | audio_chunk::channel_top_back_left |
+                              audio_chunk::channel_top_back_center | audio_chunk::channel_top_back_right;
+    const unsigned config = chunk.get_channel_config();
+    weights.resize(chunk.get_channel_count());
+    for (unsigned c = 0; c < weights.size(); ++c) {
+        const unsigned flag = audio_chunk::g_extract_channel_flag(config, c);
+        weights[c] = (flag & audio_chunk::channel_lfe) ? 0.0f : (flag & surround) ? 1.41f : 1.0f;
+    }
+}
+
 // One segment through its own decoder: the pre-roll that settles the
 // filters, the segment, then the few frames that finish clip runs crossing
 // its end
@@ -148,6 +176,7 @@ WaveformData analyseSegment(input_helper& decoder, const analysis::Segment& segm
     analyzer.setPosition(from);
 
     audio_chunk_impl_temporary chunk;
+    std::vector<float> weights;
     while (analyzer.position() < to && decoder.run(chunk, abort)) {
         abort.check();
         // Boundaries are frame counts at the nominal rate; a rate change would
@@ -157,7 +186,8 @@ WaveformData analyseSegment(input_helper& decoder, const analysis::Segment& segm
         }
         const size_t frames = static_cast<size_t>(
             std::min<uint64_t>(chunk.get_sample_count(), to - analyzer.position()));
-        analyzer.process(chunk.get_data(), frames, chunk.get_channel_count());
+        loudnessWeights(chunk, weights);
+        analyzer.process(chunk.get_data(), frames, chunk.get_channel_count(), weights.data());
     }
     return analyzer.finish();
 }
@@ -196,7 +226,7 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
         // One decoder on one core is slow for long tracks. Split them into
         // segments analysed in parallel, unless seeking is unavailable or
         // slow, or the file is remote (parallel reads multiply traffic)
-        const uint64_t expectedFrames = static_cast<uint64_t>(duration * sampleRate);
+        const uint64_t expectedFrames = declaredFrames(duration, sampleRate);
         std::vector<analysis::Segment> segments = { { 0, UINT64_MAX } };
         if (decoder.can_seek() && !decoder.extended_param(input_params::seeking_expensive) &&
             !filesystem::g_is_remote_or_unrecognized(track->get_path())) {
@@ -209,7 +239,7 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
             std::vector<WaveformData> parts(segments.size());
             std::atomic<size_t> nextSegment{0};
             std::atomic<bool> failed{false};
-            const uint32_t analysedChannels = std::min(channels, 2u);
+            const uint32_t drawnChannels = std::min(channels, 2u);
             const size_t workers = std::min<size_t>(segments.size(), pfc::getOptimalWorkerThreadCount());
 
             fb2k::cpuThreadPool::runMultiHelper([&] {
@@ -217,7 +247,7 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
                     input_helper segmentDecoder;
                     segmentDecoder.open(nullptr, track, input_flag_no_looping, abort);
                     for (size_t i; !failed && (i = nextSegment++) < segments.size();) {
-                        parts[i] = analyseSegment(segmentDecoder, segments[i], analysedChannels, sampleRate,
+                        parts[i] = analyseSegment(segmentDecoder, segments[i], drawnChannels, sampleRate,
                                                   expectedFrames, abort);
                     }
                 } catch (...) {
@@ -238,15 +268,17 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
             segments.assign(1, { 0, UINT64_MAX });
             std::optional<analysis::TrackAnalyzer> analyzer;
             audio_chunk_impl_temporary chunk;
+            std::vector<float> weights;
             while (decoder.run(chunk, abort)) {
                 abort.check();
                 if (!analyzer) {
                     if (chunk.get_sample_rate() > 0) sampleRate = chunk.get_sample_rate();
                     if (chunk.get_channel_count() > 0) channels = chunk.get_channel_count();
-                    analyzer.emplace(sampleRate, std::min(channels, 2u),
-                                     static_cast<uint64_t>(duration * sampleRate));
+                    analyzer.emplace(sampleRate, std::min(channels, 2u), declaredFrames(duration, sampleRate));
                 }
-                analyzer->process(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count());
+                loudnessWeights(chunk, weights);
+                analyzer->process(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count(),
+                                  weights.data());
             }
             if (!analyzer) return std::nullopt;
             result = analyzer->finish();
