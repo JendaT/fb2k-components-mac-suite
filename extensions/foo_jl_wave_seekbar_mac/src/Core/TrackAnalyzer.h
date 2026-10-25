@@ -5,8 +5,10 @@
 //  One streaming pass over a decoded track: fine-block sample peaks and RMS,
 //  100 ms hops of K-weighted power, Lo/Mid/Hi band power and L/R products,
 //  clip runs, 4x oversampled true peak, then BS.1770-4 integrated loudness
-//  and EBU Tech 3342 loudness range. Pure C++ with no foobar2000 SDK or
-//  Cocoa dependency, so it is unit-tested standalone.
+//  and EBU Tech 3342 loudness range. The drawing data covers the first two
+//  channels (front L/R); loudness, true peak and clip runs cover them all.
+//  Pure C++ with no foobar2000 SDK or Cocoa dependency, so it is unit-tested
+//  standalone.
 //
 
 #pragma once
@@ -25,8 +27,10 @@ constexpr double kLowCrossoverHz = 250.0;
 constexpr double kHighCrossoverHz = 2000.0;
 
 // Fine blocks: about 1024 frames, larger for long tracks so a track never
-// has more than kMaxBlocks of them.
-constexpr uint32_t kMinBlockFrames = 1024;
+// has more than kMaxBlocks of them. Always a divisor or a multiple of the
+// hop, so the block and hop grids meet every max(block, hop) frames and
+// segments can start on both.
+constexpr uint32_t kTargetBlockFrames = 1024;
 constexpr size_t kMaxBlocks = 16384;
 
 // Long tracks are analysed in segments decoded in parallel: at least this
@@ -68,17 +72,18 @@ struct Biquad {
 // Mean square -> loudness (LUFS / LKFS): -0.691 + 10 log10(power).
 float loudnessOf(double power);
 
-// BS.1770-4 integrated loudness from 100 ms hops of K-weighted mean square:
-// 400 ms blocks at 75 % overlap, absolute gate -70 LUFS, relative gate
-// -10 LU. -inf when no block passes the gates.
-float integratedLoudness(const std::vector<float> kms[2], uint32_t channels, size_t hops);
+// BS.1770-4 integrated loudness from 100 ms hops of K-weighted mean square,
+// channels summed with their weights: 400 ms blocks at 75 % overlap,
+// absolute gate -70 LUFS, relative gate -10 LU. -inf when no block passes
+// the gates.
+float integratedLoudness(const std::vector<float>& kms, size_t hops);
 
 // EBU Tech 3342 loudness range: 3 s short-term blocks every 100 ms, absolute
 // gate -70 LUFS, relative gate -20 LU, 10th to 95th percentile. 0 when
 // nothing passes the gates.
-float loudnessRange(const std::vector<float> kms[2], uint32_t channels, size_t hops);
+float loudnessRange(const std::vector<float>& kms, size_t hops);
 
-uint32_t blockFramesFor(uint64_t expectedFrames);
+uint32_t blockFramesFor(uint64_t expectedFrames, uint32_t sampleRate);
 uint32_t hopFramesFor(uint32_t sampleRate);
 
 // A run of frames [start, end); the last segment's end is UINT64_MAX (to
@@ -96,14 +101,19 @@ std::vector<Segment> planSegments(uint64_t totalFrames, uint32_t sampleRate,
 
 class TrackAnalyzer {
 public:
-    // `channels` is 1 or 2 (the first two of the source are analysed).
+    // `channels` drawn, 1 or 2 (the first two of the source; loudness, true
+    // peak and clip runs take every source channel).
     // `expectedFrames` sizes the fine blocks; it only needs to be roughly right.
     TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames);
 
-    // `frames` interleaved frames of `stride` channels each (stride >= 1). A
-    // mono chunk in a stereo analysis feeds the same sample to both channels.
-    void process(const float* samples, size_t frames, uint32_t stride);
-    void process(const double* samples, size_t frames, uint32_t stride);   // fb2k audio_sample
+    // `frames` interleaved frames of `stride` channels each (stride >= 1).
+    // `weights` has one BS.1770 weight per source channel for the loudness
+    // sum (1 front and centre, 1.41 surround, 0 LFE); null weighs them all 1.
+    // A mono chunk in a stereo analysis draws its channel on both lanes but
+    // counts once in the loudness.
+    void process(const float* samples, size_t frames, uint32_t stride, const float* weights = nullptr);
+    void process(const double* samples, size_t frames, uint32_t stride,    // fb2k audio_sample
+                 const float* weights = nullptr);
 
     // Segment mode. setPosition() names the absolute frame of the next
     // sample passed to process() (after a seek). Only frames in
@@ -115,8 +125,9 @@ public:
     uint64_t position() const { return _frame; }
 
     // Flush the partial block and hop and compute the summary. The duration
-    // is that of the counted audio. The result is invalid (isValid() false)
-    // when no audio was processed.
+    // is that of the counted audio. At the end of the track (no range end)
+    // the true-peak interpolator also runs over the last samples. The result
+    // is invalid (isValid() false) when no audio was processed.
     WaveformData finish();
 
     // Joins segment results, in track order, into the whole track's data and
@@ -124,10 +135,12 @@ public:
     static WaveformData merge(std::vector<WaveformData> parts);
 
 private:
-    template <typename Sample> void processFrames(const Sample* samples, size_t frames, uint32_t stride);
+    template <typename Sample>
+    void processFrames(const Sample* samples, size_t frames, uint32_t stride, const float* weights);
     void flushBlock();
     void flushHop();
-    void updateTruePeak(int ch, float x, bool counted);
+    void flushFilters();
+    void updateTruePeak(float* history, float x, bool counted);
 
     WaveformData _data;
     uint32_t _channels;
@@ -143,24 +156,28 @@ private:
 
     // Current hop
     uint32_t _hopCount = 0;
-    double _hopK[2] = {}, _hopMs[2] = {}, _hopLR = 0.0, _hopBand[3] = {};
+    double _hopK[2] = {}, _hopKSum = 0.0, _hopMs[2] = {}, _hopLR = 0.0, _hopBand[3] = {};
     bool _lastHopPartial = false;
 
-    // Filters: [channel][stage]
-    Biquad _kWeight[2][2];
+    // Band filters of the drawn channels: [channel][stage]
     Biquad _low[2][2], _midHp[2][2], _midLp[2][2], _high[2][2];
 
     // True peak: 48-tap, 4-phase interpolator over the last 12 samples
     static constexpr int kTpPhases = 4;
     static constexpr int kTpTaps = 12;
     float _tpCoeffs[kTpPhases][kTpTaps];
-    float _tpGainBound = 1.0f;          // max over phases of sum |h|
-    float _tpHistory[2][kTpTaps] = {};
+    float _tpGainBound = 1.0f;          // max over phases of sum |h|, a hair over
     float _truePeak = 0.0f;             // linear
     float _samplePeak = 0.0f;           // linear
 
-    // Clip runs
-    int _clipRun[2] = {};
+    // Per source channel, added as chunks bring them
+    struct Source {
+        Biquad kWeight[2];              // K-weighting stages
+        float tpHistory[kTpTaps] = {};
+        int clipRun = 0;
+    };
+    std::vector<Source> _sources;
+    Biquad _kShelf, _kHighpass;         // designs the sources start from
     bool _clipActive = false;
 };
 

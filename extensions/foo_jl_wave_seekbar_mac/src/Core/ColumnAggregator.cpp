@@ -59,13 +59,15 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
     for (auto& b : out.bandShare) b.resize(columns);
     for (auto& b : out.tintShare) b.resize(columns);
 
-    // Short-term powers per hop, per channel and summed
+    // Short-term powers per hop, per channel and summed over all source
+    // channels (the BS.1770 sum, which may have more than the drawn two)
     std::vector<double> shortTerm[2];
     std::vector<double> momentary[2];
     for (uint32_t ch = 0; ch < chans; ++ch) {
         shortTerm[ch] = centredMeans(data.hopKms[ch], kShortTermHalf);
         momentary[ch] = centredMeans(data.hopKms[ch], kMomentaryHalf);
     }
+    const std::vector<double> shortTermSum = centredMeans(data.hopKmsSum, kShortTermHalf);
     std::vector<double> tintBands[3];
     for (int b = 0; b < 3; ++b) tintBands[b] = centredMeans(data.hopBand[b], kTintHalf);
 
@@ -81,8 +83,11 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
         for (uint32_t ch = 0; ch < chans; ++ch) {
             float mn, mx, rms;
             if (blocksPerColumn >= 1.0) {
-                const size_t b0 = std::min(blocks - 1, (size_t)(f0 / data.blockFrames));
-                const size_t b1 = std::min(blocks, std::max(b0 + 1, (size_t)std::ceil(f1 / data.blockFrames)));
+                // Each block in the one column that holds its centre, so a
+                // transient shows once; the last column takes the rest
+                const size_t b0 = std::min(blocks - 1, (size_t)std::ceil(std::max(0.0, f0 / data.blockFrames - 0.5)));
+                const size_t b1 = c + 1 == columns ? blocks
+                    : std::min(blocks, std::max(b0 + 1, (size_t)std::ceil(f1 / data.blockFrames - 0.5)));
                 mn = 0.0f; mx = 0.0f;
                 double ms = 0.0;
                 for (size_t b = b0; b < b1; ++b) {
@@ -120,13 +125,11 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
         // Short-term and momentary levels: the loudest hop in the column
         double loudest = 0.0, loudestCh[2] = { 0.0, 0.0 }, momentaryCh[2] = { 0.0, 0.0 };
         for (size_t h = h0; h < h1; ++h) {
-            double sum = 0.0;
             for (uint32_t ch = 0; ch < chans; ++ch) {
                 loudestCh[ch] = std::max(loudestCh[ch], shortTerm[ch][h]);
                 momentaryCh[ch] = std::max(momentaryCh[ch], momentary[ch][h]);
-                sum += shortTerm[ch][h];
             }
-            loudest = std::max(loudest, sum);
+            loudest = std::max(loudest, shortTermSum[h]);
         }
         for (uint32_t ch = 0; ch < chans; ++ch) {
             out.level[ch][c] = powerDb(loudestCh[ch]);
