@@ -19,7 +19,7 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 
 | Style | Description |
 |-------|-------------|
-| **Layered** | L up, R down on one dBFS axis: the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
+| **Layered** | Each channel mirrored in its own lane on a dBFS axis (one lane in Mono; L up and R down around one centre line in Split): the peak envelope around a momentary (400 ms) loudness body. The gap between them is the crest factor, so compression is visible. The body is tinted by each passage's spectral balance: darker where bass dominates, brighter where highs do. |
 | **Two-tone** (default) | Split L/R lanes on black, linear: peaks at 50 % with an RMS core |
 | **Glow** | Peaks fade to the tips, RMS core runs to a hot centre |
 | **Heat** | One layer coloured by amplitude, deep to hot |
@@ -27,7 +27,7 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 | **Rainbow** (classic) | Hue runs through the rainbow across the track |
 | **Solid** (classic) | The theme colour fading from the centre out in steps (Gradient bands: none to 32) |
 
-Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one).
+Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one). **Split** draws L above and R below one centre line, each at twice the height of a Stereo lane: Layered and Classic up to each channel's peak, Simple with each channel's larger excursion and its core.
 
 ### Loudness Analysis
 

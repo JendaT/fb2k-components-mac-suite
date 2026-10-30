@@ -82,7 +82,7 @@ enum Style {
     StyleSolid = 0,     // Classic: theme colour fading from the centre out in gradient bands
     StyleHeatMap = 1,   // Classic: colour per column by peak, blue -> green -> yellow -> red
     StyleRainbow = 2,   // Classic: hue runs through the rainbow across the track
-    StyleLayered = 3,   // peak envelope around a loudness body, one dBFS axis
+    StyleLayered = 3,   // peak envelope around a loudness body, dBFS axis
     StyleTwoTone = 4,   // Simple: split L/R lanes, linear, flat peak and RMS core
     StyleGlow = 5,      // Simple: peaks fade to the tips, hot RMS core
     StyleHeat = 6,      // Simple: colour by amplitude, deep -> accent -> hot
@@ -91,8 +91,10 @@ enum Style {
 
 // Channels shown, stored under display_mode with the original values
 enum ChannelMode {
-    ChannelsStereo = 0, // L and R apart (Layered: up / down; Simple: two lanes)
-    ChannelsMono = 1    // mixed to one
+    ChannelsStereo = 0, // L and R in their own lanes
+    ChannelsMono = 1,   // mixed to one
+    ChannelsSplit = 2,  // L up, R down around one centre line
+    ChannelModeCount
 };
 
 // When the loudness summary badge shows
