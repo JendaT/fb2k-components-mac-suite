@@ -64,7 +64,7 @@ Waveform seekbar with per-track loudness analysis. This one was my favorite, a n
 
 | Overview | Settings |
 |----------|----------|
-| ![Waveform Seekbar in the Layered style with Split channels, the hover readout and the loudness summary](docs/images/waveform-layered-split.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings-v3.png) |
+| ![Waveform Seekbar in the Layered style with Split channels, the hover readout and the loudness summary](docs/images/waveform-layered-split.png)<br>![Waveform Seekbar in the Two-tone style (P31 green) with Split channels](docs/images/waveform-twotone-split.png)<br>![Waveform Seekbar in the Glow style with Split channels](docs/images/waveform-glow-split.png)<br>![Waveform Seekbar in the Heat style with Split channels](docs/images/waveform-heat-split.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings-v3.png) |
 
 **Features:**
 - Layered style: peak envelope around a momentary loudness body on a dBFS axis, tinted by the spectral balance

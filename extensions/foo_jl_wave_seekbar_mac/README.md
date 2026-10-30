@@ -8,6 +8,18 @@
 
 An interactive waveform display and seekbar for foobar2000 macOS.
 
+## Screenshots
+
+![Waveform Seekbar in the Layered style with Split channels, the hover readout and the loudness summary](../../docs/images/waveform-layered-split.png)
+
+![Waveform Seekbar in the Two-tone style (P31 green) with Split channels](../../docs/images/waveform-twotone-split.png)
+
+![Waveform Seekbar in the Glow style with Split channels](../../docs/images/waveform-glow-split.png)
+
+![Waveform Seekbar in the Heat style with Split channels](../../docs/images/waveform-heat-split.png)
+
+![Waveform Seekbar in the Classic Solid style](../../docs/images/waveform-classic-solid.png)
+
 ## Requirements
 
 - foobar2000 for Mac 2.x
