@@ -26,6 +26,7 @@
 #include "../Core/WaveformGeometry.h"
 #include "../Core/GradientBandTable.h"
 #include "../Core/ThemeTokens.h"
+#include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -150,21 +151,32 @@ struct Paint {
     bool laneGradient;
 };
 
+// Theme colours are Display P3 (shared/ThemeColor.h), like the other
+// visualisers', so they show at full saturation on wide-gamut screens.
+CGColorSpaceRef themeSpace() {
+    static CGColorSpaceRef space = JLCreateThemeColorSpace();
+    return space;
+}
+
 void setFill(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
-    CGContextSetRGBFillColor(ctx, c.r, c.g, c.b, alpha);
+    const CGFloat comps[4] = { c.r, c.g, c.b, alpha };
+    CGContextSetFillColorSpace(ctx, themeSpace());
+    CGContextSetFillColor(ctx, comps);
 }
 
 void setStroke(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
-    CGContextSetRGBStrokeColor(ctx, c.r, c.g, c.b, alpha);
+    const CGFloat comps[4] = { c.r, c.g, c.b, alpha };
+    CGContextSetStrokeColorSpace(ctx, themeSpace());
+    CGContextSetStrokeColor(ctx, comps);
 }
 
 NSString *str(const std::string& s) {
     return [NSString stringWithUTF8String:s.c_str()] ?: @"";
 }
 
-NSColor *srgb(uint32_t rgb, CGFloat alpha = 1.0) {
-    return [NSColor colorWithSRGBRed:((rgb >> 16) & 0xFF) / 255.0 green:((rgb >> 8) & 0xFF) / 255.0
-                                blue:(rgb & 0xFF) / 255.0 alpha:alpha];
+NSColor *p3(uint32_t rgb, CGFloat alpha = 1.0) {
+    return [NSColor colorWithDisplayP3Red:((rgb >> 16) & 0xFF) / 255.0 green:((rgb >> 8) & 0xFF) / 255.0
+                                     blue:(rgb & 0xFF) / 255.0 alpha:alpha];
 }
 
 // Overlays keep their own dark palette in every theme
@@ -506,12 +518,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         ? getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)
         : getConfigInt(kKeyBgColorLight, kDefaultBgColorLight));
 
-    auto color = [](uint32_t argb) {
-        return [NSColor colorWithSRGBRed:((argb >> 16) & 0xFF) / 255.0
-                                   green:((argb >> 8) & 0xFF) / 255.0
-                                    blue:(argb & 0xFF) / 255.0
-                                   alpha:((argb >> 24) & 0xFF) / 255.0];
-    };
+    auto color = [](uint32_t argb) { return JLColorFromARGB(argb); };
     _waveformColor = color(waveARGB);
     _backgroundColor = color(bgARGB);
 
@@ -748,16 +755,16 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 }
 
 - (BOOL)buildComposite {
-    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGContextRef ctx = CGBitmapContextCreate(NULL, _maskWidth, _maskHeight, 8, 0, srgb,
+    CGColorSpaceRef space = JLCreateThemeColorSpace();
+    CGContextRef ctx = CGBitmapContextCreate(NULL, _maskWidth, _maskHeight, 8, 0, space,
                                              kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
-    CGColorSpaceRelease(srgb);
+    CGColorSpaceRelease(space);
     if (!ctx) return NO;
 
     const CGRect full = CGRectMake(0, 0, _maskWidth, _maskHeight);
     const CGFloat scale = [self backingScale];
     const Lanes lanes = lanesFor(_maskHeight, scale, _laneCount, _maskFamily);
-    CGColorSpaceRef gradientSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGColorSpaceRef gradientSpace = JLCreateThemeColorSpace();
 
     for (const Paint& p : [self paints]) {
         if (!_masks[p.mask]) continue;
@@ -801,7 +808,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
             pixels[c * 4 + 2] = (uint8_t)std::lround(std::clamp(col.b, 0.0f, 1.0f) * 255);
             pixels[c * 4 + 3] = 255;
         }
-        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorSpaceRef space = JLCreateThemeColorSpace();
         CGContextRef strip = CGBitmapContextCreate(pixels.data(), _maskWidth, 1, 8, _maskWidth * 4, space,
                                                    (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
         CGColorSpaceRelease(space);
@@ -848,7 +855,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
             stop(0.5 + (CGFloat)k / kSolidBands * 0.5, a);
             stop(0.5 + (CGFloat)(k + 1) / kSolidBands * 0.5, a);
         }
-        CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGColorSpaceRef space = JLCreateThemeColorSpace();
         CGGradientRef bands = CGGradientCreateWithColorComponents(space, components.data(), locations.data(),
                                                                   locations.size());
         CGColorSpaceRelease(space);
@@ -1111,10 +1118,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 // Effect 0: None - Sharp transition, uniform dimming
 - (void)drawNoneEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent
-                                        green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent
-                                        alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
@@ -1137,8 +1141,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     // Solid portion
     if (playedWidth > fadeWidth) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
         CGContextSetFillColorWithColor(context, dimColor.CGColor);
         CGContextFillRect(context, CGRectMake(0, 0, playedWidth - fadeWidth, bounds.size.height));
     }
@@ -1157,8 +1160,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
@@ -1200,8 +1202,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (void)drawScanlineEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                         playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw solid dimming first
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
@@ -1252,8 +1253,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     // Modulate dimOpacity: ranges from dimOpacity*0.3 to dimOpacity*1.0
     CGFloat pulsingOpacity = dimOpacity * (0.3 + breath * 0.7);
 
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:pulsingOpacity];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:pulsingOpacity];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
@@ -1265,8 +1265,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     // Draw solid dimming for area before trail
     if (playedWidth > trailLength) {
-        NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                             blue:bgColor.blueComponent alpha:dimOpacity];
+        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
         CGContextSetFillColorWithColor(context, dimColor.CGColor);
         CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
     }
@@ -1297,8 +1296,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Draw base dimming
-    NSColor *dimColor = [NSColor colorWithRed:bgColor.redComponent green:bgColor.greenComponent
-                                         blue:bgColor.blueComponent alpha:dimOpacity * 0.7];
+    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity * 0.7];
     CGContextSetFillColorWithColor(context, dimColor.CGColor);
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
@@ -1365,7 +1363,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (!self.showCursorTime) return;
     NSDictionary *attrs = @{
         NSFontAttributeName: _chipFont,
-        NSForegroundColorAttributeName: [NSColor colorWithSRGBRed:_tokens.cursorText.r
+        NSForegroundColorAttributeName: [NSColor colorWithDisplayP3Red:_tokens.cursorText.r
                                                             green:_tokens.cursorText.g
                                                              blue:_tokens.cursorText.b
                                                             alpha:1.0]
@@ -1401,7 +1399,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     const CGFloat scale = [self backingScale];
     CGContextSaveGState(context);
-    [srgb(kOverlayAlert, _clipMarkerOpacity) setFill];
+    [p3(kOverlayAlert, _clipMarkerOpacity) setFill];
     long lastPixel = -1;
     for (uint64_t frame : data.clipRunFrames) {
         const CGFloat x = rect.origin.x + rect.size.width * (CGFloat)(frame / totalFrames);
@@ -1429,10 +1427,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextSaveGState(context);
     const CGRect inner = CGRectInset(box, 0.5, 0.5);
     CGPathRef shape = CGPathCreateWithRoundedRect(inner, radius, radius, NULL);
-    [srgb(kOverlayBackground, kOverlayBackgroundAlpha) setFill];
+    [p3(kOverlayBackground, kOverlayBackgroundAlpha) setFill];
     CGContextAddPath(context, shape);
     CGContextFillPath(context);
-    [srgb(kOverlayBorder) setStroke];
+    [p3(kOverlayBorder) setStroke];
     CGContextSetLineWidth(context, 1.0);
     CGContextAddPath(context, shape);
     CGContextStrokePath(context);
@@ -1443,7 +1441,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (NSAttributedString *)text:(NSString *)s color:(uint32_t)color bold:(BOOL)bold {
     return [[NSAttributedString alloc] initWithString:s attributes:@{
         NSFontAttributeName: bold ? _overlayBoldFont : _overlayFont,
-        NSForegroundColorAttributeName: srgb(color)
+        NSForegroundColorAttributeName: p3(color)
     }];
 }
 
@@ -1569,7 +1567,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - TS(kReadoutBarHeight),
                                   width - 2 * TS(kReadoutPadX), TS(kReadoutBarHeight));
     CGContextSaveGState(context);
-    [srgb(kOverlayBorder) setFill];
+    [p3(kOverlayBorder) setFill];
     CGContextFillRect(context, bar);
     int percent[3] = { 0, 0, 0 };
     const bool known = !std::isnan(r.bandShare[0][c]);
@@ -1577,7 +1575,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         CGFloat x = bar.origin.x;
         for (int b = 0; b < 3; ++b) {
             const CGFloat w = bar.size.width * r.bandShare[b][c];
-            [srgb(kBandColors[b]) setFill];
+            [p3(kBandColors[b]) setFill];
             CGContextFillRect(context, CGRectMake(x, bar.origin.y, w, bar.size.height));
             x += w;
             percent[b] = (int)std::lround(r.bandShare[b][c] * 100.0);
@@ -1599,7 +1597,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (NSAttributedString *)scaleText:(NSString *)s {
     return [[NSAttributedString alloc] initWithString:s attributes:@{
         NSFontAttributeName: _overlayFont,
-        NSForegroundColorAttributeName: srgb(kScaleLabel)
+        NSForegroundColorAttributeName: p3(kScaleLabel)
     }];
 }
 
@@ -1610,7 +1608,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     const CGFloat top = self.bounds.origin.y + [self rulerHeight];
     CGContextSaveGState(context);
 
-    [srgb(kScaleBorder) setStroke];
+    [p3(kScaleBorder) setStroke];
     CGContextSetLineWidth(context, 1.0);
     const CGFloat borderY = (std::floor(top * scale) - 0.5) / scale;
     CGContextMoveToPoint(context, self.bounds.origin.x, borderY);
@@ -1624,7 +1622,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     }
     const double major = overlay::rulerInterval(duration, wave.size.width);
     const double minor = major / 4.0;
-    [srgb(kScaleLabel, 0.6) setStroke];
+    [p3(kScaleLabel, 0.6) setStroke];
     for (long i = 0; i * minor <= duration; ++i) {
         const CGFloat x = (std::floor((wave.origin.x + wave.size.width * (i * minor / duration)) * scale) + 0.5) / scale;
         const CGFloat length = (i % 4 == 0) ? kRulerMajorTick : kRulerMinorTick;
