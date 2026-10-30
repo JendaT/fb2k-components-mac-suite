@@ -167,6 +167,15 @@ static NSColor *blendP3(NSColor *a, CGFloat fraction, NSColor *b) {
                                     alpha:x.alphaComponent + (y.alphaComponent - x.alphaComponent) * t];
 }
 
+// HSB colour built in sRGB terms, its numbers then read as Display P3 like
+// every other theme colour. nil when it cannot be converted.
+static NSColor *hueColorP3(CGFloat h, CGFloat s, CGFloat b) {
+    NSColor *rgb = [[NSColor colorWithHue:h saturation:s brightness:b alpha:1.0]
+                    colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!rgb) return nil;
+    return [NSColor colorWithDisplayP3Red:rgb.redComponent green:rgb.greenComponent blue:rgb.blueComponent alpha:1.0];
+}
+
 // Two-colour gradient interpolated in Display P3.
 static NSGradient *gradientP3(NSColor *from, NSColor *to) {
     const CGFloat locations[2] = {0.0, 1.0};
@@ -190,12 +199,7 @@ static NSGradient *gradientP3(NSColor *from, NSColor *to) {
     CGFloat h, s, b, a;
     [c getHue:&h saturation:&s brightness:&b alpha:&a];
     h += 0.5; if (h >= 1.0) h -= 1.0;
-    // Build the hue in sRGB terms, then read its numbers as P3 like every
-    // other theme colour.
-    NSColor *rgb = [[NSColor colorWithHue:h saturation:MAX(s, 0.55) brightness:MAX(b, 0.75) alpha:1.0]
-                    colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    if (!rgb) return [NSColor systemOrangeColor];
-    return [NSColor colorWithDisplayP3Red:rgb.redComponent green:rgb.greenComponent blue:rgb.blueComponent alpha:1.0];
+    return hueColorP3(h, MAX(s, 0.55), MAX(b, 0.75)) ?: [NSColor systemOrangeColor];
 }
 
 - (void)drawSideLine {
@@ -533,7 +537,8 @@ static const CGFloat kPeakLineAlpha = 0.45;
             if (bv * _pMag < 1.0) continue;
             CGFloat h = 0.66 - 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);
             if (h < 0) h = 0;
-            NSColor *c = [NSColor colorWithHue:h saturation:0.85 brightness:brightness alpha:1.0];
+            NSColor *c = hueColorP3(h, 0.85, brightness);
+            if (!c) continue;
             CGContextSetFillColorWithColor(ctx, c.CGColor);
             CGContextFillRect(ctx, barRect(i, bv));
         }
