@@ -15,6 +15,8 @@
 #include <limits>
 #include <vector>
 
+namespace analysis = waveseek::analysis;
+
 // Construct-on-first-use singleton to avoid static initialization order issues
 WaveformScanner& getWaveformScanner() {
     static WaveformScanner g_scanner;

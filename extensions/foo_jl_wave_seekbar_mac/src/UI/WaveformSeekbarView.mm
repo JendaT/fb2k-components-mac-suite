@@ -30,6 +30,12 @@
 #include <cmath>
 #include <vector>
 
+namespace analysis = waveseek::analysis;
+namespace layered = waveseek::layered;
+namespace overlay = waveseek::overlay;
+namespace simple = waveseek::simple;
+namespace theme = waveseek::theme;
+
 namespace {
 
 // Style Layered: peak envelope fill and edge, then the loudness body tinted
@@ -240,17 +246,32 @@ void addHalfShape(CGMutablePathRef path, const std::vector<float>& frac, CGFloat
 // track limited to 0 dBFS doesn't draw a flat line along the top
 const float kEdgeCeiling = 0.995f;   // within ~0.2 dB of 0 dBFS on the -36 dB axis
 
-void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat centerY,
-             CGFloat amplitude, CGFloat dir) {
-    bool open = false;
+// Stroked kEdgeChunk columns at a time: one path with a vertex per pixel
+// column takes CoreGraphics 0.1-0.35 s to stroke, on the main thread. Each
+// run starts where the last one ended; round caps close the joins.
+const size_t kEdgeChunk = 64;
+
+void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat centerY,
+                CGFloat amplitude, CGFloat dir) {
+    size_t points = 0;
+    auto finishRun = [&] {
+        if (points > 1) CGContextStrokePath(ctx);
+        else CGContextBeginPath(ctx);
+        points = 0;
+    };
     for (size_t c = 0; c < frac.size(); ++c) {
         const CGFloat h = frac[c] * amplitude;
-        if (h < 0.5 || frac[c] >= kEdgeCeiling) { open = false; continue; }
+        if (h < 0.5 || frac[c] >= kEdgeCeiling) { finishRun(); continue; }
         const CGPoint p = CGPointMake(c + 0.5, centerY + dir * h);
-        if (open) CGPathAddLineToPoint(path, NULL, p.x, p.y);
-        else CGPathMoveToPoint(path, NULL, p.x, p.y);
-        open = true;
+        if (points == 0) CGContextMoveToPoint(ctx, p.x, p.y);
+        else CGContextAddLineToPoint(ctx, p.x, p.y);
+        if (++points == kEdgeChunk) {
+            CGContextStrokePath(ctx);
+            CGContextMoveToPoint(ctx, p.x, p.y);
+            points = 1;
+        }
     }
+    finishRun();
 }
 
 } // namespace
@@ -265,6 +286,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     // Mouse over the view, for the readout and the summary badge
     BOOL _hovering;
     CGFloat _hoverX;
+    BOOL _seeking;               // a click on the waveform, until the mouse is up
     BOOL _showReadout;
     int _readoutPosition;
     float _tintStrength;
@@ -422,6 +444,23 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         owner:self
         userInfo:nil];
     [self addTrackingArea:_trackingArea];
+
+    // The view can move or shrink away from the mouse without an exit event
+    if (_hovering && self.window) {
+        const NSPoint mouse = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+        if (!NSPointInRect(mouse, self.bounds)) _hovering = NO;
+    }
+}
+
+// Hidden or moved while the mouse was over it: no exit event either
+- (void)viewDidHide {
+    [super viewDidHide];
+    _hovering = NO;
+}
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    _hovering = NO;
 }
 
 #pragma mark - Appearance
@@ -438,11 +477,19 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     return [name isEqualToString:NSAppearanceNameDarkAqua];
 }
 
+// The Simple styles draw on black, except over glass
+- (BOOL)drawsOnBlack {
+    return familyOf(_style) == FamilySimple && !_glassBackground;
+}
+
 - (void)updateColorsForAppearance {
     using namespace waveform_config;
 
     const BOOL dark = [self isDarkAppearance];
-    const uint32_t waveARGB = static_cast<uint32_t>(dark
+    // On black, the Simple styles take the dark-mode wave colour in light
+    // mode too
+    const BOOL onBlack = [self drawsOnBlack];
+    const uint32_t waveARGB = static_cast<uint32_t>((dark || onBlack)
         ? getConfigInt(kKeyWaveColorDark, kDefaultWaveColorDark)
         : getConfigInt(kKeyWaveColorLight, kDefaultWaveColorLight));
     const uint32_t bgARGB = static_cast<uint32_t>(dark
@@ -458,10 +505,10 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     _waveformColor = color(waveARGB);
     _backgroundColor = color(bgARGB);
 
-    // The Simple styles draw on black. Over glass (or a see-through
-    // colour) the guides are derived against the appearance instead.
+    // Over glass (or a see-through colour) the guides are derived against
+    // the appearance instead.
     theme::RGB background = theme::RGB::fromARGB(bgARGB);
-    if (familyOf(_style) == FamilySimple) {
+    if (onBlack) {
         background = kBlack;
     } else if (_glassBackground || ((bgARGB >> 24) & 0xFF) < 128) {
         background = dark ? kBlack : theme::RGB{ 1, 1, 1 };
@@ -540,23 +587,23 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     for (int m = 0; m < MaskCount; ++m) {
         CGContextRef ctx = createMaskContext(width, height);
         if (!ctx) return NO;
-        CGMutablePathRef path = CGPathCreateMutable();
-        for (int half = 0; half < 2; ++half) {
-            switch (m) {
-                case MaskPeakFill: addHalfShape(path, shape.peak[half], centerY, amplitude, dirs[half]); break;
-                case MaskPeakEdge: addEdge(path, shape.peak[half], centerY, amplitude, dirs[half]); break;
-                case MaskBody:     addHalfShape(path, shape.body[half], centerY, amplitude, dirs[half]); break;
-            }
-        }
-        CGContextAddPath(ctx, path);
         if (m == MaskPeakEdge) {
             CGContextSetLineWidth(ctx, scale);
             CGContextSetLineJoin(ctx, kCGLineJoinRound);
-            CGContextStrokePath(ctx);
+            CGContextSetLineCap(ctx, kCGLineCapRound);
+            for (int half = 0; half < 2; ++half) {
+                strokeEdge(ctx, shape.peak[half], centerY, amplitude, dirs[half]);
+            }
         } else {
+            CGMutablePathRef path = CGPathCreateMutable();
+            for (int half = 0; half < 2; ++half) {
+                const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[half] : shape.body[half];
+                addHalfShape(path, frac, centerY, amplitude, dirs[half]);
+            }
+            CGContextAddPath(ctx, path);
             CGContextFillPath(ctx);
+            CGPathRelease(path);
         }
-        CGPathRelease(path);
         _masks[m] = CGBitmapContextCreateImage(ctx);
         CGContextRelease(ctx);
         if (!_masks[m]) return NO;
@@ -735,7 +782,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         }
         CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGContextRef strip = CGBitmapContextCreate(pixels.data(), _maskWidth, 1, 8, _maskWidth * 4, space,
-                                                   kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+                                                   (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
         CGColorSpaceRelease(space);
         CGImageRef image = strip ? CGBitmapContextCreateImage(strip) : NULL;
         if (image) {
@@ -881,7 +928,9 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (r.size.height >= kMinWaveformHeight + 2 * kWaveformMargin) {
         r = CGRectInset(r, 0, kWaveformMargin);
     }
-    return r;
+    // On whole pixels: the composite is built at the pixel size and would be
+    // resampled (blurred) into a rect that isn't, e.g. beside a 67.2 pt gutter
+    return [self backingAlignedRect:r options:NSAlignAllEdgesNearest];
 }
 
 // The waveform's rect grown back over its top and bottom margins
@@ -1245,9 +1294,16 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 
 - (void)drawPlaceholderInContext:(CGContextRef)context rect:(CGRect)rect {
     NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
-    const NSSize size = [text sizeWithAttributes:_placeholderAttributes];
+    NSDictionary *attrs = _placeholderAttributes;
+    if ([self drawsOnBlack] && ![self isDarkAppearance]) {
+        // The light-mode secondary label colour is dark grey
+        NSMutableDictionary *onBlack = [attrs mutableCopy];
+        onBlack[NSForegroundColorAttributeName] = [NSColor colorWithWhite:1.0 alpha:0.55];
+        attrs = onBlack;
+    }
+    const NSSize size = [text sizeWithAttributes:attrs];
     [text drawAtPoint:NSMakePoint(CGRectGetMidX(rect) - size.width / 2, CGRectGetMidY(rect) - size.height / 2)
-       withAttributes:_placeholderAttributes];
+       withAttributes:attrs];
 }
 
 // 1 pt line, and the time in a chip beside it at the top
@@ -1255,7 +1311,9 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     if (self.trackDuration <= 0.0 || (self.playbackPosition <= 0.0 && !self.playing)) return;
 
     const CGFloat scale = [self backingScale];
-    const CGFloat x = (std::floor((rect.origin.x + rect.size.width * self.playbackPosition) * scale) + 0.5) / scale;
+    const CGFloat position = std::clamp(self.playbackPosition, 0.0, 1.0);
+    const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * position) * scale) + 0.5) / scale,
+                               CGRectGetMaxX(rect) - 0.5 / scale);
 
     CGContextSaveGState(context);
     setStroke(context, _tokens.cursor, 1.0);
@@ -1423,7 +1481,15 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     }
     const CGFloat room = CGRectGetMaxY(self.bounds) - floor;
     const bool bands = TS(kReadoutHeight) <= room;
-    const CGFloat height = bands ? TS(kReadoutHeight) : TS(kReadoutCompactHeight);
+    // Without the bands, as many value rows as fit (Corr goes first); in a
+    // view too short even for the time, no box
+    int rowCount = 4;
+    auto compactHeight = [&](int rows) {
+        return TS(rows > 0 ? kReadoutCompactHeight - (4 - rows) * kReadoutRowStep : kReadoutRowsY);
+    };
+    while (!bands && rowCount > 0 && compactHeight(rowCount) > room) --rowCount;
+    const CGFloat height = bands ? TS(kReadoutHeight) : compactHeight(rowCount);
+    if (height > room) return;
     // 10 pt from the top, less in views too short for that; at the bottom
     // right it sits on its floor instead
     const CGFloat topInset = std::clamp<CGFloat>((room - height) / 2, 0.0, overlay::kReadoutTop);
@@ -1452,7 +1518,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
         { @"Crest", overlay::formatNumber(r.crestDb[c], 1), @" dB" },
         { @"Corr", overlay::formatNumber(r.correlation[c], 2, true), @"" },
     };
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < rowCount; ++i) {
         const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep);
         drawLeft([self text:rows[i].label color:kOverlayLabel bold:NO], y);
         drawRight([self text:[str(rows[i].value) stringByAppendingString:rows[i].unit] color:kOverlayValue bold:NO], y);
@@ -1583,6 +1649,7 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
     for (const Mark& m : marks) {
         NSAttributedString *label = [self scaleText:m.text];
         const CGFloat h = label.size.height;
+        if (h > area.size.height) return;   // no room for any label
         const CGFloat y = std::clamp(m.y - h / 2, area.origin.y, CGRectGetMaxY(area) - h);
         if (lastBottom == CGFLOAT_MAX) topLabelY = y;
         if (y + h > lastBottom) continue;
@@ -1625,12 +1692,20 @@ void addEdge(CGMutablePathRef path, const std::vector<float>& frac, CGFloat cent
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    [self handleSeekWithEvent:event];
+    // Not on the level scale: clamped, a click there would seek to the end
+    // and skip to the next track
+    const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
+    _seeking = x < CGRectGetMaxX([self waveformRect]);
+    if (_seeking) [self handleSeekWithEvent:event];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
     _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
-    [self handleSeekWithEvent:event];
+    if (_seeking) [self handleSeekWithEvent:event];
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    _seeking = NO;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {

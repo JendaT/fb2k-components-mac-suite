@@ -286,7 +286,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         }
         y += 28;
     }
-    [self addHint:@"Editing a colour switches Colours to Custom." x:x y:&y width:w lines:1];
+    [self addHint:@"Editing a colour switches Colours to Custom. The Simple styles draw on black, "
+                   "in the dark mode wave colour." x:x y:&y width:w lines:1];
     y += kRowGap;
 
     _glassBackgroundCheckbox = [self addCheckbox:@"Glass background"
@@ -375,7 +376,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     CGFloat y = [self addCardTitle:@"Played part" x:x y:top + kCardPad];
 
     _shadePlayedCheckbox = [self addCheckbox:@"Shade played portion"
-                                        hint:@"Dim the part already played with the background colour."
+                                        hint:@"Dim the part already played with the background colour "
+                                              "(black in the Simple styles)."
                                            x:x y:&y width:w];
 
     [self addHeading:@"Dimming" x:x y:y width:w];
@@ -571,6 +573,12 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _styleHint.stringValue = hint;
     _bodyTintPopup.enabled = _stylePopup.selectedTag == StyleLayered;
     _gradientBandsPopup.enabled = _stylePopup.selectedTag == StyleSolid;
+
+    // On black (no glass) the Simple styles use only the dark mode wave colour
+    const NSInteger style = _stylePopup.selectedTag;
+    const bool onBlack = (style == StyleTwoTone || style == StyleGlow || style == StyleHeat)
+                      && _glassBackgroundCheckbox.state != NSControlStateValueOn;
+    _waveColorLightWell.enabled = _bgColorLightWell.enabled = _bgColorDarkWell.enabled = !onBlack;
 }
 
 - (void)styleChanged:(id)sender {
@@ -628,6 +636,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     using namespace waveform_config;
     if (sender == _glassBackgroundCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
+        [self updateStyleHint];
     } else if (sender == _cursorTimeCheckbox) {
         setConfigBool(kKeyCursorTime, _cursorTimeCheckbox.state == NSControlStateValueOn);
     } else if (sender == _shadePlayedCheckbox) {

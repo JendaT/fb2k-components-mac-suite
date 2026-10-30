@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace analysis {
+namespace waveseek::analysis {
 
 namespace {
     const size_t kShortTermHalf = 15;      // 3 s window, centred: 15 hops each side
@@ -196,4 +196,4 @@ Columns mixdown(const Columns& in) {
     return out;
 }
 
-} // namespace analysis
+} // namespace waveseek::analysis

@@ -15,6 +15,8 @@
 #include <cmath>
 #include <vector>
 
+using namespace waveseek;
+
 namespace {
 
 simple::Shape shapeOf(const std::vector<float>& lr, uint32_t channels, size_t columns) {

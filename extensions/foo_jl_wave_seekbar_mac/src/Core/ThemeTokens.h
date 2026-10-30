@@ -11,7 +11,7 @@
 
 #include <cstdint>
 
-namespace theme {
+namespace waveseek::theme {
 
 struct RGB {
     float r = 0, g = 0, b = 0;      // sRGB, 0..1
@@ -56,4 +56,4 @@ Tokens deriveTokens(const RGB& accent, const RGB& background);
 // -14 .. +14 degrees; 0 gives the accent everywhere.
 RGB tintColor(const RGB& accent, float position, float strength = 1.0f);
 
-} // namespace theme
+} // namespace waveseek::theme

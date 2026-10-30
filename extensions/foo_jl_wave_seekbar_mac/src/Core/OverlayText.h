@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <string>
 
-namespace overlay {
+namespace waveseek::overlay {
 
 // Hover readout box, in points at the 10 pt text size (scaled with the text)
 constexpr double kReadoutWidth = 186.0;
@@ -65,7 +65,8 @@ inline double rulerInterval(double durationSeconds, double widthPoints) {
     for (double interval : kRulerIntervals) {
         if (interval * pointsPerSecond >= kRulerLabelSpacing) return interval;
     }
-    return kRulerIntervals[sizeof kRulerIntervals / sizeof kRulerIntervals[0] - 1];
+    // Past the list (many hours in a narrow view): whole hours
+    return 3600.0 * std::ceil(kRulerLabelSpacing / (3600.0 * pointsPerSecond));
 }
 
 // Left edge of the readout box: right of the mouse, or left of it near the
@@ -77,4 +78,4 @@ inline double readoutX(double mouseX, double viewWidth, double boxWidth = kReado
     return std::fmax(0.0, x);
 }
 
-} // namespace overlay
+} // namespace waveseek::overlay

@@ -24,7 +24,7 @@
 #include <random>
 #include <vector>
 
-using namespace analysis;
+using namespace waveseek::analysis;
 
 namespace {
 
