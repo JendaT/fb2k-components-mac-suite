@@ -346,7 +346,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ### [2.0.0] - 2026-10-30
 
-Redesign and Display P3 colours contributed by [Scannou](https://github.com/Scannou) (#49, #55).
+Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 #### Added
 - **Layered style**: Each channel's peak envelope around its momentary loudness body on a dBFS axis, tinted by spectral balance.

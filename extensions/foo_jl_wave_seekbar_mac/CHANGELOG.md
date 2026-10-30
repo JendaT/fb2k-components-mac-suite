@@ -4,7 +4,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 ## [2.0.0] - 2026-10-30
 
-The redesign and the Display P3 colours were contributed by [Scannou](https://github.com/Scannou) (#49, #55).
+The redesign and the Display P3 colours were contributed by @Scannou (#49, #55).
 
 ### Added
 - **Layered style**: Each channel's peak envelope around its momentary (400 ms) loudness body on a dBFS axis; the gap between them shows the crest factor. Body tint (off, subtle, strong) shades it by the passage's spectral balance.
