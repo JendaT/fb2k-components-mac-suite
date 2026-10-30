@@ -13,6 +13,7 @@
 #include <mutex>
 #include <atomic>
 #include <algorithm>
+#include <Carbon/Carbon.h>  // kVK_Escape
 #import <QuartzCore/QuartzCore.h>
 
 namespace {
@@ -87,6 +88,46 @@ public:
     }
 };
 FB2K_SERVICE_FACTORY(spectrogram_initquit);
+
+#pragma mark - Full-screen window
+
+// Hosts its own SpectrogramController in a native full-screen Space, so the
+// panel stays in the foobar2000 layout. Closes itself once full screen is exited.
+@interface SpectrogramFullScreenWindow : NSWindow <NSWindowDelegate>
+@property (nonatomic, strong) SpectrogramController *spectrogramController;
+- (void)exitFullScreen;
+@end
+
+namespace {
+    // At most one full-screen spectrogram; main thread only.
+    SpectrogramFullScreenWindow *g_fullScreenWindow = nil;
+}
+
+@implementation SpectrogramFullScreenWindow
+
+- (void)exitFullScreen {
+    if (self.styleMask & NSWindowStyleMaskFullScreen) [self toggleFullScreen:nil];
+    else [self close];
+}
+
+- (void)keyDown:(NSEvent *)event {
+    if (event.keyCode == kVK_Escape) { [self exitFullScreen]; return; }
+    [super keyDown:event];
+}
+
+- (void)windowDidExitFullScreen:(NSNotification *)note {
+    [self close];
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+    [self close];
+}
+
+- (void)windowWillClose:(NSNotification *)note {
+    if (g_fullScreenWindow == self) g_fullScreenWindow = nil;
+}
+
+@end
 
 @implementation SpectrogramController
 
@@ -314,6 +355,13 @@ static bool playbackRunning() {
 - (void)spectrogramViewRequestsContextMenu:(SpectrogramView *)view atPoint:(NSPoint)point {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Spectrogram"];
 
+    NSMenuItem *fullScreen = [[NSMenuItem alloc] initWithTitle:g_fullScreenWindow ? @"Exit Full Screen" : @"Full Screen"
+                                                        action:@selector(menuToggleFullScreen:)
+                                                 keyEquivalent:@""];
+    fullScreen.target = self;
+    [menu addItem:fullScreen];
+    [menu addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem *freeze = [[NSMenuItem alloc] initWithTitle:@"Freeze"
                                                     action:@selector(menuToggleFreeze:)
                                              keyEquivalent:@""];
@@ -335,6 +383,58 @@ static bool playbackRunning() {
     prefs.target = self;
     [menu addItem:prefs];
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+}
+
+- (void)spectrogramViewRequestsFullScreenToggle:(SpectrogramView *)view {
+    [self toggleFullScreen];
+}
+
+- (void)menuToggleFullScreen:(NSMenuItem *)sender {
+    [self toggleFullScreen];
+}
+
+// From the panel this opens the full-screen window; from inside it (or while
+// one is already open) it exits.
+- (void)toggleFullScreen {
+    if (g_fullScreenWindow) { [g_fullScreenWindow exitFullScreen]; return; }
+    if (g_shutdown.load()) return;
+
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    const NSRect frame = screen.visibleFrame;
+
+    SpectrogramFullScreenWindow *w = [[SpectrogramFullScreenWindow alloc]
+        initWithContentRect:frame
+                  styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                            NSWindowStyleMaskResizable | NSWindowStyleMaskFullSizeContentView
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    w.releasedWhenClosed = NO;
+    w.title = @"Spectrogram";
+    w.titleVisibility = NSWindowTitleHidden;
+    w.titlebarAppearsTransparent = YES;
+    w.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
+    w.delegate = w;
+
+    // The controller's view opts out of autoresizing masks, so pin it inside
+    // a plain content view rather than making it the window's content view.
+    SpectrogramController *controller = [[SpectrogramController alloc] init];
+    NSView *spectrogram = controller.view;
+    spectrogram.layer.cornerRadius = 0;
+    controller.spectrogramView.fullScreen = YES;
+    NSView *content = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, frame.size.width, frame.size.height)];
+    [content addSubview:spectrogram];
+    [NSLayoutConstraint activateConstraints:@[
+        [spectrogram.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+        [spectrogram.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+        [spectrogram.topAnchor constraintEqualToAnchor:content.topAnchor],
+        [spectrogram.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
+    ]];
+    w.contentView = content;
+    w.spectrogramController = controller;
+
+    g_fullScreenWindow = w;
+    [w makeKeyAndOrderFront:nil];
+    [w toggleFullScreen:nil];
 }
 
 - (void)menuToggleFreeze:(NSMenuItem *)sender {
