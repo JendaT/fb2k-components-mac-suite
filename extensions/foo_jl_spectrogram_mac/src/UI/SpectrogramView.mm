@@ -196,13 +196,24 @@ namespace {
 
 - (BOOL)isFlipped { return NO; }  // origin bottom-left: frequency grows upward / rightward
 
+- (void)setFullScreen:(BOOL)fullScreen {
+    if (_fullScreen == fullScreen) return;
+    _fullScreen = fullScreen;
+    [self reloadSettings];
+}
+
 - (void)reloadSettings {
     using namespace spectrogram_config;
     const int scale = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
     const int minHz = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
     const int maxHz = std::max((int)getConfigInt(kKeyMaxHz, kDefaultMaxHz), minHz + 100);
 
-    const bool horizontal = getConfigInt(kKeyOrientation, kDefaultOrientation) == OrientationHorizontal;
+    int orientation = (int)getConfigInt(kKeyOrientation, kDefaultOrientation);
+    if (_fullScreen) {
+        const int fs = (int)getConfigInt(kKeyFullScreenOrientation, kDefaultFullScreenOrientation);
+        if (fs == OrientationHorizontal || fs == OrientationVertical) orientation = fs;
+    }
+    const bool horizontal = orientation == OrientationHorizontal;
     const bool reverse = getConfigBool(kKeyReverseScroll, kDefaultReverseScroll);
 
     // History drawn under another frequency mapping or layout would sit at the
@@ -789,9 +800,17 @@ static NSString *noteName(double f) {
 - (BOOL)mouseDownCanMoveWindow { return NO; }
 
 // Hold the left button to read the frequency under the cursor; drag to scrub.
+// Double-click toggles full screen.
 - (void)mouseDown:(NSEvent *)event {
     if (event.modifierFlags & NSEventModifierFlagControl) {
         [self rightMouseDown:event];  // ctrl-click opens the context menu
+        return;
+    }
+    if (event.clickCount == 2 &&
+        [self.delegate respondsToSelector:@selector(spectrogramViewRequestsFullScreenToggle:)]) {
+        _probing = NO;
+        [_overlayView setNeedsDisplay:YES];
+        [self.delegate spectrogramViewRequestsFullScreenToggle:self];
         return;
     }
     _probing = YES;

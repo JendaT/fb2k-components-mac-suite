@@ -136,7 +136,7 @@ Scrolling spectrogram panel: frequency over time, level as color.
 - Mid, left, right, or side channel
 - Horizontal or vertical orientation (same meaning as in the Spectrum Analyzer, so the two line up), either scroll direction
 - Frequency axis and gridlines; click and hold to read the frequency and note under the cursor
-- Freeze and clear from the context menu
+- Double-click for full screen, with its own orientation setting; freeze and clear from the context menu
 
 ---
 

@@ -20,11 +20,17 @@ NS_ASSUME_NONNULL_BEGIN
 @optional
 // Sent when the view joins or leaves a window (its display link's screen changes).
 - (void)spectrogramViewDidMoveToWindow:(SpectrogramView *)view;
+// Sent on a double-click.
+- (void)spectrogramViewRequestsFullScreenToggle:(SpectrogramView *)view;
 @end
 
 @interface SpectrogramView : NSView
 
 @property (nonatomic, weak, nullable) id<SpectrogramViewDelegate> delegate;
+
+// The view in the full-screen window: takes the full-screen orientation
+// setting instead of the panel's. Set before the view is shown.
+@property (nonatomic) BOOL fullScreen;
 
 // Re-read display settings (colormap, axis, scale) from config.
 - (void)reloadSettings;

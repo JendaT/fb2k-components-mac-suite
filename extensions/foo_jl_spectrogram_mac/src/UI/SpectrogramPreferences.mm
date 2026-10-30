@@ -36,6 +36,7 @@
     NSPopUpButton *_scrollSpeedPopup;
     NSPopUpButton *_orientationPopup;
     NSButton      *_reverseCheckbox;
+    NSPopUpButton *_fullScreenOrientationPopup;
     NSButton      *_freqAxisCheckbox;
     NSButton      *_legendCheckbox;
     NSSlider      *_gridOpacitySlider;
@@ -59,7 +60,7 @@
 - (NSString *)preferencesTitle { return @"Spectrogram"; }
 
 - (void)loadView {
-    SpectrogramFlippedView *view = [[SpectrogramFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 790)];
+    SpectrogramFlippedView *view = [[SpectrogramFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 460, 820)];
     self.view = view;
     [NSColor setIgnoresAlpha:NO];
     [self buildUI];
@@ -250,6 +251,20 @@
     [self.view addSubview:_reverseCheckbox];
     y += 30;
 
+    [self.view addSubview:[self label:@"Full screen:" at:NSMakePoint(labelX + 10, y + 3)]];
+    _fullScreenOrientationPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(controlX, y, 150, 25)];
+    // Item tags hold the stored value: kFullScreenSameAsPanel or an Orientation.
+    [_fullScreenOrientationPopup addItemWithTitle:@"Same as panel"];
+    _fullScreenOrientationPopup.lastItem.tag = spectrogram_config::kFullScreenSameAsPanel;
+    [_fullScreenOrientationPopup addItemWithTitle:@"Horizontal"];
+    _fullScreenOrientationPopup.lastItem.tag = spectrogram_config::OrientationHorizontal;
+    [_fullScreenOrientationPopup addItemWithTitle:@"Vertical"];
+    _fullScreenOrientationPopup.lastItem.tag = spectrogram_config::OrientationVertical;
+    _fullScreenOrientationPopup.toolTip = @"Orientation of the full-screen view (double-click the spectrogram), independent of the panel in the layout";
+    _fullScreenOrientationPopup.target = self; _fullScreenOrientationPopup.action = @selector(popupChanged:);
+    [self.view addSubview:_fullScreenOrientationPopup];
+    y += 30;
+
     _freqAxisCheckbox = [self checkbox:@"Show frequency axis" at:NSMakePoint(labelX + 10, y)];
     [self.view addSubview:_freqAxisCheckbox];
     y += 26;
@@ -383,6 +398,8 @@
     if (![_orientationPopup selectItemWithTag:getConfigInt(kKeyOrientation, kDefaultOrientation)])
         [_orientationPopup selectItemWithTag:kDefaultOrientation];
     _reverseCheckbox.state = getConfigBool(kKeyReverseScroll, kDefaultReverseScroll) ? NSControlStateValueOn : NSControlStateValueOff;
+    if (![_fullScreenOrientationPopup selectItemWithTag:getConfigInt(kKeyFullScreenOrientation, kDefaultFullScreenOrientation)])
+        [_fullScreenOrientationPopup selectItemWithTag:kDefaultFullScreenOrientation];
 
     _minHzField.integerValue = getConfigInt(kKeyMinHz, kDefaultMinHz);
     _maxHzField.integerValue = getConfigInt(kKeyMaxHz, kDefaultMaxHz);
@@ -459,6 +476,7 @@
     else if (sender == _slopePopup)       setConfigInt(kKeySlopeTenths, _slopePopup.selectedItem.tag);
     else if (sender == _scrollSpeedPopup) setConfigInt(kKeyScrollSpeed, _scrollSpeedPopup.selectedItem.tag);
     else if (sender == _orientationPopup) setConfigInt(kKeyOrientation, _orientationPopup.selectedItem.tag);
+    else if (sender == _fullScreenOrientationPopup) setConfigInt(kKeyFullScreenOrientation, _fullScreenOrientationPopup.selectedItem.tag);
     [self notifyChanged];
 }
 

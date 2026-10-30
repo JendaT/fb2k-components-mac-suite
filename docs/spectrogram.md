@@ -70,12 +70,17 @@ The plot starts out in the colormap's floor color; the margins around it use the
 
 Click and hold the left mouse button to show a marker with the frequency and nearest note (A4 = 440 Hz) under the cursor; drag to scrub. The marker line and the note take the colormap's accent: the most vivid color of its upper half (Inferno: orange, Viridis: yellow, theme ramps: the theme's accent).
 
+### Full Screen
+
+Double-click the spectrogram (or choose **Full Screen** from its context menu) to open it in its own full-screen Space; double-click again or press Esc to return. The panel stays in the layout. The full-screen view can use its own orientation (**Full screen** setting), so a narrow panel in the layout can open as a wide waterfall, or the other way round.
+
 ### Context Menu
 
 Right-click the element:
 
 | Item | Description |
 |------|-------------|
+| **Full Screen** / **Exit Full Screen** | Same as a double-click |
 | **Freeze** | Stop scrolling while playback continues |
 | **Clear** | Drop the picture drawn so far |
 | **Preferences...** | Open the settings page |
@@ -111,6 +116,7 @@ Changing the frequency scale or range clears the picture, since older columns wo
 | Scroll speed | Travel along the time axis | 30, 60, 120, 240 pt/s | 120 pt/s |
 | Orientation | Frequency along Y (vertical) or X (horizontal), as in the Spectrum Analyzer | Horizontal, Vertical | Vertical |
 | Reverse scroll direction | New audio at the left / bottom instead of the right / top | On/Off | Off |
+| Full screen | Orientation of the full-screen view, independent of the panel's | Same as panel, Horizontal, Vertical | Same as panel |
 | Show frequency axis | Frequency labels right of the plot (vertical) or below it (horizontal) | On/Off | On |
 | Show dB color scale | Color bar on the right | On/Off | On |
 | Frequency labels | Font size | 8-16 pt | 11 pt |
