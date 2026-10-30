@@ -665,6 +665,15 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 ## Spectrum Analyzer
 
+### [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+#### Changed
+- **Display P3 colors**: Full saturation on wide-gamut screens; stored colors look more saturated than before.
+- **Color mixing**: Shadow, peak caps, gradient bars and color bars keep the saturation.
+- **Color wells**: Read and write P3.
+
 ### [1.0.0] - 2026-10-20
 
 #### Added
@@ -722,7 +731,7 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 ### [0.1.0] - 2026-10-03
 
 #### Added
-- Initial release, contributed by [Scannou](https://github.com/Scannou)
+- Initial release, contributed by @Scannou
 - **Analyzer core**: Real-time FFT bars from the core visualisation stream; log/linear band mapping; sub-bin low-end bands interpolated; 0..-80 dB display window shared by bars and grid.
 - **Dynamics**: Attack/decay smoothing plus three fall timescales (bar, shadow envelope, peak line with hold).
 - **Rendering**: Solid / gradient / spectrum bar styles; bars or smooth full-width curve; horizontal or vertical orientation; dB scale and frequency axis; glass background.
@@ -730,6 +739,15 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 - **Lifecycle**: Streams released via `initquit` before service teardown (fixes abort on quit).
 
 ## Vectorscope
+
+### [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+#### Changed
+- **Display P3 colors**: Full saturation on wide-gamut screens; stored colors look more saturated than before.
+- **Afterglow trace**: Keeps the theme's saturation, as do the grid and correlation bars.
+- **Color wells**: Read and write P3.
 
 ### [1.0.0] - 2026-10-20
 
@@ -746,7 +764,7 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 ### [0.1.0] - 2026-10-12
 
 #### Added
-- Initial release, contributed by [Scannou](https://github.com/Scannou)
+- Initial release, contributed by @Scannou
 - **Scope**: Goniometer or Lissajous style with afterglow trace (lines or dots), -6/-12 dB guides and L/R/M/S axes.
 - **Band colors**: Optional low/mid/high colored trace.
 - **Gain**: Auto gain that keeps the trace inside the scope, or fixed 0 to +36 dB.

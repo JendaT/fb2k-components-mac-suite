@@ -28,7 +28,7 @@ JL_COMPONENT_ABOUT_BY(
     "- Phase correlation meter, broadband or low / mid / high\n"
     "- Meter on any side, with a recent-range hold band\n"
     "- Grid with level guides and L / R / M / S labels\n"
-    "- Phosphor and other color themes, light/dark colors, glass background"
+    "- Phosphor and other color themes in Display P3, light/dark colors, glass background"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_vectorscope.component");

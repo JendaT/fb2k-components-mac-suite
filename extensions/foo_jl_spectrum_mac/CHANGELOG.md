@@ -2,9 +2,21 @@
 
 All notable changes to Spectrum Analyzer will be documented in this file.
 
+## [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+### Changed
+- **Display P3 colors**: Theme and custom colors are drawn in Display P3, so they show at full saturation on wide-gamut screens; stored colors are kept, so they look more saturated than before.
+- **Color mixing**: Shadow fill, peak caps, gradient bars and color bars mix in P3, so they keep the saturation; the side line and the Spectrum bar style's rainbow follow.
+- **Color wells**: Read and write P3, so a picked color is what is drawn.
+
+### Technical
+- Theme color helpers shared in `shared/ThemeColor.h`; the rules are in `docs/theme-colours.md`.
+
 ## [1.0.0] - 2026-10-20
 
-Contributed by [Scannou](https://github.com/Scannou), apart from the Component details, About and Preferences title entries.
+Contributed by @Scannou, apart from the Component details, About and Preferences title entries.
 
 ### Added
 - **Own FFT**: Analyses PCM from the visualisation stream with its own vDSP FFT (Blackman-Harris or Hann window, 1024-32768); steep roll-offs such as a CD master's cut-off show as a cliff instead of a leakage floor.
@@ -33,7 +45,7 @@ Contributed by [Scannou](https://github.com/Scannou), apart from the Component d
 
 ## [0.3.0] - 2026-10-12
 
-Contributed by [Scannou](https://github.com/Scannou).
+Contributed by @Scannou.
 
 ### Added
 - **Full-screen view**: Double-click the panel, or choose Full Screen from its context menu, to open the spectrum in a native full-screen Space; Esc, double-click or Exit Full Screen leaves it.
@@ -49,7 +61,7 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 ## [0.2.0] - 2026-10-09
 
-Contributed by [Scannou](https://github.com/Scannou).
+Contributed by @Scannou.
 
 ### Added
 - **Auto bar count**: One bar per 2 points of panel width, recomputed on resize, orientation and dB-scale changes; up to 2048 bars. New 384 and 512 presets.
@@ -66,7 +78,7 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 ## [0.1.0] - 2026-10-03
 
-Initial release. Contributed by [Scannou](https://github.com/Scannou).
+Initial release. Contributed by @Scannou.
 
 ### Added
 - **Analyzer core**: Real-time FFT bars from the core `visualisation_manager` stream (normalized FFT, mono mix); log or linear frequency mapping rebuilt on sample-rate change; 0..-80 dB display window shared by bars and grid.

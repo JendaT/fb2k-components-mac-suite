@@ -31,7 +31,7 @@ JL_COMPONENT_ABOUT_BY(
     "- Hover readout: frequency, note and level\n"
     "- Presets: Classic bars, RTA 1/3 octave, Fine detail, Mid + side\n"
     "- Full-screen view via double-click or context menu\n"
-    "- Phosphor and other color themes, light/dark colors, glass background"
+    "- Phosphor and other color themes in Display P3, light/dark colors, glass background"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_spectrum.component");

@@ -2,9 +2,21 @@
 
 All notable changes to Vectorscope will be documented in this file.
 
+## [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+### Changed
+- **Display P3 colors**: Theme and custom colors are drawn in Display P3, so they show at full saturation on wide-gamut screens; stored colors are kept, so they look more saturated than before.
+- **Afterglow trace**: Built in P3, so it keeps the theme's saturation; the grid and correlation bars follow.
+- **Color wells**: Read and write P3, so a picked color is what is drawn.
+
+### Technical
+- Theme color helpers shared in `shared/ThemeColor.h`; the rules are in `docs/theme-colours.md`.
+
 ## [1.0.0] - 2026-10-20
 
-Contributed by [Scannou](https://github.com/Scannou), apart from the Component details, About and Preferences title entries.
+Contributed by @Scannou, apart from the Component details, About and Preferences title entries.
 
 ### Added
 - **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first; theme names and colors match the Spectrum Analyzer.
@@ -18,7 +30,7 @@ Contributed by [Scannou](https://github.com/Scannou), apart from the Component d
 
 ## [0.1.0] - 2026-10-12
 
-Initial release. Contributed by [Scannou](https://github.com/Scannou).
+Initial release. Contributed by @Scannou.
 
 ### Added
 - **Scope**: Goniometer (mid up, side across) or Lissajous (left across, right up) style; full-scale outline, dashed -6 dB and -12 dB guides, mid/side and left/right axes with L / R / M / S labels.
