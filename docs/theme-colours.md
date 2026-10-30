@@ -1,6 +1,6 @@
 # Theme colours (Display P3)
 
-The visualisers (Spectrum, Vectorscope, Waveform Seekbar) store theme and custom colours as `0xAARRGGBB` and draw those numbers in **Display P3**, not sRGB. On a wide-gamut screen the same numbers then look more saturated than as sRGB; on an sRGB screen the system maps them back. Stored values were not migrated when this changed (PR #55), so a custom colour picked under sRGB shows a little more saturated now.
+The visualisers (Spectrum, Vectorscope, Waveform Seekbar, Spectrogram) store theme and custom colours as `0xAARRGGBB` and draw those numbers in **Display P3**, not sRGB. On a wide-gamut screen the same numbers then look more saturated than as sRGB; on an sRGB screen the system maps them back. Stored values were not migrated when this changed (PR #55), so a custom colour picked under sRGB shows a little more saturated now.
 
 ## Rules
 
@@ -10,3 +10,4 @@ The visualisers (Spectrum, Vectorscope, Waveform Seekbar) store theme and custom
 - Colours built from HSB (complementary hues, rainbow scales) are built in sRGB terms and their numbers read as P3, like the stored colours (Spectrum's `hueColorP3`).
 - Waveform draws its fixed overlay and scale palette (readout, badge, ruler, level scale, clip markers) in P3 too, so the whole seekbar shares one look.
 - Waveform's `ThemeTokens` derive deep / hot / guide colours in OKLCH with sRGB maths; the view draws the results as P3, so they relate to the accent as before.
+- Spectrogram's theme ramps, Custom ramp and panel colours are P3 like any theme colour, so a theme ramp matches its Spectrum theme. Its general-purpose colormaps (Inferno, Viridis, ...) are published sRGB definitions and stay sRGB: their tiles, dB colour bar and probe marker are drawn in sRGB (`isDisplayP3Map` picks the space). When one seeds the Custom wells, its colours are converted to P3 so the ramp starts out looking the same.

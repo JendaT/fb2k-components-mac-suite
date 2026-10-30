@@ -86,7 +86,8 @@ module Fb2kVersions
     "tidal" => "TIDAL_VERSION",
     "playback_controls" => "PLAYBACK_CONTROLS_VERSION",
     "spectrum" => "SPECTRUM_VERSION",
-    "vectorscope" => "VECTORSCOPE_VERSION"
+    "vectorscope" => "VECTORSCOPE_VERSION",
+    "spectrogram" => "SPECTROGRAM_VERSION"
   }
 
   # Parse version.h and extract versions
