@@ -344,14 +344,45 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Waveform Seekbar
 
-### [1.2.1] - 2026-10-19
+### [2.0.0] - 2026-10-30
+
+Redesign and Display P3 colours contributed by [Scannou](https://github.com/Scannou) (#49, #55).
+
+#### Added
+- **Layered style**: Each channel's peak envelope around its momentary loudness body on a dBFS axis, tinted by spectral balance.
+- **Simple styles**: Two-tone, Glow and Heat: L and R lanes on black, linear, with an RMS core.
+- **Split channels**: L above and R below one centre line, for every style.
+- **Loudness analysis**: Integrated loudness, LRA, true peak, PLR, clip runs, correlation and Lo/Mid/Hi energy per track.
+- **Hover readout, loudness summary and clip markers**: Optional overlays with the analysis.
+- **Scales**: Optional time ruler and dB level scale.
+- **Elapsed time**: Optional m:ss chip beside the cursor.
+- **Colour themes**: Presets shared with Spectrum Analyzer, phosphors first.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names.*
+
+#### Changed
+- **Defaults**: Two-tone in P4 white with the level scale, readout and clip markers; settings that were never changed take them too.
+- **Display P3 colours**: Full saturation on wide-gamut screens; stored colours look more saturated than before.
+- **Drawing**: Smooth per-pixel-column waveform; 8 pt margin top and bottom.
+- **Playback cursor**: Theme-coloured, within the waveform area.
+- **Cache**: Entries 10-20x larger; every track is analysed again once.
+- **Preferences**: Cards with a hint under each control.
+- **Parallel analysis**: Long local tracks are analysed in parallel segments (thanks @alies-dev, #40).*
+- **macOS 12, About, preferences title**: See 1.2.1.*
+
+#### Fixed
+- **Played-part dimming**: Matches the background colour exactly.
+- **Analyzing state, scan cancellation, colour drift**: See 1.2.1.*
+
+\* Developed as 1.2.1, which was never published.
+
+### [1.2.1] - developed 2026-10-19, never published (ships in 2.0.0)
 
 #### Added
 - **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
 
 #### Changed
 - **Minimum macOS**: Raised to 12.0 (Monterey).
-- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s.
+- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s (thanks @alies-dev, #40).
 - **About**: Shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.
 - **Preferences title**: Same size as foobar2000's own page titles.
 

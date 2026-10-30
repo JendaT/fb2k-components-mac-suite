@@ -2,14 +2,60 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
-## [1.2.1] - 2026-10-19
+## [2.0.0] - 2026-10-30
+
+The redesign and the Display P3 colours were contributed by [Scannou](https://github.com/Scannou) (#49, #55).
+
+### Added
+- **Layered style**: Each channel's peak envelope around its momentary (400 ms) loudness body on a dBFS axis; the gap between them shows the crest factor. Body tint (off, subtle, strong) shades it by the passage's spectral balance.
+- **Simple styles**: Two-tone, Glow and Heat draw L and R in lanes on black, on a linear scale, with an RMS core inside the peaks.
+- **Split channels**: Third Channels mode for every style: L above and R below one centre line, each at twice a Stereo lane's height.
+- **Loudness analysis**: BS.1770-4 integrated loudness, EBU 3342 loudness range, 4x oversampled true peak, PLR, clip runs, correlation and Lo/Mid/Hi energy per track, over every channel (surround weighted, LFE left out).
+- **Hover readout**: Time, short-term loudness, peak, crest, correlation and band split under the mouse; beside the mouse or in a corner.
+- **Loudness summary**: Integrated loudness, LRA, true peak, PLR and clip count in a badge; off, on hover or always.
+- **Clip markers**: Red ticks on the top edge where the audio stays at full scale for 3 or more samples; adjustable brightness.
+- **Scales**: Optional time ruler under the waveform and dB level scale on the right.
+- **Elapsed time**: Optional m:ss chip beside the playback cursor.
+- **Colour themes**: Presets shared with Spectrum Analyzer (P31, P3, P4 and P7 phosphors, Nord, Dracula and more); darker and brighter shades derived in OKLCH.
+- **Text size**: One setting for the overlay and scale text.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.*
+
+### Changed
+- **Defaults**: Two-tone in P4 white, level scale, readout and clip markers on, summary on hover, 25 % played-part dimming, no cursor effect; settings that were never changed take them too.
+- **Display P3 colours**: Theme and custom colours are drawn in Display P3, so they show at full saturation on wide-gamut screens; stored colours are kept, so they look more saturated than before.
+- **Drawing**: Smooth per-pixel-column waveform from cached masks; theme changes recolour without redrawing the shape. The waveform sits 8 pt inside the top and bottom edges.
+- **Classic styles**: Solid, Heat map and Rainbow stay as the original styles.
+- **Playback cursor**: Drawn in the theme's cursor colour within the waveform area (was a white line over the full height); seeking maps across the waveform area, and the level scale does not seek.
+- **Cache**: Stores the fine-grained analysis with the loudness data, so entries are 10-20x larger; every track is analysed again once after the update.
+- **Preferences**: Appearance, Scales, Overlays, Played part and Cache cards with a hint under each control; the page scrolls.
+- **Parallel analysis**: Long local tracks are analysed in parallel segments on the foobar2000 CPU thread pool (thanks @alies-dev, #40).*
+- **Minimum macOS**: Raised to 12.0 (Monterey).*
+- **About**: New feature list; shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.*
+- **Preferences title**: Same size as foobar2000's own page titles.*
+
+### Fixed
+- **Played-part dimming**: Matches the background colour exactly; it was rebuilt from device components, a slight shift.
+- **Analyzing state**: No longer stuck on "Analyzing..." after a layout change; a 30 s watchdog retries once, then gives up.*
+- **Scan cancellation**: Skipping tracks stops the previous track's analysis instead of leaving it running.*
+- **Colour drift**: Colours no longer get one step darker on each preferences save and reload.*
+
+### Technical
+- One decode pass per track (`TrackAnalyzer`): sample min/max/RMS per block, 100 ms hops of K-weighted power, band power and L*R; parallel segments give a bit-identical result to one pass.
+- Cache format v3 (zlib): samples stored up to +6 dBFS, plus the all-channel loudness sum.
+- Per-column values are aggregated from the cached blocks (`ColumnAggregator`), so resizing never re-decodes.
+- C++ moved under the `waveseek::` namespace; theme colour helpers shared in `shared/ThemeColor.h`.
+- 9 unit-test suites gate the build, including exact segment equality, 5.1 loudness, true peak at the track end and cache headroom.
+
+\* Developed as 1.2.1, which was never published.
+
+## [1.2.1] - developed 2026-10-19, never published (ships in 2.0.0)
 
 ### Added
 - **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
 
 ### Changed
 - **Minimum macOS**: Raised to 12.0 (Monterey).
-- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s.
+- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s, a 4 minute track in ~0.02s instead of ~0.15s (thanks @alies-dev, #40).
 - **About**: Shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.
 - **Preferences title**: Same size as foobar2000's own page titles.
 
