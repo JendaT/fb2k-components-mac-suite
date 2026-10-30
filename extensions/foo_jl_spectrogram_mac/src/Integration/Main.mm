@@ -7,14 +7,18 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/SpectrogramController.h"
 
-JL_COMPONENT_ABOUT(
+JL_COMPONENT_ABOUT_BY(
     "Spectrogram",
     SPECTROGRAM_VERSION,
+    "Scannou",
     "Scrolling spectrogram for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Frequency content over time from the playback stream\n"
     "- Reassigned analysis: thin tonal lines and sharp transients together\n"
@@ -22,6 +26,8 @@ JL_COMPONENT_ABOUT(
     "- Colormaps, including ramps matching the Spectrum Analyzer themes, with a dB color scale\n"
     "- Adjustable level range, slope, and scroll speed\n"
     "- Mid, left, right, or side channel\n"
+    "- Horizontal or vertical, either scroll direction\n"
+    "- Full-screen view via double-click or context menu\n"
     "- Click-and-hold frequency and note readout"
 );
 
@@ -44,10 +50,7 @@ namespace {
         }
 
         bool match_name(const char* name) override {
-            return strcmp(name, "Spectrogram") == 0 ||
-                   strcmp(name, "spectrogram") == 0 ||
-                   strcmp(name, "foo_jl_spectrogram") == 0 ||
-                   strcmp(name, "jl_spectrogram") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {
