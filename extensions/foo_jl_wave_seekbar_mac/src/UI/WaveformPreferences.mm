@@ -259,9 +259,12 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y += kRowGap;
 
     y = [self addHeading:@"Channels" x:x y:y width:w];
-    _channelsPopup = [self addPopup:@[ @"Stereo (L / R)", @"Mono (mixed)" ]
+    // In ChannelMode order
+    _channelsPopup = [self addPopup:@[ @"Stereo (L / R)", @"Mono (mixed)", @"Split (L up, R down)" ]
                              action:@selector(channelsChanged:) x:x y:&y width:w];
-    [self addHint:@"Left and right apart, or both mixed into one waveform." x:x y:&y width:w lines:1];
+    [self addHint:@"Left and right apart, both mixed into one waveform, or left above and right below one "
+                   "centre line, each at twice the height."
+                x:x y:&y width:w lines:1];
     y += kRowGap;
 
     // Theme presets, and the four colours they set
@@ -471,7 +474,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     if (_gradientBandsPopup.indexOfSelectedItem < 0) [_gradientBandsPopup selectItemWithTag:kDefaultGradientBands];
     [_bodyTintPopup selectItemAtIndex:std::clamp<int64_t>(getConfigInt(kKeyBodyTint, kDefaultBodyTint),
                                                           BodyTintOff, BodyTintStrong)];
-    [_channelsPopup selectItemAtIndex:getConfigInt(kKeyDisplayMode, kDefaultChannelMode) == ChannelsMono ? 1 : 0];
+    const int64_t channels = getConfigInt(kKeyDisplayMode, kDefaultChannelMode);
+    [_channelsPopup selectItemAtIndex:channels >= 0 && channels < ChannelModeCount ? channels : kDefaultChannelMode];
 
     // Played part opacity and cursor time
     // Played part
@@ -562,7 +566,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     using namespace waveform_config;
     NSString *hint = @"";
     switch (_stylePopup.selectedTag) {
-        case StyleLayered: hint = @"Peak envelope around a loudness body tinted by the music's spectral balance, one dBFS axis."; break;
+        case StyleLayered: hint = @"Peak envelope around a loudness body tinted by the music's spectral balance, on a dBFS axis."; break;
         case StyleTwoTone: hint = @"Split L/R lanes, linear peak at 50 % with an RMS core."; break;
         case StyleGlow:    hint = @"Split L/R lanes, peaks fade to the tips, hot RMS core."; break;
         case StyleHeat:    hint = @"Split L/R lanes, colour by amplitude: deep → accent → hot."; break;
@@ -602,7 +606,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)channelsChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyDisplayMode, _channelsPopup.indexOfSelectedItem == 1 ? ChannelsMono : ChannelsStereo);
+    setConfigInt(kKeyDisplayMode, _channelsPopup.indexOfSelectedItem);
     [self notifySettingsChanged];
 }
 

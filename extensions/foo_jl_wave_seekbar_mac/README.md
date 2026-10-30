@@ -132,10 +132,10 @@ Settings sit on four cards, plus the cache. Keys and values carried over from be
 
 | Card | Setting | Description | Default |
 |------|---------|-------------|---------|
-| Appearance | Style | Layered (peak envelope around a momentary loudness body tinted by the spectral balance, one dBFS axis); Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear); Classic: Solid, Heat map, Rainbow (the original styles) | Simple — Two-tone |
+| Appearance | Style | Layered (peak envelope around a momentary loudness body tinted by the spectral balance, on a dBFS axis, L and R in their own lanes); Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear); Classic: Solid, Heat map, Rainbow (the original styles) | Simple — Two-tone |
 | Appearance | Body tint | Layered: the body darker where bass dominates, lighter where highs do: Off, Subtle, Strong | Off |
 | Appearance | Gradient bands | Classic Solid: steps from the centre out (0 = flat, up to 32) | 8 |
-| Appearance | Channels | Stereo (L / R apart) or Mono (mixed into one) | Stereo |
+| Appearance | Channels | Stereo (L / R apart), Mono (mixed into one) or Split (L up, R down around one centre line) | Stereo |
 | Appearance | Colours | Theme preset (the Spectrum Analyzer themes) and its light / dark waveform and background colours; editing a colour switches to Custom | P4 white |
 | Appearance | Glass background | Translucent blur instead of the background colour | Off |
 | Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | Off |

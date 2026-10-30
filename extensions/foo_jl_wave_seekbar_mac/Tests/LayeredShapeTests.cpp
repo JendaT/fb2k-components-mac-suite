@@ -32,7 +32,7 @@ void testFraction() {
 }
 
 void testShape() {
-    // L at -6 dBFS, R at -18 dBFS, 997 Hz: peaks and bodies per half
+    // L at -6 dBFS, R at -18 dBFS, 997 Hz: peaks and bodies per lane
     const double sr = 48000.0, kPi = 3.14159265358979323846;
     std::vector<float> lr;
     for (size_t i = 0; i < (size_t)(sr * 6); ++i) {
@@ -46,6 +46,7 @@ void testShape() {
     const layered::Shape s = layered::shapeFor(cols);
 
     g_context = "shape";
+    CHECK_EQ(s.lanes, 2, "a lane per channel");
     CHECK_EQ(s.peak[0].size(), 40, "columns");
     CHECK(std::fabs(s.peak[0][20] - (36.0f - 6.0f) / 36.0f) < 0.01f, "L peak at -6 dBFS");
     CHECK(std::fabs(s.peak[1][20] - (36.0f - 18.0f) / 36.0f) < 0.01f, "R peak at -18 dBFS");
@@ -58,7 +59,14 @@ void testShape() {
     std::vector<float> mono(48000, 0.25f);
     m.process(mono.data(), mono.size(), 1);
     const layered::Shape ms = layered::shapeFor(analysis::aggregateColumns(m.finish(), 10));
-    CHECK_FLOAT_EQ(ms.peak[0][5], ms.peak[1][5], "mono fills both halves alike");
+    CHECK_EQ(ms.lanes, 1, "mono track: one lane");
+    CHECK(std::fabs(ms.peak[0][5] - (36.0f - 12.04f) / 36.0f) < 0.01f, "mono peak at -12 dBFS");
+    CHECK(ms.peak[1].empty(), "no second lane");
+
+    g_context = "mixed";
+    const layered::Shape mixed = layered::shapeFor(analysis::mixdown(cols));
+    CHECK_EQ(mixed.lanes, 1, "Mono setting: one lane");
+    CHECK(std::fabs(mixed.peak[0][20] - s.peak[0][20]) < 0.001f, "the mix peaks with the louder channel");
 }
 
 void testTint() {

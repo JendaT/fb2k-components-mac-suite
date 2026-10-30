@@ -42,6 +42,16 @@ void testSine() {
     CHECK(std::fabs(s.lane[0].coreTop[16] - 0.5f) < 0.01f, "RMS x sqrt 2 of a sine is its peak");
     CHECK(s.lane[0].coreTop[16] <= s.lane[0].top[16] && s.lane[0].coreBottom[16] >= s.lane[0].bottom[16],
           "core inside the peaks");
+
+    g_context = "split";
+    analysis::TrackAnalyzer a(48000, 2, lr.size() / 2);
+    a.process(lr.data(), lr.size() / 2, 2);
+    const simple::Shape split = simple::splitShapeFor(analysis::aggregateColumns(a.finish(), 32));
+    CHECK_EQ(split.lanes, 1, "one lane");
+    CHECK(std::fabs(split.lane[0].top[16] - 0.5f) < 0.01f, "L above the centre");
+    CHECK(std::fabs(split.lane[0].bottom[16] + 0.25f) < 0.01f, "R below it");
+    CHECK(std::fabs(split.lane[0].coreBottom[16] + 0.25f) < 0.01f, "R's core below");
+    CHECK(split.lane[1].top.empty(), "no second lane");
 }
 
 void testAsymmetricAndMono() {
@@ -62,6 +72,19 @@ void testAsymmetricAndMono() {
     std::vector<float> mono(48000, 0.3f);
     const simple::Shape m = shapeOf(mono, 1, 8);
     CHECK_FLOAT_EQ(m.lane[0].top[4], m.lane[1].top[4], "mono fills both lanes alike");
+
+    g_context = "split mono";
+    analysis::TrackAnalyzer ma(48000, 1, mono.size());
+    ma.process(mono.data(), mono.size(), 1);
+    const simple::Shape sm = simple::splitShapeFor(analysis::aggregateColumns(ma.finish(), 8));
+    CHECK_FLOAT_EQ(sm.lane[0].top[4], -sm.lane[0].bottom[4], "a mono track mirrors its channel");
+
+    g_context = "split asymmetric";
+    const simple::Shape sa = simple::splitShapeFor(analysis::aggregateColumns(
+        [&] { analysis::TrackAnalyzer t(48000, 2, lr.size() / 2); t.process(lr.data(), lr.size() / 2, 2);
+              return t.finish(); }(), 8));
+    CHECK(std::fabs(sa.lane[0].top[4] - 0.6f) < 0.01f && std::fabs(sa.lane[0].bottom[4] + 0.6f) < 0.01f,
+          "split shows each channel's larger excursion");
 
     g_context = "one lane";
     const simple::Shape one = simple::shapeFor(analysis::mixdown(analysis::aggregateColumns(

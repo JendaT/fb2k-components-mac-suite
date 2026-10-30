@@ -2,9 +2,10 @@
 //  LayeredShape.h
 //  foo_wave_seekbar_mac
 //
-//  Style "Layered": mirrored halves (L up, R down) on one dBFS axis. The peak
-//  envelope surrounds a K-weighted momentary (400 ms) loudness body; the gap
-//  between them is the crest factor. Heights are fractions of a half, 0..1.
+//  Style "Layered": each channel mirrored about its lane's centre on a dBFS
+//  axis, L above R. The peak envelope surrounds a K-weighted momentary
+//  (400 ms) loudness body; the gap between them is the crest factor. Heights
+//  are fractions of half a lane, 0..1.
 //  The body is tinted by the passage's spectral balance (tintPositions).
 //  Header-only, tested standalone.
 //
@@ -21,32 +22,33 @@ namespace waveseek::layered {
 constexpr float kFloorDb = -36.0f;
 constexpr float kGridDb[] = { -12.0f, -24.0f };
 
-// dBFS -> fraction of the half height: floor -> 0, 0 dBFS -> 1
+// dBFS -> fraction of half a lane: floor -> 0, 0 dBFS -> 1
 inline float fraction(float db, float floorDb = kFloorDb) {
     if (!(db > floorDb)) return 0.0f;           // also -inf and NaN
     return std::min(1.0f, (db - floorDb) / -floorDb);
 }
 
 struct Shape {
-    // [0] = top half (left channel), [1] = bottom half (right channel)
+    int lanes = 0;
+    // Per lane: [0] = left channel (top), [1] = right channel (bottom)
     std::vector<float> peak[2];
     std::vector<float> body[2];
 };
 
-// Mono tracks show the one channel in both halves.
+// One lane per channel; mono columns (a mono track, or the mix) give one.
 inline Shape shapeFor(const analysis::Columns& cols, float floorDb = kFloorDb) {
     Shape s;
-    for (int half = 0; half < 2; ++half) {
-        const int ch = cols.channels == 2 ? half : 0;
-        s.peak[half].resize(cols.count);
-        s.body[half].resize(cols.count);
+    s.lanes = cols.channels == 2 ? 2 : 1;
+    for (int ch = 0; ch < s.lanes; ++ch) {
+        s.peak[ch].resize(cols.count);
+        s.body[ch].resize(cols.count);
         for (size_t c = 0; c < cols.count; ++c) {
             const float peak = std::max(-cols.min[ch][c], cols.max[ch][c]);
             const float peakDb = peak > 0.0f ? 20.0f * std::log10(peak) : -INFINITY;
             // K-weighting lifts highs by up to 4 dB; the body stays inside the peaks
             const float bodyDb = std::min(cols.momentary[ch][c], peakDb);
-            s.peak[half][c] = fraction(peakDb, floorDb);
-            s.body[half][c] = fraction(bodyDb, floorDb);
+            s.peak[ch][c] = fraction(peakDb, floorDb);
+            s.body[ch][c] = fraction(bodyDb, floorDb);
         }
     }
     return s;

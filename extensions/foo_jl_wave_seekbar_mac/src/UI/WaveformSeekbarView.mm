@@ -42,9 +42,10 @@ namespace {
 // by the passage's spectral balance (theme::tintColor)
 const CGFloat kPeakFillAlpha = 0.26;
 const CGFloat kPeakEdgeAlpha = 0.55;
-const CGFloat kHalfInset = 2.0;         // pt left free at each half's outer edge
+const CGFloat kHalfInset = 2.0;         // pt left free at each lane's outer edges
 
-// Styles Simple: two lanes with a gap, peaks reaching almost to the lane edge
+// Styles Layered and Simple: two lanes with a gap; Simple's peaks reach
+// almost to the lane edge
 const CGFloat kLaneGap = 2.0;
 const CGFloat kLaneInset = 1.0;
 const float kSimpleCentreLineMix = 0.85f;   // accent towards black
@@ -102,23 +103,26 @@ theme::RGB rainbowColor(float position) {
 const theme::RGB kBlack = { 0, 0, 0 };
 
 // Lanes in a rect `height` high, `unit` per point: [0] = L on top, [1] = R
-// below; one lane fills the rect. Simple: a gap between them, peaks almost
-// to the edge. Classic: no gap, 4 pt padding.
+// below; one lane fills the rect. Layered: a gap between them, peaks 2 pt
+// from the edges. Simple: a gap, peaks almost to the edge. Classic: no gap,
+// 4 pt padding.
 struct Lanes {
     int count;
     CGFloat bottom[2], center[2];
     CGFloat height, amplitude;
 };
 
-Lanes lanesFor(CGFloat height, CGFloat unit, int count, bool classic = false) {
+Lanes lanesFor(CGFloat height, CGFloat unit, int count, Family family = FamilySimple) {
     Lanes l;
     l.count = count == 1 ? 1 : 2;
-    const CGFloat gap = classic ? 0.0 : kLaneGap;
+    const CGFloat gap = family == FamilyClassic ? 0.0 : kLaneGap;
+    const CGFloat inset = family == FamilyLayered ? kHalfInset
+                        : family == FamilyClassic ? kClassicPadding : kLaneInset;
     l.height = l.count == 1 ? height : std::max<CGFloat>(0.0, (height - gap * unit) / 2.0);
     l.bottom[0] = height - l.height;
     l.bottom[1] = 0.0;
     for (int i = 0; i < l.count; ++i) l.center[i] = l.bottom[i] + l.height / 2.0;
-    l.amplitude = std::max<CGFloat>(0.0, l.height / 2.0 - (classic ? kClassicPadding : kLaneInset) * unit);
+    l.amplitude = std::max<CGFloat>(0.0, l.height / 2.0 - inset * unit);
     return l;
 }
 
@@ -309,12 +313,14 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     size_t _maskWidth, _maskHeight;
     Family _maskFamily;
     bool _maskMono;
-    std::vector<float> _lanePeak[2];   // Classic: peak per column and lane, for the colours
+    std::vector<float> _lanePeak[2];   // Classic: peak per column and lane (or half in Split), for the colours
+    bool _classicSplit;                // Classic: L up, R down in one lane
     int _laneCount;
     int _gradientBands;                // Classic Solid
     std::vector<float> _bodyTint;      // Layered: tint position per column
     int _style;
     bool _mono;
+    bool _split;                       // L up, R down in one lane
 }
 
 @end
@@ -390,7 +396,11 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         [self invalidateMasks];
     }
     _style = newStyle;
-    _mono = getConfigInt(kKeyDisplayMode, kDefaultChannelMode) == ChannelsMono;
+    const int64_t channels = getConfigInt(kKeyDisplayMode, kDefaultChannelMode);
+    _mono = channels == ChannelsMono;
+    const bool split = channels == ChannelsSplit;
+    if (split != _split) [self invalidateMasks];
+    _split = split;
     _shadePlayedPortion = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion);
     _playedDimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100) / 100.0;
     const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
@@ -574,15 +584,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     return YES;
 }
 
-// Layered: L up, R down on one dBFS axis; peak envelope (fill and edge)
-// around the short-term loudness body
+// Layered: each channel mirrored in its lane on a dBFS axis, or in Split L
+// up and R down around one centre line; peak envelope (fill and edge) around
+// the short-term loudness body
 - (BOOL)buildLayeredMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
     const layered::Shape shape = layered::shapeFor(cols);
     _bodyTint = layered::tintPositions(cols);
-    const CGFloat centerY = height / 2.0;
-    const CGFloat amplitude = std::max<CGFloat>(0.0, height / 2.0 - kHalfInset * scale);
+    const Lanes lanes = lanesFor(height, scale, _split ? 1 : shape.lanes, FamilyLayered);
+    _laneCount = lanes.count;
     const CGFloat dirs[2] = { 1.0, -1.0 };
+    // Channel drawn in a lane's upper (0) and lower (1) half
+    auto channelOf = [&](int lane, int half) { return _split ? std::min(half, shape.lanes - 1) : lane; };
 
     for (int m = 0; m < MaskCount; ++m) {
         CGContextRef ctx = createMaskContext(width, height);
@@ -591,14 +604,19 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
             CGContextSetLineWidth(ctx, scale);
             CGContextSetLineJoin(ctx, kCGLineJoinRound);
             CGContextSetLineCap(ctx, kCGLineCapRound);
-            for (int half = 0; half < 2; ++half) {
-                strokeEdge(ctx, shape.peak[half], centerY, amplitude, dirs[half]);
+            for (int l = 0; l < lanes.count; ++l) {
+                for (int half = 0; half < 2; ++half) {
+                    strokeEdge(ctx, shape.peak[channelOf(l, half)], lanes.center[l], lanes.amplitude, dirs[half]);
+                }
             }
         } else {
             CGMutablePathRef path = CGPathCreateMutable();
-            for (int half = 0; half < 2; ++half) {
-                const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[half] : shape.body[half];
-                addHalfShape(path, frac, centerY, amplitude, dirs[half]);
+            for (int l = 0; l < lanes.count; ++l) {
+                for (int half = 0; half < 2; ++half) {
+                    const int ch = channelOf(l, half);
+                    const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[ch] : shape.body[ch];
+                    addHalfShape(path, frac, lanes.center[l], lanes.amplitude, dirs[half]);
+                }
             }
             CGContextAddPath(ctx, path);
             CGContextFillPath(ctx);
@@ -612,11 +630,12 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 }
 
 // Simple: L and R in their own lanes, linear; sample min/max around an RMS
-// core.
+// core. Split: one lane, L's levels up and R's down.
 - (BOOL)buildSimpleMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                    scale:(CGFloat)scale {
-    const simple::Shape shape = simple::shapeFor(cols, _mono ? 1 : 2);
+    const simple::Shape shape = _split ? simple::splitShapeFor(cols) : simple::shapeFor(cols, _mono ? 1 : 2);
     const Lanes lanes = lanesFor(height, scale, shape.lanes);
+    _laneCount = lanes.count;
 
     for (int m : { (int)MaskSimplePeak, (int)MaskSimpleCore }) {
         CGContextRef ctx = createMaskContext(width, height);
@@ -640,15 +659,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 // Classic: as the original styles drew, a 1 pt stroke per bucket out to
 // the larger of |min| and |max|, mirrored about each half's centre. Mono:
 // Solid averages the channels' min and max as it used to; Heat map and
-// Rainbow take the larger channel. Mono tracks use one lane.
+// Rainbow take the larger channel. Mono tracks use one lane. Split: one
+// lane, up to L's peak and down to R's.
 - (BOOL)buildClassicMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
     const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets);
     if (buckets.count != kClassicBuckets) return NO;
     const bool stereo = buckets.channels == 2 && !_mono;
+    const bool split = stereo && _split;
     const bool averageMono = _style == waveform_config::StyleSolid;
-    const Lanes lanes = lanesFor(height, scale, stereo ? 2 : 1, true);
+    const Lanes lanes = lanesFor(height, scale, stereo && !split ? 2 : 1, FamilyClassic);
     _laneCount = lanes.count;
+    _classicSplit = split;
 
     // Peak of a column set (buckets, or the view's pixel columns) for a lane
     auto peakOf = [&](const analysis::Columns& c, size_t i, int lane) {
@@ -668,11 +690,12 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGMutablePathRef path = CGPathCreateMutable();
     for (int l = 0; l < lanes.count; ++l) {
         for (size_t i = 0; i < kClassicBuckets; ++i) {
-            const CGFloat h = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
-            if (h <= 0.0) continue;
+            const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
+            const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
+            if (up <= 0.0 && down <= 0.0) continue;
             const CGFloat x = (CGFloat)i / kClassicBuckets * width;
-            CGPathMoveToPoint(path, NULL, x, lanes.center[l] - h);
-            CGPathAddLineToPoint(path, NULL, x, lanes.center[l] + h);
+            CGPathMoveToPoint(path, NULL, x, lanes.center[l] - down);
+            CGPathAddLineToPoint(path, NULL, x, lanes.center[l] + up);
         }
     }
     CGContextAddPath(ctx, path);
@@ -681,9 +704,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _masks[MaskSimplePeak] = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
 
-    // Heat map colours per pixel column, from the bucket under it
+    // Heat map colours per pixel column, from the bucket under it; per half in Split
     for (int l = 0; l < 2; ++l) _lanePeak[l].clear();
-    for (int l = 0; l < lanes.count; ++l) {
+    for (int l = 0; l < (split ? 2 : lanes.count); ++l) {
         _lanePeak[l].resize(width);
         for (size_t c = 0; c < width; ++c) {
             const size_t i = std::min(kClassicBuckets - 1, (size_t)((c + 0.5) / width * kClassicBuckets));
@@ -733,9 +756,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     const CGRect full = CGRectMake(0, 0, _maskWidth, _maskHeight);
     const CGFloat scale = [self backingScale];
-    const Lanes lanes = _maskFamily == FamilyClassic
-        ? lanesFor(_maskHeight, scale, _laneCount, true)
-        : lanesFor(_maskHeight, scale, _maskMono ? 1 : 2);
+    const Lanes lanes = lanesFor(_maskHeight, scale, _laneCount, _maskFamily);
     CGColorSpaceRef gradientSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
 
     for (const Paint& p : [self paints]) {
@@ -843,11 +864,16 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         CGGradientRelease(bands);
     }
 
-    // Classic: per lane, Heat map by the column's peak, Rainbow by position
+    // Classic: per lane, Heat map by the column's peak, Rainbow by position.
+    // Split: L's colours above the centre line, R's below.
     if (_maskFamily == FamilyClassic && _style != waveform_config::StyleSolid && _masks[MaskSimplePeak]) {
-        for (int l = 0; l < _laneCount && l < 2; ++l) {
+        const CGFloat mid = std::round(lanes.center[0]);
+        for (int l = 0; l < (_classicSplit ? 2 : _laneCount) && l < 2; ++l) {
             if (_lanePeak[l].size() != _maskWidth) continue;
-            drawStrip(_masks[MaskSimplePeak], CGRectMake(0, lanes.bottom[l], _maskWidth, lanes.height), [&](size_t c) {
+            const CGRect band = !_classicSplit ? CGRectMake(0, lanes.bottom[l], _maskWidth, lanes.height)
+                              : l == 0 ? CGRectMake(0, mid, _maskWidth, _maskHeight - mid)
+                                       : CGRectMake(0, 0, _maskWidth, mid);
+            drawStrip(_masks[MaskSimplePeak], band, [&](size_t c) {
                 return _style == waveform_config::StyleHeatMap ? heatMapColor(_lanePeak[l][c])
                                                                : rainbowColor((c + 0.5f) / _maskWidth);
             });
@@ -946,15 +972,23 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     return scale > 0 ? scale : 2.0;
 }
 
-// Layered: centre line, and the -12 / -24 dB gridlines in each half.
-// Simple: each lane's centre line. Classic: none, as before.
+// Lanes the waveform is drawn in: two in Stereo, except that Layered and
+// Classic give a mono track one; one in Mono and Split
+- (int)laneCount {
+    if (_mono || _split) return 1;
+    if (familyOf(_style) == FamilySimple) return 2;
+    return self.waveformData && self.waveformData->channelCount == 2 ? 2 : 1;
+}
+
+// Layered: each lane's centre line, and the -12 / -24 dB gridlines on both
+// sides of it. Simple: each lane's centre line. Classic: none, as before.
 - (void)drawGuidesInContext:(CGContextRef)context rect:(CGRect)rect full:(bool)full {
     const CGFloat scale = [self backingScale];
     auto snap = [&](CGFloat y) { return (std::floor(y * scale) + 0.5) / scale; };
 
     if (usesLanes(_style)) {
         if (familyOf(_style) != FamilySimple) return;   // Classic draws no guides
-        const Lanes lanes = lanesFor(rect.size.height, 1.0, _mono ? 1 : 2);
+        const Lanes lanes = lanesFor(rect.size.height, 1.0, [self laneCount]);
         CGContextSaveGState(context);
         CGContextSetLineWidth(context, 1.0);
         setStroke(context, theme::mix(_tokens.accent, kBlack, kSimpleCentreLineMix), 1.0);
@@ -968,25 +1002,30 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         return;
     }
 
-    const CGFloat centerY = CGRectGetMidY(rect);
-    const CGFloat amplitude = std::max<CGFloat>(0.0, rect.size.height / 2.0 - kHalfInset);
+    const Lanes lanes = lanesFor(rect.size.height, 1.0, [self laneCount], FamilyLayered);
 
     CGContextSaveGState(context);
     CGContextSetLineWidth(context, 1.0);
     if (full) {
         setStroke(context, _tokens.grid, 1.0);
-        for (float db : layered::kGridDb) {
-            const CGFloat h = layered::fraction(db) * amplitude;
-            for (CGFloat y : { centerY + h, centerY - h }) {
-                CGContextMoveToPoint(context, rect.origin.x, snap(y));
-                CGContextAddLineToPoint(context, CGRectGetMaxX(rect), snap(y));
+        for (int l = 0; l < lanes.count; ++l) {
+            const CGFloat centerY = rect.origin.y + lanes.center[l];
+            for (float db : layered::kGridDb) {
+                const CGFloat h = layered::fraction(db) * lanes.amplitude;
+                for (CGFloat y : { centerY + h, centerY - h }) {
+                    CGContextMoveToPoint(context, rect.origin.x, snap(y));
+                    CGContextAddLineToPoint(context, CGRectGetMaxX(rect), snap(y));
+                }
             }
         }
         CGContextStrokePath(context);
     }
     setStroke(context, _tokens.centre, 1.0);
-    CGContextMoveToPoint(context, rect.origin.x, snap(centerY));
-    CGContextAddLineToPoint(context, CGRectGetMaxX(rect), snap(centerY));
+    for (int l = 0; l < lanes.count; ++l) {
+        const CGFloat y = snap(rect.origin.y + lanes.center[l]);
+        CGContextMoveToPoint(context, rect.origin.x, y);
+        CGContextAddLineToPoint(context, CGRectGetMaxX(rect), y);
+    }
     CGContextStrokePath(context);
     CGContextRestoreGState(context);
 }
@@ -1603,8 +1642,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextRestoreGState(context);
 }
 
-// Gutter on the right. Layered: 0 / -12 / -24 / -inf mirrored, with the
-// unit. Simple: per lane 0 / -6 / -inf / -6 (-6 dB = half amplitude) and L / R.
+// Gutter on the right. Layered: per lane 0 / -12 / -24 / -inf mirrored, with
+// the unit. Simple and Classic: per lane 0 / -6 / -inf / -6 (-6 dB = half
+// amplitude). L / R beside stereo lanes.
 - (void)drawLevelScaleInContext:(CGContextRef)context wave:(CGRect)wave {
     const CGFloat gutterX = CGRectGetMaxX(wave);
     const CGFloat gutterRight = CGRectGetMaxX(self.bounds);
@@ -1613,11 +1653,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     NSString *minus = @"\u2212";
     NSString *minusInf = [minus stringByAppendingString:@"\u221E"];
 
+    const Lanes lanes = lanesFor(wave.size.height, 1.0, [self laneCount], familyOf(_style));
     if (usesLanes(_style)) {
-        const bool classic = familyOf(_style) == FamilyClassic;
-        const int count = classic ? ((self.waveformData && self.waveformData->channelCount == 2 && !_mono) ? 2 : 1)
-                                  : (_mono ? 1 : 2);
-        const Lanes lanes = lanesFor(wave.size.height, 1.0, count, classic);
         for (int l = 0; l < lanes.count; ++l) {
             const CGFloat c = wave.origin.y + lanes.center[l], a = lanes.amplitude;
             marks.push_back({ c + a, @"0" });
@@ -1627,17 +1664,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         }
         marks.push_back({ wave.origin.y + lanes.center[lanes.count - 1] - lanes.amplitude, @"0" });
     } else {
-        const CGFloat c = CGRectGetMidY(wave);
-        const CGFloat a = std::max<CGFloat>(0.0, wave.size.height / 2.0 - kHalfInset);
-        marks.push_back({ c + a, @"0" });
-        for (float db : layered::kGridDb) {
-            marks.push_back({ c + layered::fraction(db) * a, str(overlay::formatNumber(db, 0)) });
+        for (int l = 0; l < lanes.count; ++l) {
+            const CGFloat c = wave.origin.y + lanes.center[l], a = lanes.amplitude;
+            marks.push_back({ c + a, @"0" });
+            for (float db : layered::kGridDb) {
+                marks.push_back({ c + layered::fraction(db) * a, str(overlay::formatNumber(db, 0)) });
+            }
+            marks.push_back({ c, minusInf });
+            for (auto it = std::rbegin(layered::kGridDb); it != std::rend(layered::kGridDb); ++it) {
+                marks.push_back({ c - layered::fraction(*it) * a, str(overlay::formatNumber(*it, 0)) });
+            }
         }
-        marks.push_back({ c, minusInf });
-        for (auto it = std::rbegin(layered::kGridDb); it != std::rend(layered::kGridDb); ++it) {
-            marks.push_back({ c - layered::fraction(*it) * a, str(overlay::formatNumber(*it, 0)) });
-        }
-        marks.push_back({ c - a, @"0" });
+        marks.push_back({ wave.origin.y + lanes.center[lanes.count - 1] - lanes.amplitude, @"0" });
     }
 
     // Top to bottom, centred on their level; the margins above and below
@@ -1657,17 +1695,20 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         lastBottom = y;
     }
 
-    // Unit (Layered) on the top row; channel names (Simple, stereo) at the lane centres
+    // Unit (Layered) on the top row; channel names at the lane centres, or
+    // half way up and down in Split
     if (!usesLanes(_style)) {
         NSAttributedString *unit = [self scaleText:@"dBFS"];
         [unit drawAtPoint:NSMakePoint(gutterRight - TS(kGutterChannelX) - unit.size.width, topLabelY)];
-    } else if (!_mono && !(familyOf(_style) == FamilyClassic && self.waveformData && self.waveformData->channelCount != 2)) {
-        const Lanes lanes = lanesFor(wave.size.height, 1.0, 2, familyOf(_style) == FamilyClassic);
+    }
+    const bool splitNames = _split && self.waveformData && self.waveformData->channelCount == 2;
+    if (lanes.count == 2 || splitNames) {
         NSString *names[2] = { @"L", @"R" };
         for (int l = 0; l < 2; ++l) {
+            const CGFloat y = splitNames ? lanes.center[0] + (l == 0 ? 0.5 : -0.5) * lanes.amplitude : lanes.center[l];
             NSAttributedString *name = [self scaleText:names[l]];
             [name drawAtPoint:NSMakePoint(gutterRight - TS(kGutterChannelX) - name.size.width,
-                                          wave.origin.y + lanes.center[l] - name.size.height / 2)];
+                                          wave.origin.y + y - name.size.height / 2)];
         }
     }
 }

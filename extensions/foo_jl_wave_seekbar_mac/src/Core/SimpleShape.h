@@ -6,7 +6,8 @@
 //  R below, each around its own centre line, on a linear amplitude scale.
 //  The peak layer follows the sample minimum and maximum; the RMS core is
 //  RMS x sqrt(2) (a sine's core then meets its peaks). Heights are signed
-//  fractions of a lane's half height, -1..1. Header-only, tested standalone.
+//  fractions of a lane's half height, -1..1. Split: one lane, L's levels
+//  above the centre line and R's below. Header-only, tested standalone.
 //
 
 #pragma once
@@ -50,6 +51,32 @@ inline Shape shapeFor(const analysis::Columns& cols, int lanes = 2) {
             lane.coreTop[c] = std::min(core, top);
             lane.coreBottom[c] = std::max(-core, bottom);
         }
+    }
+    return s;
+}
+
+// Split: one lane, the left channel's peak magnitude and core upward, the
+// right channel's downward. A mono track shows its one channel both ways.
+inline Shape splitShapeFor(const analysis::Columns& cols) {
+    const float kCoreScale = 1.41421356f;
+    Shape s;
+    s.lanes = 1;
+    Lane& lane = s.lane[0];
+    lane.top.resize(cols.count);
+    lane.bottom.resize(cols.count);
+    lane.coreTop.resize(cols.count);
+    lane.coreBottom.resize(cols.count);
+    for (size_t c = 0; c < cols.count; ++c) {
+        float peak[2], core[2];
+        for (int half = 0; half < 2; ++half) {
+            const int ch = cols.channels == 2 ? half : 0;
+            peak[half] = std::min(1.0f, std::max(cols.max[ch][c], -cols.min[ch][c]));
+            core[half] = std::min(peak[half], cols.rms[ch][c] * kCoreScale);
+        }
+        lane.top[c] = peak[0];
+        lane.bottom[c] = -peak[1];
+        lane.coreTop[c] = core[0];
+        lane.coreBottom[c] = -core[1];
     }
     return s;
 }
