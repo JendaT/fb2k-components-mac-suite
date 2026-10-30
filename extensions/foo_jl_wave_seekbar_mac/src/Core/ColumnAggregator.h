@@ -13,7 +13,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace analysis {
+namespace waveseek::analysis {
 
 struct Columns {
     size_t count = 0;
@@ -48,4 +48,4 @@ Columns aggregateColumns(const WaveformData& data, size_t columns);
 // and copy over. Mono input comes back unchanged.
 Columns mixdown(const Columns& stereo);
 
-} // namespace analysis
+} // namespace waveseek::analysis

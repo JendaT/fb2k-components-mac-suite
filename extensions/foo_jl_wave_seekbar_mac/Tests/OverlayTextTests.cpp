@@ -11,7 +11,7 @@
 #include <cmath>
 #include <string>
 
-using namespace overlay;
+using namespace waveseek::overlay;
 
 namespace {
 
@@ -67,7 +67,8 @@ void testRuler() {
     CHECK_FLOAT_EQ(rulerInterval(180, 1200), 30, "3 min track, wide view");
     CHECK_FLOAT_EQ(rulerInterval(60, 2000), 10, "short track: the smallest step");
     CHECK_FLOAT_EQ(rulerInterval(7200, 800), 1800, "2 h mix in 800 pt");
-    CHECK_FLOAT_EQ(rulerInterval(86400, 100), 3600, "longest step caps");
+    CHECK_FLOAT_EQ(rulerInterval(36000, 800), 7200, "10 h in 800 pt: whole hours past the list");
+    CHECK_FLOAT_EQ(rulerInterval(86400, 100), 97200, "a day in 100 pt still keeps the labels apart");
     CHECK_FLOAT_EQ(rulerInterval(0, 1000), 10, "no duration");
     const double interval = rulerInterval(425, 1915);
     CHECK(interval * 1915 / 425 >= kRulerLabelSpacing, "labels at least 110 pt apart");

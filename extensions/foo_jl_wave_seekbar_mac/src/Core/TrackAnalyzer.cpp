@@ -8,7 +8,7 @@
 #include <cmath>
 #include <numeric>
 
-namespace analysis {
+namespace waveseek::analysis {
 
 namespace {
     const double kPi = 3.14159265358979323846;
@@ -480,4 +480,4 @@ WaveformData TrackAnalyzer::merge(std::vector<WaveformData> parts) {
     return out;
 }
 
-} // namespace analysis
+} // namespace waveseek::analysis

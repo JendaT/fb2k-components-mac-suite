@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace theme {
+namespace waveseek::theme {
 
 namespace {
     const float kPi = 3.14159265358979323846f;
@@ -136,4 +136,4 @@ RGB tintColor(const RGB& accent, float position, float strength) {
     return fromOklch(c);
 }
 
-} // namespace theme
+} // namespace waveseek::theme

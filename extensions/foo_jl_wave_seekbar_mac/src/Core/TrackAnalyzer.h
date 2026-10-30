@@ -18,7 +18,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace analysis {
+namespace waveseek::analysis {
 
 // Crossovers of the Lo / Mid / Hi split: the Vectorscope's tri-band
 // defaults (foo_jl_vectorscope_mac, VectorscopeConfig.h), so both
@@ -181,4 +181,4 @@ private:
     bool _clipActive = false;
 };
 
-} // namespace analysis
+} // namespace waveseek::analysis

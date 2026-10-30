@@ -15,6 +15,8 @@
 #include <cmath>
 #include <vector>
 
+using namespace waveseek;
+
 namespace {
 
 void testFraction() {

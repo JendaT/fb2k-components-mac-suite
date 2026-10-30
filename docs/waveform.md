@@ -109,7 +109,8 @@ splitter vertical
 ### Audio Analysis
 
 - One decode pass per track in the background (Grand Central Dispatch), cancelled on track change
-- Fine blocks (~1024 frames) of sample min/max/RMS and 100 ms hops of K-weighted power, band power and L*R
+- Fine blocks (~900-1000 frames) of sample min/max/RMS and 100 ms hops of K-weighted power, band power and L*R
+- Loudness, true peak and clips cover every channel (BS.1770 weights: surround 1.41, no LFE); the first two are drawn
 - Long local tracks decoded in parallel segments on the foobar2000 CPU thread pool
 - Per-column values are aggregated from the cached blocks, so resizing never re-decodes
 

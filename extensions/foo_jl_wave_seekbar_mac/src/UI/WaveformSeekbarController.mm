@@ -384,7 +384,8 @@ static const int kAnalysisMaxRetries = 1;
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
                     double threshold = waveseek::positionRedrawThreshold(viewWidth);
                     const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
-                    const bool nextSecond = std::floor(position) != std::floor(oldTime);
+                    const bool nextSecond = self.waveformView.showCursorTime &&
+                                            std::floor(position) != std::floor(oldTime);
 
                     // Animated cursor effects need continuous redraw to stay smooth
                     BOOL animatedEffect = NO;

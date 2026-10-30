@@ -11,7 +11,7 @@
 
 #include <cmath>
 
-using namespace theme;
+using namespace waveseek::theme;
 
 namespace {
 

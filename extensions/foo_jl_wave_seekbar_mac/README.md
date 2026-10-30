@@ -200,12 +200,13 @@ foo_jl_wave_seekbar_mac/
 ### Analysis
 
 One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks), cached:
-- Fine blocks of ~1024 frames (fewer, larger blocks past ~6 min): sample min/max and RMS per channel
+- Fine blocks of ~900-1000 frames (fewer, larger blocks past ~5.5 min): sample min/max and RMS per channel
 - 100 ms hops: K-weighted (BS.1770) power, plain power and L*R per channel, Lo/Mid/Hi band power (250 Hz / 2 kHz Linkwitz-Riley, as the Vectorscope)
 - Clip runs: 3+ consecutive samples at |x| >= 0.9999
 - Summary: integrated loudness (BS.1770-4 gating), LRA (EBU Tech 3342), true peak (4x oversampled), PLR, clip count
+- Loudness, true peak and clips take every channel (surround weighted 1.41, LFE left out); the first two are drawn
 - Per-column values are aggregated from the blocks at draw time, so a resize never re-decodes
-- Stored zlib-compressed with levels in 0.01 dB steps and samples in 16 bits (~100-300 KB per track)
+- Stored zlib-compressed with levels in 0.01 dB steps and samples in 16 bits up to +6 dBFS (~100-300 KB per track)
 
 ### Scanning Performance
 

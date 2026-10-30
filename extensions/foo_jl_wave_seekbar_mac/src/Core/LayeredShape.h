@@ -16,7 +16,7 @@
 #include <cmath>
 #include <vector>
 
-namespace layered {
+namespace waveseek::layered {
 
 constexpr float kFloorDb = -36.0f;
 constexpr float kGridDb[] = { -12.0f, -24.0f };
@@ -78,4 +78,4 @@ inline std::vector<float> tintPositions(const analysis::Columns& cols) {
     return out;
 }
 
-} // namespace layered
+} // namespace waveseek::layered

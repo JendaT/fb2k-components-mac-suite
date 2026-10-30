@@ -16,7 +16,7 @@
 #include <cmath>
 #include <vector>
 
-namespace simple {
+namespace waveseek::simple {
 
 struct Lane {
     std::vector<float> top, bottom;             // peak layer: max >= 0 >= min
@@ -54,4 +54,4 @@ inline Shape shapeFor(const analysis::Columns& cols, int lanes = 2) {
     return s;
 }
 
-} // namespace simple
+} // namespace waveseek::simple
