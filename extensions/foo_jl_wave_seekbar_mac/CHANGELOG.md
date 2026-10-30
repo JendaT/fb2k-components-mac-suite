@@ -6,6 +6,10 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 The redesign and the Display P3 colours were contributed by @Scannou (#49, #55).
 
+![Waveform Seekbar in the Layered style](https://raw.githubusercontent.com/JendaT/fb2k-components-mac-suite/waveform-seekbar-v2.0.0/docs/images/waveform-overview-v3.png)
+
+![Waveform Seekbar in the Classic Solid style](https://raw.githubusercontent.com/JendaT/fb2k-components-mac-suite/waveform-seekbar-v2.0.0/docs/images/waveform-classic-solid.png)
+
 ### Added
 - **Layered style**: Each channel's peak envelope around its momentary (400 ms) loudness body on a dBFS axis; the gap between them shows the crest factor. Body tint (off, subtle, strong) shades it by the passage's spectral balance.
 - **Simple styles**: Two-tone, Glow and Heat draw L and R in lanes on black, on a linear scale, with an RMS core inside the peaks.
