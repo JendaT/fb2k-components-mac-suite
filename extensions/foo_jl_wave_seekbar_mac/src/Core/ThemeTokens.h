@@ -4,7 +4,9 @@
 //
 //  Colour tokens the waveform styles draw with. A theme supplies the accent
 //  and background; deep, hot and the guide colours are derived in OKLCH so
-//  they keep the accent's hue. Pure C++, tested standalone.
+//  they keep the accent's hue. The maths treat the numbers as sRGB; the view
+//  draws them as Display P3 like every theme colour (shared/ThemeColor.h).
+//  Pure C++, tested standalone.
 //
 
 #pragma once
@@ -14,7 +16,7 @@
 namespace waveseek::theme {
 
 struct RGB {
-    float r = 0, g = 0, b = 0;      // sRGB, 0..1
+    float r = 0, g = 0, b = 0;      // 0..1
     static RGB fromARGB(uint32_t argb);
     bool operator==(const RGB& o) const { return r == o.r && g == o.g && b == o.b; }
 };

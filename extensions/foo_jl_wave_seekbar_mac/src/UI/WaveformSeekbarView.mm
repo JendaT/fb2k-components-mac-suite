@@ -518,9 +518,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         ? getConfigInt(kKeyBgColorDark, kDefaultBgColorDark)
         : getConfigInt(kKeyBgColorLight, kDefaultBgColorLight));
 
-    auto color = [](uint32_t argb) { return JLColorFromARGB(argb); };
-    _waveformColor = color(waveARGB);
-    _backgroundColor = color(bgARGB);
+    _waveformColor = JLColorFromARGB(waveARGB);
+    _backgroundColor = JLColorFromARGB(bgARGB);
 
     // Over glass (or a see-through colour) the guides are derived against
     // the appearance instead.
@@ -1364,9 +1363,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     NSDictionary *attrs = @{
         NSFontAttributeName: _chipFont,
         NSForegroundColorAttributeName: [NSColor colorWithDisplayP3Red:_tokens.cursorText.r
-                                                            green:_tokens.cursorText.g
-                                                             blue:_tokens.cursorText.b
-                                                            alpha:1.0]
+                                                                  green:_tokens.cursorText.g
+                                                                   blue:_tokens.cursorText.b
+                                                                  alpha:1.0]
     };
     NSString *time = str(overlay::formatClock(self.playbackPosition * self.trackDuration));
     const NSSize textSize = [time sizeWithAttributes:attrs];
