@@ -24,7 +24,7 @@ Place screenshots in this directory with the following filenames:
 
 ## Spectrogram
 - `spectrogram-inferno.png`, `spectrogram-viridis.png`, `spectrogram-p3-amber.png` - Spectrogram panel (reassigned mode) with the Inferno, Viridis and P3 amber colormaps, cropped to the panel's right end
-- `spectrogram-settings.png` - Preferences page with analysis, display and panel options
+- `spectrogram-settings.png` - Preferences page (cards: Analysis, Colours, Display, Layout, Labels)
 
 ## Last.fm Scrobbler
 - `scrobbler-settings.png` - Preferences page with account and options
