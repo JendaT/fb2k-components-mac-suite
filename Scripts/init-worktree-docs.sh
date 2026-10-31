@@ -22,6 +22,7 @@ DISPLAY_NAMES=(
     [playback-controls]="Playback Controls"
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
+    [remote]="LAN Remote"
 )
 
 # Generate CLAUDE.md for a component
