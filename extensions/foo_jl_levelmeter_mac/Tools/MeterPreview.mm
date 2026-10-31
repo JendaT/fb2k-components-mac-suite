@@ -11,6 +11,7 @@
 
 #import <Cocoa/Cocoa.h>
 #include "../src/Core/MeterEngine.h"
+#include "../src/Core/LevelMeterThemes.h"
 #include "../src/UI/MeterRenderer.h"
 #include <cmath>
 #include <string>
@@ -104,6 +105,17 @@ int main(int argc, const char **argv) {
         seg.scale = ScaleType::K14;
         seg.barMode = BarMode::PeakAndRms;
         render(out + "/digital_k14_segments.png", 260, 420, seg, snap);
+
+        // A shipped theme, dark colours, as the component would load it.
+        DisplaySettings amber = d;
+        for (int i = 0; i < kMeterThemeCount; ++i) {
+            if (std::string(kMeterThemes[i].name) != "P3 amber") continue;
+            const uint32_t *c = kMeterThemes[i].dark;
+            amber.palette.background = c[0]; amber.palette.text = c[1]; amber.palette.safe = c[2];
+            amber.palette.warn = c[3]; amber.palette.over = c[4]; amber.palette.loudness = c[5];
+        }
+        amber.segments = true;
+        render(out + "/digital_p3_amber.png", 260, 420, amber, clipped);
 
         DisplaySettings big = d;
         big.textScale = 1.4;
