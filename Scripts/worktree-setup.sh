@@ -21,6 +21,7 @@ COMPONENTS=(
     playback-controls
     spectrum
     vectorscope
+    levelmeter
 )
 
 echo "=== foobar2000 Worktree Setup ==="

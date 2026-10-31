@@ -22,6 +22,7 @@ DISPLAY_NAMES=(
     [playback-controls]="Playback Controls"
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
+    [levelmeter]="Level Meter"
 )
 
 # Generate CLAUDE.md for a component
