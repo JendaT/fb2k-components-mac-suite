@@ -4,7 +4,8 @@
 
 ### fb2k-debug - Component Toggle Tool
 
-Interactive tool to quickly enable/disable components for debugging:
+Interactive tool to quickly enable/disable components for debugging. It is the author's local script in `~/.local/bin`, not part of this repository; without it, use the `mv` commands under [Recovery Procedures](#recovery-procedures).
+
 
 ```bash
 fb2k-debug
@@ -85,30 +86,20 @@ mv ~/Library/foobar2000-v2/user-components/foo_jl_* ~/Library/foobar2000-v2/user
 
 **Check structure:**
 ```bash
-# Should see Contents/ folder
-ls ~/Library/foobar2000-v2/user-components/<component>/
+# Should list foo_jl_<name>.component
+ls ~/Library/foobar2000-v2/user-components/foo_jl_<name>/
 ```
 
-**Valid structures:**
+**Expected structure** (what Preferences > Components and `Scripts/install.sh` both create):
+```
+foo_jl_plorg/
+  foo_jl_plorg.component/
+    Contents/
+      MacOS/foo_jl_plorg
+      Info.plist
+```
 
-1. Flat (preferred):
-   ```
-   foo_jl_album_art.component/
-     Contents/
-       MacOS/foo_jl_album_art
-       Info.plist
-   ```
-
-2. Nested (also works):
-   ```
-   foo_jl_plorg/
-     foo_jl_plorg.component/
-       Contents/
-         MacOS/foo_jl_plorg
-         Info.plist
-   ```
-
-**Invalid:** Having BOTH for the same component (causes duplicate loading).
+**Invalid:** A second copy of the same component elsewhere in `user-components/`, e.g. an old flat `foo_jl_plorg.component/` beside the folder (causes duplicate loading).
 
 ### Duplicate Class Warning
 
@@ -145,7 +136,7 @@ ls ~/Library/foobar2000-v2/user-components/<component>/
 | Purpose | Location |
 |---------|----------|
 | Components | `~/Library/foobar2000-v2/user-components/` |
-| Configuration | `~/Library/foobar2000-v2/configuration/` |
+| Configuration | `~/Library/foobar2000-v2/config.sqlite` (all components' settings, via `fb2k::configStore`) |
 | Crash Reports | `~/Library/Logs/DiagnosticReports/foobar2000-*.ips` |
 
 ### Legacy v1 (Don't Use)
@@ -174,14 +165,12 @@ mv ~/Library/foobar2000-v2/user-components-disabled/foo_jl_<name> \
    ~/Library/foobar2000-v2/user-components/
 ```
 
-### Reset Component Configuration
+### Back Up Configuration
+
+Settings of all components live in `config.sqlite`; there are no per-component files to delete. Quit foobar2000 first, then:
 
 ```bash
-# Backup first
-cp -r ~/Library/foobar2000-v2/configuration ~/Library/foobar2000-v2/configuration.bak
-
-# Remove specific component config
-rm ~/Library/foobar2000-v2/configuration/*<component>*
+cp ~/Library/foobar2000-v2/config.sqlite ~/Library/foobar2000-v2/config.sqlite.bak
 ```
 
 ### Full Reset (Nuclear Option)
@@ -245,11 +234,8 @@ dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
 ### 4. Test After Every Build
 
 ```bash
-# Build
-./Scripts/generate_xcode_project.rb && xcodebuild ...
-
-# Install
-./Scripts/install.sh
+# Build and install (never call xcodebuild directly)
+./Scripts/build.sh --install
 
 # Test immediately
 /Applications/foobar2000.app/Contents/MacOS/foobar2000 2>&1 | head -50

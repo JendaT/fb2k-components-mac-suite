@@ -201,7 +201,7 @@ Access settings via **Preferences > Display > Spectrum Analyzer**, or right-clic
 
 ## Layout Editor
 
-Add Spectrum Analyzer to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `spectrum` (recommended)
 - `Spectrum Analyzer`
 - `spectrum_analyzer`
@@ -210,7 +210,7 @@ Add Spectrum Analyzer to your layout using any of these names:
 
 Example layout:
 ```
-splitter vertical
+splitter horizontal style=thin
   waveform-seekbar
   spectrum
   simplaylist

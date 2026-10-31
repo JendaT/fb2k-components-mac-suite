@@ -208,10 +208,10 @@ When releasing a new version:
 2. **Update extension's CHANGELOG.md** - This is `extensions/<component>/CHANGELOG.md`, NOT the root CHANGELOG.md
    - The release script extracts "What's New" from this file
    - Without an entry for the version, the release will have no changelog
-3. **Optionally update root CHANGELOG.md** - For monorepo-wide tracking
+3. **Update root CHANGELOG.md** - Same entry, concise, under the component's section (skip Technical subsections)
 4. **Rebuild the component** - The version propagates automatically via `common_about.h`
 5. **Commit and push**
-6. **Run release script**: `./Scripts/release_component.sh <name> --draft`
+6. **Run release script**: `./Scripts/release_component.sh <name>` (`--draft` creates an unpublished release and skips the README version update)
 
 **IMPORTANT:** The release script reads `extensions/<component>/CHANGELOG.md` to generate GitHub release notes. If this file is missing the version entry, the release will only have installation instructions with no "What's New" section.
 
@@ -238,10 +238,12 @@ Releasing one extension does not affect others.
 
 ## Building
 
-1. Generate Xcode project: `ruby Scripts/generate_xcode_project.rb`
-2. Build: `./Scripts/build.sh`
-3. Install: `./Scripts/install.sh`
-4. Test: Restart foobar2000
+From the component's directory:
+
+1. Build and install: `./Scripts/build.sh --install` (generates the Xcode project on the first run; `--regenerate` after adding or removing source files)
+2. Test: Restart foobar2000
+
+Never call `xcodebuild` directly: it builds into DerivedData, and `install.sh` copies the component's local `build/` folder.
 
 ## Testing
 
@@ -277,11 +279,14 @@ This project uses Git worktrees for parallel component development. Each compone
     biography/                   # dev/biography branch
     cloud-streamer/              # dev/cloud-streamer branch
     playback-controls/           # dev/playback-controls branch
+    effects-dsp/                 # dev/effects-dsp branch
+    spectrum/                    # dev/spectrum branch
+    vectorscope/                 # dev/vectorscope branch
 ```
 
 ### Starting Development
 
-Use the `fb2k-dev` launcher from anywhere:
+The author uses an `fb2k-dev` launcher (a local script in `~/.local/bin`, not part of this repository):
 
 ```bash
 fb2k-dev biography    # Opens Claude in ~/Projects/Foobar2000-worktrees/biography
@@ -313,7 +318,7 @@ The `ff-merge.sh` script:
 | Item | Pattern | Example |
 |------|---------|---------|
 | Branch | `dev/<name>` | `dev/biography` |
-| Directory | `foo_jl_<name>_mac` | `foo_jl_biography_mac` |
+| Directory | `foo_jl_<name>_mac` | `foo_jl_biography_mac` (exceptions: `waveform-seekbar` → `foo_jl_wave_seekbar_mac`, `albumart` → `foo_jl_album_art_mac`, `queue-manager` → `foo_jl_queue_manager_mac`, `playback-controls` → `foo_jl_playback_controls_ext`) |
 | Component file | `foo_jl_<name>.fb2k-component` | `foo_jl_biography.fb2k-component` |
 
 ### Worktree Files
@@ -353,7 +358,7 @@ This creates:
 2. Mappings in all release/package scripts
 3. Extension directory structure
 4. Worktree with CLAUDE.md and BACKLOG.md
-5. Updates to fb2k-dev and completions
+5. Updates to the author's local `fb2k-dev` launcher and its completions (steps 7-8 of the script fail where those files don't exist)
 
 **Manual steps after:**
 1. Create `generate_xcode_project.rb` in the extension

@@ -13,32 +13,20 @@ A streamlined playlist view with album grouping and cover art display.
 ### Requirements
 
 - macOS 12.0 (Monterey) or later
-- Xcode 14.0 or later
-- foobar2000 SDK 2025-03-07
+- Xcode 15 or later
+- foobar2000 SDK 2026-10-01 (at the repository root, see the [main README](../../README.md#building-from-source))
 - Ruby (for project generation)
 
 ### Build Steps
 
-1. **Build SDK Libraries** (if not already done):
+1. **Build the SDK libraries** once, as described in [Building from Source](../../README.md#building-from-source) in the main README.
+
+2. **Build and install** (generates the Xcode project on the first run):
    ```bash
-   cd ../SDK-2026-10-01/foobar2000
-   xcodebuild -workspace foobar2000.xcworkspace -scheme "foobar2000 SDK" -configuration Release build
+   ./Scripts/build.sh --install
    ```
 
-2. **Generate Xcode Project**:
-   ```bash
-   ruby Scripts/generate_xcode_project.rb
-   ```
-
-3. **Build**:
-   ```bash
-   ./Scripts/build.sh
-   ```
-
-4. **Install**:
-   ```bash
-   ./Scripts/install.sh
-   ```
+3. Restart foobar2000.
 
 ## Project Structure
 

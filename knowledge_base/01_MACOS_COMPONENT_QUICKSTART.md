@@ -7,10 +7,10 @@ This guide covers creating a new foobar2000 macOS component from scratch, includ
 ## Prerequisites
 
 - **macOS 12+** (Monterey or later)
-- **Xcode 12+** with Command Line Tools
+- **Xcode 15+** with Command Line Tools
 - **Ruby** (for project generation scripts)
 - **foobar2000 for Mac** installed for testing
-- **foobar2000 SDK** (2025-03-07 or later)
+- **foobar2000 SDK** 2026-10-01 (requires C++20)
 
 ## 1. Naming Convention
 
@@ -201,18 +201,7 @@ namespace {
 
 ### Building SDK Libraries
 
-Before building your component, build the SDK libraries:
-
-```bash
-cd /path/to/SDK-2026-10-01
-
-# Build all SDK projects in Release mode
-xcodebuild -project foobar2000/SDK/foobar2000_SDK.xcodeproj -configuration Release
-xcodebuild -project foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj -configuration Release
-xcodebuild -project foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release
-xcodebuild -project foobar2000/shared/shared.xcodeproj -configuration Release
-xcodebuild -project pfc/pfc.xcodeproj -configuration Release
-```
+Before building your component, build the SDK libraries once, in the order and with the `MACOSX_DEPLOYMENT_TARGET=12.0` override given in the main [README](../README.md#building-from-source) (pfc, SDK, shared, helpers, component_client). These are the only direct `xcodebuild` calls; components build through their `Scripts/build.sh`.
 
 ### Header Search Paths
 ```
@@ -260,19 +249,14 @@ cd foo_mycomponent_mac
 ruby Scripts/generate_xcode_project.rb
 ```
 
-### Step 2: Build
+### Step 2: Build and Install for Testing
 ```bash
-xcodebuild -project foo_mycomponent.xcodeproj -configuration Release
+./Scripts/build.sh --install
 ```
 
-### Step 3: Install for Testing
-```bash
-# Copy to foobar2000 components folder
-cp -r build/Release/foo_mycomponent.component \
-  ~/Library/foobar2000-v2/user-components/
-```
+`build.sh` keeps its output in the local `build/` folder (calling `xcodebuild` directly builds into DerivedData instead), and `--install` copies `build/Release/foo_mycomponent.component` to `~/Library/foobar2000-v2/user-components/foo_mycomponent/`, the same layout Preferences > Components creates.
 
-### Step 4: Verify in foobar2000
+### Step 3: Verify in foobar2000
 1. Launch foobar2000 for Mac
 2. Open Preferences > Components
 3. Your component should appear in the list

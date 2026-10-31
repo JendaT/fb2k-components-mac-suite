@@ -133,7 +133,7 @@ Access settings via **Preferences > Display > Vectorscope**, or right-click the 
 
 ## Layout Editor
 
-Add Vectorscope to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `vectorscope` (recommended)
 - `Vectorscope`
 - `vector_scope`

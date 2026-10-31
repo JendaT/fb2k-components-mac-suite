@@ -75,7 +75,7 @@ Access settings via **Preferences > Display > Queue Manager**.
 
 ## Layout Editor
 
-Add Queue Manager to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `queue_manager` (recommended)
 - `Queue Manager`
 - `QueueManager`

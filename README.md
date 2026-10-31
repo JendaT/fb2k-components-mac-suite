@@ -52,9 +52,7 @@ Tree-based playlist management with folder organization and smart import. Necesi
 **Features:**
 - Hierarchical folder organization
 - Drag-and-drop playlist reordering
-- Smart import from filesystem with path mapping
-- Autoplaylist support
-- Playlist search and filtering
+- Import from a YAML file, Strawberry, DeaDBeeF, Vox, or Windows foo_plorg (theme.fth, with drive-letter path mapping)
 
 ---
 
@@ -68,7 +66,7 @@ Waveform seekbar with per-track loudness analysis. This one was my favorite, a n
 
 **Features:**
 - Layered style: peak envelope around a momentary loudness body on a dBFS axis, tinted by the spectral balance
-- Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo or mono
+- Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo, mono or split (L up, R down)
 - Hover readout (LUFS-S, peak, crest, correlation, Lo/Mid/Hi) and click-to-seek
 - Loudness summary: integrated, LRA, true peak, PLR, clip count; clip markers
 - Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Trail, Shimmer), optionally synced to the track's BPM
@@ -115,7 +113,7 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 - Phase correlation meter, broadband or split into low / mid / high bands with adjustable crossovers
 - Meter below, above, left or right of the scope, with adjustable bar thickness and a band showing its recent range
 - Grid with level guides, L / R / M / S labels and adjustable opacity
-- Color presets (Phosphor Green, Amber, Nord, Dracula, Gruvbox, ...) with separate light/dark colors, band colors and optional glass background
+- Color presets (P31 green, P3 amber, P4 white and P7 blue phosphors, Nord, Dracula, Gruvbox, ...) with separate light/dark colors, band colors and optional glass background
 
 ---
 
@@ -128,8 +126,7 @@ Extended album art viewer with support for multiple artwork types and selection-
 - Shows artwork for selected track (falls back to now playing)
 - Right-click context menu to switch artwork type
 - Navigation arrows on hover to cycle through available types
-- Per-instance configuration (each panel remembers its type)
-- Layout parameters for default artwork type
+- Layout parameter for the panel's artwork type (a type picked from the menu lasts until foobar2000 restarts)
 
 **Layout Usage:**
 ```
@@ -138,7 +135,7 @@ albumart_ext type=back          # Back cover
 albumart_ext type=disc          # Disc art
 
 # Dual panel layout (front + back side by side)
-splitter horizontal
+splitter vertical
   albumart_ext type=front
   albumart_ext type=back
 ```
@@ -199,20 +196,22 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
-| Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
-| Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
+| Album Art (Extended) | [1.0.1](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1) | TBD |
+| Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=Queue+Manager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
 | Effects DSP | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=effects-dsp) | TBD |
 
 ## Installation
 
 1. Download the `.fb2k-component` file from the links above
-2. Double-click to install, or manually copy to `~/Library/foobar2000-v2/user-components/`
-3. Restart foobar2000
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the downloaded file
+3. Restart foobar2000 when it asks
+
+Double-clicking a `.fb2k-component` file does not install it, and copying it into the components folder doesn't either. Panels then go into your layout by name (see [Layout Editor](#layout-editor)); Effects DSP goes into the DSP chain instead.
 
 ## Requirements
 
-- foobar2000 v2.6+ for macOS
+- foobar2000 v2 for macOS (tested on 2.25 and 2.26)
 - macOS 12 "Monterey" or newer
 - Intel or Apple Silicon processor
 
@@ -231,7 +230,7 @@ directory layout looks like this:
 
 ```
 fb2k-components-mac-suite/
-└── SDK-2026-10-01/          # exact name must match the downloaded archive
+└── SDK-2026-10-01/          # this exact name, or set FB2K_SDK_PATH
     ├── pfc/
     ├── foobar2000/
     │   ├── SDK/
@@ -262,16 +261,12 @@ which the SDK requires since 2026-09-16.
 
 ```bash
 cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
-ruby Scripts/generate_xcode_project.rb
-./Scripts/build.sh          # --release is the default; use --debug for a debug build
-./Scripts/install.sh
+./Scripts/build.sh --install   # Release by default; add --debug for a debug build
 ```
 
-Or build all extensions at once:
+`build.sh` generates the Xcode project on the first run (`--regenerate` after adding or removing source files) and keeps its output in the component's `build/` folder, which `--install` copies into foobar2000. Restart foobar2000 afterwards.
 
-```bash
-./Scripts/build_all.sh [--clean] [--install]
-```
+`./Scripts/build_all.sh [--clean] [--install]` builds SimPlaylist, Playlist Organizer, Waveform Seekbar and Last.fm Scrobbler in one go.
 
 ## Documentation
 
@@ -300,11 +295,13 @@ If you like this project, you can support it here.
 
 ## Layout Editor
 
-To add these components to your layout, use **View → Layout → Enable Layout Editing Mode**, then right-click to add UI elements.
+foobar2000 for Mac builds its window from a text layout; there is no drag-and-drop or right-click layout editing. To add a panel, open **View → Layout → Edit Layout...**, type its name into the layout text where you want it, and click **Apply**.
+
+In the layout text, `splitter horizontal` stacks its children top to bottom and `splitter vertical` places them side by side.
 
 ### Component Names for Layout
 
-Use these names in the layout editor or when editing the layout text file directly:
+Use these names in the layout text:
 
 | Component | Recommended | Also Accepted |
 |-----------|-------------|---------------|
@@ -327,13 +324,13 @@ splitter horizontal style=thin
   spectrum
   splitter vertical style=thin
     splitter horizontal style=thin
-      plorg tab-name="Playlists"
+      plorg
     splitter horizontal style=thin
       simplaylist
     splitter horizontal style=thin
       tabs
         splitter horizontal style=thin tab-name="Now Playing"
-          albumart
+          albumart_ext type=front
           selection-properties sections=metadata
         audiounit mode=visualization name=AUGraphicEQ vendor=Apple tab-name="EQ"
       playback-controls
@@ -342,10 +339,9 @@ splitter horizontal style=thin
 This creates a layout with:
 - Waveform seekbar at the top
 - Spectrum analyzer below it
-- Playlist Organizer on the left sidebar
-- SimPlaylist as the main playlist view
-- Tabbed panel with Now Playing info and EQ visualization
-- Playback controls at the bottom
+- Three columns underneath: Playlist Organizer, SimPlaylist, and a tabbed panel (Now Playing with Album Art and track info, EQ visualization) above playback controls
+
+`selection-properties`, `audiounit` and `playback-controls` are foobar2000's built-in elements.
 
 ---
 

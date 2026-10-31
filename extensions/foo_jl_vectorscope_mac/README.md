@@ -14,7 +14,7 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 - foobar2000 for Mac 2.x
 - macOS 12.0+ (Monterey or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
@@ -32,10 +32,9 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 ### From Binary
 
-1. Download `foo_jl_vectorscope.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_vectorscope/`
-3. Copy `foo_jl_vectorscope.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_vectorscope.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Build Scripts
 
@@ -55,11 +54,9 @@ Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` 
 
 ### Adding to Layout
 
-1. **View → Layout → Enable Layout Editing Mode**
-2. Right-click and choose **Add UI Element**
-3. Select **Vectorscope**
+Open **View → Layout → Edit Layout...**, add a line with `vectorscope` inside a splitter where you want the panel, and click **Apply**.
 
-Layout file names: `vectorscope` (also `Vectorscope`, `vector_scope`, `goniometer`, `foo_jl_vectorscope`, `jl_vectorscope`).
+Layout names: `vectorscope` (also `Vectorscope`, `vector_scope`, `goniometer`, `foo_jl_vectorscope`, `jl_vectorscope`).
 
 ### Configuration
 

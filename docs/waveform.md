@@ -91,7 +91,7 @@ Waveform data is cached at:
 
 ## Layout Editor
 
-Add Waveform Seekbar to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `waveform-seekbar` (recommended)
 - `Waveform Seekbar`
 - `waveform_seekbar`
@@ -99,7 +99,7 @@ Add Waveform Seekbar to your layout using any of these names:
 
 Example layout:
 ```
-splitter vertical
+splitter horizontal style=thin
   waveform-seekbar
   simplaylist
 ```

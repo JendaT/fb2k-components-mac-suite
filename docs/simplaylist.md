@@ -41,12 +41,18 @@ Efficiently handles playlists of any size with smooth scrolling performance.
 
 ### Keyboard Navigation
 
-Full keyboard support:
-- **Arrow keys** - Navigate between tracks
-- **Page Up/Down** - Scroll by page
-- **Home/End** - Jump to beginning/end
-- **Enter** - Play selected track
+Full keyboard support (hold Shift with the movement keys to extend the selection):
+- **Arrow keys** - Move between tracks
+- **Page Up/Down** - Move the focus by a page
+- **Home/End** - Jump to the first/last track
+- **Enter** - Play the focused track
 - **Space** - Toggle play/pause
+- **Delete/Backspace** - Remove the selected tracks
+- **Q** - Add the selected tracks to the playback queue
+- **Cmd+A** - Select all
+- **Cmd+Z / Cmd+Shift+Z** - Undo / redo playlist changes
+- **Cmd+F** - foobar2000's search
+- **Ctrl+scroll** - Resize the album art column
 
 ### Drag & Drop Reordering
 
@@ -54,7 +60,7 @@ Reorder tracks within the playlist using drag and drop.
 
 ### Context Menu
 
-Right-click for the standard foobar2000 context menu with all playback and metadata options.
+Right-click for the standard foobar2000 context menu with all playback and metadata options, plus Remove, Sort, Reload Info and Focus Playing Now.
 
 ### Keep Playback in Its Playlist
 
@@ -87,7 +93,7 @@ Access settings via **Preferences > Display > SimPlaylist**
 
 ## Layout Editor
 
-Add SimPlaylist to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the playlist, and click **Apply**:
 - `simplaylist` (recommended)
 - `SimPlaylist`
 - `foo_jl_simplaylist`

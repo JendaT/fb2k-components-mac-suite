@@ -23,19 +23,6 @@ Optional Windows Explorer-style tree connection lines for visual clarity. Works 
 - Reorder playlists and folders
 - Move items between folders
 
-### Customizable Display
-
-Use title formatting syntax to customize how nodes are displayed:
-
-```
-%node_name%$if(%is_folder%, [%count%],)
-```
-
-Available fields:
-- `%node_name%` - Name of playlist or folder
-- `%is_folder%` - True if item is a folder
-- `%count%` - Number of items in folder
-
 ### Auto-Sync
 
 Automatically syncs with foobar2000's playlist manager:
@@ -46,16 +33,16 @@ Automatically syncs with foobar2000's playlist manager:
 ### Import/Export
 
 Share your organization structure:
-- **Export** - Save current structure to file
-- **Import** - Load structure from file
-- Supports path mapping for portable configurations
+- **Export Tree...** - Save the current structure to a YAML file
+- **Import** - Load a structure from a YAML file, Strawberry, DeaDBeeF, Vox, or Windows foo_plorg (theme.fth)
+- **Add Missing foobar2000 Playlists** - Add playlists that aren't in the tree yet
 
 <!-- Screenshot: Import menu -->
 ![Import Menu](images/plorg-import-menu.png)
 
 ### Path Mapping
 
-When importing configurations from different systems, map paths to work with your local library:
+When importing a Windows foo_plorg `theme.fth`, map its drive letters to folders in your local library:
 
 <!-- Screenshot: Path mapping dialog -->
 ![Path Mapping](images/plorg-path-mapping.png)
@@ -71,7 +58,7 @@ Access settings via **Preferences > Display > Playlist Organizer**
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Node Format | Title formatting string for display | `%node_name%...` |
+| Node Format | Title formatting string; saved but not applied yet (the tree shows plain names, with counts in their own column) | `%node_name%` |
 | Show Tree Lines | Display tree connection lines | Off |
 
 ### Configuration File
@@ -84,7 +71,7 @@ The tree structure is stored as human-readable YAML at:
 Example:
 ```yaml
 # Playlist Organizer Configuration
-node_format: "%node_name%$if(%is_folder%, [%count%],)"
+node_format: "%node_name%"
 
 tree:
   - folder: "Rock"
@@ -101,27 +88,28 @@ tree:
 
 ## Layout Editor
 
-Add Playlist Organizer to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `plorg` (recommended)
-- `Playlist Organizer`
 - `playlist_organizer`
 - `foo_jl_plorg`
 
-Example layout:
+Example layout (organizer beside the playlist):
 ```
-splitter horizontal style=thin
-  plorg tab-name="Playlists"
+splitter vertical style=thin
+  plorg
   simplaylist
 ```
 
 ## Context Menu
 
 Right-click options:
-- **New Folder** - Create a new folder
-- **Rename** - Rename selected item
-- **Delete** - Remove folder (playlists moved to root)
+- **New Folder / New Playlist** - Create a folder or a playlist
+- **Rename** - Rename the selected item
+- **Delete** - Remove the selected items. Playlists are also deleted from foobar2000 unless **Keep playlists in foobar2000** is ticked; a deleted folder's contents move up one level unless **Also delete all playlists inside folders** is ticked
+- **Sort A-Z / Sort Z-A** - Sort the contents of the right-clicked folder
 - **Expand All / Collapse All** - Toggle all folders
-- **Import / Export** - Configuration management
+- **Import** (submenu) / **Export Tree...** - Configuration management
+- **Tools > Repair Volume UUIDs...** - Fix playlist paths after a disk's volume ID changed
 
 ## Requirements
 

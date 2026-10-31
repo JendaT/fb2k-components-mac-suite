@@ -5,7 +5,7 @@ A foobar2000 macOS component for streaming Mixcloud and SoundCloud content direc
 ## Features
 
 - Stream Mixcloud mixes and SoundCloud tracks directly in foobar2000
-- Add tracks via URL paste or drag-drop from browser
+- Add tracks by URL, or search SoundCloud and Mixcloud in the Cloud Browser panel
 - Full metadata display (title, artist, duration, album art)
 - Seeking support for both services
 - Persistent metadata cache
@@ -29,17 +29,14 @@ Or download from: https://github.com/yt-dlp/yt-dlp/releases
 
 ## Installation
 
-1. Download `foo_jl_cloud_streamer.component`
-2. Copy to: `~/Library/foobar2000-v2/user-components/foo_jl_cloud_streamer/`
-3. Restart foobar2000
+Not released yet. Build it from source (see below); `./Scripts/build.sh --install` installs it into foobar2000.
 
 ## Usage
 
 ### Adding Tracks
 
-1. Copy a Mixcloud or SoundCloud URL
-2. In foobar2000, use Edit > Paste URL (or Cmd+V in playlist)
-3. The track will be added to your playlist
+- Open foobar2000's **Add Location...** and enter a Mixcloud or SoundCloud URL, or
+- Add the Cloud Browser panel to your layout (**View → Layout → Edit Layout...**, add a line with `cloud_browser`, click **Apply**), search, and add results by double-click, Enter or drag
 
 ### Supported URLs
 
@@ -61,7 +58,7 @@ https://soundcloud.com/username/track-name
 Access preferences via: foobar2000 > Preferences > Tools > Cloud Streamer
 
 - **yt-dlp path**: Custom path to yt-dlp executable
-- **Format preferences**: Select preferred audio format per service
+- **Format preferences**: not applied yet; yt-dlp's default format is used
 - **Cache management**: View stats, clear cached data
 - **Debug logging**: Enable verbose console output
 
@@ -78,20 +75,17 @@ Access preferences via: foobar2000 > Preferences > Tools > Cloud Streamer
 - Xcode 15+
 - foobar2000 macOS SDK (SDK-2026-10-01)
 
-### Build
-```bash
-cd foo_jl_cloud_streamer_mac
-./Scripts/build.sh
-```
+### Build and Install
 
-### Install
+Build the SDK libraries once, as described in [Building from Source](../../README.md#building-from-source) in the main README, then from this directory:
+
 ```bash
-./Scripts/install.sh
+./Scripts/build.sh --install
 ```
 
 ## License
 
-Personal/non-commercial use. Part of the foobar2000 macOS components suite.
+MIT License - see [LICENSE](../../LICENSE). Part of the foobar2000 macOS components suite.
 
 ## Author
 

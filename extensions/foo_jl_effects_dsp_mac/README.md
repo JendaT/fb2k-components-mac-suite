@@ -2,7 +2,7 @@
 
 > Part of [foobar2000 macOS Components Suite](../../README.md)
 
-**[Features & Documentation](../../docs/effects_dsp.md)** | **[Changelog](CHANGELOG.md)**
+**[Features](../../README.md#effects-dsp)** | **[Changelog](CHANGELOG.md)**
 
 ---
 

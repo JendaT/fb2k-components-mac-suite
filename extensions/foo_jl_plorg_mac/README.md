@@ -11,56 +11,27 @@ Hierarchical playlist organization with folders for foobar2000 macOS.
 ## Requirements
 
 - macOS 12.0 (Monterey) or later
-- Xcode 14.0 or later
-- foobar2000 SDK 2025-03-07
+- Xcode 15 or later
+- foobar2000 SDK 2026-10-01 (at the repository root, see the [main README](../../README.md#building-from-source))
 
 ## Building
 
-### 1. Build SDK Libraries
+1. Build the SDK libraries once, as described in [Building from Source](../../README.md#building-from-source) in the main README.
 
-First, build the foobar2000 SDK libraries if not already done:
+2. Build and install (generates the Xcode project on the first run):
+   ```bash
+   ./Scripts/build.sh --install
+   ```
 
-```bash
-cd ../SDK-2026-10-01/foobar2000
-xcodebuild -workspace foobar2000.xcworkspace -scheme "foobar2000 SDK" -configuration Release build
-```
+   Don't build from Xcode: it writes to DerivedData, and `install.sh` copies `build/Release`.
 
-### 2. Generate Xcode Project
-
-```bash
-cd foo_jl_plorg_mac
-ruby Scripts/generate_xcode_project.rb
-```
-
-### 3. Build
-
-Using script:
-```bash
-./Scripts/build.sh --release
-```
-
-Or open in Xcode:
-```bash
-open foo_jl_plorg.xcodeproj
-```
-
-Then build with Cmd+B.
-
-### 4. Install
-
-```bash
-./Scripts/install.sh
-```
-
-Or manually copy `build/Release/foo_jl_plorg.component` to:
-- `~/Library/foobar2000-v2/user-components/foo_jl_plorg/`
+3. Restart foobar2000.
 
 ## Usage
 
-1. In foobar2000, go to View menu
-2. Add "Playlist Organizer" panel to your layout
-3. Right-click to create folders and organize playlists
-4. Drag & drop to reorder
+1. Open **View → Layout → Edit Layout...**, add a line with `plorg` inside a splitter where you want the panel, and click **Apply**
+2. Right-click in the panel to create folders and playlists
+3. Drag & drop to reorder
 
 ## Configuration
 
@@ -68,12 +39,7 @@ Settings are stored via `fb2k::configStore` and persist automatically.
 
 ### Node Format
 
-Customize how nodes are displayed using the node format pattern:
-- `%node_name%` - Name of folder or playlist
-- `%is_folder%` - "1" for folders, empty for playlists
-- `%count%` - Number of children (folders) or tracks (playlists)
-
-Default format: `%node_name%$if(%is_folder%,' ['%count%']',)`
+The Node Format field in the preferences (default `%node_name%`) is saved but not applied yet: the tree shows plain names, with item counts in their own column.
 
 ## Project Structure
 

@@ -24,117 +24,55 @@ An interactive waveform display and seekbar for foobar2000 macOS.
 
 - foobar2000 for Mac 2.x
 - macOS 12.0+ (Monterey or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
 
-### Build and Test Install
+### Build and Install
 
 ```bash
-# One-command build and install for testing
-./Scripts/test_install.sh
+# From this directory
+./Scripts/build.sh --install            # Run tests, build Release and install
+./Scripts/build.sh --clean --install    # Clean rebuild and install
+./Scripts/build.sh --regenerate --install  # After adding/removing source files
 
 # Restart foobar2000, then add the UI element
 ```
 
 ### From Binary
 
-1. Download `foo_jl_wave_seekbar.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/`
-3. Copy `foo_jl_wave_seekbar.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_wave_seekbar.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Build Scripts
 
-All scripts are located in the `Scripts/` directory.
+All scripts are located in the `Scripts/` directory and share `shared/scripts/lib.sh`.
 
-### test_install.sh
+| Script | Purpose |
+|--------|---------|
+| `build.sh` | Run tests, then build (`--debug`, `--release`, `--clean`, `--regenerate`, `--install`) |
+| `run_tests.sh` | Compile and run the Core unit tests standalone |
+| `install.sh` | Install a pre-built component (`--config Debug`) |
+| `clean.sh` | Remove the build directory and the generated Xcode project |
+| `generate_xcode_project.rb` | Generate the Xcode project from `src/` |
 
-The primary script for development - performs a clean build and installs to foobar2000 for testing.
-
-```bash
-./Scripts/test_install.sh           # Clean build (Release) and install
-./Scripts/test_install.sh --debug   # Build Debug configuration
-./Scripts/test_install.sh --no-clean # Skip cleaning, faster rebuild
-./Scripts/test_install.sh --regenerate # Force regenerate Xcode project
-```
-
-### build.sh
-
-Build the component with various options.
-
-```bash
-./Scripts/build.sh                  # Build Release
-./Scripts/build.sh --debug          # Build Debug
-./Scripts/build.sh --clean          # Clean before building
-./Scripts/build.sh --regenerate     # Regenerate Xcode project first
-./Scripts/build.sh --install        # Build and install
-./Scripts/build.sh --clean --install # Full clean build and install
-```
-
-### install.sh
-
-Install a pre-built component to foobar2000.
-
-```bash
-./Scripts/install.sh                # Install Release build
-./Scripts/install.sh --config Debug # Install Debug build
-```
-
-### clean.sh
-
-Remove build artifacts.
-
-```bash
-./Scripts/clean.sh           # Clean build directory
-./Scripts/clean.sh --all     # Also remove generated Xcode project
-```
-
-### generate_xcode_project.rb
-
-Generate the Xcode project from source files.
-
-```bash
-ruby Scripts/generate_xcode_project.rb
-```
-
-This script:
-- Discovers all source files in `src/`
-- Configures SDK library linking
-- Sets up framework dependencies
-- Creates `foo_jl_wave_seekbar.xcodeproj`
-
-## Manual Build Commands
-
-If you prefer using xcodebuild directly:
-
-```bash
-# Generate project (required first time)
-ruby Scripts/generate_xcode_project.rb
-
-# Build Release
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Release build
-
-# Build Debug
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Debug build
-
-# Clean
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar clean
-```
+Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` directory so `install.sh` copies the binary you just built.
 
 ## Usage
 
 ### Adding to Layout
 
-1. Right-click on the foobar2000 window
-2. Select "Add UI Element"
-3. Choose "Waveform Seekbar" from the list
+Open **View → Layout → Edit Layout...**, add a line with `waveform-seekbar` inside a splitter where you want the panel, and click **Apply**.
+
+Layout names: `waveform-seekbar` (also `Waveform Seekbar`, `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar`).
 
 ### Seeking
 
 - **Click** anywhere on the waveform to seek to that position
-- **Drag** to preview position before releasing
+- **Drag** to scrub; playback follows the mouse
+- The level scale beside the waveform does not seek
 
 ### Configuration
 
@@ -222,12 +160,6 @@ One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks
 
 ### Scanning Performance
 
-| Track Duration | Typical Scan Time |
-|----------------|-------------------|
-| 3 min (FLAC)   | ~0.5-1.0 sec |
-| 10 min (FLAC)  | ~1.5-2.5 sec |
-| 3 min (MP3)    | ~0.3-0.5 sec |
-
 - Local tracks longer than about a minute are analysed in up to 64 segments in parallel on the foobar2000 CPU thread pool, one decoder per worker; each segment starts 1 s early so the filters settle, and segments join into exactly one sequential pass (unit-tested)
 - Remote, non-seekable and slow-seeking inputs, and any segment failure, use one sequential pass (about 0.9 s of analysis per 10 minutes of stereo on top of decoding)
 - Background scanning with GCD
@@ -255,7 +187,7 @@ One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks
 
 1. Check Preferences > Components for error messages
 2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/foo_jl_wave_seekbar.component`
-3. Try rebuilding with `./Scripts/test_install.sh --regenerate`
+3. Try rebuilding with `./Scripts/build.sh --regenerate --install`
 
 ### Waveform not displaying
 
@@ -265,8 +197,8 @@ One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2026-10-01 && xcodebuild`
-2. Regenerate project: `./Scripts/clean.sh --all && ./Scripts/test_install.sh`
+1. Ensure the SDK is built (see [Building from Source](../../README.md#building-from-source) in the main README)
+2. Regenerate the project: `./Scripts/clean.sh && ./Scripts/build.sh --install`
 
 ## Credits
 
@@ -279,12 +211,4 @@ MIT License - see LICENSE file
 
 ## Changelog
 
-### 1.0.0 (2024)
-
-- Initial release
-- Waveform display with stereo/mono modes
-- Interactive click-to-seek
-- SQLite caching with WAL mode
-- Dark mode support
-- Full preferences page with color customization
-- Universal binary (arm64 + x86_64)
+See [CHANGELOG.md](CHANGELOG.md).

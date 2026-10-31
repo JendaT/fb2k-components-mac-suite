@@ -40,12 +40,13 @@ Cycles through all available artwork types for the current track.
 
 Right-click for quick access to:
 - Switch to specific artwork type
-- Fetch missing artwork from online sources
-- See which types are available for current track
+- Fetch missing artwork from online sources (1.1.0, not released yet)
 
 <!-- Screenshot: Context menu -->
 
 ### Fetch Missing Artwork
+
+*Coming in 1.1.0, not released yet.*
 
 Search online sources for artwork matching the current track (right-click >
 **Fetch Missing...**). Results appear as thumbnails in a footer; click one to
@@ -56,9 +57,9 @@ Sources: Cover Art Archive (via MusicBrainz), iTunes, Deezer - no setup
 required. TIDAL is available as an additional source with free developer
 credentials (see the component README for setup).
 
-### Per-Instance Configuration
+### Per-Panel Artwork Type
 
-Each Album Art panel remembers its selected artwork type independently. Perfect for multi-panel setups showing different artwork simultaneously.
+Each Album Art panel shows its own artwork type, so several panels can show different artwork at once. A type picked from the context menu lasts until foobar2000 restarts or the layout is reloaded; set a lasting one with the `type=` layout parameter.
 
 ### Layout Parameters
 
@@ -75,10 +76,10 @@ albumart_ext type=artist        # Artist photo
 
 ### Dual Panel Setup
 
-Display multiple artwork types side by side:
+Display multiple artwork types side by side (`splitter vertical` places its children side by side, `splitter horizontal` stacks them):
 
 ```
-splitter horizontal
+splitter vertical
   albumart_ext type=front
   albumart_ext type=back
 ```
@@ -94,7 +95,7 @@ splitter horizontal
 
 ## Layout Editor
 
-Add Album Art to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `albumart_ext` (recommended)
 - `foo_jl_album_art`
 - `jl_album_art`
@@ -113,18 +114,18 @@ splitter horizontal
   simplaylist
 ```
 
-**Front and back covers:**
+**Front and back covers side by side:**
 ```
-splitter horizontal style=thin
+splitter vertical style=thin
   albumart_ext type=front
   albumart_ext type=back
 ```
 
 **Complete layout with all components:**
 ```
-splitter vertical
+splitter horizontal
   waveform-seekbar
-  splitter horizontal
+  splitter vertical
     splitter horizontal style=thin
       albumart_ext type=front
       albumart_ext type=back
@@ -140,7 +141,7 @@ splitter vertical
 
 - Artwork is read from embedded metadata (ID3, Vorbis comments, etc.)
 - External artwork files (folder.jpg, cover.png) support depends on foobar2000 configuration
-- If a requested artwork type is not available, the panel shows a placeholder or falls back to front cover
+- If a requested artwork type is not available, the panel shows the type's name (e.g. "Back Cover") as a placeholder
 
 ## Links
 

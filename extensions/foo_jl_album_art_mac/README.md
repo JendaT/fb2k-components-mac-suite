@@ -12,32 +12,33 @@ Extended album artwork display with multiple artwork types for foobar2000 macOS.
 
 - foobar2000 for Mac 2.x
 - macOS 12.0+ (Monterey or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
 
-### Build and Test Install
+### Build and Install
 
 ```bash
-# One-command build and install for testing
-./Scripts/test_install.sh
+# From this directory
+./Scripts/build.sh --install            # Run tests, build Release and install
+./Scripts/build.sh --clean --install    # Clean rebuild and install
+./Scripts/build.sh --regenerate --install  # After adding/removing source files
 
 # Restart foobar2000, then add the UI element
 ```
 
 ### From Binary
 
-1. Download `foo_jl_album_art.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_album_art/`
-3. Copy `foo_jl_album_art.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_album_art.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Usage
 
 ### Layout Editor Names
 
-Use these names in the layout editor:
+Open **View → Layout → Edit Layout...**, add a line with one of these names inside a splitter where you want the panel, and click **Apply**:
 
 | Recommended | Also Accepted |
 |-------------|---------------|
@@ -57,10 +58,10 @@ albumart_ext type=front square  # Square aspect ratio
 
 ### Dual Panel Layout (Front + Back Cover)
 
-A common use case is displaying front and back cover side by side:
+A common use case is displaying front and back cover side by side (`splitter vertical` places its children side by side, `splitter horizontal` stacks them):
 
 ```
-splitter horizontal
+splitter vertical
   albumart_ext type=front
   albumart_ext type=back
 ```
@@ -72,6 +73,8 @@ splitter horizontal
 - **Click arrows** - Cycle through available artwork types for the current track
 
 ### Fetch Missing Artwork
+
+*Coming in 1.1.0, not released yet.*
 
 Right-click the panel and choose **Fetch Missing...** to search online sources
 for artwork matching the current track (artist + album, or MusicBrainz IDs when
@@ -111,29 +114,16 @@ This means clicking a track in the playlist immediately updates the album art di
 
 ## Build Scripts
 
-All scripts are located in the `Scripts/` directory.
+All scripts are located in the `Scripts/` directory and share `shared/scripts/lib.sh`.
 
-### test_install.sh
+| Script | Purpose |
+|--------|---------|
+| `build.sh` | Run tests, then build (`--debug`, `--release`, `--clean`, `--regenerate`, `--install`) |
+| `run_tests.sh` | Compile and run the Core unit tests standalone |
+| `install.sh` | Install a pre-built component (`--config Debug`) |
+| `clean.sh` | Remove the build directory and the generated Xcode project |
 
-```bash
-./Scripts/test_install.sh           # Clean build (Release) and install
-./Scripts/test_install.sh --debug   # Build Debug configuration
-./Scripts/test_install.sh --no-clean # Skip cleaning, faster rebuild
-./Scripts/test_install.sh --regenerate # Force regenerate Xcode project
-```
-
-### install.sh
-
-```bash
-./Scripts/install.sh                # Install Release build
-./Scripts/install.sh --config Debug # Install Debug build
-```
-
-### clean.sh
-
-```bash
-./Scripts/clean.sh                  # Clean build directory
-```
+Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` directory so `install.sh` copies the binary you just built.
 
 ## Project Structure
 
@@ -180,10 +170,7 @@ The component uses two callback systems:
 
 ### Per-Instance Storage
 
-Each component instance has a unique GUID. Artwork type preferences are stored in `fb2k::configStore` with keys like:
-```
-foo_jl_album_art.instance.<GUID>.type
-```
+The artwork type picked from the context menu is stored in `fb2k::configStore` under a per-instance key (`foo_jl_album_art.instance.<GUID>.type`). The GUID is generated anew each time the panel is created, so after a restart or layout reload the panel starts from its `type=` parameter again.
 
 ## Troubleshooting
 
@@ -191,7 +178,7 @@ foo_jl_album_art.instance.<GUID>.type
 
 1. Check Preferences > Components for error messages
 2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_jl_album_art/foo_jl_album_art.component`
-3. Try rebuilding with `./Scripts/test_install.sh --regenerate`
+3. Try rebuilding with `./Scripts/build.sh --regenerate --install`
 
 ### Artwork not displaying
 
@@ -201,8 +188,8 @@ foo_jl_album_art.instance.<GUID>.type
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2026-10-01 && xcodebuild`
-2. Regenerate project: `./Scripts/clean.sh && ruby Scripts/generate_xcode_project.rb`
+1. Ensure the SDK is built (see [Building from Source](../../README.md#building-from-source) in the main README)
+2. Regenerate the project: `./Scripts/clean.sh && ./Scripts/build.sh --install`
 
 ## License
 
@@ -210,13 +197,4 @@ MIT License - see LICENSE file
 
 ## Changelog
 
-### 1.0.0 (2024)
-
-- Initial release
-- Support for all 5 artwork types (front, back, disc, icon, artist)
-- Selection-based display with now-playing fallback
-- Right-click context menu
-- Navigation arrows on hover
-- Per-instance configuration
-- Layout parameter support
-- Universal binary (arm64 + x86_64)
+See [CHANGELOG.md](CHANGELOG.md).

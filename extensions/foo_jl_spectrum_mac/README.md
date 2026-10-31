@@ -6,7 +6,7 @@
 
 ---
 
-A real-time spectrum analyzer UI element for foobar2000 macOS. Pulls normalized FFT data from the core `visualisation_manager` (no third-party DSP) and renders with Core Graphics.
+A real-time spectrum analyzer UI element for foobar2000 macOS. Reads PCM from the core `visualisation_manager` stream, runs its own FFT (Apple vDSP) and renders with Core Graphics.
 
 Contributed by [Scannou](https://github.com/Scannou).
 
@@ -14,7 +14,7 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 - foobar2000 for Mac 2.x
 - macOS 12.0+ (Monterey or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
@@ -32,10 +32,9 @@ Contributed by [Scannou](https://github.com/Scannou).
 
 ### From Binary
 
-1. Download `foo_jl_spectrum.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_spectrum/`
-3. Copy `foo_jl_spectrum.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_spectrum.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Build Scripts
 
@@ -54,11 +53,9 @@ Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` 
 
 ### Adding to Layout
 
-1. **View → Layout → Enable Layout Editing Mode**
-2. Right-click and choose **Add UI Element**
-3. Select **Spectrum Analyzer**
+Open **View → Layout → Edit Layout...**, add a line with `spectrum` inside a splitter where you want the panel, and click **Apply**.
 
-Layout file names: `spectrum` (also `spectrum_analyzer`, `Spectrum Analyzer`, `foo_jl_spectrum`, `jl_spectrum`).
+Layout names: `spectrum` (also `spectrum_analyzer`, `Spectrum Analyzer`, `foo_jl_spectrum`, `jl_spectrum`).
 
 ### Configuration
 
@@ -72,12 +69,12 @@ See [docs/spectrum.md](../../docs/spectrum.md) for the full settings reference.
 foo_jl_spectrum_mac/
 ├── src/
 │   ├── Core/
-│   │   ├── SpectrumAnalyzer.h/cpp   # FFT pull, band mapping, smoothing, dynamics (pure C++)
+│   │   ├── SpectrumAnalyzer.h/cpp   # FFT, band mapping, smoothing, dynamics (pure C++)
 │   │   ├── SpectrumConfig.h         # Config keys, enums, defaults, configStore accessors
 │   │   └── SpectrumThemes.h         # Color theme presets
 │   ├── UI/
 │   │   ├── SpectrumView.h/mm        # Core Graphics rendering (bars, curve, grids)
-│   │   ├── SpectrumController.h/mm  # View controller, 60 fps timer, glass background, quit handling
+│   │   ├── SpectrumController.h/mm  # View controller, display link / timer, glass background, quit handling
 │   │   └── SpectrumPreferences.h/mm # Preferences page
 │   ├── Integration/
 │   │   └── Main.mm                  # UI element and component registration
@@ -91,8 +88,8 @@ foo_jl_spectrum_mac/
 
 ## Technical Details
 
-- Spectrum data comes from `visualisation_stream_v2::get_spectrum_absolute` with `KStreamFlagNewFFT` (0..1 normalized, Gauss window), mono channel mode.
-- Bars are driven by a 60 fps `NSTimer`; the timer pauses when the view is hidden and the stream is released so the core can stop the visualisation backend.
+- Audio comes from `visualisation_stream_v2::get_chunk_absolute` (all channels); the component windows it (Hann or Blackman-Harris) and runs a vDSP real FFT.
+- Updates come from the view's `CADisplayLink` on macOS 14+ and a 60 fps `NSTimer` on macOS 12-13; they pause when the view is hidden and the stream is released so the core can stop the visualisation backend.
 - An `initquit` service releases all live streams before service teardown; holding a stream through shutdown aborts the app.
 - Display window is set by Top and Range (default 0 dB to -90 dB); bars and grid share the settings so guides line up.
 - Settings persist through `fb2k::configStore` under the `foo_jl_spectrum.` prefix.

@@ -371,9 +371,8 @@ $CHANGELOG_CONTENT
 
 ### Installation
 1. Download \`$COMPONENT_FILE\` below
-2. Double-click to install, or manually copy to:
-   \`~/Library/foobar2000-v2/user-components/\`
-3. Restart foobar2000
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ### Requirements
 - foobar2000 v2.x for macOS
@@ -384,9 +383,8 @@ else
 
 ### Installation
 1. Download \`$COMPONENT_FILE\` below
-2. Double-click to install, or manually copy to:
-   \`~/Library/foobar2000-v2/user-components/\`
-3. Restart foobar2000
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ### Requirements
 - foobar2000 v2.x for macOS

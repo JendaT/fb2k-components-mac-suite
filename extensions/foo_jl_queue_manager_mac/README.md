@@ -12,7 +12,7 @@ Visual playback queue manager for foobar2000 macOS - functionality that exists i
 
 - foobar2000 for Mac 2.x
 - macOS 12.0+ (Monterey or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
@@ -20,28 +20,27 @@ Visual playback queue manager for foobar2000 macOS - functionality that exists i
 ### Build and Install
 
 ```bash
-# Generate Xcode project
-ruby Scripts/generate_xcode_project.rb
+# From this directory
+./Scripts/build.sh --install            # Run tests, build Release and install
+./Scripts/build.sh --clean --install    # Clean rebuild and install
+./Scripts/build.sh --regenerate --install  # After adding/removing source files
 
-# Build Release configuration
-xcodebuild -project foo_jl_queue_manager.xcodeproj -configuration Release
-
-# Install component
-./Scripts/install.sh
+# Restart foobar2000, then add the UI element
 ```
+
+Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` directory so `install.sh` copies the binary you just built.
 
 ### From Binary
 
-1. Download `foo_jl_queue_manager.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_queue_manager/`
-3. Copy `foo_jl_queue_manager.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_queue_manager.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=Queue+Manager)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Usage
 
 ### Layout Editor Names
 
-Use these names in the layout editor:
+Open **View → Layout → Edit Layout...**, add a line with one of these names inside a splitter where you want the panel, and click **Apply**:
 
 | Recommended | Also Accepted |
 |-------------|---------------|
@@ -61,7 +60,7 @@ splitter vertical
 - **Delete/Backspace** - Remove selected items from queue
 - **Enter** - Play selected item
 - **Drag** - Reorder items within the queue
-- **Right-click** - Context menu (Play, Remove, Clear, Show in Playlist)
+- **Right-click** - Stop After Queue / Turn Off After Stopping Once
 
 ### Adding Tracks to Queue
 
@@ -83,7 +82,6 @@ foo_jl_queue_manager/
 │   │   ├── QueueManagerController.h/mm  # Main view controller
 │   │   ├── QueueItemWrapper.h/mm   # Safe wrapper for queue items
 │   │   ├── QueueRowView.h          # Custom row view
-│   │   ├── QueueHeaderCell.h/mm    # Column header
 │   │   └── QueueManagerPreferences.h/mm # Preferences UI
 │   ├── Integration/
 │   │   ├── Main.mm                 # Component registration
@@ -137,17 +135,17 @@ Queue items are wrapped in `QueueItemWrapper` using C++ member variables (not Ob
 
 1. Check Preferences > Components for error messages
 2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_jl_queue_manager/foo_jl_queue_manager.component`
-3. Try rebuilding with a clean project
+3. Try rebuilding with `./Scripts/build.sh --clean --install`
 
 ### Queue doesn't update
 
 1. Ensure the component is properly loaded (check Preferences > Components)
-2. Try closing and re-adding the Queue Manager UI element
+2. Try removing the `queue_manager` line from the layout, applying, then adding it back
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2026-10-01 && xcodebuild`
-2. Regenerate project: `ruby Scripts/generate_xcode_project.rb`
+1. Ensure the SDK is built (see [Building from Source](../../README.md#building-from-source) in the main README)
+2. Regenerate the project: `./Scripts/build.sh --regenerate --install`
 
 ## License
 

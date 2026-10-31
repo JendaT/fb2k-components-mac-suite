@@ -13,16 +13,16 @@ Last.fm scrobbler for foobar2000 macOS.
 ### Requirements
 
 - macOS 12.0 (Monterey) or later
-- Xcode 14.0 or later
-- foobar2000 SDK 2025-03-07
+- Xcode 15 or later
+- foobar2000 SDK 2026-10-01 (at the repository root, see the [main README](../../README.md#building-from-source))
 - Ruby (for project generation)
 - Last.fm API credentials
 
 ### API Credentials
 
-Create `src/SecretConfig.h` from the template:
+Create `src/LastFm/SecretConfig.h` from the template:
 ```bash
-cp src/SecretConfig.h.template src/SecretConfig.h
+cp src/LastFm/SecretConfig.h.template src/LastFm/SecretConfig.h
 ```
 
 Then edit with your Last.fm API credentials:
@@ -35,26 +35,14 @@ Get credentials at: https://www.last.fm/api/account/create
 
 ### Build Steps
 
-1. **Build SDK Libraries** (if not already done):
+1. **Build the SDK libraries** once, as described in [Building from Source](../../README.md#building-from-source) in the main README.
+
+2. **Build and install** (generates the Xcode project on the first run):
    ```bash
-   cd ../SDK-2026-10-01/foobar2000
-   xcodebuild -workspace foobar2000.xcworkspace -scheme "foobar2000 SDK" -configuration Release build
+   ./Scripts/build.sh --install
    ```
 
-2. **Generate Xcode Project**:
-   ```bash
-   ruby Scripts/generate_xcode_project.rb
-   ```
-
-3. **Build**:
-   ```bash
-   ./Scripts/build.sh
-   ```
-
-4. **Install**:
-   ```bash
-   ./Scripts/install.sh
-   ```
+3. Restart foobar2000.
 
 ## Project Structure
 
@@ -62,9 +50,9 @@ Get credentials at: https://www.last.fm/api/account/create
 foo_jl_scrobble_mac/
 ├── src/
 │   ├── Core/           # Scrobble logic, API client, cache
+│   ├── LastFm/         # Last.fm API, SecretConfig.h.template
 │   ├── UI/             # Preferences controller
 │   ├── Integration/    # SDK registration, playback callbacks
-│   ├── SecretConfig.h.template
 │   ├── fb2k_sdk.h
 │   └── Prefix.pch
 ├── Resources/
@@ -80,10 +68,10 @@ foo_jl_scrobble_mac/
 ## Features
 
 - Last.fm authentication via web browser
-- Automatic scrobbling based on play duration
+- Automatic scrobbling after 50% of the track or 4 minutes played (fixed)
 - Now Playing updates
-- Offline cache for failed scrobbles
-- Configurable scrobble threshold
+- Offline queue with automatic retry, and a queue viewer in the preferences
+- Stats widget (layout element `lastfm_scrobbler`): top albums, artists and tracks, recent tracks with live Now Playing, listening streak
 
 ## Configuration
 
