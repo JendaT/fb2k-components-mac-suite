@@ -90,6 +90,7 @@ Access settings via **Preferences > Display > SimPlaylist**
 | Header Display | Header style (Above/Aligned/Inline) | Above tracks |
 | Highlight Now Playing | Show yellow highlight on playing track | Off |
 | Keep playback in its playlist | Prevent library browsing (ReFacets) from changing what plays next | On |
+| Sort library selection automatically | Re-sort the library browser's selection (ReFacets, Album List) by a title-formatting pattern after every click; default pattern orders each album artist's albums by date. To see the selection in SimPlaylist on a single click, turn on **Preferences > Advanced > Library Selection Playlist > Activate** | Off |
 
 ## Layout Editor
 

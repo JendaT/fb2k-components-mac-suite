@@ -318,6 +318,79 @@ public:
 
 static simplaylist_playing_playlist_guard* g_playing_playlist_guard = nullptr;
 
+// Library selection auto-sort
+//
+// Library viewers (ReFacets, Album List) refill the host's hidden selection
+// playlist on every click, in their own order, so a right-click Sort only
+// lasts until the next click. When enabled, re-sort that playlist after each
+// refill. The name is the host's ("Library Viewer Selection", a literal in the
+// foobar2000 binary); there is no SDK API that identifies the playlist.
+//
+// Sorting is a mutation, so it is deferred to the main queue like the guard
+// check above. It reorders items, which raises on_items_reordered — not one of
+// the events this callback watches — so a sort cannot trigger another sort.
+
+static const char* const kLibraryViewerPlaylistName = "Library Viewer Selection";
+static std::atomic<bool> g_librarySortActive{false};
+static std::atomic<bool> g_librarySortPending{false};
+
+static void runLibrarySelectionSort() {
+    if (!g_librarySortActive) return;
+    if (!simplaylist_config::getConfigBool(simplaylist_config::kLibrarySelectionSort,
+                                           simplaylist_config::kDefaultLibrarySelectionSort)) return;
+    // Main-queue block: an escaping SDK exception would terminate the host.
+    try {
+        std::string pattern = simplaylist_config::getConfigString(
+            simplaylist_config::kLibrarySelectionSortPattern,
+            simplaylist_config::kDefaultLibrarySelectionSortPattern);
+        if (pattern.empty()) return;
+
+        auto pm = playlist_manager::get();
+        t_size playlist = pm->find_playlist(kLibraryViewerPlaylistName);
+        if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return;
+        if (pm->playlist_get_item_count(playlist) < 2) return;
+        if (pm->playlist_lock_is_present(playlist) &&
+            (pm->playlist_lock_get_filter_mask(playlist) & playlist_lock::filter_reorder)) return;
+
+        pm->playlist_sort_by_format(playlist, pattern.c_str(), false);
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] Library selection sort failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] Library selection sort failed";
+    }
+}
+
+static void scheduleLibrarySelectionSort() {
+    // One sort per burst: a refill is a remove followed by one or more adds.
+    bool expected = false;
+    if (!g_librarySortPending.compare_exchange_strong(expected, true)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_librarySortPending = false;
+        runLibrarySelectionSort();
+    });
+}
+
+class simplaylist_library_selection_sorter : public playlist_callback_impl_base {
+public:
+    simplaylist_library_selection_sorter() : playlist_callback_impl_base(flag_on_items_added) {}
+
+    void on_items_added(t_size p_playlist, t_size p_start, metadb_handle_list_cref p_data, const bit_array& p_selection) override {
+        // Config first: this fires for every add to every playlist.
+        if (!simplaylist_config::getConfigBool(simplaylist_config::kLibrarySelectionSort,
+                                               simplaylist_config::kDefaultLibrarySelectionSort)) return;
+        try {
+            pfc::string8 name;
+            if (!playlist_manager::get()->playlist_get_name(p_playlist, name)) return;
+            if (strcmp(name.c_str(), kLibraryViewerPlaylistName) != 0) return;
+        } catch (...) {
+            return;
+        }
+        scheduleLibrarySelectionSort();
+    }
+};
+
+static simplaylist_library_selection_sorter* g_library_selection_sorter = nullptr;
+
 // Watches the *set* of playlists rather than their contents.
 //
 // Almost every piece of per-playlist state the controller keeps —
@@ -375,6 +448,10 @@ void SimPlaylistCallbackManager::initCallbacks() {
     if (!g_playlist_set_callback) {
         g_playlist_set_callback = new simplaylist_playlist_set_callback();
     }
+    if (!g_library_selection_sorter) {
+        g_library_selection_sorter = new simplaylist_library_selection_sorter();
+    }
+    g_librarySortActive = true;
     g_playingGuardActive = true;
     if (!g_playingGuardTimer) {
         g_playingGuardTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
@@ -407,6 +484,9 @@ void SimPlaylistCallbackManager::onShutdown() {
 void SimPlaylistCallbackManager::shutdownCallbacks() {
     onShutdown();
     g_playingGuardActive = false;
+    g_librarySortActive = false;
+    delete g_library_selection_sorter;
+    g_library_selection_sorter = nullptr;
     [g_playingGuardTimer invalidate];
     g_playingGuardTimer = nil;
     delete g_playing_playlist_guard;
