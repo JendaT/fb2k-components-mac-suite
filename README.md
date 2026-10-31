@@ -14,7 +14,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.1 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.1 | [📖](docs/vectorscope.md) |
 | [Spectrogram](#spectrogram) | Scrolling spectrogram with sharp bass lines and transients | 0.1.0 | [📖](docs/spectrogram.md) |
-| [Level Meter](#level-meter) | Peak, RMS, loudness (LUFS) and analog VU meter | 0.1.0 | – |
+| [Level Meter](#level-meter) | Peak, RMS, loudness (LUFS) and analog VU meter | 0.1.0 | [📖](docs/levelmeter.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
 | [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.1 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
@@ -325,6 +325,7 @@ cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
 - [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
 - [Vectorscope](docs/vectorscope.md) - Features, configuration, and usage
 - [Spectrogram](docs/spectrogram.md) - Features, configuration, and usage
+- [Level Meter](docs/levelmeter.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
