@@ -136,6 +136,7 @@ Peak, RMS and loudness meter with an optional analog VU look, fed by foobar2000'
 - Analog VU faces (vintage, dark or theme colors) with VU or PPM ballistics, adjustable reference level and a peak LED
 - Vertical, horizontal or automatic layout; peaks and loudness can reset on each new track
 - Color themes matching the other visualisers, light/dark colors, text size and optional glass background
+- A settings page that shows only what applies to the chosen style
 
 ---
 
