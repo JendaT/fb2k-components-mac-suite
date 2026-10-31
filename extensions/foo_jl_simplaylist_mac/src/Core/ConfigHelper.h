@@ -59,6 +59,11 @@ static const char* const kColumnHeaderSize = "column_header_size";
 // Column header accent color: 0 = none, 1 = tinted
 static const char* const kHeaderAccentColor = "header_accent_color";
 
+// Selection highlight color: 0 = system accent, 1 = custom (kSelectionColor)
+static const char* const kSelectionColorMode = "selection_color_mode";
+// Custom selection color as 0xAARRGGBB, Display P3 (shared/ThemeColor.h)
+static const char* const kSelectionColor = "selection_color";
+
 // Glass (transparent) background - allows content behind to show through
 static const char* const kGlassBackground = "glass_background";
 
@@ -116,6 +121,8 @@ static const bool kDefaultHideSingleSubgroup = false;  // Don't hide single subg
 static const int64_t kDefaultDisplaySize = 1;  // 0=compact, 1=normal, 2=large
 static const int64_t kDefaultColumnHeaderSize = 1;  // 0=compact, 1=normal, 2=large
 static const int64_t kDefaultHeaderAccentColor = 0;  // 0=none, 1=tinted
+static const int64_t kDefaultSelectionColorMode = 0;  // 0=system accent, 1=custom
+static const int64_t kDefaultSelectionColor = 0xFFE0A526;  // Amber
 static const bool kDefaultGlassBackground = false;   // Opaque background by default
 static const int64_t kDefaultGroupHeaderSpacing = 1; // 0=compact, 1=normal, 2=larger
 static const int64_t kDefaultInlineAlbumSpacing = 1; // empty rows between albums (Inline style)

@@ -15,6 +15,7 @@
 #import "../Core/PlaylistSelectionModel.h"
 #import "../Core/DecorationStore.h"
 #import "../../../../shared/UIStyles.h"
+#import "../../../../shared/ThemeColor.h"
 
 #include <unistd.h>
 #include <vector>
@@ -147,6 +148,9 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) NSInteger pendingClickRow;  // Row to select on mouseUp if no drag (for multi-select drag)
 @property (nonatomic, assign) BOOL needsFullRedraw;  // Force full visible rect redraw after group data changes
 @property (nonatomic, assign) BOOL debugRendering;   // Show diagnostic text on rendering anomalies
+// Custom selection highlight and its text color; both nil = system colors.
+@property (nonatomic, strong) NSColor *customSelectionColor;
+@property (nonatomic, strong) NSColor *customSelectionTextColor;
 @property (nonatomic, strong) NSDictionary *currentDragData;  // Internal drag data, passed via draggingSource
 // Pure geometry/index model — owns the row-mapping arithmetic. The view mirrors
 // its geometry ivars into this model (see the custom setters below) and forwards
@@ -160,6 +164,22 @@ static NSString *formatGroupDuration(double seconds) {
 @property (nonatomic, assign) BOOL delegateHasColumnValues;
 @property (nonatomic, assign) BOOL delegateHasAlbumArt;
 @end
+
+// Black or white, whichever has more WCAG contrast against bg. White text
+// on a light custom selection (e.g. yellow) would be unreadable.
+static NSColor *contrastingTextColor(NSColor *bg) {
+    NSColor *c = [bg colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!c) return [NSColor whiteColor];
+    auto linear = [](CGFloat v) {
+        v = fmin(fmax(v, 0.0), 1.0);
+        return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    };
+    CGFloat luminance = 0.2126 * linear(c.redComponent) +
+                        0.7152 * linear(c.greenComponent) +
+                        0.0722 * linear(c.blueComponent);
+    // Black and white give equal contrast at luminance ~0.179
+    return luminance > 0.179 ? [NSColor blackColor] : [NSColor whiteColor];
+}
 
 @implementation SimPlaylistView
 
@@ -235,6 +255,7 @@ static NSString *formatGroupDuration(double seconds) {
     _inlineAlbumSpacing = simplaylist_config::getConfigInt(
         simplaylist_config::kInlineAlbumSpacing,
         simplaylist_config::kDefaultInlineAlbumSpacing);
+    [self loadSelectionColor];
 
     [self updateHeaderHeightForSpacing];
 
@@ -356,11 +377,32 @@ static NSString *formatGroupDuration(double seconds) {
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
     _inlineAlbumSpacing = getConfigInt(kInlineAlbumSpacing, kDefaultInlineAlbumSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
+    [self loadSelectionColor];
 
     [self updateHeaderHeightForSpacing];
 
     // Update frame size to reflect new row heights (header height affects total content height)
     [self reloadData];
+}
+
+- (void)loadSelectionColor {
+    using namespace simplaylist_config;
+    if (getConfigInt(kSelectionColorMode, kDefaultSelectionColorMode) == 1) {
+        uint32_t argb = (uint32_t)getConfigInt(kSelectionColor, kDefaultSelectionColor);
+        _customSelectionColor = JLColorFromARGB(argb | 0xFF000000u);  // Always opaque
+        _customSelectionTextColor = contrastingTextColor(_customSelectionColor);
+    } else {
+        _customSelectionColor = nil;
+        _customSelectionTextColor = nil;
+    }
+}
+
+- (NSColor *)selectionBackgroundColor {
+    return _customSelectionColor ?: fb2k_ui::selectedBackgroundColor();
+}
+
+- (NSColor *)selectionTextColor {
+    return _customSelectionTextColor ?: fb2k_ui::selectedTextColor();
 }
 
 // Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12.
@@ -737,7 +779,7 @@ static NSString *formatGroupDuration(double seconds) {
         NSRect contentRect = NSMakeRect(_groupColumnWidth, rect.origin.y,
                                         rect.size.width - _groupColumnWidth, rect.size.height);
         if (isSelected) {
-            [fb2k_ui::selectedBackgroundColor() setFill];
+            [[self selectionBackgroundColor] setFill];
         } else {
             [[[NSColor systemYellowColor] colorWithAlphaComponent:0.15] setFill];
         }
@@ -1085,12 +1127,12 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 
     // Draw columns (shifted right by the decoration gutter when providers exist)
     CGFloat x = _groupColumnWidth + _decorationGutterWidth;
-    NSColor *textColor = selected ? fb2k_ui::selectedTextColor() : fb2k_ui::textColor();
+    NSColor *textColor = selected ? [self selectionTextColor] : fb2k_ui::textColor();
     // Only the dim-parentheses path reads this; deriving it unconditionally
     // allocated a color per selected row per frame that was never used.
     NSColor *dimmedColor = nil;
     if (_dimParentheses) {
-        dimmedColor = selected ? [fb2k_ui::selectedTextColor() colorWithAlphaComponent:0.5]
+        dimmedColor = selected ? [[self selectionTextColor] colorWithAlphaComponent:0.5]
                                : fb2k_ui::secondaryTextColor();
     }
     // Font size from shared UIStyles
@@ -1106,7 +1148,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
         NSString *glyph = glyphForIconId(decoration.iconId);
         if (glyph) {
             NSColor *iconColor = colorFromRGBA(decoration.iconRGBA)
-                ?: (selected ? fb2k_ui::selectedTextColor() : fb2k_ui::secondaryTextColor());
+                ?: (selected ? [self selectionTextColor] : fb2k_ui::secondaryTextColor());
             NSDictionary *iconAttrs = @{
                 NSFontAttributeName: [NSFont systemFontOfSize:font.pointSize],
                 NSForegroundColorAttributeName: iconColor
@@ -1323,7 +1365,7 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
 - (void)drawFocusRingForRect:(NSRect)rect {
     // Only draw focus ring in columns area, not album art column
     // Use same color as selection background for consistency
-    [fb2k_ui::selectedBackgroundColor() setStroke];
+    [[self selectionBackgroundColor] setStroke];
     NSRect focusRect = NSMakeRect(_groupColumnWidth, rect.origin.y,
                                   rect.size.width - _groupColumnWidth, rect.size.height);
     focusRect = NSInsetRect(focusRect, 1, 1);
