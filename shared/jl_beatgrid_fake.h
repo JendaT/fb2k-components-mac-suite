@@ -97,6 +97,17 @@ public:
         return true;
     }
 
+    // One grid throughout: the master as the only section
+    bool get_sections(const metadb_handle_ptr &item, pfc::array_t<jl_grid_section> &sections,
+                      pfc::array_t<jl_bar_stat> &bars) override {
+        jl_beatgrid_summary summary;
+        pfc::array_t<jl_beat_region> regions;
+        if (!get(item, summary, regions, bars)) return false;
+        sections.set_size(1);
+        sections[0] = jl_master_section(summary, bars.get_size());
+        return true;
+    }
+
     void request(const metadb_handle_ptr &item, bool urgent) override {
         (void)urgent;
         if (!item.is_valid()) return;
