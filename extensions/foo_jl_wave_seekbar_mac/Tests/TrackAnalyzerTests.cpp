@@ -482,6 +482,52 @@ void testColumnEdges() {
     CHECK(filled, "no column left without blocks");
 }
 
+void testColumnRange() {
+    // Zoomed in: a range's columns are the matching slice of the whole
+    // track's at the same column width, merging and interpolating alike
+    g_context = "column range";
+    const double sr = 48000.0;
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<float> noise(-1.0f, 1.0f);
+    std::vector<float> lr(2 * 10 * 48000);   // 10 s, swelling every 1 s
+    for (size_t i = 0; i < lr.size(); ++i) lr[i] = noise(rng) * (float)(0.1 + 0.9 * (i % 96000) / 96000.0);
+    const WaveformData w = analyse(lr, sr);
+
+    auto same = [](float a, float b) { return a == b || (std::isnan(a) && std::isnan(b)); };
+    auto sliceMatches = [&](const Columns& whole, const Columns& part, size_t offset) {
+        bool ok = part.count > 0 && part.channels == whole.channels;
+        for (size_t i = 0; ok && i < part.count; ++i) {
+            const size_t j = offset + i;
+            for (uint32_t ch = 0; ch < part.channels; ++ch) {
+                ok &= same(part.min[ch][i], whole.min[ch][j]) && same(part.max[ch][i], whole.max[ch][j])
+                   && same(part.rms[ch][i], whole.rms[ch][j]) && same(part.level[ch][i], whole.level[ch][j])
+                   && same(part.momentary[ch][i], whole.momentary[ch][j]);
+            }
+            ok &= same(part.lufs[i], whole.lufs[j]) && same(part.peakDb[i], whole.peakDb[j])
+               && same(part.crestDb[i], whole.crestDb[j]) && same(part.correlation[i], whole.correlation[j]);
+            for (int b = 0; b < 3; ++b) {
+                ok &= same(part.bandShare[b][i], whole.bandShare[b][j]) && same(part.tintShare[b][i], whole.tintShare[b][j]);
+            }
+        }
+        return ok;
+    };
+
+    for (size_t columns : { (size_t)100, (size_t)4000 }) {   // 5 blocks per column, and under one
+        const Columns whole = aggregateColumns(w, columns);
+        const std::string n = std::to_string(columns);
+        CHECK(sliceMatches(whole, aggregateColumns(w, columns / 4, 0.25, 0.5), columns / 4),
+              ("a middle quarter, " + n).c_str());
+        CHECK(sliceMatches(whole, aggregateColumns(w, columns / 4, 0.0, 0.25), 0), ("the first quarter, " + n).c_str());
+        CHECK(sliceMatches(whole, aggregateColumns(w, columns / 4, 0.75, 1.0), columns - columns / 4),
+              ("the last quarter, " + n).c_str());
+        CHECK(sliceMatches(whole, aggregateColumns(w, columns, 0.0, 1.0), 0), ("the whole range, " + n).c_str());
+    }
+
+    CHECK_EQ(aggregateColumns(w, 10, 0.5, 0.5).count, 0, "an empty range has no columns");
+    CHECK_EQ(aggregateColumns(w, 10, 0.6, 0.4).count, 0, "nor a reversed one");
+    CHECK_EQ(aggregateColumns(w, 10, -1.0, 2.0).count, 10, "a range past the track clamps to it");
+}
+
 void testPlanSegments() {
     g_context = "plan";
     const uint32_t sr = 44100;
@@ -645,6 +691,7 @@ int main() {
     testCacheRoundTrip();
     testCacheRejectsNonFinite();
     testColumnEdges();
+    testColumnRange();
     testPlanSegments();
     testSegmentsMatchOnePass();
     TEST_MAIN_END();

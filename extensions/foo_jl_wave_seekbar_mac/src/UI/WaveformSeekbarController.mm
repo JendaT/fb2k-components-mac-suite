@@ -393,10 +393,10 @@ static const int kAnalysisMaxRetries = 1;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
-                    // Redraw once the cursor moves at least a quarter pixel, or
-                    // the time chip reaches the next second
+                    // Redraw once the cursor moves at least a quarter pixel (of
+                    // the zoomed waveform), or the time chip reaches the next second
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
-                    double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    double threshold = waveseek::positionRedrawThreshold(viewWidth) / self.waveformView.zoomFactor;
                     const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
                     const bool nextSecond = self.waveformView.showCursorTime &&
                                             std::floor(position) != std::floor(oldTime);

@@ -4,10 +4,18 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms the waveform about the pointer; horizontal scroll (or Shift + wheel) pans. A Reset zoom button appears bottom right while zoomed; a new track starts unzoomed.
+
+### Changed
+- **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
+
 ### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
 
 ### Technical
+- `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.
+- Mask shapes (`MaskPaths.h`) filled in runs of 32 columns, edges and Classic strokes stroked in runs; unit-tested against the exact pixel coverage.
 - A request for the track already being scanned no longer restarts the scan (second seekbar, layout change, watchdog).
 
 ## [2.0.0] - 2026-10-30

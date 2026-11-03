@@ -610,7 +610,26 @@ typedef struct {
 }
 ```
 
-## 9. Accessibility
+### 8.3 CoreGraphics: Long Paths Are Slow
+
+Filling or stroking one path with a vertex per pixel column (a waveform
+outline across a Retina view, ~3000 vertices) takes CoreGraphics 10-70 ms,
+and its antialiasing gets less exact (up to 34/255 off the true coverage).
+Add and fill the shape in runs of ~32 columns instead: 5-25x faster and
+within 2/255. Measured on macOS 27 for Waveform Seekbar 2.1 (`MaskPaths.h`).
+
+- End each run on a whole pixel (x = integer), with the outline's height
+  there interpolated between the neighbouring vertices. Runs then meet
+  without seams.
+- Anything that shares a pixel must go into the same run's path, e.g. the
+  upper and lower halves of a waveform at its centre line. Separate fills
+  blend their partial coverage (a + b - ab instead of a + b) and leave a
+  faint line.
+- Strokes: runs of 16 vertices, each starting where the last ended, with
+  round caps closing the joins.
+- Separate strokes that overlap (2048 one-point strokes in 1500 pt) can be
+  stroked 256 at a time. Only the few overlaps where runs meet blend instead
+  of merging.
 
 ### 9.1 Basic Accessibility Support
 

@@ -20,12 +20,14 @@
 #include "../Core/ConfigHelper.h"
 #include "../Core/ColumnAggregator.h"
 #include "../Core/LayeredShape.h"
+#include "../Core/MaskPaths.h"
 #include "../Core/SimpleShape.h"
 #include "../Core/OverlayText.h"
 #include "../Core/WaveformColorMap.h"
 #include "../Core/WaveformGeometry.h"
 #include "../Core/GradientBandTable.h"
 #include "../Core/ThemeTokens.h"
+#include "../Core/ZoomRange.h"
 #include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
@@ -33,6 +35,7 @@
 
 namespace analysis = waveseek::analysis;
 namespace layered = waveseek::layered;
+namespace masks = waveseek::masks;
 namespace overlay = waveseek::overlay;
 namespace simple = waveseek::simple;
 namespace theme = waveseek::theme;
@@ -93,6 +96,7 @@ theme::RGB heatMapColor(float amplitude) {
 // without a gap, peaks 4 pt from the edges (WaveformGeometry.h). Solid's
 // gradient bands step down to 40 % at full amplitude (bandAlpha).
 const size_t kClassicBuckets = 2048;
+const size_t kClassicStrokeRun = 256;
 const CGFloat kClassicPadding = waveseek::kWaveformPadding;
 
 // Rainbow: fully saturated hue by position across the track, 0..1
@@ -127,20 +131,6 @@ Lanes lanesFor(CGFloat height, CGFloat unit, int count, Family family = FamilySi
     return l;
 }
 
-// Area between two signed outlines around a lane centre, one vertex per
-// column centre
-void addBand(CGMutablePathRef path, const std::vector<float>& top, const std::vector<float>& bottom,
-             CGFloat centerY, CGFloat amplitude) {
-    const size_t n = top.size();
-    if (n == 0) return;
-    CGPathMoveToPoint(path, NULL, 0, centerY + top[0] * amplitude);
-    for (size_t c = 0; c < n; ++c) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + top[c] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY + top[n - 1] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY + bottom[n - 1] * amplitude);
-    for (size_t c = n; c-- > 0;) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + bottom[c] * amplitude);
-    CGPathAddLineToPoint(path, NULL, 0, centerY + bottom[0] * amplitude);
-    CGPathCloseSubpath(path);
-}
 
 // How one mask is coloured: flat, or a vertical gradient mirrored around
 // each lane's centre (edge, mid, centre, mid, edge)
@@ -228,6 +218,13 @@ const CGFloat kBadgeRadius = 3.0;
 const CGFloat kClipMarkerWidth = 2.0;
 const CGFloat kClipMarkerHeight = 5.0;
 
+// Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
+// pans. A wheel notch is one line; trackpad scroll comes in points.
+const double kZoomOctavesPerLine = 0.25;        // ~1.19x per notch
+const double kZoomOctavesPerPoint = 0.01;       // 2x per 100 pt
+const CGFloat kPanPointsPerLine = 10.0;
+const CGFloat kEffectReach = 50.0;              // cursor effects reach 40 pt from the cursor
+
 // Greyscale mask: black hides, white shows
 CGContextRef createMaskContext(size_t width, size_t height) {
     CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
@@ -241,31 +238,16 @@ CGContextRef createMaskContext(size_t width, size_t height) {
     return ctx;
 }
 
-// Area between the centre line and the heights, one vertex per column
-// centre; `dir` +1 grows up, -1 down
-void addHalfShape(CGMutablePathRef path, const std::vector<float>& frac, CGFloat centerY,
-                  CGFloat amplitude, CGFloat dir) {
-    const size_t n = frac.size();
-    if (n == 0) return;
-    CGPathMoveToPoint(path, NULL, 0, centerY);
-    CGPathAddLineToPoint(path, NULL, 0, centerY + dir * frac[0] * amplitude);
-    for (size_t c = 0; c < n; ++c) {
-        CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + dir * frac[c] * amplitude);
-    }
-    CGPathAddLineToPoint(path, NULL, n, centerY + dir * frac[n - 1] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY);
-    CGPathCloseSubpath(path);
-}
-
 // The outline of the heights, broken where they drop under half a pixel so
 // silence leaves only the centre line, and where they sit at full scale so a
 // track limited to 0 dBFS doesn't draw a flat line along the top
 const float kEdgeCeiling = 0.995f;   // within ~0.2 dB of 0 dBFS on the -36 dB axis
 
 // Stroked kEdgeChunk columns at a time: one path with a vertex per pixel
-// column takes CoreGraphics 0.1-0.35 s to stroke, on the main thread. Each
-// run starts where the last one ended; round caps close the joins.
-const size_t kEdgeChunk = 64;
+// column takes CoreGraphics 0.1-0.35 s to stroke, on the main thread, and
+// runs of 16 take about half as long as runs of 64. Each run starts where
+// the last one ended; round caps close the joins.
+const size_t kEdgeChunk = 16;
 
 void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat centerY,
                 CGFloat amplitude, CGFloat dir) {
@@ -301,7 +283,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     // Mouse over the view, for the readout and the summary badge
     BOOL _hovering;
-    CGFloat _hoverX;
+    CGFloat _hoverX, _hoverY;
     BOOL _seeking;               // a click on the waveform, until the mouse is up
     BOOL _showReadout;
     int _readoutPosition;
@@ -333,6 +315,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     int _style;
     bool _mono;
     bool _split;                       // L up, R down in one lane
+
+    // The part of the track the waveform shows, and the part the masks show
+    waveseek::ZoomRange _zoom;
+    waveseek::ZoomRange _maskZoom;
 }
 
 @end
@@ -553,12 +539,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 - (void)setWaveformData:(const WaveformData *)waveformData {
     _waveformData = waveformData;
+    if (!waveformData) _zoom.reset();   // a new track, or none
     [self invalidateMasks];
+}
+
+- (double)zoomFactor {
+    return _zoom.zoom;
 }
 
 - (BOOL)buildMasksWidth:(size_t)width height:(size_t)height {
     [self invalidateMasks];
-    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width);
+    _maskZoom = _zoom;
+    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width, _maskZoom.start, _maskZoom.end());
     if (cols.count != width) return NO;
     _readout = cols;
     const CGFloat scale = [self backingScale];
@@ -616,17 +608,15 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
                 }
             }
         } else {
-            CGMutablePathRef path = CGPathCreateMutable();
-            for (int l = 0; l < lanes.count; ++l) {
-                for (int half = 0; half < 2; ++half) {
-                    const int ch = channelOf(l, half);
-                    const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[ch] : shape.body[ch];
-                    addHalfShape(path, frac, lanes.center[l], lanes.amplitude, dirs[half]);
+            masks::fillInRuns(ctx, width, [&](size_t c0, size_t c1) {
+                for (int l = 0; l < lanes.count; ++l) {
+                    for (int half = 0; half < 2; ++half) {
+                        const int ch = channelOf(l, half);
+                        const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[ch] : shape.body[ch];
+                        masks::addHalfShape(ctx, frac, c0, c1, lanes.center[l], lanes.amplitude, dirs[half]);
+                    }
                 }
-            }
-            CGContextAddPath(ctx, path);
-            CGContextFillPath(ctx);
-            CGPathRelease(path);
+            });
         }
         _masks[m] = CGBitmapContextCreateImage(ctx);
         CGContextRelease(ctx);
@@ -646,15 +636,13 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     for (int m : { (int)MaskSimplePeak, (int)MaskSimpleCore }) {
         CGContextRef ctx = createMaskContext(width, height);
         if (!ctx) return NO;
-        CGMutablePathRef path = CGPathCreateMutable();
-        for (int l = 0; l < shape.lanes; ++l) {
-            const simple::Lane& lane = shape.lane[l];
-            if (m == MaskSimplePeak) addBand(path, lane.top, lane.bottom, lanes.center[l], lanes.amplitude);
-            else addBand(path, lane.coreTop, lane.coreBottom, lanes.center[l], lanes.amplitude);
-        }
-        CGContextAddPath(ctx, path);
-        CGContextFillPath(ctx);
-        CGPathRelease(path);
+        masks::fillInRuns(ctx, width, [&](size_t c0, size_t c1) {
+            for (int l = 0; l < shape.lanes; ++l) {
+                const simple::Lane& lane = shape.lane[l];
+                if (m == MaskSimplePeak) masks::addBand(ctx, lane.top, lane.bottom, c0, c1, lanes.center[l], lanes.amplitude);
+                else masks::addBand(ctx, lane.coreTop, lane.coreBottom, c0, c1, lanes.center[l], lanes.amplitude);
+            }
+        });
         _masks[m] = CGBitmapContextCreateImage(ctx);
         CGContextRelease(ctx);
         if (!_masks[m]) return NO;
@@ -669,7 +657,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 // lane, up to L's peak and down to R's.
 - (BOOL)buildClassicMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
-    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets);
+    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets,
+                                                                 _maskZoom.start, _maskZoom.end());
     if (buckets.count != kClassicBuckets) return NO;
     const bool stereo = buckets.channels == 2 && !_mono;
     const bool split = stereo && _split;
@@ -692,21 +681,24 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     CGContextRef ctx = createMaskContext(width, height);
     if (!ctx) return NO;
+    // Stroked kClassicStrokeRun buckets at a time: all 4096 strokes in one
+    // path take CoreGraphics 20-60 ms. Where two runs meet, the neighbouring
+    // strokes' overlap is blended instead of merged, a few pixels slightly off.
     CGContextSetLineWidth(ctx, scale);
-    CGMutablePathRef path = CGPathCreateMutable();
-    for (int l = 0; l < lanes.count; ++l) {
-        for (size_t i = 0; i < kClassicBuckets; ++i) {
-            const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
-            const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
-            if (up <= 0.0 && down <= 0.0) continue;
-            const CGFloat x = (CGFloat)i / kClassicBuckets * width;
-            CGPathMoveToPoint(path, NULL, x, lanes.center[l] - down);
-            CGPathAddLineToPoint(path, NULL, x, lanes.center[l] + up);
+    for (size_t i0 = 0; i0 < kClassicBuckets; i0 += kClassicStrokeRun) {
+        const size_t i1 = std::min(kClassicBuckets, i0 + kClassicStrokeRun);
+        for (int l = 0; l < lanes.count; ++l) {
+            for (size_t i = i0; i < i1; ++i) {
+                const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
+                const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
+                if (up <= 0.0 && down <= 0.0) continue;
+                const CGFloat x = (CGFloat)i / kClassicBuckets * width;
+                CGContextMoveToPoint(ctx, x, lanes.center[l] - down);
+                CGContextAddLineToPoint(ctx, x, lanes.center[l] + up);
+            }
         }
+        CGContextStrokePath(ctx);
     }
-    CGContextAddPath(ctx, path);
-    CGContextStrokePath(ctx);
-    CGPathRelease(path);
     _masks[MaskSimplePeak] = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
 
@@ -880,8 +872,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
                               : l == 0 ? CGRectMake(0, mid, _maskWidth, _maskHeight - mid)
                                        : CGRectMake(0, 0, _maskWidth, mid);
             drawStrip(_masks[MaskSimplePeak], band, [&](size_t c) {
-                return _style == waveform_config::StyleHeatMap ? heatMapColor(_lanePeak[l][c])
-                                                               : rainbowColor((c + 0.5f) / _maskWidth);
+                return _style == waveform_config::StyleHeatMap
+                    ? heatMapColor(_lanePeak[l][c])
+                    : rainbowColor((float)_maskZoom.positionAt((c + 0.5) / _maskWidth));
             });
         }
     }
@@ -1042,7 +1035,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     const size_t pixelH = (size_t)std::lround(pixelSize.height);
     if (pixelW == 0 || pixelH == 0) return;
 
-    if (pixelW != _maskWidth || pixelH != _maskHeight || !_masks[0] || _maskFamily != familyOf(_style) || _maskMono != _mono) {
+    if (pixelW != _maskWidth || pixelH != _maskHeight || !_masks[0] || _maskFamily != familyOf(_style) || _maskMono != _mono
+        || _maskZoom != _zoom) {
         if (![self buildMasksWidth:pixelW height:pixelH]) return;
     }
     if (!_composite && ![self buildComposite]) return;
@@ -1067,8 +1061,12 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     NSColor *bgDeviceColor = [dimBase colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
     if (!bgDeviceColor) return;
 
+    // Zoomed in, the cursor can be off either side: nothing played in view,
+    // or all of it, with the effects at the cursor kept out of sight
     const CGRect bounds = CGRectMake(0, 0, rect.size.width, rect.size.height);
-    const CGFloat playedWidth = bounds.size.width * std::clamp(self.playbackPosition, 0.0, 1.0);
+    const double across = _zoom.acrossOf(std::clamp(self.playbackPosition, 0.0, 1.0));
+    if (across <= 0.0) return;
+    const CGFloat playedWidth = across > 1.0 ? bounds.size.width + kEffectReach : bounds.size.width * across;
     const CGFloat dimOpacity = self.playedDimming;
 
     CGContextSaveGState(context);
@@ -1347,8 +1345,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (self.trackDuration <= 0.0 || (self.playbackPosition <= 0.0 && !self.playing)) return;
 
     const CGFloat scale = [self backingScale];
-    const CGFloat position = std::clamp(self.playbackPosition, 0.0, 1.0);
-    const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * position) * scale) + 0.5) / scale,
+    const double across = _zoom.acrossOf(std::clamp(self.playbackPosition, 0.0, 1.0));
+    if (across < 0.0 || across > 1.0) return;   // zoomed in on another part
+    const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * across) * scale) + 0.5) / scale,
                                CGRectGetMaxX(rect) - 0.5 / scale);
 
     CGContextSaveGState(context);
@@ -1401,7 +1400,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     [p3(kOverlayAlert, _clipMarkerOpacity) setFill];
     long lastPixel = -1;
     for (uint64_t frame : data.clipRunFrames) {
-        const CGFloat x = rect.origin.x + rect.size.width * (CGFloat)(frame / totalFrames);
+        const double across = _zoom.acrossOf(frame / totalFrames);
+        if (across < 0.0 || across > 1.0) continue;
+        const CGFloat x = rect.origin.x + rect.size.width * across;
         const long pixel = std::lround(x * scale);
         if (pixel == lastPixel) continue;
         lastPixel = pixel;
@@ -1414,12 +1415,40 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 - (void)drawOverlaysInContext:(CGContextRef)context rect:(CGRect)rect {
     using namespace waveform_config;
+    if (_zoom.zoomed()) [self drawZoomButtonInContext:context rect:rect];
     if (_summaryMode == SummaryAlways || (_summaryMode == SummaryOnHover && _hovering)) {
         [self drawSummaryInContext:context rect:rect];
     }
-    if (_showReadout && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect)) {
+    if (_showReadout && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect) && ![self isOverZoomButton]) {
         [self drawReadoutInContext:context rect:rect];
     }
+}
+
+// Reset zoom, at the bottom right of the waveform while zoomed in; the
+// summary badge moves to its left. Null when the waveform is too narrow.
+- (NSAttributedString *)zoomButtonLabelHighlighted:(BOOL)highlighted {
+    return [self text:@"Reset zoom" color:highlighted ? kOverlayValue : kOverlayLabel bold:NO];
+}
+
+- (CGRect)zoomButtonRectFor:(CGRect)wave {
+    if (!_zoom.zoomed()) return CGRectNull;
+    const NSSize size = [self zoomButtonLabelHighlighted:NO].size;
+    const CGFloat w = std::ceil(size.width + 2 * TS(kBadgePadX));
+    const CGFloat h = std::ceil(size.height + 2 * TS(kBadgePadY));
+    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(wave) - kBadgeInset - w), wave.origin.y + kBadgeInset, w, h);
+    return box.origin.x < wave.origin.x ? CGRectNull : box;
+}
+
+- (BOOL)isOverZoomButton {
+    return _hovering && CGRectContainsPoint([self zoomButtonRectFor:[self waveformRect]], CGPointMake(_hoverX, _hoverY));
+}
+
+- (void)drawZoomButtonInContext:(CGContextRef)context rect:(CGRect)rect {
+    const CGRect box = [self zoomButtonRectFor:rect];
+    if (CGRectIsNull(box)) return;
+    [self fillOverlayBox:box radius:kBadgeRadius context:context];
+    [[self zoomButtonLabelHighlighted:[self isOverZoomButton]]
+        drawAtPoint:NSMakePoint(box.origin.x + TS(kBadgePadX), box.origin.y + TS(kBadgePadY))];
 }
 
 - (void)fillOverlayBox:(CGRect)box radius:(CGFloat)radius context:(CGContextRef)context {
@@ -1462,7 +1491,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     }
 
     const NSSize size = line.size;
-    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(rect) - kBadgeInset - size.width - 2 * TS(kBadgePadX)),
+    const CGRect zoomButton = [self zoomButtonRectFor:rect];
+    const CGFloat right = CGRectIsNull(zoomButton) ? CGRectGetMaxX(rect) : zoomButton.origin.x;
+    const CGRect box = CGRectMake(std::round(right - kBadgeInset - size.width - 2 * TS(kBadgePadX)),
                                   rect.origin.y + kBadgeInset,
                                   std::ceil(size.width + 2 * TS(kBadgePadX)), std::ceil(size.height + 2 * TS(kBadgePadY)));
     if (box.origin.x < rect.origin.x) return;   // narrower than the badge
@@ -1489,7 +1520,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     const analysis::Columns& r = _readout;
     const size_t c = std::min(r.count - 1, (size_t)std::max<CGFloat>(0.0, (mouseX - rect.origin.x) * scale));
-    const double seconds = (mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width) * self.trackDuration;
+    const double seconds = _zoom.positionAt((mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width))
+                         * self.trackDuration;
 
     using namespace waveform_config;
     const CGFloat width = TS(overlay::kReadoutWidth);
@@ -1504,7 +1536,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGFloat floor = self.bounds.origin.y;
     if (onFloor) {
         floor = rect.origin.y + kBadgeInset;
-        if (_summaryMode != SummaryOff) {
+        if (_summaryMode != SummaryOff || _zoom.zoomed()) {   // the badge or the zoom button's row
             const CGFloat badge = std::ceil([@"I" sizeWithAttributes:@{ NSFontAttributeName: _overlayFont }].height
                                             + 2 * TS(kBadgePadY));
             floor += badge + kBadgeInset;
@@ -1619,20 +1651,24 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         CGContextRestoreGState(context);
         return;
     }
-    const double major = overlay::rulerInterval(duration, wave.size.width);
+    // The part of the track in view; ticks stay on whole multiples of the
+    // interval when zoomed in
+    const double first = _zoom.start * duration, shown = _zoom.span() * duration;
+    auto xAt = [&](double seconds) { return wave.origin.x + wave.size.width * ((seconds - first) / shown); };
+    const double major = overlay::rulerInterval(shown, wave.size.width, _zoom.zoomed());
     const double minor = major / 4.0;
     [p3(kScaleLabel, 0.6) setStroke];
-    for (long i = 0; i * minor <= duration; ++i) {
-        const CGFloat x = (std::floor((wave.origin.x + wave.size.width * (i * minor / duration)) * scale) + 0.5) / scale;
+    for (long i = (long)std::ceil(first / minor - 1e-9); i * minor <= first + shown; ++i) {
+        const CGFloat x = (std::floor(xAt(i * minor) * scale) + 0.5) / scale;
         const CGFloat length = (i % 4 == 0) ? kRulerMajorTick : kRulerMinorTick;
         CGContextMoveToPoint(context, x, top);
         CGContextAddLineToPoint(context, x, top - length);
     }
     CGContextStrokePath(context);
 
-    for (long i = 0; i * major <= duration; ++i) {
+    for (long i = (long)std::ceil(first / major - 1e-9); i * major <= first + shown; ++i) {
         NSAttributedString *label = [self scaleText:str(overlay::formatClock(i * major))];
-        const CGFloat x = wave.origin.x + wave.size.width * (i * major / duration) + TS(kRulerLabelGap);
+        const CGFloat x = xAt(i * major) + TS(kRulerLabelGap);
         if (x + label.size.width > CGRectGetMaxX(wave)) break;
         [label drawAtPoint:NSMakePoint(std::round(x), top - TS(kRulerLabelTop) - label.size.height)];
     }
@@ -1712,16 +1748,21 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 #pragma mark - Mouse Events
 
-- (void)mouseEntered:(NSEvent *)event {
+- (void)trackHoverWithEvent:(NSEvent *)event {
     _hovering = YES;
-    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    _hoverX = p.x;
+    _hoverY = p.y;
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [self trackHoverWithEvent:event];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseMoved:(NSEvent *)event {
-    _hovering = YES;
-    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
-    if (_showReadout || _summaryMode == waveform_config::SummaryOnHover) [self setNeedsDisplay:YES];
+    [self trackHoverWithEvent:event];
+    if (_showReadout || _summaryMode == waveform_config::SummaryOnHover || _zoom.zoomed()) [self setNeedsDisplay:YES];
 }
 
 - (void)mouseExited:(NSEvent *)event {
@@ -1730,9 +1771,16 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    if (CGRectContainsPoint([self zoomButtonRectFor:[self waveformRect]], p)) {
+        _seeking = NO;
+        _zoom.reset();
+        [self setNeedsDisplay:YES];
+        return;
+    }
     // Not on the level scale: clamped, a click there would seek to the end
     // and skip to the next track
-    const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const CGFloat x = p.x;
     _seeking = x < CGRectGetMaxX([self waveformRect]);
     if (_seeking) [self handleSeekWithEvent:event];
 }
@@ -1758,10 +1806,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     const CGRect wave = [self waveformRect];
-    CGFloat normalizedPosition = (location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
-    normalizedPosition = MAX(0.0, MIN(1.0, normalizedPosition));
-
-    double seekTime = normalizedPosition * self.trackDuration;
+    const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
+                                               0.0, 1.0);
+    double seekTime = _zoom.positionAt(across) * self.trackDuration;
 
     // Seek via SDK - must be on main thread
     if ([NSThread isMainThread]) {
@@ -1778,6 +1825,55 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if ([self.delegate respondsToSelector:@selector(waveformSeekbarView:requestsSeekToTime:)]) {
         [self.delegate waveformSeekbarView:self requestsSeekToTime:seekTime];
     }
+}
+
+#pragma mark - Zoom
+
+- (BOOL)canZoom {
+    return self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
+}
+
+// About the pointer, within the zoom the track's analysis supports
+- (void)zoomBy:(double)factor event:(NSEvent *)event {
+    const CGRect wave = [self waveformRect];
+    const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
+    _zoom.zoomBy(factor, across, waveseek::maxZoomFor(self.waveformData->blockCount(), wave.size.width));
+    [self setNeedsDisplay:YES];
+}
+
+// Vertical scroll zooms: away from you zooms in, whatever the scroll
+// direction setting, and momentum doesn't keep zooming. Horizontal scroll
+// (or Shift with a wheel) pans while zoomed in, the waveform following the
+// fingers.
+- (void)scrollWheel:(NSEvent *)event {
+    if (![self canZoom]) {
+        [super scrollWheel:event];
+        return;
+    }
+    const bool precise = event.hasPreciseScrollingDeltas;
+    const CGFloat dx = event.scrollingDeltaX, dy = event.scrollingDeltaY;
+    if (std::fabs(dx) > std::fabs(dy)) {
+        if (!_zoom.zoomed()) {
+            [super scrollWheel:event];
+            return;
+        }
+        const CGFloat points = precise ? dx : dx * kPanPointsPerLine;
+        _zoom.panBy(-points / std::max<CGFloat>(1.0, [self waveformRect].size.width));
+        [self setNeedsDisplay:YES];
+        return;
+    }
+    if (dy == 0.0 || event.momentumPhase != NSEventPhaseNone) return;
+    const CGFloat away = event.isDirectionInvertedFromDevice ? -dy : dy;
+    [self zoomBy:std::exp2(away * (precise ? kZoomOctavesPerPoint : kZoomOctavesPerLine)) event:event];
+}
+
+- (void)magnifyWithEvent:(NSEvent *)event {
+    if (![self canZoom]) {
+        [super magnifyWithEvent:event];
+        return;
+    }
+    [self zoomBy:std::exp(event.magnification) event:event];
 }
 
 #pragma mark - Public Methods

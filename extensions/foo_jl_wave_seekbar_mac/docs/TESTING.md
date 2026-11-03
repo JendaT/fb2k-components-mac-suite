@@ -48,14 +48,17 @@ with `CHECK` / `CHECK_EQ` / `CHECK_FLOAT_EQ` and `TEST_MAIN_END()`; both work):
 
 | Module | Covers |
 |--------|--------|
-| `TrackAnalyzer` | integrated loudness and gating, LRA, true peak, clip runs, Lo/Mid/Hi bands, correlation, column aggregation and mixdown, segments joining into one sequential pass (including clip runs at boundaries), the v2 cache round trip and rejection of truncated/corrupt blobs |
+| `TrackAnalyzer` | integrated loudness and gating, LRA, true peak, clip runs, Lo/Mid/Hi bands, correlation, column aggregation (whole track and a zoomed part, which must equal the matching slice) and mixdown, segments joining into one sequential pass (including clip runs at boundaries), the v2 cache round trip and rejection of truncated/corrupt blobs |
 | `LayeredShape` | dBFS fractions, peak and loudness-body heights, tint positions |
 | `SimpleShape` | linear lanes, asymmetric min/max, RMS core, one-lane mixdown |
 | `ThemeTokens` | OKLCH conversion and gamut mapping, derived deep / hot / guide colours, the body tint ramp |
+| `OverlayText` | number and clock formats, ruler intervals (with the zoomed-in steps under 10 s) |
 | `WaveformGeometry` | channel layouts, bucket-to-pixel mapping, band ranges and alpha, pointer-to-seek clamping, redraw threshold |
 | `WaveformColorMap` | heat map and rainbow ramps, gamut bounds, exact ARGB round trip, BPM sync, oscillator bounds |
 | `GradientBandTable` | index/value round trip, out-of-range and unknown stored values |
 | `CachePolicy` | eviction count and bounds, prune cutoff, age, cache key identity |
+| `ZoomRange` | zoom about the pointer, edges and limits (including a view narrowed past the maximum), pan, invalid input, maximum zoom per track |
+| `MaskPaths` | Layered half shapes and Simple bands, filled in runs of columns, against the exact pixel coverage of the whole outline (within 3/255); no seam along a lane's centre line or where runs meet |
 
 ## What these tests do not cover
 

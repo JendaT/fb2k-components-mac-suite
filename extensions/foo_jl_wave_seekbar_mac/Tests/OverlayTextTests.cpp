@@ -72,6 +72,12 @@ void testRuler() {
     CHECK_FLOAT_EQ(rulerInterval(0, 1000), 10, "no duration");
     const double interval = rulerInterval(425, 1915);
     CHECK(interval * 1915 / 425 >= kRulerLabelSpacing, "labels at least 110 pt apart");
+
+    // Zoomed in: steps under 10 s
+    CHECK_FLOAT_EQ(rulerInterval(4.5, 800, true), 1, "4.5 s in 800 pt: every second");
+    CHECK_FLOAT_EQ(rulerInterval(60, 2000, true), 5, "60 s in 2000 pt: every 5 s when zoomed");
+    CHECK_FLOAT_EQ(rulerInterval(180, 1200, true), 30, "the usual steps past 5 s");
+    CHECK_FLOAT_EQ(rulerInterval(0, 1000, true), 10, "no duration, zoomed");
 }
 
 } // namespace

@@ -364,6 +364,12 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ### [Unreleased]
 
+#### Added
+- **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms about the pointer; horizontal scroll pans; Reset zoom button while zoomed.
+
+#### Changed
+- **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.
+
 #### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform" after 60 s.
 

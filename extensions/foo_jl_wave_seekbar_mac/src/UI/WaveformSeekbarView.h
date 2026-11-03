@@ -57,6 +57,9 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 @property (nonatomic, assign, getter=isPlaying) BOOL playing;
 @property (nonatomic, assign, getter=isAnalyzing) BOOL analyzing;  // Shows "Analyzing..." message
 
+// Zoom: 1 shows the whole track; wheel, trackpad scroll and pinch change it
+@property (nonatomic, readonly) double zoomFactor;
+
 // Colors (automatically switch based on appearance)
 @property (nonatomic, strong) NSColor *waveformColor;
 @property (nonatomic, strong) NSColor *backgroundColor;

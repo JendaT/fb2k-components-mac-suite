@@ -15,6 +15,10 @@ Shows the entire track waveform at a glance - not just the current audio buffer.
 
 Click anywhere on the waveform to seek to that position. The playback cursor carries an optional elapsed-time chip.
 
+### Zoom
+
+Pinch on the trackpad, or scroll vertically with the mouse wheel or trackpad, to zoom in on the part under the pointer; scroll horizontally (or hold Shift with a wheel) to pan. Clicking seeks within the zoomed part. **Reset zoom** at the bottom right returns to the whole track, and each new track starts unzoomed.
+
 ### Styles
 
 | Style | Description |

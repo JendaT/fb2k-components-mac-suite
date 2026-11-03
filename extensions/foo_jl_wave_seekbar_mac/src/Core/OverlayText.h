@@ -56,12 +56,19 @@ inline std::string formatClock(double seconds, bool tenths = false) {
 // Time ruler: the smallest major interval (seconds) that keeps labels at
 // least kRulerLabelSpacing points apart. Minor ticks go at a quarter of it.
 // Past the spec's 10 min, longer intervals keep long mixes readable.
+// Zoomed in (`fine`), steps under 10 s come first.
 constexpr double kRulerLabelSpacing = 110.0;
+constexpr double kRulerFineIntervals[] = { 1, 2, 5 };
 constexpr double kRulerIntervals[] = { 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600 };
 
-inline double rulerInterval(double durationSeconds, double widthPoints) {
+inline double rulerInterval(double durationSeconds, double widthPoints, bool fine = false) {
     if (!(durationSeconds > 0.0) || !(widthPoints > 0.0)) return kRulerIntervals[0];
     const double pointsPerSecond = widthPoints / durationSeconds;
+    if (fine) {
+        for (double interval : kRulerFineIntervals) {
+            if (interval * pointsPerSecond >= kRulerLabelSpacing) return interval;
+        }
+    }
     for (double interval : kRulerIntervals) {
         if (interval * pointsPerSecond >= kRulerLabelSpacing) return interval;
     }

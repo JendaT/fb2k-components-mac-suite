@@ -36,9 +36,11 @@ namespace {
     }
 }
 
-Columns aggregateColumns(const WaveformData& data, size_t columns) {
+Columns aggregateColumns(const WaveformData& data, size_t columns, double from, double to) {
     Columns out;
-    if (!data.isValid() || columns == 0) return out;
+    from = std::clamp(from, 0.0, 1.0);
+    to = std::clamp(to, 0.0, 1.0);
+    if (!data.isValid() || columns == 0 || !(to > from)) return out;
 
     const uint32_t chans = data.channelCount;
     const size_t blocks = data.blockCount(), hops = data.hopCount();
@@ -71,11 +73,13 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
     std::vector<double> tintBands[3];
     for (int b = 0; b < 3; ++b) tintBands[b] = centredMeans(data.hopBand[b], kTintHalf);
 
-    const double framesPerColumn = totalFrames / columns;
+    const double firstFrame = from * totalFrames;
+    const double framesPerColumn = (to - from) * totalFrames / columns;
     const double blocksPerColumn = framesPerColumn / data.blockFrames;
+    const bool toEnd = to >= 1.0;
 
     for (size_t c = 0; c < columns; ++c) {
-        const double f0 = c * framesPerColumn, f1 = (c + 1) * framesPerColumn;
+        const double f0 = firstFrame + c * framesPerColumn, f1 = firstFrame + (c + 1) * framesPerColumn;
 
         // --- Sample envelope from fine blocks ---
         double sumSq = 0.0;
@@ -84,9 +88,9 @@ Columns aggregateColumns(const WaveformData& data, size_t columns) {
             float mn, mx, rms;
             if (blocksPerColumn >= 1.0) {
                 // Each block in the one column that holds its centre, so a
-                // transient shows once; the last column takes the rest
+                // transient shows once; the track's last column takes the rest
                 const size_t b0 = std::min(blocks - 1, (size_t)std::ceil(std::max(0.0, f0 / data.blockFrames - 0.5)));
-                const size_t b1 = c + 1 == columns ? blocks
+                const size_t b1 = c + 1 == columns && toEnd ? blocks
                     : std::min(blocks, std::max(b0 + 1, (size_t)std::ceil(f1 / data.blockFrames - 0.5)));
                 mn = 0.0f; mx = 0.0f;
                 double ms = 0.0;
