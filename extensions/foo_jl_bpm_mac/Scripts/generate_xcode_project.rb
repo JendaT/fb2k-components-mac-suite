@@ -82,7 +82,8 @@ ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
 
 # Collect resource files (XIB, etc.)
-resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
+# XIBs, and license texts copied into the bundle as they are
+resource_files = Dir.glob("Resources/*.{xib,txt}").sort.map { |f| File.basename(f) }
 # Core ML models: Xcode compiles each into <name>.mlmodelc in the bundle's Resources
 model_files = Dir.glob("Resources/*.mlpackage").map { |f| File.basename(f) }
 
@@ -188,7 +189,8 @@ end
 
 # Add XIB file references
 resource_files.each do |file|
-  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = #{file}; sourceTree = \"<group>\"; };\n"
+  file_type = file.end_with?('.xib') ? 'file.xib' : 'text'
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = \"#{file}\"; sourceTree = \"<group>\"; };\n"
 end
 
 # Add Core ML model references

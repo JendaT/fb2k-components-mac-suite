@@ -13,14 +13,17 @@ JL_COMPONENT_ABOUT(
     "BPM Analyzer",
     BPM_VERSION,
     "Tempo (BPM) analysis and tagging for foobar2000 macOS\n\n"
+    "Layout element: none (track context menu: BPM)\n"
+    "Preferences: none\n\n"
     "Features:\n"
     "- Analyze BPM: finds the tempo of the selected tracks and shows the results for review before writing the BPM tag\n"
     "- Uses TIDAL's tempo for tracks it matches by ISRC when the Tidal component is installed\n"
-    "- Analyzes everything else locally (decoded audio, several tracks at a time)\n"
+    "- Analyzes everything else locally with the Beat This! beat-tracking network, several tracks at a time\n"
     "- Double BPM and Halve BPM fix half/double tempo tags\n"
     "- Beat grids (bars and phrases) for Waveform Seekbar's phrase markers\n\n"
-    "Beat grids use Beat This! by Francesco Foscarin, Jan Schlueter and Gerhard Widmer "
-    "(Institute of Computational Perception, JKU Linz), MIT license."
+    "Uses Beat This! by Francesco Foscarin, Jan Schlueter and Gerhard Widmer, "
+    "Copyright (c) 2024 Institute of Computational Perception, JKU Linz, Austria, "
+    "MIT license (BeatThis-LICENSE.txt in the component bundle)."
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_bpm.component");
