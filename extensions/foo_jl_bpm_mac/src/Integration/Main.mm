@@ -17,7 +17,10 @@ JL_COMPONENT_ABOUT(
     "- Analyze BPM: finds the tempo of the selected tracks and shows the results for review before writing the BPM tag\n"
     "- Uses TIDAL's tempo for tracks it matches by ISRC when the Tidal component is installed\n"
     "- Analyzes everything else locally (decoded audio, several tracks at a time)\n"
-    "- Double BPM and Halve BPM fix half/double tempo tags"
+    "- Double BPM and Halve BPM fix half/double tempo tags\n"
+    "- Beat grids (bars and phrases) for Waveform Seekbar's phrase markers\n\n"
+    "Beat grids use Beat This! by Francesco Foscarin, Jan Schlueter and Gerhard Widmer "
+    "(Institute of Computational Perception, JKU Linz), MIT license."
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_bpm.component");

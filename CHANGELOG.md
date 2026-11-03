@@ -781,6 +781,7 @@ Display P3 colors contributed by @Scannou (#55).
 - **Sources**: TIDAL for exact ISRC matches when the Tidal component is installed; local analysis for the rest.
 - **Double BPM / Halve BPM**: Scale existing BPM tags.
 - **Beat grids**: A master beat grid per track with bar and phrase starts for Waveform Seekbar's phrase markers.
+- **Beat This!**: Beat grids from the Beat This! network on Core ML (bundled), the classic tracker as fallback.
 
 ## Tidal Integration
 

@@ -50,6 +50,10 @@ uuid_quartz_framework = generate_uuid
 uuid_quartz_framework_ref = generate_uuid
 uuid_accelerate_framework = generate_uuid
 uuid_accelerate_framework_ref = generate_uuid
+uuid_coreml_framework = generate_uuid
+uuid_coreml_framework_ref = generate_uuid
+uuid_avfoundation_framework = generate_uuid
+uuid_avfoundation_framework_ref = generate_uuid
 uuid_security_framework = generate_uuid
 uuid_security_framework_ref = generate_uuid
 uuid_sqlite_lib = generate_uuid
@@ -79,6 +83,8 @@ integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.base
 
 # Collect resource files (XIB, etc.)
 resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
+# Core ML models: Xcode compiles each into <name>.mlmodelc in the bundle's Resources
+model_files = Dir.glob("Resources/*.mlpackage").map { |f| File.basename(f) }
 
 # Generate UUIDs for all source files
 file_uuids = {}
@@ -89,8 +95,8 @@ file_ref_uuids = {}
   file_ref_uuids[file] = generate_uuid
 end
 
-# Generate UUIDs for resource files
-resource_files.each do |file|
+# Generate UUIDs for resource files and models
+(resource_files + model_files).each do |file|
   file_uuids[file] = generate_uuid
   file_ref_uuids[file] = generate_uuid
 end
@@ -103,6 +109,7 @@ puts "  Core files: #{core_files.join(', ')}"
 puts "  UI files: #{ui_files.join(', ')}"
 puts "  Integration files: #{integration_files.join(', ')}"
 puts "  Resource files: #{resource_files.join(', ')}"
+puts "  Core ML models: #{model_files.join(', ')}"
 
 # Create the .xcodeproj bundle
 FileUtils.mkdir_p("#{PROJECT_NAME}.xcodeproj")
@@ -133,10 +140,17 @@ resource_files.each do |file|
   pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Resources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
 end
 
+# Core ML models compile in the Sources phase
+model_files.each do |file|
+  pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Sources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
+end
+
 # Add frameworks
 pbxproj_content += "\t\t#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_cocoa_framework_ref} /* Cocoa.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_quartz_framework_ref} /* QuartzCore.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_accelerate_framework} /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_accelerate_framework_ref} /* Accelerate.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_coreml_framework} /* CoreML.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_coreml_framework_ref} /* CoreML.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_avfoundation_framework} /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_avfoundation_framework_ref} /* AVFoundation.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework} /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_security_framework_ref} /* Security.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_sqlite_lib_ref} /* libsqlite3.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib} /* libcompression.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_compression_lib_ref} /* libcompression.tbd */; };\n"
@@ -177,6 +191,11 @@ resource_files.each do |file|
   pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = #{file}; sourceTree = \"<group>\"; };\n"
 end
 
+# Add Core ML model references
+model_files.each do |file|
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = #{file}; sourceTree = \"<group>\"; };\n"
+end
+
 # Add product reference
 pbxproj_content += "\t\t#{uuid_product} /* #{PROJECT_NAME}.component */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = #{PROJECT_NAME}.component; sourceTree = BUILT_PRODUCTS_DIR; };\n"
 
@@ -187,6 +206,8 @@ pbxproj_content += "\t\t#{uuid_infoplist} /* Info.plist */ = {isa = PBXFileRefer
 pbxproj_content += "\t\t#{uuid_cocoa_framework_ref} /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework_ref} /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_accelerate_framework_ref} /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };\n"
+pbxproj_content += "\t\t#{uuid_coreml_framework_ref} /* CoreML.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreML.framework; path = System/Library/Frameworks/CoreML.framework; sourceTree = SDKROOT; };\n"
+pbxproj_content += "\t\t#{uuid_avfoundation_framework_ref} /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework_ref} /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib_ref} /* libcompression.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libcompression.tbd; path = usr/lib/libcompression.tbd; sourceTree = SDKROOT; };\n"
@@ -210,6 +231,8 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */,
 				#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */,
 				#{uuid_accelerate_framework} /* Accelerate.framework in Frameworks */,
+				#{uuid_coreml_framework} /* CoreML.framework in Frameworks */,
+				#{uuid_avfoundation_framework} /* AVFoundation.framework in Frameworks */,
 				#{uuid_security_framework} /* Security.framework in Frameworks */,
 				#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */,
 				#{uuid_compression_lib} /* libcompression.tbd in Frameworks */,
@@ -293,7 +316,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_infoplist} /* Info.plist */,
 PBXPROJ
 
-resource_files.each do |file|
+(resource_files + model_files).each do |file|
   pbxproj_content += "\t\t\t\t#{file_ref_uuids[file]} /* #{file} */,\n"
 end
 
@@ -308,6 +331,8 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework_ref} /* Cocoa.framework */,
 				#{uuid_quartz_framework_ref} /* QuartzCore.framework */,
 				#{uuid_accelerate_framework_ref} /* Accelerate.framework */,
+				#{uuid_coreml_framework_ref} /* CoreML.framework */,
+				#{uuid_avfoundation_framework_ref} /* AVFoundation.framework */,
 				#{uuid_security_framework_ref} /* Security.framework */,
 				#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */,
 				#{uuid_compression_lib_ref} /* libcompression.tbd */,
@@ -413,6 +438,9 @@ PBXPROJ
     pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"
   end
 end
+model_files.each do |file|
+  pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"
+end
 
 pbxproj_content += <<~PBXPROJ
 			);
@@ -460,6 +488,7 @@ pbxproj_content += <<~PBXPROJ
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				COREML_CODEGEN_LANGUAGE = None;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
@@ -499,6 +528,7 @@ pbxproj_content += <<~PBXPROJ
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				COREML_CODEGEN_LANGUAGE = None;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = macosx;
 			};

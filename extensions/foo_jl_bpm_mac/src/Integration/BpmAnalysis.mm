@@ -162,8 +162,7 @@ void analyzeRow(TrackRow &row, abort_callback &abort, std::atomic<double> &progr
     }
 
     // The beat grid from the same decode, for the seekbar's phrase markers
-    const BeatGrid grid = analyseBeatGrid(track.envelope, track.bands, track.framesPerSecond,
-                                          track.firstFrameSeconds, track.seconds, hintsFor(row.handle));
+    const BeatGrid grid = analyseDecodedTrack(track, hintsFor(row.handle));
     storeAnalysedGrid(row.handle, grid,
                       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
 

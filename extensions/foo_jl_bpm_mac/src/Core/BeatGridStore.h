@@ -24,8 +24,10 @@ namespace bpm {
 
 // 2: bars start on the bar phase (stage 6). 3: bar statistics from the
 // onsets at the grid beats, phases from clustered section changes, off-beat
-// bars flagged. Grids of an older version are analysed again.
-constexpr uint32_t kStoredGridVersion = 3;
+// bars flagged. 4: grids from the Beat This! network where its model loads;
+// master grids refitted over the whole track. Grids of an older version are
+// analysed again.
+constexpr uint32_t kStoredGridVersion = 4;
 
 struct StoredGrid {
     bool available = false;         // false: analysed, but no grid (no pulse, too short)

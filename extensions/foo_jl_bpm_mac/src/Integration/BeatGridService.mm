@@ -95,7 +95,8 @@ void logGrid(const metadb_handle_ptr &item, const StoredGrid &stored, double sec
                    << stored.summary.phrase_phase_bars << " (confidence "
                    << pfc::format_float(stored.summary.phrase_confidence, 0, 2) << ")";
         }
-        FB2K_console_formatter() << "[BPM] Beat grid: " << pfc::format_float(stored.summary.bpm, 0, 2) << " BPM, "
+        const char *source = stored.summary.source == jl_beatgrid_source_beat_this ? "Beat This!" : "classic";
+        FB2K_console_formatter() << "[BPM] Beat grid (" << source << "): " << pfc::format_float(stored.summary.bpm, 0, 2) << " BPM, "
             << stored.regions.size() << (stored.regions.size() == 1 ? " region, " : " regions, ")
             << pfc::format_int(static_cast<int64_t>(std::lround(lockedShare(stored.bars) * 100.0)))
             << "% of bars locked, " << phases << " (" << pfc::format_float(seconds, 0, 2) << " s): "
@@ -244,8 +245,7 @@ private:
                 fail(item, track.problem);
                 return;
             }
-            const BeatGrid grid = analyseBeatGrid(track.envelope, track.bands, track.framesPerSecond,
-                                                  track.firstFrameSeconds, track.seconds, hintsFor(item));
+            const BeatGrid grid = analyseDecodedTrack(track, hintsFor(item));
             store(item, toStored(grid), seconds);
         } catch (exception_aborted const &) {
             // shutting down
