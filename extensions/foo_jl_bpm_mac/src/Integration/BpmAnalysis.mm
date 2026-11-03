@@ -166,7 +166,11 @@ void analyzeRow(TrackRow &row, abort_callback &abort, std::atomic<double> &progr
     storeAnalysedGrid(row.handle, grid,
                       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
 
-    const TempoResult result = estimateTempo(track.envelope, track.framesPerSecond);
+    // The network grid's tempo; no grid means no steady beat anywhere, where
+    // the classic estimate would only guess (181, 187 BPM on ambient). The
+    // classic estimate only where the model could not run.
+    const TempoResult result =
+        track.networkRan ? networkTempo(grid) : estimateTempo(track.envelope, track.framesPerSecond);
     if (!result.valid) {
         row.problem = track.seconds < kMinimumSeconds ? "Too short to analyze" : "No beat found";
         return;

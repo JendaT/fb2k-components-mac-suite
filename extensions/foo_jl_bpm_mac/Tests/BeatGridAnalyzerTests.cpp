@@ -252,6 +252,7 @@ void testClickTracks() {
         CHECK(locked, "every phrase Locked");
         CHECK(!g.uncertain, "a steady beat is certain");
         CHECK(g.barPhase == -1, "identical clicks: no bar phase to claim");
+        CHECK(!networkTempo(g).valid, "classic grid: tag tempo from estimateTempo instead");
     }
 }
 
@@ -491,6 +492,8 @@ void testNetworkGrid() {
     CHECK(rest, "Locked where the clicks are");
     CHECK(g.tempoStrength > 0.7f && g.tempoStrength < 0.9f, "strength: the share of beats heard on the grid (150 of 180 s)");
     CHECK(!g.uncertain, "certain");
+    const TempoResult tag = networkTempo(g);
+    CHECK(tag.valid && tag.bpm == g.bpm && tag.strength == g.tempoStrength, "tag tempo: the network grid's");
 }
 
 // Where the kick is out the network follows a line a 16th late: still on

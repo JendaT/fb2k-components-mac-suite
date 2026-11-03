@@ -123,6 +123,8 @@ see Parity):
   animation and any beat jump or loop would land on the off-beat.
 - **Tempo**: 2:3 drum and bass (114.7 for 172, 87 for 174) and 3:4 psychill
   errors are gone; four dub techno tracks with a weak pulse remain "other".
+  Analyze BPM proposes this tempo for the tag; a track without a network
+  grid gets "No beat found" rather than the classic estimate.
 - **Broken halves**, mostly beatless intros and breakdowns that now read No
   pulse (Akshan - Time For Change: 13 Broken to 0). No pulse rises from 4% to
   22%: the network says there is no beat where the classic tracker found
@@ -213,9 +215,6 @@ weights).
 ## Open
 
 - The listening check of Broken markers (owner), now on Beat This! grids.
-- Analyze BPM still proposes the classic tempo estimate; the network's grid
-  tempo matched the tags more often (41 vs 36 same, 4 vs 9 other) and could
-  replace it there.
 - The classic fallback still locks onto off-beats on psychill and psytrance;
   a kick check (low-band rise at the grid beats vs half a beat later) would
   fix most of it if the fallback matters.

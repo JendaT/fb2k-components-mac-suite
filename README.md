@@ -124,7 +124,7 @@ Finds the tempo of tracks and writes the `BPM` tag, from the track context menu 
 
 **Features:**
 - Uses TIDAL's tempo for tracks it matches exactly by ISRC when the Tidal component is installed
-- Analyzes everything else locally, several tracks at a time
+- Analyzes everything else locally with the Beat This! beat-tracking network, several tracks at a time
 - Review window before anything is written: current tag, new value, source, and whether they agree
 - Double BPM and Halve BPM for half/double tempo tags
 

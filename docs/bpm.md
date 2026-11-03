@@ -13,7 +13,7 @@ Finds the tempo of tracks and writes it to the `BPM` tag. Adds a **BPM** submenu
 ## Where the tempo comes from
 
 1. **TIDAL**, when the Tidal component is installed and signed in: for tracks with an `ISRC` tag and for `tidal://` entries. Only exact matches are used (same ISRC or the TIDAL track itself); tracks are never matched by artist and title, so a cover or a different version cannot lend its tempo to the wrong file.
-2. **Local analysis** for every local file without a TIDAL answer. The audio is decoded and analysed on this Mac, several tracks at a time at background priority.
+2. **Local analysis** for every local file without a TIDAL answer. The audio is decoded and analysed on this Mac, several tracks at a time at background priority. The tempo is the one of the track's beat grid from the Beat This! network (see [Beat grids](#beat-grids)); a track where the network finds no steady beat anywhere gets "No beat found". Only where the model cannot run does the classic estimator below give the tempo.
 
 `tidal://` entries are shown in the review window, but their tags cannot be written.
 
@@ -36,6 +36,10 @@ Values are written as whole numbers because the ID3 `TBPM` frame and the MP4 `tm
 
 ## How the local analysis works
 
+The tempo proposed for the tag is the beat grid's: the Beat This! network finds the beats, a straight grid is fitted to the longest steady stretch of them, and its tempo is snapped to a round value within its tolerance (138.000 rather than 137.98). The review window marks it uncertain when the grid is heard on less than 30% of the track.
+
+### Classic estimator (fallback)
+
 1. **Onset strength**: the rise in the log-compressed spectrum from one 5-6 ms step to the next (spectral flux).
 2. **Periodicity**: autocorrelation of 8-second stretches of the onset strength, averaged over the whole track.
 3. **Choosing the beat level**: a steady beat also repeats at twice its period, so a preference for tempos near 120 BPM picks between the candidates (50-220 BPM).
@@ -45,11 +49,22 @@ The method follows librosa's tempo estimator; the code is a new implementation o
 
 ### Limitations
 
-- **Half/double tempo**: the most common mistake, especially around 85 vs 170 BPM (drum and bass is often found at 87). Use Double / Halve.
-- **One tempo per track**: tracks with tempo changes, DJ mixes and rubato get one averaged value.
-- **No clear beat** (ambient, classical, speech): the result is marked "Analysis (uncertain)", left unchecked, and is mostly a guess.
+- **Half/double tempo**: rare from the network (1 of 46 tagged tracks); the classic estimator's most common mistake, especially around 85 vs 170 BPM (drum and bass is often found at 87). Use Double / Halve.
+- **One tempo per track**: tracks with tempo changes and DJ mixes get the tempo of their longest steady stretch (the classic estimator: one averaged value); rubato gets a guess.
+- **No clear beat** (ambient, classical, speech): "No beat found" from the network; the classic estimator marks its guess "Analysis (uncertain)" and leaves it unchecked. A grid heard on less than 30% of the track is marked uncertain too.
 
 ### Measured so far
+
+47 tagged electronic tracks (psychill, dub techno, psytrance, progressive, drum and bass; full details in the beat grid validation linked below):
+
+| Tempo from | Same as tag | Half | Double | Other |
+|------------|-------------|------|--------|-------|
+| Beat This! grid (used) | 41 | 0 | 1 | 4, and 1 without a steady beat (No beat found) |
+| Classic estimator | 36 | 1 | 1 | 9 |
+
+The classic estimator's misses were 2:3 on drum and bass (116 for 174) and 4:3 on psychill; the network's four are dub techno tracks with a weak pulse. On six tracks without a steady beat (ambient, improvised) the classic estimator invented a tempo (181, 187 BPM); the network finds none.
+
+Earlier, classic estimator only:
 
 80 tracks from the developer's library that already had a BPM tag (mostly psychill and dub techno; where the tags came from is unknown):
 

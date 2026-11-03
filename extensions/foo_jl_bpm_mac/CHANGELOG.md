@@ -9,7 +9,8 @@ Initial release.
 ### Added
 - **Analyze BPM...**: Finds the tempo of the selected tracks and opens a review window; nothing is written until confirmed.
 - **TIDAL tempo**: Used for tracks with an ISRC tag and tidal:// entries when the Tidal component is installed; exact matches only.
-- **Local analysis**: Spectral-flux onsets, averaged autocorrelation, 120 BPM prior, sub-frame refinement; several tracks at a time at background priority.
+- **Local analysis**: Tempo of the track's Beat This! beat grid, snapped to a round value; tracks without a steady beat get none instead of a guess. Several tracks at a time at background priority.
+- **Classic estimator**: Spectral-flux onsets, averaged autocorrelation, 120 BPM prior; used where the model cannot run.
 - **Review window**: Current tag, new value, source, agreement with the tag (same / double / half / different), sortable columns, Double/Halve for selected rows.
 - **Uncertain results**: Estimates without a clear beat are marked and left unchecked.
 - **Double BPM / Halve BPM**: Scale the existing BPM tag of the selected tracks.

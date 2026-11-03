@@ -927,4 +927,13 @@ BeatGrid analyseNetworkBeatGrid(const RawBeats &network, const std::vector<float
     return grid;
 }
 
+TempoResult networkTempo(const BeatGrid &grid) {
+    TempoResult result;
+    if (!grid.valid || grid.source != BeatSource::BeatThis) return result;
+    result.valid = true;
+    result.bpm = grid.bpm;
+    result.strength = grid.tempoStrength;
+    return result;
+}
+
 } // namespace bpm
