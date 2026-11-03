@@ -27,12 +27,15 @@
 @end
 
 namespace {
-// Two columns of cards: Appearance on the left, Overlays and Scales on the
-// right, Cache across the bottom
-const CGFloat kPageWidth = 660.0;
+// Columns of cards, Cache across the bottom. Two: Appearance, Scales and
+// Zoom on the left, Overlays and Played part on the right. Three, when the
+// panel is wide enough: Appearance | Overlays | Played part, Scales, Zoom.
 const CGFloat kMargin = 20.0;
 const CGFloat kColumnGap = 16.0;
-const CGFloat kColumnWidth = (kPageWidth - 2 * kMargin - kColumnGap) / 2;
+const CGFloat kColumnWidth = 302.0;
+CGFloat pageWidth(int columns) {
+    return 2 * kMargin + columns * kColumnWidth + (columns - 1) * kColumnGap;
+}
 const CGFloat kCardGap = 16.0;
 const CGFloat kCardPad = 14.0;
 const CGFloat kRowGap = 12.0;
@@ -41,6 +44,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 @interface WaveformPreferences () {
     WaveformFlippedView *_page;
+    int _columns;                               // as built: 2, or 3 in a wide panel
 
     // Appearance
     NSPopUpButton *_stylePopup;
@@ -105,10 +109,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)loadView {
     // The page scrolls when the preferences window is shorter than it
-    _page = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 600)];
+    _page = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, pageWidth(2), 600)];
     _page.autoresizingMask = 0;
 
-    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 600)];
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, pageWidth(2), 600)];
     scrollView.hasVerticalScroller = YES;
     scrollView.autohidesScrollers = YES;
     scrollView.borderType = NSNoBorder;
@@ -121,7 +125,18 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
 
-    [self buildUI];
+    [self buildUIColumns:2];
+    [self loadSettings];
+}
+
+// A third column when the panel is wide enough for it: the page is built
+// again (controls keep no state of their own; settings load back in)
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    const int columns = self.view.bounds.size.width >= pageWidth(3) ? 3 : 2;
+    if (columns == _columns) return;
+    for (NSView *view in [_page.subviews copy]) [view removeFromSuperview];
+    [self buildUIColumns:columns];
     [self loadSettings];
 }
 
@@ -206,7 +221,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 #pragma mark - Cards
 
-- (void)buildUI {
+- (void)buildUIColumns:(int)columns {
+    _columns = columns;
     CGFloat y = 10;
     NSTextField *title = JLCreatePreferencesTitle(@"Waveform Seekbar");
     title.frame = NSMakeRect(kMargin, y, 400, 20);
@@ -214,18 +230,26 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     JLAddPreferencesInfoButton(_page, title, self, @selector(showComponentInfo:));
     y += 32;
 
-    // Appearance and Scales on the left, Overlays and Played part on the
-    // right: the two columns come out about equally tall
-    const CGFloat rightX = kMargin + kColumnWidth + kColumnGap;
-    CGFloat left = [self buildAppearanceAtX:kMargin y:y];
-    left = [self buildScalesAtX:kMargin y:left + kCardGap];
-    left = [self buildZoomAtX:kMargin y:left + kCardGap];
-    CGFloat right = [self buildOverlaysAtX:rightX y:y];
-    right = [self buildPlayedAtX:rightX y:right + kCardGap];
-    y = std::max(left, right) + kCardGap;
-    y = [self buildCacheAtX:kMargin y:y width:kPageWidth - 2 * kMargin];
+    // The columns come out about equally tall either way
+    const CGFloat step = kColumnWidth + kColumnGap;
+    if (columns >= 3) {
+        const CGFloat first = [self buildAppearanceAtX:kMargin y:y];
+        const CGFloat second = [self buildOverlaysAtX:kMargin + step y:y];
+        CGFloat third = [self buildPlayedAtX:kMargin + 2 * step y:y];
+        third = [self buildScalesAtX:kMargin + 2 * step y:third + kCardGap];
+        third = [self buildZoomAtX:kMargin + 2 * step y:third + kCardGap];
+        y = std::max({ first, second, third }) + kCardGap;
+    } else {
+        CGFloat left = [self buildAppearanceAtX:kMargin y:y];
+        left = [self buildScalesAtX:kMargin y:left + kCardGap];
+        left = [self buildZoomAtX:kMargin y:left + kCardGap];
+        CGFloat right = [self buildOverlaysAtX:kMargin + step y:y];
+        right = [self buildPlayedAtX:kMargin + step y:right + kCardGap];
+        y = std::max(left, right) + kCardGap;
+    }
+    y = [self buildCacheAtX:kMargin y:y width:pageWidth(columns) - 2 * kMargin];
 
-    _page.frame = NSMakeRect(0, 0, kPageWidth, y + kMargin);
+    _page.frame = NSMakeRect(0, 0, pageWidth(columns), y + kMargin);
     [self updateCacheStatus];
 }
 
@@ -463,7 +487,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y += kRowGap;
 
     _bpmSyncCheckbox = [self addCheckbox:@"Sync animations to track BPM"
-                                    hint:@"Animated effects follow the track's BPM tag when it has one."
+                                    hint:@"Animated effects pulse on the beat with a beat grid from BPM "
+                                          "Analyzer, else at the tempo of the track's BPM tag."
                                        x:x y:&y width:w];
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }

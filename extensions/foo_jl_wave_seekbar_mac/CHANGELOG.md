@@ -16,6 +16,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **BPM sync**: With a beat grid from BPM Analyzer, the Glow, Scanline, Pulse and Shimmer effects follow the playback position and peak on every beat; the BPM tag's tempo is the fallback.
 
+- **Preferences**: Three columns of settings when the preferences window is wide enough.
+
 ### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
 
