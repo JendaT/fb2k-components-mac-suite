@@ -62,3 +62,16 @@ The method follows librosa's tempo estimator; the code is a new implementation o
 Where the estimate agrees with the tag, the median difference is 0.15 BPM. The analysis itself takes about 1 ms per track; decoding the file is nearly all of the time.
 
 The tags are not a reliable reference. Traktor-written tags in this library read 0.85% low: for three Saint Cole tracks tagged 128.96, 129.88 and 122.93, the plugin found 129.98, 130.96 and 124.01, and a whole-track phase check found exactly 130.00, 131.00 and 124.00. Some of the "different" results above are the same offset.
+
+## Beat grids
+
+BPM Analyzer also finds each track's beat grid for Waveform Seekbar's phrase markers: one constant grid of beats over the whole track, which beat starts a bar, which bar starts a 32-beat phrase, and per bar how well the music sits on the grid. Grids are stored with the track in foobar2000's database (not in tags) and analysed when the seekbar asks for the playing track, or by **Analyze BPM...** from the same decode.
+
+Beats come from **Beat This!** (Foscarin, Schlüter and Widmer, JKU Linz, ISMIR 2024; MIT license), a beat-tracking network bundled with the component and run on Core ML (about one second per 10-minute track on Apple silicon, on top of decoding):
+
+- **Beats where people tap**: the onset-based tracker this replaces put the grid half a beat off, on the off-beat hi-hat, on 31 of 51 psychill and psytrance tracks; the network finds the kick.
+- **Timing from the audio**: each beat the network finds is moved to the onset at it, so the grid is as exact as the attacks (the network's own timing moves by tens of milliseconds with what is playing).
+- **Bars from its downbeats**, phrases from where the track's sections change.
+- **Beatless passages** (intros, breakdowns, the kick out under a rolling bassline) count as no pulse rather than as the music leaving the grid. A track without a steady beat anywhere gets no grid.
+
+Where the model cannot run, the onset-based tracker takes over. Measured on 84 tracks of the developer's library: [docs/BEATGRID-VALIDATION.md](../extensions/foo_jl_bpm_mac/docs/BEATGRID-VALIDATION.md).

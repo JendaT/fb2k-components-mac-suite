@@ -112,6 +112,15 @@ Intake system overview and decision log (music ingest pipeline):
 - Private rules repo boundary (no personal data in this repo)
 - Phase plan P1-P6
 
+### Machine Learning
+
+#### [15_COREML_MODELS.md](15_COREML_MODELS.md)
+Bundling and running a Core ML model in a component:
+- Compiling a committed .mlpackage at build time; finding it in the bundle
+- PyTorch conversion pitfalls (rotary embeddings, NumPy 2, tracing)
+- float16 vs float32 and compute units, measured
+- Matching the training front end (resampling, spectrogram precision)
+
 ---
 
 ## Prerequisites
@@ -151,6 +160,7 @@ The SDK should be located at:
 | **Debugging** | 07 | All developers |
 | **Settings & UI** | 08 | UI component developers |
 | **Tooling & Pipelines** | 14 | Intake/tools developers |
+| **Machine Learning** | 15 | Components that bundle a model |
 
 ## Reference Implementations
 
@@ -164,6 +174,9 @@ The SDK should be located at:
 - [Hydrogenaudio Development Wiki](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Development:Overview)
 
 ## Changelog
+
+### 2026-11-03
+- Created 15_COREML_MODELS.md - bundling the Beat This! model in foo_jl_bpm: conversion, precision, front-end parity
 
 ### 2026-07-11
 - Created 14_INTAKE_SYSTEM_OVERVIEW.md - intake system overview and decision log
