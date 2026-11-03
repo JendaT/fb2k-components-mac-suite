@@ -21,6 +21,58 @@ namespace {
         return power > 0.0 ? (float)(10.0 * std::log10(power)) : -INFINITY;
     }
 
+    // Block arrays the sample envelope reads: the waveform's own, or the fine detail
+    struct Blocks {
+        const WaveformData& d;
+        uint32_t frames() const { return d.blockFrames; }
+        size_t count() const { return d.blockCount(); }
+        float min(uint32_t ch, size_t b) const { return d.blockMin[ch][b]; }
+        float max(uint32_t ch, size_t b) const { return d.blockMax[ch][b]; }
+        float rms(uint32_t ch, size_t b) const { return d.blockRms[ch][b]; }
+    };
+    struct DetailBlocks {
+        const WaveformDetail& d;
+        uint32_t frames() const { return d.blockFrames; }
+        size_t count() const { return d.blockCount(); }
+        float min(uint32_t ch, size_t b) const { return d.minAt(ch, b); }
+        float max(uint32_t ch, size_t b) const { return d.maxAt(ch, b); }
+        float rms(uint32_t ch, size_t b) const { return d.rmsAt(ch, b); }
+    };
+
+    // One channel's sample envelope over the frames [f0, f1). Columns at
+    // least a block `wide` merge blocks: each counts in the one column that
+    // holds its centre, so a transient shows once, and `last` (the track's
+    // last column) takes the rest. Narrower ones interpolate between block
+    // centres.
+    template <typename Source>
+    void envelope(const Source& src, uint32_t ch, double f0, double f1, bool wide, bool last,
+                  float& mn, float& mx, float& rms) {
+        const size_t blocks = src.count();
+        const double blockFrames = src.frames();
+        if (wide) {
+            const size_t b0 = std::min(blocks - 1, (size_t)std::ceil(std::max(0.0, f0 / blockFrames - 0.5)));
+            const size_t b1 = last ? blocks
+                : std::min(blocks, std::max(b0 + 1, (size_t)std::ceil(f1 / blockFrames - 0.5)));
+            mn = 0.0f; mx = 0.0f;
+            double ms = 0.0;
+            for (size_t b = b0; b < b1; ++b) {
+                mn = std::min(mn, src.min(ch, b));
+                mx = std::max(mx, src.max(ch, b));
+                const double r = src.rms(ch, b);
+                ms += r * r;
+            }
+            rms = (float)std::sqrt(ms / (b1 - b0));
+        } else {
+            const double t = std::clamp((f0 + f1) * 0.5 / blockFrames - 0.5, 0.0, (double)(blocks - 1));
+            const size_t i0 = (size_t)t, i1 = std::min(blocks - 1, i0 + 1);
+            const float f = (float)(t - i0);
+            mn = src.min(ch, i0) + (src.min(ch, i1) - src.min(ch, i0)) * f;
+            mx = src.max(ch, i0) + (src.max(ch, i1) - src.max(ch, i0)) * f;
+            const float r0 = src.rms(ch, i0), r1 = src.rms(ch, i1);
+            rms = std::sqrt(r0 * r0 + (r1 * r1 - r0 * r0) * f);
+        }
+    }
+
     // Mean of v over the hops [center - half, center + half), clamped to the track
     std::vector<double> centredMeans(const std::vector<float>& v, size_t half) {
         const size_t n = v.size();
@@ -36,14 +88,15 @@ namespace {
     }
 }
 
-Columns aggregateColumns(const WaveformData& data, size_t columns, double from, double to) {
+Columns aggregateColumns(const WaveformData& data, size_t columns, double from, double to,
+                         const WaveformDetail* detail) {
     Columns out;
     from = std::clamp(from, 0.0, 1.0);
     to = std::clamp(to, 0.0, 1.0);
     if (!data.isValid() || columns == 0 || !(to > from)) return out;
 
     const uint32_t chans = data.channelCount;
-    const size_t blocks = data.blockCount(), hops = data.hopCount();
+    const size_t hops = data.hopCount();
     const double totalFrames = data.duration * data.sampleRate;
     out.count = columns;
     out.channels = chans;
@@ -75,8 +128,10 @@ Columns aggregateColumns(const WaveformData& data, size_t columns, double from, 
 
     const double firstFrame = from * totalFrames;
     const double framesPerColumn = (to - from) * totalFrames / columns;
-    const double blocksPerColumn = framesPerColumn / data.blockFrames;
     const bool toEnd = to >= 1.0;
+    // The detail only where blocks would be wider than a column
+    const bool useDetail = detail && framesPerColumn < data.blockFrames && detail->matches(data);
+    const bool wide = framesPerColumn / (useDetail ? detail->blockFrames : data.blockFrames) >= 1.0;
 
     for (size_t c = 0; c < columns; ++c) {
         const double f0 = firstFrame + c * framesPerColumn, f1 = firstFrame + (c + 1) * framesPerColumn;
@@ -84,33 +139,11 @@ Columns aggregateColumns(const WaveformData& data, size_t columns, double from, 
         // --- Sample envelope from fine blocks ---
         double sumSq = 0.0;
         float peak = 0.0f;
+        const bool last = c + 1 == columns && toEnd;
         for (uint32_t ch = 0; ch < chans; ++ch) {
             float mn, mx, rms;
-            if (blocksPerColumn >= 1.0) {
-                // Each block in the one column that holds its centre, so a
-                // transient shows once; the track's last column takes the rest
-                const size_t b0 = std::min(blocks - 1, (size_t)std::ceil(std::max(0.0, f0 / data.blockFrames - 0.5)));
-                const size_t b1 = c + 1 == columns && toEnd ? blocks
-                    : std::min(blocks, std::max(b0 + 1, (size_t)std::ceil(f1 / data.blockFrames - 0.5)));
-                mn = 0.0f; mx = 0.0f;
-                double ms = 0.0;
-                for (size_t b = b0; b < b1; ++b) {
-                    mn = std::min(mn, data.blockMin[ch][b]);
-                    mx = std::max(mx, data.blockMax[ch][b]);
-                    ms += (double)data.blockRms[ch][b] * data.blockRms[ch][b];
-                }
-                rms = (float)std::sqrt(ms / (b1 - b0));
-            } else {
-                // Narrower than a block: interpolate between block centres
-                const double t = std::clamp((f0 + f1) * 0.5 / data.blockFrames - 0.5, 0.0, (double)(blocks - 1));
-                const size_t i0 = (size_t)t, i1 = std::min(blocks - 1, i0 + 1);
-                const float f = (float)(t - i0);
-                auto lerp = [&](const std::vector<float>& v) { return v[i0] + (v[i1] - v[i0]) * f; };
-                mn = lerp(data.blockMin[ch]);
-                mx = lerp(data.blockMax[ch]);
-                const float r0 = data.blockRms[ch][i0], r1 = data.blockRms[ch][i1];
-                rms = std::sqrt(r0 * r0 + (r1 * r1 - r0 * r0) * f);
-            }
+            if (useDetail) envelope(DetailBlocks{ *detail }, ch, f0, f1, wide, last, mn, mx, rms);
+            else envelope(Blocks{ data }, ch, f0, f1, wide, last, mn, mx, rms);
             out.min[ch][c] = mn;
             out.max[ch][c] = mx;
             out.rms[ch][c] = std::min(rms, std::max(-mn, mx));   // RMS never exceeds the peak

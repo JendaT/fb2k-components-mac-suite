@@ -44,6 +44,13 @@ public:
     // The track's scan is still running
     bool isScanning(const metadb_handle_ptr& track);
 
+    // Fine detail for deep zoom (the zoom_detail option). Main thread. Reaches
+    // the detail listeners: from the cache, or, for a track analysed before
+    // the option was on, from a background rescan when no other scan runs
+    // (a stream downloads once more for it).
+    void requestDetail(const metadb_handle_ptr& track);
+    static bool detailEnabled();
+
     // Cancel pending request for track
     void cancelRequest(const metadb_handle_ptr& track);
 
@@ -58,6 +65,11 @@ public:
     using WaveformListener = std::function<void(const metadb_handle_ptr&, const WaveformData*)>;
     ListenerId addListener(WaveformListener listener);
     void removeListener(ListenerId id);
+
+    // Fine detail ready for a track (main thread)
+    using DetailListener = std::function<void(const metadb_handle_ptr&, std::shared_ptr<const WaveformDetail>)>;
+    ListenerId addDetailListener(DetailListener listener);
+    void removeDetailListener(ListenerId id);
     void removeAllListeners();
 
     // Cache management
@@ -68,6 +80,7 @@ public:
     struct CacheStats {
         size_t entryCount = 0;
         size_t totalSizeBytes = 0;
+        size_t detailCount = 0;
         double oldestAccessDays = 0;
     };
     CacheStats getCacheStats() const;
@@ -75,6 +88,9 @@ public:
 private:
     // Notify all listeners
     void notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform);
+    void notifyDetail(const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail);
+    // Stores a scan's detail and keeps the cache within its limit, in the background
+    void storeDetail(const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail);
 
     // isScanning with m_pendingMutex held
     bool isScanningLocked(const metadb_handle_ptr& track) const;
@@ -88,6 +104,11 @@ private:
         WaveformListener callback;
     };
     std::vector<ListenerEntry> m_listeners;
+    struct DetailListenerEntry {
+        ListenerId id;
+        DetailListener callback;
+    };
+    std::vector<DetailListenerEntry> m_detailListeners;
     std::mutex m_listenerMutex;
     ListenerId m_nextListenerId = 1;
 

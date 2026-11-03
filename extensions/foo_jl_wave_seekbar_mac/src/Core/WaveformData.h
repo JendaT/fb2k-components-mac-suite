@@ -63,3 +63,33 @@ struct WaveformData {
     std::vector<uint8_t> compress() const;
     static std::optional<WaveformData> decompress(const uint8_t* data, size_t size);
 };
+
+// Fine blocks for deep zoom (the "fine detail" option), gathered in the same
+// pass as the WaveformData: sample minimum, maximum and RMS of the drawn
+// channels, a divisor of its block long. Kept as the cache stores them, 16
+// bits each, since a long track has up to kMaxDetailBlocks of them.
+struct WaveformDetail {
+    static constexpr double kSampleRange = 2.0;     // as WaveformData's cache: peaks past full scale survive
+
+    uint32_t channelCount = 0;
+    uint32_t sampleRate = 0;
+    uint32_t blockFrames = 0;
+    uint64_t frames = 0;                            // analysed audio
+    std::vector<int16_t> blockMin[2], blockMax[2];  // +-32767 is +-kSampleRange
+    std::vector<uint16_t> blockRms[2];              // 65535 is kSampleRange
+
+    size_t blockCount() const { return blockMin[0].size(); }
+    float minAt(uint32_t ch, size_t b) const { return (float)(blockMin[ch][b] * (kSampleRange / 32767.0)); }
+    float maxAt(uint32_t ch, size_t b) const { return (float)(blockMax[ch][b] * (kSampleRange / 32767.0)); }
+    float rmsAt(uint32_t ch, size_t b) const { return (float)(blockRms[ch][b] * (kSampleRange / 65535.0)); }
+    static int16_t encodeSample(float v);
+    static uint16_t encodeRms(float v);
+
+    bool isValid() const;
+    // Analysed with `data`: the same audio, in blocks finer than its own
+    bool matches(const WaveformData& data) const;
+    size_t memorySize() const;
+
+    std::vector<uint8_t> compress() const;
+    static std::optional<WaveformDetail> decompress(const uint8_t* data, size_t size);
+};

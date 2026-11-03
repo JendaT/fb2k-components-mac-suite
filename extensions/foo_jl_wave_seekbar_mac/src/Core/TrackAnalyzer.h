@@ -16,6 +16,7 @@
 #include "WaveformData.h"
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace waveseek::analysis {
@@ -32,6 +33,12 @@ constexpr double kHighCrossoverHz = 2000.0;
 // segments can start on both.
 constexpr uint32_t kTargetBlockFrames = 1024;
 constexpr size_t kMaxBlocks = 16384;
+
+// Fine detail for deep zoom (optional): blocks of about kTargetDetailFrames,
+// a divisor of the normal block so they nest in it and segments start on
+// them too, at most kMaxDetailBlocks per track.
+constexpr uint32_t kTargetDetailFrames = 128;
+constexpr size_t kMaxDetailBlocks = 1 << 19;
 
 // Long tracks are analysed in segments decoded in parallel: at least this
 // long, at most this many (more segments than cores, so a worker on an
@@ -84,6 +91,10 @@ float integratedLoudness(const std::vector<float>& kms, size_t hops);
 float loudnessRange(const std::vector<float>& kms, size_t hops);
 
 uint32_t blockFramesFor(uint64_t expectedFrames, uint32_t sampleRate);
+// The detail block for a track of `expectedFrames` with normal blocks of
+// `blockFrames`; 0 (no detail) when the length is unknown or no divisor of
+// the block is finer within the limit.
+uint32_t detailFramesFor(uint32_t blockFrames, uint64_t expectedFrames);
 uint32_t hopFramesFor(uint32_t sampleRate);
 
 // A run of frames [start, end); the last segment's end is UINT64_MAX (to
@@ -104,7 +115,8 @@ public:
     // `channels` drawn, 1 or 2 (the first two of the source; loudness, true
     // peak and clip runs take every source channel).
     // `expectedFrames` sizes the fine blocks; it only needs to be roughly right.
-    TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames);
+    // `detail` also gathers the fine detail (takeDetail).
+    TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames, bool detail = false);
 
     // `frames` interleaved frames of `stride` channels each (stride >= 1).
     // `weights` has one BS.1770 weight per source channel for the loudness
@@ -130,14 +142,21 @@ public:
     // is invalid (isValid() false) when no audio was processed.
     WaveformData finish();
 
+    // The fine detail, after finish(): none when it wasn't asked for, the
+    // length was unknown, or the track ran far past its expected length.
+    std::optional<WaveformDetail> takeDetail();
+
     // Joins segment results, in track order, into the whole track's data and
     // recomputes the summary over it.
     static WaveformData merge(std::vector<WaveformData> parts);
+    // The same for the fine detail; none unless every part has it.
+    static std::optional<WaveformDetail> mergeDetail(std::vector<std::optional<WaveformDetail>> parts);
 
 private:
     template <typename Sample>
     void processFrames(const Sample* samples, size_t frames, uint32_t stride, const float* weights);
     void flushBlock();
+    void flushDetail();
     void flushHop();
     void flushFilters();
     void updateTruePeak(float* history, float x, bool counted);
@@ -153,6 +172,13 @@ private:
     uint32_t _blockCount = 0;
     float _blockMin[2] = {}, _blockMax[2] = {};
     double _blockSumSq[2] = {};
+
+    // Current detail block; _detailFrames 0 when not gathering
+    WaveformDetail _detail;
+    uint32_t _detailFrames = 0;
+    uint32_t _detailCount = 0;
+    float _detailMin[2] = {}, _detailMax[2] = {};
+    double _detailSumSq[2] = {};
 
     // Current hop
     uint32_t _hopCount = 0;

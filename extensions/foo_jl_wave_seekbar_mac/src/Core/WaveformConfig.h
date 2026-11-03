@@ -152,6 +152,8 @@ constexpr int kDefaultCursorEffect = CursorEffectNone;
 constexpr bool kDefaultBpmSync = false;         // sync animated cursor effects to the track's BPM
 constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the cursor
 constexpr bool kDefaultGlassBackground = false; // Opaque background by default
+constexpr bool kDefaultZoomEnabled = true;
+constexpr bool kDefaultZoomDetail = false;      // fine detail: more disk per track, see TrackAnalyzer.h
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

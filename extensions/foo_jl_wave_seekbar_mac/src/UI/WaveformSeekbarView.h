@@ -14,8 +14,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Forward declaration for C++ struct
 #ifdef __cplusplus
 struct WaveformData;
+struct WaveformDetail;
 #else
 typedef struct WaveformData WaveformData;
+typedef struct WaveformDetail WaveformDetail;
 #endif
 
 @class WaveformSeekbarView;
@@ -66,6 +68,9 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 
 // Waveform data (const pointer to C++ struct, not owned)
 @property (nonatomic, nullable, assign) const WaveformData *waveformData;
+// Its fine detail for deep zoom, when there is one (not owned); ignored
+// unless it matches waveformData
+@property (nonatomic, nullable, assign) const WaveformDetail *waveformDetail;
 
 // Actions
 - (void)clearWaveform;

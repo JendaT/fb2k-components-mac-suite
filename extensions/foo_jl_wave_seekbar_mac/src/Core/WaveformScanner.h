@@ -21,8 +21,10 @@
 typedef void* WaveformScanOperation;
 #endif
 
-// Scan result callback
-using WaveformScanCallback = std::function<void(std::optional<WaveformData>, const char* error)>;
+// Scan result callback: the waveform, and its fine detail when that was
+// asked for and could be gathered (null otherwise)
+using WaveformScanCallback = std::function<void(std::optional<WaveformData>,
+                                                std::shared_ptr<const WaveformDetail> detail, const char* error)>;
 
 // Scanner for extracting waveform data from audio files
 class WaveformScanner {
@@ -30,9 +32,9 @@ public:
     WaveformScanner();
     ~WaveformScanner();
 
-    // Start async scan of a track
+    // Start async scan of a track, gathering the fine detail too with `detail`
     // Callback is invoked on main thread when complete
-    void scanAsync(const metadb_handle_ptr& track, WaveformScanCallback callback);
+    void scanAsync(const metadb_handle_ptr& track, bool detail, WaveformScanCallback callback);
 
     // Cancel any pending scan
     void cancel();
@@ -44,8 +46,9 @@ public:
     std::optional<WaveformData> scanSync(const metadb_handle_ptr& track, abort_callback& abort);
 
 private:
-    // Internal scan implementation
-    std::optional<WaveformData> performScan(const metadb_handle_ptr& track, abort_callback& abort);
+    // Internal scan implementation; `detail` non-null gathers the fine detail into it
+    std::optional<WaveformData> performScan(const metadb_handle_ptr& track, abort_callback& abort,
+                                            std::optional<WaveformDetail>* detail = nullptr);
 
     // Atomic state
     std::atomic<bool> m_scanning{false};

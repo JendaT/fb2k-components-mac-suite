@@ -19,6 +19,8 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 
 Pinch on the trackpad, or scroll vertically with the mouse wheel or trackpad, to zoom in on the part under the pointer; scroll horizontally (or hold Shift with a wheel) to pan. Clicking seeks within the zoomed part. **Reset zoom** at the bottom right returns to the whole track, and each new track starts unzoomed.
 
+Zoom can be switched off in Preferences > Zoom. **Fine detail for deep zoom** (off by default) keeps 7-8x finer detail per track, more for long mixes, so zooming goes that much deeper; it is gathered in the same analysis pass. It costs about 1 MB of cache per track (up to 5 MB for long mixes), and fine detail is the first thing dropped when the cache is over its size limit. Tracks analysed before the option was on are analysed again in the background when played; for a stream that means downloading it once more, since its audio is not kept on disk.
+
 ### Styles
 
 | Style | Description |

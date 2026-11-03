@@ -22,6 +22,8 @@
     NSTimer *_positionTimer;
     BOOL _isPaused;
     std::unique_ptr<WaveformData> _storedWaveform;  // We own this copy
+    std::shared_ptr<const WaveformDetail> _detail;  // Its fine detail for deep zoom, when there is one
+    ListenerId _detailListenerId;
     NSLayoutConstraint *_widthConstraint;           // Current width constraint
     NSLayoutConstraint *_heightConstraint;          // Current height constraint
     BOOL _widthLocked;                              // Track if width is locked
@@ -85,6 +87,20 @@
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
+    // The fine detail switched on or off
+    if (!WaveformService::detailEnabled()) {
+        [self dropDetail];
+    } else if (!_detail && _storedWaveform && _currentTrack.is_valid()) {
+        getWaveformService().requestDetail(_currentTrack);
+    }
+}
+
+// The view stops pointing at the detail before it is released
+- (void)dropDetail {
+    if (!_detail) return;
+    self.waveformView.waveformDetail = nullptr;
+    _detail.reset();
+    [self.waveformView refreshDisplay];
 }
 
 // The host may place the panel between pixels; keep the drawing on whole ones.
@@ -150,6 +166,20 @@
         }
     });
 
+    // Fine detail for deep zoom, which may come before or after the waveform
+    _detailListenerId = getWaveformService().addDetailListener(
+        [weakSelf](const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !detail || !WaveformService::detailEnabled()) return;
+            if (strongSelf->_currentTrack.is_valid() && track.is_valid() &&
+                strongSelf->_currentTrack->get_location() == track->get_location()) {
+                // The view takes the new detail before the old one is released
+                strongSelf.waveformView.waveformDetail = detail.get();
+                strongSelf->_detail = detail;
+                [strongSelf.waveformView refreshDisplay];
+            }
+        });
+
     // Check if something is already playing
     [self syncWithCurrentPlayback];
 }
@@ -179,8 +209,9 @@
     [self stopAnalysisWatchdog];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     PlaybackCallbackManager::instance().unregisterController(self);
-    // Remove only our listener from the waveform service
+    // Remove only our listeners from the waveform service
     getWaveformService().removeListener(_waveformListenerId);
+    getWaveformService().removeDetailListener(_detailListenerId);
 }
 
 #pragma mark - Playback State Sync
@@ -221,6 +252,7 @@
 #pragma mark - Playback Event Handlers
 
 - (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm {
+    [self dropDetail];
     _currentTrack = track;
     _isPaused = NO;
     _storedWaveform.reset();  // Clear previous waveform
@@ -246,6 +278,7 @@
 }
 
 - (void)handlePlaybackStop {
+    [self dropDetail];
     _currentTrack.release();
     _isPaused = NO;
     _storedWaveform.reset();  // Release stored waveform
@@ -300,6 +333,9 @@
         _storedWaveform = std::make_unique<WaveformData>(*waveform);
         // Point view to our owned copy
         self.waveformView.waveformData = _storedWaveform.get();
+        if (!_detail && _currentTrack.is_valid() && WaveformService::detailEnabled()) {
+            getWaveformService().requestDetail(_currentTrack);
+        }
     }
 
     [self.waveformView refreshDisplay];

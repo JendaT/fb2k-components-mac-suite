@@ -43,7 +43,11 @@ struct Columns {
 
 // Columns over the part of the track between `from` and `to`, as fractions
 // of it (zoomed in); by default the whole track. An empty range gives none.
-Columns aggregateColumns(const WaveformData& data, size_t columns, double from = 0.0, double to = 1.0);
+// With the track's fine `detail`, columns narrower than a block take their
+// sample envelope from it instead of interpolating between blocks; wider
+// columns are the same either way.
+Columns aggregateColumns(const WaveformData& data, size_t columns, double from = 0.0, double to = 1.0,
+                         const WaveformDetail* detail = nullptr);
 
 // Both channels as one (channels = 1): the widest min / max, the power mean
 // of RMS and levels. Readout and tint values are already for all channels

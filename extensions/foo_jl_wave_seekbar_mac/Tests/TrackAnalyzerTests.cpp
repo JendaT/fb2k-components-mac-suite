@@ -674,6 +674,228 @@ void testSegmentsMatchOnePass() {
     checkIdentical(one6, analyseSegmented(six, 6, sr6, segs6, 4096, weights));
 }
 
+// Fine detail: block sizes for the usual rates and lengths
+void testDetailFrames() {
+    g_context = "detail frames";
+    CHECK_EQ(blockFramesFor(44100ull * 300, 44100), 882u, "5 min at 44.1 kHz: 20 ms blocks");
+    CHECK_EQ(detailFramesFor(882, 44100ull * 300), 126u, "detail: the divisor nearest 128");
+    CHECK_EQ(detailFramesFor(960, 48000ull * 300), 120u, "48 kHz");
+    CHECK_EQ(detailFramesFor(882, 0), 0u, "unknown length: no detail");
+    CHECK_EQ(detailFramesFor(1103, 11025ull * 300), 0u, "a prime block has no finer divisor");
+    CHECK_EQ(detailFramesFor(1, 1000), 0u, "a one-frame block");
+
+    bool divides = true, bounded = true, finer = true, found = true;
+    for (uint32_t rate : { 22050u, 44100u, 48000u, 88200u, 96000u, 192000u }) {
+        for (double seconds : { 10.0, 240.0, 600.0, 3600.0, 3 * 3600.0, 8 * 3600.0 }) {
+            const uint64_t frames = (uint64_t)(rate * seconds);
+            const uint32_t block = blockFramesFor(frames, rate), detail = detailFramesFor(block, frames);
+            found &= detail > 0;
+            if (detail == 0) { printf("  %u Hz, %.0f s: no detail\n", rate, seconds); continue; }
+            divides &= block % detail == 0;
+            finer &= detail < block;
+            bounded &= (frames + detail - 1) / detail <= kMaxDetailBlocks;
+        }
+    }
+    CHECK(found, "every usual rate and length gets detail");
+    CHECK(divides, "detail blocks divide the normal block");
+    CHECK(finer, "and are finer");
+    CHECK(bounded, "at most kMaxDetailBlocks");
+}
+
+// Interleaved stereo with a quiet noise floor and a single-sample spike
+std::vector<float> spikeSignal(uint32_t sr, double seconds, uint64_t spikeFrame) {
+    const uint64_t total = (uint64_t)(sr * seconds);
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> noise(-0.05f, 0.05f);
+    std::vector<float> lr(total * 2);
+    for (uint64_t i = 0; i < total; ++i) {
+        lr[2 * i] = noise(rng) + 0.2f * (float)std::sin(2.0 * kPi * 3.0 * i / sr);
+        lr[2 * i + 1] = 0.5f * lr[2 * i];
+    }
+    lr[2 * spikeFrame] = 0.9f;
+    return lr;
+}
+
+std::pair<WaveformData, std::optional<WaveformDetail>> analyseWithDetail(const std::vector<float>& lr, uint32_t sr) {
+    const size_t frames = lr.size() / 2;
+    TrackAnalyzer a(sr, 2, frames, true);
+    size_t pos = 0, chunk = 1000;
+    while (pos < frames) {
+        const size_t n = std::min(chunk, frames - pos);
+        a.process(lr.data() + pos * 2, n, 2);
+        pos += n;
+        chunk = chunk == 1000 ? 4096 : 1000;
+    }
+    WaveformData data = a.finish();
+    return { std::move(data), a.takeDetail() };
+}
+
+// Detail blocks hold each block's samples, quantised, and nest in the
+// normal blocks
+void testDetailBlocks() {
+    g_context = "detail blocks";
+    const uint32_t sr = 48000;
+    const std::vector<float> lr = spikeSignal(sr, 10.0, 230500);
+    const auto [data, detail] = analyseWithDetail(lr, sr);
+    CHECK(detail.has_value(), "gathered");
+    if (!detail) return;
+    CHECK(detail->isValid(), "valid");
+    CHECK(detail->matches(data), "matches its waveform");
+    CHECK_EQ(detail->blockFrames, 120u, "120-frame blocks");
+    CHECK_EQ(detail->frames, (uint64_t)lr.size() / 2, "every frame");
+
+    const double q = WaveformDetail::kSampleRange / 32767.0;
+    double worstMin = 0, worstMax = 0, worstRms = 0;
+    for (size_t b = 0; b < detail->blockCount(); ++b) {
+        for (uint32_t ch = 0; ch < 2; ++ch) {
+            float mn = 0, mx = 0;
+            double ss = 0;
+            const size_t f0 = b * 120, f1 = std::min(lr.size() / 2, f0 + 120);
+            for (size_t f = f0; f < f1; ++f) {
+                const float v = lr[2 * f + ch];
+                mn = std::min(mn, v); mx = std::max(mx, v); ss += (double)v * v;
+            }
+            worstMin = std::max(worstMin, (double)std::fabs(detail->minAt(ch, b) - mn));
+            worstMax = std::max(worstMax, (double)std::fabs(detail->maxAt(ch, b) - mx));
+            worstRms = std::max(worstRms, std::fabs(detail->rmsAt(ch, b) - std::sqrt(ss / (f1 - f0))));
+        }
+    }
+    CHECK(worstMin <= q, "block minima within one 16-bit step");
+    CHECK(worstMax <= q, "block maxima");
+    CHECK(worstRms <= q, "block RMS");
+
+    // Eight detail blocks to a 960-frame block: their peaks are its peak
+    bool nested = true;
+    const size_t per = data.blockFrames / detail->blockFrames;
+    for (size_t b = 0; b < data.blockCount(); ++b) {
+        float mx = 0;
+        for (size_t k = b * per; k < std::min(detail->blockCount(), (b + 1) * per); ++k) mx = std::max(mx, detail->maxAt(0, k));
+        nested &= std::fabs(mx - data.blockMax[0][b]) <= q;
+    }
+    CHECK(nested, "detail peaks make up the normal blocks' peaks");
+
+    TrackAnalyzer none(sr, 2, lr.size() / 2);
+    none.process(lr.data(), lr.size() / 2, 2);
+    none.finish();
+    CHECK(!none.takeDetail().has_value(), "not gathered unless asked for");
+}
+
+void testDetailRoundTrip() {
+    g_context = "detail cache";
+    const uint32_t sr = 44100;
+    const auto [data, detail] = analyseWithDetail(spikeSignal(sr, 6.0, 1000), sr);
+    CHECK(detail.has_value(), "gathered");
+    if (!detail) return;
+    const std::vector<uint8_t> blob = detail->compress();
+    CHECK(!blob.empty(), "compressed");
+    const std::optional<WaveformDetail> back = WaveformDetail::decompress(blob.data(), blob.size());
+    CHECK(back.has_value(), "decompressed");
+    if (back) {
+        bool same = back->blockFrames == detail->blockFrames && back->frames == detail->frames &&
+                    back->channelCount == detail->channelCount && back->sampleRate == detail->sampleRate;
+        for (int ch = 0; ch < 2; ++ch) {
+            same &= back->blockMin[ch] == detail->blockMin[ch] && back->blockMax[ch] == detail->blockMax[ch] &&
+                    back->blockRms[ch] == detail->blockRms[ch];
+        }
+        CHECK(same, "identical after the round trip");
+    }
+    CHECK(!WaveformDetail::decompress(blob.data(), blob.size() / 2).has_value(), "truncated blob rejected");
+    CHECK(!WaveformDetail::decompress(data.compress().data(), data.compress().size()).has_value(),
+          "a waveform blob is not a detail blob");
+
+    WaveformDetail bad = *detail;
+    bad.blockRms[1].pop_back();
+    CHECK(bad.compress().empty(), "an inconsistent detail is not stored");
+}
+
+// Segments analysed separately join into the one-pass detail
+void testDetailSegments() {
+    g_context = "detail segments";
+    const uint32_t sr = 44100;
+    const uint64_t total = (uint64_t)sr * 150;
+    const std::vector<float> lr = spikeSignal(sr, 150.0, total / 2 + 77);
+    const auto [one, oneDetail] = analyseWithDetail(lr, sr);
+    CHECK(oneDetail.has_value(), "one pass gathered detail");
+
+    const std::vector<Segment> segs = planSegments(total, sr);
+    const uint64_t preroll = (uint64_t)(kSegmentPrerollSeconds * sr);
+    std::vector<std::optional<WaveformDetail>> parts;
+    for (const Segment& seg : segs) {
+        TrackAnalyzer a(sr, 2, total, true);
+        a.setRange(seg.start, seg.end);
+        const uint64_t from = seg.start > preroll ? seg.start - preroll : 0;
+        const uint64_t to = seg.end == UINT64_MAX ? total : std::min(total, seg.end + kClipRunLength - 1);
+        a.setPosition(from);
+        for (uint64_t pos = from; pos < to; pos += 1152) {
+            a.process(lr.data() + pos * 2, (size_t)std::min<uint64_t>(1152, to - pos), 2);
+        }
+        a.finish();
+        parts.push_back(a.takeDetail());
+    }
+    const std::optional<WaveformDetail> joined = TrackAnalyzer::mergeDetail(std::move(parts));
+    CHECK(joined.has_value(), "joined");
+    if (!joined || !oneDetail) return;
+    bool same = joined->frames == oneDetail->frames && joined->blockFrames == oneDetail->blockFrames;
+    for (int ch = 0; ch < 2; ++ch) {
+        same &= joined->blockMin[ch] == oneDetail->blockMin[ch] && joined->blockMax[ch] == oneDetail->blockMax[ch] &&
+                joined->blockRms[ch] == oneDetail->blockRms[ch];
+    }
+    CHECK(same, "bit for bit the one-pass detail");
+
+    std::vector<std::optional<WaveformDetail>> gap = { oneDetail, std::nullopt };
+    CHECK(!TrackAnalyzer::mergeDetail(std::move(gap)).has_value(), "a part without detail gives none");
+}
+
+// Zoomed in past the normal blocks, the detail places a transient in its
+// column; zoomed out, columns are the same with or without it
+void testDetailColumns() {
+    g_context = "detail columns";
+    const uint32_t sr = 48000;
+    const uint64_t spike = 230400 + 240 * 37 + 50;   // inside column 37 below
+    const std::vector<float> lr = spikeSignal(sr, 10.0, spike);
+    const auto [data, detail] = analyseWithDetail(lr, sr);
+    CHECK(detail.has_value(), "gathered");
+    if (!detail) return;
+    const double total = data.duration * data.sampleRate;
+
+    // 100 columns of 240 frames: a quarter of a 960-frame block, two detail blocks
+    const double from = 230400 / total, to = (230400 + 24000) / total;
+    const Columns coarse = aggregateColumns(data, 100, from, to);
+    const Columns fine = aggregateColumns(data, 100, from, to, &*detail);
+    size_t coarseLoud = 0, fineLoud = 0, fineSpikes = 0;
+    int spikeColumn = -1;
+    for (size_t c = 0; c < 100; ++c) {
+        coarseLoud += coarse.max[0][c] > 0.4f;
+        fineLoud += fine.max[0][c] > 0.4f;
+        if (fine.max[0][c] > 0.85f) { ++fineSpikes; spikeColumn = (int)c; }
+    }
+    CHECK(coarseLoud >= 3, "without detail the spike spreads over several columns");
+    CHECK_EQ(fineSpikes, 1u, "with it, one column holds the spike");
+    CHECK_EQ(spikeColumn, 37, "the column it is in");
+    CHECK(fineLoud == 1, "and no other column is raised");
+
+    // Columns a block wide or wider: identical with or without the detail
+    auto same = [](const Columns& a, const Columns& b) {
+        bool eq = a.count == b.count;
+        for (int ch = 0; ch < 2 && eq; ++ch) eq = a.min[ch] == b.min[ch] && a.max[ch] == b.max[ch] && a.rms[ch] == b.rms[ch];
+        return eq;
+    };
+    CHECK(same(aggregateColumns(data, 400), aggregateColumns(data, 400, 0.0, 1.0, &*detail)), "the whole track");
+    CHECK(same(aggregateColumns(data, 100, 0.25, 0.5), aggregateColumns(data, 100, 0.25, 0.5, &*detail)),
+          "a part with columns wider than a block");
+
+    // A detail that doesn't belong to the waveform is ignored
+    WaveformDetail other = *detail;
+    other.frames += 1000;
+    for (int ch = 0; ch < 2; ++ch) {
+        other.blockMin[ch].resize((other.frames + 119) / 120);
+        other.blockMax[ch].resize((other.frames + 119) / 120);
+        other.blockRms[ch].resize((other.frames + 119) / 120);
+    }
+    CHECK(!other.matches(data), "a longer detail doesn't match");
+    CHECK(same(coarse, aggregateColumns(data, 100, from, to, &other)), "and is ignored");
+}
+
 } // namespace
 
 int main() {
@@ -694,5 +916,10 @@ int main() {
     testColumnRange();
     testPlanSegments();
     testSegmentsMatchOnePass();
+    testDetailFrames();
+    testDetailBlocks();
+    testDetailRoundTrip();
+    testDetailSegments();
+    testDetailColumns();
     TEST_MAIN_END();
 }

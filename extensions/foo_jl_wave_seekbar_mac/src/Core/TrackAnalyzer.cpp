@@ -172,6 +172,25 @@ uint32_t blockFramesFor(uint64_t expectedFrames, uint32_t sampleRate) {
     return (uint32_t)best;
 }
 
+uint32_t detailFramesFor(uint32_t blockFrames, uint64_t expectedFrames) {
+    if (blockFrames < 2 || expectedFrames == 0) return 0;
+    const uint64_t needed = std::max<uint64_t>(1, (expectedFrames + kMaxDetailBlocks - 1) / kMaxDetailBlocks);
+    // The divisor nearest kTargetDetailFrames by ratio among those within the
+    // limit; pairs from the square root up, so huge blocks stay cheap
+    auto distance = [](uint64_t frames) { return std::fabs(std::log((double)frames / kTargetDetailFrames)); };
+    uint64_t best = 0;
+    auto consider = [&](uint64_t d) {
+        if (d >= blockFrames || d < needed) return;
+        if (best == 0 || distance(d) < distance(best)) best = d;
+    };
+    for (uint64_t d = 1; d * d <= blockFrames; ++d) {
+        if (blockFrames % d != 0) continue;
+        consider(d);
+        consider(blockFrames / d);
+    }
+    return (uint32_t)best;
+}
+
 uint32_t hopFramesFor(uint32_t sampleRate) {
     return std::max<uint32_t>(1, (uint32_t)std::lround(std::max(sampleRate, 1u) / 10.0));
 }
@@ -198,12 +217,18 @@ std::vector<Segment> planSegments(uint64_t totalFrames, uint32_t sampleRate, siz
 
 #pragma mark - TrackAnalyzer
 
-TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames)
+TrackAnalyzer::TrackAnalyzer(uint32_t sampleRate, uint32_t channels, uint64_t expectedFrames, bool detail)
     : _channels(std::clamp(channels, 1u, 2u)) {
     _data.channelCount = _channels;
     _data.sampleRate = std::max(sampleRate, 1u);
     _data.blockFrames = blockFramesFor(expectedFrames, _data.sampleRate);
     _data.hopFrames = hopFramesFor(_data.sampleRate);
+    if (detail) {
+        _detailFrames = detailFramesFor(_data.blockFrames, expectedFrames);
+        _detail.channelCount = _channels;
+        _detail.sampleRate = _data.sampleRate;
+        _detail.blockFrames = _detailFrames;
+    }
 
     const double fs = _data.sampleRate;
     _kShelf = Biquad::kShelf(fs);
@@ -339,6 +364,15 @@ void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t
                     _blockMax[ch] = std::max(_blockMax[ch], s);
                 }
                 _blockSumSq[ch] += (double)s * s;
+                if (_detailFrames) {
+                    if (_detailCount == 0) {
+                        _detailMin[ch] = _detailMax[ch] = s;
+                    } else {
+                        _detailMin[ch] = std::min(_detailMin[ch], s);
+                        _detailMax[ch] = std::max(_detailMax[ch], s);
+                    }
+                    _detailSumSq[ch] += (double)s * s;
+                }
                 _hopMs[ch] += (double)s * s;
                 _hopK[ch] += k[ch] * k[ch];
                 _hopBand[0] += lo * lo;
@@ -363,6 +397,7 @@ void TrackAnalyzer::processFrames(const Sample* samples, size_t frames, uint32_t
         if (_channels == 2) _hopLR += (double)x[0] * x[1];
         ++_counted;
         if (++_blockCount >= _data.blockFrames) flushBlock();
+        if (_detailFrames && ++_detailCount >= _detailFrames) flushDetail();
         if (++_hopCount >= _data.hopFrames) flushHop();
     }
 }
@@ -388,6 +423,23 @@ void TrackAnalyzer::flushBlock() {
         _blockSumSq[ch] = 0.0;
     }
     _blockCount = 0;
+}
+
+void TrackAnalyzer::flushDetail() {
+    if (_detailCount == 0) return;
+    for (uint32_t ch = 0; ch < _channels; ++ch) {
+        _detail.blockMin[ch].push_back(WaveformDetail::encodeSample(std::min(0.0f, _detailMin[ch])));
+        _detail.blockMax[ch].push_back(WaveformDetail::encodeSample(std::max(0.0f, _detailMax[ch])));
+        _detail.blockRms[ch].push_back(WaveformDetail::encodeRms((float)std::sqrt(_detailSumSq[ch] / _detailCount)));
+        _detailSumSq[ch] = 0.0;
+    }
+    _detailCount = 0;
+    // A track running far past its declared length: stop rather than grow
+    // without bound (the detail is optional)
+    if (_detail.blockCount() > 2 * kMaxDetailBlocks) {
+        _detailFrames = 0;
+        _detail = WaveformDetail();
+    }
 }
 
 void TrackAnalyzer::flushHop() {
@@ -420,9 +472,11 @@ WaveformData TrackAnalyzer::finish() {
         }
     }
     flushBlock();
+    if (_detailFrames) flushDetail();
     flushHop();
 
     _data.duration = (double)_counted / _data.sampleRate;
+    _detail.frames = _counted;
 
     // A short last hop would skew the gated blocks it falls into
     const size_t gatedHops = _data.hopCount() - (_lastHopPartial ? 1 : 0);
@@ -434,6 +488,37 @@ WaveformData TrackAnalyzer::finish() {
     s.clipRuns = (uint32_t)_data.clipRunFrames.size();
 
     return std::move(_data);
+}
+
+std::optional<WaveformDetail> TrackAnalyzer::takeDetail() {
+    if (!_detailFrames || !_detail.isValid()) return std::nullopt;
+    _detailFrames = 0;
+    return std::move(_detail);
+}
+
+std::optional<WaveformDetail> TrackAnalyzer::mergeDetail(std::vector<std::optional<WaveformDetail>> parts) {
+    if (parts.empty()) return std::nullopt;
+    for (const auto& p : parts) {
+        if (!p || p->blockFrames != parts[0]->blockFrames || p->channelCount != parts[0]->channelCount) {
+            return std::nullopt;
+        }
+    }
+    if (parts.size() == 1) return std::move(parts[0]);
+
+    WaveformDetail out;
+    out.channelCount = parts[0]->channelCount;
+    out.sampleRate = parts[0]->sampleRate;
+    out.blockFrames = parts[0]->blockFrames;
+    for (const auto& p : parts) {
+        for (uint32_t ch = 0; ch < out.channelCount; ++ch) {
+            out.blockMin[ch].insert(out.blockMin[ch].end(), p->blockMin[ch].begin(), p->blockMin[ch].end());
+            out.blockMax[ch].insert(out.blockMax[ch].end(), p->blockMax[ch].begin(), p->blockMax[ch].end());
+            out.blockRms[ch].insert(out.blockRms[ch].end(), p->blockRms[ch].begin(), p->blockRms[ch].end());
+        }
+        out.frames += p->frames;
+    }
+    if (!out.isValid()) return std::nullopt;
+    return out;
 }
 
 WaveformData TrackAnalyzer::merge(std::vector<WaveformData> parts) {

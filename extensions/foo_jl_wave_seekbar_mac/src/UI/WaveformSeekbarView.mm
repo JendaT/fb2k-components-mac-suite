@@ -319,6 +319,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     // The part of the track the waveform shows, and the part the masks show
     waveseek::ZoomRange _zoom;
     waveseek::ZoomRange _maskZoom;
+    bool _zoomEnabled;
 }
 
 @end
@@ -435,6 +436,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _showTimeRuler = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler);
     _showLevelScale = getConfigBool(kKeyLevelScale, kDefaultLevelScale);
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
+    _zoomEnabled = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled);
+    if (!_zoomEnabled) _zoom.reset();
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
 }
@@ -543,6 +546,17 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     [self invalidateMasks];
 }
 
+- (void)setWaveformDetail:(const WaveformDetail *)waveformDetail {
+    if (waveformDetail == _waveformDetail) return;
+    _waveformDetail = waveformDetail;
+    [self invalidateMasks];
+}
+
+// The fine detail, when it belongs to the waveform shown
+- (const WaveformDetail *)usableDetail {
+    return _waveformDetail && _waveformData && _waveformDetail->matches(*_waveformData) ? _waveformDetail : nullptr;
+}
+
 - (double)zoomFactor {
     return _zoom.zoom;
 }
@@ -550,7 +564,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (BOOL)buildMasksWidth:(size_t)width height:(size_t)height {
     [self invalidateMasks];
     _maskZoom = _zoom;
-    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width, _maskZoom.start, _maskZoom.end());
+    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width, _maskZoom.start, _maskZoom.end(),
+                                                        [self usableDetail]);
     if (cols.count != width) return NO;
     _readout = cols;
     const CGFloat scale = [self backingScale];
@@ -658,7 +673,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (BOOL)buildClassicMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
     const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets,
-                                                                 _maskZoom.start, _maskZoom.end());
+                                                                 _maskZoom.start, _maskZoom.end(), [self usableDetail]);
     if (buckets.count != kClassicBuckets) return NO;
     const bool stereo = buckets.channels == 2 && !_mono;
     const bool split = stereo && _split;
@@ -1830,15 +1845,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 #pragma mark - Zoom
 
 - (BOOL)canZoom {
-    return self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
+    return _zoomEnabled && self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
 }
 
-// About the pointer, within the zoom the track's analysis supports
+// About the pointer, within the zoom the track's analysis supports: its
+// blocks, or the fine detail's when there is one
 - (void)zoomBy:(double)factor event:(NSEvent *)event {
     const CGRect wave = [self waveformRect];
     const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
     const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
-    _zoom.zoomBy(factor, across, waveseek::maxZoomFor(self.waveformData->blockCount(), wave.size.width));
+    const WaveformDetail *detail = [self usableDetail];
+    const size_t blocks = detail ? detail->blockCount() : self.waveformData->blockCount();
+    _zoom.zoomBy(factor, across, waveseek::maxZoomFor(blocks, wave.size.width));
     [self setNeedsDisplay:YES];
 }
 

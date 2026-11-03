@@ -48,7 +48,7 @@ with `CHECK` / `CHECK_EQ` / `CHECK_FLOAT_EQ` and `TEST_MAIN_END()`; both work):
 
 | Module | Covers |
 |--------|--------|
-| `TrackAnalyzer` | integrated loudness and gating, LRA, true peak, clip runs, Lo/Mid/Hi bands, correlation, column aggregation (whole track and a zoomed part, which must equal the matching slice) and mixdown, segments joining into one sequential pass (including clip runs at boundaries), the v2 cache round trip and rejection of truncated/corrupt blobs |
+| `TrackAnalyzer` | integrated loudness and gating, LRA, true peak, clip runs, Lo/Mid/Hi bands, correlation, column aggregation (whole track and a zoomed part, which must equal the matching slice) and mixdown, fine detail (block sizes, values against the samples, nesting in the normal blocks, segment joins, cache round trip, a single-sample transient landing in its own column only with detail), segments joining into one sequential pass (including clip runs at boundaries), the v2 cache round trip and rejection of truncated/corrupt blobs |
 | `LayeredShape` | dBFS fractions, peak and loudness-body heights, tint positions |
 | `SimpleShape` | linear lanes, asymmetric min/max, RMS core, one-lane mixdown |
 | `ThemeTokens` | OKLCH conversion and gamut mapping, derived deep / hot / guide colours, the body tint ramp |

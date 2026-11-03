@@ -93,8 +93,10 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
         m_pendingTrack = track;
     }
 
-    // Scan asynchronously
-    m_scanner.scanAsync(track, [this, track, callback](std::optional<WaveformData> result, const char* error) {
+    // Scan asynchronously; with the zoom_detail option the same pass gathers the detail
+    m_scanner.scanAsync(track, detailEnabled(), [this, track, callback](std::optional<WaveformData> result,
+                                                                       std::shared_ptr<const WaveformDetail> detail,
+                                                                       const char* error) {
         // Clear the pending slot if this result is the one it was waiting for.
         // The result is delivered either way: listeners filter by track themselves,
         // and dropping it here used to strand the UI in its "analyzing" state
@@ -109,6 +111,13 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
         if (result) {
             // Store in cache
             m_cache.storeWaveform(track, *result);
+
+            // The detail first, so a listener that asks for it on the
+            // waveform already holds it instead of starting a rescan
+            if (detail) {
+                notifyDetail(track, detail);
+                storeDetail(track, detail);
+            }
 
             // Invoke callback
             if (callback) {
@@ -131,6 +140,91 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
             notifyListeners(track, nullptr);
         }
     });
+}
+
+bool WaveformService::detailEnabled() {
+    using namespace waveform_config;
+    return getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled) && getConfigBool(kKeyZoomDetail, kDefaultZoomDetail);
+}
+
+void WaveformService::requestDetail(const metadb_handle_ptr& track) {
+    if (!track.is_valid() || !detailEnabled()) return;
+
+    // The blob is up to a few MB: load it off the main thread
+    metadb_handle_ptr handle = track;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        std::optional<WaveformDetail> cached = m_cache.getDetail(handle);
+        std::shared_ptr<const WaveformDetail> detail =
+            cached ? std::make_shared<const WaveformDetail>(std::move(*cached)) : nullptr;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (detail) {
+                notifyDetail(handle, detail);
+                return;
+            }
+
+            // Rescan only while nothing else is scanning: a track that
+            // starts playing takes over (its request cancels this scan)
+            {
+                std::lock_guard<std::mutex> lock(m_pendingMutex);
+                if (m_scanner.isScanning() || m_pendingTrack.is_valid()) return;
+                m_pendingTrack = handle;
+            }
+            m_scanner.scanAsync(handle, true, [this, handle](std::optional<WaveformData> result,
+                                                             std::shared_ptr<const WaveformDetail> scanned,
+                                                             const char*) {
+                {
+                    std::lock_guard<std::mutex> lock(m_pendingMutex);
+                    if (m_pendingTrack.is_valid() && m_pendingTrack->get_location() == handle->get_location()) {
+                        m_pendingTrack.release();
+                    }
+                }
+                // The waveform is cached and shown already; only the detail is new
+                if (result && scanned) {
+                    notifyDetail(handle, scanned);
+                    storeDetail(handle, scanned);
+                }
+            });
+        });
+    });
+}
+
+void WaveformService::storeDetail(const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail) {
+    using namespace waveform_config;
+    if (!detail) return;
+    // Compressing a few MB and writing it takes 30-150 ms: off the main thread
+    const int maxSizeMB = static_cast<int>(getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB));
+    metadb_handle_ptr handle = track;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        m_cache.storeDetail(handle, *detail);
+        if (maxSizeMB > 0) m_cache.enforceSizeLimit(static_cast<size_t>(maxSizeMB));
+    });
+}
+
+ListenerId WaveformService::addDetailListener(DetailListener listener) {
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    ListenerId id = m_nextListenerId++;
+    m_detailListeners.push_back({id, std::move(listener)});
+    return id;
+}
+
+void WaveformService::removeDetailListener(ListenerId id) {
+    if (id == InvalidListenerId) return;
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    m_detailListeners.erase(
+        std::remove_if(m_detailListeners.begin(), m_detailListeners.end(),
+            [id](const DetailListenerEntry& entry) { return entry.id == id; }),
+        m_detailListeners.end());
+}
+
+void WaveformService::notifyDetail(const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail) {
+    std::vector<DetailListenerEntry> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_listenerMutex);
+        snapshot = m_detailListeners;
+    }
+    for (const auto& entry : snapshot) {
+        if (entry.callback) entry.callback(track, detail);
+    }
 }
 
 bool WaveformService::isScanning(const metadb_handle_ptr& track) {
@@ -184,6 +278,7 @@ void WaveformService::removeListener(ListenerId id) {
 void WaveformService::removeAllListeners() {
     std::lock_guard<std::mutex> lock(m_listenerMutex);
     m_listeners.clear();
+    m_detailListeners.clear();
 }
 
 void WaveformService::notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform) {
@@ -224,5 +319,5 @@ void WaveformService::clearCache() {
 
 WaveformService::CacheStats WaveformService::getCacheStats() const {
     auto raw = m_cache.getStats();
-    return {raw.entryCount, raw.totalSizeBytes, raw.oldestAccessDays};
+    return {raw.entryCount, raw.totalSizeBytes, raw.detailCount, raw.oldestAccessDays};
 }

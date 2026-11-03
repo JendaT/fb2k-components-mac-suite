@@ -45,11 +45,11 @@ void WaveformScanner::cancel() {
     m_scanning.store(false);
 }
 
-void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCallback callback) {
+void WaveformScanner::scanAsync(const metadb_handle_ptr& track, bool withDetail, WaveformScanCallback callback) {
     if (!track.is_valid()) {
         if (callback) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                callback(std::nullopt, "Invalid track handle");
+                callback(std::nullopt, nullptr, "Invalid track handle");
             });
         }
         return;
@@ -74,6 +74,7 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
     // Dispatch to background queue
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         std::optional<WaveformData> result;
+        std::shared_ptr<const WaveformDetail> detail;
         const char* error = nullptr;
         bool aborted = false;
 
@@ -86,9 +87,12 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
                 metadb::get()->handle_create(handle, make_playable_location(path.c_str(), subsong));
 
                 if (handle.is_valid()) {
-                    result = performScan(handle, *abort);
+                    std::optional<WaveformDetail> gathered;
+                    result = performScan(handle, *abort, withDetail ? &gathered : nullptr);
                     if (!result) {
                         error = "Scan failed";
+                    } else if (gathered) {
+                        detail = std::make_shared<const WaveformDetail>(std::move(*gathered));
                     }
                 } else {
                     error = "Could not create track handle";
@@ -121,7 +125,7 @@ void WaveformScanner::scanAsync(const metadb_handle_ptr& track, WaveformScanCall
         // Callback on main thread only if this generation is still current
         if (callback && m_generation.load() == gen) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                callback(result, error);
+                callback(result, detail, error);
             });
         }
     });
@@ -163,10 +167,11 @@ void loudnessWeights(const audio_chunk& chunk, std::vector<float>& weights) {
 
 // One segment through its own decoder: the pre-roll that settles the
 // filters, the segment, then the few frames that finish clip runs crossing
-// its end
+// its end. `detail` non-null gathers the segment's fine detail into it.
 WaveformData analyseSegment(input_helper& decoder, const analysis::Segment& segment, uint32_t channels,
-                            uint32_t sampleRate, uint64_t expectedFrames, abort_callback& abort) {
-    analysis::TrackAnalyzer analyzer(sampleRate, channels, expectedFrames);
+                            uint32_t sampleRate, uint64_t expectedFrames, abort_callback& abort,
+                            std::optional<WaveformDetail>* detail) {
+    analysis::TrackAnalyzer analyzer(sampleRate, channels, expectedFrames, detail != nullptr);
     analyzer.setRange(segment.start, segment.end);
 
     const uint64_t preroll = static_cast<uint64_t>(analysis::kSegmentPrerollSeconds * sampleRate);
@@ -191,12 +196,15 @@ WaveformData analyseSegment(input_helper& decoder, const analysis::Segment& segm
         loudnessWeights(chunk, weights);
         analyzer.process(chunk.get_data(), frames, chunk.get_channel_count(), weights.data());
     }
-    return analyzer.finish();
+    WaveformData data = analyzer.finish();
+    if (detail) *detail = analyzer.takeDetail();
+    return data;
 }
 
 }  // namespace
 
-std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr& track, abort_callback& abort) {
+std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr& track, abort_callback& abort,
+                                                         std::optional<WaveformDetail>* detail) {
     if (!track.is_valid()) {
         return std::nullopt;
     }
@@ -239,6 +247,7 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
         if (segments.size() > 1) {
             // Workers take segments from a shared counter, each reusing its own decoder
             std::vector<WaveformData> parts(segments.size());
+            std::vector<std::optional<WaveformDetail>> detailParts(segments.size());
             std::atomic<size_t> nextSegment{0};
             std::atomic<bool> failed{false};
             const uint32_t drawnChannels = std::min(channels, 2u);
@@ -250,7 +259,7 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
                     segmentDecoder.open(nullptr, track, input_flag_no_looping, abort);
                     for (size_t i; !failed && (i = nextSegment++) < segments.size();) {
                         parts[i] = analyseSegment(segmentDecoder, segments[i], drawnChannels, sampleRate,
-                                                  expectedFrames, abort);
+                                                  expectedFrames, abort, detail ? &detailParts[i] : nullptr);
                     }
                 } catch (...) {
                     failed = true;
@@ -260,7 +269,10 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
             abort.check();
             if (!failed) {
                 WaveformData joined = analysis::TrackAnalyzer::merge(std::move(parts));
-                if (joined.isValid()) result = std::move(joined);
+                if (joined.isValid()) {
+                    result = std::move(joined);
+                    if (detail) *detail = analysis::TrackAnalyzer::mergeDetail(std::move(detailParts));
+                }
             }
         }
 
@@ -276,7 +288,8 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
                 if (!analyzer) {
                     if (chunk.get_sample_rate() > 0) sampleRate = chunk.get_sample_rate();
                     if (chunk.get_channel_count() > 0) channels = chunk.get_channel_count();
-                    analyzer.emplace(sampleRate, std::min(channels, 2u), declaredFrames(duration, sampleRate));
+                    analyzer.emplace(sampleRate, std::min(channels, 2u), declaredFrames(duration, sampleRate),
+                                     detail != nullptr);
                 }
                 loudnessWeights(chunk, weights);
                 analyzer->process(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count(),
@@ -284,9 +297,11 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
             }
             if (!analyzer) return std::nullopt;
             result = analyzer->finish();
+            if (detail) *detail = analyzer->takeDetail();
         }
         if (!result->isValid()) return std::nullopt;
         WaveformData waveform = std::move(*result);
+        if (detail && *detail && !(*detail)->matches(waveform)) detail->reset();
 
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
         const LoudnessSummary& sum = waveform.summary;
@@ -297,6 +312,10 @@ std::optional<WaveformData> WaveformScanner::performScan(const metadb_handle_ptr
             << " LU, TP " << pfc::format_float(sum.truePeak, 0, 1)
             << " dBTP, PLR " << pfc::format_float(sum.plr(), 0, 1)
             << ", " << sum.clipRuns << " clip runs";
+        if (detail && *detail) {
+            FB2K_console_formatter() << "[WaveSeek] Fine detail: " << (*detail)->blockCount() << " blocks of "
+                << (*detail)->blockFrames << " frames";
+        }
         return waveform;
 
     } catch (const exception_aborted&) {

@@ -74,6 +74,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_timeRulerCheckbox;
     NSButton *_levelScaleCheckbox;
 
+    // Zoom
+    NSButton *_zoomCheckbox;
+    NSButton *_zoomDetailCheckbox;
+
     // Cache
     NSTextField *_cacheSizeField;
     NSTextField *_retentionField;
@@ -210,6 +214,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const CGFloat rightX = kMargin + kColumnWidth + kColumnGap;
     CGFloat left = [self buildAppearanceAtX:kMargin y:y];
     left = [self buildScalesAtX:kMargin y:left + kCardGap];
+    left = [self buildZoomAtX:kMargin y:left + kCardGap];
     CGFloat right = [self buildOverlaysAtX:rightX y:y];
     right = [self buildPlayedAtX:rightX y:right + kCardGap];
     y = std::max(left, right) + kCardGap;
@@ -372,6 +377,23 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
+- (CGFloat)buildZoomAtX:(CGFloat)cardX y:(CGFloat)top {
+    const CGFloat x = cardX + kCardPad, w = kColumnWidth - 2 * kCardPad;
+    CGFloat y = [self addCardTitle:@"Zoom" x:x y:top + kCardPad];
+
+    _zoomCheckbox = [self addCheckbox:@"Zoom with pinch and scroll"
+                                 hint:@"Over the waveform: pinch or scroll vertically to zoom, "
+                                       "horizontally to pan."
+                                    x:x y:&y width:w];
+    _zoomDetailCheckbox = [self addCheckbox:@"Fine detail for deep zoom"
+                                       hint:@"Keeps 7-8x finer detail per track (more for long mixes), so zoom "
+                                             "goes that much deeper. About 1 MB of cache per track, up to 5 MB "
+                                             "for long mixes; tracks analysed before are analysed again when "
+                                             "played (streams download once more)."
+                                          x:x + kHintIndent y:&y width:w - kHintIndent];
+    return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
+}
+
 // Dimming of the part already played and the effect at its edge, as before
 // the redesign
 - (CGFloat)buildPlayedAtX:(CGFloat)cardX y:(CGFloat)top {
@@ -508,6 +530,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     // Scales
     _timeRulerCheckbox.state = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler) ? NSControlStateValueOn : NSControlStateValueOff;
     _levelScaleCheckbox.state = getConfigBool(kKeyLevelScale, kDefaultLevelScale) ? NSControlStateValueOn : NSControlStateValueOff;
+    _zoomCheckbox.state = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
+    _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
 
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
@@ -548,8 +573,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         sizeStr = [NSString stringWithFormat:@"%.1f MB", stats.totalSizeBytes / (1024.0 * 1024.0)];
     }
 
-    _cacheStatusLabel.stringValue = [NSString stringWithFormat:@"Cache: %@, %lu tracks",
-                                     sizeStr, (unsigned long)stats.entryCount];
+    NSString *detail = stats.detailCount > 0
+        ? [NSString stringWithFormat:@" (%lu with fine detail)", (unsigned long)stats.detailCount] : @"";
+    _cacheStatusLabel.stringValue = [NSString stringWithFormat:@"Cache: %@, %lu tracks%@",
+                                     sizeStr, (unsigned long)stats.entryCount, detail];
 }
 
 #pragma mark - Actions
@@ -655,6 +682,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyTimeRuler, _timeRulerCheckbox.state == NSControlStateValueOn);
     } else if (sender == _levelScaleCheckbox) {
         setConfigBool(kKeyLevelScale, _levelScaleCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _zoomCheckbox) {
+        setConfigBool(kKeyZoomEnabled, _zoomCheckbox.state == NSControlStateValueOn);
+        _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    } else if (sender == _zoomDetailCheckbox) {
+        setConfigBool(kKeyZoomDetail, _zoomDetailCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }

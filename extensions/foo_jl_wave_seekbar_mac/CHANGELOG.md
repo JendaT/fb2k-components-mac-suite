@@ -7,6 +7,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 ### Added
 - **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms the waveform about the pointer; horizontal scroll (or Shift + wheel) pans. A Reset zoom button appears bottom right while zoomed; a new track starts unzoomed.
 
+- **Zoom settings**: Zoom can be switched off; "Fine detail for deep zoom" (off by default) keeps 7-8x finer detail per track, more for long mixes, and zooms that much deeper (about 1 MB of cache per track).
+
 ### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
 
@@ -17,6 +19,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 - `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.
 - Mask shapes (`MaskPaths.h`) filled in runs of 32 columns, edges and Classic strokes stroked in runs; unit-tested against the exact pixel coverage.
 - A request for the track already being scanned no longer restarts the scan (second seekbar, layout change, watchdog).
+- Fine detail: blocks of about 128 frames (a divisor of the normal block, at most 2^19 per track) gathered in the same pass, segments included; stored in their own cache table (the waveform format stays version 3), evicted first over the size limit; columns narrower than a normal block take their envelope from them. Unit-tested: block values, nesting, segment joins, round trip, a single-sample transient's column.
 
 ## [2.0.0] - 2026-10-30
 
