@@ -329,6 +329,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     bool _phraseMarkers;
     int _phraseLength;
     bool _phraseBreakColours;
+    bool _phraseFollowGrid;     // markers and beat-synced effects follow a new grid
     std::vector<waveseek::PhraseMarker> _phrases;
     const waveseek::PhraseGrid *_phrasesFor;
     int _phraseBeatsDrawn;
@@ -454,6 +455,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _phraseMarkers = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers);
     _phraseLength = getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32;
     _phraseBreakColours = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours);
+    _phraseFollowGrid = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid);
     _phraseBeatsDrawn = 0;   // rebuild the markers
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
@@ -1147,10 +1149,19 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextRestoreGState(context);
 }
 
-// The animation rate: with sync on, the beat grid's tempo when there is one,
-// else the BPM tag's; otherwise the effect's own default
+// The grid at the playback position: following a new grid when the
+// markers do
+- (waveseek::GridAt)gridAtPlayback {
+    return waveseek::gridAt(*_phraseGrid, self.playbackPosition * self.trackDuration, _phraseFollowGrid);
+}
+
+// The animation rate: with sync on, the beat grid's tempo when there is one
+// (the section playing), else the BPM tag's; otherwise the effect's own default
 - (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
-    if (self.bpmSync && _phraseGrid && _phraseGrid->summary.bpm > 0.0) return _phraseGrid->summary.bpm / 60.0;
+    if (self.bpmSync && _phraseGrid && _phraseGrid->summary.bpm > 0.0) {
+        const waveseek::GridAt grid = [self gridAtPlayback];
+        if (grid.bpm > 0.0) return grid.bpm / 60.0;
+    }
     return waveseek::animationFrequency(self.bpmSync, self.trackBpm, defaultHz);
 }
 
@@ -1159,8 +1170,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 // a sine at the beat rate peaks exactly on every beat. Otherwise wall time.
 - (double)animationTime {
     if (self.bpmSync && self.isPlaying && _phraseGrid && _phraseGrid->summary.bpm > 0.0 && self.trackDuration > 0.0) {
-        return waveseek::beatSyncedTime(self.playbackPosition * self.trackDuration,
-                                        _phraseGrid->summary.anchor_seconds, _phraseGrid->summary.bpm);
+        const waveseek::GridAt grid = [self gridAtPlayback];
+        if (grid.bpm > 0.0) {
+            return waveseek::beatSyncedTime(self.playbackPosition * self.trackDuration, grid.anchorSeconds, grid.bpm);
+        }
     }
     return CFAbsoluteTimeGetCurrent();
 }
@@ -1444,20 +1457,21 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 #pragma mark - Phrase Markers
 
-// A hairline at every phrase start of the master grid, coloured by how well
-// the beats sit on it there: quiet when locked, a warning tick when
-// drifting, an alert tick when broken, dashed and dim without pulse, and a
-// triangle on the top edge where a new grid begins. Thinned to keep them
+// A hairline at every phrase start, coloured by how well the beats sit on
+// the grid there: quiet when locked, a warning tick when drifting, an alert
+// tick when broken, dashed and dim without pulse, and a triangle on the top
+// edge where a new grid begins. On the master grid, or following each new
+// grid (its own tempo and phrase count). Thinned to keep them
 // kMinPhraseSpacing apart; neutral when colours are off or the tempo is
 // uncertain.
 - (void)drawPhraseMarkersInContext:(CGContextRef)context rect:(CGRect)rect {
     _phraseHits.clear();
     if (!_phraseMarkers || !_phraseGrid || !(self.trackDuration > 0.0)) return;
     const jl_beatgrid_summary &grid = _phraseGrid->summary;
-    const int beats = waveseek::thinnedPhraseBeats(_phraseLength, grid.bpm, self.trackDuration, rect.size.width,
-                                                   _zoom.zoom);
+    const int beats = waveseek::thinnedPhraseBeats(_phraseLength, waveseek::densestBpm(*_phraseGrid, _phraseFollowGrid),
+                                                   self.trackDuration, rect.size.width, _zoom.zoom);
     if (beats != _phraseBeatsDrawn || _phrasesFor != _phraseGrid) {
-        _phrases = waveseek::phraseMarkers(*_phraseGrid, beats);
+        _phrases = waveseek::phraseMarkers(*_phraseGrid, beats, _phraseFollowGrid);
         _phraseBeatsDrawn = beats;
         _phrasesFor = _phraseGrid;
     }
@@ -1534,6 +1548,14 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     const waveseek::PhraseMarker &m = _phrases[nearest->second];
     const bool neutral = !_phraseBreakColours || _phraseGrid->summary.tempo_strength < jl_beatgrid_uncertain_strength;
     if (m.state == jl_phrase_no_pulse && !neutral) return [self text:@"No pulse" color:kOverlayLabel bold:NO];
+    if (m.phrase < 0) {   // where a section's grid begins
+        NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
+        [line appendAttributedString:[self text:@"New grid · " color:kOverlayLabel bold:NO]];
+        [line appendAttributedString:[self text:str(overlay::formatNumber(m.bpm, 2))
+                                          color:neutral ? kOverlayValue : kOverlayWarning bold:NO]];
+        [line appendAttributedString:[self text:@" BPM" color:kOverlayLabel bold:NO]];
+        return line;
+    }
     NSString *where = [NSString stringWithFormat:@"Phrase %ld · bar %ld · ", m.phrase + 1, m.startBar + 1];
     NSString *what = m.state == jl_phrase_reanchor ? @"new grid"
                    : [NSString stringWithFormat:@"%@ ms", str(overlay::formatNumber(m.offsetMs, 0, true))];
@@ -1653,6 +1675,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         add(@"  Grid ", kOverlayLabel);
         add(str(overlay::formatNumber(_phraseGrid->summary.bpm, 2)), kOverlayValue);
         add(@" BPM · ", kOverlayLabel);
+        if (_phraseFollowGrid && _phraseGrid->hasSections()) {
+            add([NSString stringWithFormat:@"%zu", _phraseGrid->sections.size()], kOverlayValue);
+            add(@" grids · ", kOverlayLabel);
+        }
         add([NSString stringWithFormat:@"%ld%%", std::lround(waveseek::lockedPhraseShare(_phrases) * 100.0)], kOverlayValue);
         add(@" locked", kOverlayLabel);
     }

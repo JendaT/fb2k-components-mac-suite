@@ -141,6 +141,13 @@ public:
             if (!_grids->get(_currentTrack, grid->summary, regions, bars)) return;
             grid->regions.assign(regions.get_ptr(), regions.get_ptr() + regions.get_size());
             grid->bars.assign(bars.get_ptr(), bars.get_ptr() + bars.get_size());
+            // Section by section, for markers that follow a new grid
+            pfc::array_t<jl_grid_section> sections;
+            pfc::array_t<jl_bar_stat> sectionBars;
+            if (_grids->get_sections(_currentTrack, sections, sectionBars)) {
+                grid->sections.assign(sections.get_ptr(), sections.get_ptr() + sections.get_size());
+                grid->sectionBars.assign(sectionBars.get_ptr(), sectionBars.get_ptr() + sectionBars.get_size());
+            }
             // The view takes the new grid before the old one is released
             self.waveformView.phraseGrid = grid.get();
             _phraseGrid = grid;

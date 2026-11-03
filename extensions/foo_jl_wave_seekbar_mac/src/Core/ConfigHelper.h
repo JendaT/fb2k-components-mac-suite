@@ -76,6 +76,7 @@ static const char* const kKeyZoomDetail = "zoom_detail";            // fine deta
 static const char* const kKeyPhraseMarkers = "phrase_markers";      // beat grid phrase markers (BPM Analyzer)
 static const char* const kKeyPhraseLength = "phrase_length";        // 16 or 32 beats
 static const char* const kKeyPhraseBreakColours = "phrase_break_colours";  // off: every marker in the guide colour
+static const char* const kKeyPhraseFollowGrid = "phrase_follow_grid";      // markers follow a new grid (tempo change, edit)
 static const char* const kKeyGridMode = "grid_mode";                // 0 master grid (1 follow regions: later)
 static const char* const kKeyCacheSizeMB = "cache_size_mb";
 static const char* const kKeyCacheRetentionDays = "cache_retention_days";

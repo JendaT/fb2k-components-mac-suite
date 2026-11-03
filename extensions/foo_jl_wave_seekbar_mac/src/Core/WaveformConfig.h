@@ -157,6 +157,7 @@ constexpr bool kDefaultZoomDetail = false;      // fine detail: more disk per tr
 constexpr bool kDefaultPhraseMarkers = false;   // off until validated against a library
 constexpr int kDefaultPhraseLength = 32;
 constexpr bool kDefaultPhraseBreakColours = true;
+constexpr bool kDefaultPhraseFollowGrid = true;
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

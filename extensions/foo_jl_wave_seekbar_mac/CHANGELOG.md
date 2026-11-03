@@ -11,6 +11,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Phrase markers**: With BPM Analyzer installed, a line every 16 or 32 beats coloured by how well the music stays on one beat grid (drifting, broken, no pulse, new grid); readout line near a marker, grid BPM and locked share in the summary. Off by default.
 
+- **Follow tempo changes**: Where a new grid begins (a tempo change, an edit), phrase markers and beat-synced effects move to it and count phrases from there; can be switched off.
+
 ### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
 

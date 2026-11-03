@@ -77,6 +77,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_phraseMarkersCheckbox;
     NSPopUpButton *_phraseLengthPopup;
     NSButton *_phraseColoursCheckbox;
+    NSButton *_phraseFollowCheckbox;
     BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
     // Scales
@@ -409,6 +410,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _phraseColoursCheckbox = [self addCheckbox:@"Colour grid breaks"
                                           hint:@"Off draws every marker in the guide colour."
                                              x:x + kHintIndent y:&y width:w - kHintIndent];
+    _phraseFollowCheckbox = [self addCheckbox:@"Follow tempo changes"
+                                         hint:@"Where a new grid begins (a tempo change, an edit), the "
+                                               "markers move to it and count phrases from there. Off "
+                                               "keeps them on the track's main grid."
+                                            x:x + kHintIndent y:&y width:w - kHintIndent];
     if (!_haveBeatGrids) {
         y -= kRowGap - 2;
         [self addHint:@"Phrase markers need BPM Analyzer, a free component from the same suite."
@@ -593,6 +599,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _phraseMarkersCheckbox.state = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
     [_phraseLengthPopup selectItemWithTag:getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32];
     _phraseColoursCheckbox.state = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours) ? NSControlStateValueOn : NSControlStateValueOff;
+    _phraseFollowCheckbox.state = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid) ? NSControlStateValueOn : NSControlStateValueOff;
     [self updatePhraseControls];
     _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
     _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
@@ -755,6 +762,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         [self updatePhraseControls];
     } else if (sender == _phraseColoursCheckbox) {
         setConfigBool(kKeyPhraseBreakColours, _phraseColoursCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _phraseFollowCheckbox) {
+        setConfigBool(kKeyPhraseFollowGrid, _phraseFollowCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }
@@ -813,6 +822,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const BOOL on = _haveBeatGrids && _phraseMarkersCheckbox.state == NSControlStateValueOn;
     _phraseLengthPopup.enabled = on;
     _phraseColoursCheckbox.enabled = on;
+    _phraseFollowCheckbox.enabled = on;
 }
 
 - (void)phraseLengthChanged:(id)sender {
