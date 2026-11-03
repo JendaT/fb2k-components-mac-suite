@@ -2,7 +2,7 @@
 
 All notable changes to BPM Analyzer will be documented in this file.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-03
 
 Initial release.
 

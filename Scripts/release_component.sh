@@ -13,7 +13,9 @@
 #   2. Build the component (Release configuration)
 #   3. Package as .fb2k-component
 #   4. Create a git tag (e.g., simplaylist-v1.0.0)
-#   5. Create a GitHub release with the component attached
+#   5. Create a GitHub release with the component and its SHA256SUMS attached
+#      (the in-app installers in shared/jl_dependency verify the download
+#      against it)
 #
 
 set -e
@@ -343,6 +345,11 @@ fi
 echo ""
 echo "Package created: $COMPONENT_FILE ($(du -h "$PROJECT_ROOT/$COMPONENT_FILE" | cut -f1))"
 
+# The package's SHA-256 in shasum's format, uploaded next to it
+SUMS_FILE="$PROJECT_ROOT/SHA256SUMS"
+(cd "$PROJECT_ROOT" && shasum -a 256 "$COMPONENT_FILE" > "$SUMS_FILE")
+echo "Checksum: $(cat "$SUMS_FILE")"
+
 # Create tag
 echo ""
 echo "Creating tag: $TAG_NAME"
@@ -407,10 +414,11 @@ gh release create "$TAG_NAME" \
     --title "$RELEASE_TITLE" \
     --notes "$RELEASE_NOTES" \
     $DRAFT \
-    "$PROJECT_ROOT/$COMPONENT_FILE"
+    "$PROJECT_ROOT/$COMPONENT_FILE" \
+    "$SUMS_FILE"
 
 # Clean up package file
-rm -f "$PROJECT_ROOT/$COMPONENT_FILE"
+rm -f "$PROJECT_ROOT/$COMPONENT_FILE" "$SUMS_FILE"
 
 # Update README.md with new version (skip for draft releases)
 if [ -z "$DRAFT" ]; then
