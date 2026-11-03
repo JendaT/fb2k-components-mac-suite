@@ -43,7 +43,7 @@ inline int thinnedPhraseBeats(int phraseBeats, double bpm, double durationSecond
 
 struct PhraseMarker {
     long phrase = 0;                // 0-based phrase index from the first phrase start
-    long startBar = 0;              // 0-based bar of the master grid
+    long startBar = 0;              // 0-based bar of the master grid (bars start on its bar phase)
     double seconds = 0.0;           // where the phrase starts
     jl_phrase_state state = jl_phrase_locked;
     int offsetMs = 0;               // median signed offset of its bars
@@ -65,6 +65,7 @@ inline std::vector<PhraseMarker> phraseMarkers(const PhraseGrid &grid, int phras
     const int barsPerPhrase = std::max(1, phraseBeats / 4);
     if (!(bpm > 0.0) || grid.bars.empty()) return out;
     const double barSeconds = 4 * 60.0 / bpm;
+    const double barsFrom = jl_beat_time(grid.summary, jl_first_bar_beat(grid.summary));
     const long bars = static_cast<long>(grid.bars.size());
     long phrase = 0;
     for (long start = firstPhraseBar(grid.summary, barsPerPhrase); start < bars; start += barsPerPhrase, ++phrase) {
@@ -72,7 +73,7 @@ inline std::vector<PhraseMarker> phraseMarkers(const PhraseGrid &grid, int phras
         PhraseMarker m;
         m.phrase = phrase;
         m.startBar = start;
-        m.seconds = grid.summary.anchor_seconds + static_cast<double>(start) * barSeconds;
+        m.seconds = barsFrom + static_cast<double>(start) * barSeconds;
         m.state = jl_classify_phrase(grid.bars.data() + start, static_cast<size_t>(count));
 
         std::vector<int> offsets;
@@ -93,7 +94,7 @@ inline std::vector<PhraseMarker> phraseMarkers(const PhraseGrid &grid, int phras
             }
             for (long b = start; std::isnan(m.reanchorSeconds) && b < start + count; ++b) {
                 if (grid.bars[static_cast<size_t>(b)].flags & jl_bar_region_start) {
-                    m.reanchorSeconds = grid.summary.anchor_seconds + static_cast<double>(b) * barSeconds;
+                    m.reanchorSeconds = barsFrom + static_cast<double>(b) * barSeconds;
                 }
             }
         }

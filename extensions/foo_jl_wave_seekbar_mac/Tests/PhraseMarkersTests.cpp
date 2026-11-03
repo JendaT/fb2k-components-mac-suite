@@ -81,6 +81,11 @@ void testPhrasePhase() {
     CHECK(phraseMarkers(g, 16)[0].startBar == 2, "modulo the shorter phrase");
     g.summary.phrase_confidence = 0.1f;
     CHECK(phraseMarkers(g, 32)[0].startBar == 0, "an unsure phase is ignored");
+
+    // Bars start on the bar phase: bar 0 on beat 2
+    g.summary.bar_phase = 2;
+    CHECK_NEAR(phraseMarkers(g, 32)[0].seconds, 0.1 + 2 * 60.0 / 128.0, 1e-9, "the first phrase on beat 2");
+    CHECK_NEAR(phraseMarkers(g, 32)[1].seconds, 0.1 + (2 + 32) * 60.0 / 128.0, 1e-9, "the next 32 beats later");
 }
 
 void testThinning() {
