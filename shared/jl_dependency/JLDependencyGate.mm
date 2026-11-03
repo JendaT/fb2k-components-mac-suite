@@ -154,6 +154,10 @@ NSString *userComponentsFolder() {
         JLDependencyManager *me = weakSelf;
         if (!me) return;
         me->_working = NO;
+        if (!release && !error) {   // cancelled
+            [me refresh];
+            return;
+        }
         if (!release) {
             me->_failedMessage = error ?: @"The release could not be looked up.";
             [me refresh];
@@ -181,7 +185,9 @@ NSString *userComponentsFolder() {
     void (^answer)(NSModalResponse) = ^(NSModalResponse response) {
         if (response == NSAlertFirstButtonReturn) proceed();
     };
-    if (window) [alert beginSheetModalForWindow:window completionHandler:answer];
+    // The lookup took a while: the page's window may have closed since
+    NSWindow *host = window.isVisible ? window : NSApp.keyWindow;
+    if (host) [alert beginSheetModalForWindow:host completionHandler:answer];
     else answer([alert runModal]);
 }
 
@@ -239,18 +245,21 @@ NSString *userComponentsFolder() {
 #pragma mark - Restart and resume
 
 // foobar2000's own restart command where the host has one; else a detached
-// shell that waits for this process to end and opens the app again
+// shell that waits (two minutes at most) for this process to end and opens
+// the app again. The app's path is the shell's $0, never part of the script.
 - (void)restartFoobar {
     if (standard_commands::main_restart()) return;
     NSString *app = [NSBundle mainBundle].bundlePath;
-    const std::string script = "while /bin/kill -0 " + std::to_string(getpid()) +
-                               " 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"$0\"";
+    const std::string script = "i=0; while /bin/kill -0 " + std::to_string(getpid()) +
+                               " 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && exit 0; /bin/sleep 0.2; done; "
+                               "/usr/bin/open \"$0\"";
     const std::string appPath = utf8(app);
     char *argv[] = { const_cast<char *>("/bin/sh"), const_cast<char *>("-c"), const_cast<char *>(script.c_str()),
                      const_cast<char *>(appPath.c_str()), nullptr };
     posix_spawnattr_t attr;
     posix_spawnattr_init(&attr);
-    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+    // Its own session, and none of this process's open files
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT);
     pid_t child = 0;
     const int spawned = posix_spawn(&child, "/bin/sh", nullptr, &attr, argv, nullptr);
     posix_spawnattr_destroy(&attr);
@@ -266,17 +275,22 @@ NSString *userComponentsFolder() {
     ResumeNote note;
     note.component = utf8(_descriptor.component);
     note.pageGuid = utf8(_preferencesPageGUID);
+    note.dependent = utf8(_descriptor.dependentName);
     note.version = utf8(version);
     note.timestamp = static_cast<int64_t>(std::time(nullptr));
     fb2k::configStore::get()->setConfigString(kResumeKey, encodeResume(note).c_str());
 }
 
 - (void)resumeAfterLaunch {
-    [[self installer] removeSetAside];
+    [[self installer] cleanUpAtLaunch];
     auto store = fb2k::configStore::get();
     const std::string text = store->getConfigString(kResumeKey)->c_str();
     ResumeNote note;
-    if (text.empty() || !decodeResume(text, note) || note.component != utf8(_descriptor.component)) return;
+    // Only the dependent that installed it resumes: its page, its feature
+    if (text.empty() || !decodeResume(text, note) || note.component != utf8(_descriptor.component) ||
+        note.dependent != utf8(_descriptor.dependentName)) {
+        return;
+    }
     store->deleteConfigString(kResumeKey);
     if (!resumeIsFresh(note, static_cast<int64_t>(std::time(nullptr)))) return;
     NSString *version = [NSString stringWithUTF8String:note.version.c_str()] ?: @"";

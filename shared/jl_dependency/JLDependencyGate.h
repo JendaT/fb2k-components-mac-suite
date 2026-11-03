@@ -13,8 +13,9 @@
 // say the install worked, or that foobar2000 did not load the component.
 //
 // Objective-C++, AppKit and the foobar2000 SDK. A component compiles it
-// through a one-line .mm of its own that includes JLDependencyGate.mm and
-// JLComponentInstaller.mm.
+// through one-line .mm files of its own that include JLDependencyGate.mm and
+// JLComponentInstaller.mm, and defines JL_DEPENDENCY_PREFIX before every
+// jl_dependency header (see jl_dependency_names.h).
 //
 
 #pragma once

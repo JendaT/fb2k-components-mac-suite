@@ -93,11 +93,18 @@ struct Pick {
     Asset sums;
 };
 
-// The newest published release of one component: tags exactly
+// Where GitHub serves a release asset of `repo` ("owner/name"): exactly this
+// URL, so a release cannot point its downloads anywhere else
+inline std::string releaseAssetURL(const std::string &repo, const std::string &tag, const std::string &asset) {
+    return "https://github.com/" + repo + "/releases/download/" + tag + "/" + asset;
+}
+
+// The newest published release of one component in `repo`: tags exactly
 // `tagPrefix` + "X.Y.Z", no drafts or prereleases, with both the package
-// asset and SHA256SUMS. Never "the latest release" of the repository: that
-// is whichever component was released last.
-inline Pick pickRelease(const std::vector<Release> &releases, const std::string &tagPrefix,
+// asset and SHA256SUMS served from the release's own download URLs. Never
+// "the latest release" of the repository: that is whichever component was
+// released last.
+inline Pick pickRelease(const std::vector<Release> &releases, const std::string &repo, const std::string &tagPrefix,
                         const std::string &assetName) {
     Pick best;
     for (const Release &r : releases) {
@@ -106,8 +113,8 @@ inline Pick pickRelease(const std::vector<Release> &releases, const std::string 
         if (!v.valid || r.tag.size() > tagPrefix.size() + 20) continue;
         const Asset *package = nullptr, *sums = nullptr;
         for (const Asset &a : r.assets) {
-            if (a.name == assetName) package = &a;
-            if (a.name == kChecksumAsset) sums = &a;
+            if (a.name == assetName && a.url == releaseAssetURL(repo, r.tag, a.name)) package = &a;
+            if (a.name == kChecksumAsset && a.url == releaseAssetURL(repo, r.tag, a.name)) sums = &a;
         }
         if (!package || !sums) continue;
         if (best.found && compare(v, best.version) <= 0) continue;
@@ -118,6 +125,24 @@ inline Pick pickRelease(const std::vector<Release> &releases, const std::string 
         best.sums = *sums;
     }
     return best;
+}
+
+// The component's tags from GitHub's matching-refs list ("refs/tags/<tag>"),
+// newest version first, at most `count`: the releases to look at, however
+// many other components were released since
+inline std::vector<std::string> newestTags(const std::vector<std::string> &refs, const std::string &tagPrefix,
+                                           size_t count) {
+    std::vector<std::pair<Version, std::string>> tags;
+    const std::string head = "refs/tags/" + tagPrefix;
+    for (const std::string &ref : refs) {
+        if (ref.compare(0, head.size(), head) != 0 || ref.size() > head.size() + 20) continue;
+        const Version v = parseVersion(ref.substr(head.size()));
+        if (v.valid) tags.emplace_back(v, ref.substr(10));
+    }
+    std::sort(tags.begin(), tags.end(), [](const auto &a, const auto &b) { return compare(a.first, b.first) > 0; });
+    std::vector<std::string> out;
+    for (size_t i = 0; i < tags.size() && i < count; i++) out.push_back(tags[i].second);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,16 +175,17 @@ inline std::string findSha256(const std::string &sums, const std::string &assetN
 }
 
 // ---------------------------------------------------------------------------
-// Where downloads may come from: HTTPS only, GitHub's API and release hosts
+// Where requests may go: HTTPS only, GitHub's API, its release download
+// URLs and the hosts those redirect to. Not the rest of
+// githubusercontent.com (raw., gist. serve anyone's files).
 // ---------------------------------------------------------------------------
 
 inline bool allowedDownloadHost(const std::string &scheme, const std::string &host) {
     if (scheme != "https") return false;
     std::string h = host;
     std::transform(h.begin(), h.end(), h.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (h == "github.com" || h == "api.github.com") return true;
-    const std::string suffix = ".githubusercontent.com";
-    return h.size() > suffix.size() && h.compare(h.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return h == "github.com" || h == "api.github.com" || h == "objects.githubusercontent.com" ||
+           h == "release-assets.githubusercontent.com";
 }
 
 // Downloads larger than this are refused (the BPM package is ~9 MB)
@@ -196,8 +222,11 @@ inline ArchiveCheck checkArchiveListing(const std::string &listing, const std::s
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.compare(0, 8, "Archive:") == 0 || line.compare(0, 14, "Zip file size:") == 0) continue;
-        // The trailer: "<n> files, <bytes> bytes uncompressed, ..."
-        if (!line.empty() && std::isdigit(static_cast<unsigned char>(line[0])) && line.find(" files, ") != std::string::npos) continue;
+        // The trailer: "<n> files, <bytes> bytes uncompressed, ..." ("1 file, ")
+        if (!line.empty() && std::isdigit(static_cast<unsigned char>(line[0])) &&
+            (line.find(" files, ") != std::string::npos || line.find(" file, ") != std::string::npos)) {
+            continue;
+        }
         if (line.empty()) continue;
         // "drwxr-xr-x  3.0 unx  0 bx stor 26-Nov-03 23:39 mac/": the type and
         // permissions, then 7 fields, then the name (which may hold spaces)
@@ -283,7 +312,7 @@ inline GateState gateState(bool serviceResolves, const Version &onDisk, const Ve
 struct ResumeNote {
     std::string component;          // "foo_jl_bpm"
     std::string pageGuid;           // the dependent's preferences page, "{...}"
-    std::string featureKey;         // the setting to switch on once loaded
+    std::string dependent;          // who installed it ("Waveform Seekbar"): only it resumes
     std::string version;            // what was installed
     int64_t timestamp = 0;          // unix seconds when it was written
 };
@@ -292,7 +321,7 @@ struct ResumeNote {
 inline constexpr int64_t kResumeMaxAgeSeconds = 10 * 60;
 
 inline std::string encodeResume(const ResumeNote &n) {
-    return "v1|" + n.component + "|" + n.pageGuid + "|" + n.featureKey + "|" + n.version + "|" +
+    return "v1|" + n.component + "|" + n.pageGuid + "|" + n.dependent + "|" + n.version + "|" +
            std::to_string(n.timestamp);
 }
 
@@ -307,7 +336,7 @@ inline bool decodeResume(const std::string &text, ResumeNote &out) {
     if (!end || *end != '\0' || f[5].empty()) return false;
     out.component = f[1];
     out.pageGuid = f[2];
-    out.featureKey = f[3];
+    out.dependent = f[3];
     out.version = f[4];
     out.timestamp = t;
     return true;
