@@ -9,6 +9,8 @@
 //
 // TEST_DEPS: src/Core/TempoEstimator.cpp
 //
+// Also the network path (analyseNetworkBeatGrid) on hand-made network beats.
+//
 
 #include "TestHarness.h"
 #include "../src/Core/BeatGridAnalyzer.h"
@@ -432,6 +434,95 @@ void testBarAndPhrasePhase() {
     CHECK(!g.bars.empty() && g.bars[1].matched == 4, "a bar holds its four beats");
 }
 
+// --- Network source ----------------------------------------------------------
+
+BeatGrid analyseWithNetwork(const Track &t, const RawBeats &network) {
+    const std::vector<float> audio = render(t);
+    OnsetEnvelope env(kRate);
+    for (size_t pos = 0; pos < audio.size(); pos += 4096) {
+        env.addInterleaved(audio.data() + pos, std::min<size_t>(4096, audio.size() - pos), 1);
+    }
+    return analyseNetworkBeatGrid(network, env.values(), env.bands(), env.framesPerSecond(), env.firstFrameSeconds(), t.seconds);
+}
+
+// The network places beats where they are but its timing shifts by section
+// (+15 ms, then -12 ms); in a beatless intro it places beats it is unsure
+// of. The grid lands on the onsets, the intro reads no pulse, the downbeats
+// set the bars.
+void testNetworkGrid() {
+    g_context = "network grid";
+    const double bpm = 128.0, beat = 60.0 / bpm;
+    Track t;
+    RawBeats net;
+    Rng rng{ 99 };
+    for (long j = 0; 0.05 + j * beat < t.seconds - 0.2; j++) {
+        const double c = 0.05 + j * beat;
+        if (c < 30.0) {   // intro: texture, no clicks; unsure beats a little off
+            net.beats.push_back(c + 0.040);
+            net.confidence.push_back(0.6f);
+            continue;
+        }
+        t.clicks.push_back(c);
+        net.beats.push_back(c + (c < 90.0 ? 0.015 : -0.012) + 0.003 * rng.next());
+        net.confidence.push_back(0.99f);
+        if (j % 4 == 1) net.downbeats.push_back(net.beats.back());
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    CHECK(g.source == BeatSource::BeatThis, "source recorded");
+    CHECK(std::fabs(g.bpm - bpm) <= 0.01, "BPM within 0.01");
+    double worst = 0.0;
+    for (double e : phaseErrors(g, t.clicks)) worst = std::max(worst, std::fabs(e));
+    printf("    network grid: worst phase error %.2f ms (network off by +15 / -12 ms)\n", worst * 1000.0);
+    CHECK(worst < 0.002, "on the onsets within 2 ms, not on the network's timing");
+    CHECK_EQ(g.barPhase, 1, "bars from the downbeats");
+    CHECK(g.barConfidence > 0.99f, "every downbeat agrees");
+    const std::vector<jl_phrase_state> p = phrases(g, 4);
+    printPhrases(p);
+    const double phraseLength = 16 * beat, barsFrom = g.beatTime(g.firstBarBeat());
+    bool intro = true, rest = true;
+    for (size_t i = 0; i < p.size(); i++) {
+        const double t0 = barsFrom + i * phraseLength, t1 = t0 + phraseLength;
+        if (t1 <= 30.0) intro &= p[i] == jl_phrase_no_pulse;
+        if (t0 >= 30.5 && t1 <= t.seconds - 1.0) rest &= p[i] == jl_phrase_locked;
+    }
+    CHECK(intro, "unsure beats in the intro: no pulse");
+    CHECK(rest, "Locked where the clicks are");
+    CHECK(g.tempoStrength > 0.7f && g.tempoStrength < 0.9f, "strength: the share of beats heard on the grid (150 of 180 s)");
+    CHECK(!g.uncertain, "certain");
+}
+
+// Where the kick is out the network follows a line a 16th late: still on
+// the grid's subdivisions, so no pulse rather than broken, and no new grid
+void testNetworkSubdivisions() {
+    g_context = "network 16ths";
+    const double bpm = 128.0, beat = 60.0 / bpm;
+    Track t;
+    RawBeats net;
+    for (long j = 0; 0.05 + j * beat < t.seconds - 0.2; j++) {
+        double c = 0.05 + j * beat;
+        if (c >= 60.0 && c < 100.0) c += beat / 4;
+        t.clicks.push_back(c);
+        net.beats.push_back(c);
+        net.confidence.push_back(0.99f);
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    const std::vector<jl_phrase_state> p = phrases(g, 4);
+    printPhrases(p);
+    const double phraseLength = 16 * beat, barsFrom = g.beatTime(g.firstBarBeat());
+    bool noBroken = true, inside = true;
+    for (size_t i = 0; i < p.size(); i++) {
+        const double t0 = barsFrom + i * phraseLength, t1 = t0 + phraseLength;
+        noBroken &= p[i] != jl_phrase_broken && p[i] != jl_phrase_reanchor;
+        if (t0 >= 61.0 && t1 <= 99.0) inside &= p[i] == jl_phrase_no_pulse;
+    }
+    CHECK(noBroken, "never Broken, no new grid");
+    CHECK(inside, "the 16th stretch reads as no pulse");
+}
+
 void testInvalid() {
     g_context = "invalid";
     const BandEnergies none;
@@ -473,6 +564,8 @@ int main() {
     testSilence();
     testBarAndPhrasePhase();
     testOffbeatSection();
+    testNetworkGrid();
+    testNetworkSubdivisions();
     testInvalid();
     testRegionSpeed();
     TEST_MAIN_END();

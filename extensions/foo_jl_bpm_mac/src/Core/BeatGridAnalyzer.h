@@ -13,7 +13,8 @@
 //    4. Constant regions: stretches of beats that fit one straight grid.
 //    5. Master grid: the longest stable region extended through compatible
 //       ones, the BPM snapped within its tolerance, the phase averaged over
-//       the beats near it.
+//       the beats near it; then tempo and phase fitted again to every beat
+//       on that grid across the track, and the BPM snapped once more.
 //  Stages 4 and 5 follow the approach of Mixxx's beat utilities as the spec
 //  describes it; reimplemented from that description (Mixxx is GPL). One
 //  deliberate change: a span's beat length is a least-squares fit over its
@@ -22,13 +23,14 @@
 //  500-beat click track's running error passes the drift limit; the fit
 //  can't be bent by its ends, so the first-plus-last-interval check that
 //  guarded against that is not needed.
-//    6. Bar and phrase phase: which of the 4 beats starts a bar (the offset
-//       whose bars change most from one to the next, squared, in log band
-//       energy) and which bar starts a phrase (Foote checkerboard novelty
-//       over the bars' self-similarity, 8-bar kernel), each with a
-//       confidence (best - second) / best.
-//  Then per-bar statistics of the raw beats against the master grid, the
-//  bars starting on the bar phase (beat 0 when it is unknown).
+//    6. Bar and phrase phase: section changes found beat by beat (Foote
+//       checkerboard novelty over the beats' band energies) vote for their
+//       place in a 32-beat cycle; the strongest cluster starts the phrases
+//       and its beat mod 4 the bars. A source that predicts downbeats sets
+//       the bar phase instead, and the changes only pick the phrase's bar.
+//  Then per-bar statistics against the master grid, the bars starting on
+//  the bar phase (beat 0 when it is unknown): from the onsets at each grid
+//  beat, or from a network source's own beats and beat probability.
 //
 
 #pragma once
@@ -95,13 +97,26 @@ constexpr double kHintTolerance = 0.04;
 
 enum class BeatSource : uint8_t { Classic = 0, BeatThis = 1 };
 
-// What a beat source hands to stages 4-5: the classic tracker, or later a
-// network that also predicts downbeats
+// What a beat source hands to stages 4-6: the classic tracker, or a network
+// that also predicts downbeats and how sure it is of each beat
 struct RawBeats {
     std::vector<double> beats;      // seconds, ascending
-    std::vector<double> downbeats;  // seconds; empty when the source has none
+    std::vector<double> downbeats;  // seconds, each on a beat; empty when the source has none
+    std::vector<float> confidence;  // per beat, 0..1; empty: all sure
     BeatSource source = BeatSource::Classic;
 };
+
+// A network's beat counts for the bar statistics only when it is at least
+// this sure of it. Its peaks run from 0.5 (its threshold) to 1; in beatless
+// intros they stay at 0.5-0.7, where the beat is it sounds near 1.
+constexpr float kSureBeat = 0.8f;
+// A network's beat moves to the onset peak within this of it: the network
+// says which onset is the beat, the onset says exactly when (the network's
+// own timing shifts by tens of milliseconds with what is playing)
+constexpr double kOnsetSearch = 0.050;
+
+// Downbeats need this many votes on the grid to set the bar phase
+constexpr size_t kMinDownbeatVotes = 8;
 
 struct BeatGrid {
     bool valid = false;
@@ -128,9 +143,19 @@ struct BeatGrid {
 BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies &bands, double framesPerSecond,
                          double firstFrameSeconds, double durationSeconds, const BeatGridHints &hints = {});
 
-// Stages 4-6 and the bar statistics, for beats from any source. The
-// envelope gives each bar its pulse; without `bands` the bar and phrase
-// phase stay unknown.
+// The pipeline from a beat network's output (Beat This!, see NetworkBeats.h)
+// instead of stages 1-3: its beats moved to the onsets at them, then stages
+// 4-6, the bar phase from its downbeats. Tempo strength is the share of grid
+// beats with a sure network beat on them.
+BeatGrid analyseNetworkBeatGrid(const RawBeats &network, const std::vector<float> &envelope, const BandEnergies &bands,
+                                double framesPerSecond, double firstFrameSeconds, double durationSeconds);
+
+// Stages 4-6 and the bar statistics, for beats from any source. Classic
+// beats: bar statistics from the onsets at each grid beat, the envelope
+// giving each bar its pulse. Network beats: from its beats, moved to the
+// onsets at them, the pulse the share of a bar's beats it is sure of and
+// can measure. Without `bands` the phrase phase, and without downbeats too
+// the bar phase, stay unknown.
 BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, double framesPerSecond,
                        double firstFrameSeconds, double durationSeconds, const BandEnergies *bands = nullptr);
 
@@ -161,8 +186,19 @@ struct Phases {
     int phraseBars = -1;            // bar (from the bar phase) mod 8 starting a 32-beat phrase
     double phraseConfidence = 0.0;
 };
+// With `barPhase` 0-3 (from downbeats) only phrase starts on that bar
+// phase compete, and the result keeps it whatever the phrase confidence
 Phases barAndPhrasePhase(const BeatGrid &grid, const BandEnergies &bands, const std::vector<float> &envelope,
-                         double framesPerSecond, double firstFrameSeconds, double durationSeconds);
+                         double framesPerSecond, double firstFrameSeconds, double durationSeconds,
+                         int barPhase = -1);
+// The beat index mod 4 most downbeats on the grid fall on; confidence
+// (best - second) / best, -1 under jl_phrase_min_confidence or with fewer
+// than kMinDownbeatVotes on the grid
+struct BarVote {
+    int phase = -1;
+    double confidence = 0.0;
+};
+BarVote barPhaseFromDownbeats(const BeatGrid &grid, const std::vector<double> &downbeats);
 
 } // namespace detail
 
