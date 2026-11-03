@@ -2,6 +2,14 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
+
+### Technical
+- A request for the track already being scanned no longer restarts the scan (second seekbar, layout change, watchdog).
+
 ## [2.0.0] - 2026-10-30
 
 The redesign and the Display P3 colours were contributed by @Scannou (#49, #55).

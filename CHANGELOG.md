@@ -362,6 +362,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Waveform Seekbar
 
+### [Unreleased]
+
+#### Fixed
+- **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform" after 60 s.
+
 ### [2.0.0] - 2026-10-30
 
 Redesign and Display P3 colours contributed by @Scannou (#49, #55).

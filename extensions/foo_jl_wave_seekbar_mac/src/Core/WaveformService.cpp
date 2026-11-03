@@ -84,6 +84,12 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
             return;
         }
 
+        // A second seekbar, a layout change or the watchdog asking again must
+        // not restart a long scan from the beginning
+        if (!callback && isScanningLocked(track)) {
+            return;
+        }
+
         m_pendingTrack = track;
     }
 
@@ -125,6 +131,16 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
             notifyListeners(track, nullptr);
         }
     });
+}
+
+bool WaveformService::isScanning(const metadb_handle_ptr& track) {
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    return isScanningLocked(track);
+}
+
+bool WaveformService::isScanningLocked(const metadb_handle_ptr& track) const {
+    return track.is_valid() && m_scanner.isScanning() && m_pendingTrack.is_valid() &&
+           m_pendingTrack->get_location() == track->get_location();
 }
 
 void WaveformService::cancelRequest(const metadb_handle_ptr& track) {

@@ -36,8 +36,13 @@ public:
 
     // Request waveform for a track
     // If cached, callback is invoked immediately
-    // Otherwise, scans asynchronously and invokes callback when ready
+    // Otherwise, scans asynchronously and invokes callback when ready. A
+    // request without a callback for the track already being scanned leaves
+    // that scan running: its result reaches every listener.
     void requestWaveform(const metadb_handle_ptr& track, WaveformReadyCallback callback);
+
+    // The track's scan is still running
+    bool isScanning(const metadb_handle_ptr& track);
 
     // Cancel pending request for track
     void cancelRequest(const metadb_handle_ptr& track);
@@ -70,6 +75,9 @@ public:
 private:
     // Notify all listeners
     void notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform);
+
+    // isScanning with m_pendingMutex held
+    bool isScanningLocked(const metadb_handle_ptr& track) const;
 
     WaveformScanner& m_scanner;
     WaveformCache& m_cache;

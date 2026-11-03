@@ -307,8 +307,9 @@
 
 #pragma mark - Analysis Watchdog
 
-// Longest a scan is allowed to run before we assume its result is never coming.
-// Generous enough for a long track on a slow or network volume.
+// How long to wait for a result before checking whether it was lost (no scan
+// running for the track). A scan still running is waited for: a long stream
+// downloads as it decodes and can take minutes.
 static const NSTimeInterval kAnalysisTimeout = 30.0;
 static const int kAnalysisMaxRetries = 1;
 
@@ -332,6 +333,11 @@ static const int kAnalysisMaxRetries = 1;
     _analysisWatchdog = nil;
 
     if (!self.waveformView.analyzing) return;
+
+    if (_currentTrack.is_valid() && getWaveformService().isScanning(_currentTrack)) {
+        [self startAnalysisWatchdog];
+        return;
+    }
 
     if (_currentTrack.is_valid() && _analysisRetries < kAnalysisMaxRetries) {
         _analysisRetries++;
