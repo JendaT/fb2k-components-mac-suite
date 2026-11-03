@@ -8,6 +8,7 @@
 #import "WaveformPreferences.h"
 #include "../fb2k_sdk.h"
 #include "../../../../shared/jl_beatgrid_api.h"
+#import "../Integration/BpmDependency.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
 #include "../Core/WaveformThemes.h"
@@ -415,15 +416,15 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
                                                "markers move to it and count phrases from there. Off "
                                                "keeps them on the track's main grid."
                                             x:x + kHintIndent y:&y width:w - kHintIndent];
-    if (!_haveBeatGrids) {
+    // Missing, too old or just installed: the gate says so and installs it
+    JLDependencyManager *bpm = waveseekBpmDependency();
+    if ([bpm needsGate]) {
         y -= kRowGap - 2;
-        [self addHint:@"Phrase markers need BPM Analyzer, a free component from the same suite."
-                    x:x + kHintIndent y:&y width:w - kHintIndent lines:1];
-        NSButton *get = [NSButton buttonWithTitle:@"Get BPM Analyzer" target:self action:@selector(getBpmAnalyzer:)];
-        [get sizeToFit];
-        get.frameOrigin = NSMakePoint(x + kHintIndent - 6, y + 2);
-        [_page addSubview:get];
-        y += 30 + kRowGap;
+        const CGFloat height = [JLDependencyGate preferredHeight];
+        JLDependencyGate *gate = [[JLDependencyGate alloc]
+            initWithFrame:NSMakeRect(x + kHintIndent, y, w - kHintIndent, height) manager:bpm];
+        [_page addSubview:gate];
+        y += height + kRowGap;
     }
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
@@ -828,12 +829,6 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 - (void)phraseLengthChanged:(id)sender {
     waveform_config::setConfigInt(waveform_config::kKeyPhraseLength, _phraseLengthPopup.selectedTag == 16 ? 16 : 32);
     [self notifySettingsChanged];
-}
-
-// Until the in-place installer exists: the suite's BPM Analyzer releases
-- (void)getBpmAnalyzer:(id)sender {
-    [[NSWorkspace sharedWorkspace]
-        openURL:[NSURL URLWithString:@"https://github.com/JendaT/fb2k-components-mac-suite/releases?q=bpm"]];
 }
 
 - (void)cacheSettingChanged:(id)sender {

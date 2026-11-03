@@ -57,7 +57,7 @@ With [BPM Analyzer](bpm.md) installed (it finds each track's beat grid), a hairl
 
 - **Follow tempo changes** (on by default): after a new grid the markers move to it, on its own tempo, and count phrases from there; off keeps them on the track's main grid. Beat-synced cursor effects follow the same grid.
 - Hovering a marker adds a line to the readout (`Phrase 12 · bar 45 · +18 ms`, `New grid · 141.64 BPM`); the summary shows the grid tempo and the share of Locked phrases. Markers thin out (every 64, 128 beats...) where they would crowd, and say so in the readout.
-- Without BPM Analyzer the settings are greyed out.
+- Without BPM Analyzer (or with one older than 0.1.0) the settings are greyed out and offer **Install BPM Analyzer...**: it looks up the newest BPM Analyzer release on GitHub, shows its version, size and where it will go, and on confirmation downloads it, checks it against the release's SHA-256 checksum, installs it to `user-components/foo_jl_bpm` and offers a restart. After the restart the phrase markers are switched on and the preferences reopen. Nothing is downloaded without the click.
 
 ### Scales
 
