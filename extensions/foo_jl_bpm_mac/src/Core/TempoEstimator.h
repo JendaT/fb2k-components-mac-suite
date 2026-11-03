@@ -21,12 +21,19 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace bpm {
+
+// Energy per envelope frame in three bands (low, mid, high), for the beat
+// grid's bar and phrase analysis: below kBandLowHz, up to kBandHighHz, above.
+constexpr double kBandLowHz = 200.0;
+constexpr double kBandHighHz = 4000.0;
+using BandEnergies = std::array<std::vector<float>, 3>;
 
 // Onset strength built incrementally from decoded audio, so a track of any
 // length only ever holds its envelope in memory, never the PCM.
@@ -44,6 +51,11 @@ public:
     double framesPerSecond() const;
     double secondsAdded() const;
     const std::vector<float> &values() const;
+    // Mean square magnitude per frame in each band, beside values()
+    const BandEnergies &bands() const;
+    // Frame k covers the samples [k * hop, k * hop + frame size); this is the
+    // centre of frame 0, so frame k sits at firstFrameSeconds() + k / fps
+    double firstFrameSeconds() const;
 
 private:
     struct Impl;

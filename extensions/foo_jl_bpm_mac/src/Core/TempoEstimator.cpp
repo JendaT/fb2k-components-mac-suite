@@ -86,6 +86,7 @@ struct OnsetEnvelope::Impl {
     size_t frameSize;
     size_t half;
     size_t fluxBins;
+    size_t lowEnd, highStart;   // band edges in bins: [1, lowEnd), [lowEnd, highStart), [highStart, half)
     vDSP_Length log2n;
     FFTSetup fft = nullptr;
 
@@ -95,6 +96,7 @@ struct OnsetEnvelope::Impl {
     std::vector<float> pending;  // mono samples not yet consumed by a frame
     uint64_t samplesAdded = 0;
     std::vector<float> values;
+    BandEnergies bands;
 
     explicit Impl(double rate) : sampleRate(rate > 0 ? rate : 44100.0) {
         hop = hopForRate(sampleRate);
@@ -105,6 +107,8 @@ struct OnsetEnvelope::Impl {
 
         const double binHz = sampleRate / static_cast<double>(frameSize);
         fluxBins = std::min(half - 1, static_cast<size_t>(kMaxFluxHz / binHz));
+        lowEnd = std::clamp<size_t>(static_cast<size_t>(std::ceil(kBandLowHz / binHz)), 2, half);
+        highStart = std::clamp<size_t>(static_cast<size_t>(std::ceil(kBandHighHz / binHz)), lowEnd, half);
 
         window.resize(frameSize);
         vDSP_hann_window(window.data(), frameSize, vDSP_HANN_DENORM);
@@ -130,6 +134,15 @@ struct OnsetEnvelope::Impl {
             vDSP_fft_zrip(fft, &split, 1, log2n, FFT_FORWARD);
             split.imagp[0] = 0.0f;  // packed Nyquist; bin 0 is not used either
             vDSP_zvabs(&split, 1, magnitude.data(), 1, half);
+
+            // Band energies from the unscaled magnitudes (bin 0 is DC)
+            const size_t edges[4] = { 1, lowEnd, highStart, half };
+            const float norm = 1.0f / (static_cast<float>(frameSize) * static_cast<float>(frameSize));
+            for (int b = 0; b < 3; b++) {
+                float energy = 0.0f;
+                if (edges[b + 1] > edges[b]) vDSP_svesq(magnitude.data() + edges[b], 1, &energy, edges[b + 1] - edges[b]);
+                bands[b].push_back(energy * norm);
+            }
 
             const float scale = kCompression / static_cast<float>(frameSize);
             vDSP_vsmul(magnitude.data() + 1, 1, &scale, magnitude.data() + 1, 1, fluxBins);
@@ -191,6 +204,14 @@ double OnsetEnvelope::secondsAdded() const {
 
 const std::vector<float> &OnsetEnvelope::values() const {
     return m->values;
+}
+
+const BandEnergies &OnsetEnvelope::bands() const {
+    return m->bands;
+}
+
+double OnsetEnvelope::firstFrameSeconds() const {
+    return static_cast<double>(m->frameSize) / 2.0 / m->sampleRate;
 }
 
 // ---------------------------------------------------------------------------
