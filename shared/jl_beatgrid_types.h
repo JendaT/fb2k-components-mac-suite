@@ -17,6 +17,14 @@
 // beats aggregates 4 or 8 bars at draw time, starting on bar
 // phrase_phase_bars (mod 8) when phrase_confidence allows.
 //
+// Sections: where the track leaves its master grid for another (a tempo
+// change, an edit), a new grid is confirmed and the bar it starts in is
+// flagged jl_bar_region_start. Drawing that follows those changes reads the
+// grid as sections instead (jl_grid_section): the track cut at each new
+// grid, every section with its own tempo, phase, bars, phrase count and bar
+// statistics. A track on one grid throughout is a single section, the
+// master grid.
+//
 // ABI: these structs cross the dylib boundary inside pfc::array_t (see
 // jl_beatgrid_api.h). Their layouts are FROZEN for the service GUID there:
 // changing a field means a new GUID, so an older provider reads as missing
@@ -80,11 +88,30 @@ struct jl_beatgrid_summary {
     uint8_t reserved1[3];
 };
 inline constexpr float jl_beatgrid_uncertain_strength = 0.3f;
+
+// A stretch of the track on one straight grid, beat j at
+// anchor_seconds + j * 60 / bpm. Its bars start on beat bar_phase (0 when
+// unknown) and run to where the next section starts; bar i covers its beats
+// jl_section_first_bar_beat() + 4i .. + 3, and so do its statistics,
+// measured against its own grid: the sections' bar array from first_bar,
+// bar_count of them. Phrases count from its own phrase phase.
+struct jl_grid_section {
+    double start_seconds;       // 0 for the first; else the first beat of the new grid
+    double bpm;
+    double anchor_seconds;      // its beat 0: the first grid beat from start_seconds (within 25 ms before it)
+    int8_t bar_phase;           // beat index mod 4 that starts a bar; -1 unknown
+    int8_t phrase_phase_bars;   // bar index mod 8 that starts a 32-beat phrase; -1 unknown
+    uint8_t reserved0[2];
+    float phrase_confidence;    // 0..1; under jl_phrase_min_confidence don't claim phrase starts
+    uint32_t first_bar;
+    uint32_t bar_count;
+};
 inline constexpr float jl_phrase_min_confidence = 0.15f;
 
 static_assert(sizeof(jl_beat_region) == 24, "jl_beat_region layout is frozen");
 static_assert(sizeof(jl_bar_stat) == 4, "jl_bar_stat layout is frozen");
 static_assert(sizeof(jl_beatgrid_summary) == 32, "jl_beatgrid_summary layout is frozen");
+static_assert(sizeof(jl_grid_section) == 40, "jl_grid_section layout is frozen");
 
 inline double jl_beat_time(const jl_beatgrid_summary &grid, long beat) {
     return grid.bpm > 0.0 ? grid.anchor_seconds + static_cast<double>(beat) * 60.0 / grid.bpm : 0.0;
@@ -93,6 +120,28 @@ inline double jl_beat_time(const jl_beatgrid_summary &grid, long beat) {
 // The beat bar 0 (and bars[0] of the statistics) starts on
 inline long jl_first_bar_beat(const jl_beatgrid_summary &grid) {
     return grid.bar_phase > 0 ? grid.bar_phase : 0;
+}
+
+inline double jl_section_beat_time(const jl_grid_section &section, long beat) {
+    return section.bpm > 0.0 ? section.anchor_seconds + static_cast<double>(beat) * 60.0 / section.bpm : 0.0;
+}
+
+inline long jl_section_first_bar_beat(const jl_grid_section &section) {
+    return section.bar_phase > 0 ? section.bar_phase : 0;
+}
+
+// The master grid as the single section of a track on one grid throughout
+inline jl_grid_section jl_master_section(const jl_beatgrid_summary &grid, size_t bar_count) {
+    jl_grid_section s{};
+    s.start_seconds = 0.0;
+    s.bpm = grid.bpm;
+    s.anchor_seconds = grid.anchor_seconds;
+    s.bar_phase = grid.bar_phase;
+    s.phrase_phase_bars = grid.phrase_phase_bars;
+    s.phrase_confidence = grid.phrase_confidence;
+    s.first_bar = 0;
+    s.bar_count = static_cast<uint32_t>(bar_count);
+    return s;
 }
 
 // ---------------------------------------------------------------------------

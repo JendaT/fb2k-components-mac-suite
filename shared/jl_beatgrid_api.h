@@ -28,6 +28,13 @@
 //         grids->get(track, summary, regions, bars)) { ... }
 //     else grids->request(track, true);   // the playing track: urgent
 //
+// Following the grid where it changes (a tempo change, an edit), section by
+// section; a track on one grid throughout returns one section, the master:
+//
+//     pfc::array_t<jl_grid_section> sections;
+//     pfc::array_t<jl_bar_stat> sectionBars;
+//     if (grids->get_sections(track, sections, sectionBars)) { ... }
+//
 // Hearing about new grids:
 //
 //     class seekbar_notify : public jl_beatgrid_notify {
@@ -36,7 +43,7 @@
 //     grids->add_notify(fb2k::service_new<seekbar_notify>());
 //
 // Threading contract:
-// - get_status() and get() may be called from ANY thread. They never do
+// - get_status(), get() and get_sections() may be called from ANY thread. They never do
 //   I/O beyond the provider's in-memory index and are cheap enough to call
 //   while drawing.
 // - request(), add_notify() and remove_notify() are called on the main
@@ -96,6 +103,13 @@ public:
     virtual bool get(const metadb_handle_ptr &item, jl_beatgrid_summary &out,
                      pfc::array_t<jl_beat_region> &regions, pfc::array_t<jl_bar_stat> &bars) = 0;
 
+    // The stored grid section by section (jl_grid_section): false unless the
+    // status is ready, else at least one section. `bars` holds the bar
+    // statistics of every section, each section's from its first_bar. Any
+    // thread, no I/O.
+    virtual bool get_sections(const metadb_handle_ptr &item, pfc::array_t<jl_grid_section> &sections,
+                              pfc::array_t<jl_bar_stat> &bars) = 0;
+
     // Analyse `item` unless it has a grid or is already queued. `urgent`
     // puts it at the front (the playing track). Main thread.
     virtual void request(const metadb_handle_ptr &item, bool urgent) = 0;
@@ -107,9 +121,11 @@ public:
     FB2K_MAKE_SERVICE_INTERFACE_ENTRYPOINT(jl_beatgrid);
 };
 
-// {08011599-E5C9-49CE-AE1B-BBD56D1EA271}
+// Layout 2: get_sections(). Layout 1 ({08011599-E5C9-49CE-AE1B-BBD56D1EA271})
+// was never released.
+// {1B84E3AD-93C9-47DE-8A71-8583CDD3DD1B}
 inline const GUID jl_beatgrid::class_guid =
-    { 0x08011599, 0xe5c9, 0x49ce, { 0xae, 0x1b, 0xbb, 0xd5, 0x6d, 0x1e, 0xa2, 0x71 } };
+    { 0x1b84e3ad, 0x93c9, 0x47de, { 0x8a, 0x71, 0x85, 0x83, 0xcd, 0xd3, 0xdd, 0x1b } };
 
 // {B8EA142D-CC4A-4CC7-9C3B-840E6C15197D}
 inline const GUID jl_beatgrid_notify::class_guid =
