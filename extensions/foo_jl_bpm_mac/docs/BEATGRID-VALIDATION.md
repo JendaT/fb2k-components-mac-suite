@@ -164,6 +164,30 @@ ms over four minutes). The master grid is now refitted to every beat within
 Confidence threshold 0.6 / 0.8 / 0.95: Broken 8 / 6 / 4%, No pulse 18 / 20 /
 27%; 0.8 kept.
 
+### Kick out under a rolling bassline (found in-app)
+
+Astral Projection - Another World (138 BPM, not in the corpus) showed a
+Broken and two Drifting phrases and three new-grid triangles on a grid that
+is right throughout. The kick is out at 1:10-1:29, 3:16-4:19 and from 6:24;
+only the 16th bassline and hats play (low-band onsets equal on all four
+16ths, against 4-8x on the beat where the kick plays). There the network:
+
+- ticks every 16th at 0.5-0.7. Those beats formed a 550 BPM region, which
+  read as a tempo step: a new grid. Regions where most beats are not
+  measured are now flagged unsure: they still help fit the master grid
+  (Monolake - Phenomenon needs one to stay at 70.000) but never start a new
+  grid, and are served as quiet.
+- wanders between the 16ths (-0.37, -0.22, -0.48 beat) at 0.8-0.97, which
+  passed the 0.8 threshold and read as Broken. A beat more than 25 ms off its
+  grid beat now counts only at 0.95 or more; on the beat 0.8 still does.
+
+Corpus, all 78 grids, phrases before / after: Broken 145 / 105, Drifting
+173 / 164, No pulse 420 / 463, new grid 66 / 63, Locked 1182 / 1191. The 36
+phrases that went from Broken to no pulse have a median kick accent (low-band
+onset on the grid beats over that on the 16ths between) of 0.98; Locked
+phrases have 1.63. Another World: Broken 1 / 0, new grids 3 / 0; two Drifting
+phrases stay where the kick returns and leaves (onsets 11-26 ms late).
+
 ## Parity and speed
 
 | Stage | Check | Result |

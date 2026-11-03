@@ -74,6 +74,7 @@ struct BeatRegion {
     double beatSeconds = 0.0;
     uint32_t beatCount = 0;         // intervals; the region ends on beat startSeconds + beatCount * beatSeconds
     bool quiet = false;             // over kQuietShare of its beats have no onset energy (a silence the tracker ran through)
+    bool unsure = false;            // network source: over kUnsureShare of its beats not measured; helps fit the master grid, never starts a new one
     bool stable() const { return beatCount >= kMinStableBeats && !quiet; }
     double endSeconds() const { return startSeconds + beatCount * beatSeconds; }
 };
@@ -110,6 +111,16 @@ struct RawBeats {
 // this sure of it. Its peaks run from 0.5 (its threshold) to 1; in beatless
 // intros they stay at 0.5-0.7, where the beat is it sounds near 1.
 constexpr float kSureBeat = 0.8f;
+// A network's beat further than kBeatTolerance from its grid beat counts
+// against the grid only when the network is at least this sure of it. With
+// the kick out under a rolling 16th bassline its beats wander between the
+// 16ths at 0.8-0.95; on the beat it sits at 0.98-1.
+constexpr float kSureOffGrid = 0.95f;
+// A network region with more than this share of beats that are not
+// measured (unsure, or no onset) never starts a new grid: the network
+// ticking along every 16th of a bassline at 0.5-0.7 is not a new grid at
+// four times the tempo. Served as quiet.
+constexpr double kUnsureShare = 0.5;
 // A network's beat moves to the onset peak within this of it: the network
 // says which onset is the beat, the onset says exactly when (the network's
 // own timing shifts by tens of milliseconds with what is playing)

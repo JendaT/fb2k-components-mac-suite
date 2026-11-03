@@ -523,6 +523,89 @@ void testNetworkSubdivisions() {
     CHECK(inside, "the 16th stretch reads as no pulse");
 }
 
+// The kick out under a rolling 16th bassline (its notes 30 ms behind the
+// grid's 16ths), as in Astral Projection - Another World: the network first
+// ticks every 16th unsure (a region at four times the tempo), then wanders
+// between the 16ths at 0.85. Neither a new grid nor broken: no pulse.
+void testNetworkKickOut() {
+    g_context = "network kick out";
+    const double bpm = 138.0, beat = 60.0 / bpm;
+    Track t;
+    RawBeats net;
+    for (long j = 0; 0.05 + j * beat < t.seconds - 0.2; j++) {
+        const double c = 0.05 + j * beat;
+        if (c >= 60.0 && c < 100.0) {
+            for (int s = 0; s < 4; s++) t.clicks.push_back(c + s * beat / 4 + 0.030);
+            if (c < 75.0) {
+                for (int s = 0; s < 4; s++) {
+                    net.beats.push_back(c + s * beat / 4 + 0.030);
+                    net.confidence.push_back(0.6f);
+                }
+            } else {
+                net.beats.push_back(c - 0.37 * beat);
+                net.confidence.push_back(0.85f);
+            }
+            continue;
+        }
+        t.clicks.push_back(c);
+        net.beats.push_back(c);
+        net.confidence.push_back(0.99f);
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    CHECK(std::fabs(g.bpm - bpm) <= 0.01, "BPM within 0.01");
+    bool fourTimes = false, unsureFlagged = true;
+    for (const BeatRegion &r : g.regions) {
+        if (r.beatCount < kMinStableBeats || std::fabs(r.beatSeconds - beat / 4) > 0.002) continue;
+        fourTimes = true;
+        unsureFlagged &= r.unsure;
+    }
+    CHECK(fourTimes, "the unsure 16ths form a region at four times the tempo");
+    CHECK(unsureFlagged, "which is flagged unsure");
+    const std::vector<jl_phrase_state> p = phrases(g, 4);
+    printPhrases(p);
+    const double phraseLength = 16 * beat, barsFrom = g.beatTime(g.firstBarBeat());
+    bool clean = true, inside = true, outside = true;
+    for (size_t i = 0; i < p.size(); i++) {
+        const double t0 = barsFrom + i * phraseLength, t1 = t0 + phraseLength;
+        clean &= p[i] != jl_phrase_broken && p[i] != jl_phrase_reanchor;
+        if (t0 >= 60.5 && t1 <= 99.5) inside &= p[i] == jl_phrase_no_pulse;
+        if ((t1 <= 59.5 || t0 >= 100.5) && t1 <= t.seconds - 1.0) outside &= p[i] == jl_phrase_locked;
+    }
+    CHECK(clean, "never Broken, no new grid");
+    CHECK(inside, "the kickless stretch reads as no pulse");
+    CHECK(outside, "Locked where the kick plays");
+}
+
+// Off the grid, a network that is sure of its beats still counts: the
+// music itself 0.37 beat off for 40 s
+void testNetworkSureOffGrid() {
+    g_context = "network sure off grid";
+    const double bpm = 138.0, beat = 60.0 / bpm;
+    Track t;
+    RawBeats net;
+    for (long j = 0; 0.05 + j * beat < t.seconds - 0.2; j++) {
+        double c = 0.05 + j * beat;
+        if (c >= 60.0 && c < 100.0) c -= 0.37 * beat;
+        t.clicks.push_back(c);
+        net.beats.push_back(c);
+        net.confidence.push_back(0.99f);
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    const std::vector<jl_phrase_state> p = phrases(g, 4);
+    printPhrases(p);
+    const double phraseLength = 16 * beat, barsFrom = g.beatTime(g.firstBarBeat());
+    bool flagged = true;
+    for (size_t i = 0; i < p.size(); i++) {
+        const double t0 = barsFrom + i * phraseLength, t1 = t0 + phraseLength;
+        if (t0 >= 60.5 && t1 <= 99.5) flagged &= p[i] == jl_phrase_broken || p[i] == jl_phrase_reanchor;
+    }
+    CHECK(flagged, "the shifted stretch reads as Broken or a new grid, not no pulse");
+}
+
 void testInvalid() {
     g_context = "invalid";
     const BandEnergies none;
@@ -566,6 +649,8 @@ int main() {
     testOffbeatSection();
     testNetworkGrid();
     testNetworkSubdivisions();
+    testNetworkKickOut();
+    testNetworkSureOffGrid();
     testInvalid();
     testRegionSpeed();
     TEST_MAIN_END();

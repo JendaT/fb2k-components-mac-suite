@@ -57,7 +57,7 @@ StoredGrid toStored(const BeatGrid &grid) {
     out.summary.phrase_confidence = grid.phraseConfidence;
     out.summary.source = static_cast<uint8_t>(grid.source);
     for (const BeatRegion &r : grid.regions) {
-        out.regions.push_back({ r.startSeconds, r.beatSeconds, r.beatCount, r.quiet ? jl_region_quiet : 0u });
+        out.regions.push_back({ r.startSeconds, r.beatSeconds, r.beatCount, r.quiet || r.unsure ? jl_region_quiet : 0u });
     }
     out.bars = grid.bars;
     return out;

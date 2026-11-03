@@ -671,6 +671,7 @@ BarEvidence onsetEvidence(const BeatGrid &grid, const std::vector<float> &envelo
 struct RefinedBeats {
     std::vector<double> times;
     std::vector<bool> measured;
+    std::vector<float> confidence;  // the network's, per beat; empty: all sure
 };
 RefinedBeats refineOnOnsets(const RawBeats &raw, const std::vector<float> &envelope, double fps,
                             double firstFrameSeconds) {
@@ -678,6 +679,7 @@ RefinedBeats refineOnOnsets(const RawBeats &raw, const std::vector<float> &envel
     RefinedBeats out;
     out.times = beats;
     out.measured.assign(beats.size(), false);
+    if (raw.confidence.size() == beats.size()) out.confidence = raw.confidence;
     const long frames = static_cast<long>(envelope.size());
     const double reach = kOnsetSearch * fps;
     std::vector<double> peakTime(beats.size(), 0.0), peakStrength(beats.size(), 0.0);
@@ -739,6 +741,12 @@ BarEvidence measuredEvidence(const BeatGrid &grid, const RefinedBeats &refined, 
         if (it != times.begin() && (best == times.size() || t - *(it - 1) < times[best] - t)) best = static_cast<size_t>(it - times.begin()) - 1;
         if (best == times.size() || !refined.measured[best] || std::fabs(times[best] - t) > halfBeat) continue;
         const double offset = times[best] - t;
+        // Off the grid beat, only a beat the network is very sure of says the
+        // grid is wrong there
+        if (std::fabs(offset) > kBeatTolerance && !refined.confidence.empty() &&
+            refined.confidence[best] < kSureOffGrid) {
+            continue;
+        }
         e.offsets[bar].push_back(offset);
         if (std::fabs(offset) <= kBeatTolerance) {
             matchedMask[bar] |= static_cast<uint8_t>(1u << ((j - first) % kBeatsPerBar));
@@ -795,7 +803,7 @@ void flagRegionStarts(const BeatGrid &grid, BarEvidence &e) {
     };
     const BeatRegion *previous = nullptr;
     for (const BeatRegion &g : grid.regions) {
-        if (!g.stable()) continue;
+        if (!g.stable() || g.unsure) continue;
         if (previous) {
             const long j = std::max(first, std::lround((g.startSeconds - grid.anchorSeconds) / beat));
             const size_t bar = std::min(barCount - 1, static_cast<size_t>(j - first) / kBeatsPerBar);
@@ -812,10 +820,13 @@ void flagRegionStarts(const BeatGrid &grid, BarEvidence &e) {
 
 // Regions where many beats carry almost no onset energy (the tracker running
 // through a silence or a beatless stretch, or re-syncing as it ends) neither
-// anchor the grid nor mark where a new one begins
+// anchor the grid nor mark where a new one begins. With a network source,
+// also flags regions where most beats are not measured (see kUnsureShare).
 void markQuietRegions(std::vector<BeatRegion> &regions, const std::vector<double> &beats,
-                      const std::vector<float> &envelope, double fps, double firstFrameSeconds) {
+                      const std::vector<float> &envelope, double fps, double firstFrameSeconds,
+                      const std::vector<bool> *measured = nullptr) {
     if (envelope.empty() || beats.empty()) return;
+    const bool byMeasure = measured && measured->size() == beats.size();
     auto strength = [&](double t) {
         const long k = std::lround((t - kOnsetCorrection - firstFrameSeconds) * fps);
         float best = 0.0f;
@@ -829,14 +840,17 @@ void markQuietRegions(std::vector<BeatRegion> &regions, const std::vector<double
     const double typical = median(all);
     size_t next = 0;
     for (BeatRegion &g : regions) {
-        size_t count = 0, weak = 0;
+        size_t count = 0, weak = 0, unmeasured = 0;
         const double end = g.endSeconds() + 1e-6;
         while (next < beats.size() && beats[next] < g.startSeconds - 1e-6) next++;
         for (size_t k = next; k < beats.size() && beats[k] <= end; k++) {
             count++;
             weak += all[k] < kNoPulseLevel * typical;
+            unmeasured += byMeasure && !(*measured)[k];
         }
-        g.quiet = count > 0 && static_cast<double>(weak) > kQuietShare * static_cast<double>(count);
+        const double n = static_cast<double>(count);
+        g.quiet = count > 0 && static_cast<double>(weak) > kQuietShare * n;
+        g.unsure = count > 0 && static_cast<double>(unmeasured) > kUnsureShare * n;
     }
 }
 
@@ -852,7 +866,7 @@ BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, 
     const std::vector<double> &beats = network ? refined.times : raw.beats;
     grid.beats = beats;
     grid.regions = detail::constantRegions(beats);
-    markQuietRegions(grid.regions, beats, envelope, fps, firstFrameSeconds);
+    markQuietRegions(grid.regions, beats, envelope, fps, firstFrameSeconds, network ? &refined.measured : nullptr);
     const detail::MasterGrid master = detail::masterGrid(grid.regions, beats);
     if (!master.valid) return grid;
     grid.bpm = master.bpm;
