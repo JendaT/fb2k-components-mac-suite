@@ -29,6 +29,7 @@
 #pragma once
 
 #include "TempoEstimator.h"
+#include "../../../../shared/jl_beatgrid_types.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -70,18 +71,14 @@ struct BeatRegion {
     double endSeconds() const { return startSeconds + beatCount * beatSeconds; }
 };
 
-// One bar (4 beats) of the master grid
-struct BarStat {
-    int8_t offsetMs = 0;            // median signed offset of the raw beats from their grid beats, clamped
-    uint8_t matched = 0;            // grid beats with a raw beat within kBeatTolerance, 0..4
-    uint8_t pulse = 0;              // mean onset energy, kPulseUnit = the track's median bar
-    uint8_t flags = 0;              // kBarRegionStart
-};
-// A stable region with another phase or tempo than the one before it begins
-// here: its first beat is off that region's grid (an edit, a re-recorded
-// section) or its tempo steps by more than kTempoStep
-constexpr uint8_t kBarRegionStart = 1;
-constexpr int kPulseUnit = 64;
+// One bar (4 beats) of the master grid, as the API carries it
+// (jl_beatgrid_types.h). kBarRegionStart: a stable region with another
+// phase or tempo than the one before it begins here, its first beat off that
+// region's grid (an edit, a re-recorded section) or its tempo stepping by
+// more than kTempoStep.
+using BarStat = jl_bar_stat;
+constexpr uint8_t kBarRegionStart = jl_bar_region_start;
+constexpr int kPulseUnit = jl_pulse_unit;
 
 // Tempo references that settle half or double tempo: the estimate times
 // 0.5, 1 or 2 within kHintTolerance of one is taken. 0 = none.
@@ -129,12 +126,9 @@ BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies 
 BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, double framesPerSecond,
                        double firstFrameSeconds, double durationSeconds);
 
-// How a phrase marker is drawn, from its bars
-enum class PhraseState : uint8_t { Locked, Drifting, Broken, NoPulse, Reanchor };
-constexpr double kLockedMs = 10.0, kDriftingMs = 25.0;
-constexpr double kLockedShare = 0.75, kBrokenShare = 0.40;
-constexpr double kNoPulseLevel = 0.25;     // of the median bar
-PhraseState classifyPhrase(const BarStat *bars, size_t count);
+// How a phrase marker is drawn, from its bars: the shared rule
+// (jl_classify_phrase), so the seekbar colours phrases the same way
+constexpr double kNoPulseLevel = jl_phrase_no_pulse_level;
 
 namespace detail {
 

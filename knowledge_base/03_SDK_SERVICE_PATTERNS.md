@@ -746,6 +746,18 @@ class my_abort_callback : public abort_callback_impl {
 abort_callback_dummy aborter;
 ```
 
+**Never construct `abort_callback_impl` during static initialization.** Its
+constructor looks up `abort_notify_manager` through `fb2k::std_api_try_get`,
+and while the component's dylib is being loaded foobar2000's service system
+does not exist yet: the lookup dereferences a null pointer and foobar2000
+crashes at launch (SIGSEGV in `service_factory_base::enum_find_class`). This
+includes members of a service class registered with a namespace-scope
+`service_factory_single_t<T>` or `FB2K_SERVICE_FACTORY(T)`: the instance is
+built at load time. Hold it as `std::unique_ptr<abort_callback_impl>` and
+create it when the work starts (BPM Analyzer's beat grid service, 2026-11-03).
+The same applies to any `::get()` / `std_api_try_get` call in a constructor or
+initialiser that runs at load time.
+
 ## Best Practices
 
 1. **Always use anonymous namespaces** for service implementations

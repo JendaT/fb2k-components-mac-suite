@@ -350,7 +350,7 @@ std::vector<BarStat> barStats(const BeatGrid &grid, const std::vector<float> &en
     }
     for (size_t i = 0; i < barCount; i++) {
         const double ms = std::clamp(std::round(median(offsets[i]) * 1000.0), -127.0, 127.0);
-        bars[i].offsetMs = static_cast<int8_t>(ms);
+        bars[i].offset_ms = static_cast<int8_t>(ms);
         bars[i].matched = static_cast<uint8_t>(__builtin_popcount(matchedMask[i]));
     }
 
@@ -457,26 +457,6 @@ BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies 
     grid.tempoStrength = static_cast<float>(tempo.strength);
     grid.uncertain = tempo.strength < kUncertainStrength;
     return grid;
-}
-
-PhraseState classifyPhrase(const BarStat *bars, size_t count) {
-    if (!bars || count == 0) return PhraseState::NoPulse;
-    size_t quiet = 0, matched = 0;
-    bool regionStart = false;
-    std::vector<double> offsets;
-    for (size_t i = 0; i < count; i++) {
-        regionStart |= (bars[i].flags & kBarRegionStart) != 0;
-        if (bars[i].pulse < kNoPulseLevel * kPulseUnit) quiet++;
-        matched += bars[i].matched;
-        offsets.push_back(std::fabs(static_cast<double>(bars[i].offsetMs)));
-    }
-    if (regionStart) return PhraseState::Reanchor;
-    if (quiet * 2 > count) return PhraseState::NoPulse;
-    const double offset = median(offsets);
-    const double share = static_cast<double>(matched) / static_cast<double>(count * kBeatsPerBar);
-    if (offset > kDriftingMs || share < kBrokenShare) return PhraseState::Broken;
-    if (offset > kLockedMs || share < kLockedShare) return PhraseState::Drifting;
-    return PhraseState::Locked;
 }
 
 } // namespace bpm

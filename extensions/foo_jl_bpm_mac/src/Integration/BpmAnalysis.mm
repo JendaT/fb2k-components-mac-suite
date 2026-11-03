@@ -8,12 +8,15 @@
 //       artist + title search is never asked for, so a cover or remaster can
 //       not lend its tempo to the wrong file.
 //    2. Local analysis of every local file still without a result, several
-//       tracks at a time on background-priority threads.
+//       tracks at a time on background-priority threads. The same decode
+//       also gives each track its beat grid, stored for the seekbar.
 //
 
 #include "BpmAnalysis.h"
 
+#include "BeatGridService.h"
 #include "BpmJob.h"
+#include "TrackDecode.h"
 #include "../Core/BpmValue.h"
 #include "../Core/TempoEstimator.h"
 #include "../../../../shared/jl_tidal_api.h"
@@ -36,10 +39,6 @@
 namespace bpm {
 
 namespace {
-
-// Guard against inputs that never end; a single BPM for hours of audio would
-// be meaningless anyway.
-constexpr double kMaxDecodeSeconds = 3.0 * 3600.0;
 
 constexpr unsigned kMaxWorkers = 8;
 constexpr auto kPollInterval = std::chrono::milliseconds(100);
@@ -155,44 +154,27 @@ bool askTidal(const std::shared_ptr<AnalysisJob> &job, const jl_tidal_lookup::pt
 
 // `progress` receives the decoded share of the track (0..1) for the dialog.
 void analyzeRow(TrackRow &row, abort_callback &abort, std::atomic<double> &progress) {
-    try {
-        const double length = row.handle->get_length();  // <= 0 when unknown
-        input_helper decoder;
-        decoder.open(nullptr, row.handle, input_flag_simpledecode, abort);
-
-        audio_chunk_impl_temporary chunk;
-        std::unique_ptr<OnsetEnvelope> envelope;
-        unsigned rate = 0;
-        while (decoder.run(chunk, abort)) {
-            if (!envelope) {
-                rate = chunk.get_sample_rate();
-                envelope = std::make_unique<OnsetEnvelope>(rate);
-            } else if (chunk.get_sample_rate() != rate) {
-                row.problem = "Sample rate changes within the track";
-                return;
-            }
-            envelope->addInterleaved(chunk.get_data(), chunk.get_sample_count(), chunk.get_channel_count());
-            if (length > 0.0) progress = std::min(1.0, envelope->secondsAdded() / length);
-            if (envelope->secondsAdded() > kMaxDecodeSeconds) break;
-        }
-        if (!envelope) {
-            row.problem = "No audio decoded";
-            return;
-        }
-
-        const TempoResult result = estimateTempo(envelope->values(), envelope->framesPerSecond());
-        if (!result.valid) {
-            row.problem = envelope->secondsAdded() < kMinimumSeconds ? "Too short to analyze" : "No beat found";
-            return;
-        }
-        row.source = ResultSource::Analysis;
-        row.bpm = result.bpm;
-        row.strength = result.strength;
-    } catch (exception_aborted const &) {
-        throw;
-    } catch (std::exception const &e) {
-        row.problem = std::string("Could not decode: ") + e.what();
+    const auto started = std::chrono::steady_clock::now();
+    const DecodedTrack track = decodeTrack(row.handle, abort, &progress);
+    if (!track.problem.empty()) {
+        row.problem = track.problem;
+        return;
     }
+
+    // The beat grid from the same decode, for the seekbar's phrase markers
+    const BeatGrid grid = analyseBeatGrid(track.envelope, track.bands, track.framesPerSecond,
+                                          track.firstFrameSeconds, track.seconds, hintsFor(row.handle));
+    storeAnalysedGrid(row.handle, grid,
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+
+    const TempoResult result = estimateTempo(track.envelope, track.framesPerSecond);
+    if (!result.valid) {
+        row.problem = track.seconds < kMinimumSeconds ? "Too short to analyze" : "No beat found";
+        return;
+    }
+    row.source = ResultSource::Analysis;
+    row.bpm = result.bpm;
+    row.strength = result.strength;
 }
 
 // Returns false when the user aborted.

@@ -76,28 +76,28 @@ BeatGrid analyse(const Track &t, const BeatGridHints &hints = {}) {
     return analyseBeatGrid(env.values(), env.bands(), env.framesPerSecond(), env.firstFrameSeconds(), t.seconds, hints);
 }
 
-std::vector<PhraseState> phrases(const BeatGrid &g, size_t barsPerPhrase = 8) {
-    std::vector<PhraseState> out;
+std::vector<jl_phrase_state> phrases(const BeatGrid &g, size_t barsPerPhrase = 8) {
+    std::vector<jl_phrase_state> out;
     for (size_t b = 0; b < g.bars.size(); b += barsPerPhrase) {
-        out.push_back(classifyPhrase(g.bars.data() + b, std::min(barsPerPhrase, g.bars.size() - b)));
+        out.push_back(jl_classify_phrase(g.bars.data() + b, std::min(barsPerPhrase, g.bars.size() - b)));
     }
     return out;
 }
 
-const char *name(PhraseState s) {
+const char *name(jl_phrase_state s) {
     switch (s) {
-        case PhraseState::Locked: return "L";
-        case PhraseState::Drifting: return "D";
-        case PhraseState::Broken: return "B";
-        case PhraseState::NoPulse: return "-";
-        case PhraseState::Reanchor: return "R";
+        case jl_phrase_locked: return "L";
+        case jl_phrase_drifting: return "D";
+        case jl_phrase_broken: return "B";
+        case jl_phrase_no_pulse: return "-";
+        case jl_phrase_reanchor: return "R";
     }
     return "?";
 }
 
-void printPhrases(const std::vector<PhraseState> &p) {
+void printPhrases(const std::vector<jl_phrase_state> &p) {
     printf("    phrases: ");
-    for (PhraseState s : p) printf("%s", name(s));
+    for (jl_phrase_state s : p) printf("%s", name(s));
     printf("\n");
 }
 
@@ -245,7 +245,7 @@ void testClickTracks() {
         }
         CHECK_EQ(g.regions.size(), 1, "one region");
         bool locked = true;
-        for (PhraseState s : phrases(g)) locked &= s == PhraseState::Locked;
+        for (jl_phrase_state s : phrases(g)) locked &= s == jl_phrase_locked;
         if (!locked) printPhrases(phrases(g));
         CHECK(locked, "every phrase Locked");
         CHECK(!g.uncertain, "a steady beat is certain");
@@ -265,7 +265,7 @@ void testJitter() {
     printf("    jitter: bpm %.3f, %zu regions (%zu stable)\n", g.bpm, g.regions.size(), stableCount(g));
     CHECK(std::fabs(g.bpm - 128.0) <= 0.01, "BPM within 0.01");
     bool locked = true;
-    for (PhraseState s : phrases(g)) locked &= s == PhraseState::Locked;
+    for (jl_phrase_state s : phrases(g)) locked &= s == jl_phrase_locked;
     if (!locked) printPhrases(phrases(g));
     CHECK(locked, "every phrase Locked");
 }
@@ -278,7 +278,7 @@ void testPhaseJump() {
     CHECK(g.valid, "valid grid");
     if (!g.valid) return;
     CHECK_EQ(stableCount(g), 2, "two stable regions");
-    const std::vector<PhraseState> p = phrases(g);
+    const std::vector<jl_phrase_state> p = phrases(g);
     printPhrases(p);
 
     // The region start is flagged in the bar that holds the jump: the first shifted click
@@ -298,10 +298,10 @@ void testPhaseJump() {
     const size_t jumpPhrase = jumpBar / 8;
     bool before = true, after = true;
     for (size_t i = 0; i < p.size(); i++) {
-        if (i < jumpPhrase) before &= p[i] == PhraseState::Broken;
-        if (i > jumpPhrase) after &= p[i] == PhraseState::Locked;
+        if (i < jumpPhrase) before &= p[i] == jl_phrase_broken;
+        if (i > jumpPhrase) after &= p[i] == jl_phrase_locked;
     }
-    CHECK(p.size() > jumpPhrase && p[jumpPhrase] == PhraseState::Reanchor, "the phrase with the jump re-anchors");
+    CHECK(p.size() > jumpPhrase && p[jumpPhrase] == jl_phrase_reanchor, "the phrase with the jump re-anchors");
     CHECK(before, "phrases off the master grid are Broken");
     CHECK(after, "phrases on it are Locked");
 }
@@ -316,13 +316,13 @@ void testRamp() {
     const BeatGrid g = analyse(t);
     CHECK(g.valid, "valid grid");
     if (!g.valid) return;
-    const std::vector<PhraseState> p = phrases(g);
+    const std::vector<jl_phrase_state> p = phrases(g);
     printPhrases(p);
     size_t locked = 0, drifting = 0;
-    for (PhraseState s : p) { locked += s == PhraseState::Locked; drifting += s == PhraseState::Drifting; }
+    for (jl_phrase_state s : p) { locked += s == jl_phrase_locked; drifting += s == jl_phrase_drifting; }
     CHECK(locked > 0, "Locked near the anchor");
     CHECK(drifting > 0, "Drifting away from it");
-    CHECK(p.front() == PhraseState::Broken || p.back() == PhraseState::Broken, "Broken towards an end");
+    CHECK(p.front() == jl_phrase_broken || p.back() == jl_phrase_broken, "Broken towards an end");
 }
 
 void testSilence() {
@@ -341,16 +341,16 @@ void testSilence() {
         CHECK(g.valid, "valid grid");
         if (!g.valid) continue;
         CHECK(std::fabs(g.bpm - 128.0) <= 0.01, "BPM within 0.01");
-        const std::vector<PhraseState> p = phrases(g, 4);
+        const std::vector<jl_phrase_state> p = phrases(g, 4);
         printPhrases(p);
         const double phraseLength = 16 * g.beatSeconds();
         bool silentNoPulse = true, noBroken = true, afterLocked = true, noReanchor = true;
         for (size_t i = 0; i < p.size(); i++) {
             const double t0 = g.anchorSeconds + i * phraseLength, t1 = t0 + phraseLength;
-            if (t0 >= from && t1 <= from + length) silentNoPulse &= p[i] == PhraseState::NoPulse;
-            if (t0 >= from + length) afterLocked &= p[i] == PhraseState::Locked;
-            noBroken &= p[i] != PhraseState::Broken;
-            noReanchor &= p[i] != PhraseState::Reanchor;
+            if (t0 >= from && t1 <= from + length) silentNoPulse &= p[i] == jl_phrase_no_pulse;
+            if (t0 >= from + length) afterLocked &= p[i] == jl_phrase_locked;
+            noBroken &= p[i] != jl_phrase_broken;
+            noReanchor &= p[i] != jl_phrase_reanchor;
         }
         CHECK(silentNoPulse, "No pulse in the silence");
         CHECK(noBroken, "never Broken");
@@ -364,7 +364,7 @@ void testInvalid() {
     const BandEnergies none;
     CHECK(!analyseBeatGrid({}, none, 172.0, 0.0, 0.0).valid, "no envelope");
     CHECK(!analyseBeatGrid(std::vector<float>(2000, 0.0f), none, 172.0, 0.0, 11.6).valid, "silence");
-    CHECK(classifyPhrase(nullptr, 0) == PhraseState::NoPulse, "no bars");
+    CHECK(jl_classify_phrase(nullptr, 0) == jl_phrase_no_pulse, "no bars");
 }
 
 // Hour-long mixes have ~8000 beats; the region search must stay fast
