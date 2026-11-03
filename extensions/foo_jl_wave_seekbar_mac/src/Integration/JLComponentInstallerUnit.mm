@@ -6,4 +6,5 @@
 //  into this component.
 //
 
+#include "JLDependencyPrefix.h"
 #include "../../../../shared/jl_dependency/JLComponentInstaller.mm"

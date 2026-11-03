@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "JLDependencyPrefix.h"
 #import "../../../../shared/jl_dependency/JLDependencyGate.h"
 
 // The manager for BPM Analyzer, configured for this component

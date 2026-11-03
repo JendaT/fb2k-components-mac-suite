@@ -28,6 +28,8 @@ void testVersions() {
     CHECK(toString(parseVersion("v2.0.11")) == "2.0.11", "printed back");
 }
 
+const char *const kRepo = "JendaT/fb2k-components-mac-suite";
+
 std::vector<Release> suiteReleases() {
     auto rel = [](const char *tag, std::vector<Asset> assets, bool draft = false, bool pre = false) {
         Release r;
@@ -37,28 +39,44 @@ std::vector<Release> suiteReleases() {
         r.assets = std::move(assets);
         return r;
     };
-    const Asset pkg{ "foo_jl_bpm.fb2k-component", 8986039, "https://github.com/x/releases/download/t/foo_jl_bpm.fb2k-component" };
-    const Asset sums{ "SHA256SUMS", 92, "https://github.com/x/releases/download/t/SHA256SUMS" };
+    auto assets = [](const char *tag, bool withSums = true) {
+        std::vector<Asset> a = { { "foo_jl_bpm.fb2k-component", 8986039,
+                                   releaseAssetURL(kRepo, tag, "foo_jl_bpm.fb2k-component") } };
+        if (withSums) a.push_back({ "SHA256SUMS", 92, releaseAssetURL(kRepo, tag, "SHA256SUMS") });
+        return a;
+    };
+    std::vector<Asset> elsewhere = assets("bpm-v0.4.0");
+    elsewhere[0].url = "https://github.com/someone/else/releases/download/bpm-v0.4.0/foo_jl_bpm.fb2k-component";
     return {
         rel("waveform-seekbar-v2.0.0", { { "foo_jl_wave_seekbar.fb2k-component", 1, "u" } }),   // the repo's latest
-        rel("bpm-v0.1.0", { pkg, sums }),
-        rel("bpm-v0.3.0", { pkg, sums }, true),                 // draft
-        rel("bpm-v0.2.0", { pkg, sums }, false, true),          // prerelease
-        rel("bpm-v0.1.5", { pkg }),                             // no checksums
-        rel("bpm-v0.1.9-test", { pkg, sums }),                  // not X.Y.Z
-        rel("bpmx-v9.0.0", { pkg, sums }),                      // another prefix
-        rel("bpm-v0.1.2", { pkg, sums }),
+        rel("bpm-v0.1.0", assets("bpm-v0.1.0")),
+        rel("bpm-v0.3.0", assets("bpm-v0.3.0"), true),          // draft
+        rel("bpm-v0.2.0", assets("bpm-v0.2.0"), false, true),   // prerelease
+        rel("bpm-v0.1.5", assets("bpm-v0.1.5", false)),         // no checksums
+        rel("bpm-v0.1.9-test", assets("bpm-v0.1.9-test")),      // not X.Y.Z
+        rel("bpmx-v9.0.0", assets("bpmx-v9.0.0")),              // another prefix
+        rel("bpm-v0.4.0", elsewhere),                           // its package served from another repository
+        rel("bpm-v0.1.2", assets("bpm-v0.1.2")),
     };
 }
 
 void testPickRelease() {
     TEST_CASE("pick release");
-    const Pick p = pickRelease(suiteReleases(), "bpm-v", "foo_jl_bpm.fb2k-component");
+    const Pick p = pickRelease(suiteReleases(), kRepo, "bpm-v", "foo_jl_bpm.fb2k-component");
     CHECK(p.found, "found");
-    CHECK(p.tag == "bpm-v0.1.2", "the newest published bpm-v release with both assets");
+    CHECK(p.tag == "bpm-v0.1.2", "the newest published bpm-v release with both assets from its own URLs");
     CHECK(p.package.size == 8986039 && p.sums.name == "SHA256SUMS", "its assets");
-    CHECK(!pickRelease(suiteReleases(), "bpm-v", "other.fb2k-component").found, "no such asset");
-    CHECK(!pickRelease({}, "bpm-v", "foo_jl_bpm.fb2k-component").found, "no releases");
+    CHECK(!pickRelease(suiteReleases(), kRepo, "bpm-v", "other.fb2k-component").found, "no such asset");
+    CHECK(!pickRelease({}, kRepo, "bpm-v", "foo_jl_bpm.fb2k-component").found, "no releases");
+    CHECK(!pickRelease(suiteReleases(), "someone/else", "bpm-v", "foo_jl_bpm.fb2k-component").found,
+          "pinned to the repository");
+
+    // Tags from the repository's tag list, newest first
+    const std::vector<std::string> tags = newestTags(
+        { "refs/tags/bpm-v0.1.0", "refs/tags/bpm-v0.10.0", "refs/tags/bpm-v0.9.1", "refs/tags/bpm-v1.0.0-rc1",
+          "refs/tags/bpm-vnext", "refs/tags/bpmx-v5.0.0", "refs/heads/bpm-v9.0.0" }, "bpm-v", 2);
+    CHECK(tags.size() == 2 && tags[0] == "bpm-v0.10.0" && tags[1] == "bpm-v0.9.1", "newest two X.Y.Z tags");
+    CHECK(newestTags({}, "bpm-v", 5).empty(), "no tags");
 }
 
 void testChecksum() {
@@ -82,6 +100,8 @@ void testHosts() {
     CHECK(allowedDownloadHost("https", "api.github.com"), "the API");
     CHECK(allowedDownloadHost("https", "objects.githubusercontent.com"), "release storage");
     CHECK(allowedDownloadHost("https", "Release-Assets.GitHubUserContent.com"), "case-insensitive");
+    CHECK(!allowedDownloadHost("https", "raw.githubusercontent.com"), "not anyone's raw files");
+    CHECK(!allowedDownloadHost("https", "gist.githubusercontent.com"), "not gists");
     CHECK(!allowedDownloadHost("http", "github.com"), "not plain HTTP");
     CHECK(!allowedDownloadHost("https", "githubusercontent.com.evil.example"), "not a lookalike");
     CHECK(!allowedDownloadHost("https", "evilgithubusercontent.com"), "not a suffix without the dot");
@@ -132,6 +152,10 @@ void testArchive() {
     CHECK(!checkWith("-rw-a--     2.0 fat      243 bx defN 26-Nov-03 23:39 mac/foo_jl_bpm.component/x\n").ok, "a non-Unix entry");
     CHECK(!checkWith("prw-r--r--  3.0 unx        0 bx stor 26-Nov-03 23:39 mac/foo_jl_bpm.component/fifo\n").ok, "a pipe");
     CHECK(checkWith(row + "mac/foo_jl_bpm.component/Contents/Resources/with space.txt\n").ok, "a name with a space is fine");
+    CHECK(checkArchiveListing("drwxr-xr-x  3.0 unx        0 bx stor 26-Nov-03 23:39 mac/\n"
+                              "-rwxr-xr-x  3.0 unx        1 bx defN 26-Nov-03 23:39 mac/foo_jl_bpm.component/Contents/MacOS/foo_jl_bpm\n"
+                              "1 file, 1 bytes uncompressed, 1 bytes compressed:  0.0%\n",
+                              "foo_jl_bpm.component", "foo_jl_bpm").ok, "the singular trailer line");
 
     std::string noExe = kPublished;
     const std::string exeLine = "-rwxr-xr-x  3.0 unx  3371616 bx defN 26-Nov-03 23:39 mac/foo_jl_bpm.component/Contents/MacOS/foo_jl_bpm\n";
@@ -162,12 +186,12 @@ void testResume() {
     ResumeNote n;
     n.component = "foo_jl_bpm";
     n.pageGuid = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
-    n.featureKey = "phrase_markers";
+    n.dependent = "Waveform Seekbar";
     n.version = "0.1.0";
     n.timestamp = 1793750400;
     ResumeNote back;
     CHECK(decodeResume(encodeResume(n), back), "round trip");
-    CHECK(back.component == n.component && back.pageGuid == n.pageGuid && back.featureKey == n.featureKey &&
+    CHECK(back.component == n.component && back.pageGuid == n.pageGuid && back.dependent == n.dependent &&
               back.version == n.version && back.timestamp == n.timestamp, "every field");
     CHECK(resumeIsFresh(back, n.timestamp + 30), "half a minute later");
     CHECK(!resumeIsFresh(back, n.timestamp + kResumeMaxAgeSeconds + 1), "after ten minutes: dropped");

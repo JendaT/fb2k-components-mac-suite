@@ -7,4 +7,5 @@
 //
 
 #include "../fb2k_sdk.h"
+#include "JLDependencyPrefix.h"
 #include "../../../../shared/jl_dependency/JLDependencyGate.mm"
