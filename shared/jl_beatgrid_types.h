@@ -10,9 +10,12 @@
 // jl_beatgrid_api.h adds the service on top.
 //
 // Grid model: one master grid per track, beat j at
-// anchor_seconds + j * 60 / bpm, bars of 4 beats counted from beat 0. The
-// per-bar statistics say how well the detected beats sit on it; a phrase of
-// 16 or 32 beats aggregates 4 or 8 bars at draw time.
+// anchor_seconds + j * 60 / bpm. Bars of 4 beats start on beat bar_phase
+// (beat 0 when bar_phase is -1, unknown): bar i covers beats
+// jl_first_bar_beat() + 4i .. + 3, and so do the per-bar statistics, which
+// say how well the detected beats sit on the grid. A phrase of 16 or 32
+// beats aggregates 4 or 8 bars at draw time, starting on bar
+// phrase_phase_bars (mod 8) when phrase_confidence allows.
 //
 // ABI: these structs cross the dylib boundary inside pfc::array_t (see
 // jl_beatgrid_api.h). Their layouts are FROZEN for the service GUID there:
@@ -77,6 +80,11 @@ static_assert(sizeof(jl_beatgrid_summary) == 32, "jl_beatgrid_summary layout is 
 
 inline double jl_beat_time(const jl_beatgrid_summary &grid, long beat) {
     return grid.bpm > 0.0 ? grid.anchor_seconds + static_cast<double>(beat) * 60.0 / grid.bpm : 0.0;
+}
+
+// The beat bar 0 (and bars[0] of the statistics) starts on
+inline long jl_first_bar_beat(const jl_beatgrid_summary &grid) {
+    return grid.bar_phase > 0 ? grid.bar_phase : 0;
 }
 
 // ---------------------------------------------------------------------------
