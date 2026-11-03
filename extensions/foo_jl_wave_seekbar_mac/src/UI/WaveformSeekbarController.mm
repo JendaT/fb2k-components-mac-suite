@@ -102,9 +102,8 @@ public:
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
-    // Phrase markers switched on or off
-    using namespace waveform_config;
-    if (!getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) [self dropPhraseGrid];
+    // Phrase markers or beat-synced animation switched on or off
+    if (![self wantsBeatGrid]) [self dropPhraseGrid];
     else if (!_phraseGrid) [self fetchPhraseGrid];
     // The fine detail switched on or off
     if (!WaveformService::detailEnabled()) {
@@ -116,15 +115,24 @@ public:
 
 #pragma mark - Beat Grid
 
-// The current track's grid from BPM Analyzer when phrase markers are on:
+// The grid is wanted for phrase markers, and for animated cursor effects
+// synced to the beat
+- (BOOL)wantsBeatGrid {
+    using namespace waveform_config;
+    if (getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) return YES;
+    if (!getConfigBool(kKeyBpmSync, kDefaultBpmSync) || !getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion)) {
+        return NO;
+    }
+    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
+    return effect == CursorEffectGlow || effect == CursorEffectScanline || effect == CursorEffectPulse ||
+           effect == CursorEffectShimmer;
+}
+
+// The current track's grid from BPM Analyzer when it is wanted:
 // fetched when stored, else asked for (urgent: it is playing). Called once
 // the seekbar's own scan of the track is done, so the decodes don't compete.
 - (void)fetchPhraseGrid {
-    using namespace waveform_config;
-    if (!_grids.is_valid() || !_currentTrack.is_valid() || !_storedWaveform ||
-        !getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) {
-        return;
-    }
+    if (!_grids.is_valid() || !_currentTrack.is_valid() || !_storedWaveform || ![self wantsBeatGrid]) return;
     switch (_grids->get_status(_currentTrack)) {
         case jl_beatgrid::ready: {
             auto grid = std::make_shared<waveseek::PhraseGrid>();

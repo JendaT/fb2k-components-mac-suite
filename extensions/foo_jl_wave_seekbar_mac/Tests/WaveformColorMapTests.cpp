@@ -121,6 +121,17 @@ void testAnimationFrequency() {
     CHECK_NEAR(animationFrequency(true, -30.0, 1.5), 1.5, 1e-9, "a nonsense tempo keeps the default rate");
 }
 
+void testBeatSync() {
+    TEST_CASE("beat sync");
+    const double bpm = 128.0, anchor = 0.37, beat = 60.0 / bpm;
+    for (int n : { 0, 1, 7, 300 }) {
+        const double onBeat = anchor + n * beat;
+        CHECK_NEAR(oscillator(beatSyncedTime(onBeat, anchor, bpm), bpm / 60.0), 1.0, 1e-9, "peaks on every grid beat");
+        CHECK_NEAR(oscillator(beatSyncedTime(onBeat + beat / 2, anchor, bpm), bpm / 60.0), 0.0, 1e-9,
+                   "and is lowest halfway between beats");
+    }
+}
+
 void testOscillator() {
     TEST_CASE("oscillator");
 
@@ -150,5 +161,6 @@ int main() {
     testArgbClamping();
     testAnimationFrequency();
     testOscillator();
+    testBeatSync();
     return testsupport::summarize("WaveformColorMapTests");
 }

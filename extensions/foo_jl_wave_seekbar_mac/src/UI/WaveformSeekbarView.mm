@@ -1147,9 +1147,22 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextRestoreGState(context);
 }
 
-// Get animation frequency: uses BPM if sync enabled, otherwise returns default
+// The animation rate: with sync on, the beat grid's tempo when there is one,
+// else the BPM tag's; otherwise the effect's own default
 - (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
+    if (self.bpmSync && _phraseGrid && _phraseGrid->summary.bpm > 0.0) return _phraseGrid->summary.bpm / 60.0;
     return waveseek::animationFrequency(self.bpmSync, self.trackBpm, defaultHz);
+}
+
+// The effects' clock. With sync on and a beat grid, while playing: the
+// playback position counted from the grid's anchor, a quarter beat ahead, so
+// a sine at the beat rate peaks exactly on every beat. Otherwise wall time.
+- (double)animationTime {
+    if (self.bpmSync && self.isPlaying && _phraseGrid && _phraseGrid->summary.bpm > 0.0 && self.trackDuration > 0.0) {
+        return waveseek::beatSyncedTime(self.playbackPosition * self.trackDuration,
+                                        _phraseGrid->summary.anchor_seconds, _phraseGrid->summary.bpm);
+    }
+    return CFAbsoluteTimeGetCurrent();
 }
 
 #pragma mark - Cursor Effects (as before the redesign)
@@ -1204,7 +1217,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
     // Pulsing glow at cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
     CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
     CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
@@ -1249,7 +1262,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (!waveDeviceColor) return;
 
     // Animated scanlines traveling near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat scanRange = 30.0;  // Lines travel within 30px of cursor
     CGFloat baseFreq = [self animationFrequencyWithDefault:1.0];  // Base frequency
 
@@ -1285,7 +1298,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (void)drawPulseEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                      playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Breathing opacity for the entire played area
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat freq = [self animationFrequencyWithDefault:1.5] * 2.0 * M_PI;  // Default 1.5Hz
     CGFloat breath = 0.5 + 0.5 * sin(time * freq);
 
@@ -1340,7 +1353,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
     // Draw shimmering bands near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat shimmerWidth = 30.0;
     CGFloat bandCount = 5;
     CGFloat baseFreq = [self animationFrequencyWithDefault:2.5];  // Default 2.5Hz

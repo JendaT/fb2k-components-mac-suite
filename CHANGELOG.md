@@ -371,6 +371,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 #### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.
+- **BPM sync**: With a beat grid from BPM Analyzer, animated cursor effects peak on every beat.
 
 #### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform" after 60 s.
