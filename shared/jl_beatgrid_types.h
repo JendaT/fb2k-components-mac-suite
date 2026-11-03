@@ -109,7 +109,8 @@ inline constexpr double jl_phrase_no_pulse_level = 0.25;   // of jl_pulse_unit
 
 // The state of the phrase made of `count` bars (4 for 16 beats, 8 for 32).
 // Re-anchor wins, then no pulse (most bars under a quarter of the median),
-// then the median absolute offset and the share of matched beats decide.
+// then the median absolute offset and the share of matched beats of the bars
+// with pulse decide: a quiet bar says nothing about the grid.
 inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count) {
     if (!bars || count == 0) return jl_phrase_no_pulse;
     size_t quiet = 0, matched = 0;
@@ -118,12 +119,15 @@ inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count)
     offsets.reserve(count);
     for (size_t i = 0; i < count; i++) {
         region_start |= (bars[i].flags & jl_bar_region_start) != 0;
-        if (bars[i].pulse < jl_phrase_no_pulse_level * jl_pulse_unit) quiet++;
+        if (bars[i].pulse < jl_phrase_no_pulse_level * jl_pulse_unit) {
+            quiet++;
+            continue;
+        }
         matched += bars[i].matched;
         offsets.push_back(std::fabs(static_cast<double>(bars[i].offset_ms)));
     }
     if (region_start) return jl_phrase_reanchor;
-    if (quiet * 2 > count) return jl_phrase_no_pulse;
+    if (quiet * 2 > count || offsets.empty()) return jl_phrase_no_pulse;
 
     const size_t mid = offsets.size() / 2;
     std::nth_element(offsets.begin(), offsets.begin() + static_cast<std::ptrdiff_t>(mid), offsets.end());
@@ -131,7 +135,7 @@ inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count)
     if (offsets.size() % 2 == 0) {
         offset = 0.5 * (offset + *std::max_element(offsets.begin(), offsets.begin() + static_cast<std::ptrdiff_t>(mid)));
     }
-    const double share = static_cast<double>(matched) / static_cast<double>(count * 4);
+    const double share = static_cast<double>(matched) / static_cast<double>(offsets.size() * 4);
     if (offset > jl_phrase_drifting_ms || share < jl_phrase_broken_share) return jl_phrase_broken;
     if (offset > jl_phrase_locked_ms || share < jl_phrase_locked_share) return jl_phrase_drifting;
     return jl_phrase_locked;
