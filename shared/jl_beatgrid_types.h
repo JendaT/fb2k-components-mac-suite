@@ -52,6 +52,9 @@ enum : uint8_t {
     // A stable region with another phase or tempo than the one before it
     // begins in this bar (an edit, a re-recorded section, a tempo change)
     jl_bar_region_start = 1,
+    // The bar's onsets fall between the beats (an off-beat bassline before
+    // the kick comes in): nothing on the beats to judge the grid by
+    jl_bar_offbeat = 2,
 };
 inline constexpr int jl_pulse_unit = 64;
 
@@ -108,9 +111,9 @@ inline constexpr double jl_phrase_broken_share = 0.40;
 inline constexpr double jl_phrase_no_pulse_level = 0.25;   // of jl_pulse_unit
 
 // The state of the phrase made of `count` bars (4 for 16 beats, 8 for 32).
-// Re-anchor wins, then no pulse (most bars under a quarter of the median),
-// then the median absolute offset and the share of matched beats of the bars
-// with pulse decide: a quiet bar says nothing about the grid.
+// Re-anchor wins, then no pulse (most bars under a quarter of the median or
+// off-beat only), then the median absolute offset and the share of matched
+// beats of the other bars decide: those bars say nothing about the grid.
 inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count) {
     if (!bars || count == 0) return jl_phrase_no_pulse;
     size_t quiet = 0, matched = 0;
@@ -119,7 +122,7 @@ inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count)
     offsets.reserve(count);
     for (size_t i = 0; i < count; i++) {
         region_start |= (bars[i].flags & jl_bar_region_start) != 0;
-        if (bars[i].pulse < jl_phrase_no_pulse_level * jl_pulse_unit) {
+        if (bars[i].pulse < jl_phrase_no_pulse_level * jl_pulse_unit || (bars[i].flags & jl_bar_offbeat)) {
             quiet++;
             continue;
         }
