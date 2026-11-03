@@ -780,7 +780,7 @@ Display P3 colors contributed by @Scannou (#55).
 - **Analyze BPM...**: Tempo of the selected tracks with a review window before any tag is written.
 - **Sources**: TIDAL for exact ISRC matches when the Tidal component is installed; local analysis for the rest.
 - **Double BPM / Halve BPM**: Scale existing BPM tags.
-- **Beat grids**: A master beat grid per track for Waveform Seekbar's phrase markers.
+- **Beat grids**: A master beat grid per track with bar and phrase starts for Waveform Seekbar's phrase markers.
 
 ## Tidal Integration
 

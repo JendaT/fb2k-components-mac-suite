@@ -16,4 +16,5 @@ Initial release.
 - **Tag format**: Whole numbers, the only form ID3 TBPM and MP4 tmpo can hold.
 - **Progress**: The bar moves with the decoded share of every track in flight, not only between tracks.
 - **Beat grids**: A constant master beat grid per track with statistics per bar, stored with the track (not in tags) and served to Waveform Seekbar's phrase markers; analysed on request (the playing track first) and by Analyze BPM from the same decode.
+- **Bars and phrases**: Bar and 32-beat phrase starts found from the track's section changes; bar statistics measured on the onsets at the grid beats, off-beat-only bars and confirmed re-anchors flagged.
 - Universal binary (arm64 + x86_64).

@@ -22,7 +22,10 @@
 
 namespace bpm {
 
-constexpr uint32_t kStoredGridVersion = 1;
+// 2: bars start on the bar phase (stage 6). 3: bar statistics from the
+// onsets at the grid beats, phases from clustered section changes, off-beat
+// bars flagged. Grids of an older version are analysed again.
+constexpr uint32_t kStoredGridVersion = 3;
 
 struct StoredGrid {
     bool available = false;         // false: analysed, but no grid (no pulse, too short)

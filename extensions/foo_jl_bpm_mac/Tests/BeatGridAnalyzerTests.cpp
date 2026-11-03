@@ -249,6 +249,7 @@ void testClickTracks() {
         if (!locked) printPhrases(phrases(g));
         CHECK(locked, "every phrase Locked");
         CHECK(!g.uncertain, "a steady beat is certain");
+        CHECK(g.barPhase == -1, "identical clicks: no bar phase to claim");
     }
 }
 
@@ -359,6 +360,78 @@ void testSilence() {
     }
 }
 
+// 40 s with the clicks on the off-beats only (an off-beat bassline before
+// the kick comes in): nothing on the beats to judge the grid by, so no
+// pulse there, never broken
+void testOffbeatSection() {
+    g_context = "off-beat section";
+    Track t;
+    for (double c : steadyClicks(128.0, t.seconds)) t.clicks.push_back(c >= 60.0 && c < 100.0 ? c + 30.0 / 128.0 : c);
+    const BeatGrid g = analyse(t);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    CHECK(std::fabs(g.bpm - 128.0) <= 0.01, "BPM within 0.01");
+    const std::vector<jl_phrase_state> p = phrases(g, 4);
+    printPhrases(p);
+    const double phraseLength = 16 * g.beatSeconds();
+    const double barsFrom = g.beatTime(g.firstBarBeat());
+    bool noBroken = true, inside = true, afterLocked = true;
+    for (size_t i = 0; i < p.size(); i++) {
+        const double t0 = barsFrom + i * phraseLength, t1 = t0 + phraseLength;
+        noBroken &= p[i] != jl_phrase_broken && p[i] != jl_phrase_reanchor;
+        if (t0 >= 61.0 && t1 <= 99.0) inside &= p[i] == jl_phrase_no_pulse;
+        if (t0 >= 101.0) afterLocked &= p[i] == jl_phrase_locked;
+    }
+    CHECK(noBroken, "never Broken, no new grid (the tracker's jump to the off-beats is not one)");
+    CHECK(inside, "the off-beat stretch reads as no pulse");
+    CHECK(afterLocked, "the grid holds after it");
+}
+
+// Kick on 1 and 3, a hat on every beat, and a mid-range part that comes in
+// for 8 bars and drops out for 8. A 2-beat pickup puts the bars on beat 2
+// of the grid; counted from there the part changes on bars 3, 11, 19, ...
+void testBarAndPhrasePhase() {
+    g_context = "bar and phrase phase";
+    const double bpm = 128.0, beat = 60.0 / bpm, first = 0.05, seconds = 180.0;
+    const size_t frames = static_cast<size_t>(seconds * kRate);
+    std::vector<float> mono(frames);
+    Rng rng{ 77 };
+    for (auto &v : mono) v = static_cast<float>(0.005 * rng.next());
+    auto add = [&](double at, double length, auto sample) {
+        const auto start = static_cast<size_t>(at * kRate);
+        for (size_t i = 0; i < static_cast<size_t>(length * kRate) && start + i < frames; i++) {
+            mono[start + i] += static_cast<float>(sample(static_cast<double>(i) / kRate));
+        }
+    };
+    long beats = 0;
+    for (long j = 0; first + j * beat < seconds - 0.2; j++, beats++) {
+        const double t = first + j * beat;
+        add(t, 0.06, [&](double s) { return 0.3 * std::exp(-s / 0.01) * rng.next(); });                         // hat
+        if (j % 2 == 0) add(t, 0.4, [&](double s) { return 0.7 * std::exp(-s / 0.12) * std::sin(2 * kPi * 60 * s); });  // kick
+    }
+    // The part: bars k = 3..10, 19..26, ... (bar k starts on beat 2 + 4k)
+    for (long k = 3; 2 + 4 * (k + 1) <= beats; k++) {
+        if (((k - 3) / 8) % 2 != 0) continue;
+        const double t = first + (2 + 4 * k) * beat;
+        add(t, 4 * beat, [&](double s) { return 0.15 * std::sin(2 * kPi * 1000 * s); });
+    }
+
+    OnsetEnvelope env(kRate);
+    for (size_t pos = 0; pos < mono.size(); pos += 4096) env.addInterleaved(mono.data() + pos, std::min<size_t>(4096, mono.size() - pos), 1);
+    const BeatGrid g = analyseBeatGrid(env.values(), env.bands(), env.framesPerSecond(), env.firstFrameSeconds(), seconds);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    printf("    bar phase %d (confidence %.2f), phrase phase %d (confidence %.2f)\n", g.barPhase, g.barConfidence,
+           g.phrasePhaseBars, g.phraseConfidence);
+    CHECK(std::fabs(g.bpm - bpm) <= 0.01, "BPM within 0.01");
+    CHECK_EQ(g.barPhase, 2, "bars start on beat 2");
+    CHECK(g.barConfidence > jl_phrase_min_confidence, "bar phase confidence over 0.15");
+    CHECK_EQ(g.phrasePhaseBars, 3, "phrases start on bar 3");
+    CHECK(g.phraseConfidence > jl_phrase_min_confidence, "phrase phase confidence over 0.15");
+    CHECK_EQ(g.firstBarBeat(), 2, "bar statistics start on the bar phase");
+    CHECK(!g.bars.empty() && g.bars[1].matched == 4, "a bar holds its four beats");
+}
+
 void testInvalid() {
     g_context = "invalid";
     const BandEnergies none;
@@ -398,6 +471,8 @@ int main() {
     testPhaseJump();
     testRamp();
     testSilence();
+    testBarAndPhrasePhase();
+    testOffbeatSection();
     testInvalid();
     testRegionSpeed();
     TEST_MAIN_END();

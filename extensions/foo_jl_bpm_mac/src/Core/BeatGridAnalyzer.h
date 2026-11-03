@@ -22,8 +22,13 @@
 //  500-beat click track's running error passes the drift limit; the fit
 //  can't be bent by its ends, so the first-plus-last-interval check that
 //  guarded against that is not needed.
-//  Then per-bar statistics of the raw beats against the master grid. Bar
-//  and phrase phase (stage 6) come later; until then beat 0 starts a bar.
+//    6. Bar and phrase phase: which of the 4 beats starts a bar (the offset
+//       whose bars change most from one to the next, squared, in log band
+//       energy) and which bar starts a phrase (Foote checkerboard novelty
+//       over the bars' self-similarity, 8-bar kernel), each with a
+//       confidence (best - second) / best.
+//  Then per-bar statistics of the raw beats against the master grid, the
+//  bars starting on the bar phase (beat 0 when it is unknown).
 //
 
 #pragma once
@@ -104,16 +109,18 @@ struct BeatGrid {
     double anchorSeconds = 0.0;     // master-grid beat 0: the first grid beat at or after 0
     float tempoStrength = 0.0f;
     bool uncertain = true;          // tempo strength under kUncertainStrength: draw neutral
-    int8_t barPhase = -1;           // stage 6; -1 unknown
-    int8_t phrasePhaseBars = -1;
+    int8_t barPhase = -1;           // beat index mod 4 that starts a bar; -1 unknown (bars from beat 0)
+    int8_t phrasePhaseBars = -1;    // bar index mod 8 that starts a 32-beat phrase; -1 unknown
+    float barConfidence = 0.0f;
     float phraseConfidence = 0.0f;
     BeatSource source = BeatSource::Classic;
     std::vector<BeatRegion> regions;
-    std::vector<BarStat> bars;      // from beat 0 to the end of the track
+    std::vector<BarStat> bars;      // bars[i] covers beats firstBarBeat() + 4i .. + 3, to the end of the track
     std::vector<double> beats;      // the raw beats (diagnostics; not stored)
 
     double beatSeconds() const { return bpm > 0.0 ? 60.0 / bpm : 0.0; }
     double beatTime(long j) const { return anchorSeconds + static_cast<double>(j) * beatSeconds(); }
+    long firstBarBeat() const { return barPhase > 0 ? barPhase : 0; }
 };
 
 // The whole pipeline over an envelope from OnsetEnvelope. `bands` are for
@@ -121,10 +128,11 @@ struct BeatGrid {
 BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies &bands, double framesPerSecond,
                          double firstFrameSeconds, double durationSeconds, const BeatGridHints &hints = {});
 
-// Stages 4-5 and the bar statistics, for beats from any source. The
-// envelope gives each bar its pulse.
+// Stages 4-6 and the bar statistics, for beats from any source. The
+// envelope gives each bar its pulse; without `bands` the bar and phrase
+// phase stay unknown.
 BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, double framesPerSecond,
-                       double firstFrameSeconds, double durationSeconds);
+                       double firstFrameSeconds, double durationSeconds, const BandEnergies *bands = nullptr);
 
 // How a phrase marker is drawn, from its bars: the shared rule
 // (jl_classify_phrase), so the seekbar colours phrases the same way
@@ -146,6 +154,15 @@ struct MasterGrid {
 };
 MasterGrid masterGrid(const std::vector<BeatRegion> &regions, const std::vector<double> &beats);
 double snapBpm(double minBpm, double centerBpm, double maxBpm);
+// Stage 6 over the grid's beats
+struct Phases {
+    int barPhase = -1;              // under jl_phrase_min_confidence: -1
+    double barConfidence = 0.0;
+    int phraseBars = -1;            // bar (from the bar phase) mod 8 starting a 32-beat phrase
+    double phraseConfidence = 0.0;
+};
+Phases barAndPhrasePhase(const BeatGrid &grid, const BandEnergies &bands, const std::vector<float> &envelope,
+                         double framesPerSecond, double firstFrameSeconds, double durationSeconds);
 
 } // namespace detail
 

@@ -6,6 +6,7 @@
 #include "BeatGridAnalyzer.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -227,11 +228,27 @@ std::vector<BeatRegion> constantRegions(const std::vector<double> &b) {
     std::vector<BeatRegion> regions;
     if (b.size() < 2) return regions;
     const size_t last = b.size() - 1;
-    // From each start, the furthest end that still fits one grid; most
-    // spans that don't fit fail within a few beats, which keeps this fast
+    // From each start, the furthest end that still fits one grid: the span
+    // doubles while it fits, then the end is bisected between the last fit
+    // and the first failure (shrinking one beat at a time from the end took
+    // seconds on an hour-long mix with many tempo changes)
     for (size_t l = 0; l < last;) {
-        size_t r = last;
-        while (r > l + 1 && !fitsOneGrid(b, l, r)) r--;
+        size_t good = l + 1, bad = last + 1;   // one interval always fits
+        for (size_t step = kMinStableBeats;; step *= 2) {
+            const size_t r = std::min(last, good + step);
+            if (!fitsOneGrid(b, l, r)) {
+                bad = r;
+                break;
+            }
+            good = r;
+            if (r == last) break;
+        }
+        while (bad - good > 1) {
+            const size_t mid = good + (bad - good) / 2;
+            if (fitsOneGrid(b, l, mid)) good = mid;
+            else bad = mid;
+        }
+        const size_t r = good;
         const double length = r > l + 1 ? fitLine(b, l, r).length : b[r] - b[l];
         BeatRegion region;
         region.startSeconds = b[l];
@@ -324,6 +341,133 @@ MasterGrid masterGrid(const std::vector<BeatRegion> &regions, const std::vector<
     return out;
 }
 
+Phases barAndPhrasePhase(const BeatGrid &grid, const BandEnergies &bands, const std::vector<float> &envelope,
+                         double fps, double firstFrameSeconds, double durationSeconds) {
+    Phases out;
+    const double beat = grid.beatSeconds();
+    if (!(beat > 0.0) || !(fps > 0.0) || bands[0].empty()) return out;
+    const long beats = static_cast<long>(std::floor((durationSeconds - grid.anchorSeconds) / beat));
+    constexpr long kCycle = kBeatsPerBar * 8;          // a 32-beat phrase
+    constexpr long kHalfKernel = 4 * kBeatsPerBar;     // 4 bars each side
+    if (beats < 2 * kCycle) return out;
+
+    // Per beat: low / mid / high band energy and onset strength, in log over
+    // a floor relative to each one's typical level (silence stays finite),
+    // then each scaled to unit spread so all four count alike
+    constexpr int kFeatures = 4;
+    const size_t frames = std::min(envelope.size(), bands[0].size());
+    auto frameAt = [&](double t) {
+        const double k = std::ceil((t - kOnsetCorrection - firstFrameSeconds) * fps);
+        return static_cast<size_t>(std::clamp(k, 0.0, static_cast<double>(frames)));
+    };
+    std::vector<std::array<double, kFeatures>> v(static_cast<size_t>(beats));
+    for (long b = 0; b < beats; b++) {
+        const size_t k0 = frameAt(grid.beatTime(b)), k1 = frameAt(grid.beatTime(b + 1));
+        std::array<double, kFeatures> sum{};
+        for (size_t k = k0; k < k1; k++) {
+            for (int f = 0; f < 3; f++) sum[f] += bands[f][k];
+            sum[3] += envelope[k];
+        }
+        for (int f = 0; f < kFeatures; f++) v[static_cast<size_t>(b)][f] = k1 > k0 ? sum[f] / (k1 - k0) : 0.0;
+    }
+    // In log, over a floor relative to each one's typical level (silence
+    // stays finite), in units of 6 dB so a threshold means the same for all
+    const double kUnit = std::log(4.0);   // power x4 = 6 dB
+    for (int f = 0; f < kFeatures; f++) {
+        std::vector<double> level;
+        for (const auto &x : v) level.push_back(x[f]);
+        const double typical = median(level);
+        const double floorLevel = typical > 0.0 ? 1e-3 * typical : 1e-12;
+        for (auto &x : v) x[f] = std::log(floorLevel + x[f]) / kUnit;
+    }
+
+    // Novelty at a beat: Foote's checkerboard kernel, Gaussian-tapered, over
+    // the distances between the beats `half` either side, as the mean
+    // distance across the beat minus the mean within each side. A clean step
+    // of d units in one feature scores d / 2
+    auto distance = [&](long a, long b) {
+        double d = 0.0;
+        for (int f = 0; f < kFeatures; f++) {
+            const double x = v[static_cast<size_t>(a)][f] - v[static_cast<size_t>(b)][f];
+            d += x * x;
+        }
+        return std::sqrt(d);
+    };
+    auto noveltyAt = [&](long b, long half) {
+        double n = 0.0, weights = 0.0;
+        for (long x = -half; x < half; x++) {
+            const double tx = (x + 0.5) / (0.5 * half);
+            for (long y = -half; y < half; y++) {
+                const double ty = (y + 0.5) / (0.5 * half);
+                const double w = std::exp(-0.5 * (tx * tx + ty * ty));
+                n += ((x < 0) == (y < 0) ? -w : w) * distance(b + x, b + y);
+                weights += w;
+            }
+        }
+        return std::max(0.0, 2.0 * n / weights);
+    };
+    std::vector<double> novelty(static_cast<size_t>(beats), 0.0);
+    for (long b = kHalfKernel; b + kHalfKernel <= beats; b++) novelty[static_cast<size_t>(b)] = noveltyAt(b, kHalfKernel);
+
+    // The clear changes vote for their place in the 32-beat cycle: local
+    // peaks of at least kMinChange and over the mean plus one spread. Sections
+    // that build up or sweep in put the 4-bar peak a few beats off, so each is
+    // pinned to the beat where a 1-bar kernel peaks within half a bar of it
+    constexpr double kMinChange = 0.25;   // a 3 dB step
+    constexpr long kFineHalf = kBeatsPerBar, kSearch = kBeatsPerBar / 2;
+    double mean = 0.0, var = 0.0;
+    for (double n : novelty) mean += n;
+    mean /= static_cast<double>(beats);
+    for (double n : novelty) var += (n - mean) * (n - mean);
+    const double threshold = std::max(kMinChange, mean + std::sqrt(var / static_cast<double>(beats)));
+    std::vector<double> votes(kCycle, 0.0);
+    for (long b = 1; b + 1 < beats; b++) {
+        const double n = novelty[static_cast<size_t>(b)];
+        if (!(n > threshold && n >= novelty[static_cast<size_t>(b - 1)] && n > novelty[static_cast<size_t>(b + 1)])) continue;
+        long at = b;
+        double best = -1.0;
+        for (long c = std::max(kFineHalf, b - kSearch); c <= std::min(beats - kFineHalf, b + kSearch); c++) {
+            const double fine = noveltyAt(c, kFineHalf);
+            if (fine > best) {
+                best = fine;
+                at = c;
+            }
+        }
+        votes[static_cast<size_t>(at % kCycle)] += n;
+    }
+
+    // Where phrases start: the centre of the strongest cluster of changes.
+    // Fills in the bar before, drop-outs a beat early and parts entering a bar
+    // late scatter real section changes over a few beats either side, so the
+    // votes are smoothed over a bar each way. A phrase starts on a bar, so
+    // the bar phase follows. Confidence: how much the best position beats the
+    // best one at least 2 bars away (another cluster, e.g. 4-bar phrases)
+    auto circular = [](long a, long b) {
+        const long d = std::labs(a - b) % kCycle;
+        return std::min(d, kCycle - d);
+    };
+    std::vector<double> score(kCycle, 0.0);
+    for (long c = 0; c < kCycle; c++) {
+        for (long o = 0; o < kCycle; o++) {
+            const long d = circular(o, c);
+            if (d <= kBeatsPerBar) score[static_cast<size_t>(c)] += votes[static_cast<size_t>(o)] * (1.0 - d / (kBeatsPerBar + 1.0));
+        }
+    }
+    const long start = static_cast<long>(std::max_element(score.begin(), score.end()) - score.begin());
+    double rival = 0.0;
+    for (long c = 0; c < kCycle; c++) {
+        if (circular(c, start) >= 2 * kBeatsPerBar) rival = std::max(rival, score[static_cast<size_t>(c)]);
+    }
+    const double best = score[static_cast<size_t>(start)];
+    const double confidence = best > 1e-12 ? (best - rival) / best : 0.0;
+    out.barConfidence = confidence;
+    out.phraseConfidence = confidence;
+    if (confidence < jl_phrase_min_confidence) return out;
+    out.barPhase = static_cast<int>(start % kBeatsPerBar);
+    out.phraseBars = static_cast<int>(start / kBeatsPerBar);
+    return out;
+}
+
 } // namespace detail
 
 namespace {
@@ -333,31 +477,80 @@ namespace {
 std::vector<BarStat> barStats(const BeatGrid &grid, const std::vector<float> &envelope, double fps,
                               double firstFrameSeconds, double durationSeconds) {
     const double beat = grid.beatSeconds(), barLength = beat * kBeatsPerBar;
-    if (!(beat > 0.0) || !(durationSeconds > grid.anchorSeconds)) return {};
-    const size_t barCount = static_cast<size_t>(std::ceil((durationSeconds - grid.anchorSeconds) / barLength));
+    const long first = grid.firstBarBeat();
+    const double barsFrom = grid.beatTime(first);
+    if (!(beat > 0.0) || !(durationSeconds > barsFrom)) return {};
+    const size_t barCount = static_cast<size_t>(std::ceil((durationSeconds - barsFrom) / barLength));
     std::vector<BarStat> bars(barCount);
 
+    // Offsets and matches from the audio at each grid beat: the onset peak
+    // nearest the beat within half a beat, among those at least half as
+    // strong as the strongest there. The tracker's beats can lock onto
+    // another layer where the kick drops out (a rolling bassline a quarter
+    // beat off) while the music stays on the grid; its onsets show that.
     std::vector<std::vector<double>> offsets(barCount);
     std::vector<uint8_t> matchedMask(barCount, 0);
-    for (double t : grid.beats) {
-        const long j = std::lround((t - grid.anchorSeconds) / beat);
-        if (j < 0) continue;
-        const size_t bar = static_cast<size_t>(j) / kBeatsPerBar;
-        if (bar >= barCount) continue;
-        const double offset = t - grid.beatTime(j);
-        offsets[bar].push_back(offset);
-        if (std::fabs(offset) <= kBeatTolerance) matchedMask[bar] |= static_cast<uint8_t>(1u << (j % kBeatsPerBar));
+    std::vector<int> offbeats(barCount, 0);
+    const long frames = static_cast<long>(envelope.size());
+    const double halfBeat = 0.5 * beat * fps;
+    std::vector<double> beatStrength;
+    auto frameOf = [&](double t) { return (t - kOnsetCorrection - firstFrameSeconds) * fps; };
+    struct Onset { double offset; double strength; bool found; };
+    auto onsetNear = [&](long j) {
+        const double centre = frameOf(grid.beatTime(j));
+        const long lo = std::max(1L, static_cast<long>(std::ceil(centre - halfBeat)));
+        const long hi = std::min(frames - 2, static_cast<long>(std::floor(centre + halfBeat)));
+        Onset out{ 0.0, 0.0, false };
+        if (lo > hi) return out;
+        float strongest = 0.0f;
+        for (long k = lo; k <= hi; k++) strongest = std::max(strongest, envelope[static_cast<size_t>(k)]);
+        if (!(strongest > 0.0f)) return out;
+        double nearest = halfBeat + 1.0;
+        for (long k = lo; k <= hi; k++) {
+            const float e = envelope[static_cast<size_t>(k)];
+            if (e < 0.5f * strongest || e < envelope[static_cast<size_t>(k - 1)] || e < envelope[static_cast<size_t>(k + 1)]) continue;
+            const double left = envelope[static_cast<size_t>(k - 1)], right = envelope[static_cast<size_t>(k + 1)];
+            const double denom = left - 2.0 * e + right;
+            const double peak = k + (denom < 0.0 ? std::clamp(0.5 * (left - right) / denom, -0.5, 0.5) : 0.0);
+            if (std::fabs(peak - centre) < std::fabs(nearest)) nearest = peak - centre;
+        }
+        if (std::fabs(nearest) > halfBeat) return out;
+        return Onset{ nearest / fps, static_cast<double>(strongest), true };
+    };
+    const long lastBeat = first + static_cast<long>(barCount) * kBeatsPerBar;
+    std::vector<Onset> onsets;
+    for (long j = first; j < lastBeat; j++) {
+        onsets.push_back(onsetNear(j));
+        if (onsets.back().found) beatStrength.push_back(onsets.back().strength);
+    }
+    // Beats in near-silence say nothing about the grid
+    const double quietBeat = kNoPulseLevel * median(beatStrength);
+    for (long j = first; j < lastBeat; j++) {
+        const Onset &o = onsets[static_cast<size_t>(j - first)];
+        if (!o.found || o.strength < quietBeat) continue;
+        const size_t bar = static_cast<size_t>(j - first) / kBeatsPerBar;
+        offsets[bar].push_back(o.offset);
+        if (std::fabs(o.offset) <= kBeatTolerance) {
+            matchedMask[bar] |= static_cast<uint8_t>(1u << ((j - first) % kBeatsPerBar));
+        } else if (std::fabs(std::fabs(o.offset) - 0.5 * beat) <= kBeatTolerance) {
+            offbeats[bar]++;
+        }
     }
     for (size_t i = 0; i < barCount; i++) {
         const double ms = std::clamp(std::round(median(offsets[i]) * 1000.0), -127.0, 127.0);
         bars[i].offset_ms = static_cast<int8_t>(ms);
         bars[i].matched = static_cast<uint8_t>(__builtin_popcount(matchedMask[i]));
+        // Onsets only on the off-beats: nothing on the beats to judge by
+        if (bars[i].matched <= 1 && offbeats[i] >= 3) bars[i].flags |= jl_bar_offbeat;
     }
 
-    // Pulse: mean envelope over the bar against the median bar
+    // Pulse: mean envelope over the bar against the median bar. (Tried and
+    // dropped: the onsets' autocorrelation one beat apart. It did not catch
+    // busy beatless textures and turned reverb-washed kicks into no pulse;
+    // see docs/BEATGRID-VALIDATION.md.)
     std::vector<double> means(barCount, 0.0);
     for (size_t i = 0; i < barCount; i++) {
-        const double t0 = grid.anchorSeconds + i * barLength, t1 = t0 + barLength;
+        const double t0 = barsFrom + i * barLength, t1 = t0 + barLength;
         auto frameAt = [&](double t) {
             const double k = std::ceil((t - kOnsetCorrection - firstFrameSeconds) * fps);
             return static_cast<size_t>(std::clamp(k, 0.0, static_cast<double>(envelope.size())));
@@ -373,21 +566,42 @@ std::vector<BarStat> barStats(const BeatGrid &grid, const std::vector<float> &en
         bars[i].pulse = static_cast<uint8_t>(std::clamp(std::round(level), 0.0, 255.0));
     }
 
-    // Where one grid gives way to another: a stable region whose first beat
-    // is off the previous stable region's grid, or whose tempo steps. Splits
-    // within one grid (jitter) and gradual ramps meet on a shared beat with
-    // small steps and are not flagged.
+    // Where one grid gives way to another: a stable region whose tempo steps
+    // from the previous stable region's, or whose first beat is off that
+    // region's grid - a phase jump, confirmed by the audio: the onsets of the
+    // bars after it sit apart from those before it. The tracker also jumps
+    // when it moves to another layer (an off-beat bassline) while the music
+    // stays put. Splits within one grid (jitter) and gradual ramps meet on a
+    // shared beat with small steps and are not flagged.
+    auto evidence = [&](size_t i) {
+        return !offsets[i].empty() && !(bars[i].flags & jl_bar_offbeat) && bars[i].pulse >= kNoPulseLevel * kPulseUnit;
+    };
+    auto onsetOffset = [&](size_t from, size_t to) {   // median over up to 8 bars with evidence, [from, to)
+        std::vector<double> v;
+        for (size_t i = from; i < to && v.size() < 8; i++) {
+            if (evidence(i)) v.push_back(bars[i].offset_ms);
+        }
+        return v.empty() ? std::nan("") : median(v);
+    };
+    auto onsetOffsetBefore = [&](size_t to) {
+        std::vector<double> v;
+        for (size_t i = to; i-- > 0 && v.size() < 8;) {
+            if (evidence(i)) v.push_back(bars[i].offset_ms);
+        }
+        return v.empty() ? std::nan("") : median(v);
+    };
     const BeatRegion *previous = nullptr;
     for (const BeatRegion &g : grid.regions) {
         if (!g.stable()) continue;
         if (previous) {
+            const long j = std::max(first, std::lround((g.startSeconds - grid.anchorSeconds) / beat));
+            const size_t bar = std::min(barCount - 1, static_cast<size_t>(j - first) / kBeatsPerBar);
             const double gap = g.startSeconds - previous->endSeconds();
             const double phase = gap - std::round(gap / previous->beatSeconds) * previous->beatSeconds;
             const bool step = std::fabs(g.beatSeconds - previous->beatSeconds) > kTempoStep * previous->beatSeconds;
-            if (std::fabs(phase) > kBeatTolerance || step) {
-                const long j = std::max(0L, std::lround((g.startSeconds - grid.anchorSeconds) / beat));
-                bars[std::min(barCount - 1, static_cast<size_t>(j) / kBeatsPerBar)].flags |= kBarRegionStart;
-            }
+            const double after = onsetOffset(bar, barCount), before = onsetOffsetBefore(bar);
+            const bool moved = !std::isnan(after) && !std::isnan(before) && std::fabs(after - before) > kBeatTolerance * 1000.0;
+            if (step || (std::fabs(phase) > kBeatTolerance && moved)) bars[bar].flags |= kBarRegionStart;
         }
         previous = &g;
     }
@@ -427,7 +641,7 @@ void markQuietRegions(std::vector<BeatRegion> &regions, const std::vector<double
 } // namespace
 
 BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, double fps,
-                       double firstFrameSeconds, double durationSeconds) {
+                       double firstFrameSeconds, double durationSeconds, const BandEnergies *bands) {
     BeatGrid grid;
     grid.source = raw.source;
     grid.beats = raw.beats;
@@ -437,6 +651,14 @@ BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, 
     if (!master.valid) return grid;
     grid.bpm = master.bpm;
     grid.anchorSeconds = master.anchorSeconds;
+    if (bands) {
+        const detail::Phases phases =
+            detail::barAndPhrasePhase(grid, *bands, envelope, fps, firstFrameSeconds, durationSeconds);
+        grid.barPhase = static_cast<int8_t>(phases.barPhase);
+        grid.barConfidence = static_cast<float>(phases.barConfidence);
+        grid.phrasePhaseBars = static_cast<int8_t>(phases.phraseBars);
+        grid.phraseConfidence = static_cast<float>(phases.phraseConfidence);
+    }
     grid.bars = barStats(grid, envelope, fps, firstFrameSeconds, durationSeconds);
     grid.valid = !grid.bars.empty();
     return grid;
@@ -444,7 +666,6 @@ BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, 
 
 BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies &bands, double fps,
                          double firstFrameSeconds, double durationSeconds, const BeatGridHints &hints) {
-    (void)bands;   // stage 6
     const TempoResult tempo = estimateTempo(envelope, fps);
     if (!tempo.valid) return BeatGrid();
     const double bpmEstimate = detail::applyHints(tempo.bpm, hints);
@@ -453,7 +674,7 @@ BeatGrid analyseBeatGrid(const std::vector<float> &envelope, const BandEnergies 
     for (double frame : detail::trackBeats(envelope, fps, bpmEstimate)) {
         raw.beats.push_back(firstFrameSeconds + frame / fps + kOnsetCorrection);
     }
-    BeatGrid grid = buildBeatGrid(raw, envelope, fps, firstFrameSeconds, durationSeconds);
+    BeatGrid grid = buildBeatGrid(raw, envelope, fps, firstFrameSeconds, durationSeconds, &bands);
     grid.tempoStrength = static_cast<float>(tempo.strength);
     grid.uncertain = tempo.strength < kUncertainStrength;
     return grid;
