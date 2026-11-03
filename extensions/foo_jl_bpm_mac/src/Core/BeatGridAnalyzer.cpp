@@ -594,9 +594,19 @@ Onset onsetNear(const BeatGrid &grid, const std::vector<float> &envelope, double
     return out;
 }
 
-// From the audio: the onsets at each grid beat, the bar's onset energy
+// The levels onset evidence is judged by, the whole track's: a section's
+// bars are measured against its own grid but by the same yardstick, or a
+// beatless section's own median would read as pulse
+struct OnsetLevels {
+    double quietBeat = -1.0;        // a grid beat's onset under this says nothing
+    double typicalBar = -1.0;       // jl_pulse_unit
+};
+
+// From the audio: the onsets at each grid beat, the bar's onset energy.
+// Beats from `durationSeconds` on are not measured (a section's last bar
+// runs into the next). `levels`: the whole track's, filled when unset.
 BarEvidence onsetEvidence(const BeatGrid &grid, const std::vector<float> &envelope, double fps,
-                          double firstFrameSeconds, double durationSeconds) {
+                          double firstFrameSeconds, double durationSeconds, OnsetLevels &levels) {
     BarEvidence e;
     const double beat = grid.beatSeconds(), barLength = beat * kBeatsPerBar;
     const long first = grid.firstBarBeat();
@@ -618,11 +628,13 @@ BarEvidence onsetEvidence(const BeatGrid &grid, const std::vector<float> &envelo
     const long lastBeat = first + static_cast<long>(barCount) * kBeatsPerBar;
     std::vector<Onset> onsets;
     for (long j = first; j < lastBeat; j++) {
-        onsets.push_back(onsetNear(grid, envelope, fps, firstFrameSeconds, j));
+        onsets.push_back(grid.beatTime(j) < durationSeconds ? onsetNear(grid, envelope, fps, firstFrameSeconds, j)
+                                                            : Onset());
         if (onsets.back().found) beatStrength.push_back(onsets.back().strength);
     }
     // Beats in near-silence say nothing about the grid
-    const double quietBeat = kNoPulseLevel * median(beatStrength);
+    if (levels.quietBeat < 0.0) levels.quietBeat = kNoPulseLevel * median(beatStrength);
+    const double quietBeat = levels.quietBeat;
     for (long j = first; j < lastBeat; j++) {
         const Onset &o = onsets[static_cast<size_t>(j - first)];
         if (!o.found || o.strength < quietBeat) continue;
@@ -656,7 +668,8 @@ BarEvidence onsetEvidence(const BeatGrid &grid, const std::vector<float> &envelo
         for (size_t k = k0; k < k1; k++) sum += envelope[k];
         means[i] = k1 > k0 ? sum / static_cast<double>(k1 - k0) : 0.0;
     }
-    const double typical = median(means);
+    if (levels.typicalBar < 0.0) levels.typicalBar = median(means);
+    const double typical = levels.typicalBar;
     for (size_t i = 0; i < barCount; i++) {
         const double level = typical > 0.0 ? kPulseUnit * means[i] / typical : (means[i] > 0.0 ? 255.0 : 0.0);
         bars[i].pulse = static_cast<uint8_t>(std::clamp(std::round(level), 0.0, 255.0));
@@ -719,7 +732,8 @@ RefinedBeats refineOnOnsets(const RawBeats &raw, const std::vector<float> &envel
 
 // From a network source's refined beats: offsets and matches from the
 // measured beat nearest each grid beat; pulse the share of measured beats,
-// none under two (no beat heard, or nothing to measure it by)
+// none under two (no beat heard, or nothing to measure it by). Grid beats
+// from `durationSeconds` on are not measured (a section's last bar).
 BarEvidence measuredEvidence(const BeatGrid &grid, const RefinedBeats &refined, double durationSeconds) {
     BarEvidence e;
     const double beat = grid.beatSeconds();
@@ -734,6 +748,7 @@ BarEvidence measuredEvidence(const BeatGrid &grid, const RefinedBeats &refined, 
     const std::vector<double> &times = refined.times;
     for (long j = first; j < first + static_cast<long>(barCount) * kBeatsPerBar; j++) {
         const double t = grid.beatTime(j);
+        if (t >= durationSeconds) break;
         const size_t bar = static_cast<size_t>(j - first) / kBeatsPerBar;
         auto it = std::lower_bound(times.begin(), times.end(), t);
         size_t best = times.size();
@@ -769,12 +784,14 @@ BarEvidence measuredEvidence(const BeatGrid &grid, const RefinedBeats &refined, 
     return e;
 }
 
-// Where one grid gives way to another, into the statistics
-void flagRegionStarts(const BeatGrid &grid, BarEvidence &e) {
+// Where one grid gives way to another, into the statistics. Returns the
+// first beat of each new grid, in order (where the sections are cut).
+std::vector<double> flagRegionStarts(const BeatGrid &grid, BarEvidence &e) {
+    std::vector<double> starts;
     std::vector<BarStat> &bars = e.bars;
     const std::vector<std::vector<double>> &offsets = e.offsets;
     const size_t barCount = bars.size();
-    if (barCount == 0) return;
+    if (barCount == 0) return starts;
     const double beat = grid.beatSeconds();
     const long first = grid.firstBarBeat();
     // Where one grid gives way to another: a stable region whose tempo steps
@@ -808,14 +825,24 @@ void flagRegionStarts(const BeatGrid &grid, BarEvidence &e) {
             const long j = std::max(first, std::lround((g.startSeconds - grid.anchorSeconds) / beat));
             const size_t bar = std::min(barCount - 1, static_cast<size_t>(j - first) / kBeatsPerBar);
             const double gap = g.startSeconds - previous->endSeconds();
-            const double phase = gap - std::round(gap / previous->beatSeconds) * previous->beatSeconds;
-            const bool step = std::fabs(g.beatSeconds - previous->beatSeconds) > kTempoStep * previous->beatSeconds;
+            // Double or half the tempo on the same beats is the same grid
+            // counted at another level (double-time hats, a half-time break),
+            // not a new one: its phase is judged on the finer of the two
+            const double ratio = g.beatSeconds / previous->beatSeconds;
+            const bool octave = std::fabs(ratio - 2.0) <= 2.0 * kTempoStep || std::fabs(ratio - 0.5) <= 0.5 * kTempoStep;
+            const double unit = octave ? std::min(g.beatSeconds, previous->beatSeconds) : previous->beatSeconds;
+            const double phase = gap - std::round(gap / unit) * unit;
+            const bool step = !octave && std::fabs(g.beatSeconds - previous->beatSeconds) > kTempoStep * previous->beatSeconds;
             const double after = onsetOffset(bar, barCount), before = onsetOffsetBefore(bar);
             const bool moved = !std::isnan(after) && !std::isnan(before) && std::fabs(after - before) > kBeatTolerance * 1000.0;
-            if (step || (std::fabs(phase) > kBeatTolerance && moved)) bars[bar].flags |= kBarRegionStart;
+            if (step || (std::fabs(phase) > kBeatTolerance && moved)) {
+                bars[bar].flags |= kBarRegionStart;
+                starts.push_back(g.startSeconds);
+            }
         }
         previous = &g;
     }
+    return starts;
 }
 
 // Regions where many beats carry almost no onset energy (the tracker running
@@ -854,6 +881,84 @@ void markQuietRegions(std::vector<BeatRegion> &regions, const std::vector<double
     }
 }
 
+// What a section is built from besides the grid: the beats, the source's
+// downbeats, the audio
+struct SectionInputs {
+    const RawBeats &raw;
+    const RefinedBeats &refined;    // network source
+    const std::vector<double> &beats;
+    const std::vector<float> &envelope;
+    double fps;
+    double firstFrameSeconds;
+    double durationSeconds;
+    const BandEnergies *bands;
+    OnsetLevels &levels;            // classic source: the whole track's
+};
+
+// The track cut at each new grid's first beat (`cuts`, from
+// flagRegionStarts): each section's grid fitted to its own regions and beats
+// as the master grid is to the track's, its bar phase from its downbeats,
+// its phrase phase from its section changes, its bars measured on it
+std::vector<GridSection> buildSections(const BeatGrid &master, const std::vector<double> &cuts,
+                                       const SectionInputs &in) {
+    std::vector<GridSection> out;
+    const bool network = master.source == BeatSource::BeatThis;
+    std::vector<double> starts = { 0.0 };
+    starts.insert(starts.end(), cuts.begin(), cuts.end());
+    for (size_t k = 0; k < starts.size(); k++) {
+        const double from = starts[k];
+        const double to = k + 1 < starts.size() ? starts[k + 1] : in.durationSeconds;
+        // A region belongs to the section it starts in
+        std::vector<BeatRegion> regions;
+        for (const BeatRegion &g : master.regions) {
+            if (g.startSeconds >= from - 1e-6 && g.startSeconds < to - 1e-6) regions.push_back(g);
+        }
+        std::vector<double> beats;
+        for (double t : in.beats) {
+            if (t >= from - kBeatTolerance && t < to) beats.push_back(t);
+        }
+        const detail::MasterGrid fit = detail::masterGrid(regions, beats);
+        BeatGrid g;
+        g.source = master.source;
+        g.bpm = fit.valid ? fit.bpm : master.bpm;
+        const double beat = 60.0 / g.bpm, anchor = fit.valid ? fit.anchorSeconds : master.anchorSeconds;
+        // Beat 0 at the new grid's first beat, which sits on the fitted grid
+        // within the tolerance; the first section keeps the master's rule
+        // (the first grid beat at or after 0)
+        g.anchorSeconds = k == 0 ? anchor : anchor + std::ceil((from - kBeatTolerance - anchor) / beat) * beat;
+
+        detail::BarVote vote;
+        if (!in.raw.downbeats.empty()) {
+            std::vector<double> downbeats;
+            for (double d : in.raw.downbeats) {
+                if (d >= from - kBeatTolerance && d < to) downbeats.push_back(d);
+            }
+            vote = detail::barPhaseFromDownbeats(g, downbeats);
+        }
+        if (vote.phase >= 0) g.barPhase = static_cast<int8_t>(vote.phase);
+        if (in.bands) {
+            const detail::Phases phases = detail::barAndPhrasePhase(g, *in.bands, in.envelope, in.fps,
+                                                                    in.firstFrameSeconds, to, vote.phase);
+            g.barPhase = static_cast<int8_t>(phases.barPhase);
+            g.phrasePhaseBars = static_cast<int8_t>(phases.phraseBars);
+            g.phraseConfidence = static_cast<float>(phases.phraseConfidence);
+        }
+        const BarEvidence evidence = network ? measuredEvidence(g, in.refined, to)
+                                             : onsetEvidence(g, in.envelope, in.fps, in.firstFrameSeconds, to,
+                                                             in.levels);
+        GridSection section;
+        section.startSeconds = from;
+        section.bpm = g.bpm;
+        section.anchorSeconds = g.anchorSeconds;
+        section.barPhase = g.barPhase;
+        section.phrasePhaseBars = g.phrasePhaseBars;
+        section.phraseConfidence = g.phraseConfidence;
+        section.bars = evidence.bars;
+        out.push_back(std::move(section));
+    }
+    return out;
+}
+
 } // namespace
 
 BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, double fps,
@@ -887,11 +992,16 @@ BeatGrid buildBeatGrid(const RawBeats &raw, const std::vector<float> &envelope, 
         grid.phrasePhaseBars = static_cast<int8_t>(phases.phraseBars);
         grid.phraseConfidence = static_cast<float>(phases.phraseConfidence);
     }
+    OnsetLevels levels;
     BarEvidence evidence = network ? measuredEvidence(grid, refined, durationSeconds)
-                                   : onsetEvidence(grid, envelope, fps, firstFrameSeconds, durationSeconds);
-    flagRegionStarts(grid, evidence);
+                                   : onsetEvidence(grid, envelope, fps, firstFrameSeconds, durationSeconds, levels);
+    const std::vector<double> cuts = flagRegionStarts(grid, evidence);
     grid.bars = std::move(evidence.bars);
     grid.valid = !grid.bars.empty();
+    if (grid.valid && !cuts.empty()) {
+        const SectionInputs in{ raw, refined, beats, envelope, fps, firstFrameSeconds, durationSeconds, bands, levels };
+        grid.sections = buildSections(grid, cuts, in);
+    }
     return grid;
 }
 

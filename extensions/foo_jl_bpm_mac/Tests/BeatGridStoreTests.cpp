@@ -2,8 +2,9 @@
 //  BeatGridStoreTests.cpp
 //  foo_jl_bpm_mac
 //
-//  The stored grid: round trip, "analysed without a grid", and blobs of
-//  another version or damaged ones reading as nothing stored.
+//  The stored grid: round trip with and without sections, "analysed
+//  without a grid", blobs of another version or damaged ones reading as
+//  nothing stored, and the sections served for a grid on one tempo.
 //
 
 #include "TestHarness.h"
@@ -37,6 +38,20 @@ BeatGrid sampleGrid() {
     return g;
 }
 
+// The sample grid with a new grid confirmed at bar 40
+BeatGrid sampleWithSections() {
+    BeatGrid g = sampleGrid();
+    GridSection a;
+    a.startSeconds = 0.0; a.bpm = 128.0; a.anchorSeconds = 0.0937; a.barPhase = 2; a.phrasePhaseBars = 5;
+    a.phraseConfidence = 0.4f;
+    a.bars.assign(40, jl_bar_stat{ 1, 4, 64, 0 });
+    GridSection b;
+    b.startSeconds = 75.2; b.bpm = 141.5; b.anchorSeconds = 75.21; b.barPhase = -1; b.phrasePhaseBars = -1;
+    b.bars.assign(50, jl_bar_stat{ -2, 3, 48, jl_bar_offbeat });
+    g.sections = { a, b };
+    return g;
+}
+
 void testRoundTrip() {
     g_context = "round trip";
     const StoredGrid stored = toStored(sampleGrid());
@@ -44,7 +59,7 @@ void testRoundTrip() {
     CHECK_EQ(stored.regions.size(), 2, "regions");
     CHECK_EQ(stored.regions[1].flags, jl_region_quiet, "a quiet region keeps its flag");
     const std::vector<uint8_t> blob = encodeStoredGrid(stored);
-    CHECK_EQ(blob.size(), 4 + 4 + 1 + 8 + 8 + 4 + 1 + 1 + 4 + 1 + 4 + 4 + 2 * 24 + 90 * 4, "blob size");
+    CHECK_EQ(blob.size(), 4 + 4 + 1 + 8 + 8 + 4 + 1 + 1 + 4 + 1 + 4 * 4 + 2 * 24 + 90 * 4, "blob size");
     const std::optional<StoredGrid> back = decodeStoredGrid(blob.data(), blob.size());
     CHECK(back.has_value(), "decoded");
     if (!back) return;
@@ -62,6 +77,57 @@ void testRoundTrip() {
         bars = std::memcmp(&back->bars[i], &stored.bars[i], sizeof(jl_bar_stat)) == 0;
     }
     CHECK(bars, "bars identical");
+    CHECK(back->sections.empty() && back->sectionBars.empty(), "one grid throughout: no sections stored");
+}
+
+void testSectionsRoundTrip() {
+    g_context = "sections round trip";
+    const StoredGrid stored = toStored(sampleWithSections());
+    CHECK_EQ(stored.sections.size(), 2, "two sections");
+    CHECK_EQ(stored.sectionBars.size(), 90, "their bars back to back");
+    if (stored.sections.size() != 2) return;
+    CHECK(stored.sections[1].first_bar == 40 && stored.sections[1].bar_count == 50, "the second's bars after the first's");
+    const std::vector<uint8_t> blob = encodeStoredGrid(stored);
+    CHECK_EQ(blob.size(), 4 + 4 + 1 + 8 + 8 + 4 + 1 + 1 + 4 + 1 + 4 * 4 + 2 * 24 + 90 * 4 + 2 * 38 + 90 * 4, "blob size");
+    const std::optional<StoredGrid> back = decodeStoredGrid(blob.data(), blob.size());
+    CHECK(back.has_value(), "decoded");
+    if (!back) return;
+    bool sections = back->sections.size() == 2;
+    for (size_t i = 0; sections && i < 2; i++) {
+        sections = std::memcmp(&back->sections[i], &stored.sections[i], sizeof(jl_grid_section)) == 0;
+    }
+    CHECK(sections, "sections identical");
+    bool bars = back->sectionBars.size() == stored.sectionBars.size();
+    for (size_t i = 0; bars && i < stored.sectionBars.size(); i++) {
+        bars = std::memcmp(&back->sectionBars[i], &stored.sectionBars[i], sizeof(jl_bar_stat)) == 0;
+    }
+    CHECK(bars, "section bars identical");
+
+    std::vector<jl_grid_section> served;
+    std::vector<jl_bar_stat> servedBars;
+    CHECK(sectionsOf(*back, served, servedBars) && served.size() == 2 && servedBars.size() == 90, "served as stored");
+
+    // A section whose bars do not follow on from the one before
+    StoredGrid gap = stored;
+    gap.sections[1].first_bar = 41;
+    gap.sections[1].bar_count = 49;
+    const std::vector<uint8_t> broken = encodeStoredGrid(gap);
+    CHECK(!decodeStoredGrid(broken.data(), broken.size()).has_value(), "sections must cover their bars in order");
+}
+
+void testMasterAsSection() {
+    g_context = "master as section";
+    const StoredGrid stored = toStored(sampleGrid());
+    std::vector<jl_grid_section> sections;
+    std::vector<jl_bar_stat> bars;
+    CHECK(sectionsOf(stored, sections, bars), "a grid on one tempo has sections");
+    CHECK_EQ(sections.size(), 1, "one: the master");
+    if (sections.size() != 1) return;
+    const jl_grid_section &s = sections[0];
+    CHECK(s.start_seconds == 0.0 && s.bpm == 128.0 && s.anchor_seconds == 0.0937, "the master's grid");
+    CHECK(s.bar_phase == 2 && s.phrase_phase_bars == 5 && s.phrase_confidence == 0.4f, "the master's phases");
+    CHECK(s.first_bar == 0 && s.bar_count == 90 && bars.size() == 90, "the master's bars");
+    CHECK(!sectionsOf(toStored(BeatGrid()), sections, bars), "none without a grid");
 }
 
 void testUnavailable() {
@@ -104,6 +170,8 @@ void testLockedShare() {
 
 int main() {
     testRoundTrip();
+    testSectionsRoundTrip();
+    testMasterAsSection();
     testUnavailable();
     testRejects();
     testLockedShare();

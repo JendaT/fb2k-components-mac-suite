@@ -98,6 +98,8 @@ void logGrid(const metadb_handle_ptr &item, const StoredGrid &stored, double sec
         const char *source = stored.summary.source == jl_beatgrid_source_beat_this ? "Beat This!" : "classic";
         FB2K_console_formatter() << "[BPM] Beat grid (" << source << "): " << pfc::format_float(stored.summary.bpm, 0, 2) << " BPM, "
             << stored.regions.size() << (stored.regions.size() == 1 ? " region, " : " regions, ")
+            << (stored.sections.empty() ? 1 : stored.sections.size())
+            << (stored.sections.size() > 1 ? " grids, " : " grid, ")
             << pfc::format_int(static_cast<int64_t>(std::lround(lockedShare(stored.bars) * 100.0)))
             << "% of bars locked, " << phases << " (" << pfc::format_float(seconds, 0, 2) << " s): "
             << item->get_path();
@@ -138,6 +140,19 @@ public:
         for (size_t i = 0; i < stored->regions.size(); i++) regions[i] = stored->regions[i];
         bars.set_size(stored->bars.size());
         for (size_t i = 0; i < stored->bars.size(); i++) bars[i] = stored->bars[i];
+        return true;
+    }
+
+    bool get_sections(const metadb_handle_ptr &item, pfc::array_t<jl_grid_section> &sections,
+                      pfc::array_t<jl_bar_stat> &bars) override {
+        const std::optional<StoredGrid> stored = loadGrid(item);
+        std::vector<jl_grid_section> s;
+        std::vector<jl_bar_stat> b;
+        if (!stored || !sectionsOf(*stored, s, b)) return false;
+        sections.set_size(s.size());
+        for (size_t i = 0; i < s.size(); i++) sections[i] = s[i];
+        bars.set_size(b.size());
+        for (size_t i = 0; i < b.size(); i++) bars[i] = b[i];
         return true;
     }
 

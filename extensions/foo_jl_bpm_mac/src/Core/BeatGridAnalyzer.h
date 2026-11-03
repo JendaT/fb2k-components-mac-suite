@@ -129,6 +129,19 @@ constexpr double kOnsetSearch = 0.050;
 // Downbeats need this many votes on the grid to set the bar phase
 constexpr size_t kMinDownbeatVotes = 8;
 
+// One stretch of the track on one straight grid (jl_grid_section): cut where
+// a new grid is confirmed (a bar flagged kBarRegionStart), with its own
+// tempo, phases and bar statistics measured against its own grid
+struct GridSection {
+    double startSeconds = 0.0;      // 0 for the first; else the new grid's first beat
+    double bpm = 0.0;
+    double anchorSeconds = 0.0;     // its beat 0: the first grid beat from startSeconds (25 ms early at most)
+    int8_t barPhase = -1;
+    int8_t phrasePhaseBars = -1;
+    float phraseConfidence = 0.0f;
+    std::vector<BarStat> bars;      // bars[i] covers its beats max(barPhase, 0) + 4i .. + 3, up to the next section
+};
+
 struct BeatGrid {
     bool valid = false;
     double bpm = 0.0;
@@ -142,6 +155,9 @@ struct BeatGrid {
     BeatSource source = BeatSource::Classic;
     std::vector<BeatRegion> regions;
     std::vector<BarStat> bars;      // bars[i] covers beats firstBarBeat() + 4i .. + 3, to the end of the track
+    // One per grid where a new one is confirmed, in order; empty when the
+    // master grid holds throughout
+    std::vector<GridSection> sections;
     std::vector<double> beats;      // the raw beats (diagnostics; not stored)
 
     double beatSeconds() const { return bpm > 0.0 ? 60.0 / bpm : 0.0; }

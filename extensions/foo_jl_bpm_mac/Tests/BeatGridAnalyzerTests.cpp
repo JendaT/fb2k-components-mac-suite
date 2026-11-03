@@ -111,6 +111,35 @@ std::vector<double> phaseErrors(const BeatGrid &g, const std::vector<double> &cl
     return out;
 }
 
+// A section's phrases from its bar 0, as the tests count them
+std::vector<jl_phrase_state> sectionPhrases(const GridSection &s, size_t barsPerPhrase = 8) {
+    std::vector<jl_phrase_state> out;
+    for (size_t b = 0; b < s.bars.size(); b += barsPerPhrase) {
+        out.push_back(jl_classify_phrase(s.bars.data() + b, std::min(barsPerPhrase, s.bars.size() - b)));
+    }
+    return out;
+}
+
+// Phrases that are not Locked, the section's last (partial) one aside
+size_t unlockedBeforeLast(const std::vector<jl_phrase_state> &p) {
+    size_t n = 0;
+    for (size_t i = 0; i + 1 < p.size(); i++) n += p[i] != jl_phrase_locked;
+    return n;
+}
+
+// Worst distance of the clicks in [from, to) to the section's grid
+double worstSectionError(const GridSection &s, const std::vector<double> &clicks, double from, double to) {
+    const double beat = 60.0 / s.bpm;
+    double worst = 0.0, at = 0.0;
+    for (double c : clicks) {
+        if (c < from || c >= to) continue;
+        const double t = s.anchorSeconds + std::round((c - s.anchorSeconds) / beat) * beat;
+        if (std::fabs(t - c) > worst) { worst = std::fabs(t - c); at = c; }
+    }
+    if (worst >= 0.005) printf("    section %.3f BPM anchor %.4f: worst %.2f ms at %.3f s\n", s.bpm, s.anchorSeconds, worst * 1000, at);
+    return worst;
+}
+
 size_t stableCount(const BeatGrid &g) {
     size_t n = 0;
     for (const BeatRegion &r : g.regions) n += r.stable();
@@ -253,6 +282,7 @@ void testClickTracks() {
         CHECK(!g.uncertain, "a steady beat is certain");
         CHECK(g.barPhase == -1, "identical clicks: no bar phase to claim");
         CHECK(!networkTempo(g).valid, "classic grid: tag tempo from estimateTempo instead");
+        CHECK(g.sections.empty(), "one grid throughout: no sections");
     }
 }
 
@@ -308,6 +338,26 @@ void testPhaseJump() {
     CHECK(p.size() > jumpPhrase && p[jumpPhrase] == jl_phrase_reanchor, "the phrase with the jump re-anchors");
     CHECK(before, "phrases off the master grid are Broken");
     CHECK(after, "phrases on it are Locked");
+
+    // Sections: each side on its own grid, Locked on it
+    CHECK_EQ(g.sections.size(), 2, "two sections");
+    if (g.sections.size() != 2) return;
+    const GridSection &a = g.sections[0], &b = g.sections[1];
+    CHECK(a.startSeconds == 0.0, "the first section starts the track");
+    CHECK(std::fabs(b.startSeconds - firstShifted) <= kBeatTolerance, "the second starts at the jump");
+    CHECK(std::fabs(b.anchorSeconds - firstShifted) <= 0.005, "its beat 0 is the first shifted click");
+    CHECK(worstSectionError(a, t.clicks, 0.0, b.startSeconds - kBeatTolerance) < 0.005, "clicks before the jump on the first grid");
+    CHECK(worstSectionError(b, t.clicks, b.startSeconds, t.seconds) < 0.005, "clicks after it on the second");
+    const std::vector<jl_phrase_state> pa = sectionPhrases(a), pb = sectionPhrases(b);
+    printPhrases(pa);
+    printPhrases(pb);
+    CHECK_EQ(unlockedBeforeLast(pa), 0, "first section Locked");
+    CHECK_EQ(unlockedBeforeLast(pb), 0, "second section Locked");
+    bool flags = false;
+    for (const GridSection &sec : g.sections) {
+        for (const BarStat &bar : sec.bars) flags |= (bar.flags & kBarRegionStart) != 0;
+    }
+    CHECK(!flags, "sections carry no re-anchor flags: they start where a grid does");
 }
 
 void testRamp() {
@@ -609,6 +659,83 @@ void testNetworkSureOffGrid() {
     CHECK(flagged, "the shifted stretch reads as Broken or a new grid, not no pulse");
 }
 
+// A tempo change mid-track (an analogue sequencer restarted at another
+// speed): the master grid holds one tempo and the other half is Broken on
+// it; its section has its own tempo and is Locked on it
+void testSectionsTempoChange() {
+    g_context = "sections, tempo change";
+    Track t;
+    RawBeats net;
+    const double change = 90.0;
+    long j = 0;
+    for (double c = 0.05; c < t.seconds - 0.2; c += 60.0 / (c < change ? 126.0 : 140.0), j++) {
+        t.clicks.push_back(c);
+        net.beats.push_back(c);
+        net.confidence.push_back(0.99f);
+        if (j % 4 == 0) net.downbeats.push_back(c);
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    const std::vector<jl_phrase_state> master = phrases(g);
+    printPhrases(master);
+    // (No pulse rather than Broken there: beats at another tempo land on the
+    // master grid's subdivisions often enough to read as off-beat bars)
+    size_t offMaster = 0;
+    for (jl_phrase_state s : master) offMaster += s != jl_phrase_locked;
+    CHECK(offMaster > 4, "the master grid holds one tempo: the other half is not Locked on it");
+
+    CHECK_EQ(g.sections.size(), 2, "two sections");
+    if (g.sections.size() != 2) return;
+    const GridSection &a = g.sections[0], &b = g.sections[1];
+    printf("    sections: %.3f BPM from %.2f s, %.3f BPM from %.2f s\n", a.bpm, a.startSeconds, b.bpm, b.startSeconds);
+    CHECK(std::fabs(a.bpm - 126.0) <= 0.01, "first section 126 BPM");
+    CHECK(std::fabs(b.bpm - 140.0) <= 0.01, "second section 140 BPM");
+    // The last click on the old tempo is on both grids; the new one starts a beat later
+    CHECK(b.startSeconds >= change && b.startSeconds <= change + 2 * 60.0 / 126.0, "the second starts at the change");
+    CHECK(worstSectionError(a, t.clicks, 0.0, b.startSeconds - kBeatTolerance) < 0.005, "clicks before the change on the first grid");
+    CHECK(worstSectionError(b, t.clicks, b.startSeconds, t.seconds) < 0.005, "clicks after it on the second");
+    CHECK(a.barPhase == 0 && b.barPhase >= 0, "bars from each section's downbeats");
+    const std::vector<jl_phrase_state> pa = sectionPhrases(a), pb = sectionPhrases(b);
+    printPhrases(pa);
+    printPhrases(pb);
+    CHECK_EQ(unlockedBeforeLast(pa), 0, "first section Locked");
+    CHECK_EQ(unlockedBeforeLast(pb), 0, "second section Locked");
+}
+
+// The network counting double time for a stretch (double-time hats) on the
+// same beats: the same grid at another level, not a new one
+void testNetworkDoubleTime() {
+    g_context = "network double time";
+    const double bpm = 128.0, beat = 60.0 / bpm;
+    Track t;
+    RawBeats net;
+    for (long j = 0; 0.05 + j * beat < t.seconds - 0.2; j++) {
+        const double c = 0.05 + j * beat;
+        t.clicks.push_back(c);
+        net.beats.push_back(c);
+        net.confidence.push_back(0.99f);
+        if (j % 4 == 0) net.downbeats.push_back(c);
+        if (c >= 70.0 && c < 110.0) {   // and every half beat there
+            t.clicks.push_back(c + 0.5 * beat);
+            net.beats.push_back(c + 0.5 * beat);
+            net.confidence.push_back(0.99f);
+        }
+    }
+    const BeatGrid g = analyseWithNetwork(t, net);
+    CHECK(g.valid, "valid grid");
+    if (!g.valid) return;
+    CHECK(std::fabs(g.bpm - bpm) <= 0.01, "the master grid at the beat level");
+    size_t doubled = 0;
+    for (const BeatRegion &r : g.regions) doubled += r.stable() && std::fabs(60.0 / r.beatSeconds - 2 * bpm) < 1.0;
+    CHECK(doubled >= 1, "a stable region at double tempo");
+    bool flagged = false;
+    for (const BarStat &b : g.bars) flagged |= (b.flags & kBarRegionStart) != 0;
+    CHECK(!flagged, "no new grid at the switches");
+    CHECK(g.sections.empty(), "one grid throughout: no sections");
+    printPhrases(phrases(g));
+}
+
 void testInvalid() {
     g_context = "invalid";
     const BandEnergies none;
@@ -654,6 +781,8 @@ int main() {
     testNetworkSubdivisions();
     testNetworkKickOut();
     testNetworkSureOffGrid();
+    testSectionsTempoChange();
+    testNetworkDoubleTime();
     testInvalid();
     testRegionSpeed();
     TEST_MAIN_END();
