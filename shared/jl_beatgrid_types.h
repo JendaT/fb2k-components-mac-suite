@@ -45,7 +45,7 @@ inline constexpr uint32_t jl_beatgrid_min_stable_beats = 16;
 struct jl_bar_stat {
     int8_t offset_ms;           // median signed offset of the detected beats from their grid beats, clamped
     uint8_t matched;            // grid beats with a detected beat within 25 ms, 0..4
-    uint8_t pulse;              // mean onset energy; jl_pulse_unit = the track's median bar
+    uint8_t pulse;              // how much beat the bar has, jl_pulse_unit the norm (see below)
     uint8_t flags;              // jl_bar_*
 };
 enum : uint8_t {
@@ -53,20 +53,25 @@ enum : uint8_t {
     // begins in this bar (an edit, a re-recorded section, a tempo change)
     jl_bar_region_start = 1,
     // The bar's onsets fall between the beats (an off-beat bassline before
-    // the kick comes in): nothing on the beats to judge the grid by
+    // the kick comes in), or a Beat This! grid's beats sit only on the
+    // grid's quarter / half beats (the kick out under a rolling bassline):
+    // nothing on the beats to judge the grid by
     jl_bar_offbeat = 2,
 };
+// pulse: classic grids, the bar's mean onset energy with jl_pulse_unit the
+// track's median bar; Beat This! grids, jl_pulse_unit / 4 for each beat the
+// network is sure of and an onset confirms, 0 under two such beats
 inline constexpr int jl_pulse_unit = 64;
 
 enum jl_beatgrid_source : uint8_t {
     jl_beatgrid_source_classic = 0,     // onset envelope + dynamic programming
-    jl_beatgrid_source_beat_this = 1,   // Beat This! network (later)
+    jl_beatgrid_source_beat_this = 1,   // Beat This! network (JKU Linz), its beats moved to the onsets
 };
 
 struct jl_beatgrid_summary {
     double bpm;
     double anchor_seconds;      // master-grid beat 0: the first grid beat at or after 0
-    float tempo_strength;       // 0..1; under jl_beatgrid_uncertain_strength draw neutral
+    float tempo_strength;       // 0..1 (Beat This!: share of grid beats heard on it); under jl_beatgrid_uncertain_strength draw neutral
     int8_t bar_phase;           // beat index mod 4 that starts a bar; -1 unknown
     int8_t phrase_phase_bars;   // bar index mod 8 that starts a 32-beat phrase; -1 unknown
     uint8_t reserved0[2];
