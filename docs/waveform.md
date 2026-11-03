@@ -43,13 +43,29 @@ Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 
 - **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
 - **Clip markers**: red ticks on the top edge where the audio hits full scale (0 dBFS) for 3+ samples in a row, i.e. clipping in the master; adjustable brightness
 
+### Phrase Markers
+
+With [BPM Analyzer](bpm.md) installed (it finds each track's beat grid), a hairline every 16 or 32 beats, where the music's phrases start. Off by default.
+
+| Marker | Meaning |
+|--------|---------|
+| Quiet line | Locked: the beats sit on the grid (within 10 ms) |
+| Amber line + bottom tick | Drifting: 10-25 ms off, or fewer beats on the grid |
+| Red line + bottom tick | Broken: the music has left the grid here |
+| Dashed, dim | No pulse: no beat to judge by (intro, breakdown) |
+| Triangle on the top edge | A new grid begins: a tempo change or an edit |
+
+- **Follow tempo changes** (on by default): after a new grid the markers move to it, on its own tempo, and count phrases from there; off keeps them on the track's main grid. Beat-synced cursor effects follow the same grid.
+- Hovering a marker adds a line to the readout (`Phrase 12 · bar 45 · +18 ms`, `New grid · 141.64 BPM`); the summary shows the grid tempo and the share of Locked phrases. Markers thin out (every 64, 128 beats...) where they would crowd, and say so in the readout.
+- Without BPM Analyzer the settings are greyed out.
+
 ### Scales
 
 Optional time ruler under the waveform and a dB gutter on the right.
 
 ### Played Part
 
-The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow, Scanline, Pulse, Trail or Shimmer. The animated ones can follow the track's BPM tag.
+The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow, Scanline, Pulse, Trail or Shimmer. The animated ones can follow the track's beat grid (from BPM Analyzer) or its BPM tag.
 
 ### Waveform Caching
 
@@ -85,6 +101,7 @@ Access settings via **Preferences > Display > Waveform Seekbar**
 | Appearance | Style, Body tint, Gradient bands, Channels, Colours, Glass background | Two-tone, off, 8, Stereo, P4 white, off |
 | Scales | Time ruler, Level scale | off, on |
 | Overlays | Text size, Readout on hover, Elapsed time on the cursor, Loudness summary, Clip markers | 14 pt, on, off, on hover, on (67 %) |
+| Overlays | Phrase markers (every 32 or 16 beats, Colour grid breaks, Follow tempo changes) | off (32, on, on) |
 | Played part | Shade played portion, Dimming, Cursor effect, Sync animations to track BPM | on, 25 %, None, off |
 | Cache | Max size, Keep for | 2048 MB, 180 days |
 
