@@ -154,6 +154,9 @@ constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the
 constexpr bool kDefaultGlassBackground = false; // Opaque background by default
 constexpr bool kDefaultZoomEnabled = true;
 constexpr bool kDefaultZoomDetail = false;      // fine detail: more disk per track, see TrackAnalyzer.h
+constexpr bool kDefaultPhraseMarkers = false;   // off until validated against a library
+constexpr int kDefaultPhraseLength = 32;
+constexpr bool kDefaultPhraseBreakColours = true;
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

@@ -7,6 +7,7 @@
 
 #import "WaveformPreferences.h"
 #include "../fb2k_sdk.h"
+#include "../../../../shared/jl_beatgrid_api.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
 #include "../Core/WaveformThemes.h"
@@ -69,6 +70,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_clipMarkersCheckbox;
     NSSlider *_clipMarkerOpacitySlider;
     NSTextField *_clipMarkerOpacityLabel;
+    NSButton *_phraseMarkersCheckbox;
+    NSPopUpButton *_phraseLengthPopup;
+    NSButton *_phraseColoursCheckbox;
+    BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
     // Scales
     NSButton *_timeRulerCheckbox;
@@ -361,6 +366,35 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _clipMarkerOpacitySlider.frame = NSMakeRect(x + kHintIndent + 72, y, w - kHintIndent - 72 - 46, 20);
     [_page addSubview:_clipMarkerOpacitySlider];
     y += 24 + kRowGap;
+
+    // Phrase markers, from BPM Analyzer's beat grids
+    jl_beatgrid::ptr grids;
+    _haveBeatGrids = fb2k::std_api_try_get(grids);
+    _phraseMarkersCheckbox = [self addCheckbox:@"Phrase markers"
+                                          hint:@"A line every 16 or 32 beats, coloured by how well the music "
+                                                "stays on one beat grid: amber drifting, red broken, dashed "
+                                                "without a beat. Grids come from BPM Analyzer."
+                                             x:x y:&y width:w];
+    y -= kRowGap - 4;
+    _phraseLengthPopup = [self addPopup:@[] action:@selector(phraseLengthChanged:) x:x + kHintIndent y:&y
+                                  width:w - kHintIndent];
+    [_phraseLengthPopup addItemWithTitle:@"Every 32 beats"];
+    _phraseLengthPopup.lastItem.tag = 32;
+    [_phraseLengthPopup addItemWithTitle:@"Every 16 beats"];
+    _phraseLengthPopup.lastItem.tag = 16;
+    _phraseColoursCheckbox = [self addCheckbox:@"Colour grid breaks"
+                                          hint:@"Off draws every marker in the guide colour."
+                                             x:x + kHintIndent y:&y width:w - kHintIndent];
+    if (!_haveBeatGrids) {
+        y -= kRowGap - 2;
+        [self addHint:@"Phrase markers need BPM Analyzer, a free component from the same suite."
+                    x:x + kHintIndent y:&y width:w - kHintIndent lines:1];
+        NSButton *get = [NSButton buttonWithTitle:@"Get BPM Analyzer" target:self action:@selector(getBpmAnalyzer:)];
+        [get sizeToFit];
+        get.frameOrigin = NSMakePoint(x + kHintIndent - 6, y + 2);
+        [_page addSubview:get];
+        y += 30 + kRowGap;
+    }
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -531,6 +565,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _timeRulerCheckbox.state = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler) ? NSControlStateValueOn : NSControlStateValueOff;
     _levelScaleCheckbox.state = getConfigBool(kKeyLevelScale, kDefaultLevelScale) ? NSControlStateValueOn : NSControlStateValueOff;
     _zoomCheckbox.state = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    _phraseMarkersCheckbox.state = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
+    [_phraseLengthPopup selectItemWithTag:getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32];
+    _phraseColoursCheckbox.state = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours) ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updatePhraseControls];
     _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
     _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
 
@@ -687,6 +725,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
     } else if (sender == _zoomDetailCheckbox) {
         setConfigBool(kKeyZoomDetail, _zoomDetailCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _phraseMarkersCheckbox) {
+        setConfigBool(kKeyPhraseMarkers, _phraseMarkersCheckbox.state == NSControlStateValueOn);
+        [self updatePhraseControls];
+    } else if (sender == _phraseColoursCheckbox) {
+        setConfigBool(kKeyPhraseBreakColours, _phraseColoursCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }
@@ -736,6 +779,26 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const NSInteger effect = _cursorEffectPopup.indexOfSelectedItem;
     _bpmSyncCheckbox.enabled = shade && (effect == CursorEffectGlow || effect == CursorEffectScanline ||
                                          effect == CursorEffectPulse || effect == CursorEffectShimmer);
+}
+
+// Without BPM Analyzer the group is greyed out; the length and colours
+// follow the main switch
+- (void)updatePhraseControls {
+    _phraseMarkersCheckbox.enabled = _haveBeatGrids;
+    const BOOL on = _haveBeatGrids && _phraseMarkersCheckbox.state == NSControlStateValueOn;
+    _phraseLengthPopup.enabled = on;
+    _phraseColoursCheckbox.enabled = on;
+}
+
+- (void)phraseLengthChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyPhraseLength, _phraseLengthPopup.selectedTag == 16 ? 16 : 32);
+    [self notifySettingsChanged];
+}
+
+// Until the in-place installer exists: the suite's BPM Analyzer releases
+- (void)getBpmAnalyzer:(id)sender {
+    [[NSWorkspace sharedWorkspace]
+        openURL:[NSURL URLWithString:@"https://github.com/JendaT/fb2k-components-mac-suite/releases?q=bpm"]];
 }
 
 - (void)cacheSettingChanged:(id)sender {

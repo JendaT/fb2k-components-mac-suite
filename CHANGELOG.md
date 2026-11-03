@@ -367,6 +367,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 #### Added
 - **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms about the pointer; horizontal scroll pans; Reset zoom button while zoomed.
 - **Zoom settings**: Zoom can be switched off; optional fine detail keeps 7-8x finer detail per track for deeper zoom.
+- **Phrase markers**: With BPM Analyzer, a line every 16 or 32 beats coloured by how well the music stays on the beat grid.
 
 #### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.

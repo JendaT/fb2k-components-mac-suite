@@ -14,8 +14,19 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
 #include "../Core/WaveformGeometry.h"
+#include "../Core/PhraseMarkers.h"
+#include "../../../../shared/jl_beatgrid_api.h"
 #include <cmath>
 #include <memory>
+
+@class WaveformSeekbarController;
+
+// BPM Analyzer stored a grid: forwarded to the controller on the main thread
+class SeekbarGridNotify : public jl_beatgrid_notify {
+public:
+    __weak WaveformSeekbarController *owner = nil;
+    void on_ready(const metadb_handle_ptr &item) override;
+};
 
 @interface WaveformSeekbarController () {
     metadb_handle_ptr _currentTrack;
@@ -24,6 +35,9 @@
     std::unique_ptr<WaveformData> _storedWaveform;  // We own this copy
     std::shared_ptr<const WaveformDetail> _detail;  // Its fine detail for deep zoom, when there is one
     ListenerId _detailListenerId;
+    jl_beatgrid::ptr _grids;                        // BPM Analyzer's beat grids; null when not installed
+    service_ptr_t<SeekbarGridNotify> _gridNotify;
+    std::shared_ptr<waveseek::PhraseGrid> _phraseGrid;   // the current track's, for phrase markers
     NSLayoutConstraint *_widthConstraint;           // Current width constraint
     NSLayoutConstraint *_heightConstraint;          // Current height constraint
     BOOL _widthLocked;                              // Track if width is locked
@@ -35,6 +49,7 @@
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
+- (void)beatgridReady:(const metadb_handle_ptr &)item;
 
 @end
 
@@ -87,12 +102,59 @@
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
+    // Phrase markers switched on or off
+    using namespace waveform_config;
+    if (!getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) [self dropPhraseGrid];
+    else if (!_phraseGrid) [self fetchPhraseGrid];
     // The fine detail switched on or off
     if (!WaveformService::detailEnabled()) {
         [self dropDetail];
     } else if (!_detail && _storedWaveform && _currentTrack.is_valid()) {
         getWaveformService().requestDetail(_currentTrack);
     }
+}
+
+#pragma mark - Beat Grid
+
+// The current track's grid from BPM Analyzer when phrase markers are on:
+// fetched when stored, else asked for (urgent: it is playing). Called once
+// the seekbar's own scan of the track is done, so the decodes don't compete.
+- (void)fetchPhraseGrid {
+    using namespace waveform_config;
+    if (!_grids.is_valid() || !_currentTrack.is_valid() || !_storedWaveform ||
+        !getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) {
+        return;
+    }
+    switch (_grids->get_status(_currentTrack)) {
+        case jl_beatgrid::ready: {
+            auto grid = std::make_shared<waveseek::PhraseGrid>();
+            pfc::array_t<jl_beat_region> regions;
+            pfc::array_t<jl_bar_stat> bars;
+            if (!_grids->get(_currentTrack, grid->summary, regions, bars)) return;
+            grid->regions.assign(regions.get_ptr(), regions.get_ptr() + regions.get_size());
+            grid->bars.assign(bars.get_ptr(), bars.get_ptr() + bars.get_size());
+            // The view takes the new grid before the old one is released
+            self.waveformView.phraseGrid = grid.get();
+            _phraseGrid = grid;
+            break;
+        }
+        case jl_beatgrid::not_analysed:
+            _grids->request(_currentTrack, true);
+            break;
+        default:   // queued or analysing: on_ready follows; unavailable: no markers
+            break;
+    }
+}
+
+- (void)beatgridReady:(const metadb_handle_ptr &)item {
+    if (_currentTrack.is_valid() && item.is_valid() && _currentTrack->get_location() == item->get_location()) {
+        [self fetchPhraseGrid];
+    }
+}
+
+- (void)dropPhraseGrid {
+    self.waveformView.phraseGrid = nullptr;
+    _phraseGrid.reset();
 }
 
 // The view stops pointing at the detail before it is released
@@ -166,6 +228,13 @@
         }
     });
 
+    // BPM Analyzer's beat grids, when it is installed
+    if (fb2k::std_api_try_get(_grids)) {
+        _gridNotify = fb2k::service_new<SeekbarGridNotify>();
+        _gridNotify->owner = self;
+        _grids->add_notify(_gridNotify);
+    }
+
     // Fine detail for deep zoom, which may come before or after the waveform
     _detailListenerId = getWaveformService().addDetailListener(
         [weakSelf](const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail) {
@@ -212,6 +281,7 @@
     // Remove only our listeners from the waveform service
     getWaveformService().removeListener(_waveformListenerId);
     getWaveformService().removeDetailListener(_detailListenerId);
+    if (_grids.is_valid() && _gridNotify.is_valid()) _grids->remove_notify(_gridNotify);
 }
 
 #pragma mark - Playback State Sync
@@ -253,6 +323,7 @@
 
 - (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm {
     [self dropDetail];
+    [self dropPhraseGrid];
     _currentTrack = track;
     _isPaused = NO;
     _storedWaveform.reset();  // Clear previous waveform
@@ -279,6 +350,7 @@
 
 - (void)handlePlaybackStop {
     [self dropDetail];
+    [self dropPhraseGrid];
     _currentTrack.release();
     _isPaused = NO;
     _storedWaveform.reset();  // Release stored waveform
@@ -336,6 +408,7 @@
         if (!_detail && _currentTrack.is_valid() && WaveformService::detailEnabled()) {
             getWaveformService().requestDetail(_currentTrack);
         }
+        if (!_phraseGrid) [self fetchPhraseGrid];
     }
 
     [self.waveformView refreshDisplay];
@@ -605,3 +678,8 @@ static const int kAnalysisMaxRetries = 1;
 }
 
 @end
+
+void SeekbarGridNotify::on_ready(const metadb_handle_ptr &item) {
+    WaveformSeekbarController *controller = owner;
+    [controller beatgridReady:item];
+}

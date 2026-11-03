@@ -9,6 +9,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Zoom settings**: Zoom can be switched off; "Fine detail for deep zoom" (off by default) keeps 7-8x finer detail per track, more for long mixes, and zooms that much deeper (about 1 MB of cache per track).
 
+- **Phrase markers**: With BPM Analyzer installed, a line every 16 or 32 beats coloured by how well the music stays on one beat grid (drifting, broken, no pulse, new grid); readout line near a marker, grid BPM and locked share in the summary. Off by default.
+
 ### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
 

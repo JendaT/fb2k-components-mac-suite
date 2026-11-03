@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 #ifdef __cplusplus
 struct WaveformData;
 struct WaveformDetail;
+namespace waveseek { struct PhraseGrid; }
 #else
 typedef struct WaveformData WaveformData;
 typedef struct WaveformDetail WaveformDetail;
@@ -71,6 +72,8 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 // Its fine detail for deep zoom, when there is one (not owned); ignored
 // unless it matches waveformData
 @property (nonatomic, nullable, assign) const WaveformDetail *waveformDetail;
+// The track's beat grid from BPM Analyzer, for phrase markers (not owned)
+@property (nonatomic, nullable, assign) const waveseek::PhraseGrid *phraseGrid;
 
 // Actions
 - (void)clearWaveform;

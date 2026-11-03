@@ -28,9 +28,11 @@
 #include "../Core/GradientBandTable.h"
 #include "../Core/ThemeTokens.h"
 #include "../Core/ZoomRange.h"
+#include "../Core/PhraseMarkers.h"
 #include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
+#include <climits>
 #include <vector>
 
 namespace analysis = waveseek::analysis;
@@ -176,6 +178,7 @@ const uint32_t kOverlayBorder = 0x3A3326;
 const uint32_t kOverlayValue = 0xF2E9D6;
 const uint32_t kOverlayLabel = 0x9A907D;
 const uint32_t kOverlayAlert = 0xF0603F;     // TP above 0, clips
+const uint32_t kOverlayWarning = 0xE5A50A;   // phrase markers drifting off the grid
 const uint32_t kBandColors[3] = { 0xC7772A, 0xD9C26A, 0xA8D4F2 };   // Lo, Mid, Hi
 
 // Hover readout layout, points from the box's top
@@ -320,6 +323,16 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     waveseek::ZoomRange _zoom;
     waveseek::ZoomRange _maskZoom;
     bool _zoomEnabled;
+
+    // Phrase markers: settings, the markers for the grid shown, and where
+    // they were drawn this frame (for the readout)
+    bool _phraseMarkers;
+    int _phraseLength;
+    bool _phraseBreakColours;
+    std::vector<waveseek::PhraseMarker> _phrases;
+    const waveseek::PhraseGrid *_phrasesFor;
+    int _phraseBeatsDrawn;
+    std::vector<std::pair<CGFloat, size_t>> _phraseHits;   // x, index into _phrases
 }
 
 @end
@@ -438,6 +451,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
     _zoomEnabled = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled);
     if (!_zoomEnabled) _zoom.reset();
+    _phraseMarkers = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers);
+    _phraseLength = getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32;
+    _phraseBreakColours = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours);
+    _phraseBeatsDrawn = 0;   // rebuild the markers
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
 }
@@ -550,6 +567,14 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (waveformDetail == _waveformDetail) return;
     _waveformDetail = waveformDetail;
     [self invalidateMasks];
+}
+
+- (void)setPhraseGrid:(const waveseek::PhraseGrid *)phraseGrid {
+    _phraseGrid = phraseGrid;
+    _phrases.clear();
+    _phrasesFor = nullptr;
+    _phraseHits.clear();
+    [self setNeedsDisplay:YES];
 }
 
 // The fine detail, when it belongs to the waveform shown
@@ -932,6 +957,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
         if (hasWaveform) {
             [self drawWaveformInContext:context rect:wave];
+            // Under the played part's dimming and the cursor
+            [self drawPhraseMarkersInContext:context rect:[self cursorRectFor:wave]];
         } else {
             [self drawPlaceholderInContext:context rect:wave];
         }
@@ -1402,6 +1429,110 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     [time drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
 }
 
+#pragma mark - Phrase Markers
+
+// A hairline at every phrase start of the master grid, coloured by how well
+// the beats sit on it there: quiet when locked, a warning tick when
+// drifting, an alert tick when broken, dashed and dim without pulse, and a
+// triangle on the top edge where a new grid begins. Thinned to keep them
+// kMinPhraseSpacing apart; neutral when colours are off or the tempo is
+// uncertain.
+- (void)drawPhraseMarkersInContext:(CGContextRef)context rect:(CGRect)rect {
+    _phraseHits.clear();
+    if (!_phraseMarkers || !_phraseGrid || !(self.trackDuration > 0.0)) return;
+    const jl_beatgrid_summary &grid = _phraseGrid->summary;
+    const int beats = waveseek::thinnedPhraseBeats(_phraseLength, grid.bpm, self.trackDuration, rect.size.width,
+                                                   _zoom.zoom);
+    if (beats != _phraseBeatsDrawn || _phrasesFor != _phraseGrid) {
+        _phrases = waveseek::phraseMarkers(*_phraseGrid, beats);
+        _phraseBeatsDrawn = beats;
+        _phrasesFor = _phraseGrid;
+    }
+    const bool neutral = !_phraseBreakColours || grid.tempo_strength < jl_beatgrid_uncertain_strength;
+    const CGFloat scale = [self backingScale];
+    const CGFloat hairline = 1.0 / scale;
+    auto xAt = [&](double seconds) {
+        return (std::floor((rect.origin.x + rect.size.width * _zoom.acrossOf(seconds / self.trackDuration)) * scale)
+                + 0.5) / scale;
+    };
+
+    CGContextSaveGState(context);
+    CGContextSetLineWidth(context, hairline);
+    long lastPixel = LONG_MIN;
+    for (size_t i = 0; i < _phrases.size(); ++i) {
+        const waveseek::PhraseMarker &m = _phrases[i];
+        const double across = _zoom.acrossOf(m.seconds / self.trackDuration);
+        if (across < 0.0 || across > 1.0) continue;
+        const CGFloat x = xAt(m.seconds);
+        const long pixel = std::lround(x * scale);
+        if (pixel == lastPixel) continue;   // one per pixel column
+        lastPixel = pixel;
+        _phraseHits.push_back({ x, i });
+
+        const jl_phrase_state state = neutral ? jl_phrase_locked : m.state;
+        switch (state) {
+            case jl_phrase_drifting: [p3(kOverlayWarning, 0.55) setStroke]; break;
+            case jl_phrase_broken: [p3(kOverlayAlert, 0.65) setStroke]; break;
+            case jl_phrase_no_pulse: setStroke(context, _tokens.centre, 0.35); break;
+            default: setStroke(context, _tokens.centre, 0.6); break;
+        }
+        if (state == jl_phrase_no_pulse) {
+            const CGFloat dash[2] = { 2.0, 3.0 };
+            CGContextSetLineDash(context, 0, dash, 2);
+        } else {
+            CGContextSetLineDash(context, 0, nullptr, 0);
+        }
+        CGContextMoveToPoint(context, x, rect.origin.y);
+        CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
+        CGContextStrokePath(context);
+
+        // Ticks on the bottom edge (clip markers own the top)
+        if (state == jl_phrase_drifting || state == jl_phrase_broken) {
+            [(state == jl_phrase_broken ? p3(kOverlayAlert) : p3(kOverlayWarning)) setFill];
+            const CGFloat left = std::round((x - kClipMarkerWidth / 2) * scale) / scale;
+            CGContextFillRect(context, CGRectMake(left, rect.origin.y, kClipMarkerWidth, kClipMarkerHeight));
+        }
+        // Where the new grid begins, on the top edge
+        if (state == jl_phrase_reanchor && !std::isnan(m.reanchorSeconds)) {
+            const double at = _zoom.acrossOf(m.reanchorSeconds / self.trackDuration);
+            if (at >= 0.0 && at <= 1.0) {
+                const CGFloat tx = xAt(m.reanchorSeconds), top = CGRectGetMaxY(rect);
+                [p3(kOverlayWarning) setFill];
+                CGContextMoveToPoint(context, tx - 3.5, top);
+                CGContextAddLineToPoint(context, tx + 3.5, top);
+                CGContextAddLineToPoint(context, tx, top - 5.0);
+                CGContextClosePath(context);
+                CGContextFillPath(context);
+            }
+        }
+    }
+    CGContextRestoreGState(context);
+}
+
+// The readout's line about the phrase marker under the mouse, if any
+- (NSAttributedString *)phraseLineNear:(CGFloat)x {
+    const std::pair<CGFloat, size_t> *nearest = nullptr;
+    for (const auto &hit : _phraseHits) {
+        if (std::fabs(hit.first - x) <= 4.0 && (!nearest || std::fabs(hit.first - x) < std::fabs(nearest->first - x))) {
+            nearest = &hit;
+        }
+    }
+    if (!nearest) return nil;
+    const waveseek::PhraseMarker &m = _phrases[nearest->second];
+    const bool neutral = !_phraseBreakColours || _phraseGrid->summary.tempo_strength < jl_beatgrid_uncertain_strength;
+    if (m.state == jl_phrase_no_pulse && !neutral) return [self text:@"No pulse" color:kOverlayLabel bold:NO];
+    NSString *where = [NSString stringWithFormat:@"Phrase %ld · bar %ld · ", m.phrase + 1, m.startBar + 1];
+    NSString *what = m.state == jl_phrase_reanchor ? @"new grid"
+                   : [NSString stringWithFormat:@"%@ ms", str(overlay::formatNumber(m.offsetMs, 0, true))];
+    NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
+    [line appendAttributedString:[self text:where color:kOverlayLabel bold:NO]];
+    const uint32_t color = neutral ? kOverlayValue
+                         : m.state == jl_phrase_broken ? kOverlayAlert
+                         : m.state == jl_phrase_drifting || m.state == jl_phrase_reanchor ? kOverlayWarning : kOverlayValue;
+    [line appendAttributedString:[self text:what color:color bold:NO]];
+    return line;
+}
+
 #pragma mark - Overlays
 
 // 2 x 5 pt ticks on the top edge, one per clip run (one per pixel at most)
@@ -1504,6 +1635,14 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (s.clipRuns > 0) {
         add([NSString stringWithFormat:@"  %u %@", s.clipRuns, s.clipRuns == 1 ? @"clip" : @"clips"], kOverlayAlert);
     }
+    // With phrase markers: the grid and how much of it holds
+    if (_phraseMarkers && _phraseGrid && !_phrases.empty()) {
+        add(@"  Grid ", kOverlayLabel);
+        add(str(overlay::formatNumber(_phraseGrid->summary.bpm, 2)), kOverlayValue);
+        add(@" BPM · ", kOverlayLabel);
+        add([NSString stringWithFormat:@"%ld%%", std::lround(waveseek::lockedPhraseShare(_phrases) * 100.0)], kOverlayValue);
+        add(@" locked", kOverlayLabel);
+    }
 
     const NSSize size = line.size;
     const CGRect zoomButton = [self zoomButtonRectFor:rect];
@@ -1563,15 +1702,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         }
     }
     const CGFloat room = CGRectGetMaxY(self.bounds) - floor;
-    const bool bands = TS(kReadoutHeight) <= room;
+    // Near a phrase marker: its line under the time, the rows below it
+    NSAttributedString *phraseLine = [self phraseLineNear:mouseX];
+    const CGFloat extra = phraseLine ? TS(kReadoutRowStep) : 0.0;
+    const bool bands = TS(kReadoutHeight) + extra <= room;
     // Without the bands, as many value rows as fit (Corr goes first); in a
     // view too short even for the time, no box
     int rowCount = 4;
     auto compactHeight = [&](int rows) {
-        return TS(rows > 0 ? kReadoutCompactHeight - (4 - rows) * kReadoutRowStep : kReadoutRowsY);
+        return TS(rows > 0 ? kReadoutCompactHeight - (4 - rows) * kReadoutRowStep : kReadoutRowsY) + extra;
     };
     while (!bands && rowCount > 0 && compactHeight(rowCount) > room) --rowCount;
-    const CGFloat height = bands ? TS(kReadoutHeight) : compactHeight(rowCount);
+    const CGFloat height = bands ? TS(kReadoutHeight) + extra : compactHeight(rowCount);
     if (height > room) return;
     // 10 pt from the top, less in views too short for that; at the bottom
     // right it sits on its floor instead
@@ -1592,7 +1734,11 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     };
 
     drawLeft([self text:str(overlay::formatClock(seconds, true)) color:kOverlayValue bold:YES], TS(kReadoutHeaderY));
-    drawRight([self text:@"click to seek" color:kOverlayLabel bold:NO], TS(kReadoutHeaderY));
+    // Thinned markers say how far apart they are instead of the seek hint
+    NSString *hint = phraseLine && _phraseBeatsDrawn != _phraseLength
+        ? [NSString stringWithFormat:@"every %d beats", _phraseBeatsDrawn] : @"click to seek";
+    drawRight([self text:hint color:kOverlayLabel bold:NO], TS(kReadoutHeaderY));
+    if (phraseLine) drawLeft(phraseLine, TS(kReadoutRowsY));
 
     struct Row { NSString *label; std::string value; NSString *unit; };
     const Row rows[4] = {
@@ -1602,7 +1748,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         { @"Corr", overlay::formatNumber(r.correlation[c], 2, true), @"" },
     };
     for (int i = 0; i < rowCount; ++i) {
-        const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep);
+        const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep) + extra;
         drawLeft([self text:rows[i].label color:kOverlayLabel bold:NO], y);
         drawRight([self text:[str(rows[i].value) stringByAppendingString:rows[i].unit] color:kOverlayValue bold:NO], y);
     }
@@ -1610,7 +1756,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (!bands) return;
 
     // Lo / Mid / Hi: stacked bar, then the shares
-    const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - TS(kReadoutBarHeight),
+    const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - extra - TS(kReadoutBarHeight),
                                   width - 2 * TS(kReadoutPadX), TS(kReadoutBarHeight));
     CGContextSaveGState(context);
     [p3(kOverlayBorder) setFill];
@@ -1633,9 +1779,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         NSString *value = known ? [NSString stringWithFormat:@"%d", percent[b]] : str(overlay::formatNumber(NAN, 0));
         return [self text:[NSString stringWithFormat:@"%@ %@%@", name, value, suffix] color:kOverlayLabel bold:NO];
     };
-    drawLeft(band(@"Lo", 0, @""), TS(kReadoutBandsY));
-    drawCentre(band(@"Mid", 1, @""), TS(kReadoutBandsY));
-    drawRight(band(@"Hi", 2, @" %"), TS(kReadoutBandsY));
+    drawLeft(band(@"Lo", 0, @""), TS(kReadoutBandsY) + extra);
+    drawCentre(band(@"Mid", 1, @""), TS(kReadoutBandsY) + extra);
+    drawRight(band(@"Hi", 2, @" %"), TS(kReadoutBandsY) + extra);
 }
 
 #pragma mark - Scales
