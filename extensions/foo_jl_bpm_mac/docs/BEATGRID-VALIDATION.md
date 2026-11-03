@@ -190,6 +190,41 @@ onset on the grid beats over that on the 16ths between) of 0.98; Locked
 phrases have 1.63. Another World: Broken 1 / 0, new grids 3 / 0; two Drifting
 phrases stay where the kick returns and leaves (onsets 11-26 ms late).
 
+### Sections: following a new grid (M8)
+
+Found in-app on Klaus Schulze - Crystal Lake (1977, 29 min): two analogue
+sequencer parts, 126.47 BPM from 1:34 and 141.64 BPM from 23:33. The
+new-grid marker at 23:33 was right, but every phrase after it was placed
+and judged on the first part's grid, so all read Broken.
+
+Where a new grid is confirmed the track is now cut into sections, each with
+its own grid (fitted to its own regions and beats as the master is to the
+track), bar phase from its downbeats, phrase phase from its section changes
+and bar statistics on its own grid. Crystal Lake's second part: 20 of 23
+phrases Locked, 2 Drifting (all Broken on the master grid). The first part
+keeps its Drifting and Broken phrases at 12-14 min: the sequence runs
+ahead of a straight grid by up to 70 ms there, which no single tempo
+fits.
+
+Half of the first pass's sections were octave switches: the network
+counting double time for a stretch (double-time hats, 120 -> 240 -> 120 on
+Blue Note) or half time, on the same beats. Those were already flagged as
+new grids on the master grid; followed, they would halve the phrase length.
+Double or half the tempo whose beats stay on the finer grid is now the
+same grid at another level. Corpus (78 grids, 32-beat phrases):
+
+| | Locked | Drifting | Broken | No pulse | New grid |
+|---|---|---|---|---|---|
+| Master grid, before | 1191 (60.0%) | 164 | 105 (5.3%) | 463 | 63 |
+| Master grid, octave rule | 1203 (60.6%) | 168 | 108 (5.4%) | 466 | 41 |
+| Following sections | 1245 (61.5%) | 206 | 85 (4.2%) | 446 | 42 |
+
+15 of 78 tracks have sections: phase jumps on electronic tracks (Life Is
+Sweet: 15 Broken phrases to 0), tempo drift in live rock (Arnold Layne:
+7 sections, Locked 1 -> 7), breaks with tempo changes. Some get slightly
+worse on their own grid (Avalon - Funky Voodoo: Broken 3 -> 5): a section
+fitted to fewer beats is less exact than the master over the whole track.
+
 ## Parity and speed
 
 | Stage | Check | Result |

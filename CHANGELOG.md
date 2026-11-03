@@ -782,6 +782,7 @@ Display P3 colors contributed by @Scannou (#55).
 - **Double BPM / Halve BPM**: Scale existing BPM tags.
 - **Beat grids**: A master beat grid per track with bar and phrase starts for Waveform Seekbar's phrase markers.
 - **Beat This!**: Beat grids from the Beat This! network on Core ML (bundled), the classic tracker as fallback.
+- **Sections**: Where the tempo changes or the track is edited, the grid is cut into sections with their own tempo and phrases.
 
 ## Tidal Integration
 

@@ -88,5 +88,6 @@ Beats come from **Beat This!** (Foscarin, Schlüter and Widmer, JKU Linz, ISMIR 
 - **Timing from the audio**: each beat the network finds is moved to the onset at it, so the grid is as exact as the attacks (the network's own timing moves by tens of milliseconds with what is playing).
 - **Bars from its downbeats**, phrases from where the track's sections change.
 - **Beatless passages** (intros, breakdowns, the kick out under a rolling bassline) count as no pulse rather than as the music leaving the grid. A track without a steady beat anywhere gets no grid.
+- **Tempo changes and edits**: where the music moves to another grid (a sequencer restarted at another speed, an edit that shifts the beat), a new grid begins there. The track is cut into sections, each with its own tempo, bars and phrases, so the seekbar can follow it. Double or half the tempo on the same beats (double-time hats, a half-time break) is the same grid.
 
 Where the model cannot run, the onset-based tracker takes over. Measured on 84 tracks of the developer's library: [docs/BEATGRID-VALIDATION.md](../extensions/foo_jl_bpm_mac/docs/BEATGRID-VALIDATION.md).
