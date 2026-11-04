@@ -21,7 +21,9 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps back are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
 
-- **Option-drag**: Moves the loop by whole beats.
+- **Option-drag, Option-jump**: Move the whole loop by whole beats; a plain jump while looping moves playback.
+
+- **Mixer output buffer**: While the mixer is on, foobar2000's output buffer is set to 100 ms (or 50-200 ms, or left alone), so loop and jump changes are heard at once; the user's own value comes back when the mixer goes off.
 
 - **Phrase-aware loops**: A loop asked for just after (or a beat before) a 16-beat phrase start starts on the phrase.
 
