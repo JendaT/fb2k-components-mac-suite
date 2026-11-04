@@ -12,6 +12,7 @@
 #import "../Core/GroupPresetStore.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/TitleFormatHelper.h"
+#import "../Integration/PlaylistCallbacks.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 #include "../Integration/ComponentInfo.h"
@@ -52,6 +53,9 @@
 @property (nonatomic, strong) NSButton *preserveQueueCheckbox;
 @property (nonatomic, strong) NSButton *keepPlayingPlaylistCheckbox;
 @property (nonatomic, strong) NSPopover *keepPlayingHelpPopover;
+@property (nonatomic, strong) NSButton *sortLibrarySelectionCheckbox;
+@property (nonatomic, strong) NSTextField *librarySortPatternField;
+@property (nonatomic, strong) NSTextField *librarySortNote;  // shows a pattern warning instead when there is one
 @property (nonatomic, strong) NSPopUpButton *queueDisplayStylePopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenBehaviorPopup;
 @property (nonatomic, strong) NSPopUpButton *finderOpenTargetPopup;
@@ -72,7 +76,7 @@
 - (void)loadView {
     // Build the preferences inside a flipped container, then wrap it in a scroll view
     // so users can scroll if their preferences window is shorter than the content.
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 960)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 1045)];
     container.autoresizingMask = 0;  // Fixed size so side-by-side layout stays intact
 
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 820, 600)];
@@ -408,12 +412,12 @@
     CGFloat behaviorBoxY = y;
     CGFloat behaviorContentY = 22;
 
-    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 230)];
+    NSBox *behaviorBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, behaviorBoxY, 460, 312)];
     behaviorBox.title = @"Behavior";
     behaviorBox.titlePosition = NSAtTop;
     [container addSubview:behaviorBox];
 
-    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 200)];
+    NSView *behaviorContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 282)];
     behaviorBox.contentView = behaviorContent;
 
     // Double-click preserves queue
@@ -449,6 +453,27 @@
     keepPlayingNote.textColor = [NSColor secondaryLabelColor];
     keepPlayingNote.lineBreakMode = NSLineBreakByWordWrapping;
     [behaviorContent addSubview:keepPlayingNote];
+    behaviorContentY += 32;
+
+    // Sort the library viewer's selection playlist
+    _sortLibrarySelectionCheckbox = [NSButton checkboxWithTitle:@"Sort library selection by:"
+                                                         target:self
+                                                         action:@selector(sortLibrarySelectionChanged:)];
+    _sortLibrarySelectionCheckbox.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 280, 20);
+    [behaviorContent addSubview:_sortLibrarySelectionCheckbox];
+    behaviorContentY += 24;
+
+    _librarySortPatternField = [[NSTextField alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, behaviorContentY, fieldWidth, 22)];
+    _librarySortPatternField.placeholderString = @(simplaylist_config::kDefaultLibrarySelectionSortPattern);
+    _librarySortPatternField.delegate = self;
+    [behaviorContent addSubview:_librarySortPatternField];
+    behaviorContentY += 26;
+
+    _librarySortNote = [NSTextField labelWithString:@""];
+    _librarySortNote.frame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 300, 28);
+    _librarySortNote.font = [NSFont systemFontOfSize:10];
+    _librarySortNote.lineBreakMode = NSLineBreakByWordWrapping;
+    [behaviorContent addSubview:_librarySortNote];
     behaviorContentY += 32;
 
     // Queue column display style
@@ -489,7 +514,7 @@
     // _finderOpenTargetPopupFrame = NSMakeRect(boxMargin + labelWidth, behaviorContentY, 220, 26);
     // _finderOpenTargetPopupParent = behaviorContent;
 
-    y = behaviorBoxY + 250;
+    y = behaviorBoxY + 332;
 
     // Help text — placed under the Pattern Help box on the right side
     CGFloat helpTextX = leftMargin + 460 + 20;
@@ -652,6 +677,17 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
         simplaylist_config::kKeepPlayingPlaylist,
         simplaylist_config::kDefaultKeepPlayingPlaylist);
     _keepPlayingPlaylistCheckbox.state = keepPlayingPlaylist ? NSControlStateValueOn : NSControlStateValueOff;
+
+    bool sortLibrarySelection = simplaylist_config::getConfigBool(
+        simplaylist_config::kSortLibrarySelection,
+        simplaylist_config::kDefaultSortLibrarySelection);
+    _sortLibrarySelectionCheckbox.state = sortLibrarySelection ? NSControlStateValueOn : NSControlStateValueOff;
+    std::string librarySortPattern = simplaylist_config::getConfigString(
+        simplaylist_config::kLibrarySelectionSortPattern,
+        simplaylist_config::kDefaultLibrarySelectionSortPattern);
+    _librarySortPatternField.stringValue = @(librarySortPattern.c_str()) ?: @"";
+    _librarySortPatternField.enabled = sortLibrarySelection;
+    [self refreshLibrarySortNote];
 
     int64_t queueStyle = simplaylist_config::getConfigInt(
         simplaylist_config::kQueueDisplayStyle,
@@ -890,6 +926,13 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 #pragma mark - NSTextFieldDelegate
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
+    if (notification.object == _librarySortPatternField) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveLibrarySortPattern) object:nil];
+        [self saveLibrarySortPattern];
+        // Sort only once editing ends, not on every pause while typing.
+        SimPlaylistCallbackManager::instance().sortLibrarySelection();
+        return;
+    }
     // Cancel the debounced save first: otherwise tabbing out of a field saves
     // here and again when the pending perform fires, posting
     // SimPlaylistSettingsChanged twice = two full rebuilds per panel.
@@ -898,6 +941,13 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 }
 
 - (void)controlTextDidChange:(NSNotification *)notification {
+    // Not part of the preset: saved on its own, without rebuilding the panels.
+    if (notification.object == _librarySortPatternField) {
+        [self refreshLibrarySortNote];
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(saveLibrarySortPattern) object:nil];
+        [self performSelector:@selector(saveLibrarySortPattern) withObject:nil afterDelay:0.5];
+        return;
+    }
     // Live warnings update immediately so the user gets feedback as they type;
     // only the edited field's preview is (re)scheduled.
     if (notification.object == _headerPatternField) {
@@ -1084,6 +1134,26 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 - (void)keepPlayingPlaylistChanged:(id)sender {
     bool enabled = (_keepPlayingPlaylistCheckbox.state == NSControlStateValueOn);
     simplaylist_config::setConfigBool(simplaylist_config::kKeepPlayingPlaylist, enabled);
+}
+
+- (void)sortLibrarySelectionChanged:(id)sender {
+    bool enabled = (_sortLibrarySelectionCheckbox.state == NSControlStateValueOn);
+    simplaylist_config::setConfigBool(simplaylist_config::kSortLibrarySelection, enabled);
+    _librarySortPatternField.enabled = enabled;
+    SimPlaylistCallbackManager::instance().sortLibrarySelection();
+}
+
+// An empty field deletes the key (the config store's idiom), which brings back
+// the default pattern shown as the placeholder.
+- (void)saveLibrarySortPattern {
+    simplaylist_config::setConfigString(simplaylist_config::kLibrarySelectionSortPattern,
+                                        _librarySortPatternField.stringValue.UTF8String);
+}
+
+- (void)refreshLibrarySortNote {
+    NSString *warning = [SimPlaylistPreferencesController warningForPattern:_librarySortPatternField.stringValue];
+    _librarySortNote.stringValue = warning ?: @"Re-sorts the ReFacets selection each time it changes, so the order survives switching artists";
+    _librarySortNote.textColor = warning ? [NSColor systemOrangeColor] : [NSColor secondaryLabelColor];
 }
 
 - (void)keepPlayingHelpClicked:(NSButton *)sender {

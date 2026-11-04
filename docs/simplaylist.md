@@ -78,6 +78,12 @@ Notes:
 - The playback queue is unaffected either way; queued tracks always play first.
 - Every restore is logged to the foobar2000 console (`View > Console`), so you can verify the guard is working.
 
+### Sort Library Selection
+
+Keeps the albums you browse in your own order, for example by release date. On by default; toggle **Sort library selection by** under **Preferences > Display > SimPlaylist > Behavior**.
+
+Clicking an artist (or anything else) in ReFacets refills the hidden **Library Viewer Selection** playlist in ReFacets' own order, albums A–Z by title, and ReFacets has no setting to change that. A sort from the right-click Sort menu lasts only until the next click. With this option on, SimPlaylist re-sorts that playlist by your pattern every time its contents change. The default pattern, `%album artist% - %date% - %album% - %discnumber% - %tracknumber%`, lists each artist's albums oldest first. Other playlists are never touched.
+
 ## Configuration
 
 Access settings via **Preferences > Display > SimPlaylist**
@@ -94,6 +100,7 @@ Access settings via **Preferences > Display > SimPlaylist**
 | Album Spacing | Inline only: empty rows between albums (Close/One row/Two rows) | One row |
 | Highlight Now Playing | Show yellow highlight on playing track | Off |
 | Keep playback in its playlist | Prevent library browsing (ReFacets) from changing what plays next | On |
+| Sort library selection by | Re-sort the ReFacets selection by a pattern each time it changes | On |
 
 ## Layout Editor
 

@@ -88,6 +88,11 @@ static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_que
 // the redirect and points continuation back at the playing track's playlist.
 static const char* const kKeepPlayingPlaylist = "keep_playing_playlist";
 
+// Re-sort the library viewer's selection playlist by a pattern each time its
+// contents change. ReFacets refills it in its own order on every click.
+static const char* const kSortLibrarySelection = "sort_library_selection";
+static const char* const kLibrarySelectionSortPattern = "library_selection_sort_pattern";
+
 // Show total album duration appended to group header text
 static const char* const kShowGroupDuration = "show_group_duration";
 
@@ -119,6 +124,9 @@ static const bool kDefaultDragToFinderMove = false;   // Copy files by default w
 static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
 static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
 static const bool kDefaultKeepPlayingPlaylist = true;         // Default: guard playing playlist while browsing library
+static const bool kDefaultSortLibrarySelection = true;        // Default: each artist's albums oldest first
+static const char* const kDefaultLibrarySelectionSortPattern =
+    "%album artist% - %date% - %album% - %discnumber% - %tracknumber%";
 static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
 static const int64_t kDefaultFinderOpenBehavior = 0;  // 0=replace (default fb2k), 1=append, 2=named
 static const char* const kDefaultFinderOpenTargetPlaylist = "Inbox";

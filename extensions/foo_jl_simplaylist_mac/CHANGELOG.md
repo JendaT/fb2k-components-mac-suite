@@ -4,6 +4,9 @@ All notable changes to SimPlaylist will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Sort library selection**: New Behavior option, on by default, re-sorts the ReFacets selection by a pattern each time it changes, so each artist's albums stay oldest first when switching artists; the pattern is editable.
+
 ### Fixed
 - **Inline header**: The album title sits right above its tracks instead of leaving the extra header space under it.
 - **Inline album spacing**: Every album is followed by the same gap, whether the tracks or the album art end lower; new **Album Spacing** setting (Close / One row / Two rows) replaces Group Header Spacing for Inline.

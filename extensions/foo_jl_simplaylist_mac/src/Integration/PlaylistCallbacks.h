@@ -43,6 +43,10 @@ public:
     // Metadb event dispatch — fires when tags are read/updated in background
     void onMetadbChanged(std::shared_ptr<metadb_handle_list> changed);
 
+    // Re-sort the library viewer's selection playlist now, if the option is on.
+    // Main thread, outside playlist callbacks (the preferences page).
+    void sortLibrarySelection();
+
     // Lifecycle - call from initquit
     void initCallbacks();
     void shutdownCallbacks();

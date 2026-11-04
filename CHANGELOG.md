@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### [Unreleased]
 
+#### Added
+- **Sort library selection**: The ReFacets selection stays sorted by a pattern (default: albums by date) when switching artists; on by default.
+
 #### Fixed
 - **Inline header**: Title sits right above its tracks; same gap after every album; new Album Spacing setting (Close / One row / Two rows).
 

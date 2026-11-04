@@ -318,6 +318,87 @@ public:
 
 static simplaylist_playing_playlist_guard* g_playing_playlist_guard = nullptr;
 
+// Library selection sort
+//
+// ReFacets refills its hidden selection playlist in its own order (albums A-Z)
+// on every click, so a sort made from the Sort menu lasts only until the next
+// selection. With the option on, the playlist is re-sorted by the user's
+// pattern each time its contents change. The SDK has no API that names the
+// library viewer's playlist; the name below is the one the Mac host uses.
+//
+// The sort is deferred to the main queue (callbacks may only read playlist
+// state) and coalesced, so a clear-then-add refill sorts once. It reorders
+// items only, and on_items_reordered is not watched, so it cannot re-trigger
+// itself.
+
+static const char* const kLibrarySelectionPlaylistName = "Library Viewer Selection";
+static std::atomic<bool> g_librarySortActive{false};
+static std::atomic<bool> g_librarySortPending{false};
+
+static bool isLibrarySelectionPlaylist(t_size playlist) {
+    pfc::string8 name;
+    if (!playlist_manager::get()->playlist_get_name(playlist, name)) return false;
+    return stricmp_utf8(name, kLibrarySelectionPlaylistName) == 0;
+}
+
+static void runLibrarySelectionSort() {
+    if (!g_librarySortActive) return;  // a block queued just before shutdown
+    if (!simplaylist_config::getConfigBool(simplaylist_config::kSortLibrarySelection,
+                                           simplaylist_config::kDefaultSortLibrarySelection)) return;
+    // Runs in a main-queue block, which is not exception-transparent.
+    try {
+        auto pm = playlist_manager::get();
+        t_size playlist = pm->find_playlist(kLibrarySelectionPlaylistName);
+        if (playlist == SIZE_MAX || pm->playlist_get_item_count(playlist) < 2) return;
+        std::string pattern = simplaylist_config::getConfigString(
+            simplaylist_config::kLibrarySelectionSortPattern,
+            simplaylist_config::kDefaultLibrarySelectionSortPattern);
+        if (pattern.empty()) return;
+        pm->playlist_sort_by_format(playlist, pattern.c_str(), false);
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[SimPlaylist] Library selection sort failed: " << e.what();
+    } catch (...) {
+        FB2K_console_formatter() << "[SimPlaylist] Library selection sort failed";
+    }
+}
+
+static void scheduleLibrarySelectionSort(t_size playlist) {
+    if (!isLibrarySelectionPlaylist(playlist)) return;
+    bool expected = false;
+    if (!g_librarySortPending.compare_exchange_strong(expected, true)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_librarySortPending = false;
+        runLibrarySelectionSort();
+    });
+}
+
+class simplaylist_library_selection_sorter : public playlist_callback_impl_base {
+public:
+    simplaylist_library_selection_sorter() : playlist_callback_impl_base(
+        flag_on_items_added |
+        flag_on_items_removed |
+        flag_on_items_replaced
+    ) {}
+
+    void on_items_added(t_size p_playlist, t_size p_start, metadb_handle_list_cref p_data, const bit_array& p_selection) override {
+        scheduleLibrarySelectionSort(p_playlist);
+    }
+
+    void on_items_removed(t_size p_playlist, const bit_array& p_mask, t_size p_old_count, t_size p_new_count) override {
+        scheduleLibrarySelectionSort(p_playlist);
+    }
+
+    void on_items_replaced(t_size p_playlist, const bit_array& p_mask, const pfc::list_base_const_t<t_on_items_replaced_entry>& p_data) override {
+        scheduleLibrarySelectionSort(p_playlist);
+    }
+};
+
+static simplaylist_library_selection_sorter* g_library_selection_sorter = nullptr;
+
+void SimPlaylistCallbackManager::sortLibrarySelection() {
+    runLibrarySelectionSort();
+}
+
 // Watches the *set* of playlists rather than their contents.
 //
 // Almost every piece of per-playlist state the controller keeps —
@@ -375,6 +456,10 @@ void SimPlaylistCallbackManager::initCallbacks() {
     if (!g_playlist_set_callback) {
         g_playlist_set_callback = new simplaylist_playlist_set_callback();
     }
+    if (!g_library_selection_sorter) {
+        g_library_selection_sorter = new simplaylist_library_selection_sorter();
+    }
+    g_librarySortActive = true;
     g_playingGuardActive = true;
     if (!g_playingGuardTimer) {
         g_playingGuardTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
@@ -406,6 +491,7 @@ void SimPlaylistCallbackManager::onShutdown() {
 
 void SimPlaylistCallbackManager::shutdownCallbacks() {
     onShutdown();
+    g_librarySortActive = false;
     g_playingGuardActive = false;
     [g_playingGuardTimer invalidate];
     g_playingGuardTimer = nil;
@@ -413,6 +499,8 @@ void SimPlaylistCallbackManager::shutdownCallbacks() {
     g_playing_playlist_guard = nullptr;
     delete g_playlist_set_callback;
     g_playlist_set_callback = nullptr;
+    delete g_library_selection_sorter;
+    g_library_selection_sorter = nullptr;
     delete g_playlist_callback;
     g_playlist_callback = nullptr;
     delete g_metadb_callback;
