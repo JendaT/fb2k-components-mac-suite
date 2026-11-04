@@ -2,20 +2,22 @@
 //  LoopEngineTests.cpp
 //  foo_wave_seekbar_mac
 //
-//  The gapless loop: bound by the seek to its start, the first pass
-//  recorded, repeated sample for sample, a new length, leaving the loop
-//  without a break, the held audio draining, other seeks, a new track in
-//  the held audio, the end of the stream, and the timeline that maps
-//  output frames back to track time.
+//  The mixer's audio side: passing through, syncs (the view's seek, its
+//  measurement, a track change), loops made from the history without a
+//  seek, new lengths taking effect at once (wrapping into a shorter loop,
+//  running on into a longer one), moves back into the history and forward
+//  into the audio decoded ahead, jumps, leaving a loop, catching up with
+//  the decoder, the crossfade, a new track behind a loop, the end of the
+//  stream, and the timeline that maps the output to track time.
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
-//  number, so the output shows exactly which frames play in which order.
+//  number (track time x 1000), so the output shows exactly which frames
+//  play in which order. Splices are hard (no crossfade) except in the
+//  crossfade test.
 //
 
 #include "TestSupport.h"
 #include "../src/Core/LoopEngine.h"
-
-#include <string>
 
 using namespace waveseek;
 
@@ -26,309 +28,373 @@ using Block = Engine::Block;
 
 constexpr unsigned kRate = 1000;
 
-// Decodes the track from `frame` on, `size` frames a block
+// Decodes from track frame `next` on, `size` frames a block
 struct Decoder {
-    uint64_t next;
-    size_t size;
+    int64_t next;
+    size_t size = 64;
     unsigned rate = kRate;
-    unsigned channels = 1;
-    Block read() {
-        Block b;
-        b.channels = channels;
-        b.rate = rate;
-        for (size_t i = 0; i < size; ++i) {
-            for (unsigned c = 0; c < channels; ++c) b.samples.push_back(static_cast<double>(next));
-            ++next;
-        }
+    std::vector<double> block() {
+        std::vector<double> b;
+        for (size_t i = 0; i < size; ++i) b.push_back(static_cast<double>(next++));
         return b;
     }
 };
 
-// What came out, first channel, frame by frame
+// What went out, frame by frame
 struct Output {
     std::vector<double> frames;
-    void add(const std::vector<Block> &blocks) {
-        for (const Block &b : blocks) {
-            for (size_t i = 0; i < b.frames(); ++i) frames.push_back(b.samples[i * b.channels]);
-        }
-    }
 };
 
-// Feeds blocks until at least `frames` have come out (or `maxBlocks` went in)
-void run(Engine &engine, Decoder &decoder, Output &out, size_t frames, int maxBlocks = 100000) {
-    for (int i = 0; i < maxBlocks && out.frames.size() < frames; ++i) {
-        std::vector<Block> blocks;
-        engine.process(decoder.read(), blocks);
-        out.add(blocks);
+// One block through the engine, its output collected
+void step(Engine &e, Decoder &d, Output &out, bool newTrack = false) {
+    const std::vector<double> in = d.block();
+    std::vector<Block> blocks;
+    if (e.process(in.data(), in.size(), 1, d.rate, 0, newTrack, blocks)) {
+        out.frames.insert(out.frames.end(), in.begin(), in.end());
+    } else {
+        for (const Block &b : blocks) out.frames.insert(out.frames.end(), b.samples.begin(), b.samples.end());
     }
 }
 
-// Every output frame is the track frame the timeline says it plays
-bool matchesTimeline(const Engine &engine, const Output &out, double start) {
-    for (size_t f = 0; f < out.frames.size(); ++f) {
-        const double t = trackTimeAt(engine.timeline(), start, kRate, static_cast<double>(f));
-        if (std::fabs(t * kRate - out.frames[f]) > 1e-6) {
-            printf("  frame %zu plays %.0f, timeline says %.3f\n", f, out.frames[f], t * kRate);
+void runUntil(Engine &e, Decoder &d, Output &out, size_t frames, int maxBlocks = 200000) {
+    for (int i = 0; i < maxBlocks && out.frames.size() < frames; ++i) step(e, d, out);
+}
+
+// Every output frame is what the timeline says it plays
+bool matchesTimeline(const Engine &e, const Output &out, size_t from = 0) {
+    for (size_t i = from; i < out.frames.size(); ++i) {
+        const double t = trackTimeAt(e.timeline(), (static_cast<double>(i) + 0.5) / kRate);
+        if (std::fabs(t * kRate - (out.frames[i] + 0.5)) > 1e-6) {
+            printf("  output frame %zu plays %.0f, the timeline says %.3f\n", i, out.frames[i], t * kRate - 0.5);
             return false;
         }
     }
     return true;
 }
 
-// A loop of 500 frames from track frame 2000 (2 s), decoded 64 frames a block
-struct Fixture {
-    Engine engine;
-    Decoder decoder{ 2000, 64 };
+// Played straight on from `first` over [from, to)
+bool straight(const Output &out, size_t from, size_t to, double first) {
+    for (size_t i = from; i < to && i < out.frames.size(); ++i) {
+        if (out.frames[i] != first + static_cast<double>(i - from)) {
+            printf("  output frame %zu plays %.0f, expected %.0f\n", i, out.frames[i], first + static_cast<double>(i - from));
+            return false;
+        }
+    }
+    return to <= out.frames.size();
+}
+
+// A loop from `start` (frame), `length` frames, from output frame `from` on
+bool looping(const Output &out, size_t from, size_t to, double start, size_t length, size_t phase = 0) {
+    for (size_t i = from; i < to && i < out.frames.size(); ++i) {
+        const double want = start + static_cast<double>((phase + i - from) % length);
+        if (out.frames[i] != want) {
+            printf("  output frame %zu plays %.0f, expected %.0f\n", i, out.frames[i], want);
+            return false;
+        }
+    }
+    return to <= out.frames.size();
+}
+
+// A seek to 2 s, synced by the view's measurement, then 3 s played live
+struct Playing {
+    Engine e;
+    Decoder d{ 2000 };
     Output out;
-    Fixture(double length = 0.5) {
-        engine.arm(7, 2.0, length);
-        engine.flush();    // the seek to 2 s
+    Playing(double played = 3.0) {
+        e.setFadeSeconds(0.0);
+        e.flush(nullptr);
+        e.sync(e.epoch(), 2.0);
+        runUntil(e, d, out, static_cast<size_t>(played * kRate));
     }
 };
 
-void testBindAndRepeat() {
-    TEST_CASE("bind and repeat");
-    Fixture f;
-    CHECK(f.engine.boundId() == 7 && f.engine.phase() == Engine::Recording, "the seek binds the armed loop");
-    run(f.engine, f.decoder, f.out, 3000);
-    bool exact = f.out.frames.size() >= 3000;
-    for (size_t i = 0; exact && i < 3000; ++i) exact = f.out.frames[i] == 2000.0 + static_cast<double>(i % 500);
-    CHECK(exact, "frames 2000..2499 again and again, no gap, nothing doubled");
-    CHECK(f.engine.phase() == Engine::Repeating, "repeating");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
-    // About a 64-frame block held per 1000-frame quantum
-    CHECK(f.engine.heldSeconds() > 0.0 && f.engine.heldSeconds() < 0.4, "the decoder runs ahead only slowly");
+LoopAction loop(uint64_t id, double start, double end, double to = NAN) {
+    LoopAction a;
+    a.kind = LoopAction::Loop;
+    a.id = id;
+    a.start = start;
+    a.end = end;
+    a.to = to;
+    return a;
 }
 
-void testExitPlaysOn() {
+LoopAction action(LoopAction::Kind kind, uint64_t id, double start = 0.0, double end = 0.0, double to = NAN) {
+    LoopAction a;
+    a.kind = kind;
+    a.id = id;
+    a.start = start;
+    a.end = end;
+    a.to = to;
+    return a;
+}
+
+void testPassThrough() {
+    TEST_CASE("passing through");
+    Playing p;
+    CHECK(p.e.live() && p.e.pristine(), "untouched");
+    CHECK(straight(p.out, 0, p.out.frames.size(), 2000.0), "what comes in goes out");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps it from the sync");
+    CHECK_NEAR(p.e.bufferedTo(), static_cast<double>(p.d.next) / kRate, 1e-9, "the history reaches the latest frame");
+
+    Engine unsynced;
+    unsynced.flush(nullptr);
+    Decoder d{ 0 };
+    Output out;
+    step(unsynced, d, out);
+    CHECK(!unsynced.act(loop(1, 0.0, 0.05, 0.0)) && unsynced.rejectedId() == 1, "unsynced: requests are turned down");
+}
+
+void testLoopFromHistory() {
+    TEST_CASE("a loop from the history");
+    Playing p;   // live up to frame ~5000
+    const size_t at = p.out.frames.size();
+    CHECK(p.e.act(loop(1, 4.5, 5.0, 4.5)), "made without a seek");
+    runUntil(p.e, p.d, p.out, at + 3000);
+    CHECK(looping(p.out, at, at + 3000, 4500.0, 500), "back to its start, then 4500..4999 again and again");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+    CHECK(p.e.aheadSeconds() > 0.0 && p.e.aheadSeconds() < 2.0, "the decoder runs ahead, slowly");
+}
+
+void testLoopAfterSeek() {
+    TEST_CASE("a loop bound by the view's seek");
+    Engine e;
+    e.setFadeSeconds(0.0);
+    LoopArm arm;
+    arm.id = 9;
+    arm.target = 2.0;
+    arm.then = loop(3, 2.0, 2.5, 2.0);
+    e.flush(&arm);
+    CHECK(e.synced() && e.boundArmId() == 9, "the seek syncs it");
+    Decoder d{ 2000 };
+    Output out;
+    runUntil(e, d, out, 2000);
+    CHECK(looping(out, 0, 2000, 2000.0, 500), "and loops from the first frame");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+
+    // A move's fallback: the seek to the loop's start, playing on from further in
+    Engine m;
+    m.setFadeSeconds(0.0);
+    arm.then = loop(4, 2.0, 2.5, 2.3);
+    m.flush(&arm);
+    Decoder d2{ 2000 };
+    Output o2;
+    runUntil(m, d2, o2, 1000);
+    CHECK(looping(o2, 0, 1000, 2000.0, 500, 300), "from 2300 once decoded, then the loop");
+}
+
+void testNarrower() {
+    TEST_CASE("narrower at once");
+    Playing p;
+    p.e.act(loop(1, 4.0, 5.0, 4.0));   // 1000 frames
+    const size_t start = p.out.frames.size();
+    runUntil(p.e, p.d, p.out, start + 1700);   // second pass, 700 in
+    const size_t at = p.out.frames.size();
+    (void)start;
+    const size_t phase = static_cast<size_t>(std::llround(p.e.playingFrom() * kRate)) - 4000;   // 0..1000
+    CHECK(p.e.act(action(LoopAction::Resize, 2, 0.0, 4.3)), "300 frames");
+    CHECK(phase % 300 != 0, "(the test wraps into it somewhere inside)");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    CHECK(looping(p.out, at, at + 2000, 4000.0, 300, phase % 300),
+          "the very next frame is inside the shorter loop, as far in as the beat went");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testWider() {
+    TEST_CASE("wider at once");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));   // 500 frames
+    const size_t start = p.out.frames.size();
+    runUntil(p.e, p.d, p.out, start + 1300);   // third pass, 300 in
+    const size_t at = p.out.frames.size();
+    (void)start;
+    const size_t phase = static_cast<size_t>(std::llround(p.e.playingFrom() * kRate)) - 4000;   // 0..500
+    CHECK(p.e.act(action(LoopAction::Resize, 2, 0.0, 5.0)), "twice as long");
+    runUntil(p.e, p.d, p.out, at + 3000);
+    CHECK(straight(p.out, at, at + (1000 - phase), 4000.0 + static_cast<double>(phase)),
+          "plays on past the old end in this pass");
+    CHECK(looping(p.out, at + (1000 - phase), at + 3000, 4000.0, 1000), "then the 1000-frame loop");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testMoveBack() {
+    TEST_CASE("moving back into the history");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    const size_t start = p.out.frames.size();
+    runUntil(p.e, p.d, p.out, start + 1200);
+    const size_t at = p.out.frames.size();
+    const size_t phase = (at - start) % 500;
+    CHECK(p.e.act(action(LoopAction::Move, 2, 3.0, 3.5)), "two loops back");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    CHECK(looping(p.out, at, at + 2000, 3000.0, 500, phase), "the same place in the moved loop, no gap");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testMoveForward() {
+    TEST_CASE("moving forward into the audio ahead");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    const size_t start = p.out.frames.size();
+    // Loop until the decoder is a second past the loop's end
+    for (int i = 0; i < 100000 && p.e.bufferedTo() < 5.6; ++i) step(p.e, p.d, p.out);
+    const size_t at = p.out.frames.size();
+    const size_t phase = (at - start) % 500;
+    CHECK(p.e.act(action(LoopAction::Move, 2, 5.0, 5.5)), "two loops on");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    CHECK(looping(p.out, at, at + 2000, 5000.0, 500, phase), "the same place in the moved loop, no gap");
+    CHECK(!p.e.act(action(LoopAction::Move, 3, 40.0, 40.5)) && p.e.rejectedId() == 3, "far beyond what is decoded: turned down");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testJump() {
+    TEST_CASE("jumping");
+    Playing p(4.0);   // live up to ~6000
+    const size_t at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)), "back into the history");
+    CHECK(!p.e.act(action(LoopAction::Jump, 2, 0.0, 0.0, 9.0)) && p.e.rejectedId() == 2, "forward past the decoder: turned down");
+    runUntil(p.e, p.d, p.out, at + 6000);
+    CHECK(straight(p.out, at, at + 6000, 4000.0), "on from 4000 without a break, through to the live stream");
+    CHECK(p.e.live(), "caught up: passing through again");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testExit() {
     TEST_CASE("leaving the loop");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 1200);
-    f.engine.requestExit();
-    run(f.engine, f.decoder, f.out, 6000);
-    // Find where the loop was left: after a whole pass, 2500 follows 2499
-    size_t left = 0;
-    for (size_t i = 1; i < f.out.frames.size(); ++i) {
-        if (f.out.frames[i] == 2500.0) {
-            left = i;
-            break;
-        }
-    }
-    CHECK(left > 0 && left % 500 == 0, "left at the end of a pass");
-    bool straight = left > 0;
-    for (size_t i = left; straight && i < f.out.frames.size(); ++i) {
-        straight = f.out.frames[i] == 2500.0 + static_cast<double>(i - left);
-    }
-    CHECK(straight, "then the track plays straight on from the loop's end, nothing skipped");
-    CHECK(f.engine.phase() == Engine::Idle, "the held audio drained: passing through again");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    const size_t start = p.out.frames.size();
+    runUntil(p.e, p.d, p.out, start + 1200);   // 200 into the third pass
+    const size_t at = p.out.frames.size();
+    const size_t phase = (at - start) % 500;
+    CHECK(p.e.act(action(LoopAction::Exit, 2)), "left");
+    runUntil(p.e, p.d, p.out, at + 8000);
+    CHECK(straight(p.out, at, at + 8000, 4000.0 + static_cast<double>(phase)),
+          "plays on from where it was, past the loop's end, without a break");
+    CHECK(p.e.live() && !p.e.looping(), "caught up: passing through again");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
-void testExitDuringFirstPass() {
-    TEST_CASE("leaving during the first pass");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 100);
-    f.engine.requestExit();
-    run(f.engine, f.decoder, f.out, 2000);
-    bool straight = true;
-    for (size_t i = 0; straight && i < 2000; ++i) straight = f.out.frames[i] == 2000.0 + static_cast<double>(i);
-    CHECK(straight, "never repeats: the track plays on");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
-}
-
-void testLonger() {
-    TEST_CASE("longer");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 1200);   // repeating
-    f.engine.setLength(1.0);                 // 1000 frames
-    run(f.engine, f.decoder, f.out, 8000);
-    // After the change the passes grow to 2000..2999, the new beats from
-    // the held audio, still without a gap
-    bool sawLong = false;
-    for (size_t i = 0; i < f.out.frames.size(); ++i) sawLong |= f.out.frames[i] == 2999.0;
-    CHECK(sawLong, "the new beats play");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
-    // The last whole passes are 1000 frames, 2000..2999 in order
-    const size_t n = f.out.frames.size();
-    size_t lastStart = 0;
-    for (size_t i = n - 1; i > 0; --i) {
-        if (f.out.frames[i] == 2000.0) {
-            lastStart = i;
-            break;
-        }
+void testCrossfade() {
+    TEST_CASE("crossfade");
+    Engine e;   // 5 ms = 5 frames at 1000 Hz
+    e.flush(nullptr);
+    e.sync(e.epoch(), 2.0);
+    Decoder d{ 2000 };
+    Output out;
+    runUntil(e, d, out, 3000);
+    const size_t at = out.frames.size();
+    const double old = out.frames.back() + 1.0;
+    e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 3.0));
+    runUntil(e, d, out, at + 20);
+    bool mixed = true;
+    for (size_t i = 0; i < 5; ++i) {
+        const double w = (static_cast<double>(i) + 0.5) / 5.0;
+        const double want = (old + static_cast<double>(i)) * (1.0 - w) + (3000.0 + static_cast<double>(i)) * w;
+        mixed &= std::fabs(out.frames[at + i] - want) < 1e-6;
     }
-    bool pass = lastStart >= 1000;
-    for (size_t i = 0; pass && i < 1000; ++i) pass = f.out.frames[lastStart - 1000 + i] == 2000.0 + static_cast<double>(i);
-    CHECK(pass, "a whole 1000-frame pass in order");
+    CHECK(mixed, "the first 5 frames blend the old continuation into the new");
+    CHECK(out.frames[at + 5] == 3005.0, "then the new audio alone");
 }
 
-void testShorter() {
-    TEST_CASE("shorter");
-    Fixture f(1.0);
-    run(f.engine, f.decoder, f.out, 1700);   // second pass, around frame 700 of the loop
-    f.engine.setLength(0.25);                // 250 frames: 700 wraps to 200
-    const size_t at = f.out.frames.size();
-    run(f.engine, f.decoder, f.out, 4000);
-    CHECK(f.out.frames[at] == 2000.0 + static_cast<double>((at - 1000) % 1000 % 250),
-          "playing past the new end wraps back into it");
-    bool wraps = true;
-    for (size_t i = at + 1; wraps && i < f.out.frames.size(); ++i) {
-        const double prev = f.out.frames[i - 1], now = f.out.frames[i];
-        wraps = now == prev + 1.0 || (prev == 2249.0 && now == 2000.0);
-    }
-    CHECK(wraps, "then 2000..2249 again and again");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
+void testForeignSeek() {
+    TEST_CASE("a seek from elsewhere");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 800);
+    const uint64_t epoch = p.e.epoch();
+    p.e.flush(nullptr);
+    CHECK(p.e.epoch() == epoch + 1 && !p.e.synced() && !p.e.looping() && p.e.live(), "drops everything, unsynced");
+    p.e.sync(epoch, 1.0);
+    CHECK(!p.e.synced(), "a measurement for the old seek is ignored");
 }
 
-void testShorterThenLeave() {
-    TEST_CASE("shorter, then leaving");
-    Fixture f(1.0);
-    run(f.engine, f.decoder, f.out, 2300);   // repeating, 1000 recorded
-    f.engine.setLength(0.25);
-    run(f.engine, f.decoder, f.out, 2600);
-    f.engine.requestExit();
-    run(f.engine, f.decoder, f.out, 8000);
-    size_t left = 0;
-    for (size_t i = 2600; i < f.out.frames.size(); ++i) {
-        if (f.out.frames[i] == 2250.0) {
-            left = i;
-            break;
-        }
-    }
-    bool straight = left > 0;
-    for (size_t i = left; straight && i < f.out.frames.size(); ++i) {
-        straight = f.out.frames[i] == 2250.0 + static_cast<double>(i - left);
-    }
-    CHECK(straight, "plays on from the shorter loop's end through the rest of the recording and the held audio");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
-}
-
-void testLengthBeforeFirstBlock() {
-    TEST_CASE("a length before the first block");
-    Fixture f;
-    f.engine.setLength(0.25);
-    run(f.engine, f.decoder, f.out, 1000);
-    bool exact = true;
-    for (size_t i = 0; exact && i < 1000; ++i) exact = f.out.frames[i] == 2000.0 + static_cast<double>(i % 250);
-    CHECK(exact, "the loop records the new length");
-}
-
-void testOtherSeek() {
-    TEST_CASE("another seek");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 1500);
-    f.engine.flush();   // a seek from elsewhere, nothing armed
-    CHECK(f.engine.phase() == Engine::Idle && f.engine.flushedAway(), "drops the loop, says so");
-    Decoder elsewhere{ 9000, 64 };
+void testNewTrackLive() {
+    TEST_CASE("a gapless track change");
+    Playing p;
+    Decoder next{ 0 };
+    Output out;
+    step(p.e, next, out, true);
+    CHECK(p.e.synced() && p.e.live(), "in step: synced to the new track's start");
+    runUntil(p.e, next, out, 1000);
+    CHECK(p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 0.2)), "the new track's history works");
     Output after;
-    run(f.engine, elsewhere, after, 640);
-    bool through = true;
-    for (size_t i = 0; through && i < 640; ++i) through = after.frames[i] == 9000.0 + static_cast<double>(i);
-    CHECK(through, "then passes the stream through");
-
-    Engine idle;
-    idle.flush();
-    CHECK(!idle.flushedAway(), "a seek with no loop is just a seek");
+    runUntil(p.e, next, after, 100);
+    CHECK(after.frames.front() == 200.0, "from its own frame 200");
 }
 
-void testRearm() {
-    TEST_CASE("a new loop");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 1500);
-    f.engine.arm(8, 5.0, 0.25);
-    f.engine.flush();
-    CHECK(f.engine.boundId() == 8 && !f.engine.flushedAway(), "the next seek binds the new one");
-    Decoder at5{ 5000, 64 };
-    Output out;
-    run(f.engine, at5, out, 1000);
-    bool exact = true;
-    for (size_t i = 0; exact && i < 1000; ++i) exact = out.frames[i] == 5000.0 + static_cast<double>(i % 250);
-    CHECK(exact, "and repeats it");
+void testNewTrackBehindLoop() {
+    TEST_CASE("a new track behind a loop");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 1000);
+    // The decoder reaches the next track (another rate) while looping
+    Decoder next{ 0 };
+    next.rate = 2000;
+    for (int i = 0; i < 4; ++i) step(p.e, next, p.out, i == 0);
+    const size_t at = p.out.frames.size();
+    runUntil(p.e, next, p.out, at + 1000, 20);
+    bool inLoop = p.out.frames.size() >= at + 1000;
+    for (size_t i = at; inLoop && i < at + 1000; ++i) inLoop = p.out.frames[i] >= 4000.0 && p.out.frames[i] < 4500.0;
+    CHECK(inLoop, "still looping the old track");
+    p.e.act(action(LoopAction::Exit, 2));
+    Output rest;
+    for (int i = 0; i < 2000 && !p.e.live(); ++i) step(p.e, next, rest);
+    CHECK(p.e.live() && p.e.synced(), "after the old track's audio and the new one's: live, synced to the new track");
+    bool reaches = false;
+    for (double v : rest.frames) reaches |= v == 0.0;
+    CHECK(reaches, "the new track plays from its first frame");
 }
 
-void testNewTrackInHeld() {
-    TEST_CASE("a new track behind the loop");
-    Engine engine;
-    engine.arm(1, 2.0, 0.5);
-    engine.flush();
-    Decoder d{ 2000, 64 };
-    Output out;
-    run(engine, d, out, 1200);
-    // The decoder reaches the next track: another rate
-    Decoder next{ 0, 64 };
-    next.rate = 48000;
-    for (int i = 0; i < 3; ++i) {
-        std::vector<Block> blocks;
-        engine.process(next.read(), blocks);
-        out.add(blocks);
-    }
-    engine.setLength(2.0);   // can grow only up to the old track's held audio
-    run(engine, next, out, 9000, 300);
-    CHECK(engine.phase() == Engine::Repeating, "still looping");
-    bool loopOnly = true;
-    for (size_t i = 1200; loopOnly && i < out.frames.size(); ++i) loopOnly = out.frames[i] >= 2000.0;
-    CHECK(loopOnly, "the new track's audio never plays inside the loop");
-    CHECK(matchesTimeline(engine, out, 2.0), "the timeline maps every frame");
+void testAheadCap() {
+    TEST_CASE("the decoder far ahead");
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    for (int i = 0; i < 20000 && p.e.looping(); ++i) step(p.e, p.d, p.out);
+    CHECK(!p.e.looping(), "past the limit the loop ends");
+    CHECK(p.e.aheadSeconds() <= Engine::kMaxAheadSeconds + 1.0, "near the limit, not beyond");
 }
 
 void testEndOfStream() {
     TEST_CASE("end of the stream");
-    Fixture f;
-    run(f.engine, f.decoder, f.out, 1700);
+    Playing p;
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 1700);
     std::vector<Block> blocks;
-    f.engine.endOfStream(blocks);
-    f.out.add(blocks);
-    CHECK(f.engine.phase() == Engine::Idle, "everything played");
-    CHECK(f.out.frames.back() == static_cast<double>(f.decoder.next - 1), "up to the last decoded frame");
-    CHECK(matchesTimeline(f.engine, f.out, 2.0), "the timeline maps every frame");
-}
-
-void testStereo() {
-    TEST_CASE("stereo");
-    Engine engine;
-    engine.arm(1, 1.0, 0.1);
-    engine.flush();
-    Decoder d{ 1000, 30 };
-    d.channels = 2;
-    std::vector<double> right;
-    for (int i = 0; i < 40; ++i) {
-        std::vector<Block> blocks;
-        engine.process(d.read(), blocks);
-        for (const Block &b : blocks) {
-            for (size_t k = 0; k < b.frames(); ++k) right.push_back(b.samples[k * 2 + 1]);
-        }
-    }
-    bool exact = right.size() > 300;
-    for (size_t i = 0; exact && i < 300; ++i) exact = right[i] == 1000.0 + static_cast<double>(i % 100);
-    CHECK(exact, "both channels loop together");
+    p.e.endOfStream(blocks);
+    for (const Block &b : blocks) p.out.frames.insert(p.out.frames.end(), b.samples.begin(), b.samples.end());
+    CHECK(p.out.frames.back() == static_cast<double>(p.d.next - 1), "everything decoded played, up to the last frame");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
 void testTimelineMath() {
     TEST_CASE("timeline");
-    std::vector<LoopSegment> t = { { 0, 500, 0, 0.0 }, { 1700, 250, 200, 0.0 }, { 2000, 0, 0, 2.25 } };
-    CHECK_NEAR(trackTimeAt(t, 2.0, 1000.0, 10.0), 2.010, 1e-12, "the first pass");
-    CHECK_NEAR(trackTimeAt(t, 2.0, 1000.0, 600.0), 2.100, 1e-12, "repeating");
-    CHECK_NEAR(trackTimeAt(t, 2.0, 1000.0, 1700.0), 2.200, 1e-12, "a new length, 200 frames in");
-    CHECK_NEAR(trackTimeAt(t, 2.0, 1000.0, 1760.0), 2.010, 1e-12, "wrapping at 250");
-    CHECK_NEAR(trackTimeAt(t, 2.0, 1000.0, 2500.0), 2.75, 1e-12, "straight on after leaving");
-    CHECK(std::isnan(trackTimeAt({}, 2.0, 1000.0, 5.0)), "no timeline");
+    const std::vector<LoopSegment> t = { { 0.0, 2.0, 0.0, 0.0 }, { 1.0, 4.0, 0.5, 0.0 }, { 3.0, 4.2, 0.25, 0.1 },
+                                         { 4.0, 4.25, 0.0, 0.0 } };
+    CHECK_NEAR(trackTimeAt(t, 0.3), 2.3, 1e-12, "straight on");
+    CHECK_NEAR(trackTimeAt(t, 1.7), 4.2, 1e-12, "looping");
+    CHECK_NEAR(trackTimeAt(t, 3.2), 4.2 + 0.05, 1e-12, "a moved loop, 0.1 in at its start");
+    CHECK_NEAR(trackTimeAt(t, 4.5), 4.75, 1e-12, "straight on after leaving");
+    CHECK(std::isnan(trackTimeAt({}, 1.0)), "no timeline");
 }
 
 } // namespace
 
 int main() {
-    testBindAndRepeat();
-    testExitPlaysOn();
-    testExitDuringFirstPass();
-    testLonger();
-    testShorter();
-    testShorterThenLeave();
-    testLengthBeforeFirstBlock();
-    testOtherSeek();
-    testRearm();
-    testNewTrackInHeld();
+    testPassThrough();
+    testLoopFromHistory();
+    testLoopAfterSeek();
+    testNarrower();
+    testWider();
+    testMoveBack();
+    testMoveForward();
+    testJump();
+    testExit();
+    testCrossfade();
+    testForeignSeek();
+    testNewTrackLive();
+    testNewTrackBehindLoop();
+    testAheadCap();
     testEndOfStream();
-    testStereo();
     testTimelineMath();
     return testsupport::summarize("LoopEngineTests");
 }

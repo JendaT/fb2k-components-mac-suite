@@ -3,8 +3,9 @@
 //  foo_wave_seekbar_mac
 //
 //  The "Beat loop" DSP and its bridge to the main thread (see BeatLoop.h).
-//  The DSP passes audio through untouched until a loop is armed; the
-//  seek to the loop's start flushes it, which binds the loop.
+//  Between blocks the DSP takes the view's requests; after each block it
+//  publishes its status. A seek flushes it: an arm made just before is the
+//  view's own seek and gives it the track time.
 //
 
 #import <Foundation/Foundation.h>
@@ -14,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <mutex>
 
 namespace {
@@ -24,20 +26,19 @@ constexpr GUID guid_beat_loop_dsp = { 0x795d5e97, 0xef6b, 0x4587, { 0xa6, 0x37, 
 using Engine = waveseek::LoopEngine<audio_sample>;
 using Clock = std::chrono::steady_clock;
 
-// Requests from the main thread and status back, under one lock; the DSP
-// holds it only to copy them between blocks
+// Requests from the main thread and the status back, under one lock; the
+// DSP holds it only to copy them between blocks
 struct Bridge {
     std::mutex lock;
     uint64_t nextId = 0;
-    // The arm waiting for a seek
+    // The seek coming
     uint64_t armId = 0;
-    double armStart = 0.0, armLength = 0.0;
+    waveseek::LoopArm arm;
     Clock::time_point armedAt;
-    // The latest length and exit asked for, per loop id
-    uint64_t lengthId = 0;
-    double length = 0.0;
-    uint64_t lengthSerial = 0;
-    uint64_t exitId = 0;
+    std::deque<waveseek::LoopAction> actions;
+    uint64_t syncSerial = 0;
+    uint64_t syncEpoch = 0;
+    double syncT0 = 0.0;
     beatloop::Status status;
 
     static Bridge &get() {
@@ -58,65 +59,77 @@ public:
 
     bool on_chunk(audio_chunk *chunk, abort_callback &) override {
         takeRequests();
-        if (m_engine.phase() == Engine::Idle) {   // the usual case: untouched
-            publishIfChanged();
-            return true;
+        // A gapless change to another track: its frame 0 is here
+        dsp_track_t file;
+        get_cur_file(file);
+        const bool newTrack = m_sawFile && file.is_valid() && file != m_file;
+        if (file.is_valid()) {
+            m_file = file;
+            m_sawFile = true;
         }
-        Engine::Block in;
-        in.channels = chunk->get_channel_count();
-        in.rate = chunk->get_sample_rate();
-        in.config = chunk->get_channel_config();
-        in.samples.assign(chunk->get_data(), chunk->get_data() + chunk->get_used_size());
         std::vector<Engine::Block> out;
-        m_engine.process(std::move(in), out);
-        insert(out);
-        publishIfChanged();
-        return false;
+        const bool through = m_engine.process(chunk->get_data(), chunk->get_sample_count(), chunk->get_channel_count(),
+                                              chunk->get_sample_rate(), chunk->get_channel_config(), newTrack, out);
+        if (!through) insert(out);
+        publish();
+        return through;
     }
 
     void on_endofplayback(abort_callback &) override {
         std::vector<Engine::Block> out;
         m_engine.endOfStream(out);
         insert(out);
-        publishIfChanged();
+        publish();
     }
 
     void on_endoftrack(abort_callback &) override {}
 
     void flush() override {
-        // A fresh arm is for this seek; a stale one is dropped
+        // A fresh arm is this seek; a stale one is dropped
+        waveseek::LoopArm arm;
+        bool own = false;
         {
             Bridge &b = Bridge::get();
             std::lock_guard<std::mutex> guard(b.lock);
             if (b.armId != 0) {
                 const double age = std::chrono::duration<double>(Clock::now() - b.armedAt).count();
-                if (age <= beatloop::kArmTimeout) m_engine.arm(b.armId, b.armStart, b.armLength);
+                if (age <= beatloop::kArmTimeout) {
+                    arm = b.arm;
+                    own = true;
+                }
                 b.armId = 0;
             }
+            b.actions.clear();   // they were for the audio before the seek
         }
-        m_engine.flush();
-        m_lengthSerial = 0;
-        publishIfChanged(true);
+        m_engine.flush(own ? &arm : nullptr);
+        m_sawFile = false;
+        m_file.release();
+        publish();
     }
 
-    // May be asked from another thread: the held audio as of the last block
+    // May be asked from another thread: the decoded audio waiting, as of the last block
     double get_latency() override { return m_latency.load(std::memory_order_relaxed); }
     bool need_track_change_mark() override { return false; }
 
 private:
     void takeRequests() {
-        Bridge &b = Bridge::get();
-        std::lock_guard<std::mutex> guard(b.lock);
-        const uint64_t id = m_engine.boundId();
-        if (id == 0) return;
-        if (b.lengthId == id && b.lengthSerial != m_lengthSerial) {
-            m_lengthSerial = b.lengthSerial;
-            m_engine.setLength(b.length);
+        std::deque<waveseek::LoopAction> actions;
+        bool haveSync = false;
+        uint64_t epoch = 0;
+        double t0 = 0.0;
+        {
+            Bridge &b = Bridge::get();
+            std::lock_guard<std::mutex> guard(b.lock);
+            actions.swap(b.actions);
+            if (b.syncSerial != m_syncSerial) {
+                m_syncSerial = b.syncSerial;
+                haveSync = true;
+                epoch = b.syncEpoch;
+                t0 = b.syncT0;
+            }
         }
-        if (b.exitId == id && !m_exitTaken) {
-            m_exitTaken = true;
-            m_engine.requestExit();
-        }
+        if (haveSync) m_engine.sync(epoch, t0);
+        for (const waveseek::LoopAction &a : actions) m_engine.act(a);
     }
 
     void insert(std::vector<Engine::Block> &blocks) {
@@ -127,43 +140,45 @@ private:
         }
     }
 
-    // The status for the view, when something it reads changed
-    void publishIfChanged(bool force = false) {
-        m_latency.store(m_engine.heldSeconds(), std::memory_order_relaxed);
-        const bool looping = m_engine.phase() == Engine::Recording || m_engine.phase() == Engine::Repeating;
-        const size_t segments = m_engine.timeline().size();
-        if (!force && m_engine.boundId() == m_publishedId && looping == m_publishedLooping &&
-            segments == m_publishedSegments && m_engine.rate() == m_publishedRate) {
-            return;
-        }
-        if (m_engine.boundId() != m_publishedId) m_exitTaken = false;
-        m_publishedId = m_engine.boundId();
-        m_publishedLooping = looping;
-        m_publishedSegments = segments;
-        m_publishedRate = m_engine.rate();
+    void publish() {
+        m_latency.store(m_engine.aheadSeconds(), std::memory_order_relaxed);
         Bridge &b = Bridge::get();
         std::lock_guard<std::mutex> guard(b.lock);
-        b.status.id = m_engine.boundId();
-        b.status.flushedAway = m_engine.flushedAway();
-        b.status.looping = looping;
-        b.status.rate = m_engine.rate();
-        b.status.start = m_engine.start();
-        b.status.timeline = m_engine.timeline();
+        beatloop::Status &s = b.status;
+        s.epoch = m_engine.epoch();
+        s.synced = m_engine.synced();
+        s.pristine = m_engine.pristine();
+        s.live = m_engine.live();
+        s.looping = m_engine.looping();
+        s.rate = m_engine.rate();
+        s.loopStart = m_engine.loopStart();
+        s.loopEnd = m_engine.loopEnd();
+        s.bufferedFrom = m_engine.bufferedFrom();
+        s.bufferedTo = m_engine.bufferedTo();
+        s.outSeconds = m_engine.outSeconds();
+        s.ahead = m_engine.aheadSeconds();
+        s.boundArmId = m_engine.boundArmId();
+        s.lastActionId = m_engine.lastActionId();
+        s.rejectedId = m_engine.rejectedId();
+        if (m_engine.version() != m_publishedVersion) {
+            m_publishedVersion = m_engine.version();
+            s.timeline = m_engine.timeline();
+        }
     }
 
     Engine m_engine;
     std::atomic<double> m_latency{ 0.0 };
-    uint64_t m_lengthSerial = 0;
-    bool m_exitTaken = false;
-    uint64_t m_publishedId = 0;
-    bool m_publishedLooping = false;
-    size_t m_publishedSegments = 0;
-    unsigned m_publishedRate = 0;
+    uint64_t m_syncSerial = 0;
+    uint64_t m_publishedVersion = UINT64_MAX;
+    dsp_track_t m_file;
+    bool m_sawFile = false;
 };
 
 dsp_factory_nopreset_t<dsp_beat_loop> g_beat_loop_factory;
 
 visualisation_stream::ptr g_clock;
+service_ptr g_liveEdit;
+bool g_liveEditMissing = false;
 
 } // namespace
 
@@ -194,30 +209,35 @@ bool running() {
     return g_instances.load() > 0;
 }
 
-uint64_t arm(double start, double length) {
+uint64_t armSeek(double target, const waveseek::LoopAction *then) {
     Bridge &b = Bridge::get();
     std::lock_guard<std::mutex> guard(b.lock);
     b.armId = ++b.nextId;
-    b.armStart = start;
-    b.armLength = length;
+    b.arm = waveseek::LoopArm();
+    b.arm.id = b.armId;
+    b.arm.target = target;
+    if (then) {
+        b.arm.then = *then;
+        b.arm.then->id = ++b.nextId;
+    }
     b.armedAt = Clock::now();
     return b.armId;
 }
 
-void setLength(uint64_t id, double length) {
+uint64_t act(waveseek::LoopAction action) {
     Bridge &b = Bridge::get();
     std::lock_guard<std::mutex> guard(b.lock);
-    if (b.armId == id) b.armLength = length;   // not bound yet
-    b.lengthId = id;
-    b.length = length;
-    b.lengthSerial++;
+    action.id = ++b.nextId;
+    b.actions.push_back(action);
+    return action.id;
 }
 
-void exit(uint64_t id) {
+void sync(uint64_t epoch, double t0) {
     Bridge &b = Bridge::get();
     std::lock_guard<std::mutex> guard(b.lock);
-    if (b.armId == id) b.armId = 0;   // never bound: nothing to leave
-    b.exitId = id;
+    b.syncSerial++;
+    b.syncEpoch = epoch;
+    b.syncT0 = t0;
 }
 
 Status status() {
@@ -238,6 +258,25 @@ double playedSinceSeek() {
 
 void releaseClock() {
     g_clock.release();
+}
+
+void setLowLatency(bool on) {
+    if (!on) {
+        g_liveEdit.release();
+        return;
+    }
+    if (g_liveEdit.is_valid() || g_liveEditMissing) return;
+    try {
+        dsp_config_manager_v3::ptr manager;
+        if (dsp_config_manager_v3::tryGet(manager)) g_liveEdit = manager->acquire_live_edit_scope();
+        else {
+            g_liveEditMissing = true;
+            FB2K_console_formatter() << "[WaveSeek] Beat loop: this foobar2000 has no low-latency hint; changes to a "
+                                        "loop are heard after the output buffer (Preferences > Playback > Output)";
+        }
+    } catch (...) {
+        g_liveEditMissing = true;
+    }
 }
 
 } // namespace beatloop

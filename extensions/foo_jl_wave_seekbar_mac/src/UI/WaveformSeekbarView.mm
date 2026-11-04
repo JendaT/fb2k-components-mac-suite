@@ -233,6 +233,7 @@ const CGFloat kBeatSnapPoints = 6.0;        // with the mixer on, a click this n
 const double kLoopLookahead = 2.5 / 60.0;   // the loop's end within 2.5 position checks: seek on time
 const double kSeekLanded = 0.15;            // the playback position this near a seek's target shows it
 const double kSeekTimeout = 1.0;            // a seek not shown by then is taken as done
+const double kDeckMargin = 0.05;            // a splice target this far inside the DSP's audio, at least
 const uint32_t kLoopColor = 0x35C27A;
 
 // Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
@@ -405,14 +406,29 @@ struct BarSegment {
     bool _loopEndScheduled;
     double _pendingSeek;            // NAN when none
     CFAbsoluteTime _pendingSince;
-    // The gapless loop: the loop DSP id armed or bound for the loop, its
-    // status as of the last position check, and the loop whose timeline
-    // maps the visualisation clock to the cursor (it outlives leaving)
-    uint64_t _dspLoopId;
-    CFAbsoluteTime _dspArmedAt;
-    beatloop::Status _dspStatus;
-    uint64_t _clockLoopId;
-    int _clockAgreements;
+    // The loop DSP: its status as of the last position check, the seek
+    // whose timeline the cursor follows, a seek of ours on its way, a
+    // request on its way and the seek that replaces it when turned down,
+    // the track time being measured, the low-latency hint
+    beatloop::Status _deck;
+    uint64_t _deckEpoch;
+    uint64_t _armId;
+    CFAbsoluteTime _armAt;
+    CFAbsoluteTime _loopCheckAfter;
+    uint64_t _requestId;
+    double _fallbackTarget;
+    bool _fallbackHasThen;
+    waveseek::LoopAction _fallbackThen;
+    std::vector<double> _syncSamples;
+    uint64_t _syncEpoch;
+    bool _lowLatency;
+    CFAbsoluteTime _latencyNoteAt;
+    // Option-dragging the loop: the beat under the mouse when it began, the
+    // loop then, and where it would go
+    bool _loopDragging;
+    double _loopDragBeat;
+    waveseek::BeatLoop _loopDragOrigin;
+    waveseek::BeatLoop _loopDragPreview;
 }
 
 @end
@@ -2331,8 +2347,9 @@ struct BarSegment {
 // The loop's range in the loop colour, edges and a light fill
 - (void)drawLoopInContext:(CGContextRef)context rect:(CGRect)rect {
     if (!_loop.active() || !(self.trackDuration > 0.0)) return;
-    const double a = _zoom.acrossOf(_loop.start / self.trackDuration);
-    const double b = _zoom.acrossOf(_loop.end / self.trackDuration);
+    const waveseek::BeatLoop &shown = _loopDragging ? _loopDragPreview : _loop;   // where a drag would put it
+    const double a = _zoom.acrossOf(shown.start / self.trackDuration);
+    const double b = _zoom.acrossOf(shown.end / self.trackDuration);
     if (b <= 0.0 || a >= 1.0) return;
     const CGFloat scale = [self backingScale];
     auto xAt = [&](double across) { return std::round((rect.origin.x + rect.size.width * across) * scale) / scale; };
@@ -2360,6 +2377,8 @@ struct BarSegment {
     return expected;
 }
 
+// The audible position: foobar2000's, mapped through the loop DSP's timeline
+// while it changes what plays
 - (double)currentSeconds {
     double seconds = self.playbackPosition * self.trackDuration;
     if ([self.delegate respondsToSelector:@selector(waveformSeekbarViewPlaybackTime:)]) {
@@ -2369,14 +2388,7 @@ struct BarSegment {
     return [self settledPosition:seconds];
 }
 
-// A seek of the view's own. While the loop DSP repeats the loop, any seek
-// drops it there (the loop goes on by seeking until it is bound again).
-- (void)beatSeekTo:(double)seconds {
-    [self detachLoopDsp];
-    [self seekKeepingDsp:seconds];
-}
-
-- (void)seekKeepingDsp:(double)seconds {
+- (void)seekTo:(double)seconds {
     _pendingSeek = seconds;
     _pendingSince = CFAbsoluteTimeGetCurrent();
     [self performSeekToTime:seconds];
@@ -2388,100 +2400,178 @@ struct BarSegment {
     _loop = loop;
     ++_loopGeneration;          // a seek scheduled for the old one is dropped
     _loopEndScheduled = false;
+    [self updateLowLatency];
     [self setNeedsDisplay:YES];
 }
 
-// Off. The loop DSP, if it repeats it, finishes the pass and plays on.
+// Off; with the loop DSP, playback goes on from where it is
 - (void)endLoop {
-    if (_dspLoopId != 0) {
-        beatloop::exit(_dspLoopId);
-        _dspLoopId = 0;
-    }
-    if (_loop.active()) [self setLoop:waveseek::BeatLoop()];
-}
-
-#pragma mark - Gapless Loop
-
-// The loop DSP repeats the loop now
-- (BOOL)loopBoundToDsp {
-    return _dspLoopId != 0 && _dspStatus.id == _dspLoopId && !_dspStatus.flushedAway;
-}
-
-// To the loop's start; with the loop DSP running, that seek binds the loop
-// to it and the passes after this one have no gap
-- (void)seekToLoopStart {
     if (!_loop.active()) return;
-    if (beatloop::running()) {
-        [self detachLoopDsp];
-        _dspLoopId = beatloop::arm(_loop.start, _loop.length());
-        _dspArmedAt = CFAbsoluteTimeGetCurrent();
-        _clockLoopId = _dspLoopId;
-        _clockAgreements = 0;
-        beatloop::playedSinceSeek();   // opens the clock before the seek
-        [self seekKeepingDsp:_loop.start];
-        return;
+    if ([self deckMode]) {
+        waveseek::LoopAction exit;
+        exit.kind = waveseek::LoopAction::Exit;
+        beatloop::act(exit);
     }
-    [self seekKeepingDsp:_loop.start];
+    [self setLoop:waveseek::BeatLoop()];
 }
 
-// Stops using the loop DSP for this loop (a seek of the view's own follows)
-- (void)detachLoopDsp {
-    if (_dspLoopId != 0) _dspLoopId = 0;
-    [self endClock];
+#pragma mark - Loop DSP
+
+// The mixer plays through the loop DSP when it is running
+- (BOOL)deckMode {
+    return _controlsMode == waveform_config::ControlsMixer && beatloop::running();
 }
 
-- (void)endClock {
-    if (_clockLoopId == 0) return;
-    _clockLoopId = 0;
-    beatloop::releaseClock();
+// It knows the track time of what it plays and no seek of ours is on its way
+- (BOOL)deckReady {
+    return [self deckMode] && _deck.synced && _deckEpoch != 0 && _deck.epoch == _deckEpoch && _armId == 0;
 }
 
-// The loop DSP's status, once per position check: a loop it was asked to
-// bind and did not falls back to seeking; one dropped by a seek from
-// elsewhere ends; after leaving, foobar2000's position takes over again
-// once it agrees with the clock
-- (void)pollLoopDsp:(double)seconds {
-    if (_dspLoopId == 0 && _clockLoopId == 0) return;
-    _dspStatus = beatloop::status();
-    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-    if (_dspLoopId != 0 && _dspStatus.id == _dspLoopId) {
-        if (_dspStatus.flushedAway) {
-            _dspLoopId = 0;
-            [self endClock];
-            if (_loop.active()) [self setLoop:waveseek::BeatLoop()];
-            return;
+// It holds the track's audio over from .. to (to may be NAN: not needed)
+- (BOOL)deckHolds:(double)from to:(double)to {
+    return [self deckReady] && from >= _deck.bufferedFrom + kDeckMargin &&
+           (std::isnan(to) || to <= _deck.bufferedTo - kDeckMargin);
+}
+
+// A seek of our own: it gives the DSP the track time, then `then` applies
+- (void)armedSeekTo:(double)target then:(const waveseek::LoopAction *)then {
+    _armId = beatloop::armSeek(target, then);
+    _armAt = CFAbsoluteTimeGetCurrent();
+    _loopCheckAfter = _armAt + 0.5;
+    [self seekTo:target];
+}
+
+// A request to the DSP; when it is turned down, the seek instead
+- (void)request:(waveseek::LoopAction)action orSeekTo:(double)target then:(const waveseek::LoopAction *)then {
+    _requestId = beatloop::act(action);
+    _fallbackTarget = target;
+    _fallbackHasThen = then != nullptr;
+    if (then) _fallbackThen = *then;
+    _loopCheckAfter = CFAbsoluteTimeGetCurrent() + 0.5;
+}
+
+static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double start, double end, double to) {
+    waveseek::LoopAction a;
+    a.kind = kind;
+    a.start = start;
+    a.end = end;
+    a.to = to;
+    return a;
+}
+
+// Playback to `target`: inside the DSP's audio a splice, else a seek
+- (void)deckSeekTo:(double)target {
+    if (_loop.active() && !_loop.contains(target)) [self endLoop];
+    if (_loop.active()) {
+        const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, _loop.start, _loop.end, target);
+        if ([self deckHolds:target to:target] && _deck.looping) {
+            [self request:makeAction(waveseek::LoopAction::Jump, 0, 0, target) orSeekTo:_loop.start then:&then];
+        } else {
+            [self armedSeekTo:_loop.start then:&then];
         }
-    } else if (_dspLoopId != 0 && now - _dspArmedAt > beatloop::kArmTimeout) {
-        FB2K_console_formatter() << "[WaveSeek] Beat loop: the loop DSP did not take the loop; looping by seeking";
-        _dspLoopId = 0;
-        [self endClock];
+    } else if ([self deckHolds:target to:target]) {
+        [self request:makeAction(waveseek::LoopAction::Jump, 0, 0, target) orSeekTo:target then:nullptr];
+    } else {
+        [self armedSeekTo:target then:nullptr];
+    }
+    if (self.trackDuration > 0.0) self.playbackPosition = target / self.trackDuration;
+    [self setNeedsDisplay:YES];
+}
+
+// The DSP's status, once per position check: our seek taken, a seek from
+// elsewhere (the loop ends), the track time measured while untouched, a
+// request turned down (seek instead), the DSP leaving a loop by itself
+- (void)pollDeck:(double)seconds {
+    if (![self deckMode]) {
+        if (_deckEpoch != 0) {
+            _deckEpoch = 0;
+            beatloop::releaseClock();
+        }
         return;
     }
-    if (_clockLoopId == 0) return;
-    if (_dspStatus.id != _clockLoopId && _dspLoopId == 0 && now - _dspArmedAt > beatloop::kArmTimeout) {
-        [self endClock];   // armed, then left before a seek bound it
-        return;
+    _deck = beatloop::status();
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (_armId != 0) {
+        if (_deck.boundArmId == _armId) {
+            _armId = 0;
+            _deckEpoch = _deck.epoch;
+        } else if (now - _armAt > beatloop::kArmTimeout) {
+            _armId = 0;
+            FB2K_console_formatter() << "[WaveSeek] Beat loop: the loop DSP missed a seek";
+        }
     }
-    if (_dspStatus.id == _clockLoopId && _dspStatus.flushedAway) {
-        [self endClock];
-        return;
+    if (_armId == 0 && _deckEpoch != 0 && _deck.epoch != _deckEpoch) {   // a seek from elsewhere
+        _deckEpoch = 0;
+        _requestId = 0;
+        if (_loop.active()) [self setLoop:waveseek::BeatLoop()];
     }
-    if (_dspStatus.id == _clockLoopId && !_dspStatus.looping) {
-        const double mapped = [self displayedTimeFor:seconds];
-        _clockAgreements = std::fabs(mapped - seconds) < 0.05 ? _clockAgreements + 1 : 0;
-        if (_clockAgreements >= 10) [self endClock];
+    if (_armId == 0 && _deck.synced) _deckEpoch = _deck.epoch;
+    if (_armId == 0 && !_deck.synced && _deck.pristine && self.playing) [self measureTrackTime:seconds];
+    if (_requestId != 0 && _deck.rejectedId == _requestId) {
+        _requestId = 0;
+        [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
+    } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
+        _requestId = 0;
+    }
+    if (_loop.active() && _armId == 0 && _requestId == 0 && now > _loopCheckAfter && [self deckReady] && !_deck.looping) {
+        [self setLoop:waveseek::BeatLoop()];   // it went too far ahead and left the loop
+    }
+    if (_latencyNoteAt > 0 && now >= _latencyNoteAt && [self deckReady]) {
+        _latencyNoteAt = 0;
+        const double played = beatloop::playedSinceSeek();
+        static bool noted = false;
+        if (std::isfinite(played) && !noted) {
+            noted = true;
+            FB2K_console_formatter() << "[WaveSeek] Beat loop: a change is heard about "
+                                     << pfc::format_float(std::max(0.0, _deck.outSeconds - played), 0, 2)
+                                     << " s after it is made (the output buffer; Preferences > Playback > Output)";
+        }
     }
 }
 
-// The track time playing: through the loop DSP's timeline while it holds
-// the playback, else foobar2000's position
+// Untouched audio: foobar2000's position less the audio played since the
+// seek is the seek's target, the track time of the DSP's first frame
+- (void)measureTrackTime:(double)seconds {
+    const double played = beatloop::playedSinceSeek();
+    if (!std::isfinite(played) || !std::isfinite(seconds)) return;
+    if (_syncEpoch != _deck.epoch) {
+        _syncEpoch = _deck.epoch;
+        _syncSamples.clear();
+    }
+    _syncSamples.push_back(seconds - played);
+    if (_syncSamples.size() > 12) _syncSamples.erase(_syncSamples.begin());
+    if (_syncSamples.size() < 5) return;
+    std::vector<double> sorted(_syncSamples.end() - 5, _syncSamples.end());
+    std::sort(sorted.begin(), sorted.end());
+    if (sorted.back() - sorted.front() > 0.01) return;   // still settling
+    double t0 = sorted[2];
+    if (std::fabs(t0) < 0.02) t0 = 0.0;                 // from the track's start
+    beatloop::sync(_deck.epoch, t0);
+    _syncSamples.clear();
+}
+
+// The track time playing: through the DSP's timeline while it changes what
+// plays, else foobar2000's position
 - (double)displayedTimeFor:(double)seconds {
-    if (_clockLoopId == 0 || _dspStatus.id != _clockLoopId || _dspStatus.rate == 0) return seconds;
+    if (![self deckMode] || _deckEpoch == 0 || _deck.epoch != _deckEpoch || !_deck.synced || _deck.pristine) {
+        return seconds;
+    }
     const double played = beatloop::playedSinceSeek();
     if (!std::isfinite(played)) return seconds;
-    const double t = waveseek::trackTimeAt(_dspStatus.timeline, _dspStatus.start, _dspStatus.rate, played * _dspStatus.rate);
+    const double t = waveseek::trackTimeAt(_deck.timeline, played);
     return std::isfinite(t) ? t : seconds;
 }
+
+// While a change may come (hovering, or a loop playing), foobar2000 keeps
+// its output latency low
+- (void)updateLowLatency {
+    const bool on = [self deckMode] && (_hovering || _loop.active());
+    if (on == _lowLatency) return;
+    _lowLatency = on;
+    beatloop::setLowLatency(on);
+}
+
+#pragma mark - Mixer Actions
 
 - (void)performBarControl:(const BarSegment &)segment {
     switch (segment.control) {
@@ -2499,22 +2589,42 @@ struct BarSegment {
     [self setNeedsDisplay:YES];
 }
 
-// `count` beats on or back, at the same place in the beat. While looping
-// the loop moves with it (nothing happens when it would leave the track);
-// it goes on by seeking until its next start binds it to the loop DSP.
-- (void)jumpBeats:(int)count {
+// The loop moved by `count` beats, playback at the same place in it
+- (void)moveLoopBy:(int)count {
     const std::vector<double> &beats = [self beats];
-    const double target = waveseek::jumpTarget(beats, [self currentSeconds], count, self.trackDuration);
-    if (std::isnan(target)) return;
-    if (_loop.active()) {
-        const waveseek::BeatLoop moved = waveseek::movedLoop(beats, _loop, count, self.trackDuration);
-        if (!moved.active()) return;
-        [self detachLoopDsp];
+    const waveseek::BeatLoop moved = waveseek::movedLoop(beats, _loop, count, self.trackDuration);
+    if (!moved.active() || count == 0) return;
+    const double now = [self currentSeconds];
+    const double shifted = waveseek::timeAtBeat(beats, waveseek::beatPosition(beats, now) + count);
+    const double target = moved.contains(shifted) ? shifted : waveseek::wrappedIntoLoop(moved, shifted);
+    if ([self deckMode]) {
+        const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, moved.start, moved.end, target);
+        const double delta = moved.start - _loop.start;
+        if ([self deckHolds:moved.start to:NAN] && _deck.looping &&
+            _deck.bufferedTo - kDeckMargin >= std::max(moved.start, now + delta)) {
+            [self request:makeAction(waveseek::LoopAction::Move, moved.start, moved.end, NAN) orSeekTo:moved.start
+                     then:&then];
+        } else {
+            [self armedSeekTo:moved.start then:&then];
+        }
         [self setLoop:moved];
-        [self beatSeekTo:moved.contains(target) ? target : waveseek::wrappedIntoLoop(moved, target)];
         return;
     }
-    [self beatSeekTo:target];
+    [self setLoop:moved];
+    [self seekTo:target];
+}
+
+// `count` beats on or back, at the same place in the beat. While looping
+// the loop moves with it (nothing happens when it would leave the track).
+- (void)jumpBeats:(int)count {
+    if (_loop.active()) {
+        [self moveLoopBy:count];
+        return;
+    }
+    const double target = waveseek::jumpTarget([self beats], [self currentSeconds], count, self.trackDuration);
+    if (std::isnan(target)) return;
+    if ([self deckMode]) [self deckSeekTo:target];
+    else [self seekTo:target];
 }
 
 // Where the 16-beat phrases (and new grids) start, for a loop to catch
@@ -2534,11 +2644,24 @@ struct BarSegment {
         [self endLoop];
         return;
     }
-    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], [self currentSeconds], _beatSize, self.trackDuration,
+    const double now = [self currentSeconds];
+    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], now, _beatSize, self.trackDuration,
                                                        [self phraseStartTimes]);
     if (!loop.active()) return;
     [self setLoop:loop];
-    [self seekToLoopStart];
+    if ([self deckMode]) {
+        // Back to its start (a phrase start just ahead: plays into it)
+        const double to = loop.start <= now ? loop.start : NAN;
+        const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, loop.start);
+        if ([self deckHolds:loop.start to:NAN]) {
+            [self request:makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, to) orSeekTo:loop.start then:&then];
+        } else {
+            [self armedSeekTo:loop.start then:&then];
+        }
+        if (_latencyNoteAt == 0) _latencyNoteAt = CFAbsoluteTimeGetCurrent() + 1.0;
+        return;
+    }
+    [self seekTo:loop.start];
 }
 
 - (void)showSizeMenuFor:(const BarSegment &)segment {
@@ -2559,32 +2682,39 @@ struct BarSegment {
     [self setNeedsDisplay:YES];
 }
 
-// The new size for the jumps beside the menu and the loop; a loop playing
-// keeps its start and takes the new length, playback past its new end goes
-// back into it (the loop DSP does that itself, without a seek)
+// The new size for the jumps beside the menu and the loop. A loop playing
+// keeps its start and takes the new length at once: playback past its new
+// end goes back into it, as far in as it was past a multiple of the length.
 - (void)sizeChosen:(NSMenuItem *)item {
     _beatSize = (int)item.tag;
     waveform_config::setConfigInt(waveform_config::kKeyBeatSize, _beatSize);
     if (_loop.active()) {
         const waveseek::BeatLoop resized = waveseek::resizedLoop([self beats], _loop, _beatSize, self.trackDuration);
         if (resized.active()) {
-            const bool bound = [self loopBoundToDsp];
+            const double now = [self currentSeconds];
+            const double into = resized.contains(now) ? now : waveseek::wrappedIntoLoop(resized, now);
             [self setLoop:resized];
-            if (bound || _dspLoopId != 0) {
-                beatloop::setLength(_dspLoopId, resized.length());
-            } else {
-                const double now = [self currentSeconds];
-                if (!resized.contains(now)) [self beatSeekTo:waveseek::wrappedIntoLoop(resized, now)];
+            if ([self deckMode]) {
+                const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, resized.start, resized.end, into);
+                if ([self deckReady]) {
+                    [self request:makeAction(waveseek::LoopAction::Resize, resized.start, resized.end, NAN)
+                         orSeekTo:resized.start then:&then];
+                } else {
+                    [self armedSeekTo:resized.start then:&then];
+                }
+            } else if (!resized.contains(now)) {
+                [self seekTo:into];
             }
         }
     }
     [self setNeedsDisplay:YES];
 }
 
+// Without the loop DSP: the loop by seeking, at the position checks
 - (void)followLoopAt:(double)seconds {
-    [self pollLoopDsp:seconds];
-    if (!_loop.active() || [self loopBoundToDsp]) return;
-    if (_dspLoopId != 0) return;   // armed: waiting for the seek to bind it
+    [self pollDeck:seconds];
+    [self updateLowLatency];
+    if (!_loop.active() || [self deckMode]) return;
     const waveseek::LoopStep step = waveseek::loopStep(_loop, [self settledPosition:seconds], kLoopLookahead);
     switch (step.kind) {
         case waveseek::LoopStep::None:
@@ -2592,11 +2722,8 @@ struct BarSegment {
         case waveseek::LoopStep::Leave:   // moved out of it from elsewhere
             [self endLoop];
             break;
-        case waveseek::LoopStep::Seek:
-            // Late: with the loop DSP, from the start exactly (it binds
-            // there); else as far in as it overran, so the beat holds
-            if (beatloop::running()) [self seekToLoopStart];
-            else [self seekKeepingDsp:step.value];
+        case waveseek::LoopStep::Seek:     // late: as far in as it overran, so the beat holds
+            [self seekTo:step.value];
             break;
         case waveseek::LoopStep::Schedule: {
             if (_loopEndScheduled) break;
@@ -2608,7 +2735,7 @@ struct BarSegment {
                 WaveformSeekbarView *me = weakSelf;
                 if (!me || me->_loopGeneration != generation) return;
                 me->_loopEndScheduled = false;
-                if (me->_loop.active() && me.playing && ![me loopBoundToDsp]) [me seekToLoopStart];
+                if (me->_loop.active() && me.playing && ![me deckMode]) [me seekTo:me->_loop.start];
             });
             break;
         }
@@ -2626,6 +2753,7 @@ struct BarSegment {
 
 - (void)mouseEntered:(NSEvent *)event {
     [self trackHoverWithEvent:event];
+    [self updateLowLatency];
     [self setNeedsDisplay:YES];
 }
 
@@ -2637,11 +2765,22 @@ struct BarSegment {
 
 - (void)mouseExited:(NSEvent *)event {
     _hovering = NO;
+    [self updateLowLatency];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseDown:(NSEvent *)event {
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    // Option-drag moves the loop, by whole beats
+    if ((event.modifierFlags & NSEventModifierFlagOption) && _loop.active() && [self mixerReady] &&
+        p.x < CGRectGetMaxX([self waveformRect])) {
+        _seeking = NO;
+        _loopDragging = YES;
+        _loopDragOrigin = _loopDragPreview = _loop;
+        _loopDragBeat = waveseek::beatPosition([self beats], [self secondsAtX:p.x]);
+        [[NSCursor closedHandCursor] push];
+        return;
+    }
     for (const BarSegment &segment : [self barSegmentsFor:[self waveformRect] box:nullptr]) {
         if (CGRectContainsPoint(segment.rect, p)) {
             _seeking = NO;
@@ -2669,11 +2808,35 @@ struct BarSegment {
 
 - (void)mouseDragged:(NSEvent *)event {
     _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
+    if (_loopDragging) {
+        const long count = std::lround(waveseek::beatPosition([self beats], [self secondsAtX:_hoverX]) - _loopDragBeat);
+        const waveseek::BeatLoop moved = waveseek::movedLoop([self beats], _loopDragOrigin, static_cast<int>(count),
+                                                             self.trackDuration);
+        if (moved.active()) _loopDragPreview = moved;
+        [self setNeedsDisplay:YES];
+        return;
+    }
     if (_seeking) [self handleSeekWithEvent:event];
 }
 
 - (void)mouseUp:(NSEvent *)event {
     _seeking = NO;
+    if (_loopDragging) {
+        _loopDragging = NO;
+        [NSCursor pop];
+        const long count = _loopDragPreview.firstBeat - _loopDragOrigin.firstBeat;
+        if (count != 0 && _loop.active() && _loop.firstBeat == _loopDragOrigin.firstBeat) {
+            [self moveLoopBy:static_cast<int>(count)];
+        }
+        [self setNeedsDisplay:YES];
+    }
+}
+
+// The track time under x in the waveform
+- (double)secondsAtX:(CGFloat)x {
+    const CGRect wave = [self waveformRect];
+    const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
+    return std::clamp(_zoom.positionAt(across), 0.0, 1.0) * self.trackDuration;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -2697,10 +2860,6 @@ struct BarSegment {
         const CGFloat beatX = wave.origin.x + wave.size.width * _zoom.acrossOf(beat / self.trackDuration);
         if (!std::isnan(beat) && std::fabs(beatX - location.x) <= kBeatSnapPoints) seekTime = beat;
     }
-    // Out of the loop: it ends. Inside it, it goes on by seeking until its
-    // next start binds it to the loop DSP again.
-    if (_loop.active() && !_loop.contains(seekTime)) [self endLoop];
-    [self detachLoopDsp];
     // Following at a spot: the cursor stays where it was clicked
     if ([self following]) {
         const double clicked = _zoom.acrossOf(seekTime / self.trackDuration);
@@ -2710,6 +2869,13 @@ struct BarSegment {
         }
     }
 
+    // With the loop DSP, inside its audio without a seek
+    if ([self deckMode]) {
+        [self deckSeekTo:seekTime];
+        return;
+    }
+    // Out of the loop: it ends
+    if (_loop.active() && !_loop.contains(seekTime)) [self endLoop];
     // Seek via SDK - must be on main thread
     if ([NSThread isMainThread]) {
         [self performSeekToTime:seekTime];

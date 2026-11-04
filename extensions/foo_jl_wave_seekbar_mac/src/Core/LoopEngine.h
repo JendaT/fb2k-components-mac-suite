@@ -2,26 +2,31 @@
 //  LoopEngine.h
 //  foo_wave_seekbar_mac
 //
-//  A beat loop without a gap: the audio side of the mixer's loop, run by a
-//  DSP placed first in the playback chain. Looping by seeking flushes the
-//  output, so every pass starts with a gap; instead the loop is bound to
-//  the seek to its start (the first block after that flush starts on the
-//  loop's first beat), its first pass plays through while it is recorded,
-//  and then the recording repeats sample for sample.
+//  The mixer's audio side: loops, jumps and loop moves without a gap or a
+//  click, run by a DSP placed first in the playback chain. Every seek
+//  flushes foobar2000's output, which is a gap, so the engine does them
+//  inside the stream instead.
 //
-//  While it repeats, each block of decoded audio is held back and a
-//  quantum of the loop goes out instead, so the decoder moves on only
-//  slowly. The held audio starts exactly where the recording ends: a
-//  longer loop takes its extra beats from it, and leaving the loop plays
-//  the rest of the pass, then the held audio, then the stream as it comes,
-//  without a break. Held audio drains faster than it arrives until none is
-//  left.
+//  It keeps the audio of the current track in one buffer: the last
+//  kHistorySeconds behind the point it plays from, and whatever the decoder
+//  delivered ahead of it. While audio passes untouched ("live") the input
+//  goes straight out and only feeds the history. A loop, a jump back, a
+//  move or a new length is a splice inside the buffer, crossfaded over
+//  kFadeSeconds so it does not click. While it plays from the buffer it
+//  sends out a quantum per block of decoded audio, so the decoder runs
+//  ahead (the loop can move forward into that audio) but not without end;
+//  after a loop it catches up at twice the decoder's pace and goes live.
 //
-//  The engine logs what each output frame plays (a timeline of segments),
-//  so the view can map the audible time since the seek to a track position.
+//  Track times come from a sync: a seek of the view's own (its target is
+//  frame 0), the view's measurement of foobar2000's position while the
+//  audio is untouched, or a gapless track change (time 0). Without one the
+//  engine passes audio through and turns requests down; the view then seeks.
 //
-//  Single-threaded: the DSP calls it on the playback thread and applies
-//  the view's requests between blocks. Header-only, tested standalone.
+//  The engine logs what the output plays (a timeline in output seconds
+//  since the seek), so the view maps the audible time to a track position.
+//
+//  Single-threaded: the DSP calls it on the playback thread and applies the
+//  view's requests between blocks. Header-only, tested standalone.
 //
 
 #pragma once
@@ -31,37 +36,55 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <vector>
 
 namespace waveseek {
 
-// Output frames counted from the seek that bound the loop, and the track
-// time each plays: the loop repeating (start + ((offset + frame - first)
-// mod loopFrames) / rate), or straight on from `linearFrom` seconds
+// From `first` seconds of output since the seek on, the output plays track
+// time `from` onward, or a loop starting at `from`, `loop` seconds long,
+// `offset` seconds into it at `first`
 struct LoopSegment {
-    uint64_t first = 0;
-    uint64_t loopFrames = 0;    // 0: straight on
-    uint64_t offset = 0;        // frames into the loop at `first`
-    double linearFrom = 0.0;
+    double first = 0.0;
+    double from = 0.0;
+    double loop = 0.0;      // 0: straight on
+    double offset = 0.0;
 };
 
-// The track time output frame `frame` plays; NAN without a timeline
-inline double trackTimeAt(const std::vector<LoopSegment> &timeline, double loopStart, double rate, double frame) {
-    if (timeline.empty() || !(rate > 0.0) || !(frame >= 0.0)) return NAN;
+// The track time playing `output` seconds after the seek; NAN without a timeline
+inline double trackTimeAt(const std::vector<LoopSegment> &timeline, double output) {
+    if (timeline.empty() || !(output >= 0.0)) return NAN;
     const LoopSegment *segment = &timeline.front();
     for (const LoopSegment &s : timeline) {
-        if (static_cast<double>(s.first) <= frame) segment = &s;
+        if (s.first <= output) segment = &s;
         else break;
     }
-    const double into = frame - static_cast<double>(segment->first);
-    if (segment->loopFrames == 0) return segment->linearFrom + into / rate;
-    return loopStart + std::fmod(static_cast<double>(segment->offset) + into, static_cast<double>(segment->loopFrames)) / rate;
+    const double into = output - segment->first;
+    if (!(segment->loop > 0.0)) return segment->from + into;
+    return segment->from + std::fmod(segment->offset + into, segment->loop);
 }
+
+// What the view asks for, in track seconds
+struct LoopAction {
+    enum Kind { Loop, Resize, Move, Jump, Exit };
+    Kind kind = Loop;
+    uint64_t id = 0;
+    double start = 0.0;     // Loop, Move: the loop's start
+    double end = 0.0;       // Loop, Move, Resize: its end
+    double to = NAN;        // Loop: where to play from (NAN: on from where it is); Jump: the target
+};
+
+// A seek of the view's own: the first frame after it is `target`; `then`
+// applies once the first audio after it arrives
+struct LoopArm {
+    uint64_t id = 0;
+    double target = 0.0;
+    std::optional<LoopAction> then;
+};
 
 template <typename Sample>
 class LoopEngine {
 public:
-    // Interleaved audio in one format
     struct Block {
         std::vector<Sample> samples;
         unsigned channels = 0;
@@ -71,321 +94,447 @@ public:
         size_t frames() const { return channels ? samples.size() / channels : 0; }
     };
 
-    enum Phase {
-        Idle,           // passing audio through
-        Recording,      // the first pass: through, and recorded
-        Repeating,      // the recording again and again; decoded audio held back
-        Draining,       // left: the rest of the recording, then the held audio, faster than it comes
-    };
+    static constexpr double kHistorySeconds = 40.0;
+    static constexpr double kFadeSeconds = 0.005;
+    // Output per block of decoded audio while looping: the delay before a
+    // request is heard, and how fast the decoder runs ahead (a block per
+    // quantum). Slower once far ahead; past kMaxAheadSeconds the loop ends.
+    static constexpr double kQuantumSeconds = 0.25;
+    static constexpr double kSlowQuantumSeconds = 1.0;
+    static constexpr double kSlowAfterSeconds = 120.0;
+    static constexpr double kMaxAheadSeconds = 180.0;
 
-    // Seconds of loop sent per block while repeating: less makes the
-    // decoder run ahead faster (a block is held per quantum), more delays
-    // a new length or leaving the loop by up to this much
-    static constexpr double kQuantumSeconds = 1.0;
-    // Held audio past this leaves the loop at the end of the pass (the
-    // decoder would otherwise run on toward the track's end)
-    static constexpr double kMaxHeldSeconds = 120.0;
+    // Crossfade length at a splice; 0 splices hard (the tests)
+    void setFadeSeconds(double seconds) { fadeSeconds_ = std::max(0.0, seconds); }
 
-    // The next flush (the seek to `start`) binds loop `id`, `length` seconds long
-    void arm(uint64_t id, double start, double length) {
-        armedId_ = id;
-        armedStart_ = start;
-        armedLength_ = length;
-    }
-
-    // A new length for the bound loop, from its start: recorded further,
-    // grown from the held audio, or wrapped back into when it already
-    // plays past the new end
-    void setLength(double seconds) {
-        if (phase_ != Recording && phase_ != Repeating) {
-            length_ = seconds;
-            return;
-        }
-        length_ = seconds;
-        const uint64_t frames = framesFor(seconds);
-        if (frames == 0) return;     // before the first block: it records this long
-        if (phase_ == Recording) {
-            if (frames > recorded_) {   // the first pass records further
-                target_ = loopFrames_ = frames;
-                timeline_.back().loopFrames = frames;
-                return;
-            }
-            // Shorter than what already played: the first pass played
-            // straight through to here
-            timeline_.back().loopFrames = std::max<uint64_t>(recorded_, 1);
-            target_ = loopFrames_ = frames;
-            if (exitRequested_) {
-                endLinearly(recorded_);
-                return;
-            }
-            phase_ = Repeating;
-            readPos_ = recorded_ % frames;
-            timeline_.push_back({ emitted_, loopFrames_, readPos_, 0.0 });
-            return;
-        }
-        loopFrames_ = frames;
-        if (readPos_ >= loopFrames_) readPos_ %= loopFrames_;
-        timeline_.push_back({ emitted_, loopFrames_, readPos_, 0.0 });
-    }
-
-    // Leave at the end of the pass playing and play on
-    void requestExit() { exitRequested_ = true; }
-
-    // A seek: binds an armed loop, else drops everything and passes through
-    void flush() {
-        held_.clear();
-        heldFrames_ = 0;
-        recording_.clear();
+    // A seek: everything goes; `arm`, when it is the view's own, syncs it
+    void flush(const LoopArm *arm) {
+        ++epoch_;
+        buf_.clear();
+        tail_.clear();
+        tailSeconds_ = 0.0;
         timeline_.clear();
-        exitRequested_ = false;
-        emitted_ = recorded_ = readPos_ = drainPos_ = target_ = loopFrames_ = 0;
-        lastInFrames_ = 0;
-        if (armedId_ != 0) {
-            boundId_ = armedId_;
-            armedId_ = 0;
-            start_ = armedStart_;
-            length_ = armedLength_;
-            phase_ = Recording;
-            rate_ = channels_ = config_ = 0;    // from the first block
-            flushedAway_ = false;
-        } else {
-            if (boundId_ != 0) flushedAway_ = true;
-            phase_ = Idle;
+        channels_ = rate_ = config_ = 0;
+        bufStart_ = pos_ = 0;
+        inFrames_ = 0;
+        outSeconds_ = 0.0;
+        live_ = pristine_ = true;
+        looping_ = loopPending_ = afterBoundary_ = tailStarted_ = false;
+        fadeLeft_ = 0;
+        synced_ = false;
+        pending_.reset();
+        if (arm) {
+            synced_ = true;
+            t0_ = arm->target;
+            boundArmId_ = arm->id;
+            timeline_.push_back({ 0.0, t0_, 0.0, 0.0 });
+            pending_ = arm->then;
         }
+        ++version_;
     }
 
-    // One block in; what to play appended to `out`
-    void process(Block &&in, std::vector<Block> &out) {
-        if (in.frames() == 0) return;
-        switch (phase_) {
-            case Idle:
-                out.push_back(std::move(in));
-                return;
-            case Recording:
-                record(std::move(in), out);
-                return;
-            case Repeating:
-                hold(std::move(in));
-                if (heldSeconds() > kMaxHeldSeconds) exitRequested_ = true;
-                emitLoop(std::max<uint64_t>(lastInFrames_, framesFor(kQuantumSeconds)), out);
-                return;
-            case Draining:
-                hold(std::move(in));
-                emitDrain(2 * static_cast<uint64_t>(lastInFrames_), out);
-                return;
+    // The view's measurement: frame 0 after the seek that began `epoch` is
+    // track time `t0`. Taken only while the audio is untouched.
+    void sync(uint64_t epoch, double t0) {
+        if (epoch != epoch_ || synced_ || !pristine_) return;
+        synced_ = true;
+        t0_ = t0;
+        timeline_.assign(1, { 0.0, t0, 0.0, 0.0 });
+        ++version_;
+    }
+
+    // A request between blocks; false when the audio for it is not here
+    // (the view seeks instead)
+    bool act(const LoopAction &a) {
+        lastActionId_ = a.id;
+        const bool ok = apply(a, false);
+        if (!ok) rejectedId_ = a.id;
+        ++version_;
+        return ok;
+    }
+
+    // One block in. Returns true when it goes out untouched; else what to
+    // play is appended to `out` (possibly nothing yet)
+    bool process(const Sample *data, size_t frames, unsigned channels, unsigned rate, unsigned config, bool newTrack,
+                 std::vector<Block> &out) {
+        if (frames == 0 || channels == 0 || rate == 0) return true;
+        if (channels_ == 0) {
+            channels_ = channels;
+            rate_ = rate;
+            config_ = config;
+            bufStart_ = pos_ = inFrames_;
         }
+        const bool newFormat = channels != channels_ || rate != rate_;
+        if ((newTrack || newFormat) && !afterBoundary_) {
+            if (live_ && !looping_) {
+                startOver(channels, rate, config, newTrack);
+            } else {
+                afterBoundary_ = true;
+                boundaryIsTrack_ = newTrack;
+                boundaryFrame_ = inFrames_;
+            }
+        } else if (afterBoundary_ && newTrack) {   // another track behind it: that one is next
+            boundaryIsTrack_ = true;
+            boundaryFrame_ = inFrames_;
+        }
+        if (afterBoundary_) {
+            Block b;
+            b.channels = channels;
+            b.rate = rate;
+            b.config = config;
+            b.samples.assign(data, data + frames * channels);
+            tail_.push_back(std::move(b));
+            tailSeconds_ += static_cast<double>(frames) / rate;
+            tailChannels_ = channels;
+            tailRate_ = rate;
+            tailConfig_ = config;
+        } else {
+            buf_.insert(buf_.end(), data, data + frames * channels);
+        }
+        inFrames_ += static_cast<int64_t>(frames);
+        if (pending_) {
+            const LoopAction a = *pending_;
+            pending_.reset();
+            lastActionId_ = a.id;
+            if (!apply(a, true)) rejectedId_ = a.id;
+            ++version_;
+        }
+        if (live_) {
+            pos_ = bufEnd();
+            outSeconds_ += static_cast<double>(frames) / rate;
+            trim();
+            return true;
+        }
+        size_t want = 2 * frames;   // behind the decoder: catch up
+        if (looping_) {
+            const double ahead = aheadSeconds();
+            if (ahead > kMaxAheadSeconds) exitLoop();
+            else want = std::max(frames, framesFor(ahead < kSlowAfterSeconds ? kQuantumSeconds : kSlowQuantumSeconds));
+        }
+        emit(want, out);
+        trim();
+        return false;
     }
 
     // The end of the stream: everything still to play, now
     void endOfStream(std::vector<Block> &out) {
-        if (phase_ == Recording) endLinearly(recorded_);
-        if (phase_ == Repeating) {
-            exitRequested_ = true;
-            emitLoop(UINT64_MAX / 2, out);
-        }
-        if (phase_ == Draining) emitDrain(UINT64_MAX / 2, out);
+        if (looping_) exitLoop();
+        if (!live_) emit(SIZE_MAX / 4, out);
     }
 
-    Phase phase() const { return phase_; }
-    uint64_t boundId() const { return boundId_; }
-    bool flushedAway() const { return flushedAway_; }      // the bound loop was dropped by another seek
+    // What the view reads
+    uint64_t version() const { return version_; }
+    uint64_t epoch() const { return epoch_; }
+    bool synced() const { return synced_; }
+    bool pristine() const { return pristine_; }     // nothing changed since the seek: the output is the input
+    bool live() const { return live_; }
+    bool looping() const { return looping_; }
     unsigned rate() const { return rate_; }
-    double start() const { return start_; }
+    uint64_t boundArmId() const { return boundArmId_; }
+    uint64_t lastActionId() const { return lastActionId_; }
+    uint64_t rejectedId() const { return rejectedId_; }
+    double outSeconds() const { return outSeconds_; }
+    double loopStart() const { return timeOf(loopStart_); }
+    double loopEnd() const { return timeOf(loopEnd_); }
+    double playingFrom() const { return timeOf(pos_); }     // the next frame out, in track time
+    double bufferedFrom() const { return timeOf(bufStart_); }
+    double bufferedTo() const { return timeOf(bufEnd()); }
     const std::vector<LoopSegment> &timeline() const { return timeline_; }
-    uint64_t emitted() const { return emitted_; }
-    // Decoded audio waiting behind the loop, in seconds
-    double heldSeconds() const {
-        const uint64_t tail = phase_ == Draining && recorded_ > drainPos_ ? recorded_ - drainPos_ : 0;
-        return rate_ ? static_cast<double>(heldFrames_ + tail) / rate_ : 0.0;
+    // Decoded audio waiting behind the point it plays from, in seconds
+    double aheadSeconds() const {
+        return (rate_ ? static_cast<double>(bufEnd() - pos_) / rate_ : 0.0) + tailSeconds_;
     }
 
 private:
-    uint64_t framesFor(double seconds) const {
-        return rate_ && seconds > 0.0 ? static_cast<uint64_t>(std::llround(seconds * rate_)) : 0;
+    int64_t bufEnd() const { return bufStart_ + (channels_ ? static_cast<int64_t>(buf_.size() / channels_) : 0); }
+    size_t framesFor(double seconds) const {
+        return rate_ && seconds > 0.0 ? static_cast<size_t>(std::llround(seconds * rate_)) : 0;
+    }
+    int64_t frameOf(double t) const { return static_cast<int64_t>(std::llround((t - t0_) * rate_)); }
+    double timeOf(int64_t frame) const { return rate_ ? t0_ + static_cast<double>(frame) / rate_ : 0.0; }
+    double secondsOf(int64_t frames) const { return rate_ ? static_cast<double>(frames) / rate_ : 0.0; }
+    const float *at(int64_t frame) const { return buf_.data() + static_cast<size_t>(frame - bufStart_) * channels_; }
+
+    Block newBlock() const {
+        Block b;
+        b.channels = channels_;
+        b.rate = rate_;
+        b.config = config_;
+        return b;
     }
 
-    static Block slice(const Block &b, size_t from, size_t frames) {
-        Block s;
-        s.channels = b.channels;
-        s.rate = b.rate;
-        s.config = b.config;
-        s.samples.assign(b.samples.begin() + static_cast<std::ptrdiff_t>(from * b.channels),
-                         b.samples.begin() + static_cast<std::ptrdiff_t>((from + frames) * b.channels));
-        return s;
-    }
-
-    static void dropFront(Block &b, size_t frames) {
-        b.samples.erase(b.samples.begin(), b.samples.begin() + static_cast<std::ptrdiff_t>(frames * b.channels));
-    }
-
-    Block fromRecording(uint64_t from, uint64_t frames) const {
-        Block s;
-        s.channels = channels_;
-        s.rate = rate_;
-        s.config = config_;
-        s.samples.assign(recording_.begin() + static_cast<std::ptrdiff_t>(from * channels_),
-                         recording_.begin() + static_cast<std::ptrdiff_t>((from + frames) * channels_));
-        return s;
-    }
-
-    void hold(Block &&in) {
-        lastInFrames_ = in.frames();
-        heldFrames_ += in.frames();
-        held_.push_back(std::move(in));
-    }
-
-    // Up to `frames` from the front of the held audio, in the loop's format
-    // only (another format, a new track, ends what the recording can grow from)
-    enum class Take { Taken, Empty, OtherFormat };
-    Take takeHeld(uint64_t frames, Block &out) {
-        if (held_.empty() || frames == 0) return Take::Empty;
-        Block &front = held_.front();
-        if (front.channels != channels_ || front.rate != rate_) return Take::OtherFormat;
-        const size_t n = static_cast<size_t>(std::min<uint64_t>(frames, front.frames()));
-        out = slice(front, 0, n);
-        if (n == front.frames()) held_.pop_front();
-        else dropFront(front, n);
-        heldFrames_ -= n;
-        return Take::Taken;
-    }
-
-    void record(Block &&in, std::vector<Block> &out) {
-        if (rate_ == 0) {
-            rate_ = in.rate;
-            channels_ = in.channels;
-            config_ = in.config;
-            target_ = loopFrames_ = framesFor(length_);
-            if (target_ == 0) {
-                phase_ = Idle;
-                out.push_back(std::move(in));
-                return;
-            }
-            timeline_.push_back({ 0, target_, 0, 0.0 });
+    // In step with the decoder at a new track (or format): a fresh buffer,
+    // time 0 for a new track
+    void startOver(unsigned channels, unsigned rate, unsigned config, bool newTrack) {
+        channels_ = channels;
+        rate_ = rate;
+        config_ = config;
+        buf_.clear();
+        bufStart_ = pos_ = inFrames_;
+        synced_ = newTrack;
+        if (newTrack) {
+            t0_ = -static_cast<double>(inFrames_) / rate_;
+            timeline_.push_back({ outSeconds_, 0.0, 0.0, 0.0 });
         }
-        if (in.rate != rate_ || in.channels != channels_) {   // a new format mid-pass: no loop
-            phase_ = Idle;
-            timeline_.push_back({ emitted_, 0, 0, start_ + static_cast<double>(recorded_) / rate_ });
-            out.push_back(std::move(in));
+        ++version_;
+    }
+
+    bool apply(const LoopAction &a, bool afterBind) {
+        if (a.kind == LoopAction::Exit) {   // always possible
+            if (looping_) exitLoop();
+            return true;
+        }
+        if (!synced_ || channels_ == 0) return false;
+        switch (a.kind) {
+            case LoopAction::Loop: {
+                const int64_t s = frameOf(a.start), e = frameOf(a.end);
+                if (e <= s || s < bufStart_) return false;
+                int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
+                if (std::isnan(a.to) && pos_ >= e) to = s;
+                // Right after a seek, playback may start further in once decoded
+                if (to < bufStart_ || (!afterBind && to > bufEnd())) return false;
+                looping_ = true;
+                loopStart_ = s;
+                loopEnd_ = e;
+                live_ = pristine_ = false;
+                moveTo(to);
+                return true;
+            }
+            case LoopAction::Resize: {
+                const int64_t e = frameOf(a.end);
+                if (!looping_ || e <= loopStart_) return false;
+                loopEnd_ = e;
+                // Past the new end: into it, as far as the loop's length goes
+                moveTo(pos_ >= e && pos_ >= loopStart_ ? loopStart_ + (pos_ - loopStart_) % (e - loopStart_) : pos_);
+                return true;
+            }
+            case LoopAction::Move: {
+                if (!looping_) return false;
+                const int64_t s = frameOf(a.start), e = frameOf(a.end);
+                const int64_t to = pos_ + (s - loopStart_);
+                if (e <= s || s < bufStart_ || to < bufStart_ || to > bufEnd()) return false;
+                loopStart_ = s;
+                loopEnd_ = e;
+                moveTo(to);
+                return true;
+            }
+            case LoopAction::Jump: {
+                const int64_t to = frameOf(a.to);
+                if (to < bufStart_ || to >= bufEnd()) return false;
+                if (looping_ && (to < loopStart_ || to >= loopEnd_)) return false;   // leave the loop first
+                live_ = false;
+                pristine_ = false;
+                moveTo(to);
+                return true;
+            }
+            case LoopAction::Exit:
+                return true;
+        }
+        return false;
+    }
+
+    // Plays on from `to`: a crossfaded splice when it is elsewhere; a new
+    // timeline segment either way (the loop may have changed)
+    void moveTo(int64_t to) {
+        if (to != pos_) {
+            startFade();
+            pos_ = to;
+            pristine_ = false;
+        }
+        pushSegment();
+    }
+
+    void startFade() {
+        fadeFrom_ = pos_;
+        fadeTotal_ = fadeLeft_ = framesFor(fadeSeconds_);
+    }
+
+    void pushSegment() {
+        if (looping_ && pos_ >= loopStart_ && pos_ < loopEnd_) {
+            timeline_.push_back({ outSeconds_, timeOf(loopStart_), secondsOf(loopEnd_ - loopStart_),
+                                  secondsOf(pos_ - loopStart_) });
+            loopPending_ = false;
+            inLoopSegment_ = true;
+        } else {
+            timeline_.push_back({ outSeconds_, timeOf(pos_), 0.0, 0.0 });
+            loopPending_ = looping_ && pos_ < loopStart_;   // runs into the loop
+            inLoopSegment_ = false;
+        }
+        ++version_;
+    }
+
+    void exitLoop() {
+        looping_ = loopPending_ = inLoopSegment_ = false;
+        timeline_.push_back({ outSeconds_, timeOf(pos_), 0.0, 0.0 });
+        ++version_;
+    }
+
+    // `frames` from the buffer at pos_, crossfading a splice's first frames
+    void copyOut(Block &cur, size_t frames) {
+        const float *src = at(pos_);
+        if (fadeLeft_ == 0) {
+            cur.samples.insert(cur.samples.end(), src, src + frames * channels_);
+            pos_ += static_cast<int64_t>(frames);
             return;
         }
-        lastInFrames_ = in.frames();
-        const size_t take = static_cast<size_t>(std::min<uint64_t>(in.frames(), target_ - recorded_));
-        recording_.insert(recording_.end(), in.samples.begin(), in.samples.begin() + static_cast<std::ptrdiff_t>(take * channels_));
-        recorded_ += take;
-        emitted_ += take;
-        if (take == in.frames()) {
-            out.push_back(std::move(in));
-        } else {
-            out.push_back(slice(in, 0, take));
-            Block rest = slice(in, take, in.frames() - take);
-            heldFrames_ += rest.frames();
-            held_.push_back(std::move(rest));
-        }
-        if (recorded_ < target_) return;
-        if (exitRequested_) {
-            endLinearly(recorded_);
-        } else {
-            phase_ = Repeating;
-            readPos_ = 0;
-        }
-    }
-
-    // Plays on from `frames` into the loop: the recording past there, the
-    // held audio, then the stream
-    void endLinearly(uint64_t frames) {
-        drainPos_ = std::min(frames, recorded_);
-        phase_ = Draining;
-        timeline_.push_back({ emitted_, 0, 0, start_ + static_cast<double>(frames) / rate_ });
-    }
-
-    void emitLoop(uint64_t frames, std::vector<Block> &out) {
-        while (frames > 0 && phase_ == Repeating) {
-            if (readPos_ >= loopFrames_) {   // the end of a pass
-                if (exitRequested_) {
-                    endLinearly(loopFrames_);
-                    emitDrain(frames, out);
-                    return;
+        for (size_t i = 0; i < frames; ++i) {
+            const float *now = at(pos_);
+            if (fadeLeft_ > 0) {
+                const double w = (static_cast<double>(fadeTotal_ - fadeLeft_) + 0.5) / static_cast<double>(fadeTotal_);
+                const bool haveOld = fadeFrom_ >= bufStart_ && fadeFrom_ < bufEnd();
+                const float *old = haveOld ? at(fadeFrom_) : nullptr;
+                for (unsigned c = 0; c < channels_; ++c) {
+                    const double o = old ? static_cast<double>(old[c]) : 0.0;
+                    cur.samples.push_back(static_cast<Sample>(o * (1.0 - w) + static_cast<double>(now[c]) * w));
                 }
-                readPos_ = 0;
-            }
-            if (readPos_ < recorded_) {
-                const uint64_t n = std::min(frames, std::min(loopFrames_, recorded_) - readPos_);
-                out.push_back(fromRecording(readPos_, n));
-                readPos_ += n;
-                emitted_ += n;
-                frames -= n;
-                continue;
-            }
-            // Longer than recorded: its next beats come from the held audio,
-            // as fast as they are decoded
-            Block piece;
-            const Take took = takeHeld(std::min(frames, loopFrames_ - recorded_), piece);
-            if (took == Take::Empty) return;
-            if (took == Take::OtherFormat) {   // the track ended: the pass ends here
-                loopFrames_ = recorded_;
-                timeline_.push_back({ emitted_, loopFrames_, 0, 0.0 });
-                readPos_ = loopFrames_;
-                continue;
-            }
-            recording_.insert(recording_.end(), piece.samples.begin(), piece.samples.end());
-            const uint64_t n = piece.frames();
-            recorded_ += n;
-            readPos_ += n;
-            emitted_ += n;
-            frames -= n;
-            out.push_back(std::move(piece));
-        }
-    }
-
-    void emitDrain(uint64_t frames, std::vector<Block> &out) {
-        while (frames > 0 && drainPos_ < recorded_) {
-            const uint64_t n = std::min(frames, recorded_ - drainPos_);
-            out.push_back(fromRecording(drainPos_, n));
-            drainPos_ += n;
-            emitted_ += n;
-            frames -= n;
-        }
-        while (frames > 0 && !held_.empty()) {
-            Block &front = held_.front();
-            const size_t n = static_cast<size_t>(std::min<uint64_t>(frames, front.frames()));
-            if (n == front.frames()) {
-                out.push_back(std::move(front));
-                held_.pop_front();
+                --fadeLeft_;
+                ++fadeFrom_;
             } else {
-                out.push_back(slice(front, 0, n));
-                dropFront(front, n);
+                cur.samples.insert(cur.samples.end(), now, now + channels_);
             }
-            heldFrames_ -= n;
-            emitted_ += n;
-            frames -= n;
-        }
-        if (held_.empty() && drainPos_ >= recorded_) {   // caught up: through again
-            phase_ = Idle;
-            recording_.clear();
-            recording_.shrink_to_fit();
-            recorded_ = drainPos_ = 0;
+            ++pos_;
         }
     }
 
-    Phase phase_ = Idle;
-    uint64_t armedId_ = 0;
-    double armedStart_ = 0.0, armedLength_ = 0.0;
-    uint64_t boundId_ = 0;
-    bool flushedAway_ = false;
-    double start_ = 0.0, length_ = 0.0;
-    unsigned rate_ = 0, channels_ = 0, config_ = 0;
+    void emit(size_t n, std::vector<Block> &out) {
+        Block cur = newBlock();
+        auto finish = [&] {
+            if (!cur.samples.empty()) {
+                outSeconds_ += static_cast<double>(cur.frames()) / cur.rate;
+                out.push_back(std::move(cur));
+            }
+            cur = newBlock();
+        };
+        while (n > 0) {
+            if (looping_) {
+                if (pos_ >= loopEnd_) {           // a pass ends: back to the start
+                    finish();
+                    startFade();
+                    pos_ = loopStart_;
+                    if (!inLoopSegment_) pushSegment();   // the loop's segment covers every pass
+                } else if (loopPending_ && pos_ >= loopStart_) {   // ran into the loop
+                    finish();
+                    pushSegment();
+                }
+            }
+            int64_t avail = bufEnd() - pos_;
+            if (looping_) avail = std::min<int64_t>(avail, loopEnd_ - pos_);
+            if (avail <= 0) {
+                if (looping_ || pos_ < bufEnd()) break;   // waiting for audio
+                finish();
+                fadeLeft_ = 0;
+                if (afterBoundary_) {                     // caught up: the new track's audio
+                    n -= emitTail(n, out);
+                    if (!tail_.empty()) break;
+                    leaveBoundary();
+                    break;
+                }
+                live_ = true;                             // the next block goes straight out
+                break;
+            }
+            const size_t k = std::min(n, static_cast<size_t>(avail));
+            copyOut(cur, k);
+            n -= k;
+        }
+        finish();
+    }
 
-    std::vector<Sample> recording_;
-    uint64_t recorded_ = 0;         // frames recorded
-    uint64_t target_ = 0;           // frames the first pass records
-    uint64_t loopFrames_ = 0;       // the loop's length now
-    uint64_t readPos_ = 0;          // frames into the loop
-    uint64_t drainPos_ = 0;         // after leaving: frames of the recording played
-    std::deque<Block> held_;
-    uint64_t heldFrames_ = 0;
-    uint64_t emitted_ = 0;          // output frames since the seek
-    size_t lastInFrames_ = 0;
-    bool exitRequested_ = false;
+    // The audio after a track change, as it came; returns frames sent
+    size_t emitTail(size_t n, std::vector<Block> &out) {
+        size_t sent = 0;
+        while (sent < n && !tail_.empty()) {
+            if (!tailStarted_) {
+                tailStarted_ = true;
+                timeline_.push_back({ outSeconds_, boundaryIsTrack_ ? 0.0 : NAN, 0.0, 0.0 });
+                ++version_;
+            }
+            Block &front = tail_.front();
+            const size_t k = std::min(n - sent, front.frames());
+            Block piece;
+            piece.channels = front.channels;
+            piece.rate = front.rate;
+            piece.config = front.config;
+            if (k == front.frames()) {
+                piece = std::move(front);
+                tail_.pop_front();
+            } else {
+                piece.samples.assign(front.samples.begin(), front.samples.begin() + static_cast<std::ptrdiff_t>(k * front.channels));
+                front.samples.erase(front.samples.begin(), front.samples.begin() + static_cast<std::ptrdiff_t>(k * front.channels));
+            }
+            const double seconds = static_cast<double>(k) / piece.rate;
+            tailSeconds_ -= seconds;
+            outSeconds_ += seconds;
+            out.push_back(std::move(piece));
+            sent += k;
+        }
+        return sent;
+    }
+
+    // All of the new track sent: live on it, its frame 0 at the change
+    void leaveBoundary() {
+        channels_ = tailChannels_;
+        rate_ = tailRate_;
+        config_ = tailConfig_;
+        afterBoundary_ = tailStarted_ = false;
+        tailSeconds_ = 0.0;
+        buf_.clear();
+        bufStart_ = pos_ = inFrames_;
+        live_ = true;
+        synced_ = boundaryIsTrack_;
+        if (synced_) t0_ = -static_cast<double>(boundaryFrame_) / rate_;
+        ++version_;
+    }
+
+    // Keeps kHistorySeconds behind what may still be played; drops the rest
+    // a few seconds at a time
+    void trim() {
+        if (!rate_ || !channels_) return;
+        int64_t keep = looping_ ? std::min(loopStart_, pos_) : pos_;
+        if (fadeLeft_ > 0) keep = std::min(keep, fadeFrom_);
+        keep -= static_cast<int64_t>(framesFor(kHistorySeconds));
+        const int64_t drop = keep - bufStart_;
+        if (drop < static_cast<int64_t>(framesFor(5.0))) return;
+        buf_.erase(buf_.begin(), buf_.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(drop) * channels_));
+        bufStart_ = keep;
+    }
+
+    // The current track's audio from frame bufStart_ (frames since the seek);
+    // float halves the memory and is below any audible difference
+    std::vector<float> buf_;
+    int64_t bufStart_ = 0;
+    int64_t pos_ = 0;               // the next frame out
+    int64_t inFrames_ = 0;          // decoded frames since the seek
+    unsigned channels_ = 0, rate_ = 0, config_ = 0;
+    double outSeconds_ = 0.0;
+
+    bool synced_ = false;
+    double t0_ = 0.0;               // track time of frame 0
+    bool live_ = true;
+    bool pristine_ = true;
+    bool looping_ = false;
+    bool loopPending_ = false;      // looping, but not yet in the loop
+    bool inLoopSegment_ = false;    // the timeline's last segment is the loop's
+    int64_t loopStart_ = 0, loopEnd_ = 0;
+
+    int64_t fadeFrom_ = 0;          // the splice's old continuation
+    size_t fadeLeft_ = 0, fadeTotal_ = 1;
+    double fadeSeconds_ = kFadeSeconds;
+
+    // After a track (or format) change while behind the decoder: its audio, as it came
+    bool afterBoundary_ = false;
+    bool boundaryIsTrack_ = false;
+    bool tailStarted_ = false;
+    int64_t boundaryFrame_ = 0;
+    std::deque<Block> tail_;
+    double tailSeconds_ = 0.0;
+    unsigned tailChannels_ = 0, tailRate_ = 0, tailConfig_ = 0;
+
+    std::optional<LoopAction> pending_;
+    uint64_t epoch_ = 0;
+    uint64_t version_ = 0;
+    uint64_t boundArmId_ = 0;
+    uint64_t lastActionId_ = 0;
+    uint64_t rejectedId_ = 0;
     std::vector<LoopSegment> timeline_;
 };
 
