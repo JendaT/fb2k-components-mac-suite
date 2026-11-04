@@ -173,12 +173,9 @@ fx::Colour fxColour(const theme::RGB& c) {
     return { c.r, c.g, c.b };
 }
 
-// The experimental effects' own colours, the same in every theme: fire,
-// and the clods Earthcrusher kicks up
+// Firewall's own colours, the same in every theme
 const fx::Colour kFireGlow = { 1.0, 0.42, 0.08 };
 const fx::Colour kFireCore = { 1.0, 0.80, 0.40 };
-const fx::Colour kEmber = { 1.0, 0.45, 0.10 };
-const fx::Colour kClod = { 0.55, 0.42, 0.30 };
 
 NSString *str(const std::string& s) {
     return [NSString stringWithUTF8String:s.c_str()] ?: @"";
@@ -1688,15 +1685,34 @@ struct BarSegment {
     return std::min(1.0f, levels.smooth(self.playbackPosition * self.trackDuration));
 }
 
-// Effect 8: Firewall - the flames themselves stand on the cursor
-// (drawEffectCursorInContext); here, under the loop and markers, their warm
-// light and the embers drifting off them
+// The track's smoothed level at x across `width`, 0..1; middling without a
+// waveform
+- (std::function<float(CGFloat)>)levelAtXForWidth:(CGFloat)width {
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    const waveseek::ZoomRange zoom = _zoom;
+    const double duration = self.trackDuration;
+    if (levels.empty() || duration <= 0.0 || width <= 0.0) return [](CGFloat) { return 0.5f; };
+    return [&levels, zoom, duration, width](CGFloat x) {
+        return std::min(1.0f, levels.smooth(zoom.positionAt(x / width) * duration));
+    };
+}
+
+// Effect 8: Firewall - the played part burns: a row of fires behind the
+// cursor, each as tall as the track is loud there and taller near the
+// cursor, with the warm light and embers at the cursor, all under the loop
+// and markers. The cursor's own fire, the tallest, stands on it
+// (drawEffectCursorInContext), from the same field, stepped here.
 - (void)drawFirewallEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
                             bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
     const bool dark = [self effectsOnDark];
     fx::Painter& painter = [self fxPainter];
-    painter.glow(context, bounds, playedWidth, kFireGlow, kFireCore, [self effectPulse], 0.8f, dark, 0.0f);
+    const float pulse = [self effectPulse];
+    // Higher where the track is loud, flaring with the pulse
+    painter.stepFire(bounds, 0.35f + 0.8f * [self effectLevel] + 0.25f * pulse, CFAbsoluteTimeGetCurrent());
+    painter.fireRow(context, bounds, playedWidth, bounds.size.width * _zoom.acrossOf(0.0), [self backingScale],
+                    [self levelAtXForWidth:bounds.size.width]);
+    painter.glow(context, bounds, playedWidth, kFireGlow, kFireCore, pulse, 0.8f, dark, 0.0f);
     if (self.trackDuration <= 0.0) return;
     const fx::LevelEnvelope& levels = [self fxLevels];
     fx::sparksAt(self.playbackPosition * self.trackDuration, fx::emberSparks(),
@@ -1704,10 +1720,16 @@ struct BarSegment {
     painter.embers(context, _sparks, bounds, [self cursorXAtTimeForWidth:bounds.size.width], dark);
 }
 
+// Earthcrusher's colours: the waveform's own, burnt (fx::earthShades)
+- (fx::EarthColours)earthColours {
+    const fx::EarthShades s = fx::earthShades(_tokens.accent);
+    return { fxColour(s.plate), fxColour(s.crack), fxColour(s.clod), fxColour(s.ember), fxColour(s.core) };
+}
+
 // Effect 9: Earthcrusher - behind the jagged cursor (drawEffectCursorInContext)
 // the 20-40 pt of waveform it just went over lies scorched and cracked, the
 // freshest cracks still glowing, longer where the track is loud; clods and
-// hot bits are kicked up on its beats
+// hot bits are kicked up on its beats. All in shades of the wave colour.
 - (void)drawEarthcrusherEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
                                 bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity wave:(CGRect)wave {
     [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
@@ -1720,14 +1742,15 @@ struct BarSegment {
     // the track's start so they stay put on it as the zone moves along
     const CGFloat scale = [self backingScale];
     const CGRect maskRect = CGRectMake(_maskOffsetPx / scale, wave.origin.y, _maskWidth / scale, wave.size.height);
+    const fx::EarthColours colours = [self earthColours];
     painter.scorch(context, CGRectMake(playedWidth - zone, wave.origin.y, zone, wave.size.height), _masks[0], maskRect,
-                   scale, bounds.size.width * _zoom.acrossOf(0.0), 0.6f + 0.4f * level, flicker,
+                   scale, bounds.size.width * _zoom.acrossOf(0.0), 0.6f + 0.4f * level, flicker, colours,
                    [self effectsOnDark]);
     const fx::LevelEnvelope& levels = [self fxLevels];
     if (levels.empty() || self.trackDuration <= 0.0) return;
     fx::sparksAt(self.playbackPosition * self.trackDuration, fx::debrisSparks(),
                  [&levels](double t) { return levels.burst(t); }, _sparks);
-    painter.sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave], kEmber, kClod, false);
+    painter.sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave], colours.ember, colours.clod, false);
 }
 
 // Firewall and Earthcrusher draw the cursor themselves while the played part
@@ -1740,13 +1763,11 @@ struct BarSegment {
 // The cursor at x in `rect` as the effect draws it: flames, or a jagged line
 - (void)drawEffectCursorInContext:(CGContextRef)context rect:(CGRect)rect x:(CGFloat)x {
     fx::Painter& painter = [self fxPainter];
-    const float pulse = [self effectPulse];
-    const float level = [self effectLevel];
     if (self.cursorEffect == WaveformCursorEffectFirewall) {
-        // Higher where the track is loud, flaring with the pulse
-        painter.fireWall(context, rect, x, 0.35f + 0.8f * level + 0.25f * pulse, CFAbsoluteTimeGetCurrent());
+        painter.fireWall(context, rect, x);
     } else {
-        painter.jaggedCursor(context, rect, x, CFAbsoluteTimeGetCurrent(), 2.0f + 2.5f * pulse + 1.5f * level);
+        painter.jaggedCursor(context, rect, x, CFAbsoluteTimeGetCurrent(), 2.0f + 2.5f * [self effectPulse] +
+                             1.5f * [self effectLevel], [self earthColours]);
     }
 }
 

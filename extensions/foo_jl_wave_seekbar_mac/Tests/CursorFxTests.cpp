@@ -2,6 +2,7 @@
 //  CursorFxTests.cpp
 //  foo_wave_seekbar_mac
 //
+// TEST_DEPS: src/Core/ThemeTokens.cpp
 
 #include "TestSupport.h"
 #include "../src/Core/CursorFx.h"
@@ -294,6 +295,166 @@ void testFireField() {
     CHECK(rgba[3] < 40, "the far top corner is clear");
 }
 
+// The flames' middle, row by row, as a straight line: cells per row
+double measuredLean(int height) {
+    FireField f;
+    f.resize(53, height, 32);
+    std::vector<double> sx((size_t)height, 0.0), sw((size_t)height, 0.0);
+    for (int i = 0; i < 1500; ++i) {
+        f.step(1.0f);
+        if (i < 200) continue;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < 53; ++x) {
+                sx[(size_t)y] += (double)x * f.at(x, y);
+                sw[(size_t)y] += f.at(x, y);
+            }
+        }
+    }
+    double n = 0, my = 0, mx = 0;
+    for (int y = 0; y < height; ++y) {
+        if (sw[(size_t)y] < 1e5) continue;
+        n += 1;
+        my += y;
+        mx += sx[(size_t)y] / sw[(size_t)y];
+    }
+    my /= n;
+    mx /= n;
+    double cyy = 0, cxy = 0;
+    for (int y = 0; y < height; ++y) {
+        if (sw[(size_t)y] < 1e5) continue;
+        cyy += (y - my) * (y - my);
+        cxy += (y - my) * (sx[(size_t)y] / sw[(size_t)y] - mx);
+    }
+    return -cxy / cyy;
+}
+
+void testFireRow() {
+    TEST_CASE("fire row");
+
+    CHECK_NEAR(measuredLean(111), FireField::kLean, 0.07, "kLean matches how far the flames lean");
+
+    FireHistory h;
+    CHECK(h.count() == 0 && h.frame(0) == nullptr, "nothing before the first push");
+    FireField f;
+    f.resize(20, 30, 12, 5u);
+    std::vector<std::vector<uint8_t>> kept;
+    for (int i = 0; i < FireHistory::kFrames + 10; ++i) {
+        f.step(1.0f);
+        h.push(f);
+        kept.emplace_back(f.data(), f.data() + 20 * 30);
+    }
+    CHECK(h.count() == FireHistory::kFrames && h.width() == 20 && h.height() == 30, "keeps kFrames of the field's size");
+    CHECK(std::equal(kept.back().begin(), kept.back().end(), h.frame(0)), "age 0 is the latest step");
+    CHECK(std::equal(kept[kept.size() - 6].begin(), kept[kept.size() - 6].end(), h.frame(5)), "age 5, five steps back");
+    CHECK(h.frame(1000) == h.frame(FireHistory::kFrames - 1), "older than kept gives the oldest");
+    FireField other;
+    other.resize(10, 10, 5);
+    other.step(1.0f);
+    h.push(other);
+    CHECK(h.count() == 1 && h.width() == 10, "a field of another size starts over");
+
+    // Layout: fires up to the cursor only, staying put as it moves
+    std::vector<FirePlace> a, b;
+    auto flat = [](double) { return 0.5f; };
+    layoutFires(0.0, 0.0, 600.0, 10.0, flat, a);
+    layoutFires(0.0, 0.0, 700.0, 10.0, flat, b);
+    bool before = !a.empty(), sane = true;
+    for (const FirePlace& p : a) {
+        before = before && p.x <= 600.0;
+        sane = sane && p.scale > 0.0f && p.scale <= 1.0f && p.width > 0.0f && p.width <= 1.0f && p.heat > 0.0f &&
+               p.heat <= 1.0f && p.age >= 0 && p.age < FireHistory::kFrames;
+    }
+    CHECK(before, "no fire past the cursor");
+    CHECK(sane, "sizes, heats and ages in range");
+    CHECK(a.size() >= 55 && a.size() <= 62, "about one fire per spacing");
+    CHECK(b.size() > a.size() && b[10].x == a[10].x && b[10].age == a[10].age, "fires stay put on the track");
+    CHECK(b[10].scale < a[10].scale, "and die down as the cursor moves away");
+
+    // Taller where louder, and near the cursor
+    std::vector<FirePlace> quiet, loud;
+    layoutFires(0.0, 0.0, 2000.0, 10.0, [](double) { return 0.1f; }, quiet);
+    layoutFires(0.0, 0.0, 2000.0, 10.0, [](double) { return 0.9f; }, loud);
+    double qs = 0, ls = 0;
+    for (size_t i = 0; i < quiet.size(); ++i) {
+        qs += quiet[i].scale;
+        ls += loud[i].scale;
+    }
+    CHECK(quiet.size() == loud.size() && ls > 1.8 * qs, "louder, taller fires");
+    CHECK(loud.back().scale > loud.front().scale && loud.back().heat > loud.front().heat,
+          "the fire at the cursor is bigger and hotter than far back");
+    std::vector<FirePlace> none;
+    layoutFires(0.0, 100.0, 50.0, 10.0, flat, none);
+    CHECK(none.empty(), "nothing when the cursor is left of the range");
+    layoutFires(0.0, 0.0, 500.0, 0.5, flat, none);
+    CHECK(none.empty(), "no fires for a spacing under a point");
+    layoutFires(-1e9, -1e9, 1e9, 1.0, flat, none);
+    CHECK(none.size() <= 4096, "bounded however wide");
+
+    // Composition: one fire reproduces the field, upright
+    FireField g;
+    g.resize(30, 40, 18, 9u);
+    FireHistory gh;
+    for (int i = 0; i < 80; ++i) {
+        g.step(1.0f);
+        gh.push(g);
+    }
+    std::vector<uint8_t> heat;
+    composeFires(gh, 18, { { 50, 1.0f, 1.0f, 1.0f, 0, false } }, 100, 40, heat);
+    bool same = true;
+    for (int x = 0; x < 30; ++x) same = same && heat[(size_t)(50 - 18 + x)] == g.at(x, 0);
+    CHECK(same, "the bottom row is the field's, its source at the base");
+    bool upright = true;
+    for (int y : { 10, 20, 35 }) {
+        const int lean = (int)std::lround(FireField::kLean * y);
+        for (int d = -5; d <= 5; ++d) upright = upright && heat[(size_t)y * 100 + 50 + d] == g.at(18 + d - lean, y);
+    }
+    CHECK(upright, "higher rows moved back by the lean: it stands upright");
+    composeFires(gh, 18, { { 50, 1.0f, 1.0f, 1.0f, 0, true } }, 100, 40, heat);
+    bool mirrored = true;
+    for (int d = -10; d <= 10; ++d) mirrored = mirrored && heat[(size_t)(50 + d)] == g.at(18 - d, 0);
+    CHECK(mirrored, "mirrored the other way round");
+    composeFires(gh, 18, { { 50, 0.5f, 1.0f, 0.5f, 0, false } }, 100, 40, heat);
+    bool low = true, cooler = true;
+    for (int y = 21; y < 40; ++y) for (int x = 0; x < 100; ++x) low = low && heat[(size_t)y * 100 + x] == 0;
+    for (int x = 0; x < 30; ++x) cooler = cooler && heat[(size_t)(32 + x)] == (uint8_t)((g.at(x, 0) * 128) >> 8);
+    CHECK(low, "half the size, half the height");
+    CHECK(cooler, "half the heat");
+    composeFires(gh, 18, { { 5, 1.0f, 1.0f, 1.0f, 0, false }, { 95, 1.0f, 1.0f, 1.0f, 0, false } }, 100, 40, heat);
+    CHECK(heat.size() == 4000, "fires cut by the edges stay inside the grid");
+    FireHistory empty;
+    composeFires(empty, 18, { { 50, 1.0f, 1.0f, 1.0f, 0, false } }, 100, 40, heat);
+    bool cold = true;
+    for (uint8_t v : heat) cold = cold && v == 0;
+    CHECK(cold, "no history, no fire");
+}
+
+void testEarthShades() {
+    TEST_CASE("earth shades");
+    namespace theme = waveseek::theme;
+
+    const theme::RGB blue = theme::RGB::fromARGB(0xFF4DA3F0);
+    const EarthShades b = earthShades(blue);
+    const float lum = theme::luminance(blue);
+    CHECK(theme::luminance(b.plate) < lum * 0.5f, "the pieces are much darker than the wave");
+    CHECK(theme::luminance(b.crack) < 0.03f, "the cracks nearly black, legible on a light background");
+    CHECK(theme::luminance(b.ember) > theme::luminance(b.plate) * 3.0f, "the glow bright against the pieces");
+    CHECK(theme::toOklch(b.core).L > 0.9f, "the core nearly white");
+    const float hue = theme::toOklch(blue).h;
+    bool sameHue = true;
+    for (const theme::RGB& c : { b.plate, b.clod, b.ember }) sameHue = sameHue && std::fabs(theme::toOklch(c).h - hue) < 10.0f;
+    CHECK(sameHue, "all in the wave's hue: the same material, burnt");
+    CHECK(theme::toOklch(b.ember).C >= theme::toOklch(blue).C * 0.9f, "the glow at least as vivid as the wave");
+
+    const EarthShades g = earthShades(theme::RGB::fromARGB(0xFF3C434B));
+    bool grey = true;
+    for (const theme::RGB& c : { g.plate, g.crack, g.clod, g.ember, g.core }) grey = grey && theme::toOklch(c).C < 0.03f;
+    CHECK(grey, "a grey wave stays grey");
+    CHECK(theme::luminance(g.ember) > theme::luminance(g.plate) * 3.0f, "still a light glow on dark pieces");
+
+    const EarthShades w = earthShades(theme::RGB::fromARGB(0xFFE6EDF2));
+    CHECK(theme::luminance(w.plate) < 0.15f, "a near-white wave still burns dark");
+}
+
 void testCracks() {
     TEST_CASE("crack tile");
 
@@ -390,6 +551,8 @@ int main() {
     testLevelEnvelope();
     testSparks();
     testFireField();
+    testFireRow();
+    testEarthShades();
     testCracks();
     testJaggedLine();
     return testsupport::summarize("CursorFxTests");

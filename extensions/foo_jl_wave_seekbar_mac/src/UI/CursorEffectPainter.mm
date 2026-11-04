@@ -4,8 +4,10 @@
 //
 
 #include "CursorEffectPainter.h"
+#include <Accelerate/Accelerate.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace waveseek::fx {
 
@@ -20,9 +22,7 @@ constexpr size_t kRampPixels = 64;
 constexpr int kAlphaSteps = 6;              // sparks are filled in this many batches by alpha
 constexpr int kGradientSteps = 8;
 
-// Fire and scorched earth keep their own colours in every theme
-const Colour kCharMid = { 0.42, 0.29, 0.17 };
-const Colour kCharDark = { 0.045, 0.03, 0.02 };
+// Fire keeps its own colours in every theme
 const Colour kEmberRed = { 1.0, 0.30, 0.04 };
 const Colour kEmberYellow = { 1.0, 0.84, 0.42 };
 
@@ -201,7 +201,7 @@ void Painter::sparks(CGContextRef ctx, const std::vector<Spark>& list, const Spa
 
 #pragma mark - Firewall
 
-void Painter::fireWall(CGContextRef ctx, CGRect rect, CGFloat x, float fuel, double now) {
+void Painter::stepFire(CGRect rect, float fuel, double now) {
     if (rect.size.height <= 0.0 || !std::isfinite(now)) return;
     // Cells of about a point (coarser on a tall view, so the field stays a
     // few thousand cells). The field is wider than the flames, which lean
@@ -213,9 +213,15 @@ void Painter::fireWall(CGContextRef ctx, CGRect rect, CGFloat x, float fuel, dou
     const int source = (int)std::lround(cols * 0.6);
     if (fire_.width() != cols || fire_.height() != rows || fire_.source() != source) {
         fire_.resize(cols, rows, source);
-        for (int i = 0; i < rows; ++i) fire_.step(fuel);   // lit, not growing from nothing
+        fireHistory_.reset(cols, rows);
+        // Lit, not growing from nothing, with a history for the row
+        for (int i = 0; i < rows + FireHistory::kFrames; ++i) {
+            fire_.step(fuel);
+            fireHistory_.push(fire_);
+        }
         fireClock_ = now;
     }
+    fireCell_ = cell;
     // Stepped by the clock, not per frame, so extra redraws don't speed it up
     int steps = 0;
     if (fireClock_ < 0.0 || now < fireClock_ || now - fireClock_ > 0.5) {
@@ -225,8 +231,91 @@ void Painter::fireWall(CGContextRef ctx, CGRect rect, CGFloat x, float fuel, dou
         steps = (int)((now - fireClock_) * kFireStepsPerSecond);
         fireClock_ += steps / kFireStepsPerSecond;
     }
-    for (int i = 0; i < std::min(steps, kFireMaxStepsPerFrame); ++i) fire_.step(fuel);
+    for (int i = 0; i < std::min(steps, kFireMaxStepsPerFrame); ++i) {
+        fire_.step(fuel);
+        fireHistory_.push(fire_);
+    }
+}
 
+void Painter::fireRow(CGContextRef ctx, CGRect rect, CGFloat cursorX, CGFloat trackStartX, CGFloat pixelScale,
+                      const std::function<float(CGFloat)>& levelAt) {
+    if (fireHistory_.count() == 0 || !(fireCell_ > 0.0) || !(pixelScale > 0.0) || !levelAt) return;
+    const int width = fire_.width(), source = fire_.source();
+    // Fires half as far apart as their flames are wide (the bed burns over
+    // about 40 % of the field): overlapping, from different moments, they
+    // make one wall with no gaps
+    const CGFloat spacing = width * fireCell_ * 0.2;
+    const CGFloat left = std::max(rect.origin.x, trackStartX);
+    const CGFloat right = std::min(CGRectGetMaxX(rect), cursorX + (width - source) * fireCell_);
+    if (!(right > left)) return;
+    layoutFires(trackStartX, left, cursorX, spacing, levelAt, firePlaces_);
+    if (firePlaces_.empty()) return;
+
+    // One heat grid for the row in field cells, from a fire's reach left of
+    // `left` (so the first fire shows whole) to `right`
+    const CGFloat originX = left - std::max(source, width - source) * fireCell_;
+    const int outW = (int)std::ceil((right - originX) / fireCell_);
+    const int outH = fire_.height();
+    fireColumns_.clear();
+    for (const FirePlace& p : firePlaces_) {
+        fireColumns_.push_back({ (int)std::lround((p.x - originX) / fireCell_), p.scale, p.width, p.heat, p.age,
+                                 p.mirror });
+    }
+    composeFires(fireHistory_, source, fireColumns_, outW, outH, rowHeat_);
+
+    // Only the rows that burn, top row first (image order), softened
+    // sideways so the fires' beds run together
+    int rows = 0;
+    for (int y = outH - 1; y >= 0 && rows == 0; --y) {
+        const uint8_t* row = &rowHeat_[(size_t)y * (size_t)outW];
+        if (std::any_of(row, row + outW, [](uint8_t v) { return v > 24; })) rows = std::min(outH, y + 2);
+    }
+    if (rows == 0) return;
+    rowSoft_.resize((size_t)outW * (size_t)rows);
+    for (int y = 0; y < rows; ++y) {
+        const uint8_t* in = &rowHeat_[(size_t)y * (size_t)outW];
+        uint8_t* out = &rowSoft_[(size_t)(rows - 1 - y) * (size_t)outW];
+        for (int x = 0; x < outW; ++x) {
+            const int l = in[std::max(0, x - 1)], r = in[std::min(outW - 1, x + 1)];
+            out[x] = (uint8_t)((l + 2 * in[x] + r + 2) / 4);
+        }
+    }
+
+    // Up to the screen's pixels with vImage, then coloured: CoreGraphics
+    // scaling an image this wide takes several milliseconds, drawing one at
+    // its own size a fraction of that. Its left edge on a whole pixel.
+    const CGFloat px0 = std::floor(originX * pixelScale);
+    const size_t pxW = (size_t)std::max<long>(1, std::lround(outW * fireCell_ * pixelScale));
+    const size_t pxH = (size_t)std::max<long>(1, std::lround(rows * fireCell_ * pixelScale));
+    rowPixels_.resize(pxW * pxH);
+    vImage_Buffer src = { rowSoft_.data(), (vImagePixelCount)rows, (vImagePixelCount)outW, (size_t)outW };
+    vImage_Buffer dst = { rowPixels_.data(), (vImagePixelCount)pxH, (vImagePixelCount)pxW, pxW };
+    const vImage_Error temp = vImageScale_Planar8(&src, &dst, nullptr, kvImageGetTempBufferSize);
+    if (temp < 0) return;
+    rowTemp_.resize((size_t)temp + 1);
+    if (vImageScale_Planar8(&src, &dst, rowTemp_.data(), kvImageNoFlags) != kvImageNoError) return;
+    // The palette as whole pixels, one store each
+    static const std::array<uint32_t, 256> palette = [] {
+        std::array<uint32_t, 256> t{};
+        for (int h = 0; h < 256; ++h) std::memcpy(&t[(size_t)h], FireField::colour((uint8_t)h).data(), 4);
+        return t;
+    }();
+    rowRgba_.resize(pxW * pxH * 4);
+    uint32_t* out = reinterpret_cast<uint32_t*>(rowRgba_.data());
+    for (size_t i = 0; i < pxW * pxH; ++i) out[i] = palette[rowPixels_[i]];
+    CGImageRef image = createImage(rowRgba_, (int)pxW, (int)pxH, srgb_);
+    if (!image) return;
+    CGContextSaveGState(ctx);
+    CGContextClipToRect(ctx, rect);
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+    CGContextDrawImage(ctx, CGRectMake(px0 / pixelScale, rect.origin.y, pxW / pixelScale, pxH / pixelScale), image);
+    CGContextRestoreGState(ctx);
+    CGImageRelease(image);
+}
+
+void Painter::fireWall(CGContextRef ctx, CGRect rect, CGFloat x) {
+    if (fire_.empty() || !(fireCell_ > 0.0)) return;
+    const int cols = fire_.width(), rows = fire_.height(), source = fire_.source();
     fireRgba_.resize((size_t)cols * (size_t)rows * 4);
     fire_.paint(fireRgba_.data(), (size_t)cols * 4);
     CGImageRef image = createImage(fireRgba_, cols, rows, srgb_);
@@ -234,7 +323,8 @@ void Painter::fireWall(CGContextRef ctx, CGRect rect, CGFloat x, float fuel, dou
     CGContextSaveGState(ctx);
     CGContextClipToRect(ctx, rect);
     CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
-    CGContextDrawImage(ctx, CGRectMake(x - (source + 0.5) * cell, rect.origin.y, cols * cell, rows * cell), image);
+    CGContextDrawImage(ctx, CGRectMake(x - (source + 0.5) * fireCell_, rect.origin.y, cols * fireCell_,
+                                       rows * fireCell_), image);
     CGContextRestoreGState(ctx);
     CGImageRelease(image);
 }
@@ -272,10 +362,21 @@ void Painter::embers(CGContextRef ctx, const std::vector<Spark>& list, CGRect re
 
 #pragma mark - Earthcrusher
 
-bool Painter::makeTiles() {
-    if (tilesTried_) return scorchTile_ && emberTile_ && scorchRamp_ && emberRamp_;
-    tilesTried_ = true;
-    const CrackTile tile = makeCrackTile(kTilePixels, kTileCells, 0x3C6EF372u);
+// The crack pattern and the ramps once; the tiles' colours again when the
+// theme's change
+bool Painter::makeTiles(const EarthColours& colours) {
+    if (!crackTried_) {
+        crackTried_ = true;
+        crackTile_ = makeCrackTile(kTilePixels, kTileCells, 0x3C6EF372u);
+        scorchRamp_ = createRamp(scorchFade);
+        emberRamp_ = createRamp(emberFade);
+    }
+    if (crackTile_.size != kTilePixels || !scorchRamp_ || !emberRamp_) return false;
+    if (scorchTile_ && emberTile_ && colours == tileColours_) return true;
+    CGImageRelease(scorchTile_);
+    CGImageRelease(emberTile_);
+    tileColours_ = colours;
+    const CrackTile& tile = crackTile_;
     const size_t n = (size_t)kTilePixels * kTilePixels;
     std::vector<uint8_t> scorch(n * 4), ember(n * 4);
     auto put = [](std::vector<uint8_t>& out, size_t i, Colour c, CGFloat alpha) {
@@ -287,25 +388,24 @@ bool Painter::makeTiles() {
     };
     for (size_t i = 0; i < n; ++i) {
         const CGFloat crack = tile.crack[i] / 255.0, plate = tile.plate[i] / 255.0, glow = tile.glow[i] / 255.0;
-        // Pieces of baked earth, some darker than others, split by black cracks
-        const Colour earth = { kCharMid.r * (0.6 + 0.8 * plate), kCharMid.g * (0.6 + 0.8 * plate),
-                               kCharMid.b * (0.6 + 0.8 * plate) };
+        // Baked pieces of the wave, some darker than others, split by
+        // nearly black cracks
+        const CGFloat shade = 0.6 + 0.8 * plate;
+        const Colour piece = { colours.plate.r * shade, colours.plate.g * shade, colours.plate.b * shade };
         const CGFloat base = 0.3 + 0.45 * (1.0 - plate);
-        put(scorch, i, mix(earth, kCharDark, crack), base + (0.97 - base) * crack);
-        // Embers: yellow in the cracks, red around them
-        put(ember, i, mix(kEmberRed, kEmberYellow, crack), std::max(crack, 0.7 * glow));
+        put(scorch, i, mix(piece, colours.crack, crack), base + (0.97 - base) * crack);
+        // Embers: the hot core in the cracks, the glow round them
+        put(ember, i, mix(colours.ember, colours.core, crack), std::max(crack, 0.7 * glow));
     }
-    scorchTile_ = createImage(scorch, kTilePixels, kTilePixels, srgb_);
-    emberTile_ = createImage(ember, kTilePixels, kTilePixels, srgb_);
-    scorchRamp_ = createRamp(scorchFade);
-    emberRamp_ = createRamp(emberFade);
-    return scorchTile_ && emberTile_ && scorchRamp_ && emberRamp_;
+    scorchTile_ = createImage(scorch, kTilePixels, kTilePixels, space_);
+    emberTile_ = createImage(ember, kTilePixels, kTilePixels, space_);
+    return scorchTile_ && emberTile_;
 }
 
 void Painter::scorch(CGContextRef ctx, CGRect zone, CGImageRef mask, CGRect maskRect, CGFloat scale,
-                     CGFloat tileOriginX, float heat, float flicker, bool screen) {
+                     CGFloat tileOriginX, float heat, float flicker, const EarthColours& colours, bool screen) {
     zone = CGRectStandardize(zone);
-    if (zone.size.width < 1.0 || zone.size.height <= 0.0 || !(scale > 0.0) || !makeTiles()) return;
+    if (zone.size.width < 1.0 || zone.size.height <= 0.0 || !(scale > 0.0) || !makeTiles(colours)) return;
     heat = std::clamp(heat, 0.0f, 1.0f);
     flicker = std::clamp(flicker, 0.0f, 1.0f);
 
@@ -333,17 +433,17 @@ void Painter::scorch(CGContextRef ctx, CGRect zone, CGImageRef mask, CGRect mask
     }
 
     const CGFloat left = zone.origin.x, right = CGRectGetMaxX(zone);
-    // Charring: a dark wash, darkest at the cursor
+    // Charring: a wash of the crack colour, darkest at the cursor
     CGFloat comps[kGradientSteps * 4], locations[kGradientSteps];
     for (int i = 0; i < kGradientSteps; ++i) {
         const float u = (float)i / (kGradientSteps - 1);
-        comps[i * 4 + 0] = kCharDark.r;
-        comps[i * 4 + 1] = kCharDark.g;
-        comps[i * 4 + 2] = kCharDark.b;
+        comps[i * 4 + 0] = colours.crack.r;
+        comps[i * 4 + 1] = colours.crack.g;
+        comps[i * 4 + 2] = colours.crack.b;
         comps[i * 4 + 3] = 0.55 * heat * scorchFade(u);
         locations[i] = u;
     }
-    CGGradientRef wash = CGGradientCreateWithColorComponents(srgb_, comps, locations, kGradientSteps);
+    CGGradientRef wash = CGGradientCreateWithColorComponents(space_, comps, locations, kGradientSteps);
     if (wash) {
         CGContextDrawLinearGradient(ctx, wash, CGPointMake(right, 0), CGPointMake(left, 0), 0);
         CGGradientRelease(wash);
@@ -370,7 +470,8 @@ void Painter::scorch(CGContextRef ctx, CGRect zone, CGImageRef mask, CGRect mask
     CGContextRestoreGState(ctx);
 }
 
-void Painter::jaggedCursor(CGContextRef ctx, CGRect rect, CGFloat x, double time, float amplitude) {
+void Painter::jaggedCursor(CGContextRef ctx, CGRect rect, CGFloat x, double time, float amplitude,
+                           const EarthColours& colours) {
     jaggedLine((float)rect.size.height, 5.0f, amplitude, time, 0x6A09E667u, line_);
     if (line_.size() < 2) return;
     CGMutablePathRef path = CGPathCreateMutable();
@@ -379,16 +480,16 @@ void Painter::jaggedCursor(CGContextRef ctx, CGRect rect, CGFloat x, double time
         if (i == 0) CGPathMoveToPoint(path, nullptr, p.x, p.y);
         else CGPathAddLineToPoint(path, nullptr, p.x, p.y);
     }
-    // A fissure: a glow round it, its dark broken edges, a hot core. Its own
-    // colours, which read on dark and light waveforms alike.
+    // A fissure: a glow round it, its dark broken edges, a hot core; the
+    // dark edges keep the light core legible on a light background too
     struct Pass { Colour colour; CGFloat alpha, width; };
-    const Pass passes[] = { { kEmberRed, 0.3, 5.0 }, { kCharDark, 0.9, 2.6 }, { kEmberYellow, 1.0, 1.0 } };
+    const Pass passes[] = { { colours.ember, 0.35, 5.0 }, { colours.crack, 0.9, 2.6 }, { colours.core, 1.0, 1.0 } };
     CGContextSaveGState(ctx);
     CGContextSetLineJoin(ctx, kCGLineJoinMiter);
     CGContextSetMiterLimit(ctx, 4.0);
     for (const Pass& pass : passes) {
         CGContextAddPath(ctx, path);
-        stroke(ctx, srgb_, pass.colour, pass.alpha);
+        stroke(ctx, space_, pass.colour, pass.alpha);
         CGContextSetLineWidth(ctx, pass.width);
         CGContextStrokePath(ctx);
     }

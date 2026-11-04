@@ -5,13 +5,14 @@
 //  The maths behind the cursor effects that are more than a gradient:
 //  hashing and noise, Glow's falloff, the level envelope Particles burst
 //  from, the sparks themselves (a pure function of the playback time),
-//  Firewall's heat field, Earthcrusher's crack tile and jagged line. No
-//  drawing: CursorEffectPainter turns these into CoreGraphics.
-//  Header-only, tested standalone.
+//  Firewall's heat field and its row of fires, Earthcrusher's colours,
+//  crack tile and jagged line. No drawing: CursorEffectPainter turns these
+//  into CoreGraphics. Header-only (with ThemeTokens.cpp), tested standalone.
 //
 
 #pragma once
 
+#include "ThemeTokens.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -330,6 +331,9 @@ inline SparkParams emberSparks() {
 class FireField {
 public:
     static constexpr int kMapRows = 256;    // the cooling map repeats every this many rows
+    // How far the flames' middle moves back a row, in cells: measured (the
+    // drift alone would be 1/16; cells keeping their heat add to it)
+    static constexpr float kLean = 0.2f;
 
     void resize(int width, int height, int source, uint32_t seed = 0x2545F491u) {
         w_ = std::max(1, std::min(width, kMapRows));
@@ -439,21 +443,29 @@ public:
         return table[heat];
     }
 
-    // The field as premultiplied RGBA, top row first (image order), each
-    // cell softened with its four neighbours so single cells don't show
-    void paint(uint8_t* rgba, size_t bytesPerRow) const {
-        auto heat = [&](int x, int y) {
-            return (x < 0 || x >= w_ || y < 0 || y >= h_) ? 0 : (int)at(x, y);
+    // A heat grid (`width` x `height`, row 0 at the bottom) as premultiplied
+    // RGBA, top row first (image order), each cell softened with its four
+    // neighbours so single cells don't show
+    static void paintHeat(const uint8_t* heat, int width, int height, uint8_t* rgba, size_t bytesPerRow) {
+        auto at = [&](int x, int y) {
+            return (x < 0 || x >= width || y < 0 || y >= height) ? 0 : (int)heat[(size_t)y * (size_t)width + (size_t)x];
         };
-        for (int y = 0; y < h_; ++y) {
-            uint8_t* out = rgba + (size_t)(h_ - 1 - y) * bytesPerRow;
-            for (int x = 0; x < w_; ++x) {
-                const int soft = (4 * heat(x, y) + heat(x - 1, y) + heat(x + 1, y) + heat(x, y - 1) + heat(x, y + 1)) / 8;
+        for (int y = 0; y < height; ++y) {
+            uint8_t* out = rgba + (size_t)(height - 1 - y) * bytesPerRow;
+            for (int x = 0; x < width; ++x) {
+                const int soft = (4 * at(x, y) + at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) / 8;
                 const auto& c = colour((uint8_t)soft);
                 std::copy(c.begin(), c.end(), out + (size_t)x * 4);
             }
         }
     }
+
+    // The field as premultiplied RGBA, top row first
+    void paint(uint8_t* rgba, size_t bytesPerRow) const {
+        if (!heat_.empty()) paintHeat(heat_.data(), w_, h_, rgba, bytesPerRow);
+    }
+
+    const uint8_t* data() const { return heat_.data(); }
 
 private:
     uint32_t next() {   // xorshift32
@@ -469,6 +481,177 @@ private:
     uint32_t rng_ = 1;
     uint64_t steps_ = 0;
 };
+
+// ---- Firewall's row of fires along the played part. They all show the one
+// simulated field, each as it was a different number of steps ago, so
+// neighbours flicker apart for the cost of one simulation.
+
+class FireHistory {
+public:
+    static constexpr int kFrames = 64;      // ~0.5 s of steps at 120 a second
+
+    void reset(int width, int height) {
+        w_ = std::max(1, width);
+        h_ = std::max(1, height);
+        frames_.assign((size_t)kFrames * (size_t)w_ * (size_t)h_, 0);
+        newest_ = 0;
+        count_ = 0;
+    }
+
+    // Keeps the field as it is now; a field of another size starts over
+    void push(const FireField& field) {
+        if (field.empty()) return;
+        if (field.width() != w_ || field.height() != h_ || frames_.empty()) reset(field.width(), field.height());
+        newest_ = (newest_ + 1) % kFrames;
+        std::copy(field.data(), field.data() + (size_t)w_ * (size_t)h_, slot(newest_));
+        count_ = std::min(count_ + 1, kFrames);
+    }
+
+    int width() const { return w_; }
+    int height() const { return h_; }
+    int count() const { return count_; }
+
+    // The field `age` steps back (0 = the latest), the oldest kept when
+    // there are fewer; null before the first push
+    const uint8_t* frame(int age) const {
+        if (count_ == 0) return nullptr;
+        age = std::clamp(age, 0, count_ - 1);
+        return slot((newest_ - age + kFrames) % kFrames);
+    }
+
+private:
+    uint8_t* slot(int i) { return &frames_[(size_t)i * (size_t)w_ * (size_t)h_]; }
+    const uint8_t* slot(int i) const { return &frames_[(size_t)i * (size_t)w_ * (size_t)h_]; }
+
+    int w_ = 0, h_ = 0;
+    std::vector<uint8_t> frames_;
+    int newest_ = 0, count_ = 0;
+};
+
+struct FirePlace {
+    double x;           // where it burns hottest, points
+    float scale;        // its height, 0..1 of the field's
+    float width;        // its width, 0..1 of the field's: smaller fires, not squat ones
+    float heat;         // 0..1 of the field's heat: further back they burn lower and redder
+    int age;            // steps back in the history
+    bool mirror;        // drawn the other way round, for variety
+};
+
+// The fires from `from` up to the cursor (points). One every `spacing`
+// points counted from the track's start, so they stay put on the track as
+// the cursor moves on, each nudged a little so the row isn't regular. Each
+// as big as the track is loud there (`levelAt(x)`, 0..1), and bigger and
+// hotter the nearer the cursor; none past it.
+template <typename LevelAt>
+void layoutFires(double trackStart, double from, double cursor, double spacing, LevelAt levelAt,
+                 std::vector<FirePlace>& out) {
+    out.clear();
+    if (!(spacing >= 1.0) || !std::isfinite(trackStart) || !std::isfinite(from) || !std::isfinite(cursor)) return;
+    constexpr double kNearCursor = 90.0;        // points over which fires fall to the row's height
+    constexpr size_t kMaxFires = 4096;
+    const double first = std::max(0.0, std::floor((from - trackStart) / spacing) - 1.0);
+    const double last = std::floor((cursor - trackStart) / spacing);
+    for (double k = first; k <= last && out.size() < kMaxFires; k += 1.0) {
+        const uint32_t key = (uint32_t)(int64_t)k;
+        const double x = trackStart + (k + 0.5 + 0.7 * (unit(hash(key, 0xF17Eu)) - 0.5)) * spacing;
+        if (x > cursor || x < from - spacing) continue;
+        const float level = std::clamp((float)levelAt(x), 0.0f, 1.0f);
+        const float near = (float)std::exp(-(cursor - x) / kNearCursor);
+        FirePlace f;
+        f.x = x;
+        // Sizes jittered by up to 20 %, so neighbours differ in height too
+        const float jitter = 0.8f + 0.4f * unit(hash(key, 0x51Eu));
+        f.scale = std::min(1.0f, (0.2f + 0.8f * level) * (0.5f + 0.5f * near) * jitter);
+        f.width = 0.3f + 0.7f * f.scale;
+        f.heat = std::min(1.0f, 0.55f + 0.2f * level + 0.35f * near);
+        const uint32_t pick = hash(key, 0xA9Eu);
+        f.age = (int)(pick % (uint32_t)FireHistory::kFrames);
+        f.mirror = (pick >> 16) & 1;
+        out.push_back(f);
+    }
+}
+
+struct FireColumn {
+    int base;           // cell of the field's source column
+    float scale;        // height, 0..1 of the field's
+    float width;        // width, 0..1 of the field's
+    float heat;         // 0..1 of the field's heat
+    int age;            // steps back in the history
+    bool mirror;
+};
+
+// The fires side by side as one heat grid of field-sized cells, `outW` x
+// `outH` (row 0 at the bottom): each the field as it was `age` steps ago,
+// stood upright (they stay where they are, so they don't lean like the
+// cursor's), shrunk to its size, its heat scaled, its source column at
+// `base`. The hottest wins where they overlap.
+inline void composeFires(const FireHistory& history, int source, const std::vector<FireColumn>& fires, int outW,
+                         int outH, std::vector<uint8_t>& heat) {
+    heat.assign((size_t)std::max(0, outW) * (size_t)std::max(0, outH), 0);
+    if (outW <= 0 || outH <= 0 || history.count() == 0) return;
+    const int fw = history.width(), fh = history.height();
+    // Upright, a flame reaches this far either side of its base, in field cells
+    const float reach = std::max((float)source, (float)(fw - source)) + FireField::kLean * (float)fh;
+    std::vector<int> fromX;
+    for (const FireColumn& f : fires) {
+        const float dir = f.mirror ? -1.0f : 1.0f;
+        const uint8_t* frame = history.frame(f.age);
+        const float scale = std::clamp(f.scale, 0.0f, 1.0f);
+        const float width = std::clamp(f.width, 0.05f, 1.0f);
+        const uint32_t gain = (uint32_t)std::lround(std::clamp(f.heat, 0.0f, 1.0f) * 256.0f);
+        const int rows = std::min(outH, (int)std::lround(scale * (float)fh));
+        if (!frame || rows < 1 || gain == 0) continue;
+        const int extent = (int)std::ceil(reach * width);
+        const int x0 = std::max(0, f.base - extent), x1 = std::min(outW, f.base + extent + 1);
+        if (x1 <= x0) continue;
+        // The field column under each cell at the bottom, worked out once
+        fromX.resize((size_t)(x1 - x0));
+        for (int ox = x0; ox < x1; ++ox) {
+            fromX[(size_t)(ox - x0)] = source + (int)std::floor(dir * (float)(ox - f.base) / width);
+        }
+        for (int oy = 0; oy < rows; ++oy) {
+            // A row of the fire this far up its own height, moved back by the
+            // lean it has there; only the cells that land in the field
+            const int fy = std::min(fh - 1, (int)((float)oy / scale));
+            const int lean = (int)std::lround(FireField::kLean * (float)fy);
+            const float lo = (float)(-source + lean) * width, hi = (float)(fw - source + lean) * width;
+            const int a = std::max(x0, f.base + (int)std::floor(f.mirror ? -hi : lo) - 1);
+            const int b = std::min(x1, f.base + (int)std::ceil(f.mirror ? -lo : hi) + 1);
+            const uint8_t* src = frame + (size_t)fy * (size_t)fw;
+            uint8_t* dst = &heat[(size_t)oy * (size_t)outW];
+            for (int ox = a; ox < b; ++ox) {
+                const int fx = fromX[(size_t)(ox - x0)] - lean;
+                if (fx < 0 || fx >= fw) continue;
+                dst[ox] = std::max(dst[ox], (uint8_t)((src[fx] * gain) >> 8));
+            }
+        }
+    }
+}
+
+// ---- Earthcrusher's colours, from the waveform's, so what it leaves behind
+// reads as the same material burnt: darker, duller pieces and nearly black
+// cracks in the wave's hue, clods of the wave colour, a bright vivid glow and
+// a nearly white core where it is hot. A grey wave stays grey.
+
+struct EarthShades {
+    theme::RGB plate;   // the baked pieces
+    theme::RGB crack;   // the cracks, the fissure's edges
+    theme::RGB clod;    // bits kicked up
+    theme::RGB ember;   // glowing cracks, the fissure's glow
+    theme::RGB core;    // the fissure's core, the hottest embers
+};
+
+inline EarthShades earthShades(const theme::RGB& wave) {
+    const theme::Oklch w = theme::toOklch(wave);
+    const bool grey = w.C < 0.02f;
+    EarthShades s;
+    s.plate = theme::fromOklch({ std::clamp(w.L * 0.5f, 0.2f, 0.4f), w.C * 0.7f, w.h });
+    s.crack = theme::fromOklch({ 0.13f, w.C * 0.4f, w.h });
+    s.clod = theme::fromOklch({ std::clamp(w.L * 0.8f, 0.3f, 0.7f), w.C * 0.8f, w.h });
+    s.ember = theme::fromOklch({ 0.74f, grey ? w.C : std::max(w.C, 0.16f), w.h });
+    s.core = theme::fromOklch({ 0.96f, std::min(w.C, 0.05f), w.h });
+    return s;
+}
 
 // ---- Earthcrusher: dried, broken earth. A square tile of jittered-grid
 // Voronoi cells (the pieces), repeating in both directions; the cracks run

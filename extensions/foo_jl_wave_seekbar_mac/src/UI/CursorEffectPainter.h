@@ -21,6 +21,15 @@ namespace waveseek::fx {
 
 struct Colour {
     CGFloat r = 0, g = 0, b = 0;
+    bool operator==(const Colour& o) const { return r == o.r && g == o.g && b == o.b; }
+};
+
+// Earthcrusher's colours (EarthShades in the view's theme space)
+struct EarthColours {
+    Colour plate, crack, clod, ember, core;
+    bool operator==(const EarthColours& o) const {
+        return plate == o.plate && crack == o.crack && clod == o.clod && ember == o.ember && core == o.core;
+    }
 };
 
 // Where the sparks go: the cursor's x at a playback time, and how far the
@@ -35,8 +44,8 @@ struct SparkGeometry {
 
 class Painter {
 public:
-    // Colours are in `space` (the view's theme space); the fire and crack
-    // images are sRGB
+    // Colours are in `space` (the view's theme space), the crack tiles too;
+    // the fire is sRGB
     explicit Painter(CGColorSpaceRef space);
     ~Painter();
     Painter(const Painter&) = delete;
@@ -55,9 +64,18 @@ public:
     void sparks(CGContextRef ctx, const std::vector<Spark>& sparks, const SparkGeometry& geometry,
                 Colour hot, Colour cool, bool screen);
 
-    // Firewall's flames standing on the cursor line at x, over the height
-    // of `rect`; the field steps with `wallTime` (seconds), fed by `fuel`
-    void fireWall(CGContextRef ctx, CGRect rect, CGFloat x, float fuel, double wallTime);
+    // Firewall: steps the fire for a view `rect`'s height by `wallTime`
+    // (seconds), fed by `fuel` (FireField::step). Once a frame, before the
+    // two below.
+    void stepFire(CGRect rect, float fuel, double wallTime);
+    // The row of fires along the played part, in `rect` up to the cursor at
+    // `cursorX`, anchored at the track's start `trackStartX`, each as tall
+    // as `levelAt(x)` (0..1) and the nearness of the cursor have it.
+    // `pixelScale`: device pixels per point, for drawing it pixel for pixel.
+    void fireRow(CGContextRef ctx, CGRect rect, CGFloat cursorX, CGFloat trackStartX, CGFloat pixelScale,
+                 const std::function<float(CGFloat)>& levelAt);
+    // The cursor's own fire, the tallest, standing on the line at x
+    void fireWall(CGContextRef ctx, CGRect rect, CGFloat x);
     // Embers rising off the wall: `born` x from xAt, heights over `rect`
     void embers(CGContextRef ctx, const std::vector<Spark>& embers, CGRect rect,
                 const std::function<CGFloat(double)>& xAt, bool screen);
@@ -70,23 +88,31 @@ public:
     // fresh it looks, `flicker` 0..1 the embers' brightness now; `screen`
     // as for glow, for the embers.
     void scorch(CGContextRef ctx, CGRect zone, CGImageRef waveMask, CGRect maskRect, CGFloat pixelScale,
-                CGFloat tileOriginX, float heat, float flicker, bool screen);
+                CGFloat tileOriginX, float heat, float flicker, const EarthColours& colours, bool screen);
     // Earthcrusher's cursor: a jagged, glowing fissure at x over the height
     // of `rect`, morphing with `time`, within +-amplitude points
-    void jaggedCursor(CGContextRef ctx, CGRect rect, CGFloat x, double time, float amplitude);
+    void jaggedCursor(CGContextRef ctx, CGRect rect, CGFloat x, double time, float amplitude,
+                      const EarthColours& colours);
 
 private:
     void setFill(CGContextRef ctx, Colour c, CGFloat alpha);
-    bool makeTiles();
+    bool makeTiles(const EarthColours& colours);
 
     CGColorSpaceRef space_ = nullptr;
     CGColorSpaceRef srgb_ = nullptr;
 
     FireField fire_;
+    FireHistory fireHistory_;
+    CGFloat fireCell_ = 0.0;        // points a field cell covers
     std::vector<uint8_t> fireRgba_;
     double fireClock_ = -1.0;
+    std::vector<FirePlace> firePlaces_;
+    std::vector<FireColumn> fireColumns_;
+    std::vector<uint8_t> rowHeat_, rowSoft_, rowPixels_, rowTemp_, rowRgba_;
 
-    bool tilesTried_ = false;
+    bool crackTried_ = false;
+    CrackTile crackTile_;
+    EarthColours tileColours_;
     CGImageRef scorchTile_ = nullptr;
     CGImageRef emberTile_ = nullptr;
     CGImageRef scorchRamp_ = nullptr;
