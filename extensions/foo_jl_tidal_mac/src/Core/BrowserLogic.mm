@@ -98,6 +98,26 @@
     return newType == currentType && browseMode == JLTidalBrowseModeSearchResults;
 }
 
+
++ (nullable NSString *)displayQualityForAudioQuality:(nullable NSString *)audioQuality
+                                           mediaTags:(nullable NSArray<NSString *> *)mediaTags {
+    // No mediaMetadata in the response: nothing better to go on.
+    if (mediaTags == nil) return audioQuality;
+
+    BOOL claimsLossless = [audioQuality isEqualToString:@"LOSSLESS"] ||
+                          [audioQuality isEqualToString:@"HI_RES"] ||
+                          [audioQuality isEqualToString:@"HI_RES_LOSSLESS"];
+    if (!claimsLossless) return audioQuality;
+
+    for (NSString *tag in mediaTags) {
+        if ([tag isEqualToString:@"HIRES_LOSSLESS"] || [tag isEqualToString:@"LOSSLESS"] ||
+            [tag isEqualToString:@"MQA"]) {
+            return audioQuality;  // a lossless format really is on offer
+        }
+    }
+    return @"HIGH";
+}
+
 + (BOOL)librarySectionChangeIsNoOpFromSection:(JLTidalLibrarySection)currentSection
                                     toSection:(JLTidalLibrarySection)newSection
                                    browseMode:(JLTidalBrowseMode)browseMode {

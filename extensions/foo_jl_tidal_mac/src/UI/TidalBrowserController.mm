@@ -1267,12 +1267,23 @@ public:
 
 - (void)updateStatusLabel {
     if ([[JLTidalAuthService shared] isAuthenticated]) {
-        JLTidalSession *session = [[JLTidalAuthService shared] session];
-        NSString *username = session.username;
-        if (!username.length) {
-            username = @"Tidal User";
+        int mode = tidal::TidalConfig::getSignInDisplay();
+        if (mode == tidal::SignInDisplayHidden) {
+            self.statusLabel.stringValue = @"";
+            return;
         }
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Signed in as %@", username];
+
+        JLTidalSession *session = [[JLTidalAuthService shared] session];
+        // Tidal reports the email in `username` for email-created accounts, and
+        // refresh responses carry no user object at all, so each mode falls back
+        // to the other field before the generic placeholder.
+        NSString *identity = (mode == tidal::SignInDisplayEmail)
+            ? (session.email.length ? session.email : session.username)
+            : (session.username.length ? session.username : session.email);
+        if (!identity.length) {
+            identity = @"Tidal User";
+        }
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Signed in as %@", identity];
     } else {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
     }
@@ -1443,7 +1454,9 @@ public:
     }
 
     if ([identifier isEqualToString:kColumnTrackQuality]) {
-        return [self qualityBadgeCell:identifier quality:track.audioQuality];
+        return [self qualityBadgeCell:identifier
+                              quality:[JLTidalBrowserLogic displayQualityForAudioQuality:track.audioQuality
+                                                                               mediaTags:track.mediaTags]];
     }
 
     if ([identifier isEqualToString:kColumnDuration]) {

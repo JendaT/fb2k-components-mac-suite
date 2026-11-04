@@ -3,8 +3,11 @@
 //  foo_jl_tidal_mac
 //
 //  Playlist context-menu command "Save to library (music.hq)". Personal
-//  feature: hidden unless a library root is configured in preferences and
-//  the selection contains at least one tidal:// track. Hands the selected
+//  feature: hidden unless the tidal.TI_download_on gate is set in the fb2k
+//  config store (docs/hidden-options.md), a library root is configured in
+//  preferences, and the selection contains at least one tidal:// track. The
+//  gate is checked first so the command stays invisible even when a root was
+//  configured earlier. Hands the selected
 //  track IDs to JLTidalLibrarySaver, which runs in the background.
 //
 
@@ -56,6 +59,7 @@ public:
     bool context_get_display(unsigned p_index, metadb_handle_list_cref p_data,
                              pfc::string_base &p_out, unsigned &p_displayflags,
                              const GUID &p_caller) override {
+        if (!tidal::TidalConfig::isDownloadFeatureEnabled()) return false;
         if (tidal::TidalConfig::getLibraryRoot().empty()) return false;
 
         @autoreleasepool {

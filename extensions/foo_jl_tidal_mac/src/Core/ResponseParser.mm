@@ -18,6 +18,10 @@ static BOOL JLTidalIsDictionary(id obj) {
     return [obj isKindOfClass:[NSDictionary class]];
 }
 
+static BOOL JLTidalIsString(id obj) {
+    return [obj isKindOfClass:[NSString class]];
+}
+
 @implementation JLTidalResponseParser
 
 #pragma mark - OAuth token responses
@@ -35,14 +39,16 @@ static BOOL JLTidalIsDictionary(id obj) {
     NSDictionary *user = JLTidalIsDictionary(json[@"user"]) ? json[@"user"] : nil;
     id rawUserId = user[@"userId"];
     NSString *userId = (rawUserId && rawUserId != [NSNull null]) ? [rawUserId description] : nil;
-    NSString *username = user[@"username"];
-    NSString *countryCode = user[@"countryCode"];
+    NSString *username = JLTidalIsString(user[@"username"]) ? user[@"username"] : nil;
+    NSString *email = JLTidalIsString(user[@"email"]) ? user[@"email"] : nil;
+    NSString *countryCode = JLTidalIsString(user[@"countryCode"]) ? user[@"countryCode"] : nil;
 
     return [[JLTidalSession alloc] initWithAccessToken:accessToken
                                           refreshToken:refreshToken
                                              expiresIn:expiresIn.doubleValue
                                                 userId:userId
                                               username:username
+                                                 email:email
                                            countryCode:countryCode];
 }
 
@@ -63,6 +69,7 @@ static BOOL JLTidalIsDictionary(id obj) {
                                                  expiresIn:expiresIn.doubleValue
                                                     userId:currentSession.userId
                                                   username:currentSession.username
+                                                     email:currentSession.email
                                                countryCode:currentSession.countryCode];
     }
     return [currentSession sessionByUpdatingAccessToken:accessToken

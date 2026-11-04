@@ -157,14 +157,18 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
         // Cache and return
         tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
 
-        NSString *requestedStr = JLTidalQualityToString(quality);
-        NSString *gotStr = info.qualityDescription;
-        if ([requestedStr isEqualToString:gotStr] || [gotStr containsString:requestedStr]) {
+        // Tidal answers a request for a tier a track does not carry with HIGH
+        // rather than the track's real maximum, and asking lower does not help
+        // (verified: an explicit LOSSLESS request for such a track still
+        // returns HIGH). So report what we got and move on — no extra requests.
+        if (info.quality >= quality) {
             tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@ at %@",
-                             trackID, gotStr] UTF8String]);
+                             trackID, info.qualityDescription] UTF8String]);
         } else {
-            tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@: requested %@, got %@ (silent downgrade by API)",
-                             trackID, requestedStr, gotStr] UTF8String]);
+            tidal::logInfo([[NSString stringWithFormat:
+                             @"Resolved track %@ at %@ (%@ not available for this track)",
+                             trackID, info.qualityDescription,
+                             JLTidalQualityToString(quality)] UTF8String]);
         }
 
         completion(info, nil);

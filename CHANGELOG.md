@@ -789,6 +789,8 @@ Display P3 colors contributed by @Scannou (#55).
 ### [Unreleased]
 
 #### Added
+- Browser status line preference: show nothing, email, or username
+- Library download (Save to library) hidden behind the `tidal.TI_download_on` config-store gate, off by default
 - Save to library (music.hq): personal playlist context-menu export of selected tidal:// tracks into a configured library root using the music.hq layout (genre collection / artist / `Artist [YYYY] Title`, with `[Releases]` and `[Compilations]` slots). Genre resolution: existing artist folder on disk > remembered choice > one-time picker. DASH FLAC remuxed losslessly to tagged `.flac` via ffmpeg; `cover.jpg` fetched per album; existing files skipped. Gated by the Preferences > Library folder setting (unset hides the feature)
 - DASH prefetch: the next track in the active playlist is resolved and its segments pre-assembled into an in-memory blob cache while the current track plays, so lossless/hi-res tracks open instantly instead of stalling ~3-4s on the segment download. Byte-capped (~320 MB), cleared on quit
 - Pure Core modules extracted from SDK/network code (testability refactor, no functional change): `ManifestParser`, `StreamResolutionPolicy`, `HTTPResponsePolicy`, `ResponseParser` (replacing 11 inline API-parsing loops), `SyncPlanner`, `BrowserLogic`, `DashCachePolicy`, `TidalLog`
@@ -802,6 +804,7 @@ Display P3 colors contributed by @Scannou (#55).
 - fb2k playlist state read only on the main thread in sync previews; sync shared state serialized; request bursts bounded to 4 concurrent
 - Token refresh is single-flight (concurrent callers get the real result instead of a 1s sleep guess); sign-out during refresh can no longer resurrect a session
 - Two crash fixes (nil dictionary key in push-sync apply, std::string(NULL) in DASH 403 re-open) plus 58 review fixes: JSON type guards, album-art data cache, stale-response guards, leak fix, dedupe
+- Playback failed with "Unsupported file format", intermittently across restarts: the `?token=` query corrupted the extension foobar2000 parses, and only the first input claiming that extension was tried even though several claim it and only one accepts a given stream
 
 #### Security
 - tidal:// content IDs validated before use in authenticated API paths (blocks request forgery via crafted playlists); search/ISRC query values strictly encoded; path traversal guards on library export paths; request logs redacted to host+path; DASH manifest bomb hardening

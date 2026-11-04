@@ -51,6 +51,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
 
 // Settings
 @property (nonatomic, strong) NSPopUpButton *qualityPopup;
+@property (nonatomic, strong) NSPopUpButton *signInDisplayPopup;
 @property (nonatomic, strong) NSButton *debugCheckbox;
 @property (nonatomic, strong) NSButton *dashCheckbox;
 @property (nonatomic, strong) NSTextField *libraryPathField;
@@ -264,9 +265,27 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     self.dashCheckbox = [NSButton checkboxWithTitle:@"Download LOSSLESS via DASH segments"
                                              target:self
                                              action:@selector(dashChanged:)];
-    addIndentedRow(self.dashCheckbox, rowHeight + sectionGap);
+    addIndentedRow(self.dashCheckbox, rowHeight + 4);
+
+    NSTextField *signInDisplayLabel = [NSTextField labelWithString:@"Browser status line:"];
+    signInDisplayLabel.font = [NSFont systemFontOfSize:11];
+    signInDisplayLabel.textColor = [NSColor labelColor];
+    addIndentedRow(signInDisplayLabel, rowHeight - 4);
+
+    self.signInDisplayPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    // Order must match tidal::SignInDisplay (Hidden, Email, Username)
+    [self.signInDisplayPopup addItemWithTitle:@"Show nothing"];
+    [self.signInDisplayPopup addItemWithTitle:@"Show email"];
+    [self.signInDisplayPopup addItemWithTitle:@"Show username"];
+    [self.signInDisplayPopup setTarget:self];
+    [self.signInDisplayPopup setAction:@selector(signInDisplayChanged:)];
+    addIndentedRow(self.signInDisplayPopup, rowHeight + sectionGap);
 
     // ===== Library Section (personal music.hq export) =====
+    // Hidden behind tidal.TI_download_on in the fb2k config store; see
+    // docs/hidden-options.md. Built only when enabled, so the rows below simply
+    // do not advance the layout when the feature is off.
+    if (tidal::TidalConfig::isDownloadFeatureEnabled()) {
     NSTextField *libraryLabel = [NSTextField labelWithString:@"Library"];
     libraryLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     libraryLabel.textColor = [NSColor secondaryLabelColor];
@@ -305,6 +324,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     libraryNote.font = [NSFont systemFontOfSize:10];
     [libraryNote.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
     addIndentedRow(libraryNote, 40);
+    }  // isDownloadFeatureEnabled
 
     self.view = container;
 }
@@ -326,10 +346,16 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     // DASH experimental toggle
     self.dashCheckbox.state = tidal::TidalConfig::isDASHEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
 
+    // Browser status line (index order matches tidal::SignInDisplay)
+    [self.signInDisplayPopup selectItemAtIndex:tidal::TidalConfig::getSignInDisplay()];
+
     [self updateLibraryPathField];
 }
 
 - (void)updateLibraryPathField {
+    // Not built when the download feature is gated off
+    if (!self.libraryPathField) return;
+
     std::string root = tidal::TidalConfig::getLibraryRoot();
     if (root.empty()) {
         self.libraryPathField.stringValue = @"Not configured";
@@ -600,6 +626,13 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
 - (void)debugChanged:(id)sender {
     bool enabled = (self.debugCheckbox.state == NSControlStateValueOn);
     tidal::TidalConfig::setDebugLoggingEnabled(enabled);
+}
+
+- (void)signInDisplayChanged:(id)sender {
+    tidal::TidalConfig::setSignInDisplay((int)self.signInDisplayPopup.indexOfSelectedItem);
+    // The browser panel refreshes its status line on this notification.
+    [[NSNotificationCenter defaultCenter] postNotificationName:JLTidalAuthStateDidChangeNotification
+                                                        object:nil];
 }
 
 - (void)chooseLibraryRoot:(id)sender {

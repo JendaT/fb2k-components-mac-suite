@@ -67,6 +67,22 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)backReturnsToArtistAlbumsFromMode:(JLTidalBrowseMode)browseMode
                                 hasArtist:(BOOL)hasArtist;
 
+#pragma mark - Quality badge
+
+/// Which quality label the browser should show for a track/album.
+///
+/// `audioQuality` reports the release's nominal quality, so a compilation whose
+/// streamable master is lossy is still advertised as LOSSLESS — the list then
+/// promises lossless that playback cannot deliver. `mediaTags` (Tidal's
+/// mediaMetadata.tags) lists the formats that actually exist, so when it is
+/// present and names no lossless format, the label is capped at "HIGH".
+/// A nil `mediaTags` (field absent from the response) leaves audioQuality alone.
+///
+/// Returns the raw quality token ("HI_RES_LOSSLESS", "LOSSLESS", "HIGH", ...)
+/// for the caller to style.
++ (nullable NSString *)displayQualityForAudioQuality:(nullable NSString *)audioQuality
+                                           mediaTags:(nullable NSArray<NSString *> *)mediaTags;
+
 #pragma mark - Mode-change no-op rules
 
 /// Same type while already showing search results changes nothing.

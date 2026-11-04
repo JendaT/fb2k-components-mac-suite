@@ -27,6 +27,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *coverID;
 @property (nonatomic, readonly) BOOL isExplicit;
 @property (nonatomic, copy, readonly, nullable) NSString *audioQuality;
+
+/// Formats Tidal actually holds for this track ("LOSSLESS", "HIRES_LOSSLESS",
+/// "MQA", ...). More truthful than audioQuality, which reports the release's
+/// nominal quality even when only a lossy master is streamable. Nil when the
+/// response carried no mediaMetadata at all.
+@property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *mediaTags;
 @property (nonatomic, copy, readonly, nullable) NSString *isrc;
 @property (nonatomic, copy, readonly, nullable) NSString *copyright;
 @property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;

@@ -150,6 +150,45 @@ static void testModeChangeNoOps(void) {
           "same section inside drill-down still reloads");
 }
 
+// The list must not promise a quality playback cannot deliver: audioQuality
+// carries the release's nominal quality, mediaMetadata.tags what really exists.
+static void testQualityBadge(void) {
+    NSString *q;
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS"
+                                                mediaTags:@[@"LOSSLESS"]];
+    CHECK([q isEqualToString:@"LOSSLESS"], "lossless tag keeps Lossless");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES_LOSSLESS"
+                                                mediaTags:@[@"HIRES_LOSSLESS", @"LOSSLESS"]];
+    CHECK([q isEqualToString:@"HI_RES_LOSSLESS"], "hi-res tag keeps Hi-Res");
+
+    // The reported bug: advertised LOSSLESS, but no lossless master exists.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "empty tags caps the claim at High");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS"
+                                                mediaTags:@[@"DOLBY_ATMOS"]];
+    CHECK([q isEqualToString:@"HIGH"], "tags without a lossless format cap at High");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES_LOSSLESS" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "hi-res claim without tags caps at High");
+
+    // MQA counts as lossless-bearing.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES" mediaTags:@[@"MQA"]];
+    CHECK([q isEqualToString:@"HI_RES"], "MQA tag keeps the hi-res claim");
+
+    // No mediaMetadata in the response: nothing better to go on, leave as-is.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:nil];
+    CHECK([q isEqualToString:@"LOSSLESS"], "absent tags leave audioQuality alone");
+
+    // Lossy claims are never rewritten, and nil stays nil.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "High claim untouched");
+    CHECK([JLTidalBrowserLogic displayQualityForAudioQuality:nil mediaTags:@[]] == nil,
+          "nil quality stays nil");
+}
+
 int main(void) {
     @autoreleasepool {
         testActiveListMatrix();
@@ -158,6 +197,7 @@ int main(void) {
         testPaginationMath();
         testBackRouting();
         testModeChangeNoOps();
+        testQualityBadge();
     }
     return testHarnessFinish("BrowserLogic");
 }

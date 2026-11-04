@@ -24,6 +24,11 @@ static const char* const kCacheStreamUrls = "cache_stream_urls";
 static const char* const kDASHEnabled = "dash_enabled";
 static const char* const kLibraryRoot = "library_root";
 static const char* const kGenreMap = "genre_map";
+static const char* const kSignInDisplay = "signin_display";
+// Hidden gate for the personal library-download feature. Deliberately absent
+// from the preferences UI: toggled by writing the config store directly, see
+// docs/hidden-options.md. Full key: "tidal.TI_download_on".
+static const char* const kDownloadEnabled = "TI_download_on";
 
 // Default values
 constexpr int kDefaultPreferredQuality = static_cast<int>(JLTidalQualityHiResLossless);
@@ -34,6 +39,15 @@ constexpr bool kDefaultDebugLogging = false;
 #endif
 constexpr bool kDefaultCacheStreamUrls = true;
 constexpr bool kDefaultDASHEnabled = true;
+constexpr bool kDefaultDownloadEnabled = false;
+
+// What the browser panel shows in its idle status line.
+enum SignInDisplay {
+    SignInDisplayHidden = 0,
+    SignInDisplayEmail = 1,
+    SignInDisplayUsername = 2,
+};
+constexpr int kDefaultSignInDisplay = SignInDisplayEmail;
 
 class TidalConfig {
 public:
@@ -79,6 +93,17 @@ public:
     // Persisted artist -> genre-collection choices, serialized JSON object.
     static std::string getGenreMapJSON();
     static void setGenreMapJSON(const std::string& json);
+
+    // What the browser status line shows when idle (see SignInDisplay).
+    static int getSignInDisplay();
+    static void setSignInDisplay(int mode);
+
+    // Master gate for the library-download feature. Off by default and not
+    // exposed in preferences; when off, the "Save to library" context menu and
+    // the preferences Library section are both hidden regardless of the
+    // configured root. Enable by writing "tidal.TI_download_on" in the fb2k
+    // config store (docs/hidden-options.md).
+    static bool isDownloadFeatureEnabled();
 };
 
 // Sync the TidalLog debug-flag cache from the stored pref.

@@ -57,6 +57,24 @@ static NSString *stringIDFromValue(id value) {
             _audioQuality = audioQuality;
         }
 
+        id mediaMetadata = dict[@"mediaMetadata"];
+        if ([mediaMetadata isKindOfClass:[NSDictionary class]]) {
+            id tags = mediaMetadata[@"tags"];
+            if ([tags isKindOfClass:[NSArray class]]) {
+                NSMutableArray<NSString *> *clean = [NSMutableArray array];
+                for (id tag in (NSArray *)tags) {
+                    if ([tag isKindOfClass:[NSString class]]) [clean addObject:tag];
+                }
+                _mediaTags = clean;
+            }
+        }
+        if (tidal::isDebugLoggingCached()) {
+            tidal::logDebug([[NSString stringWithFormat:
+                @"Track %@ quality fields: audioQuality=%@ mediaTags=%@",
+                _trackID ?: @"?", _audioQuality ?: @"(nil)",
+                _mediaTags ? [_mediaTags componentsJoinedByString:@","] : @"(absent)"] UTF8String]);
+        }
+
         // Artist - may be nested object or null
         id artist = dict[@"artist"];
         if ([artist isKindOfClass:[NSDictionary class]]) {

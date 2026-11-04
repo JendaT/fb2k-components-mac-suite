@@ -14,6 +14,7 @@
 static NSString * const kTokenExpiryKey = @"com.foobar2000.tidal.token_expiry";
 static NSString * const kUserIdKey = @"com.foobar2000.tidal.user_id";
 static NSString * const kUsernameKey = @"com.foobar2000.tidal.username";
+static NSString * const kEmailKey = @"com.foobar2000.tidal.email";
 static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
 
 @implementation JLTidalKeychainHelper
@@ -110,6 +111,7 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     [defaults removeObjectForKey:kTokenExpiryKey];
     [defaults removeObjectForKey:kUserIdKey];
     [defaults removeObjectForKey:kUsernameKey];
+    [defaults removeObjectForKey:kEmailKey];
     [defaults removeObjectForKey:kCountryCodeKey];
 
     return accessDeleted && refreshDeleted;
@@ -162,6 +164,15 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
     }
 }
 
++ (void)storeEmail:(nullable NSString *)email {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (email) {
+        [defaults setObject:email forKey:kEmailKey];
+    } else {
+        [defaults removeObjectForKey:kEmailKey];
+    }
+}
+
 + (void)storeCountryCode:(nullable NSString *)countryCode {
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     if (countryCode) {
@@ -177,6 +188,10 @@ static NSString * const kCountryCodeKey = @"com.foobar2000.tidal.country_code";
 
 + (nullable NSString *)loadUsername {
     return [[NSUserDefaults standardUserDefaults] objectForKey:kUsernameKey];
+}
+
++ (nullable NSString *)loadEmail {
+    return [[NSUserDefaults standardUserDefaults] objectForKey:kEmailKey];
 }
 
 + (nullable NSString *)loadCountryCode {

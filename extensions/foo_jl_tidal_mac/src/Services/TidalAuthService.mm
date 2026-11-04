@@ -100,6 +100,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     NSDate *expiry = [JLTidalKeychainHelper loadTokenExpiry];
     NSString *userId = [JLTidalKeychainHelper loadUserId];
     NSString *username = [JLTidalKeychainHelper loadUsername];
+    NSString *email = [JLTidalKeychainHelper loadEmail];
     NSString *countryCode = [JLTidalKeychainHelper loadCountryCode];
 
     // Fallback to system locale if countryCode not stored (migration from old version)
@@ -120,6 +121,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
                                                                     expiresIn:expiresIn
                                                                        userId:userId
                                                                      username:username
+                                                                        email:email
                                                                   countryCode:countryCode];
         self.session = session;
         [[JLTidalAPI shared] updateSession:session];
@@ -158,6 +160,12 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     [JLTidalKeychainHelper storeTokenExpiry:session.expiryDate];
     [JLTidalKeychainHelper storeUserId:session.userId];
     [JLTidalKeychainHelper storeUsername:session.username];
+    // Only overwrite a stored email when the response actually carried one:
+    // refresh responses omit the user object, and losing it would silently
+    // demote the "Email" status-line mode to its username fallback.
+    if (session.email.length > 0) {
+        [JLTidalKeychainHelper storeEmail:session.email];
+    }
     [JLTidalKeychainHelper storeCountryCode:session.countryCode];
 }
 

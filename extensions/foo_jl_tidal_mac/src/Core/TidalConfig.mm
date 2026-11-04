@@ -131,4 +131,20 @@ void TidalConfig::setGenreMapJSON(const std::string& json) {
     setConfigString(kGenreMap, json);
 }
 
+int TidalConfig::getSignInDisplay() {
+    int mode = getConfigInt(kSignInDisplay, kDefaultSignInDisplay);
+    if (mode < SignInDisplayHidden || mode > SignInDisplayUsername) {
+        return kDefaultSignInDisplay;
+    }
+    return mode;
+}
+
+void TidalConfig::setSignInDisplay(int mode) {
+    setConfigInt(kSignInDisplay, mode);
+}
+
+bool TidalConfig::isDownloadFeatureEnabled() {
+    return getConfigBool(kDownloadEnabled, kDefaultDownloadEnabled);
+}
+
 } // namespace tidal

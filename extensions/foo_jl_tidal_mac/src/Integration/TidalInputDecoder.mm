@@ -31,6 +31,113 @@ static NSDateFormatter* sharedDateFormatter() {
     return fmt;
 }
 
+// Tidal's signed CDN URLs end in "....mp4?token=...". foobar2000 derives a
+// file's extension from everything after the last dot, so the query string must
+// be stripped before the URL touches any SDK path API:
+//   - g_find_service_by_path() sees extension "mp4?token=..." and matches no
+//     extension-based input, falling through to whatever claims URL schemes;
+//   - the selected decoder re-runs its own is_our_path()/g_is_our_path() check
+//     inside open_for_decoding(), and the same bogus extension makes it reject
+//     the stream with "Unsupported file format".
+// Lookup therefore uses a synthetic local filename carrying the real extension
+// (so only genuine extension/content-type matching applies) and the decoder is
+// handed the query-free URL. Shared by openStream and tryReopen.
+static std::string pathWithoutQuery(const std::string &url) {
+    size_t cut = url.find_first_of("?#");
+    return (cut == std::string::npos) ? url : url.substr(0, cut);
+}
+
+// Collect every input that could handle this stream, best guess first:
+// extension match on a synthetic local filename, then codec-derived content
+// type, then the containers Tidal actually serves.
+static std::vector<input_entry::ptr> decoderCandidates(const std::string &url, NSString *codec) {
+    std::vector<input_entry::ptr> out;
+    auto append = [&out](input_entry::ptr e) {
+        if (e.is_empty()) return;
+        for (const auto &have : out) {
+            if (have == e) return;
+        }
+        out.push_back(e);
+    };
+    auto appendByPath = [&](const std::string &syntheticName) {
+        pfc::list_t<input_entry::ptr> found;
+        input_entry::g_find_inputs_by_path(found, syntheticName.c_str(), false);
+        for (t_size i = 0; i < found.get_count(); i++) append(found[i]);
+    };
+
+    std::string path = pathWithoutQuery(url);
+    size_t slash = path.find_last_of('/');
+    std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos && dot + 1 < name.size()) {
+        appendByPath("track." + name.substr(dot + 1));
+    }
+
+    const char *mimeType = nullptr;
+    if ([codec isEqualToString:@"FLAC"] || [codec isEqualToString:@"MQA"]) {
+        mimeType = "audio/flac";  // MQA is encoded in a FLAC container
+    } else if ([codec isEqualToString:@"AAC"] || [codec isEqualToString:@"MP4A"]) {
+        mimeType = "audio/mp4";
+    } else if ([codec isEqualToString:@"EAC3"]) {
+        mimeType = "audio/eac3";
+    }
+    if (mimeType) {
+        pfc::list_t<input_entry::ptr> found;
+        input_entry::g_find_inputs_by_content_type(found, mimeType, false);
+        for (t_size i = 0; i < found.get_count(); i++) append(found[i]);
+    }
+
+    appendByPath("track.m4a");
+    appendByPath("track.mp4");
+    appendByPath("track.flac");
+    return out;
+}
+
+static std::string decoderName(const input_entry::ptr &entry) {
+    input_entry_v2::ptr v2;
+    if (entry->service_query_t(v2)) return std::string(v2->get_name());
+    return std::string("unnamed input");
+}
+
+// Open the stream with the first candidate that actually accepts it.
+//
+// Several inputs claim the same extension — foobar2000 registers both an "MP4
+// Demuxer" and an "MP4 Stream Demuxer" — and only one of them may accept a
+// given Tidal stream. Which one comes first depends on input enumeration
+// order, which varies between launches, so picking the first claimer made
+// playback work or fail seemingly at random across restarts. fb2k's own
+// g_open_from_list tries every candidate and falls through on failure; this
+// mirrors that, and logs which input accepted or rejected the stream.
+static void openDecoderForStream(service_ptr_t<input_decoder> &outDecoder,
+                                 const std::string &url, NSString *codec,
+                                 const service_ptr_t<file> &streamFile,
+                                 abort_callback &p_abort) {
+    std::vector<input_entry::ptr> candidates = decoderCandidates(url, codec);
+    if (candidates.empty()) {
+        pfc::throw_exception_with_message<exception_io_data>("No decoder found for stream URL");
+    }
+
+    const std::string cleanPath = pathWithoutQuery(url);
+    std::exception_ptr firstFailure;
+    for (const auto &entry : candidates) {
+        try {
+            entry->open_for_decoding(outDecoder, streamFile, cleanPath.c_str(), p_abort);
+            logInfo(("Decoder opened the stream: " + decoderName(entry)).c_str());
+            return;
+        } catch (const exception_aborted &) {
+            throw;
+        } catch (const std::exception &e) {
+            if (p_abort.is_aborting()) throw exception_aborted();
+            logInfo(("Decoder " + decoderName(entry) + " rejected the stream: " +
+                     std::string(e.what()) + " — trying next").c_str());
+            if (!firstFailure) firstFailure = std::current_exception();
+        }
+    }
+
+    if (firstFailure) std::rethrow_exception(firstFailure);
+    pfc::throw_exception_with_message<exception_io_data>("No decoder accepted the stream");
+}
+
 // Overlay Tidal track metadata onto a file_info. Shared by TidalInputDecoder
 // and TidalInfoReader. When logFields is true, TITLE/ARTIST sets are logged
 // at debug level (info-reader diagnostics).
@@ -297,60 +404,14 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         }
     }
 
-    // Try to find decoder by path (extension-based matching)
-    input_entry::ptr entry;
-    bool foundDecoder = input_entry::g_find_service_by_path(entry, m_streamURL.c_str());
-    if (foundDecoder) {
-        logInfo([[NSString stringWithFormat:@"Decoder found by path (ext of %@)",
-                  [[NSString stringWithUTF8String:m_streamURL.c_str()] lastPathComponent]] UTF8String]);
-    }
-
-    if (!foundDecoder) {
-        logDebug("No decoder found by path, trying content type fallback");
-
-        // Map Tidal codec to MIME type for content-type based lookup
-        NSString *codec = resultInfo.codec;
-        const char* mimeType = nullptr;
-        if ([codec isEqualToString:@"FLAC"]) {
-            mimeType = "audio/flac";
-        } else if ([codec isEqualToString:@"AAC"] || [codec isEqualToString:@"MP4A"]) {
-            mimeType = "audio/mp4";
-        } else if ([codec isEqualToString:@"MQA"]) {
-            mimeType = "audio/flac";  // MQA is encoded in FLAC container
-        } else if ([codec isEqualToString:@"EAC3"]) {
-            mimeType = "audio/eac3";
-        }
-
-        if (mimeType) {
-            logDebug(("Trying content type: " + std::string(mimeType)).c_str());
-            foundDecoder = input_entry::g_find_service_by_content_type(entry, mimeType);
-        }
-
-        if (!foundDecoder) {
-            // Last resort: try common extensions
-            logDebug("Content type lookup failed, trying known extensions");
-            foundDecoder = input_entry::g_find_service_by_path(entry, "dummy.flac");
-            if (!foundDecoder) {
-                foundDecoder = input_entry::g_find_service_by_path(entry, "dummy.m4a");
-            }
-        }
-    }
-
-    if (!foundDecoder) {
-        logError("No decoder found for stream URL by any method");
-        pfc::throw_exception_with_message<exception_io_data>("No decoder found for stream URL");
-    }
-
-    logDebug("Found decoder, opening for decoding...");
     try {
-        entry->open_for_decoding(m_decoder, streamFile, m_streamURL.c_str(), p_abort);
+        tidal::openDecoderForStream(m_decoder, m_streamURL, resultInfo.codec, streamFile, p_abort);
     } catch (const exception_aborted &) {
         throw;
     } catch (const std::exception &e) {
-        // Surface WHICH decoder failed and WHY before rethrowing — without this
-        // the console shows "Found decoder, opening..." and then silence while
-        // fb2k skips to the next track.
-        logError(("open_for_decoding failed: " + std::string(e.what())).c_str());
+        // Every candidate rejected the stream — surface why before fb2k skips
+        // the track, otherwise the console goes silent here.
+        logError(("No decoder accepted the stream: " + std::string(e.what())).c_str());
         throw;
     }
 
@@ -420,16 +481,8 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
             return false;
         }
 
-        input_entry::ptr entry;
-        if (!input_entry::g_find_service_by_path(entry, m_streamURL.c_str())) {
-            // Fallback: try FLAC (most common Tidal format)
-            if (!input_entry::g_find_service_by_content_type(entry, "audio/flac")) {
-                return false;
-            }
-        }
-
         service_ptr_t<input_decoder> newDecoder;
-        entry->open_for_decoding(newDecoder, streamFile, m_streamURL.c_str(), p_abort);
+        tidal::openDecoderForStream(newDecoder, m_streamURL, resultInfo.codec, streamFile, p_abort);
 
         if (!newDecoder.is_valid()) {
             return false;

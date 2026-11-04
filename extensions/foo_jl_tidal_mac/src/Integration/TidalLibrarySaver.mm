@@ -64,6 +64,12 @@ static void saverError(NSString *msg) {
 }
 
 - (void)runBatch:(NSArray<NSString *> *)trackIDs {
+    // Belt and braces: the menu is already gated, but never download when the
+    // hidden feature flag is off (docs/hidden-options.md).
+    if (!tidal::TidalConfig::isDownloadFeatureEnabled()) {
+        saverError(@"library download is disabled (tidal.TI_download_on is not set)");
+        return;
+    }
     NSString *root = [NSString stringWithUTF8String:tidal::TidalConfig::getLibraryRoot().c_str()];
     if (root.length == 0) {
         saverError(@"no library root configured (Preferences > Tidal > Library)");
