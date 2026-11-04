@@ -423,6 +423,11 @@ struct BarSegment {
     uint64_t _syncEpoch;
     bool _lowLatency;
     CFAbsoluteTime _latencyNoteAt;
+    // The visualisation clock less the audio actually heard (measured while
+    // the audio is untouched; 0 when the clock is exact)
+    double _clockOffset;
+    std::vector<double> _clockSamples;
+    bool _jumpMovesLoop;
     // Option-dragging the loop: the beat under the mouse when it began, the
     // loop then, and where it would go
     bool _loopDragging;
@@ -2507,6 +2512,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     }
     if (_armId == 0 && _deck.synced) _deckEpoch = _deck.epoch;
     if (_armId == 0 && !_deck.synced && _deck.pristine && self.playing) [self measureTrackTime:seconds];
+    if (_armId == 0 && _deck.synced && _deck.pristine && _deck.live && self.playing) [self measureClock:seconds];
     if (_requestId != 0 && _deck.rejectedId == _requestId) {
         _requestId = 0;
         [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
@@ -2550,6 +2556,20 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     _syncSamples.clear();
 }
 
+// Untouched audio: foobar2000's position is what is heard, so the
+// visualisation clock less (position - the seek's track time) is how far
+// the clock runs ahead of the audio (if it does not count the output buffer)
+- (void)measureClock:(double)seconds {
+    const double played = beatloop::playedSinceSeek();
+    if (!std::isfinite(played) || !std::isfinite(seconds)) return;
+    _clockSamples.push_back(played - (seconds - _deck.startTime));
+    if (_clockSamples.size() > 9) _clockSamples.erase(_clockSamples.begin());
+    if (_clockSamples.size() < 5) return;
+    std::vector<double> sorted(_clockSamples);
+    std::sort(sorted.begin(), sorted.end());
+    _clockOffset = sorted[sorted.size() / 2];
+}
+
 // The track time playing: through the DSP's timeline while it changes what
 // plays, else foobar2000's position
 - (double)displayedTimeFor:(double)seconds {
@@ -2558,14 +2578,14 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     }
     const double played = beatloop::playedSinceSeek();
     if (!std::isfinite(played)) return seconds;
-    const double t = waveseek::trackTimeAt(_deck.timeline, played);
+    const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, played - _clockOffset));
     return std::isfinite(t) ? t : seconds;
 }
 
-// While a change may come (hovering, or a loop playing), foobar2000 keeps
-// its output latency low
+// While a change may come (the mouse over the seekbar, a menu or a drag),
+// short steps from the DSP and foobar2000's low-latency hint
 - (void)updateLowLatency {
-    const bool on = [self deckMode] && (_hovering || _loop.active());
+    const bool on = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging);
     if (on == _lowLatency) return;
     _lowLatency = on;
     beatloop::setLowLatency(on);
@@ -2574,6 +2594,9 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 #pragma mark - Mixer Actions
 
 - (void)performBarControl:(const BarSegment &)segment {
+    // Option with a jump while looping moves the whole loop
+    const bool option = (NSEvent.modifierFlags & NSEventModifierFlagOption) != 0;
+    _jumpMovesLoop = option;
     switch (segment.control) {
         case BarControlCog: [self showControlsMenuFor:segment]; break;
         case BarControlBack32: [self jumpBeats:-32]; break;
@@ -2614,17 +2637,22 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     [self seekTo:target];
 }
 
-// `count` beats on or back, at the same place in the beat. While looping
-// the loop moves with it (nothing happens when it would leave the track).
+// `count` beats on or back, at the same place in the beat. While looping,
+// with Option the whole loop moves (nothing happens when it would leave the
+// track); without, playback jumps, inside the loop or out of it (which ends it).
 - (void)jumpBeats:(int)count {
-    if (_loop.active()) {
+    if (_loop.active() && _jumpMovesLoop) {
         [self moveLoopBy:count];
         return;
     }
     const double target = waveseek::jumpTarget([self beats], [self currentSeconds], count, self.trackDuration);
     if (std::isnan(target)) return;
-    if ([self deckMode]) [self deckSeekTo:target];
-    else [self seekTo:target];
+    if ([self deckMode]) {
+        [self deckSeekTo:target];
+        return;
+    }
+    if (_loop.active() && !_loop.contains(target)) [self endLoop];
+    [self seekTo:target];
 }
 
 // Where the 16-beat phrases (and new grids) start, for a loop to catch

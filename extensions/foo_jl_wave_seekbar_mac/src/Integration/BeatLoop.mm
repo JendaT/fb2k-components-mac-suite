@@ -11,9 +11,11 @@
 #import <Foundation/Foundation.h>
 
 #include "../fb2k_sdk.h"
+#include "../Core/ConfigHelper.h"
 #include "BeatLoop.h"
 
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -48,6 +50,7 @@ struct Bridge {
 };
 
 std::atomic<int> g_instances{ 0 };
+std::atomic<bool> g_responsive{ false };
 
 class dsp_beat_loop : public dsp_impl_base {
 public:
@@ -59,6 +62,7 @@ public:
 
     bool on_chunk(audio_chunk *chunk, abort_callback &) override {
         takeRequests();
+        m_engine.setResponsive(g_responsive.load(std::memory_order_relaxed));
         // A gapless change to another track: its frame 0 is here
         dsp_track_t file;
         get_cur_file(file);
@@ -147,6 +151,7 @@ private:
         beatloop::Status &s = b.status;
         s.epoch = m_engine.epoch();
         s.synced = m_engine.synced();
+        s.startTime = m_engine.startTime();
         s.pristine = m_engine.pristine();
         s.live = m_engine.live();
         s.looping = m_engine.looping();
@@ -261,6 +266,7 @@ void releaseClock() {
 }
 
 void setLowLatency(bool on) {
+    g_responsive.store(on, std::memory_order_relaxed);
     if (!on) {
         g_liveEdit.release();
         return;
@@ -276,6 +282,34 @@ void setLowLatency(bool on) {
         }
     } catch (...) {
         g_liveEditMissing = true;
+    }
+}
+
+void applyMixerBuffer(bool mixerOn, int mixerMs) {
+    using namespace waveform_config;
+    try {
+        output_manager_v2::ptr manager;
+        if (!output_manager_v2::tryGet(manager)) return;
+        outputCoreConfig_t config = manager->getCoreConfig();
+        const int64_t saved = getConfigInt(kKeyMixerSavedBufferMs, 0);
+        if (mixerOn && mixerMs > 0) {
+            const double want = mixerMs / 1000.0;
+            if (std::fabs(config.m_buffer_length - want) < 0.0005) return;
+            const int64_t own = saved > 0 ? saved : std::llround(config.m_buffer_length * 1000.0);
+            if (saved <= 0) setConfigInt(kKeyMixerSavedBufferMs, own);
+            config.m_buffer_length = want;
+            manager->setCoreConfig(config);
+            FB2K_console_formatter() << "[WaveSeek] Mixer: output buffer " << mixerMs << " ms while the mixer is on (yours, "
+                                     << own << " ms, comes back when it goes off)";
+        } else if (saved > 0) {
+            setConfigInt(kKeyMixerSavedBufferMs, 0);
+            if (std::fabs(config.m_buffer_length - saved / 1000.0) < 0.0005) return;
+            config.m_buffer_length = saved / 1000.0;
+            manager->setCoreConfig(config);
+            FB2K_console_formatter() << "[WaveSeek] Mixer off: output buffer back to " << saved << " ms";
+        }
+    } catch (const std::exception &e) {
+        FB2K_console_formatter() << "[WaveSeek] Mixer output buffer: " << e.what();
     }
 }
 

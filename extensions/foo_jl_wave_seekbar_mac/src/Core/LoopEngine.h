@@ -96,13 +96,16 @@ public:
 
     static constexpr double kHistorySeconds = 40.0;
     static constexpr double kFadeSeconds = 0.005;
-    // Output per block of decoded audio while looping: the delay before a
-    // request is heard, and how fast the decoder runs ahead (a block per
-    // quantum). Slower once far ahead; past kMaxAheadSeconds the loop ends.
-    static constexpr double kQuantumSeconds = 0.25;
-    static constexpr double kSlowQuantumSeconds = 1.0;
-    static constexpr double kSlowAfterSeconds = 120.0;
-    static constexpr double kMaxAheadSeconds = 180.0;
+    // Output per block of decoded audio while looping: it adds to the delay
+    // before a request is heard, and sets how fast the decoder runs ahead (a
+    // block per quantum). Short while a change may come (responsive: the
+    // decoder then runs about as fast as it plays), long otherwise; past
+    // kMaxAheadSeconds of decoded audio waiting the loop ends.
+    static constexpr double kResponsiveQuantumSeconds = 0.03;
+    static constexpr double kIdleQuantumSeconds = 1.0;
+    static constexpr double kMaxAheadSeconds = 300.0;
+
+    void setResponsive(bool on) { responsive_ = on; }
 
     // Crossfade length at a splice; 0 splices hard (the tests)
     void setFadeSeconds(double seconds) { fadeSeconds_ = std::max(0.0, seconds); }
@@ -209,7 +212,7 @@ public:
         if (looping_) {
             const double ahead = aheadSeconds();
             if (ahead > kMaxAheadSeconds) exitLoop();
-            else want = std::max(frames, framesFor(ahead < kSlowAfterSeconds ? kQuantumSeconds : kSlowQuantumSeconds));
+            else want = std::max(frames, framesFor(responsive_ ? kResponsiveQuantumSeconds : kIdleQuantumSeconds));
         }
         emit(want, out);
         trim();
@@ -226,6 +229,7 @@ public:
     uint64_t version() const { return version_; }
     uint64_t epoch() const { return epoch_; }
     bool synced() const { return synced_; }
+    double startTime() const { return t0_; }        // the track time of the first frame after the seek
     bool pristine() const { return pristine_; }     // nothing changed since the seek: the output is the input
     bool live() const { return live_; }
     bool looping() const { return looping_; }
@@ -511,6 +515,7 @@ private:
     double t0_ = 0.0;               // track time of frame 0
     bool live_ = true;
     bool pristine_ = true;
+    bool responsive_ = false;
     bool looping_ = false;
     bool loopPending_ = false;      // looping, but not yet in the loop
     bool inLoopSegment_ = false;    // the timeline's last segment is the loop's

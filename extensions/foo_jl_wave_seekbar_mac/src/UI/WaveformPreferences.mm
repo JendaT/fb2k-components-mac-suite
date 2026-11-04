@@ -80,6 +80,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_phraseColoursCheckbox;
     NSButton *_phraseFollowCheckbox;
     NSPopUpButton *_controlsPopup;
+    NSPopUpButton *_mixerBufferPopup;
     NSButton *_lockRelativeCheckbox;
     NSPopUpButton *_zoomFollowPopup;
     BOOL _haveBeatGrids;                        // BPM Analyzer installed
@@ -374,6 +375,23 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     }
     [self addHint:@"Also on the cog at the bottom right. The mixer needs BPM Analyzer; analytics shows the readout "
                    "and summary below." x:x y:&y width:w lines:2];
+    y += kRowGap - 4;
+    [self addSmallLabel:@"Output buffer with the mixer" frame:NSMakeRect(x + kHintIndent, y + 4, 170, 15)];
+    _mixerBufferPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x + kHintIndent + 170, y, w - kHintIndent - 170, 24)
+                                                   pullsDown:NO];
+    _mixerBufferPopup.controlSize = NSControlSizeSmall;
+    _mixerBufferPopup.font = [NSFont systemFontOfSize:11];
+    for (int ms : waveform_config::kMixerOutputBufferChoices) {
+        [_mixerBufferPopup addItemWithTitle:ms ? [NSString stringWithFormat:@"%d ms", ms] : @"Unchanged"];
+        _mixerBufferPopup.lastItem.tag = ms;
+    }
+    _mixerBufferPopup.target = self;
+    _mixerBufferPopup.action = @selector(mixerBufferChanged:);
+    [_page addSubview:_mixerBufferPopup];
+    y += 28;
+    [self addHint:@"foobar2000's output buffer delays every loop and jump change. While the mixer is on it is set to "
+                   "this; yours comes back after (playback restarts once)." x:x + kHintIndent y:&y
+            width:w - kHintIndent lines:2];
     y += kRowGap;
 
     _readoutCheckbox = [self addCheckbox:@"Readout on hover"
@@ -656,6 +674,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _zoomFollowPopup.enabled = _zoomCheckbox.state == NSControlStateValueOn;
     [_controlsPopup selectItemWithTag:std::clamp<int64_t>(getConfigInt(kKeyControlsMode, kDefaultControlsMode),
                                                           ControlsNone, ControlsAnalytics)];
+    if (![_mixerBufferPopup selectItemWithTag:getConfigInt(kKeyMixerOutputBufferMs, kDefaultMixerOutputBufferMs)]) {
+        [_mixerBufferPopup selectItemWithTag:kDefaultMixerOutputBufferMs];
+    }
 
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
@@ -779,6 +800,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)controlsModeChanged:(id)sender {
     waveform_config::setConfigInt(waveform_config::kKeyControlsMode, _controlsPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)mixerBufferChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyMixerOutputBufferMs, _mixerBufferPopup.selectedTag);
     [self notifySettingsChanged];
 }
 

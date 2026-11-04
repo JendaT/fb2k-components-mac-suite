@@ -30,6 +30,7 @@ constexpr double kArmTimeout = 2.0;
 struct Status {
     uint64_t epoch = 0;         // counts the DSP's seeks
     bool synced = false;        // it knows the track time of what it plays
+    double startTime = 0.0;     // when synced: the track time of the first frame after the seek
     bool pristine = true;       // nothing changed since the seek
     bool live = true;           // passing the audio through
     bool looping = false;
@@ -65,7 +66,14 @@ double playedSinceSeek();
 void releaseClock();
 
 // While the user may change the loop: asks foobar2000 to keep its output
-// latency low (foobar2000 2.25 and later), so a change is heard sooner
+// latency low (foobar2000 2.25 and later), and the DSP sends short steps
+// (the decoder then runs ahead about as fast as it plays)
 void setLowLatency(bool on);
+
+// foobar2000's output buffer is what delays every change. While the mixer
+// is on it is set to `mixerMs` (0: left alone); the user's own is kept and
+// put back when the mixer goes off (also at the next launch, if foobar2000
+// quit in between). Changing it restarts playback once.
+void applyMixerBuffer(bool mixerOn, int mixerMs);
 
 } // namespace beatloop

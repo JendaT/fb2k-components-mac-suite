@@ -105,9 +105,9 @@ public:
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
     [self applyLockedSize];   // following the screen switched on or off
-    // The mixer's gapless loop needs its DSP in the playback chain
-    beatloop::setInChain(waveform_config::getConfigInt(waveform_config::kKeyControlsMode,
-                                                       waveform_config::kDefaultControlsMode) == waveform_config::ControlsMixer);
+    // The mixer's gapless loop needs its DSP in the playback chain, and a
+    // short output buffer for changes to be heard at once
+    [self applyMixerAudio];
     // Phrase markers or beat-synced animation switched on or off
     if (![self wantsBeatGrid]) [self dropPhraseGrid];
     else if (!_phraseGrid) [self fetchPhraseGrid];
@@ -222,7 +222,7 @@ public:
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
                                                  name:NSApplicationDidChangeScreenParametersNotification object:nil];
 
-    beatloop::setInChain(getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer);
+    [self applyMixerAudio];
 
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
@@ -646,6 +646,15 @@ static const int kAnalysisMaxRetries = 1;
     } @catch (...) {
         console::error("[WaveSeek] Failed to open preferences");
     }
+}
+
+#pragma mark - Mixer Audio
+
+- (void)applyMixerAudio {
+    using namespace waveform_config;
+    const bool mixer = getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer;
+    beatloop::setInChain(mixer);
+    beatloop::applyMixerBuffer(mixer, static_cast<int>(getConfigInt(kKeyMixerOutputBufferMs, kDefaultMixerOutputBufferMs)));
 }
 
 #pragma mark - Locked Size

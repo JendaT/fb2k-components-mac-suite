@@ -263,12 +263,12 @@ void testExit() {
     Playing p;
     p.e.act(loop(1, 4.0, 4.5, 4.0));
     const size_t start = p.out.frames.size();
-    runUntil(p.e, p.d, p.out, start + 1200);   // 200 into the third pass
+    runUntil(p.e, p.d, p.out, start + 1200);
     const size_t at = p.out.frames.size();
-    const size_t phase = (at - start) % 500;
+    const double from = std::round(p.e.playingFrom() * kRate);   // where the next frame comes from
     CHECK(p.e.act(action(LoopAction::Exit, 2)), "left");
     runUntil(p.e, p.d, p.out, at + 8000);
-    CHECK(straight(p.out, at, at + 8000, 4000.0 + static_cast<double>(phase)),
+    CHECK(straight(p.out, at, at + 8000, from),
           "plays on from where it was, past the loop's end, without a break");
     CHECK(p.e.live() && !p.e.looping(), "caught up: passing through again");
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
@@ -345,9 +345,25 @@ void testNewTrackBehindLoop() {
     CHECK(reaches, "the new track plays from its first frame");
 }
 
+void testResponsive() {
+    TEST_CASE("responsive");
+    Playing idle, quick;
+    quick.e.setResponsive(true);
+    idle.e.act(loop(1, 4.0, 4.5, 4.0));
+    quick.e.act(loop(1, 4.0, 4.5, 4.0));
+    // One block each: idle sends a second of loop, responsive barely more than the block
+    Decoder d1{ idle.d.next }, d2{ quick.d.next };
+    Output o1, o2;
+    step(idle.e, d1, o1);
+    step(quick.e, d2, o2);
+    CHECK(o1.frames.size() >= 1000, "idle: a second of loop per block (the decoder held back)");
+    CHECK(o2.frames.size() <= 64, "responsive: about a block (a change is heard after little more)");
+}
+
 void testAheadCap() {
     TEST_CASE("the decoder far ahead");
     Playing p;
+    p.e.setResponsive(true);   // the decoder runs ahead fastest
     p.e.act(loop(1, 4.0, 4.5, 4.0));
     for (int i = 0; i < 20000 && p.e.looping(); ++i) step(p.e, p.d, p.out);
     CHECK(!p.e.looping(), "past the limit the loop ends");
@@ -393,6 +409,7 @@ int main() {
     testForeignSeek();
     testNewTrackLive();
     testNewTrackBehindLoop();
+    testResponsive();
     testAheadCap();
     testEndOfStream();
     testTimelineMath();
