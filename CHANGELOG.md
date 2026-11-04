@@ -370,7 +370,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Phrase markers**: With BPM Analyzer, a line every 16 or 32 beats coloured by how well the music stays on the beat grid.
 - **Follow tempo changes**: Phrase markers and beat-synced effects move to a new grid where the tempo changes or the track is edited.
 - **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
-- **Beat jumps and loops**: With BPM Analyzer, hover controls jump 1-32 beats and loop 1-32 beats on the beat grid; clicks near a beat play from it.
+- **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
+- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid; clicks near a beat play from it.
+- **Gapless loops**: A "Beat loop" DSP repeats the loop sample for sample and leaves it without a break.
+- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
+- **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
 
 #### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.

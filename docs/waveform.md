@@ -19,6 +19,12 @@ Click anywhere on the waveform to seek to that position. The playback cursor car
 
 Pinch on the trackpad, or scroll vertically with the mouse wheel or trackpad, to zoom in on the part under the pointer; scroll horizontally (or hold Shift with a wheel) to pan. Clicking seeks within the zoomed part. **Reset zoom** at the bottom right returns to the whole track, and each new track starts unzoomed.
 
+Zoomed in, the view can follow the playback cursor (Preferences > Zoom, or the cog at the bottom right):
+
+- **Don't follow the cursor** (default): the view stays where you put it.
+- **Follow the cursor**: once the cursor is in view and reaches its spot, the waveform moves under it and the cursor stays there. Panning, zooming or a click with the cursor in view sets that spot. While the cursor is out of view the view stays.
+- **Keep the cursor centred**: the cursor stays in the middle; at the track's start and end the view shows empty space beyond it, the only mode that does. Panning does nothing, zooming zooms about the cursor.
+
 Zoom can be switched off in Preferences > Zoom. **Fine detail for deep zoom** (off by default) keeps 7-8x finer detail per track, more for long mixes, so zooming goes that much deeper; it is gathered in the same analysis pass. It costs about 1 MB of cache per track (up to 5 MB for long mixes), and fine detail is the first thing dropped when the cache is over its size limit. Tracks analysed before the option was on are analysed again in the background when played; for a stream that means downloading it once more, since its audio is not kept on disk.
 
 ### Styles
@@ -35,9 +41,17 @@ Zoom can be switched off in Preferences > Zoom. **Fine detail for deep zoom** (o
 
 Every style can show **Stereo** (L and R apart) or **Mono** (both mixed into one). **Split** draws L above and R below one centre line, each at twice the height of a Stereo lane: Layered and Classic up to each channel's peak, Simple with each channel's larger excursion and its core.
 
+### Controls (the cog)
+
+Hovering the waveform shows a cog at the bottom right. Its menu picks the controls (also in Preferences > Overlays, "Controls on hover") and the zoom's follow mode:
+
+- **No controls** (default): only the cog; clicks seek.
+- **Mixer**: beat jumps and loops (below); needs BPM Analyzer.
+- **Analytics**: the hover readout and the loudness summary, as their preferences set them.
+
 ### Loudness Analysis
 
-Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 3342 loudness range, 4x oversampled true peak, PLR, clip runs, per-moment short-term loudness, correlation and Lo/Mid/Hi energy.
+Each track is analysed once and cached: BS.1770-4 integrated loudness, EBU Tech 3342 loudness range, 4x oversampled true peak, PLR, clip runs, per-moment short-term loudness, correlation and Lo/Mid/Hi energy. The readout and the summary show with the **Analytics** controls.
 
 - **Readout on hover**: time, LUFS-S, peak, crest, correlation and band split under the mouse; next to the mouse, top right, or bottom right above the summary
 - **Loudness summary**: `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips` (off, on hover or always)
@@ -50,7 +64,7 @@ With [BPM Analyzer](bpm.md) installed (it finds each track's beat grid), a hairl
 | Marker | Meaning |
 |--------|---------|
 | Quiet line | Locked: the beats sit on the grid (within 10 ms) |
-| Amber line + bottom tick | Drifting: 10-25 ms off, or fewer beats on the grid |
+| Amber line + bottom tick | Drifting: 10-25 ms off, or fewer of the beats heard on the grid (a beat the music leaves out, as in a sparse build-up, does not count against it) |
 | Red line + bottom tick | Broken: the music has left the grid here |
 | Dashed, dim | No pulse: no beat to judge by (intro, breakdown) |
 | Triangle on the top edge | A new grid begins: a tempo change or an edit |
@@ -61,18 +75,19 @@ With [BPM Analyzer](bpm.md) installed (it finds each track's beat grid), a hairl
 
 ### Beat Jumps and Loops
 
-With **Beat jumps and loops** on (Preferences, under Phrase markers; needs BPM Analyzer), hovering the waveform shows a metronome button at the bottom right. Clicking it turns the controls on (the button stays lit, and the setting is kept):
+With the **Mixer** controls (the cog; needs BPM Analyzer), the bottom bar shows on hover:
 
 | Control | Does |
 |---------|------|
 | `‹32` `‹16` / `16›` `32›` | Jump 16 or 32 beats back or on |
-| `‹` `4▾` `›` | Jump the chosen number of beats (1, 2, 4 or 8) back or on |
-| `Loop` `8▾` | Loop the chosen number of beats (1 to 32) from the beat behind the cursor; click again to stop |
+| `‹` `4▾` `›` | Jump the chosen size back or on; the menu sets the size (1 to 32 beats) for these and the loop |
+| `Loop` | Loop that many beats from the beat behind the cursor; click again to stop |
 
 - Jumps keep the playback position's place within its beat, count beats on the grid that holds there (following a new grid when Follow tempo changes is on), stop at the start going back and do nothing when they would reach the end.
-- A loop starts playing from its first beat and is drawn in green. While it plays, jumps move the whole loop, a new length keeps its start, and a click outside it (or a seek from elsewhere) ends it. A new track ends it too.
-- While the controls are on, a click within 6 points of a beat plays from that beat.
-- The loop restarts by seeking, so depending on the output there may be a short gap at the loop point. It keeps running while the seekbar is out of sight, but not while its layout is closed.
+- A loop starts playing from its first beat and is drawn in green. While it plays, jumps move the whole loop, a new size keeps its start, and a click outside it (or a seek from elsewhere) ends it. A new track ends it too.
+- A click within 6 points of a beat plays from that beat.
+- **Without a gap**: choosing the Mixer adds a "Beat loop (Waveform Seekbar)" DSP first in the playback chain (Preferences > Playback > DSP; leaving the Mixer removes it). The seek to the loop's start binds the loop to it: the first pass plays while it is recorded, then the recording repeats sample for sample. Stopping the loop finishes the pass and plays on from its end without a break; a longer size grows the loop from the audio that follows. While the loop repeats, foobar2000's own time display stands still near the loop's end; the seekbar's cursor follows the passes.
+- A loop that the DSP has not taken (it is not in the chain, or playback has not reached it yet) loops by seeking, with a short gap at each start, until its next start binds it. After a jump moves the loop or a click lands inside it, the first pass loops by seeking again.
 
 ### Scales
 
@@ -128,6 +143,8 @@ Waveform data is cached at:
 ```
 
 ## Layout Editor
+
+Right-click the seekbar for **Lock Width** and **Lock Height**. With **Locked size follows the screen** (Preferences > Appearance, on by default) a locked size is kept as a share of the screen, so it stays in proportion when the window moves to another display or the resolution changes; off keeps it in points.
 
 Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `waveform-seekbar` (recommended)

@@ -15,7 +15,15 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Install BPM Analyzer**: Without BPM Analyzer (or with one too old), the phrase marker settings offer to install it: the newest release is downloaded from GitHub, checked against its SHA-256 checksum and installed; after the restart the markers are switched on and the preferences reopen.
 
-- **Beat jumps and loops**: With BPM Analyzer, a button at the bottom right on hover turns on beat controls: jump 16, 32 or 1-8 beats back or on (keeping the place in the beat), loop 1-32 beats from the beat behind the cursor (drawn in green; jumps move it), and clicks near a beat play from the beat. Off by default.
+- **Bottom bar controls**: A cog at the bottom right on hover picks no controls (default), the mixer, or analytics (the readout and loudness summary, now shown only there); also in Preferences > Overlays.
+
+- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (drawn in green; jumps move it), and clicks near a beat play from the beat.
+
+- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; a loop's passes repeat sample for sample, and stopping it plays on without a break.
+
+- **Following the cursor**: Zoomed in, the view can follow the cursor at a spot you set by panning, or keep it centred (the only mode showing space beyond the track's ends); in the cog's menu and Preferences > Zoom.
+
+- **Locked size follows the screen**: Lock Width and Lock Height keep their share of the screen on another display or resolution (on by default).
 
 ### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
@@ -28,6 +36,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
 
 ### Technical
+- `LoopEngine.h`: the gapless loop's audio side (record, repeat, hold the decoded audio, leave without a break) and the timeline that maps output frames to track time, unit-tested with frame-numbered audio. `ZoomRange` gains following and centring on whole pixels; while following, masks cover a view's width more on each side and draw at whole-pixel offsets.
 - `BeatJump.h`: the grid's beats (master or section by section), beat numbers, jumps, loops and the loop's step at each position check, unit-tested.
 - `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.
 - Mask shapes (`MaskPaths.h`) filled in runs of 32 columns, edges and Classic strokes stroked in runs; unit-tested against the exact pixel coverage.
