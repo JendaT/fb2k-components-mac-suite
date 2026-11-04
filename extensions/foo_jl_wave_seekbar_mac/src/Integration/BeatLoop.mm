@@ -99,7 +99,8 @@ public:
         publishIfChanged(true);
     }
 
-    double get_latency() override { return m_engine.heldSeconds(); }
+    // May be asked from another thread: the held audio as of the last block
+    double get_latency() override { return m_latency.load(std::memory_order_relaxed); }
     bool need_track_change_mark() override { return false; }
 
 private:
@@ -128,6 +129,7 @@ private:
 
     // The status for the view, when something it reads changed
     void publishIfChanged(bool force = false) {
+        m_latency.store(m_engine.heldSeconds(), std::memory_order_relaxed);
         const bool looping = m_engine.phase() == Engine::Recording || m_engine.phase() == Engine::Repeating;
         const size_t segments = m_engine.timeline().size();
         if (!force && m_engine.boundId() == m_publishedId && looping == m_publishedLooping &&
@@ -150,6 +152,7 @@ private:
     }
 
     Engine m_engine;
+    std::atomic<double> m_latency{ 0.0 };
     uint64_t m_lengthSerial = 0;
     bool m_exitTaken = false;
     uint64_t m_publishedId = 0;
