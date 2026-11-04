@@ -89,7 +89,7 @@ namespace detail {
 // every barSeconds, phrases from firstBar, none starting at or after `end`
 inline void gridPhrases(std::vector<PhraseMarker> &out, const jl_bar_stat *bars, long count, double barsFrom,
                         double barSeconds, long firstBar, int barsPerPhrase, double end, size_t section, double bpm,
-                        const std::vector<jl_beat_region> *regions) {
+                        uint8_t source, const std::vector<jl_beat_region> *regions) {
     long phrase = 0;
     for (long start = firstBar; start < count; start += barsPerPhrase, ++phrase) {
         const double seconds = barsFrom + static_cast<double>(start) * barSeconds;
@@ -101,7 +101,7 @@ inline void gridPhrases(std::vector<PhraseMarker> &out, const jl_bar_stat *bars,
         m.section = section;
         m.seconds = seconds;
         m.bpm = bpm;
-        m.state = jl_classify_phrase(bars + start, static_cast<size_t>(n));
+        m.state = jl_classify_phrase(bars + start, static_cast<size_t>(n), source);
 
         std::vector<int> offsets;
         for (long b = start; b < start + n; ++b) offsets.push_back(bars[b].offset_ms);
@@ -156,7 +156,7 @@ inline std::vector<PhraseMarker> phraseMarkers(const PhraseGrid &grid, int phras
             detail::gridPhrases(out, grid.sectionBars.data() + s.first_bar, static_cast<long>(s.bar_count),
                                 jl_section_beat_time(s, jl_section_first_bar_beat(s)), 4 * 60.0 / s.bpm,
                                 firstPhraseBar(s.phrase_phase_bars, s.phrase_confidence, barsPerPhrase),
-                                barsPerPhrase, end, k, s.bpm, nullptr);
+                                barsPerPhrase, end, k, s.bpm, grid.summary.source, nullptr);
         }
         return out;
     }
@@ -164,7 +164,8 @@ inline std::vector<PhraseMarker> phraseMarkers(const PhraseGrid &grid, int phras
     if (!(bpm > 0.0) || grid.bars.empty()) return out;
     detail::gridPhrases(out, grid.bars.data(), static_cast<long>(grid.bars.size()),
                         jl_beat_time(grid.summary, jl_first_bar_beat(grid.summary)), 4 * 60.0 / bpm,
-                        firstPhraseBar(grid.summary, barsPerPhrase), barsPerPhrase, never, 0, bpm, &grid.regions);
+                        firstPhraseBar(grid.summary, barsPerPhrase), barsPerPhrase, never, 0, bpm, grid.summary.source,
+                        &grid.regions);
     return out;
 }
 

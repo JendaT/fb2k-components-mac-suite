@@ -184,7 +184,26 @@ void testSections() {
     CHECK(skipped.size() == 4, "only the section whose bars are there");
 }
 
+// A sparse build-up: two of four grid beats played in every bar, both on
+// the grid. A Beat This! grid counts only the beats it heard, a classic
+// grid looks for all four.
+void testSparseBeats() {
+    TEST_CASE("sparse beats");
+    PhraseGrid g = lockedGrid(8);
+    for (jl_bar_stat &b : g.bars) b = jl_bar_stat{ 1, 2, static_cast<uint8_t>(2 * jl_pulse_unit / 4), 0 };
+    g.summary.source = jl_beatgrid_source_beat_this;
+    CHECK(phraseMarkers(g, 32)[0].state == jl_phrase_locked, "Beat This!: every beat heard is on the grid");
+    g.summary.source = jl_beatgrid_source_classic;
+    CHECK(phraseMarkers(g, 32)[0].state == jl_phrase_drifting, "classic: half the grid beats missing");
+
+    // Heard but off: still not Locked
+    g.summary.source = jl_beatgrid_source_beat_this;
+    for (jl_bar_stat &b : g.bars) b = jl_bar_stat{ 1, 1, static_cast<uint8_t>(3 * jl_pulse_unit / 4), 0 };
+    CHECK(phraseMarkers(g, 32)[0].state == jl_phrase_broken, "one of three heard beats matched");
+}
+
 int main() {
+    testSparseBeats();
     testPositions();
     testStates();
     testPhrasePhase();
