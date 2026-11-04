@@ -420,9 +420,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     JLDependencyManager *bpm = waveseekBpmDependency();
     if ([bpm needsGate]) {
         y -= kRowGap - 2;
-        const CGFloat height = [JLDependencyGate preferredHeight];
         JLDependencyGate *gate = [[JLDependencyGate alloc]
-            initWithFrame:NSMakeRect(x + kHintIndent, y, w - kHintIndent, height) manager:bpm];
+            initWithFrame:NSMakeRect(x + kHintIndent, y, w - kHintIndent, 62) manager:bpm];
+        const CGFloat height = gate.preferredHeight;
+        [gate setFrameSize:NSMakeSize(w - kHintIndent, height)];
         [_page addSubview:gate];
         y += height + kRowGap;
     }
