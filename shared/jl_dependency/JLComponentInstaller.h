@@ -40,7 +40,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *assetName;        // "foo_jl_bpm.fb2k-component"
 @property (nonatomic, copy) NSString *minVersion;       // the oldest version the dependent works with
 @property (nonatomic, copy) NSString *repository;       // "JendaT/fb2k-components-mac-suite"
-@property (nonatomic, copy) NSString *featureName;      // "Phrase markers"
 @property (nonatomic, copy) NSString *dependentName;    // "Waveform Seekbar"
 - (NSString *)releasesPageURL;
 @end

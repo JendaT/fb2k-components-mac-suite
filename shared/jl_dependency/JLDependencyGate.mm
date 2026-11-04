@@ -108,16 +108,16 @@ NSString *userComponentsFolder() {
     NSString *holder = _working ? nil : [[self installer] lockHolder];
     _state = gateState(available, parseVersion(utf8(onDisk)), parseVersion(utf8(d.minVersion)), _working,
                        _failedMessage != nil, holder != nil);
-    NSString *feature = d.featureName.lowercaseString;
+    // Subject-free: the gate sits under the settings that need the component
     switch (_state) {
         case GateState::Available:
             _message = _installedNote ?: @"";
             break;
         case GateState::Missing:
-            _message = [NSString stringWithFormat:@"%@ need %@, a free component from the same suite.", d.featureName, d.displayName];
+            _message = [NSString stringWithFormat:@"Needs %@, a free component from the same suite.", d.displayName];
             break;
         case GateState::TooOld:
-            _message = [NSString stringWithFormat:@"%@ %@ is installed; %@ need %@ or later.", d.displayName, onDisk, feature, d.minVersion];
+            _message = [NSString stringWithFormat:@"%@ %@ is installed; this needs %@ or later.", d.displayName, onDisk, d.minVersion];
             break;
         case GateState::RestartPending:
             _message = [NSString stringWithFormat:@"%@ %@ is installed. Restart foobar2000 to load it.", d.displayName, onDisk];
