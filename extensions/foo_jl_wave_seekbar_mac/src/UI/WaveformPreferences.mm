@@ -79,6 +79,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSPopUpButton *_phraseLengthPopup;
     NSButton *_phraseColoursCheckbox;
     NSButton *_phraseFollowCheckbox;
+    NSButton *_beatControlsCheckbox;
     BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
     // Scales
@@ -416,6 +417,11 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
                                                "markers move to it and count phrases from there. Off "
                                                "keeps them on the track's main grid."
                                             x:x + kHintIndent y:&y width:w - kHintIndent];
+    _beatControlsCheckbox = [self addCheckbox:@"Beat jumps and loops"
+                                         hint:@"On hover, a button at the bottom right turns on beat jump and "
+                                               "loop controls. While they are on, a click near a beat plays "
+                                               "from that beat."
+                                            x:x y:&y width:w];
     // Missing, too old or just installed: the gate says so and installs it
     JLDependencyManager *bpm = waveseekBpmDependency();
     if ([bpm needsGate]) {
@@ -602,6 +608,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [_phraseLengthPopup selectItemWithTag:getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32];
     _phraseColoursCheckbox.state = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours) ? NSControlStateValueOn : NSControlStateValueOff;
     _phraseFollowCheckbox.state = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid) ? NSControlStateValueOn : NSControlStateValueOff;
+    _beatControlsCheckbox.state = getConfigBool(kKeyBeatControls, kDefaultBeatControls) ? NSControlStateValueOn : NSControlStateValueOff;
     [self updatePhraseControls];
     _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
     _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
@@ -766,6 +773,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyPhraseBreakColours, _phraseColoursCheckbox.state == NSControlStateValueOn);
     } else if (sender == _phraseFollowCheckbox) {
         setConfigBool(kKeyPhraseFollowGrid, _phraseFollowCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _beatControlsCheckbox) {
+        setConfigBool(kKeyBeatControls, _beatControlsCheckbox.state == NSControlStateValueOn);
+        [self updatePhraseControls];
     }
     [self notifySettingsChanged];
 }
@@ -818,13 +828,16 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 }
 
 // Without BPM Analyzer the group is greyed out; the length and colours
-// follow the main switch
+// follow the markers' switch, following a new grid either switch (the beat
+// controls jump on the same grid)
 - (void)updatePhraseControls {
     _phraseMarkersCheckbox.enabled = _haveBeatGrids;
+    _beatControlsCheckbox.enabled = _haveBeatGrids;
     const BOOL on = _haveBeatGrids && _phraseMarkersCheckbox.state == NSControlStateValueOn;
+    const BOOL beats = _haveBeatGrids && _beatControlsCheckbox.state == NSControlStateValueOn;
     _phraseLengthPopup.enabled = on;
     _phraseColoursCheckbox.enabled = on;
-    _phraseFollowCheckbox.enabled = on;
+    _phraseFollowCheckbox.enabled = on || beats;
 }
 
 - (void)phraseLengthChanged:(id)sender {

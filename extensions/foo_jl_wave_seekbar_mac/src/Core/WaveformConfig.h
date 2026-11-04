@@ -158,6 +158,7 @@ constexpr bool kDefaultPhraseMarkers = false;   // off until validated against a
 constexpr int kDefaultPhraseLength = 32;
 constexpr bool kDefaultPhraseBreakColours = true;
 constexpr bool kDefaultPhraseFollowGrid = true;
+constexpr bool kDefaultBeatControls = false;    // with phrase markers, until beat grids are validated
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

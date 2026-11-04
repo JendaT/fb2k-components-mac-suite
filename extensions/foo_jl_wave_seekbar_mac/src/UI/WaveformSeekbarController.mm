@@ -115,11 +115,12 @@ public:
 
 #pragma mark - Beat Grid
 
-// The grid is wanted for phrase markers, and for animated cursor effects
-// synced to the beat
+// The grid is wanted for phrase markers, beat jumps and loops, and for
+// animated cursor effects synced to the beat
 - (BOOL)wantsBeatGrid {
     using namespace waveform_config;
     if (getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) return YES;
+    if (getConfigBool(kKeyBeatControls, kDefaultBeatControls)) return YES;
     if (!getConfigBool(kKeyBpmSync, kDefaultBpmSync) || !getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion)) {
         return NO;
     }
@@ -507,13 +508,18 @@ static const int kAnalysisMaxRetries = 1;
 - (void)updatePosition:(NSTimer *)timer {
     @autoreleasepool {
         if (_isPaused) return;
-        if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
-        JLPixelSnapContent(self.view, self.waveformView);
+        // On whole device pixels while in sight (a beat loop below runs either way)
+        if (self.view.window && !self.view.isHiddenOrHasHiddenAncestor) {
+            JLPixelSnapContent(self.view, self.waveformView);
+        }
 
         try {
             auto pc = playback_control::get();
             if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
                 double position = pc->playback_get_position();
+                // A beat loop keeps going while the view is out of sight
+                [self.waveformView followLoopAt:position];
+                if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
@@ -567,6 +573,15 @@ static const int kAnalysisMaxRetries = 1;
     } catch (...) {
         console::error("[WaveSeek] Unknown seek error");
     }
+}
+
+- (double)waveformSeekbarViewPlaybackTime:(WaveformSeekbarView *)view {
+    try {
+        auto pc = playback_control::get();
+        if (pc.is_valid() && pc->is_playing()) return pc->playback_get_position();
+    } catch (...) {
+    }
+    return NAN;
 }
 
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point {

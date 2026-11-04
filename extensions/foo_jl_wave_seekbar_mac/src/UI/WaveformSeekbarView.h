@@ -28,6 +28,8 @@ typedef struct WaveformDetail WaveformDetail;
 @optional
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point;
 - (void)waveformSeekbarView:(WaveformSeekbarView *)view requestsSeekToTime:(double)time;
+// The playback position in seconds, read now (beat jumps and loops start from it)
+- (double)waveformSeekbarViewPlaybackTime:(WaveformSeekbarView *)view;
 @end
 
 typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
@@ -74,6 +76,10 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 @property (nonatomic, nullable, assign) const WaveformDetail *waveformDetail;
 // The track's beat grid from BPM Analyzer, for phrase markers (not owned)
 @property (nonatomic, nullable, assign) const waveseek::PhraseGrid *phraseGrid;
+
+// A beat loop, if one is on: called with the playback position at every
+// position check while playing; seeks back to the loop's start on time
+- (void)followLoopAt:(double)seconds;
 
 // Actions
 - (void)clearWaveform;

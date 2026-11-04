@@ -59,6 +59,21 @@ With [BPM Analyzer](bpm.md) installed (it finds each track's beat grid), a hairl
 - Hovering a marker adds a line to the readout (`Phrase 12 · bar 45 · +18 ms`, `New grid · 141.64 BPM`); the summary shows the grid tempo and the share of Locked phrases. Markers thin out (every 64, 128 beats...) where they would crowd, and say so in the readout.
 - Without BPM Analyzer (or with one older than 0.1.0) the settings are greyed out and offer **Install BPM Analyzer...**: it looks up the newest BPM Analyzer release on GitHub, shows its version, size and where it will go, and on confirmation downloads it, checks it against the release's SHA-256 checksum, installs it to `user-components/foo_jl_bpm` and offers a restart. After the restart the phrase markers are switched on and the preferences reopen. Nothing is downloaded without the click.
 
+### Beat Jumps and Loops
+
+With **Beat jumps and loops** on (Preferences, under Phrase markers; needs BPM Analyzer), hovering the waveform shows a metronome button at the bottom right. Clicking it turns the controls on (the button stays lit, and the setting is kept):
+
+| Control | Does |
+|---------|------|
+| `‹32` `‹16` / `16›` `32›` | Jump 16 or 32 beats back or on |
+| `‹` `4▾` `›` | Jump the chosen number of beats (1, 2, 4 or 8) back or on |
+| `Loop` `8▾` | Loop the chosen number of beats (1 to 32) from the beat behind the cursor; click again to stop |
+
+- Jumps keep the playback position's place within its beat, count beats on the grid that holds there (following a new grid when Follow tempo changes is on), stop at the start going back and do nothing when they would reach the end.
+- A loop starts playing from its first beat and is drawn in green. While it plays, jumps move the whole loop, a new length keeps its start, and a click outside it (or a seek from elsewhere) ends it. A new track ends it too.
+- While the controls are on, a click within 6 points of a beat plays from that beat.
+- The loop restarts by seeking, so depending on the output there may be a short gap at the loop point. It keeps running while the seekbar is out of sight, but not while its layout is closed.
+
 ### Scales
 
 Optional time ruler under the waveform and a dB gutter on the right.

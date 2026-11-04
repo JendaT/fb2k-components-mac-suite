@@ -15,6 +15,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Install BPM Analyzer**: Without BPM Analyzer (or with one too old), the phrase marker settings offer to install it: the newest release is downloaded from GitHub, checked against its SHA-256 checksum and installed; after the restart the markers are switched on and the preferences reopen.
 
+- **Beat jumps and loops**: With BPM Analyzer, a button at the bottom right on hover turns on beat controls: jump 16, 32 or 1-8 beats back or on (keeping the place in the beat), loop 1-32 beats from the beat behind the cursor (drawn in green; jumps move it), and clicks near a beat play from the beat. Off by default.
+
 ### Changed
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
 
@@ -26,6 +28,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
 
 ### Technical
+- `BeatJump.h`: the grid's beats (master or section by section), beat numbers, jumps, loops and the loop's step at each position check, unit-tested.
 - `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.
 - Mask shapes (`MaskPaths.h`) filled in runs of 32 columns, edges and Classic strokes stroked in runs; unit-tested against the exact pixel coverage.
 - A request for the track already being scanned no longer restarts the scan (second seekbar, layout change, watchdog).
