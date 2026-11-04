@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <vector>
 
 namespace waveseek {
@@ -138,12 +140,34 @@ inline BeatLoop loopFromBeat(const std::vector<double> &beats, long first, int l
     return loop;
 }
 
+// How far from a phrase start a loop's start is caught by it, in beats:
+// a loop asked for up to this many beats after the phrase start (late) ...
+inline int phraseCatchBehind(int length) { return length >= 16 ? 4 : length >= 8 ? 2 : 1; }
+// ... or up to a beat before it (early)
+constexpr int kPhraseCatchAhead = 1;
+
 // `length` beats from the beat at or behind `seconds` (one kLoopSnapAhead
-// ahead counts as behind; before the first beat, from the first)
-inline BeatLoop makeLoop(const std::vector<double> &beats, double seconds, int length, double duration) {
+// ahead counts as behind; before the first beat, from the first). Near a
+// phrase start (`phraseStarts`, seconds, the 16-beat marks) the loop starts
+// there instead: a beat or two late, or one early, the intention was the
+// phrase, the more so the longer the loop.
+inline BeatLoop makeLoop(const std::vector<double> &beats, double seconds, int length, double duration,
+                         const std::vector<double> &phraseStarts = {}) {
     if (beats.size() < 2 || !std::isfinite(seconds)) return {};
     const auto above = std::upper_bound(beats.begin(), beats.end(), seconds + kLoopSnapAhead);
-    const long first = above == beats.begin() ? 0 : static_cast<long>(above - beats.begin()) - 1;
+    long first = above == beats.begin() ? 0 : static_cast<long>(above - beats.begin()) - 1;
+    long best = first;
+    long bestDistance = std::numeric_limits<long>::max();
+    for (double p : phraseStarts) {
+        const long phrase = static_cast<long>(std::lround(beatPosition(beats, p)));
+        const long d = phrase - first;   // positive: the phrase starts after the beat behind the cursor
+        if (d < -phraseCatchBehind(length) || d > kPhraseCatchAhead || phrase < 0) continue;
+        if (std::labs(d) < bestDistance) {
+            bestDistance = std::labs(d);
+            best = phrase;
+        }
+    }
+    first = best;
     return loopFromBeat(beats, first, length, duration);
 }
 

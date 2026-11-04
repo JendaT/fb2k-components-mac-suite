@@ -367,9 +367,11 @@ struct BarSegment {
     size_t _maskViewWidth;
     long _maskOffsetPx;
     size_t _classicBuckets;
-    // Following the cursor: the spot it stays at (a fraction across), and
-    // when the zoom last changed (masks for following wait for a pause)
+    // Following the cursor: the spot it stays at (a fraction across; taken
+    // where the cursor is when it comes into view), and when the zoom last
+    // changed (masks for following wait for a pause)
     double _followSpot;
+    bool _followSpotSet;
     CFAbsoluteTime _lastZoomChange;
     bool _zoomEnabled;
 
@@ -1229,15 +1231,29 @@ struct BarSegment {
     const double pixels = [self convertSizeToBacking:[self waveformRect].size].width;
     const double grid = pixels >= 1.0 ? _zoom.span() / pixels : 0.0;
     const double position = std::clamp(_playbackPosition, 0.0, 1.0);
-    if (_followMode == waveform_config::FollowCentre) _zoom.centreOn(position, grid);
-    else _zoom.followAt(position, _followSpot, grid);
+    if (_followMode == waveform_config::FollowCentre) {
+        _zoom.centreOn(position, grid);
+        return;
+    }
+    // Held where it is while in view; where it comes into view next time
+    const double across = _zoom.acrossOf(position);
+    if (across < 0.0 || across > 1.0) {
+        _followSpotSet = false;
+        return;
+    }
+    if (!_followSpotSet) {
+        _followSpot = across;
+        _followSpotSet = true;
+    }
+    _zoom.followAt(position, _followSpot, grid);
 }
 
 // After the user moves or zooms the view: where the cursor is becomes the
 // spot it is kept at, when it is in view
 - (void)takeFollowSpot {
     const double across = _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0));
-    if (across >= 0.0 && across <= 1.0) _followSpot = across;
+    _followSpotSet = across >= 0.0 && across <= 1.0;
+    if (_followSpotSet) _followSpot = across;
 }
 
 - (void)setPlaybackPosition:(double)playbackPosition {
@@ -2501,14 +2517,25 @@ struct BarSegment {
     [self beatSeekTo:target];
 }
 
-// A loop of the chosen length from the beat behind the cursor, playing from
-// its start; or off
+// Where the 16-beat phrases (and new grids) start, for a loop to catch
+- (std::vector<double>)phraseStartTimes {
+    std::vector<double> out;
+    if (!_phraseGrid) return out;
+    for (const waveseek::PhraseMarker &m : waveseek::phraseMarkers(*_phraseGrid, 16, _phraseFollowGrid)) {
+        out.push_back(m.seconds);
+    }
+    return out;
+}
+
+// A loop of the chosen length from the beat behind the cursor (or a phrase
+// start near it), playing from its start; or off
 - (void)toggleLoop {
     if (_loop.active()) {
         [self endLoop];
         return;
     }
-    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], [self currentSeconds], _beatSize, self.trackDuration);
+    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], [self currentSeconds], _beatSize, self.trackDuration,
+                                                       [self phraseStartTimes]);
     if (!loop.active()) return;
     [self setLoop:loop];
     [self seekToLoopStart];
@@ -2625,6 +2652,11 @@ struct BarSegment {
     if (CGRectContainsPoint([self zoomButtonRectFor:[self waveformRect]], p)) {
         _seeking = NO;
         _zoom.reset();
+        // Following goes off with the zoom
+        if (_followMode != waveform_config::FollowNone) {
+            waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, waveform_config::FollowNone);
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+        }
         [self setNeedsDisplay:YES];
         return;
     }
@@ -2672,7 +2704,10 @@ struct BarSegment {
     // Following at a spot: the cursor stays where it was clicked
     if ([self following]) {
         const double clicked = _zoom.acrossOf(seekTime / self.trackDuration);
-        if (clicked >= 0.0 && clicked <= 1.0) _followSpot = clicked;
+        if (clicked >= 0.0 && clicked <= 1.0) {
+            _followSpot = clicked;
+            _followSpotSet = true;
+        }
     }
 
     // Seek via SDK - must be on main thread

@@ -71,13 +71,12 @@ struct ZoomRange {
         return moveTo(snap(position - 0.5 * span(), grid));
     }
 
-    // The cursor kept at `spot` (a fraction across) once it is in view and
-    // has got there; before that, or out of view, the view stays. Within
-    // the track's ends.
+    // The cursor kept at `spot` (a fraction across) while it is in view;
+    // out of view, the view stays. Within the track's ends.
     bool followAt(double position, double spot, double grid) {
         if (!std::isfinite(position) || !std::isfinite(spot)) return false;
         const double across = acrossOf(position);
-        if (across < 0.0 || across > 1.0 || across <= spot) return false;
+        if (across < 0.0 || across > 1.0) return false;
         const double s = std::clamp(position - spot * span(), 0.0, 1.0 - span());
         return moveTo(std::clamp(snap(s, grid), 0.0, 1.0 - span()));
     }

@@ -132,9 +132,9 @@ void testFollow() {
     ZoomRange z;
     z.zoom = 4.0;
     z.start = 0.2;      // 0.2 .. 0.45
-    CHECK(!z.followAt(0.3, 0.5, 0.0), "in view but short of the spot: the view stays");
-    CHECK(z.followAt(0.36, 0.5, 0.0), "past the spot: the view moves");
-    CHECK_NEAR(z.acrossOf(0.36), 0.5, 1e-12, "the cursor at the spot");
+    CHECK(z.followAt(0.3, 0.5, 0.0), "in view: the view moves");
+    CHECK_NEAR(z.acrossOf(0.3), 0.5, 1e-12, "the cursor at the spot");
+    CHECK(!z.followAt(0.3, 0.5, 0.0), "already there: no change");
     CHECK(!z.followAt(0.8, 0.5, 0.0), "out of view: the view stays");
     CHECK(!z.followAt(0.1, 0.5, 0.0), "out of view on the left too");
     z.start = 0.7;      // 0.7 .. 0.95

@@ -156,6 +156,22 @@ void testLoops() {
     CHECK(!movedLoop(beats, loop, 200, 60.0).active(), "moved past the end: gone");
 }
 
+void testPhraseCatch() {
+    TEST_CASE("phrase starts catch the loop");
+    const auto beats = beatTimes(grid120(), 60.0, false);
+    const std::vector<double> phrases = { 0.2, 8.2, 16.2, 24.2 };   // every 16 beats from beat 0
+    // 9.5 s is beat 18.6: two beats after the phrase at beat 16
+    CHECK_NEAR(makeLoop(beats, 9.5, 16, 60.0, phrases).start, 8.2, 1e-9, "16 beats, two late: from the phrase");
+    CHECK_NEAR(makeLoop(beats, 9.5, 8, 60.0, phrases).start, 8.2, 1e-9, "8 beats, two late: from the phrase");
+    CHECK_NEAR(makeLoop(beats, 9.5, 4, 60.0, phrases).start, 9.2, 1e-9, "4 beats, two late: the beat behind");
+    CHECK_NEAR(makeLoop(beats, 10.1, 16, 60.0, phrases).start, 8.2, 1e-9, "16 beats, four late: still the phrase");
+    CHECK_NEAR(makeLoop(beats, 10.7, 16, 60.0, phrases).start, 10.7, 1e-9, "five late: the beat behind");
+    // 7.9 s is beat 15.4: the phrase is the next beat
+    CHECK_NEAR(makeLoop(beats, 7.9, 4, 60.0, phrases).start, 8.2, 1e-9, "a beat early: from the phrase, ahead");
+    CHECK_NEAR(makeLoop(beats, 7.3, 16, 60.0, phrases).start, 7.2, 1e-9, "two early: the beat behind");
+    CHECK_NEAR(makeLoop(beats, 9.5, 16, 60.0).start, 9.2, 1e-9, "without phrase starts: the beat behind");
+}
+
 void testLoopSteps() {
     TEST_CASE("loop steps");
     const auto beats = beatTimes(grid120(), 60.0, false);
@@ -182,6 +198,7 @@ int main() {
     testJumps();
     testNearest();
     testLoops();
+    testPhraseCatch();
     testLoopSteps();
     return testsupport::summarize("BeatJumpTests");
 }
