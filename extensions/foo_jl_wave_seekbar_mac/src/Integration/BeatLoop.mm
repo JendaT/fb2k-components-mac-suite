@@ -200,6 +200,7 @@ dsp_factory_nopreset_t<dsp_beat_loop> g_beat_loop_factory;
 visualisation_stream::ptr g_clock;
 service_ptr g_liveEdit;
 bool g_liveEditMissing = false;
+bool g_quitting = false;
 
 } // namespace
 
@@ -269,6 +270,7 @@ Status status() {
 }
 
 double playedSinceSeek() {
+    if (g_quitting) return NAN;
     try {
         if (!g_clock.is_valid()) visualisation_manager::get()->create_stream(g_clock, 0);
         double seconds = 0.0;
@@ -288,7 +290,7 @@ void setLowLatency(bool on) {
         g_liveEdit.release();
         return;
     }
-    if (g_liveEdit.is_valid() || g_liveEditMissing) return;
+    if (g_liveEdit.is_valid() || g_liveEditMissing || g_quitting) return;
     try {
         dsp_config_manager_v3::ptr manager;
         if (dsp_config_manager_v3::tryGet(manager)) g_liveEdit = manager->acquire_live_edit_scope();
@@ -338,6 +340,12 @@ int outputBufferMs() {
     } catch (...) {
         return 0;
     }
+}
+
+void shutdown() {
+    g_quitting = true;
+    g_clock.release();
+    g_liveEdit.release();
 }
 
 } // namespace beatloop

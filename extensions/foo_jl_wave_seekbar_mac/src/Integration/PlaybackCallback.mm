@@ -9,6 +9,7 @@
 #import "../UI/WaveformSeekbarController.h"
 #import "../Core/WaveformService.h"
 #import "BpmDependency.h"
+#import "BeatLoop.h"
 #include <vector>
 #include <mutex>
 
@@ -171,6 +172,7 @@ public:
     }
 
     void on_quit() override {
+        beatloop::shutdown();
         getWaveformService().shutdown();
     }
 };

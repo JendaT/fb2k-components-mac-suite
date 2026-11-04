@@ -81,4 +81,9 @@ void applyMixerBuffer(bool mixerOn, int mixerMs);
 // foobar2000's output buffer setting now, ms (0 when unknown)
 int outputBufferMs();
 
+// foobar2000 is quitting: lets go of its services while they still exist
+// (one still held by a global at exit makes foobar2000 abort) and takes
+// none again
+void shutdown();
+
 } // namespace beatloop
