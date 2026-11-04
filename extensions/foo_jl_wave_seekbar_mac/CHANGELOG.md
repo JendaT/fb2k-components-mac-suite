@@ -31,7 +31,17 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Locked size follows the screen**: Lock Width and Lock Height keep their share of the screen on another display or resolution (on by default).
 
+- **Particles cursor effect (experimental)**: Sparks burst off the waveform at the cursor, more where the track is louder, so they follow its beat.
+
+- **Firewall cursor effect (experimental)**: A wall of flames stands on the cursor, taller where the track is loud.
+
+- **Earthcrusher cursor effect (experimental)**: A jagged, glowing cursor leaves the waveform just behind it scorched and cracked.
+
 ### Changed
+- **Glow cursor effect**: Now a bloom centred on the cursor line, fading with distance and pulsing on the beat.
+
+- **Trail cursor effect**: Removed; a saved Trail setting now shows as Gradient.
+
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
 
 - **BPM sync**: With a beat grid from BPM Analyzer, the Glow, Scanline, Pulse and Shimmer effects follow the playback position and peak on every beat; the BPM tag's tempo is the fallback.

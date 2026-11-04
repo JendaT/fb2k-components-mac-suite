@@ -99,7 +99,15 @@ Optional time ruler under the waveform and a dB gutter on the right.
 
 ### Played Part
 
-The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow, Scanline, Pulse, Trail or Shimmer. The animated ones can follow the track's beat grid (from BPM Analyzer) or its BPM tag.
+The part already played can be dimmed (default 25 %), with a cursor effect at its edge: None (default), Gradient, Glow (a bloom centred on the cursor line, pulsing), Scanline, Pulse or Shimmer. The animated ones can follow the track's beat grid (from BPM Analyzer) or its BPM tag. A saved Trail effect (removed) shows as Gradient.
+
+Experimental effects, drawn only near the cursor:
+
+- **Particles**: sparks burst off the waveform's edge at the cursor, more and further where the track is louder (sudden rises count most), so they fall on the beat by themselves. Not tied to BPM sync.
+- **Firewall**: a column of flames stands on the cursor, taller where the track is loud, leaning back as it moves, with embers rising.
+- **Earthcrusher**: the cursor is a jagged, glowing fissure; the 20-40 pt of waveform just behind it are scorched and cracked into plates, fading further back, with embers in the freshest cracks and clods thrown up on loud beats.
+
+Firewall and Earthcrusher draw their own cursor and keep their fire and earth colours in every theme.
 
 ### Waveform Caching
 

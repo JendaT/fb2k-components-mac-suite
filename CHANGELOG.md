@@ -378,8 +378,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Phrase-aware loops**: Loops started near a 16-beat phrase start begin on it.
 - **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
 - **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
+- **Experimental cursor effects**: Particles, Firewall and Earthcrusher.
 
 #### Changed
+- **Glow cursor effect**: A bloom centred on the cursor line.
+- **Trail cursor effect**: Removed; shows as Gradient.
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.
 - **BPM sync**: With a beat grid from BPM Analyzer, animated cursor effects peak on every beat.
 - **Preferences**: Three columns of settings in a wide preferences window.
