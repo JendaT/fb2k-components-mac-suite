@@ -22,7 +22,8 @@ Pinch on the trackpad, or scroll vertically with the mouse wheel or trackpad, to
 Zoomed in, the view can follow the playback cursor (Preferences > Zoom, or the cog at the bottom right):
 
 - **Don't follow the cursor** (default): the view stays where you put it.
-- **Follow the cursor**: once the cursor is in view and reaches its spot, the waveform moves under it and the cursor stays there. Panning, zooming or a click with the cursor in view sets that spot. While the cursor is out of view the view stays.
+- **Follow the cursor**: while the cursor is in view, the waveform moves under it and the cursor stays where it is (where it came into view). Panning, zooming or a click with the cursor in view sets that spot. While the cursor is out of view the view stays.
+- **Reset zoom** also switches following off.
 - **Keep the cursor centred**: the cursor stays in the middle; at the track's start and end the view shows empty space beyond it, the only mode that does. Panning does nothing, zooming zooms about the cursor.
 
 Zoom can be switched off in Preferences > Zoom. **Fine detail for deep zoom** (off by default) keeps 7-8x finer detail per track, more for long mixes, so zooming goes that much deeper; it is gathered in the same analysis pass. It costs about 1 MB of cache per track (up to 5 MB for long mixes), and fine detail is the first thing dropped when the cache is over its size limit. Tracks analysed before the option was on are analysed again in the background when played; for a stream that means downloading it once more, since its audio is not kept on disk.
@@ -81,13 +82,16 @@ With the **Mixer** controls (the cog; needs BPM Analyzer), the bottom bar shows 
 |---------|------|
 | `‹32` `‹16` / `16›` `32›` | Jump 16 or 32 beats back or on |
 | `‹` `4▾` `›` | Jump the chosen size back or on; the menu sets the size (1 to 32 beats) for these and the loop |
-| `Loop` | Loop that many beats from the beat behind the cursor; click again to stop |
+| `Loop` | Loop that many beats from the beat behind the cursor, or from a 16-beat phrase start near it; click again to stop |
 
 - Jumps keep the playback position's place within its beat, count beats on the grid that holds there (following a new grid when Follow tempo changes is on), stop at the start going back and do nothing when they would reach the end.
-- A loop starts playing from its first beat and is drawn in green. While it plays, jumps move the whole loop, a new size keeps its start, and a click outside it (or a seek from elsewhere) ends it. A new track ends it too.
+- **Phrase starts**: asked for up to 4 beats after a 16-beat phrase start (16 and 32-beat loops; 2 for 8, 1 for shorter) or a beat before it, the loop starts on the phrase.
+- A loop starts playing from its first beat and is drawn in green. While it plays, jumps move the whole loop, **Option-drag** on the waveform moves it by whole beats (applied on release), a new size keeps its start, and a click outside it (or a seek from elsewhere) ends it. A new track ends it too.
+- A narrower size applies at once: playback past the new end goes back into the loop, as far in as it was past a multiple of the new length (bar 5 of 8, narrowed to 4: bar 1). A wider one plays on past the old end in the same pass.
 - A click within 6 points of a beat plays from that beat.
-- **Without a gap**: choosing the Mixer adds a "Beat loop (Waveform Seekbar)" DSP first in the playback chain (Preferences > Playback > DSP; leaving the Mixer removes it). The seek to the loop's start binds the loop to it: the first pass plays while it is recorded, then the recording repeats sample for sample. Stopping the loop finishes the pass and plays on from its end without a break; a longer size grows the loop from the audio that follows. While the loop repeats, foobar2000's own time display stands still near the loop's end; the seekbar's cursor follows the passes.
-- A loop that the DSP has not taken (it is not in the chain, or playback has not reached it yet) loops by seeking, with a short gap at each start, until its next start binds it. After a jump moves the loop or a click lands inside it, the first pass loops by seeking again.
+- **Without a gap or a click**: choosing the Mixer adds a "Beat loop (Waveform Seekbar)" DSP first in the playback chain (Preferences > Playback > DSP; leaving the Mixer removes it). It keeps the track's last 40 s and the audio decoded ahead; loops, new sizes, loop moves and jumps back are splices inside that audio with a 5 ms crossfade, not seeks (every seek flushes foobar2000's output, which is a gap). A forward jump without a loop still seeks: that audio is not decoded yet.
+- **Delay**: a change is heard after the DSP's 0.25 s step and foobar2000's output buffer (the console says how long once). While the mouse is over the seekbar in Mixer mode, or a loop plays, the seekbar asks foobar2000 (2.25 and later) to keep its output latency low; a shorter buffer in Preferences > Playback > Output also helps.
+- While the DSP plays from its buffer (a loop, or after a jump back until it catches up), foobar2000's own time display may lag or stand still; the seekbar's cursor follows what plays. Without the DSP in the chain, loops run by seeking, with a short gap at each start.
 
 ### Scales
 

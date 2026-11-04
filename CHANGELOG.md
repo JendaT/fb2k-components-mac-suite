@@ -372,7 +372,9 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
 - **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
 - **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid; clicks near a beat play from it.
-- **Gapless loops**: A "Beat loop" DSP repeats the loop sample for sample and leaves it without a break.
+- **Gapless loops**: A "Beat loop" DSP plays loops, new sizes, loop moves and jumps back without a gap or a click.
+- **Option-drag**: Moves the loop by whole beats.
+- **Phrase-aware loops**: Loops started near a 16-beat phrase start begin on it.
 - **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
 - **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
 

@@ -19,7 +19,11 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (drawn in green; jumps move it), and clicks near a beat play from the beat.
 
-- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; a loop's passes repeat sample for sample, and stopping it plays on without a break.
+- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps back are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
+
+- **Option-drag**: Moves the loop by whole beats.
+
+- **Phrase-aware loops**: A loop asked for just after (or a beat before) a 16-beat phrase start starts on the phrase.
 
 - **Following the cursor**: Zoomed in, the view can follow the cursor at a spot you set by panning, or keep it centred (the only mode showing space beyond the track's ends); in the cog's menu and Preferences > Zoom.
 
