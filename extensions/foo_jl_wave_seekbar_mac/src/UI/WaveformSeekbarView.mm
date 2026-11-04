@@ -31,6 +31,7 @@
 #include "../Core/PhraseMarkers.h"
 #include "../Core/BeatJump.h"
 #include "../../../../shared/ThemeColor.h"
+#include "../../../../shared/jl_beatgrid_api.h"
 #include <algorithm>
 #include <cmath>
 #include <climits>
@@ -222,12 +223,12 @@ const CGFloat kBadgeRadius = 3.0;
 const CGFloat kClipMarkerWidth = 2.0;
 const CGFloat kClipMarkerHeight = 5.0;
 
-// Beat controls: segments in one box at the bottom right, groups apart by a
-// gap with a hairline in it; the loop's colour
-const CGFloat kBeatSegmentPadX = 5.0;
-const CGFloat kBeatGroupGap = 7.0;
-const CGFloat kBeatIconSize = 11.0;
-const CGFloat kBeatSnapPoints = 6.0;        // with the controls on, a click this near a beat seeks to it
+// The bottom bar's controls: segments in one box at the bottom right,
+// groups apart by a gap with a hairline in it; the loop's colour
+const CGFloat kBarSegmentPadX = 5.0;
+const CGFloat kBarGroupGap = 7.0;
+const CGFloat kBarIconSize = 11.0;
+const CGFloat kBeatSnapPoints = 6.0;        // with the mixer on, a click this near a beat seeks to it
 const double kLoopLookahead = 2.5 / 60.0;   // the loop's end within 2.5 position checks: seek on time
 const double kSeekLanded = 0.15;            // the playback position this near a seek's target shows it
 const double kSeekTimeout = 1.0;            // a seek not shown by then is taken as done
@@ -289,25 +290,25 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 } // namespace
 
-// The beat controls, left to right: the jumps, the loop and its length, and
-// the button that turns them on
-typedef NS_ENUM(NSInteger, BeatControl) {
-    BeatControlNone = 0,
-    BeatControlBack32,
-    BeatControlBack16,
-    BeatControlBackN,
-    BeatControlJumpMenu,
-    BeatControlForwardN,
-    BeatControlForward16,
-    BeatControlForward32,
-    BeatControlLoop,
-    BeatControlLoopMenu,
-    BeatControlButton,
+// The bottom bar, left to right: with the mixer, the jumps with the size
+// menu among them and the loop (of that size); always the cog with the
+// controls' and the zoom's modes
+typedef NS_ENUM(NSInteger, BarControl) {
+    BarControlNone = 0,
+    BarControlBack32,
+    BarControlBack16,
+    BarControlBackSize,
+    BarControlSizeMenu,
+    BarControlForwardSize,
+    BarControlForward16,
+    BarControlForward32,
+    BarControlLoop,
+    BarControlCog,
 };
 
-struct BeatSegment {
-    BeatControl control = BeatControlNone;
-    NSString *title = nil;      // nil: the button's icon
+struct BarSegment {
+    BarControl control = BarControlNone;
+    NSString *title = nil;      // nil: an icon
     bool groupStart = false;    // a gap and a hairline before it
     CGRect rect = CGRectZero;
 };
@@ -355,8 +356,20 @@ struct BeatSegment {
     bool _split;                       // L up, R down in one lane
 
     // The part of the track the waveform shows, and the part the masks show
+    // (more than that while the view follows the cursor, so it can move
+    // without rebuilding them) with the view's zoom and pixel width they
+    // were built for, and where they were last drawn, in pixels from the
+    // waveform's left edge
     waveseek::ZoomRange _zoom;
     waveseek::ZoomRange _maskZoom;
+    double _maskViewZoom;
+    size_t _maskViewWidth;
+    long _maskOffsetPx;
+    size_t _classicBuckets;
+    // Following the cursor: the spot it stays at (a fraction across), and
+    // when the zoom last changed (masks for following wait for a pause)
+    double _followSpot;
+    CFAbsoluteTime _lastZoomChange;
     bool _zoomEnabled;
 
     // Phrase markers: settings, the markers for the grid shown, and where
@@ -370,15 +383,16 @@ struct BeatSegment {
     int _phraseBeatsDrawn;
     std::vector<std::pair<CGFloat, size_t>> _phraseHits;   // x, index into _phrases
 
-    // Beat jumps and loops: the setting, the controls turned on from their
-    // button, the menus' lengths, the beats of the grid shown, the loop, and
-    // a seek sent but not yet in the playback position
-    bool _beatControls;
-    bool _beatControlsOn;
-    int _jumpBeats;
-    int _loopBeats;
-    bool _beatMenuOpen;
-    NSMutableDictionary<NSNumber *, NSImage *> *_beatIcons;   // by colour
+    // The bottom bar: the cog's controls and zoom modes, and whether BPM
+    // Analyzer is there for the mixer. The mixer: the loop and jump size,
+    // the beats of the grid shown, the loop, and a seek sent but not yet in
+    // the playback position
+    int _controlsMode;
+    int _followMode;
+    bool _haveBeatGrids;
+    bool _barMenuOpen;
+    NSMutableDictionary<NSString *, NSImage *> *_barIcons;   // by symbol and colour
+    int _beatSize;
     std::vector<double> _beats;
     const waveseek::PhraseGrid *_beatsFor;
     bool _beatsFollow;
@@ -423,6 +437,9 @@ struct BeatSegment {
     [self reloadSettings];
 
     _pendingSeek = NAN;
+    _followSpot = 0.5;
+    jl_beatgrid::ptr grids;
+    _haveBeatGrids = fb2k::std_api_try_get(grids);
 
     // Default playback state
     _playbackPosition = 0.0;
@@ -513,17 +530,16 @@ struct BeatSegment {
     _phraseBreakColours = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours);
     _phraseFollowGrid = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid);
     _phraseBeatsDrawn = 0;   // rebuild the markers
-    _beatControls = getConfigBool(kKeyBeatControls, kDefaultBeatControls);
-    _beatControlsOn = getConfigBool(kKeyBeatControlsOpen, false);
-    auto choice = [](int64_t value, const auto &choices, int fallback) {
-        return std::find(std::begin(choices), std::end(choices), value) != std::end(choices) ? (int)value : fallback;
-    };
-    _jumpBeats = choice(getConfigInt(kKeyBeatJumpBeats, waveseek::kDefaultJumpBeats), waveseek::kJumpBeatChoices,
-                        waveseek::kDefaultJumpBeats);
-    _loopBeats = choice(getConfigInt(kKeyBeatLoopBeats, waveseek::kDefaultLoopBeats), waveseek::kLoopBeatChoices,
-                        waveseek::kDefaultLoopBeats);
-    _beatIcons = nil;   // the text size may have changed
-    if (!_beatControls) [self endLoop];
+    _controlsMode = (int)std::clamp<int64_t>(getConfigInt(kKeyControlsMode, kDefaultControlsMode), ControlsNone,
+                                             ControlsAnalytics);
+    _followMode = (int)std::clamp<int64_t>(getConfigInt(kKeyZoomFollow, kDefaultZoomFollow), FollowNone, FollowCentre);
+    if (_followMode != FollowCentre) _zoom.clampToTrack();
+    [self followCursor];
+    const int64_t size = getConfigInt(kKeyBeatSize, waveseek::kDefaultBeatSize);
+    _beatSize = std::find(std::begin(waveseek::kBeatSizeChoices), std::end(waveseek::kBeatSizeChoices), size)
+                    != std::end(waveseek::kBeatSizeChoices) ? (int)size : waveseek::kDefaultBeatSize;
+    _barIcons = nil;   // the text size may have changed
+    if (_controlsMode != ControlsMixer) [self endLoop];
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
 }
@@ -658,9 +674,16 @@ struct BeatSegment {
     return _zoom.zoom;
 }
 
-- (BOOL)buildMasksWidth:(size_t)width height:(size_t)height {
+// Masks `width` pixels wide for `range` of the track, at the scale of a
+// view `viewWidth` pixels wide at the current zoom
+- (BOOL)buildMasksForRange:(const waveseek::ZoomRange &)range width:(size_t)width height:(size_t)height
+                 viewWidth:(size_t)viewWidth {
     [self invalidateMasks];
-    _maskZoom = _zoom;
+    _maskZoom = range;
+    _maskViewZoom = _zoom.zoom;
+    _maskViewWidth = viewWidth;
+    // Classic keeps its bucket count per view width
+    _classicBuckets = std::max<size_t>(1, (size_t)std::lround((double)kClassicBuckets * width / std::max<size_t>(1, viewWidth)));
     analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width, _maskZoom.start, _maskZoom.end(),
                                                         [self usableDetail]);
     if (cols.count != width) return NO;
@@ -769,9 +792,10 @@ struct BeatSegment {
 // lane, up to L's peak and down to R's.
 - (BOOL)buildClassicMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
-    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets,
+    const size_t bucketCount = _classicBuckets;
+    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, bucketCount,
                                                                  _maskZoom.start, _maskZoom.end(), [self usableDetail]);
-    if (buckets.count != kClassicBuckets) return NO;
+    if (buckets.count != bucketCount) return NO;
     const bool stereo = buckets.channels == 2 && !_mono;
     const bool split = stereo && _split;
     const bool averageMono = _style == waveform_config::StyleSolid;
@@ -797,14 +821,14 @@ struct BeatSegment {
     // path take CoreGraphics 20-60 ms. Where two runs meet, the neighbouring
     // strokes' overlap is blended instead of merged, a few pixels slightly off.
     CGContextSetLineWidth(ctx, scale);
-    for (size_t i0 = 0; i0 < kClassicBuckets; i0 += kClassicStrokeRun) {
-        const size_t i1 = std::min(kClassicBuckets, i0 + kClassicStrokeRun);
+    for (size_t i0 = 0; i0 < bucketCount; i0 += kClassicStrokeRun) {
+        const size_t i1 = std::min(bucketCount, i0 + kClassicStrokeRun);
         for (int l = 0; l < lanes.count; ++l) {
             for (size_t i = i0; i < i1; ++i) {
                 const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
                 const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
                 if (up <= 0.0 && down <= 0.0) continue;
-                const CGFloat x = (CGFloat)i / kClassicBuckets * width;
+                const CGFloat x = (CGFloat)i / bucketCount * width;
                 CGContextMoveToPoint(ctx, x, lanes.center[l] - down);
                 CGContextAddLineToPoint(ctx, x, lanes.center[l] + up);
             }
@@ -819,7 +843,7 @@ struct BeatSegment {
     for (int l = 0; l < (split ? 2 : lanes.count); ++l) {
         _lanePeak[l].resize(width);
         for (size_t c = 0; c < width; ++c) {
-            const size_t i = std::min(kClassicBuckets - 1, (size_t)((c + 0.5) / width * kClassicBuckets));
+            const size_t i = std::min(bucketCount - 1, (size_t)((c + 0.5) / width * bucketCount));
             _lanePeak[l][c] = std::min(1.0f, peakOf(buckets, i, l));
         }
     }
@@ -1150,13 +1174,66 @@ struct BeatSegment {
     const size_t pixelH = (size_t)std::lround(pixelSize.height);
     if (pixelW == 0 || pixelH == 0) return;
 
-    if (pixelW != _maskWidth || pixelH != _maskHeight || !_masks[0] || _maskFamily != familyOf(_style) || _maskMono != _mono
-        || _maskZoom != _zoom) {
-        if (![self buildMasksWidth:pixelW height:pixelH]) return;
+    // The part of the track in view (less than the view when centring
+    // shows space beyond its ends), and a pixel's share of the track
+    const double grid = _zoom.span() / pixelW;
+    const double from = std::max(0.0, _zoom.start), to = std::min(1.0, _zoom.end());
+    if (!(to > from)) return;
+    const bool covered = _masks[0] && pixelH == _maskHeight && _maskFamily == familyOf(_style) && _maskMono == _mono &&
+                         _maskViewWidth == pixelW && _maskViewZoom == _zoom.zoom &&
+                         from >= _maskZoom.start - grid / 2 && to <= _maskZoom.end() + grid / 2;
+    if (!covered) {
+        // Following, once the zoom has settled: a view's width more on each
+        // side, on whole pixels of the track; else just what is in view
+        double m0 = from, m1 = to;
+        if ([self following] && CFAbsoluteTimeGetCurrent() - _lastZoomChange > 0.25) {
+            m0 = std::max(0.0, std::floor((_zoom.start - _zoom.span()) / grid) * grid);
+            m1 = std::min(1.0, _zoom.end() + _zoom.span());
+        }
+        waveseek::ZoomRange range;
+        range.zoom = 1.0 / (m1 - m0);
+        range.start = m0;
+        const size_t width = std::max<size_t>(1, (size_t)std::lround((m1 - m0) / grid));
+        if (![self buildMasksForRange:range width:width height:pixelH viewWidth:pixelW]) return;
     }
     if (!_composite && ![self buildComposite]) return;
 
-    CGContextDrawImage(context, rect, _composite);
+    // At whole pixels, so the composite is never resampled
+    const CGFloat scale = [self backingScale];
+    _maskOffsetPx = std::lround((_maskZoom.start - _zoom.start) / grid);
+    const CGRect dest = CGRectMake(rect.origin.x + _maskOffsetPx / scale, rect.origin.y, _maskWidth / scale, rect.size.height);
+    CGContextSaveGState(context);
+    CGContextClipToRect(context, rect);
+    CGContextDrawImage(context, dest, _composite);
+    CGContextRestoreGState(context);
+}
+
+// Zoomed in with a follow mode on
+- (BOOL)following {
+    return _zoomEnabled && _zoom.zoomed() && _followMode != waveform_config::FollowNone;
+}
+
+// Moves the view with the cursor (see ZoomRange::centreOn, followAt), on
+// whole pixels
+- (void)followCursor {
+    if (![self following]) return;
+    const double pixels = [self convertSizeToBacking:[self waveformRect].size].width;
+    const double grid = pixels >= 1.0 ? _zoom.span() / pixels : 0.0;
+    const double position = std::clamp(_playbackPosition, 0.0, 1.0);
+    if (_followMode == waveform_config::FollowCentre) _zoom.centreOn(position, grid);
+    else _zoom.followAt(position, _followSpot, grid);
+}
+
+// After the user moves or zooms the view: where the cursor is becomes the
+// spot it is kept at, when it is in view
+- (void)takeFollowSpot {
+    const double across = _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0));
+    if (across >= 0.0 && across <= 1.0) _followSpot = across;
+}
+
+- (void)setPlaybackPosition:(double)playbackPosition {
+    _playbackPosition = playbackPosition;
+    [self followCursor];
 }
 
 #pragma mark - Played Part
@@ -1184,8 +1261,12 @@ struct BeatSegment {
     const CGFloat playedWidth = across > 1.0 ? bounds.size.width + kEffectReach : bounds.size.width * across;
     const CGFloat dimOpacity = self.playedDimming;
 
+    // Only over the track: a centred view shows space beyond its ends
+    const CGFloat trackLeft = rect.origin.x + rect.size.width * std::max(0.0, _zoom.acrossOf(0.0));
+    const CGFloat trackRight = rect.origin.x + rect.size.width * std::min(1.0, _zoom.acrossOf(1.0));
     CGContextSaveGState(context);
-    CGContextClipToRect(context, rect);
+    CGContextClipToRect(context, CGRectMake(trackLeft, rect.origin.y, std::max<CGFloat>(0.0, trackRight - trackLeft),
+                                            rect.size.height));
     CGContextTranslateCTM(context, rect.origin.x, rect.origin.y);
     switch (self.cursorEffect) {
         case WaveformCursorEffectNone:
@@ -1667,27 +1748,28 @@ struct BeatSegment {
 
 - (void)drawOverlaysInContext:(CGContextRef)context rect:(CGRect)rect {
     using namespace waveform_config;
-    [self drawBeatControlsInContext:context rect:rect];
+    [self drawBarInContext:context rect:rect];
     if (_zoom.zoomed()) [self drawZoomButtonInContext:context rect:rect];
-    if (_summaryMode == SummaryAlways || (_summaryMode == SummaryOnHover && _hovering)) {
+    const int summary = [self summaryShown];
+    if (summary == SummaryAlways || (summary == SummaryOnHover && _hovering)) {
         [self drawSummaryInContext:context rect:rect];
     }
-    if (_showReadout && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect) && ![self isOverZoomButton] &&
-        ![self isOverBeatControls]) {
+    if ([self readoutShown] && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect) &&
+        ![self isOverZoomButton] && ![self isOverBar]) {
         [self drawReadoutInContext:context rect:rect];
     }
 }
 
 // Where the bottom row's badges end on the right: the waveform's edge, or
-// the beat controls while they show
+// the bar while it shows
 - (CGFloat)badgeRowRightFor:(CGRect)wave {
     CGRect box;
-    [self beatSegmentsFor:wave box:&box];
+    [self barSegmentsFor:wave box:&box];
     return CGRectIsNull(box) ? CGRectGetMaxX(wave) : box.origin.x;
 }
 
 // Reset zoom, at the bottom right of the waveform while zoomed in (left of
-// the beat controls); the summary badge moves to its left. Null when the
+// the bar); the summary badge moves to its left. Null when the
 // waveform is too narrow.
 - (NSAttributedString *)zoomButtonLabelHighlighted:(BOOL)highlighted {
     return [self text:@"Reset zoom" color:highlighted ? kOverlayValue : kOverlayLabel bold:NO];
@@ -1793,8 +1875,11 @@ struct BeatSegment {
     CGContextStrokePath(context);
     CGContextRestoreGState(context);
 
+    // The masks' column under the mouse; none beyond the track's ends
     const analysis::Columns& r = _readout;
-    const size_t c = std::min(r.count - 1, (size_t)std::max<CGFloat>(0.0, (mouseX - rect.origin.x) * scale));
+    const long column = (long)std::floor((mouseX - rect.origin.x) * scale) - _maskOffsetPx;
+    if (column < 0 || column >= (long)r.count) return;
+    const size_t c = (size_t)column;
     const double seconds = _zoom.positionAt((mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width))
                          * self.trackDuration;
 
@@ -1811,7 +1896,7 @@ struct BeatSegment {
     CGFloat floor = self.bounds.origin.y;
     if (onFloor) {
         floor = rect.origin.y + kBadgeInset;
-        if (_summaryMode != SummaryOff || _zoom.zoomed() || [self beatControlsShown]) {   // the badges' row
+        if ([self summaryShown] != SummaryOff || _zoom.zoomed() || [self barShown]) {   // the badges' row
             const CGFloat badge = std::ceil([@"I" sizeWithAttributes:@{ NSFontAttributeName: _overlayFont }].height
                                             + 2 * TS(kBadgePadY));
             floor += badge + kBadgeInset;
@@ -1940,7 +2025,9 @@ struct BeatSegment {
     const double major = overlay::rulerInterval(shown, wave.size.width, _zoom.zoomed());
     const double minor = major / 4.0;
     [p3(kScaleLabel, 0.6) setStroke];
-    for (long i = (long)std::ceil(first / minor - 1e-9); i * minor <= first + shown; ++i) {
+    // Within the track: a centred view shows space beyond its ends
+    const double last = std::min(first + shown, duration);
+    for (long i = std::max(0L, (long)std::ceil(first / minor - 1e-9)); i * minor <= last; ++i) {
         const CGFloat x = (std::floor(xAt(i * minor) * scale) + 0.5) / scale;
         const CGFloat length = (i % 4 == 0) ? kRulerMajorTick : kRulerMinorTick;
         CGContextMoveToPoint(context, x, top);
@@ -1948,7 +2035,7 @@ struct BeatSegment {
     }
     CGContextStrokePath(context);
 
-    for (long i = (long)std::ceil(first / major - 1e-9); i * major <= first + shown; ++i) {
+    for (long i = std::max(0L, (long)std::ceil(first / major - 1e-9)); i * major <= last; ++i) {
         NSAttributedString *label = [self scaleText:str(overlay::formatClock(i * major))];
         const CGFloat x = xAt(i * major) + TS(kRulerLabelGap);
         if (x + label.size.width > CGRectGetMaxX(wave)) break;
@@ -2028,7 +2115,7 @@ struct BeatSegment {
     }
 }
 
-#pragma mark - Beat Controls
+#pragma mark - Bottom Bar
 
 // Every beat of the grid shown (following a new grid when the markers do);
 // a new list ends the loop, whose beats were the old one's
@@ -2044,65 +2131,78 @@ struct BeatSegment {
     return _beats;
 }
 
-- (BOOL)beatControlsAvailable {
-    return _beatControls && self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0 &&
-           [self beats].size() >= 2;
+- (BOOL)hasTrackShown {
+    return self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
 }
 
-// On hover, and while one of their menus is open
-- (BOOL)beatControlsShown {
-    return (_hovering || _beatMenuOpen) && [self beatControlsAvailable];
+// The mixer is chosen and the track's beats are in
+- (BOOL)mixerReady {
+    return _controlsMode == waveform_config::ControlsMixer && [self hasTrackShown] && [self beats].size() >= 2;
 }
 
-- (NSImage *)beatIconWithColor:(uint32_t)color {
-    if (!_beatIcons) _beatIcons = [NSMutableDictionary dictionary];
-    NSImage *icon = _beatIcons[@(color)];
+// The loudness summary and the readout show with the analytics controls,
+// as the preferences set them
+- (int)summaryShown {
+    return _controlsMode == waveform_config::ControlsAnalytics ? _summaryMode : waveform_config::SummaryOff;
+}
+
+- (BOOL)readoutShown {
+    return _controlsMode == waveform_config::ControlsAnalytics && _showReadout;
+}
+
+// On hover, and while one of its menus is open
+- (BOOL)barShown {
+    return (_hovering || _barMenuOpen) && [self hasTrackShown];
+}
+
+- (NSImage *)barIcon:(NSString *)name color:(uint32_t)color {
+    if (!_barIcons) _barIcons = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%@/%06X", name, color];
+    NSImage *icon = _barIcons[key];
     if (icon) return icon;
-    NSImage *symbol = [NSImage imageWithSystemSymbolName:@"metronome" accessibilityDescription:@"Beat controls"];
+    NSImage *symbol = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
     if (!symbol) return nil;
     NSImageSymbolConfiguration *config =
-        [[NSImageSymbolConfiguration configurationWithPointSize:TS(kBeatIconSize) weight:NSFontWeightRegular]
+        [[NSImageSymbolConfiguration configurationWithPointSize:TS(kBarIconSize) weight:NSFontWeightRegular]
             configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[ p3(color) ]]];
     icon = [symbol imageWithSymbolConfiguration:config];
-    if (icon) _beatIcons[@(color)] = icon;
+    if (icon) _barIcons[key] = icon;
     return icon;
 }
 
-// The beat controls at the bottom right of the waveform, while they show:
-// the button alone while they are off, the jumps and the loop to its left
-// while on (the button alone again when those don't fit). `box` gets the
-// box around them, null when none.
-- (std::vector<BeatSegment>)beatSegmentsFor:(CGRect)wave box:(CGRect *)box {
+// The bar at the bottom right of the waveform, while it shows: the cog,
+// with the mixer's jumps and loop to its left (the cog alone when those
+// don't fit). `box` gets the box around them, null when none.
+- (std::vector<BarSegment>)barSegmentsFor:(CGRect)wave box:(CGRect *)box {
     if (box) *box = CGRectNull;
-    if (![self beatControlsShown]) return {};
+    if (![self barShown]) return {};
     NSDictionary *attributes = @{ NSFontAttributeName: _overlayFont };
     const CGFloat height = std::ceil([@"I" sizeWithAttributes:attributes].height + 2 * TS(kBadgePadY));
-    NSImage *icon = [self beatIconWithColor:kOverlayLabel];
     const CGFloat bottom = wave.origin.y + kBadgeInset;
+    NSImage *cog = [self barIcon:@"gearshape" color:kOverlayLabel];
 
-    auto layout = [&](bool all, CGRect *outBox) {
-        std::vector<BeatSegment> segments;
-        if (all) {
-            NSString *jump = [NSString stringWithFormat:@"%d▾", _jumpBeats];
-            NSString *loop = [NSString stringWithFormat:@"%d▾", _loopBeats];
+    auto layout = [&](bool mixer, CGRect *outBox) {
+        std::vector<BarSegment> segments;
+        if (mixer) {
+            NSString *size = [NSString stringWithFormat:@"%d▾", _beatSize];
             segments = {
-                { BeatControlBack32, @"‹32" }, { BeatControlBack16, @"‹16" }, { BeatControlBackN, @"‹" },
-                { BeatControlJumpMenu, jump }, { BeatControlForwardN, @"›" }, { BeatControlForward16, @"16›" },
-                { BeatControlForward32, @"32›" },
-                { BeatControlLoop, @"Loop", true }, { BeatControlLoopMenu, loop },
+                { BarControlBack32, @"‹32" }, { BarControlBack16, @"‹16" }, { BarControlBackSize, @"‹" },
+                { BarControlSizeMenu, size }, { BarControlForwardSize, @"›" }, { BarControlForward16, @"16›" },
+                { BarControlForward32, @"32›" },
+                { BarControlLoop, @"Loop", true },
             };
         }
-        segments.push_back({ BeatControlButton, icon ? nil : @"Beats", all });
+        segments.push_back({ BarControlCog, cog ? nil : @"Controls", mixer });
         CGFloat total = 0.0;
-        for (BeatSegment &s : segments) {
-            const CGFloat content = s.title ? [s.title sizeWithAttributes:attributes].width : icon.size.width;
-            s.rect.size = CGSizeMake(std::ceil(content + 2 * TS(kBeatSegmentPadX)), height);
-            total += s.rect.size.width + (s.groupStart ? TS(kBeatGroupGap) : 0.0);
+        for (BarSegment &s : segments) {
+            const CGFloat content = s.title ? [s.title sizeWithAttributes:attributes].width : cog.size.width;
+            s.rect.size = CGSizeMake(std::ceil(content + 2 * TS(kBarSegmentPadX)), height);
+            total += s.rect.size.width + (s.groupStart ? TS(kBarGroupGap) : 0.0);
         }
         CGFloat x = std::round(CGRectGetMaxX(wave) - kBadgeInset - total);
         *outBox = CGRectMake(x, bottom, total, height);
-        for (BeatSegment &s : segments) {
-            if (s.groupStart) x += TS(kBeatGroupGap);
+        for (BarSegment &s : segments) {
+            if (s.groupStart) x += TS(kBarGroupGap);
             s.rect.origin = CGPointMake(x, bottom);
             x += s.rect.size.width;
         }
@@ -2110,46 +2210,39 @@ struct BeatSegment {
     };
 
     CGRect frame;
-    std::vector<BeatSegment> segments = layout(_beatControlsOn, &frame);
-    if (frame.origin.x < wave.origin.x + kBadgeInset && _beatControlsOn) segments = layout(false, &frame);
+    const bool mixer = [self mixerReady];
+    std::vector<BarSegment> segments = layout(mixer, &frame);
+    if (frame.origin.x < wave.origin.x + kBadgeInset && mixer) segments = layout(false, &frame);
     if (frame.origin.x < wave.origin.x + kBadgeInset || CGRectGetMaxY(frame) > CGRectGetMaxY(wave)) return {};
     if (box) *box = frame;
     return segments;
 }
 
-- (BOOL)isOverBeatControls {
+- (BOOL)isOverBar {
     CGRect box;
-    [self beatSegmentsFor:[self waveformRect] box:&box];
+    [self barSegmentsFor:[self waveformRect] box:&box];
     return _hovering && CGRectContainsPoint(box, CGPointMake(_hoverX, _hoverY));
 }
 
-- (void)drawBeatControlsInContext:(CGContextRef)context rect:(CGRect)rect {
+- (void)drawBarInContext:(CGContextRef)context rect:(CGRect)rect {
     CGRect box;
-    const std::vector<BeatSegment> segments = [self beatSegmentsFor:rect box:&box];
+    const std::vector<BarSegment> segments = [self barSegmentsFor:rect box:&box];
     if (segments.empty()) return;
     [self fillOverlayBox:box radius:kBadgeRadius context:context];
     const CGFloat scale = [self backingScale];
     const CGPoint mouse = CGPointMake(_hoverX, _hoverY);
     CGContextSaveGState(context);
-    for (const BeatSegment &s : segments) {
+    for (const BarSegment &s : segments) {
         if (s.groupStart) {
-            const CGFloat x = std::round((s.rect.origin.x - TS(kBeatGroupGap) / 2) * scale) / scale;
+            const CGFloat x = std::round((s.rect.origin.x - TS(kBarGroupGap) / 2) * scale) / scale;
             [p3(kOverlayBorder) setFill];
             CGContextFillRect(context, CGRectMake(x, s.rect.origin.y + 4.0, 1.0 / scale, s.rect.size.height - 8.0));
         }
-        const bool hot = _hovering && CGRectContainsPoint(s.rect, mouse);
-        const bool lit = s.control == BeatControlButton && _beatControlsOn;
-        const bool looping = s.control == BeatControlLoop && _loop.active();
-        if (lit) {   // on: the button sits in a lit well
-            CGPathRef well = CGPathCreateWithRoundedRect(CGRectInset(s.rect, 2.0, 2.0), 2.0, 2.0, NULL);
-            [p3(kOverlayBorder) setFill];
-            CGContextAddPath(context, well);
-            CGContextFillPath(context);
-            CGPathRelease(well);
-        }
-        const uint32_t color = looping ? kLoopColor : (hot || lit) ? kOverlayValue : kOverlayLabel;
+        const bool hot = (_hovering && CGRectContainsPoint(s.rect, mouse)) || (s.control == BarControlCog && _barMenuOpen);
+        const bool looping = s.control == BarControlLoop && _loop.active();
+        const uint32_t color = looping ? kLoopColor : hot ? kOverlayValue : kOverlayLabel;
         if (!s.title) {
-            NSImage *icon = [self beatIconWithColor:color];
+            NSImage *icon = [self barIcon:@"gearshape" color:color];
             const NSSize size = icon.size;
             [icon drawInRect:NSMakeRect(std::round(CGRectGetMidX(s.rect) - size.width / 2),
                                         std::round(CGRectGetMidY(s.rect) - size.height / 2), size.width, size.height)];
@@ -2160,6 +2253,54 @@ struct BeatSegment {
         }
     }
     CGContextRestoreGState(context);
+}
+
+// The cog's menu: the controls, and how a zoomed view follows the cursor
+- (void)showControlsMenuFor:(const BarSegment &)segment {
+    using namespace waveform_config;
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Controls"];
+    menu.autoenablesItems = NO;
+    auto add = [&](NSString *title, SEL action, NSInteger tag, bool on, bool enabled) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:@""];
+        item.target = self;
+        item.tag = tag;
+        item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+        item.enabled = enabled;
+        [menu addItem:item];
+    };
+    auto header = [&](NSString *title) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+        item.enabled = NO;
+        [menu addItem:item];
+    };
+    header(@"Controls");
+    add(@"No Controls", @selector(controlsModeChosen:), ControlsNone, _controlsMode == ControlsNone, true);
+    add(_haveBeatGrids ? @"Mixer: Beat Jumps and Loops" : @"Mixer: Needs BPM Analyzer", @selector(controlsModeChosen:),
+        ControlsMixer, _controlsMode == ControlsMixer, _haveBeatGrids);
+    add(@"Analytics: Loudness and Readout", @selector(controlsModeChosen:), ControlsAnalytics,
+        _controlsMode == ControlsAnalytics, true);
+    [menu addItem:[NSMenuItem separatorItem]];
+    header(@"Zoomed In");
+    add(@"Don't Follow the Cursor", @selector(followModeChosen:), FollowNone, _followMode == FollowNone, _zoomEnabled);
+    add(@"Follow the Cursor", @selector(followModeChosen:), FollowCursor, _followMode == FollowCursor, _zoomEnabled);
+    add(@"Keep the Cursor Centred", @selector(followModeChosen:), FollowCentre, _followMode == FollowCentre, _zoomEnabled);
+    _barMenuOpen = YES;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(segment.rect.origin.x, CGRectGetMaxY(segment.rect))
+                            inView:self];
+    _barMenuOpen = NO;
+    [self setNeedsDisplay:YES];
+}
+
+// Saved and sent to every seekbar and the preferences; the controller
+// fetches the beat grid for the mixer
+- (void)controlsModeChosen:(NSMenuItem *)item {
+    waveform_config::setConfigInt(waveform_config::kKeyControlsMode, item.tag);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+}
+
+- (void)followModeChosen:(NSMenuItem *)item {
+    waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, item.tag);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
 }
 
 // The loop's range in the loop colour, edges and a light fill
@@ -2222,23 +2363,18 @@ struct BeatSegment {
     if (_loop.active()) [self setLoop:waveseek::BeatLoop()];
 }
 
-- (void)performBeatControl:(const BeatSegment &)segment {
+- (void)performBarControl:(const BarSegment &)segment {
     switch (segment.control) {
-        case BeatControlButton:
-            _beatControlsOn = !_beatControlsOn;
-            waveform_config::setConfigBool(waveform_config::kKeyBeatControlsOpen, _beatControlsOn);
-            if (!_beatControlsOn) [self endLoop];
-            break;
-        case BeatControlBack32: [self jumpBeats:-32]; break;
-        case BeatControlBack16: [self jumpBeats:-16]; break;
-        case BeatControlBackN: [self jumpBeats:-_jumpBeats]; break;
-        case BeatControlForwardN: [self jumpBeats:_jumpBeats]; break;
-        case BeatControlForward16: [self jumpBeats:16]; break;
-        case BeatControlForward32: [self jumpBeats:32]; break;
-        case BeatControlLoop: [self toggleLoop]; break;
-        case BeatControlJumpMenu:
-        case BeatControlLoopMenu: [self showBeatMenuFor:segment]; break;
-        case BeatControlNone: break;
+        case BarControlCog: [self showControlsMenuFor:segment]; break;
+        case BarControlBack32: [self jumpBeats:-32]; break;
+        case BarControlBack16: [self jumpBeats:-16]; break;
+        case BarControlBackSize: [self jumpBeats:-_beatSize]; break;
+        case BarControlForwardSize: [self jumpBeats:_beatSize]; break;
+        case BarControlForward16: [self jumpBeats:16]; break;
+        case BarControlForward32: [self jumpBeats:32]; break;
+        case BarControlLoop: [self toggleLoop]; break;
+        case BarControlSizeMenu: [self showSizeMenuFor:segment]; break;
+        case BarControlNone: break;
     }
     [self setNeedsDisplay:YES];
 }
@@ -2266,49 +2402,38 @@ struct BeatSegment {
         [self endLoop];
         return;
     }
-    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], [self currentSeconds], _loopBeats, self.trackDuration);
+    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], [self currentSeconds], _beatSize, self.trackDuration);
     if (!loop.active()) return;
     [self setLoop:loop];
     [self beatSeekTo:loop.start];
 }
 
-- (void)showBeatMenuFor:(const BeatSegment &)segment {
-    const bool loop = segment.control == BeatControlLoopMenu;
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:loop ? @"Loop length" : @"Jump length"];
-    auto add = [&](int beats) {
+- (void)showSizeMenuFor:(const BarSegment &)segment {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Loop and jump size"];
+    for (int beats : waveseek::kBeatSizeChoices) {
         NSMenuItem *item = [[NSMenuItem alloc]
             initWithTitle:[NSString stringWithFormat:@"%d %@", beats, beats == 1 ? @"beat" : @"beats"]
-                   action:loop ? @selector(loopLengthChosen:) : @selector(jumpLengthChosen:) keyEquivalent:@""];
+                   action:@selector(sizeChosen:) keyEquivalent:@""];
         item.target = self;
         item.tag = beats;
-        item.state = beats == (loop ? _loopBeats : _jumpBeats) ? NSControlStateValueOn : NSControlStateValueOff;
+        item.state = beats == _beatSize ? NSControlStateValueOn : NSControlStateValueOff;
         [menu addItem:item];
-    };
-    if (loop) {
-        for (int beats : waveseek::kLoopBeatChoices) add(beats);
-    } else {
-        for (int beats : waveseek::kJumpBeatChoices) add(beats);
     }
-    _beatMenuOpen = YES;
+    _barMenuOpen = YES;
     [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(segment.rect.origin.x, CGRectGetMaxY(segment.rect))
                             inView:self];
-    _beatMenuOpen = NO;
+    _barMenuOpen = NO;
     [self setNeedsDisplay:YES];
 }
 
-- (void)jumpLengthChosen:(NSMenuItem *)item {
-    _jumpBeats = (int)item.tag;
-    waveform_config::setConfigInt(waveform_config::kKeyBeatJumpBeats, _jumpBeats);
-    [self setNeedsDisplay:YES];
-}
-
-// A loop playing keeps its start and takes the new length; playback past
-// its new end goes back into it
-- (void)loopLengthChosen:(NSMenuItem *)item {
-    _loopBeats = (int)item.tag;
-    waveform_config::setConfigInt(waveform_config::kKeyBeatLoopBeats, _loopBeats);
+// The new size for the jumps beside the menu and the loop; a loop playing
+// keeps its start and takes the new length, playback past its new end goes
+// back into it
+- (void)sizeChosen:(NSMenuItem *)item {
+    _beatSize = (int)item.tag;
+    waveform_config::setConfigInt(waveform_config::kKeyBeatSize, _beatSize);
     if (_loop.active()) {
-        const waveseek::BeatLoop resized = waveseek::resizedLoop([self beats], _loop, _loopBeats, self.trackDuration);
+        const waveseek::BeatLoop resized = waveseek::resizedLoop([self beats], _loop, _beatSize, self.trackDuration);
         if (resized.active()) {
             [self setLoop:resized];
             const double now = [self currentSeconds];
@@ -2363,9 +2488,8 @@ struct BeatSegment {
 
 - (void)mouseMoved:(NSEvent *)event {
     [self trackHoverWithEvent:event];
-    if (_showReadout || _summaryMode == waveform_config::SummaryOnHover || _zoom.zoomed() || [self beatControlsAvailable]) {
-        [self setNeedsDisplay:YES];
-    }
+    // The bar shows on hover, its segments light under the mouse
+    [self setNeedsDisplay:YES];
 }
 
 - (void)mouseExited:(NSEvent *)event {
@@ -2375,10 +2499,10 @@ struct BeatSegment {
 
 - (void)mouseDown:(NSEvent *)event {
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    for (const BeatSegment &segment : [self beatSegmentsFor:[self waveformRect] box:nullptr]) {
+    for (const BarSegment &segment : [self barSegmentsFor:[self waveformRect] box:nullptr]) {
         if (CGRectContainsPoint(segment.rect, p)) {
             _seeking = NO;
-            [self performBeatControl:segment];
+            [self performBarControl:segment];
             return;
         }
     }
@@ -2419,14 +2543,19 @@ struct BeatSegment {
     const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
                                                0.0, 1.0);
     double seekTime = _zoom.positionAt(across) * self.trackDuration;
-    // With the beat controls on, a click near a beat plays from the beat
-    if (_beatControlsOn && [self beatControlsAvailable]) {
+    // With the mixer, a click near a beat plays from the beat
+    if ([self mixerReady]) {
         const double beat = waveseek::nearestBeat([self beats], seekTime);
         const CGFloat beatX = wave.origin.x + wave.size.width * _zoom.acrossOf(beat / self.trackDuration);
         if (!std::isnan(beat) && std::fabs(beatX - location.x) <= kBeatSnapPoints) seekTime = beat;
     }
     // Out of the loop: it ends
     if (_loop.active() && !_loop.contains(seekTime)) [self endLoop];
+    // Following at a spot: the cursor stays where it was clicked
+    if ([self following]) {
+        const double clicked = _zoom.acrossOf(seekTime / self.trackDuration);
+        if (clicked >= 0.0 && clicked <= 1.0) _followSpot = clicked;
+    }
 
     // Seek via SDK - must be on main thread
     if ([NSThread isMainThread]) {
@@ -2459,7 +2588,13 @@ struct BeatSegment {
     const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
     const WaveformDetail *detail = [self usableDetail];
     const size_t blocks = detail ? detail->blockCount() : self.waveformData->blockCount();
-    _zoom.zoomBy(factor, across, waveseek::maxZoomFor(blocks, wave.size.width));
+    // Centred, it zooms about the cursor and stays centred
+    const bool centred = [self following] && _followMode == waveform_config::FollowCentre;
+    const double about = centred ? _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0)) : across;
+    _zoom.zoomBy(factor, about, waveseek::maxZoomFor(blocks, wave.size.width));
+    _lastZoomChange = CFAbsoluteTimeGetCurrent();
+    [self followCursor];
+    [self takeFollowSpot];
     [self setNeedsDisplay:YES];
 }
 
@@ -2479,8 +2614,11 @@ struct BeatSegment {
             [super scrollWheel:event];
             return;
         }
+        // Centred, the cursor holds the view in place
+        if ([self following] && _followMode == waveform_config::FollowCentre) return;
         const CGFloat points = precise ? dx : dx * kPanPointsPerLine;
         _zoom.panBy(-points / std::max<CGFloat>(1.0, [self waveformRect].size.width));
+        [self takeFollowSpot];
         [self setNeedsDisplay:YES];
         return;
     }

@@ -112,6 +112,24 @@ enum BodyTint {
 };
 constexpr float kBodyTintStrength[] = { 0.0f, 0.5f, 1.0f };
 
+// The controls the cog at the bottom right offers on hover: none, the mixer
+// (beat jumps and loops, clicks seek to a beat) or analytics (the loudness
+// summary and the hover readout, as set in the preferences)
+enum ControlsMode {
+    ControlsNone = 0,
+    ControlsMixer = 1,
+    ControlsAnalytics = 2
+};
+
+// Zoomed in, how the view follows the playback cursor: not at all; keeping
+// it where it is once it is in view (panning moves that spot); or keeping it
+// in the centre, the only mode that shows space beyond the track's ends
+enum ZoomFollow {
+    FollowNone = 0,
+    FollowCursor = 1,
+    FollowCentre = 2
+};
+
 // Where the hover readout sits
 enum ReadoutPosition {
     ReadoutFollowsMouse = 0,
@@ -158,7 +176,8 @@ constexpr bool kDefaultPhraseMarkers = false;   // off until validated against a
 constexpr int kDefaultPhraseLength = 32;
 constexpr bool kDefaultPhraseBreakColours = true;
 constexpr bool kDefaultPhraseFollowGrid = true;
-constexpr bool kDefaultBeatControls = false;    // with phrase markers, until beat grids are validated
+constexpr int kDefaultControlsMode = ControlsNone;
+constexpr int kDefaultZoomFollow = FollowNone;
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

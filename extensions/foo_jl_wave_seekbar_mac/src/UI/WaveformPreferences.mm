@@ -79,7 +79,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSPopUpButton *_phraseLengthPopup;
     NSButton *_phraseColoursCheckbox;
     NSButton *_phraseFollowCheckbox;
-    NSButton *_beatControlsCheckbox;
+    NSPopUpButton *_controlsPopup;
+    NSPopUpButton *_zoomFollowPopup;
     BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
     // Scales
@@ -352,8 +353,27 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self addHint:@"Readout, summary, cursor time and the scales' labels." x:x y:&y width:w lines:1];
     y += kRowGap;
 
+    // Also the cog's first choice at the bottom right
+    y = [self addHeading:@"Controls on hover" x:x y:y width:w];
+    _controlsPopup = [self addPopup:@[] action:@selector(controlsModeChanged:) x:x y:&y width:w];
+    {
+        using namespace waveform_config;
+        const std::pair<NSString *, int> modes[] = {
+            { @"No controls", ControlsNone }, { @"Mixer: beat jumps and loops", ControlsMixer },
+            { @"Analytics: loudness and readout", ControlsAnalytics },
+        };
+        for (const auto &m : modes) {
+            [_controlsPopup addItemWithTitle:m.first];
+            _controlsPopup.lastItem.tag = m.second;
+        }
+    }
+    [self addHint:@"Also on the cog at the bottom right. The mixer needs BPM Analyzer; analytics shows the readout "
+                   "and summary below." x:x y:&y width:w lines:2];
+    y += kRowGap;
+
     _readoutCheckbox = [self addCheckbox:@"Readout on hover"
-                                    hint:@"Time, LUFS-S, peak, crest, correlation, band split; click to seek."
+                                    hint:@"Time, LUFS-S, peak, crest, correlation, band split; with the "
+                                          "analytics controls."
                                        x:x y:&y width:w];
     y -= kRowGap - 4;
     _readoutPositionPopup = [self addPopup:@[ @"Follows the mouse", @"Top right", @"Bottom right, above the summary" ]
@@ -367,7 +387,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y = [self addHeading:@"Loudness summary" x:x y:y width:w];
     _summaryPopup = [self addPopup:@[ @"Off", @"On hover", @"Always" ]
                             action:@selector(summaryChanged:) x:x y:&y width:w];
-    [self addHint:@"Integrated, LRA, true peak, PLR, clip count." x:x y:&y width:w lines:1];
+    [self addHint:@"Integrated, LRA, true peak, PLR, clip count; with the analytics controls." x:x y:&y width:w
+            lines:1];
     y += kRowGap;
 
     _clipMarkersCheckbox = [self addCheckbox:@"Clip markers"
@@ -417,11 +438,6 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
                                                "markers move to it and count phrases from there. Off "
                                                "keeps them on the track's main grid."
                                             x:x + kHintIndent y:&y width:w - kHintIndent];
-    _beatControlsCheckbox = [self addCheckbox:@"Beat jumps and loops"
-                                         hint:@"On hover, a button at the bottom right turns on beat jump and "
-                                               "loop controls. While they are on, a click near a beat plays "
-                                               "from that beat."
-                                            x:x y:&y width:w];
     // Missing, too old or just installed: the gate says so and installs it
     JLDependencyManager *bpm = waveseekBpmDependency();
     if ([bpm needsGate]) {
@@ -463,6 +479,24 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
                                              "for long mixes; tracks analysed before are analysed again when "
                                              "played (streams download once more)."
                                           x:x + kHintIndent y:&y width:w - kHintIndent];
+    // Also on the cog at the bottom right
+    _zoomFollowPopup = [self addPopup:@[] action:@selector(zoomFollowChanged:) x:x + kHintIndent y:&y
+                                width:w - kHintIndent];
+    {
+        using namespace waveform_config;
+        const std::pair<NSString *, int> modes[] = {
+            { @"Don't follow the cursor", FollowNone }, { @"Follow the cursor", FollowCursor },
+            { @"Keep the cursor centred", FollowCentre },
+        };
+        for (const auto &m : modes) {
+            [_zoomFollowPopup addItemWithTitle:m.first];
+            _zoomFollowPopup.lastItem.tag = m.second;
+        }
+    }
+    [self addHint:@"Zoomed in. Follow: once the cursor is in view the waveform moves under it, and panning sets "
+                   "where it stays. Centred: the cursor stays in the middle, with space beyond the track's ends."
+                x:x + kHintIndent y:&y width:w - kHintIndent lines:3];
+    y += kRowGap;
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -608,10 +642,14 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [_phraseLengthPopup selectItemWithTag:getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32];
     _phraseColoursCheckbox.state = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours) ? NSControlStateValueOn : NSControlStateValueOff;
     _phraseFollowCheckbox.state = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid) ? NSControlStateValueOn : NSControlStateValueOff;
-    _beatControlsCheckbox.state = getConfigBool(kKeyBeatControls, kDefaultBeatControls) ? NSControlStateValueOn : NSControlStateValueOff;
     [self updatePhraseControls];
     _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
     _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    [_zoomFollowPopup selectItemWithTag:std::clamp<int64_t>(getConfigInt(kKeyZoomFollow, kDefaultZoomFollow), FollowNone,
+                                                            FollowCentre)];
+    _zoomFollowPopup.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    [_controlsPopup selectItemWithTag:std::clamp<int64_t>(getConfigInt(kKeyControlsMode, kDefaultControlsMode),
+                                                          ControlsNone, ControlsAnalytics)];
 
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
@@ -733,6 +771,16 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self notifySettingsChanged];
 }
 
+- (void)controlsModeChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyControlsMode, _controlsPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)zoomFollowChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, _zoomFollowPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
 - (void)summaryChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeySummaryMode, _summaryPopup.indexOfSelectedItem);
@@ -764,6 +812,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     } else if (sender == _zoomCheckbox) {
         setConfigBool(kKeyZoomEnabled, _zoomCheckbox.state == NSControlStateValueOn);
         _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+        _zoomFollowPopup.enabled = _zoomCheckbox.state == NSControlStateValueOn;
     } else if (sender == _zoomDetailCheckbox) {
         setConfigBool(kKeyZoomDetail, _zoomDetailCheckbox.state == NSControlStateValueOn);
     } else if (sender == _phraseMarkersCheckbox) {
@@ -773,9 +822,6 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyPhraseBreakColours, _phraseColoursCheckbox.state == NSControlStateValueOn);
     } else if (sender == _phraseFollowCheckbox) {
         setConfigBool(kKeyPhraseFollowGrid, _phraseFollowCheckbox.state == NSControlStateValueOn);
-    } else if (sender == _beatControlsCheckbox) {
-        setConfigBool(kKeyBeatControls, _beatControlsCheckbox.state == NSControlStateValueOn);
-        [self updatePhraseControls];
     }
     [self notifySettingsChanged];
 }
@@ -828,16 +874,14 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 }
 
 // Without BPM Analyzer the group is greyed out; the length and colours
-// follow the markers' switch, following a new grid either switch (the beat
-// controls jump on the same grid)
+// follow the markers' switch. Following a new grid also applies to the
+// mixer's beats and beat-synced effects, so it stays available.
 - (void)updatePhraseControls {
     _phraseMarkersCheckbox.enabled = _haveBeatGrids;
-    _beatControlsCheckbox.enabled = _haveBeatGrids;
     const BOOL on = _haveBeatGrids && _phraseMarkersCheckbox.state == NSControlStateValueOn;
-    const BOOL beats = _haveBeatGrids && _beatControlsCheckbox.state == NSControlStateValueOn;
     _phraseLengthPopup.enabled = on;
     _phraseColoursCheckbox.enabled = on;
-    _phraseFollowCheckbox.enabled = on || beats;
+    _phraseFollowCheckbox.enabled = _haveBeatGrids;
 }
 
 - (void)phraseLengthChanged:(id)sender {

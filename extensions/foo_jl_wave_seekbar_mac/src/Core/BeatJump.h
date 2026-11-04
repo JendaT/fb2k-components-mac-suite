@@ -20,11 +20,10 @@
 
 namespace waveseek {
 
-// Lengths offered in the jump and loop menus
-constexpr int kJumpBeatChoices[] = { 1, 2, 4, 8 };
-constexpr int kLoopBeatChoices[] = { 1, 2, 4, 8, 16, 32 };
-constexpr int kDefaultJumpBeats = 4;
-constexpr int kDefaultLoopBeats = 8;
+// Sizes offered in the size menu: the length of a loop and of the jumps
+// beside the menu
+constexpr int kBeatSizeChoices[] = { 1, 2, 4, 8, 16, 32 };
+constexpr int kDefaultBeatSize = 4;
 
 // Nothing is placed closer than this to the track's end: seeking there
 // skips to the next track

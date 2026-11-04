@@ -125,9 +125,46 @@ void testMaxZoom() {
     CHECK_NEAR(maxZoomFor(10000, 0.0), 1.0, 1e-12, "no width");
 }
 
+void testFollow() {
+    TEST_CASE("follow");
+
+    // 4x: a quarter of the track in view
+    ZoomRange z;
+    z.zoom = 4.0;
+    z.start = 0.2;      // 0.2 .. 0.45
+    CHECK(!z.followAt(0.3, 0.5, 0.0), "in view but short of the spot: the view stays");
+    CHECK(z.followAt(0.36, 0.5, 0.0), "past the spot: the view moves");
+    CHECK_NEAR(z.acrossOf(0.36), 0.5, 1e-12, "the cursor at the spot");
+    CHECK(!z.followAt(0.8, 0.5, 0.0), "out of view: the view stays");
+    CHECK(!z.followAt(0.1, 0.5, 0.0), "out of view on the left too");
+    z.start = 0.7;      // 0.7 .. 0.95
+    CHECK(z.followAt(0.9, 0.5, 0.0), "near the end it still moves");
+    CHECK_NEAR(z.end(), 1.0, 1e-12, "up to the track's end, no further");
+
+    // Whole pixels: a 1000-pixel view at 4x is 0.00025 of the track per pixel
+    const double grid = 0.25 / 1000.0;
+    z.start = 0.2;
+    z.followAt(0.3337, 0.5, grid);
+    const double pixels = z.start / grid;
+    CHECK(std::fabs(pixels - std::round(pixels)) < 1e-6, "start on a whole pixel");
+    CHECK(std::fabs(z.acrossOf(0.3337) - 0.5) <= 1.0 / 1000.0, "the cursor within a pixel of the spot");
+
+    z.start = 0.2;
+    CHECK(z.centreOn(0.05, 0.0), "centred");
+    CHECK_NEAR(z.start, 0.05 - 0.125, 1e-12, "before the track's start: space shows on the left");
+    CHECK_NEAR(z.acrossOf(0.05), 0.5, 1e-12, "the cursor in the middle");
+    CHECK(!z.centreOn(0.05, 0.0), "the same position: no change");
+    z.centreOn(0.99, 0.0);
+    CHECK(z.end() > 1.0, "past the track's end too");
+    z.clampToTrack();
+    CHECK_NEAR(z.end(), 1.0, 1e-12, "back within the track");
+    CHECK(!z.centreOn(std::numeric_limits<double>::quiet_NaN(), 0.0), "NaN is ignored");
+}
+
 } // namespace
 
 int main() {
+    testFollow();
     testDefault();
     testZoomKeepsAnchor();
     testZoomAtEdges();

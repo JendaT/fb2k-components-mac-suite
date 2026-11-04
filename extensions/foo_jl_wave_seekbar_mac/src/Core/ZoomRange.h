@@ -26,7 +26,7 @@ inline double maxZoomFor(size_t blocks, double widthPoints) {
 
 struct ZoomRange {
     double zoom = 1.0;      // the waveform shows 1 / zoom of the track
-    double start = 0.0;     // track position at the left edge, 0 .. 1 - 1 / zoom
+    double start = 0.0;     // track position at the left edge, 0 .. 1 - 1 / zoom (beyond when centred)
 
     bool zoomed() const { return zoom > 1.0; }
     double span() const { return 1.0 / zoom; }
@@ -59,11 +59,43 @@ struct ZoomRange {
 
     void reset() { *this = ZoomRange(); }
 
+    // Following the playback cursor at `position` (0..1). `grid` is a
+    // pixel's share of the track: start lands on whole multiples of it, so
+    // the waveform moves by whole pixels (0: no snapping). Each returns
+    // whether start changed.
+
+    // The cursor in the middle; start may leave 0 .. 1 - span, showing
+    // space beyond the track's ends
+    bool centreOn(double position, double grid) {
+        if (!std::isfinite(position)) return false;
+        return moveTo(snap(position - 0.5 * span(), grid));
+    }
+
+    // The cursor kept at `spot` (a fraction across) once it is in view and
+    // has got there; before that, or out of view, the view stays. Within
+    // the track's ends.
+    bool followAt(double position, double spot, double grid) {
+        if (!std::isfinite(position) || !std::isfinite(spot)) return false;
+        const double across = acrossOf(position);
+        if (across < 0.0 || across > 1.0 || across <= spot) return false;
+        const double s = std::clamp(position - spot * span(), 0.0, 1.0 - span());
+        return moveTo(std::clamp(snap(s, grid), 0.0, 1.0 - span()));
+    }
+
+    // Back within the track's ends after centring
+    void clampToTrack() { clampStart(); }
+
     bool operator==(const ZoomRange& o) const { return zoom == o.zoom && start == o.start; }
     bool operator!=(const ZoomRange& o) const { return !(*this == o); }
 
 private:
     void clampStart() { start = std::clamp(start, 0.0, 1.0 - span()); }
+    static double snap(double value, double grid) { return grid > 0.0 ? std::floor(value / grid + 0.5) * grid : value; }
+    bool moveTo(double s) {
+        if (s == start) return false;
+        start = s;
+        return true;
+    }
 };
 
 } // namespace waveseek

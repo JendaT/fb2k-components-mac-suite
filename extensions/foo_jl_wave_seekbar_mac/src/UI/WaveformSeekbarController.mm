@@ -120,7 +120,7 @@ public:
 - (BOOL)wantsBeatGrid {
     using namespace waveform_config;
     if (getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) return YES;
-    if (getConfigBool(kKeyBeatControls, kDefaultBeatControls)) return YES;
+    if (getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer) return YES;
     if (!getConfigBool(kKeyBpmSync, kDefaultBpmSync) || !getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion)) {
         return NO;
     }
