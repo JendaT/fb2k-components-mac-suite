@@ -67,8 +67,9 @@ enum : uint8_t {
     jl_bar_offbeat = 2,
 };
 // pulse: classic grids, the bar's mean onset energy with jl_pulse_unit the
-// track's median bar; Beat This! grids, jl_pulse_unit / 4 for each beat the
-// network is sure of and an onset confirms, 0 under two such beats
+// track's median bar; Beat This! grids, jl_pulse_unit / 4 for each beat that
+// counts (the network sure of it, an onset confirming it; off its grid beat
+// only when the network is very sure), 0 under two such beats
 inline constexpr int jl_pulse_unit = 64;
 
 enum jl_beatgrid_source : uint8_t {
@@ -151,7 +152,7 @@ inline jl_grid_section jl_master_section(const jl_beatgrid_summary &grid, size_t
 // How a phrase marker is drawn
 enum jl_phrase_state : uint8_t {
     jl_phrase_locked,           // on the grid
-    jl_phrase_drifting,         // off by 10-25 ms, or 40-75% of beats matched
+    jl_phrase_drifting,         // off by 10-25 ms, or 40-75% of the beats heard matched
     jl_phrase_broken,           // off by more, or fewer matched, with pulse present
     jl_phrase_no_pulse,         // a beatless stretch: never counted as broken
     jl_phrase_reanchor,         // a new grid starts in the phrase
@@ -164,13 +165,24 @@ inline constexpr double jl_phrase_locked_share = 0.75;
 inline constexpr double jl_phrase_broken_share = 0.40;
 inline constexpr double jl_phrase_no_pulse_level = 0.25;   // of jl_pulse_unit
 
-// The state of the phrase made of `count` bars (4 for 16 beats, 8 for 32).
-// Re-anchor wins, then no pulse (most bars under a quarter of the median or
-// off-beat only), then the median absolute offset and the share of matched
-// beats of the other bars decide: those bars say nothing about the grid.
-inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count) {
+// The beats of a bar that say something about the grid, matched or not.
+// A classic grid looks for an onset at every grid beat; a Beat This! grid
+// counts only the beats it heard (its pulse): a grid beat the music leaves
+// out, as a sparse build-up or a half-time breakdown does, is not a miss.
+inline size_t jl_bar_heard_beats(const jl_bar_stat &bar, uint8_t source) {
+    if (source != jl_beatgrid_source_beat_this) return 4;
+    const size_t counted = static_cast<size_t>(bar.pulse) / (jl_pulse_unit / 4);
+    return std::min<size_t>(4, std::max<size_t>(counted, bar.matched));
+}
+
+// The state of the phrase made of `count` bars (4 for 16 beats, 8 for 32)
+// of a grid from `source`. Re-anchor wins, then no pulse (most bars under a
+// quarter of the median or off-beat only), then the median absolute offset
+// and the share of the beats heard that matched, over the other bars,
+// decide: those bars say nothing about the grid.
+inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count, uint8_t source) {
     if (!bars || count == 0) return jl_phrase_no_pulse;
-    size_t quiet = 0, matched = 0;
+    size_t quiet = 0, matched = 0, heard = 0;
     bool region_start = false;
     std::vector<double> offsets;
     offsets.reserve(count);
@@ -181,6 +193,7 @@ inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count)
             continue;
         }
         matched += bars[i].matched;
+        heard += jl_bar_heard_beats(bars[i], source);
         offsets.push_back(std::fabs(static_cast<double>(bars[i].offset_ms)));
     }
     if (region_start) return jl_phrase_reanchor;
@@ -192,7 +205,7 @@ inline jl_phrase_state jl_classify_phrase(const jl_bar_stat *bars, size_t count)
     if (offsets.size() % 2 == 0) {
         offset = 0.5 * (offset + *std::max_element(offsets.begin(), offsets.begin() + static_cast<std::ptrdiff_t>(mid)));
     }
-    const double share = static_cast<double>(matched) / static_cast<double>(offsets.size() * 4);
+    const double share = heard > 0 ? static_cast<double>(matched) / static_cast<double>(heard) : 0.0;
     if (offset > jl_phrase_drifting_ms || share < jl_phrase_broken_share) return jl_phrase_broken;
     if (offset > jl_phrase_locked_ms || share < jl_phrase_locked_share) return jl_phrase_drifting;
     return jl_phrase_locked;
