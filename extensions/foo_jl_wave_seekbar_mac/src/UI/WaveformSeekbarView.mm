@@ -453,7 +453,7 @@ struct BarSegment {
     CFAbsoluteTime _loopRearmAt;
     CFAbsoluteTime _timingNoteAt;
     bool _wasInsideLoop;            // playback was in the loop at the last check (seek-based looping)
-    bool _timingNoted;
+    double _measuredLag;
     // Option-dragging the loop: the beat under the mouse when it began, the
     // loop then, and where it would go
     bool _loopDragging;
@@ -2685,6 +2685,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         _requestId = 0;
         if (!std::isnan(_fallbackTarget)) [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
     } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
+        if (_deck.lastTakenId == _requestId) {
+            FB2K_console_formatter() << "[WaveSeek] Mixer: request taken by the DSP after "
+                                     << pfc::format_int(std::lround(_deck.lastTakenMs)) << " ms; playback runs "
+                                     << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP";
+        }
         _requestId = 0;
     }
     // The loop set, the DSP without it (a seek from elsewhere, or it ran too
@@ -2964,23 +2969,24 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     [self armedSeekTo:_loop.start then:&then];
 }
 
-// Once per mixer session, how the timing works out here: the DSP's block
-// size and how far what plays is behind what the DSP takes in
+// How far playback runs behind what the DSP takes in, measured while the
+// audio is untouched and passes through (foobar2000's position is then
+// what is heard); every 10 s while the mixer is on, the console line with
+// it, foobar2000's block size and the output buffer
 - (void)noteTimingAt:(CFAbsoluteTime)now seconds:(double)seconds {
-    if (_timingNoted || ![self deckReady] || !_deck.live || !_deck.pristine || !self.playing || _deck.blockSeconds <= 0.0) {
-        return;
-    }
-    if (_timingNoteAt == 0) {
-        _timingNoteAt = now + 3.0;   // after it has settled
-        return;
+    if (![self deckReady] || !self.playing) return;
+    if (_deck.live && _deck.pristine && std::isfinite(seconds)) {
+        const double lag = _deck.bufferedTo - seconds;
+        _measuredLag = _measuredLag > 0.0 ? 0.8 * _measuredLag + 0.2 * lag : lag;
     }
     if (now < _timingNoteAt) return;
-    _timingNoted = true;
-    FB2K_console_formatter() << "[WaveSeek] Mixer timing: foobar2000 hands the DSP "
-                             << pfc::format_int(std::lround(_deck.blockSeconds * 1000.0)) << " ms blocks; what plays is "
-                             << pfc::format_int(std::lround((_deck.bufferedTo - seconds) * 1000.0))
-                             << " ms behind what the DSP takes in (output buffer "
-                             << pfc::format_int(beatloop::outputBufferMs()) << " ms)";
+    _timingNoteAt = now + 10.0;
+    FB2K_console_formatter() << "[WaveSeek] Mixer timing: blocks of "
+                             << pfc::format_int(std::lround(_deck.blockSeconds * 1000.0)) << " ms, playback "
+                             << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP, output buffer "
+                             << pfc::format_int(beatloop::outputBufferMs()) << " ms, "
+                             << pfc::format_float(_deck.ahead, 0, 2) << " s decoded ahead"
+                             << (_lowLatency ? ", short steps" : "");
 }
 
 #pragma mark - Mouse Events

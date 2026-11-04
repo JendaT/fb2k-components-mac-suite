@@ -38,6 +38,7 @@ struct Bridge {
     waveseek::LoopArm arm;
     Clock::time_point armedAt;
     std::deque<waveseek::LoopAction> actions;
+    std::deque<Clock::time_point> queuedAt;
     uint64_t syncSerial = 0;
     uint64_t syncEpoch = 0;
     double syncT0 = 0.0;
@@ -106,6 +107,7 @@ public:
                 b.armId = 0;
             }
             b.actions.clear();   // they were for the audio before the seek
+            b.queuedAt.clear();
         }
         m_engine.flush(own ? &arm : nullptr);
         m_sawFile = false;
@@ -120,6 +122,7 @@ public:
 private:
     void takeRequests() {
         std::deque<waveseek::LoopAction> actions;
+        std::deque<Clock::time_point> queuedAt;
         bool haveSync = false;
         uint64_t epoch = 0;
         double t0 = 0.0;
@@ -127,6 +130,7 @@ private:
             Bridge &b = Bridge::get();
             std::lock_guard<std::mutex> guard(b.lock);
             actions.swap(b.actions);
+            queuedAt.swap(b.queuedAt);
             if (b.syncSerial != m_syncSerial) {
                 m_syncSerial = b.syncSerial;
                 haveSync = true;
@@ -136,6 +140,10 @@ private:
         }
         if (haveSync) m_engine.sync(epoch, t0);
         for (const waveseek::LoopAction &a : actions) m_engine.act(a);
+        if (!queuedAt.empty()) {
+            m_lastTakenMs = std::chrono::duration<double, std::milli>(Clock::now() - queuedAt.back()).count();
+            m_lastTakenId = actions.back().id;
+        }
     }
 
     void insert(std::vector<Engine::Block> &blocks) {
@@ -165,6 +173,8 @@ private:
         s.outSeconds = m_engine.outSeconds();
         s.ahead = m_engine.aheadSeconds();
         s.blockSeconds = m_blockSeconds;
+        s.lastTakenMs = m_lastTakenMs;
+        s.lastTakenId = m_lastTakenId;
         s.boundArmId = m_engine.boundArmId();
         s.lastActionId = m_engine.lastActionId();
         s.rejectedId = m_engine.rejectedId();
@@ -176,6 +186,8 @@ private:
 
     Engine m_engine;
     double m_blockSeconds = 0.0;
+    double m_lastTakenMs = 0.0;
+    uint64_t m_lastTakenId = 0;
     std::atomic<double> m_latency{ 0.0 };
     uint64_t m_syncSerial = 0;
     uint64_t m_publishedVersion = UINT64_MAX;
@@ -238,6 +250,7 @@ uint64_t act(waveseek::LoopAction action) {
     std::lock_guard<std::mutex> guard(b.lock);
     action.id = ++b.nextId;
     b.actions.push_back(action);
+    b.queuedAt.push_back(Clock::now());
     return action.id;
 }
 

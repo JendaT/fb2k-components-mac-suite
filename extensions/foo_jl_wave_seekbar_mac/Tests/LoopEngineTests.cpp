@@ -392,6 +392,23 @@ void testResponsive() {
     CHECK(o3.frames.size() <= 31, "a 500-frame block, 30 frames out");
 }
 
+void testStandby() {
+    TEST_CASE("responsive without a change");
+    Playing p;   // live
+    p.e.setResponsive(true);
+    const size_t at = p.out.frames.size();
+    step(p.e, p.d, p.out);
+    CHECK(!p.e.live() && p.out.frames.size() - at <= 30, "short steps from the buffer while a change may come");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    CHECK(straight(p.out, at, at + 2000, p.out.frames[at]), "the same audio, nothing skipped or doubled");
+    CHECK(p.out.frames[at] == p.out.frames[at - 1] + 1.0, "following on from what passed through");
+    p.e.setResponsive(false);
+    for (int i = 0; i < 10000 && !p.e.live(); ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.live(), "then catches up and passes through again");
+    CHECK(straight(p.out, at, p.out.frames.size(), p.out.frames[at]), "still without a break");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
 void testAheadCap() {
     TEST_CASE("the decoder far ahead");
     Playing p;
@@ -443,6 +460,7 @@ int main() {
     testNewTrackLive();
     testNewTrackBehindLoop();
     testResponsive();
+    testStandby();
     testAheadCap();
     testEndOfStream();
     testTimelineMath();

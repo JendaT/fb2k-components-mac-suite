@@ -40,6 +40,8 @@ struct Status {
     double outSeconds = 0.0;    // output since the seek
     double ahead = 0.0;         // decoded audio waiting, seconds
     double blockSeconds = 0.0;  // how much audio foobar2000 hands the DSP at a time (recent average)
+    double lastTakenMs = 0.0;   // how long the last request waited for the DSP to take it
+    uint64_t lastTakenId = 0;
     uint64_t boundArmId = 0;    // the arm the last seek took
     uint64_t lastActionId = 0;
     uint64_t rejectedId = 0;

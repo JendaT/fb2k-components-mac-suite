@@ -205,6 +205,15 @@ public:
             if (!apply(a, true)) rejectedId_ = a.id;
             ++version_;
         }
+        // While a change may come, play from the buffer in short steps even
+        // with nothing changed, so a request is taken within a step rather
+        // than a whole block (the decoder runs ahead meanwhile; the output is
+        // still the input, so nothing is heard)
+        if (live_ && responsive_ && synced_ && !afterBoundary_ && aheadSeconds() < kResponsiveAheadSeconds) {
+            live_ = false;
+            pristine_ = false;
+            pos_ = bufEnd() - static_cast<int64_t>(frames);   // this block is next out
+        }
         if (live_) {
             pos_ = bufEnd();
             outSeconds_ += static_cast<double>(frames) / rate;
