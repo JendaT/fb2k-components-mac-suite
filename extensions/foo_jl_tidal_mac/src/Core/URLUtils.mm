@@ -189,6 +189,12 @@ std::string makeTrackURL(const std::string& trackID, JLTidalQuality quality) {
     return std::string([result UTF8String]);
 }
 
+bool isPlayableTidalTrackURL(const char* path) {
+    if (!isTidalURL(path)) return false;
+    auto parsed = parseURL(std::string(path));
+    return parsed.has_value() && parsed->type == TidalContentType::Track;
+}
+
 bool isTidalURL(const char* path) {
     if (!path || !*path) return false;
 

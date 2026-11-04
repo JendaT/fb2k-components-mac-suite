@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly) NSString *title;
 @property (nonatomic, copy, readonly, nullable) NSString *artist;
 @property (nonatomic, copy, readonly, nullable) NSString *album;
+@property (nonatomic, copy, readonly, nullable) NSString *albumID;  // for "Go to Album"
 @property (nonatomic, copy, readonly, nullable) NSString *albumArtist;
 @property (nonatomic, readonly) NSInteger duration;  // seconds
 @property (nonatomic, readonly) NSInteger trackNumber;
@@ -26,6 +27,31 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSURL *albumArtURL;
 @property (nonatomic, copy, readonly, nullable) NSString *coverID;
 @property (nonatomic, readonly) BOOL isExplicit;
+
+/// Availability, as reported by the catalogue. A region-restricted, withdrawn
+/// or not-yet-released track is listed normally but cannot be streamed; every
+/// other client gates on these before asking for a stream. Default YES so an
+/// absent field never hides a playable track.
+@property (nonatomic, readonly) BOOL allowStreaming;
+@property (nonatomic, readonly) BOOL streamReady;
+
+/// Edition suffix ("Live", "Remastered", "Kasper Bjorke Remix"...). Without
+/// it "Song" and "Song (Live)" are indistinguishable in a playlist.
+@property (nonatomic, copy, readonly, nullable) NSString *version;
+
+/// The title as it should be shown and tagged: "Title (Version)", or just
+/// the title when there is no version or the title already carries it. Every
+/// remix on a remix album otherwise reads as the same song.
+@property (nonatomic, copy, readonly) NSString *displayTitle;
+
+/// Every credited artist, in response order. `artist` is just the first.
+@property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *allArtists;
+
+/// Track-level ReplayGain from the catalogue (dB) and peak amplitude.
+/// `hasReplayGain` is NO when the response carried neither.
+@property (nonatomic, readonly) BOOL hasReplayGain;
+@property (nonatomic, readonly) double replayGain;
+@property (nonatomic, readonly) double peakAmplitude;
 @property (nonatomic, copy, readonly, nullable) NSString *audioQuality;
 
 /// Formats Tidal actually holds for this track ("LOSSLESS", "HIRES_LOSSLESS",
@@ -34,6 +60,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// response carried no mediaMetadata at all.
 @property (nonatomic, copy, readonly, nullable) NSArray<NSString *> *mediaTags;
 @property (nonatomic, copy, readonly, nullable) NSString *isrc;
+/// Tempo and key from the catalogue. bpm is 0 and key/keyScale nil when the
+/// catalogue has none ("UNKNOWN" counts as none). key is TIDAL's spelling
+/// ("C", "CSharp", "Eb"...), keyScale "MAJOR", "MINOR" or a mode name.
+@property (nonatomic, readonly) double bpm;
+@property (nonatomic, copy, readonly, nullable) NSString *key;
+@property (nonatomic, copy, readonly, nullable) NSString *keyScale;
 @property (nonatomic, copy, readonly, nullable) NSString *copyright;
 @property (nonatomic, copy, readonly, nullable) NSDate *releaseDate;
 @property (nonatomic, readonly) NSInteger totalTracks;  // from album.numberOfTracks
@@ -55,6 +87,24 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, readonly, nullable) NSString *codec;
 @property (nonatomic, readonly, getter=isDRMProtected) BOOL drmProtected;
 
+/// ReplayGain the stream response carries. fb2k normalises local files and
+/// would otherwise leave TIDAL streams un-normalised in the same playlist.
+@property (nonatomic, readonly) BOOL hasReplayGain;
+@property (nonatomic, readonly) double trackReplayGain;
+@property (nonatomic, readonly) double trackPeakAmplitude;
+@property (nonatomic, readonly) BOOL hasAlbumReplayGain;
+@property (nonatomic, readonly) double albumReplayGain;
+@property (nonatomic, readonly) double albumPeakAmplitude;
+
+/// YES when TIDAL returned a ~30s sample instead of the full track
+/// (assetPresentation != "FULL"). Absent is treated as PREVIEW, matching
+/// tidal-sdk-web: only an explicit FULL counts as the full asset.
+@property (nonatomic, readonly, getter=isPreviewOnly) BOOL previewOnly;
+
+/// Server's reason for a preview, e.g. "FULL_REQUIRES_SUBSCRIPTION". Nil
+/// when the response carried none.
+@property (nonatomic, copy, readonly, nullable) NSString *previewReason;
+
 // DASH (segment-based streaming). Populated only when the API returns a DASH
 // manifest with a SegmentTemplate (typically LOSSLESS/HiRes). When populated,
 // streamURL will be nil — the decoder substitutes $Number$ = 0..(dashSegmentCount-1)
@@ -63,6 +113,10 @@ NS_ASSUME_NONNULL_BEGIN
 // is needed (see python-tidal DashInfo.get_urls).
 @property (nonatomic, copy, readonly, nullable) NSString *dashMediaTemplate;  // contains $Number$
 @property (nonatomic, readonly) NSInteger dashSegmentCount;
+// Track length in dashTimescale units (the sample count, as Tidal sets the
+// timescale to the sample rate); 0 when unknown.
+@property (nonatomic, readonly) int64_t dashTotalDuration;
+@property (nonatomic, readonly) NSInteger dashTimescale;
 
 // Decoded MPD XML, populated only for DASH manifests. Diagnostics only —
 // the resolver dumps it to the console when DASH is enabled in prefs.

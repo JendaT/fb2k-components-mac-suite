@@ -16,6 +16,9 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSMutableArray *> *pendingCompletions;
 @property (nonatomic, strong) NSURLSession *urlSession;
 @property (nonatomic, strong) dispatch_queue_t syncQueue;
+/// Keys whose fetch already failed this session. Without it a missing or
+/// forbidden rendition is re-requested every time the row scrolls into view.
+@property (nonatomic, strong) NSMutableSet<NSString *> *failedKeys;
 @end
 
 @implementation JLTidalAlbumArtCache
@@ -36,6 +39,7 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
         _imageCache.totalCostLimit = 50 * 1024 * 1024; // 50MB based on decompressed size
         _imageCache.countLimit = 500; // Hard cap on number of cached images
         _loadingKeys = [NSMutableSet set];
+        _failedKeys = [NSMutableSet set];
         _pendingCompletions = [NSMutableDictionary dictionary];
         _maxCacheSize = 50 * 1024 * 1024;
         _syncQueue = dispatch_queue_create("com.foobar2000.tidal.artcache", DISPATCH_QUEUE_SERIAL);
@@ -60,6 +64,14 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 - (void)loadImageForCoverID:(NSString *)coverID
                        size:(NSInteger)size
                  completion:(void (^)(NSImage * _Nullable image))completion {
+    [self loadImageForCoverID:coverID size:size kind:JLTidalArtKindAlbum completion:completion];
+}
+
+- (void)loadImageForCoverID:(NSString *)coverID
+                       size:(NSInteger)size
+                       kind:(JLTidalArtKind)kind
+                 completion:(void (^)(NSImage * _Nullable image))completion {
+    size = [[self class] normalizeSize:size kind:kind];
     if (!coverID.length) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -77,6 +89,8 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
     dispatch_sync(self.syncQueue, ^{
         cached = [self.imageCache objectForKey:cacheKey];
         if (cached) return;
+
+        if ([self.failedKeys containsObject:cacheKey]) return;
 
         if ([self.loadingKeys containsObject:cacheKey]) {
             // Already loading - add to pending completions
@@ -146,6 +160,8 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
             __block NSArray *completions = nil;
             dispatch_sync(self.syncQueue, ^{
                 [self.loadingKeys removeObject:cacheKey];
+                // Remember the miss so scrolling does not re-issue it forever.
+                if (!image) [self.failedKeys addObject:cacheKey];
                 completions = [self.pendingCompletions[cacheKey] copy];
                 [self.pendingCompletions removeObjectForKey:cacheKey];
             });
@@ -182,6 +198,9 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 }
 
 - (void)clearCache {
+    dispatch_sync(self.syncQueue, ^{
+        [self.failedKeys removeAllObjects];
+    });
     [self.imageCache removeAllObjects];
     dispatch_sync(self.syncQueue, ^{
         [self.loadingKeys removeAllObjects];
@@ -227,6 +246,19 @@ static NSString * const kTidalImageBaseURL = @"https://resources.tidal.com/image
 }
 
 + (NSInteger)normalizeSize:(NSInteger)size {
+    return [self normalizeSize:size kind:JLTidalArtKindAlbum];
+}
+
++ (NSInteger)normalizeSize:(NSInteger)size kind:(JLTidalArtKind)kind {
+    // Album covers have an 80x80 rendition; artist and playlist pictures do
+    // not, and asking for one returns 403. Probed live: artist 80 -> 403,
+    // 160/320/480/750 -> 200.
+    if (kind == JLTidalArtKindArtist || kind == JLTidalArtKindPlaylist) {
+        if (size <= 160) return 160;
+        if (size <= 320) return 320;
+        if (size <= 480) return 480;
+        return 750;
+    }
     // Tidal supports: 80, 160, 320, 640, 750, 1080, 1280
     if (size <= 80) return 80;
     if (size <= 160) return 160;

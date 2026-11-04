@@ -197,6 +197,37 @@ static void testQualityBadge(void) {
           "nil quality stays nil");
 }
 
+// mediaTags describes what Tidal actually holds, so it decides in both
+// directions -- not only as a downward cap.
+//
+// Note: array literals are assigned to locals first. A comma inside @[...] is
+// not protected from the preprocessor by the brackets, so passing one straight
+// into CHECK_STREQ splits the macro arguments.
+static void testQualityBadgeFromTags(void) {
+    NSArray<NSString *> *hiResTags = @[@"LOSSLESS", @"HIRES_LOSSLESS"];
+    NSArray<NSString *> *losslessTags = @[@"LOSSLESS"];
+    NSArray<NSString *> *lossyTags = @[@"SONY_360RA"];
+    NSString *q;
+
+    // Tags ahead of audioQuality: believe the tags.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:hiResTags];
+    CHECK_STREQ(q, @"HI_RES_LOSSLESS", "HIRES_LOSSLESS tag raises the badge");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:losslessTags];
+    CHECK_STREQ(q, @"LOSSLESS", "a lossless tag raises a HIGH claim");
+
+    // Tags behind the claim: cap it.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:lossyTags];
+    CHECK_STREQ(q, @"HIGH", "unbacked lossless claim is capped");
+
+    // Nothing to go on: leave it alone.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:nil];
+    CHECK_STREQ(q, @"LOSSLESS", "absent mediaMetadata leaves audioQuality untouched");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:@[]];
+    CHECK_STREQ(q, @"HIGH", "an empty tag list does not invent a quality");
+}
+
 int main(void) {
     @autoreleasepool {
         testActiveListMatrix();
@@ -206,6 +237,7 @@ int main(void) {
         testBackRouting();
         testModeChangeNoOps();
         testQualityBadge();
+        testQualityBadgeFromTags();
     }
     return testHarnessFinish("BrowserLogic");
 }

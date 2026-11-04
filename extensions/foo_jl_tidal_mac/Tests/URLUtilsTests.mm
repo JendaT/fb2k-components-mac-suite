@@ -156,6 +156,24 @@ static void testQualityPin(void) {
           "pinned URL round-trips");
 }
 
+// Only a track is playable. Album/playlist/artist URLs are Tidal URLs but must
+// not be claimed by the input, or they enter a playlist and die at play time.
+static void testPlayableTrackPredicate(void) {
+    CHECK(isPlayableTidalTrackURL("tidal://track/123456"), "internal track URL is playable");
+    CHECK(isPlayableTidalTrackURL("tidal://track/123456?q=LOSSLESS"), "pinned track is playable");
+    CHECK(isPlayableTidalTrackURL("https://tidal.com/browse/track/123456"), "web track URL is playable");
+    CHECK(isPlayableTidalTrackURL("https://listen.tidal.com/track/777"), "listen track URL is playable");
+
+    CHECK(!isPlayableTidalTrackURL("tidal://album/987"), "album URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://playlist/abc-def"), "playlist URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://artist/42"), "artist URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://track/12x"), "invalid id is not playable");
+    CHECK(!isPlayableTidalTrackURL("https://example.com/track/1"), "non-tidal host is not playable");
+    CHECK(!isPlayableTidalTrackURL("/Users/x/music.flac"), "local path is not playable");
+    CHECK(!isPlayableTidalTrackURL(""), "empty is not playable");
+    CHECK(!isPlayableTidalTrackURL(nullptr), "null is not playable");
+}
+
 int main(void) {
     @autoreleasepool {
         testParseTidalScheme();
@@ -164,6 +182,7 @@ int main(void) {
         testIDValidation();
         testIsTidalURL();
         testQualityPin();
+        testPlayableTrackPredicate();
     }
     return testHarnessFinish("URLUtils");
 }

@@ -23,8 +23,10 @@ static const char* const kDebugLogging = "debug_logging";
 static const char* const kCacheStreamUrls = "cache_stream_urls";
 static const char* const kDASHEnabled = "dash_enabled";
 static const char* const kLibraryRoot = "library_root";
+static const char* const kLastSaveFolder = "last_save_folder";
 static const char* const kGenreMap = "genre_map";
 static const char* const kSignInDisplay = "signin_display";
+static const char* const kUseReplayGain = "use_replaygain";
 // Hidden gate for the personal library-download feature. Deliberately absent
 // from the preferences UI: toggled by writing the config store directly, see
 // docs/hidden-options.md. Full key: "tidal.TI_download_on".
@@ -40,6 +42,10 @@ constexpr bool kDefaultDebugLogging = false;
 constexpr bool kDefaultCacheStreamUrls = true;
 constexpr bool kDefaultDASHEnabled = true;
 constexpr bool kDefaultDownloadEnabled = false;
+// On: Tidal's ReplayGain is the right data for anyone whose library is tagged.
+// The setting exists for libraries that are not, where applying it leaves
+// Tidal tracks several dB quieter than everything around them.
+constexpr bool kDefaultUseReplayGain = true;
 
 // What the browser panel shows in its idle status line.
 enum SignInDisplay {
@@ -90,9 +96,19 @@ public:
     static std::string getLibraryRoot();
     static void setLibraryRoot(const std::string& path);
 
+    // Where "Save to folder..." last saved, so the picker opens there.
+    static std::string getLastSaveFolder();
+    static void setLastSaveFolder(const std::string& path);
+
     // Persisted artist -> genre-collection choices, serialized JSON object.
     static std::string getGenreMapJSON();
     static void setGenreMapJSON(const std::string& json);
+
+    // Publish Tidal's ReplayGain values on Tidal tracks (see
+    // kDefaultUseReplayGain). foobar2000's own ReplayGain mode still decides
+    // whether any gain is applied.
+    static bool isReplayGainEnabled();
+    static void setReplayGainEnabled(bool enabled);
 
     // What the browser status line shows when idle (see SignInDisplay).
     static int getSignInDisplay();

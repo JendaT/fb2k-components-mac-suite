@@ -10,6 +10,7 @@
 #include "../fb2k_sdk.h"
 #include "../Core/TidalModels.h"
 #import "../Services/TidalStreamResolver.h"
+#import "TidalDashCache.h"
 #include <atomic>
 #include <optional>
 #include <string>
@@ -52,8 +53,20 @@ private:
     // Try to reopen on 403 error
     bool tryReopen(abort_callback& p_abort);
 
+    // Start a DASH FLAC track before its download finishes: open fb2k's FLAC
+    // decoder on the remuxed stream. False when the track cannot be served
+    // that way, leaving the caller to wait for the whole blob instead.
+    bool openProgressive(NSString* trackID, JLTidalPlaybackInfo* info, abort_callback& p_abort);
+
+    // Seek while still progressive: wait for the whole blob, then hand over
+    // to the MP4 demuxer, which can seek anywhere in it.
+    void seekProgressive(double p_seconds, abort_callback& p_abort);
+
     // Ask the resolver for this entry's stream, honouring its quality pin.
     void resolveStream(NSString* trackIDStr, JLTidalStreamResolverCompletion completion);
+
+    // Seconds of audio delivered so far (reset by seek).
+    double decodedSeconds() const { return m_decodedSeconds; }
 
     std::string m_trackID;
     // Quality pinned on the playlist entry ("?q="); empty = global preference.
@@ -62,8 +75,13 @@ private:
     __strong JLTidalPlaybackInfo* m_playbackInfo;
     __strong JLTidalTrack* m_trackInfo;
     service_ptr_t<input_decoder> m_decoder;
+    // Set while m_decoder reads a download still in flight (openProgressive).
+    __strong JLTidalDashStream* m_dashStream = nil;
     event_logger::ptr m_logger;
     std::atomic<bool> m_abortFlag;
+    // Decoded position, so a mid-track re-resolve can seek back to where
+    // playback actually was instead of restarting the track.
+    double m_decodedSeconds = 0.0;
     bool m_initialized;
     unsigned m_flags;
     t_uint32 m_subsong;
@@ -125,5 +143,11 @@ public:
     GUID get_preferences_guid() override;
     bool is_low_merit() override;
 };
+
+// Removes ReplayGain from the library's stored info for every Tidal track in
+// any playlist, without touching the network. The info reader stores what it
+// read, so switching "Use TIDAL ReplayGain" off would otherwise only reach
+// tracks whose info is read again. Main thread only. Returns tracks changed.
+size_t stripStoredTidalReplayGain();
 
 } // namespace tidal

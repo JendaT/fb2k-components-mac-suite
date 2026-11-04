@@ -53,6 +53,13 @@ typedef void (^JLTidalMetadataCompletion)(JLTidalTrack * _Nullable track, NSErro
 - (void)getMetadataForTrackID:(NSString *)trackID
                    completion:(JLTidalMetadataCompletion)completion;
 
+/// Pre-populate the metadata cache from an already-parsed list response.
+///
+/// fb2k opens an info reader per imported location, so without this a
+/// favourites pull of N tracks issues N authenticated GETs for data the
+/// browser and the sync engine already hold fully parsed in memory.
+- (void)seedMetadataForTracks:(NSArray<JLTidalTrack *> *)tracks;
+
 @end
 
 NS_ASSUME_NONNULL_END

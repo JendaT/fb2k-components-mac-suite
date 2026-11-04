@@ -21,6 +21,9 @@ static NSString * const kTidalTokenEndpoint = @"/v1/oauth2/token";
 // Main API endpoints
 static NSString * const kTidalAPIBaseURL = @"https://api.tidal.com";
 static NSString * const kTidalAPIv2BaseURL = @"https://listen.tidal.com/v2";
+// Official public API. Used for the ISRC filter, which the v1 surface has no
+// equivalent for (free-text search over a relevance ranking is not a lookup).
+static NSString * const kTidalOpenAPIBaseURL = @"https://openapi.tidal.com/v2";
 static NSString * const kTidalPlaybackInfoEndpoint = @"/v1/tracks/%@/playbackinfopostpaywall";
 static NSString * const kTidalTrackMetadataEndpoint = @"/v1/tracks/%@";
 

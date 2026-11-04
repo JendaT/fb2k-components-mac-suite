@@ -6,6 +6,10 @@
 //
 
 #import "TidalPlaylistSync.h"
+#import "TidalErrors.h"
+#include <atomic>
+#include <memory>
+#import "../Services/TidalStreamResolver.h"
 #import "TidalConfig.h"
 #import "TidalModels.h"
 #import "SyncPlanner.h"
@@ -87,6 +91,7 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
     __block NSArray<JLTidalTrack *> *favTracks = nil;
     __block NSArray<JLTidalAlbum *> *favAlbums = nil;
     __block NSError *playlistsError = nil;
+    __block NSError *foldersError = nil;
     __block NSError *favTracksError = nil;
     __block NSError *favAlbumsError = nil;
 
@@ -98,12 +103,18 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         dispatch_group_leave(group);
     }];
 
-    // Fetch folders (v2 - may fail; flat structure is an acceptable fallback)
+    // Fetch folders (v2). NOT an acceptable fallback to treat as empty: local
+    // names embed the folder path, so an empty folder list renames every
+    // foldered playlist to a flat "TIDAL > X" and the planner then proposes
+    // Delete for every local name that no longer appears -- exactly the
+    // "a failed fetch is never an empty collection" rule stated three lines
+    // below for favourites.
     dispatch_group_enter(group);
     [[JLTidalAPI shared] getPlaylistFoldersWithCompletion:^(NSArray<JLTidalPlaylistFolder *> *result, NSError *error) {
         if (error) {
-            tidal::logDebug([[NSString stringWithFormat:@"PlaylistSync: folder fetch failed (will use flat structure): %@",
+            tidal::logError([[NSString stringWithFormat:@"PlaylistSync: folder fetch failed: %@",
                               error.localizedDescription] UTF8String]);
+            foldersError = error;
         }
         folders = result ?: @[];
         dispatch_group_leave(group);
@@ -131,6 +142,13 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
             // Without the authoritative playlist list nothing can be planned
             // safely - in particular no deletes may be proposed.
             completion(nil, playlistsError);
+            return;
+        }
+        if (foldersError) {
+            // Same reasoning: local names embed the folder path, so planning
+            // against an unverified folder tree proposes a rename (Create +
+            // Delete) for every foldered playlist.
+            completion(nil, foldersError);
             return;
         }
 
@@ -377,8 +395,14 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                  completion:(void (^)(BOOL, NSError *))completion {
     tidal::logInfo("PlaylistSync: applying pull from Tidal");
 
+    // Imports are asynchronous; the group keeps the completion honest by
+    // holding it until every one of them has landed. The counter turns a
+    // silent partial failure into a reported one.
+    dispatch_group_t importGroup = dispatch_group_create();
+    auto failureCount = std::make_shared<std::atomic<int>>(0);
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        fb2k::inMainThread([self, report, completion]() {
+        fb2k::inMainThread([self, report, completion, importGroup, failureCount]() {
             auto pm = playlist_manager::get();
 
             for (JLTidalSyncChange *change in report.changes) {
@@ -390,7 +414,8 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                         if (newIdx != SIZE_MAX) {
                             NSArray<JLTidalTrack *> *tracks = self.cachedPlaylistTracks[change.tidalUUID];
                             if (tracks.count > 0) {
-                                [self addTracks:tracks toPlaylistIndex:newIdx];
+                                [self addTracks:tracks toPlaylistIndex:newIdx
+                                    importGroup:importGroup failureCount:failureCount.get()];
                             }
                             // Install sync lock
                             tidal::installSyncLock(newIdx);
@@ -413,7 +438,8 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                             pm->playlist_clear(idx);
                             NSArray<JLTidalTrack *> *tracks = self.cachedPlaylistTracks[change.tidalUUID];
                             if (tracks.count > 0) {
-                                [self addTracks:tracks toPlaylistIndex:idx];
+                                [self addTracks:tracks toPlaylistIndex:idx
+                                    importGroup:importGroup failureCount:failureCount.get()];
                             }
                         }
                         break;
@@ -422,16 +448,33 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                     case JLTidalSyncChangeTypeDelete: {
                         pfc::string8 name([change.playlistName UTF8String]);
                         t_size idx = pm->find_playlist(name, name.length());
+                        BOOL removed = NO;
                         if (idx != SIZE_MAX) {
-                            pm->remove_playlist(idx);
-                        }
-                        // Remove mapping (stateQueue-confined)
-                        dispatch_sync(self.stateQueue, ^{
-                            if (change.tidalUUID) {
-                                [self.uuidToNameMap removeObjectForKey:change.tidalUUID];
+                            // Our own lock blocks playlist removal, so this
+                            // call quietly failed while the mapping was dropped
+                            // anyway -- the Delete was then re-proposed on every
+                            // later pull, and push saw an unmapped playlist and
+                            // created a remote duplicate.
+                            tidal::removeSyncLock(idx);
+                            removed = pm->remove_playlist(idx);
+                            if (!removed) {
+                                tidal::logError([[NSString stringWithFormat:
+                                    @"Could not remove playlist \"%@\"; keeping its mapping",
+                                    change.playlistName] UTF8String]);
                             }
-                            [self.nameToUUIDMap removeObjectForKey:change.playlistName];
-                        });
+                        } else {
+                            removed = YES;  // already gone locally
+                        }
+
+                        // Drop the mapping only when the playlist is really gone.
+                        if (removed) {
+                            dispatch_sync(self.stateQueue, ^{
+                                if (change.tidalUUID) {
+                                    [self.uuidToNameMap removeObjectForKey:change.tidalUUID];
+                                }
+                                [self.nameToUUIDMap removeObjectForKey:change.playlistName];
+                            });
+                        }
                         break;
                     }
 
@@ -440,8 +483,25 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                 }
             }
 
-            // Handle favorite albums that need track fetching
-            [self fetchAndApplyFavoriteAlbums:report completion:completion];
+            // Handle favorite albums that need track fetching, then wait for
+            // every queued import before telling the caller we are done.
+            [self fetchAndApplyFavoriteAlbums:report
+                                  importGroup:importGroup
+                                 failureCount:failureCount.get()
+                                   completion:^(BOOL ok, NSError *error) {
+                dispatch_group_notify(importGroup,
+                                      dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    int failures = failureCount->load();
+                    if (failures > 0) {
+                        tidal::logError([[NSString stringWithFormat:
+                            @"PlaylistSync: pull finished with %d failed import(s)", failures] UTF8String]);
+                        completion(NO, error ?: JLTidalError(JLTidalErrorInternal,
+                            [NSString stringWithFormat:@"%d playlist import(s) failed", failures]));
+                        return;
+                    }
+                    completion(ok, error);
+                });
+            }];
         });
     });
 }
@@ -524,6 +584,18 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                     return;
                 }
 
+                // Record the mapping as soon as the remote playlist exists.
+                // Deferring it until after the tracks were added meant that any
+                // failure in between -- most realistically a 429 on the ETag
+                // probe -- left an empty playlist on the TIDAL account with no
+                // local mapping, so the next push created another one.
+                if (playlist.playlistUUID) {
+                    dispatch_sync(self.stateQueue, ^{
+                        self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
+                        self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
+                    });
+                }
+
                 // Add tracks from foobar playlist (with ISRC resolution)
                 [self resolveTidalTrackIDsFromFoobarPlaylist:change.playlistName
                                                  completion:^(NSArray<NSString *> *trackIDs) {
@@ -538,24 +610,29 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                                                      completion:^(BOOL success, NSError *addError) {
                                     dispatch_sync(self.stateQueue, ^{
                                         if (addError && !firstError) firstError = addError;
-                                        self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
-                                        self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
                                     });
                                     // Mappings are persisted once, after the group completes
                                     dispatch_group_leave(group);
                                 }];
                             } else {
+                                // The playlist was created but its tracks were
+                                // not added. Reporting success here is what made
+                                // "Push complete" appear over an empty remote
+                                // playlist.
+                                tidal::logError([[NSString stringWithFormat:
+                                    @"Push: created \"%@\" but could not read its ETag: %@",
+                                    change.playlistName,
+                                    etagError.localizedDescription ?: @"no ETag in response"] UTF8String]);
+                                dispatch_sync(self.stateQueue, ^{
+                                    if (!firstError) {
+                                        firstError = etagError ?: JLTidalError(JLTidalErrorInvalidResponse,
+                                            @"Playlist created but its ETag could not be read");
+                                    }
+                                });
                                 dispatch_group_leave(group);
                             }
                         }];
                     } else {
-                        if (playlist.playlistUUID) {
-                            dispatch_sync(self.stateQueue, ^{
-                                self.uuidToNameMap[playlist.playlistUUID] = change.playlistName;
-                                self.nameToUUIDMap[change.playlistName] = playlist.playlistUUID;
-                            });
-                            // Mappings are persisted once, after the group completes
-                        }
                         dispatch_group_leave(group);
                     }
                 }];
@@ -597,33 +674,98 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 
 #pragma mark - Helpers
 
-/// Notify class for async track import during sync
+/// Playlist identity that survives the wait for an async import.
+///
+/// process_locations_async returns immediately, and applyPull goes on to
+/// delete playlists in the same loop -- every removal shifts the indices
+/// above it. A captured index therefore names a different playlist by the
+/// time the import lands: tracks were dropped by the bounds check, or worse,
+/// appended to whichever playlist had slid into that slot. A GUID names the
+/// same playlist or nothing at all.
+static GUID capturePlaylistGUID(t_size playlistIdx) {
+    playlist_manager_v5::ptr pm5;
+    if (playlist_manager_v5::tryGet(pm5)) {
+        return pm5->playlist_get_guid(playlistIdx);
+    }
+    return pfc::guid_null;  // pre-2.0 host: fall back to the index
+}
+
+/// Re-resolve at completion time. Returns SIZE_MAX when the playlist is gone,
+/// which the caller must treat as "drop these tracks", not "use index 0".
+static t_size resolvePlaylistIndex(const GUID &guid, t_size fallbackIdx) {
+    playlist_manager_v5::ptr pm5;
+    if (playlist_manager_v5::tryGet(pm5) && guid != pfc::guid_null) {
+        return pm5->find_playlist_by_guid(guid);
+    }
+    return fallbackIdx;
+}
+
+/// Notify class for async track import during sync.
+///
+/// Imports are network-bound and land long after applyPull's loop returns, so
+/// the caller has to be able to wait for them: reporting "Pull complete" over
+/// still-empty playlists let a second preview taken inside that window snapshot
+/// them as empty, plan an Update, and double every track when both imports
+/// landed. The group is left exactly once, on either outcome.
 class TidalSyncImportNotify : public process_locations_notify {
 public:
-    t_size m_playlistIndex;
+    GUID m_playlistGUID;
+    t_size m_playlistIndex;  // fallback only, for hosts without playlist_manager_v5
     pfc::string_list_impl m_paths;
+    dispatch_group_t m_group;
+    std::atomic<int> *m_failureCount;
 
-    TidalSyncImportNotify(t_size playlistIndex)
-        : m_playlistIndex(playlistIndex) {}
+    TidalSyncImportNotify(GUID playlistGUID, t_size playlistIndex,
+                          dispatch_group_t group, std::atomic<int> *failureCount)
+        : m_playlistGUID(playlistGUID), m_playlistIndex(playlistIndex),
+          m_group(group), m_failureCount(failureCount) {}
 
     void on_completion(metadb_handle_list_cref items) override {
         if (items.get_count() > 0) {
             auto pm = playlist_manager::get();
-            if (m_playlistIndex < pm->get_playlist_count()) {
-                pm->playlist_undo_backup(m_playlistIndex);
+            t_size idx = resolvePlaylistIndex(m_playlistGUID, m_playlistIndex);
+            if (idx < pm->get_playlist_count()) {
+                pm->playlist_undo_backup(idx);
                 pfc::bit_array_false noSelect;
-                pm->playlist_insert_items(m_playlistIndex, SIZE_MAX, items, noSelect);
+                pm->playlist_insert_items(idx, SIZE_MAX, items, noSelect);
+            } else {
+                tidal::logError("Sync import: target playlist no longer exists, tracks dropped");
+                if (m_failureCount) m_failureCount->fetch_add(1);
             }
+        } else if (m_paths.get_count() > 0) {
+            tidal::logError("Sync import: no items resolved from the requested locations");
+            if (m_failureCount) m_failureCount->fetch_add(1);
         }
+        finish();
     }
 
-    void on_aborted() override {}
+    void on_aborted() override {
+        tidal::logError("Sync import aborted");
+        if (m_failureCount) m_failureCount->fetch_add(1);
+        finish();
+    }
+
+private:
+    std::atomic<bool> m_finished{false};
+    void finish() {
+        if (m_group && !m_finished.exchange(true)) dispatch_group_leave(m_group);
+    }
 };
 
-- (void)addTracks:(NSArray<JLTidalTrack *> *)tracks toPlaylistIndex:(t_size)playlistIdx {
+- (void)addTracks:(NSArray<JLTidalTrack *> *)tracks
+  toPlaylistIndex:(t_size)playlistIdx
+     importGroup:(dispatch_group_t)importGroup
+    failureCount:(std::atomic<int> *)failureCount {
     if (tracks.count == 0) return;
 
-    auto notify = new service_impl_t<TidalSyncImportNotify>(playlistIdx);
+    // fb2k opens an info reader per imported location. Without this, a pull of
+    // N tracks issues N authenticated GETs from the loader thread for metadata
+    // we already hold fully parsed.
+    [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+
+    if (importGroup) dispatch_group_enter(importGroup);
+    auto notify = new service_impl_t<TidalSyncImportNotify>(
+        capturePlaylistGUID(playlistIdx), playlistIdx, importGroup, failureCount);
     for (JLTidalTrack *track in tracks) {
         NSString *url = [NSString stringWithFormat:@"tidal://track/%@", track.trackID];
         notify->m_paths.add_item([url UTF8String]);
@@ -788,6 +930,8 @@ public:
 }
 
 - (void)fetchAndApplyFavoriteAlbums:(JLTidalSyncReport *)report
+                        importGroup:(dispatch_group_t)importGroup
+                       failureCount:(std::atomic<int> *)failureCount
                          completion:(void (^)(BOOL, NSError *))completion {
     // Find album changes that need track fetching
     NSMutableArray<JLTidalSyncChange *> *albumChanges = [NSMutableArray array];
@@ -814,12 +958,13 @@ public:
         dispatch_group_enter(group);
         [[JLTidalAPI shared] getAlbumTracksForAlbumID:albumID completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
             if (tracks.count > 0) {
-                fb2k::inMainThread([self, change, tracks]() {
+                fb2k::inMainThread([self, change, tracks, importGroup, failureCount]() {
                     auto pm = playlist_manager::get();
                     pfc::string8 name([change.playlistName UTF8String]);
                     t_size idx = pm->find_playlist(name, name.length());
                     if (idx != SIZE_MAX) {
-                        [self addTracks:tracks toPlaylistIndex:idx];
+                        [self addTracks:tracks toPlaylistIndex:idx
+                            importGroup:importGroup failureCount:failureCount];
                     }
                 });
             }
@@ -928,10 +1073,39 @@ public:
 }
 
 - (NSString *)mappingFilePath {
+    // The fb2k v2 profile is ~/Library/foobar2000-v2, not
+    // ~/Library/Application Support/foobar2000-v2. Storing the mapping in the
+    // wrong tree meant it did not travel with a copied or restored profile --
+    // and because pull records a mapping only on Create, a lost entry never
+    // comes back: every pull then reports Unchanged while every push proposes
+    // a full remote duplicate.
+    NSString *library = NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *profileDir = [library stringByAppendingPathComponent:@"foobar2000-v2"];
+    NSString *profilePath = [profileDir stringByAppendingPathComponent:@"tidal_sync_map.plist"];
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:profilePath]) return profilePath;
+
+    // One-time migration from the old Application Support location.
     NSString *appSupport = NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *dir = [appSupport stringByAppendingPathComponent:@"foobar2000-v2"];
-    return [dir stringByAppendingPathComponent:@"tidal_sync_map.plist"];
+    NSString *legacyPath = [[appSupport stringByAppendingPathComponent:@"foobar2000-v2"]
+                            stringByAppendingPathComponent:@"tidal_sync_map.plist"];
+    if ([fm fileExistsAtPath:legacyPath]) {
+        NSError *error = nil;
+        [fm createDirectoryAtPath:profileDir withIntermediateDirectories:YES
+                       attributes:nil error:nil];
+        if ([fm copyItemAtPath:legacyPath toPath:profilePath error:&error]) {
+            tidal::logInfo("PlaylistSync: migrated sync map into the foobar2000 profile");
+        } else {
+            tidal::logError([[NSString stringWithFormat:
+                @"PlaylistSync: could not migrate sync map (%@); using the old location",
+                error.localizedDescription ?: @"unknown error"] UTF8String]);
+            return legacyPath;
+        }
+    }
+    return profilePath;
 }
 
 @end

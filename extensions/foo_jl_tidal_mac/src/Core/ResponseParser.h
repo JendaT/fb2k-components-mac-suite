@@ -20,6 +20,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface JLTidalResponseParser : NSObject
 
+/// Extract `data[].id` from a JSON:API collection document (openapi.tidal.com).
+/// Non-string ids and malformed entries are skipped.
++ (NSArray<NSString *> *)trackIDsFromJSONAPIData:(nullable id)data;
+
 #pragma mark - OAuth token responses
 
 /// Parse a token response (device-code grant). Returns nil when

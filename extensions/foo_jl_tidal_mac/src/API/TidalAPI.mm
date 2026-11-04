@@ -9,7 +9,12 @@
 #import "TidalAPIPrivate.h"
 #import "RateLimiter.h"
 #import "../Core/TidalErrors.h"
-#import "../Core/TidalConfig.h"
+// TidalLog, not TidalConfig: the only thing this file wanted from TidalConfig
+// was tidal::log*, and that one include was what bound the whole API client to
+// the fb2k SDK -- keeping 1200 lines of transport logic (401 retry, retry
+// ladder, countryCode injection, pagination) out of a Foundation-only test
+// harness. See docs/design for the planned NSURLProtocol mock tier.
+#include "../Core/TidalLog.h"
 #import "../Core/TidalModels.h"
 #import "../Core/HTTPResponsePolicy.h"
 #import "../Core/PaginationPolicy.h"
@@ -230,7 +235,19 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
         // verificationURI is declared nonnull; an unparseable URL string is a
         // missing-field error, not a nil passed through the contract.
-        NSURL *verificationURL = verificationUri ? [NSURL URLWithString:verificationUri] : nil;
+        //
+        // TIDAL returns these bare ("link.tidal.com/ABCDE"), and NSURL then
+        // builds a scheme-less relative URL that NSWorkspace cannot open --
+        // which is why the completed URI, the one carrying the user's code,
+        // was never usable and a hardcoded landing page was opened instead.
+        NSURL *(^absoluteURL)(NSString *) = ^NSURL *(NSString *raw) {
+            if (![raw isKindOfClass:[NSString class]] || raw.length == 0) return nil;
+            NSString *withScheme = [raw containsString:@"://"]
+                ? raw
+                : [@"https://" stringByAppendingString:raw];
+            return [NSURL URLWithString:withScheme];
+        };
+        NSURL *verificationURL = absoluteURL(verificationUri);
         if (!deviceCode || !userCode || !verificationURL) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Missing required fields"));
             return;
@@ -240,7 +257,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
             initWithDeviceCode:deviceCode
                       userCode:userCode
                verificationURI:verificationURL
-       verificationURIComplete:verificationUriComplete ? [NSURL URLWithString:verificationUriComplete] : nil
+       verificationURIComplete:absoluteURL(verificationUriComplete)
                      expiresIn:expiresIn.doubleValue
                       interval:interval.doubleValue];
 
@@ -351,20 +368,40 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
             ? (NSHTTPURLResponse *)response : nil;
         if (httpResponse.statusCode != 200) {
-            // Log response body for debugging refresh failures
+            // Log response body for debugging refresh failures, and classify:
+            // the caller must be able to tell a rejected grant (wipe the
+            // session, ask for a new pairing) from a 503 or a 429 (keep it and
+            // retry). Without this, one flaky minute costs the stored session.
             NSString *errorDetail = @"";
+            NSString *oauthError = nil;
             if (data.length > 0) {
                 NSDictionary *errorJson = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                 if (![errorJson isKindOfClass:[NSDictionary class]]) errorJson = nil;
                 if (errorJson) {
+                    if ([errorJson[@"error"] isKindOfClass:[NSString class]]) {
+                        oauthError = errorJson[@"error"];
+                    }
                     errorDetail = [NSString stringWithFormat:@" (%@: %@)",
-                                   errorJson[@"error"] ?: @"unknown",
+                                   oauthError ?: @"unknown",
                                    errorJson[@"error_description"] ?: errorJson[@"sub_status"] ?: @""];
                 }
             }
             tidal::logError([[NSString stringWithFormat:@"Token refresh HTTP %ld%@",
                               (long)httpResponse.statusCode, errorDetail] UTF8String]);
-            completion(nil, JLTidalError(JLTidalErrorTokenRefreshFailed,
+
+            // The five codes TIDAL's Auth.md names as logout triggers. Anything
+            // else -- including every 5xx and 429 -- stays recoverable.
+            static NSSet<NSString *> *terminalErrors = nil;
+            static dispatch_once_t terminalOnce;
+            dispatch_once(&terminalOnce, ^{
+                terminalErrors = [NSSet setWithArray:@[@"invalid_grant", @"unauthorized_client",
+                                                       @"invalid_request", @"access_denied",
+                                                       @"invalid_client"]];
+            });
+            BOOL terminal = oauthError && [terminalErrors containsObject:oauthError] &&
+                            (httpResponse.statusCode == 400 || httpResponse.statusCode == 401);
+
+            completion(nil, JLTidalError(terminal ? JLTidalErrorInvalidGrant : JLTidalErrorTokenRefreshFailed,
                 [NSString stringWithFormat:@"HTTP %ld%@", (long)httpResponse.statusCode, errorDetail]));
             return;
         }
@@ -402,7 +439,12 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                        completion:(JLTidalDataCompletion)completion {
     NSString *qualityStr = JLTidalQualityToString(quality);
 
-    NSString *urlStr = [NSString stringWithFormat:@"%@%@?audioquality=%@&playbackmode=STREAM&assetpresentation=FULL",
+    // immersiveaudio=false: for a track whose album also has a Dolby Atmos
+    // edition, TIDAL otherwise answers with the immersive asset -- E-AC-3 or
+    // AC-4, reported as audioQuality=LOW -- in place of the stereo master.
+    // Every serious client opts out of it (music-assistant, tiddl, kodi).
+    NSString *urlStr = [NSString stringWithFormat:
+                        @"%@%@?audioquality=%@&playbackmode=STREAM&assetpresentation=FULL&immersiveaudio=false",
                         kTidalAPIBaseURL,
                         [NSString stringWithFormat:kTidalPlaybackInfoEndpoint, trackID],
                         qualityStr];
@@ -518,14 +560,16 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 #pragma mark - Album API
 
 - (void)getAlbumTracksForAlbumID:(NSString *)albumID
+                           limit:(NSInteger)limit
+                          offset:(NSInteger)offset
                       completion:(JLTidalTracksCompletion)completion {
     if (!albumID.length) {
         completion(@[], nil);
         return;
     }
 
-    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/albums/%@/tracks?limit=100",
-                        kTidalAPIBaseURL, albumID];
+    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/albums/%@/tracks?limit=%ld&offset=%ld",
+                        kTidalAPIBaseURL, albumID, (long)limit, (long)offset];
 
     NSURL *url = [NSURL URLWithString:urlStr];
 
@@ -537,9 +581,36 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
         NSArray<JLTidalTrack *> *tracks =
             [JLTidalResponseParser tracksFromItems:json[@"items"]];
-        tidal::logDebug([[NSString stringWithFormat:@"Album %@ has %lu tracks",
-                          albumID, (unsigned long)tracks.count] UTF8String]);
+        tidal::logDebug([[NSString stringWithFormat:@"Album %@ page at %ld: %lu tracks",
+                          albumID, (long)offset, (unsigned long)tracks.count] UTF8String]);
         completion(tracks, nil);
+    }];
+}
+
+// A box set runs past 100 tracks, and a single page silently truncated it in
+// browse, add, import and favourite-album sync -- while the sync report showed
+// the album's true numberOfTracks. Paginate like every other collection.
+- (void)getAlbumTracksForAlbumID:(NSString *)albumID
+                      completion:(JLTidalTracksCompletion)completion {
+    if (!albumID.length) {
+        completion(@[], nil);
+        return;
+    }
+
+    JLTidalPageFetch pageFetch = ^(NSInteger limit, NSInteger offset, JLTidalPageCompletion pageCompletion) {
+        [self getAlbumTracksForAlbumID:albumID limit:limit offset:offset
+                            completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+            pageCompletion(tracks, error);
+        }];
+    };
+
+    [self fetchAllPagesWithLimit:100
+                          offset:0
+                     accumulated:[NSMutableArray array]
+                     description:[NSString stringWithFormat:@"album %@ tracks", albumID]
+                       pageFetch:pageFetch
+                      completion:^(NSArray *tracks, NSError *error) {
+        completion((NSArray<JLTidalTrack *> *)tracks, error);
     }];
 }
 
@@ -580,23 +651,54 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         return;
     }
 
-    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/artists/%@/albums?limit=%ld",
-                        kTidalAPIBaseURL, artistID, (long)limit];
+    // Without an explicit filter this endpoint lists full albums only, so an
+    // artist with nothing but EPs or singles read as "no albums" and fell
+    // through to top tracks. Fetch the default listing plus EPSANDSINGLES and
+    // COMPILATIONS, then merge by album id, keeping first-seen order.
+    NSArray<NSString *> *filters = @[@"", @"EPSANDSINGLES", @"COMPILATIONS"];
+    NSMutableArray<JLTidalAlbum *> *merged = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_queue_t mergeQueue = dispatch_queue_create("com.foobar2000.tidal.artistalbums", DISPATCH_QUEUE_SERIAL);
+    __block NSError *firstError = nil;
 
-    NSURL *url = [NSURL URLWithString:urlStr];
+    for (NSString *filter in filters) {
+        NSString *urlStr = filter.length > 0
+            ? [NSString stringWithFormat:@"%@/v1/artists/%@/albums?limit=%ld&filter=%@",
+               kTidalAPIBaseURL, artistID, (long)limit, filter]
+            : [NSString stringWithFormat:@"%@/v1/artists/%@/albums?limit=%ld",
+               kTidalAPIBaseURL, artistID, (long)limit];
+        NSURL *url = [NSURL URLWithString:urlStr];
 
-    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) {
-            completion(nil, error);
+        dispatch_group_enter(group);
+        [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+            NSArray<JLTidalAlbum *> *albums = error
+                ? @[]
+                : [JLTidalResponseParser albumsFromItems:json[@"items"]];
+            dispatch_async(mergeQueue, ^{
+                // Only the unfiltered listing failing is worth reporting: the
+                // filtered ones are extras, and older accounts may not have them.
+                if (error && filter.length == 0 && !firstError) firstError = error;
+                for (JLTidalAlbum *album in albums) {
+                    if (album.albumID.length && ![seen containsObject:album.albumID]) {
+                        [seen addObject:album.albumID];
+                        [merged addObject:album];
+                    }
+                }
+                dispatch_group_leave(group);
+            });
+        }];
+    }
+
+    dispatch_group_notify(group, mergeQueue, ^{
+        if (firstError && merged.count == 0) {
+            completion(nil, firstError);
             return;
         }
-
-        NSArray<JLTidalAlbum *> *albums =
-            [JLTidalResponseParser albumsFromItems:json[@"items"]];
-        tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu albums",
-                          artistID, (unsigned long)albums.count] UTF8String]);
-        completion(albums, nil);
-    }];
+        tidal::logDebug([[NSString stringWithFormat:@"Artist %@ has %lu releases (albums + EPs/singles + compilations)",
+                          artistID, (unsigned long)merged.count] UTF8String]);
+        completion([merged copy], nil);
+    });
 }
 
 #pragma mark - Favorites API
@@ -707,7 +809,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
     NSURL *url = [NSURL URLWithString:urlStr];
 
-    [self requestWithURL:url method:@"POST" body:@{@"trackIds": trackID}
+    [self requestWithURL:url method:@"POST" body:@{@"trackIds": trackID} formEncoded:YES headers:nil
               completion:^(NSDictionary *json, NSError *error) {
         if (error) {
             // 200 or 201 both indicate success; some errors may still be "already favorited"
@@ -850,7 +952,8 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         body[@"description"] = description;
     }
 
-    [self requestWithURL:url method:@"POST" body:body completion:^(NSDictionary *json, NSError *error) {
+    [self requestWithURL:url method:@"POST" body:body formEncoded:YES headers:nil
+              completion:^(NSDictionary *json, NSError *error) {
         if (error) {
             completion(nil, error);
             return;
@@ -884,7 +987,8 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
     NSDictionary *headers = etag.length > 0 ? @{@"If-None-Match": etag} : nil;
 
-    [self requestWithURL:url method:@"POST" body:body headers:headers completion:^(NSDictionary *json, NSError *error) {
+    [self requestWithURL:url method:@"POST" body:body formEncoded:YES headers:headers
+              completion:^(NSDictionary *json, NSError *error) {
         if (error) {
             completion(NO, error);
         } else {
@@ -960,35 +1064,19 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                         kTidalAPIBaseURL, playlistUUID];
     NSURL *url = [NSURL URLWithString:urlStr];
 
-    // We need the raw response headers, so do a manual request
-    JLTidalSession *session = self.session;
-    if (!session.isValid) {
-        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
-        return;
-    }
-
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    request.HTTPMethod = @"GET";
-    [request setValue:[NSString stringWithFormat:@"Bearer %@", session.accessToken]
-   forHTTPHeaderField:@"Authorization"];
-
-    NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
-                                                   completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    // Routed through the shared pipeline so the probe inherits token refresh,
+    // rate limiting, countryCode injection, bounded retry and status mapping.
+    // It used to be a hand-rolled NSURLSession request that mapped every
+    // non-200 -- 401, 429 and 5xx alike -- to a generic "HTTP %ld", and it runs
+    // immediately after a side-effecting createPlaylist.
+    [self requestWithURL:url method:@"GET" body:nil headers:nil
+       headersCompletion:^(NSDictionary *json, NSDictionary *responseHeaders, NSError *error) {
         if (error) {
-            completion(nil, JLTidalError(JLTidalErrorNetworkFailure, error.localizedDescription));
+            completion(nil, error);
             return;
         }
 
-        NSHTTPURLResponse *httpResponse = [response isKindOfClass:[NSHTTPURLResponse class]]
-            ? (NSHTTPURLResponse *)response : nil;
-        if (httpResponse.statusCode != 200) {
-            completion(nil, JLTidalError(JLTidalErrorInvalidResponse,
-                [NSString stringWithFormat:@"HTTP %ld", (long)httpResponse.statusCode]));
-            return;
-        }
-
-        NSString *etag = httpResponse.allHeaderFields[@"ETag"]
-                      ?: httpResponse.allHeaderFields[@"etag"];
+        NSString *etag = responseHeaders[@"ETag"] ?: responseHeaders[@"etag"];
         if (!etag.length) {
             completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"No ETag in response"));
             return;
@@ -998,7 +1086,6 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                           playlistUUID, etag] UTF8String]);
         completion(etag, nil);
     }];
-    [task resume];
 }
 
 - (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion {
@@ -1027,27 +1114,87 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         return;
     }
 
-    // Use search API with ISRC as query (v1 approach)
-    NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search/tracks?query=%@&limit=5",
-                        kTidalAPIBaseURL,
-                        JLTidalQueryValueEncode(isrc)];
-    NSURL *url = [NSURL URLWithString:urlStr];
+    // The official endpoint filters by ISRC directly. Free-text search over a
+    // relevance ranking was never a reliable lookup: with limit=5 a real match
+    // ranked sixth was simply dropped, and push sync then omitted the track
+    // while reporting success. Search stays as a fallback for the case where
+    // this client is not entitled to the v2 API.
+    NSString *countryCode = self.session.countryCode ?: @"US";
+    NSString *v2URLStr = [NSString stringWithFormat:
+                          @"%@/tracks?countryCode=%@&filter%%5Bisrc%%5D=%@",
+                          kTidalOpenAPIBaseURL,
+                          JLTidalQueryValueEncode(countryCode),
+                          JLTidalQueryValueEncode(isrc)];
+    NSURL *v2URL = [NSURL URLWithString:v2URLStr];
 
-    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
-        if (error) {
-            completion(nil, error);
+    [self requestWithURL:v2URL method:@"GET" body:nil
+                 headers:@{@"Accept": @"application/vnd.api+json"}
+              completion:^(NSDictionary *json, NSError *error) {
+        if (!error) {
+            NSArray<NSString *> *ids = [JLTidalResponseParser trackIDsFromJSONAPIData:json[@"data"]];
+            if (ids.count > 0) {
+                tidal::logDebug([[NSString stringWithFormat:@"ISRC %@: %lu match(es) via filter[isrc]",
+                                  isrc, (unsigned long)ids.count] UTF8String]);
+                [self getTrackMetadataForTrackID:ids.firstObject
+                                      completion:^(NSDictionary *trackJson, NSError *metaError) {
+                    if (metaError || !trackJson) {
+                        completion(@[], nil);
+                        return;
+                    }
+                    JLTidalTrack *track = [[JLTidalTrack alloc] initWithDictionary:trackJson];
+                    completion(track.trackID.length ? @[track] : @[], nil);
+                }];
+                return;
+            }
+            tidal::logDebug([[NSString stringWithFormat:@"ISRC %@: no filter[isrc] match", isrc] UTF8String]);
+            completion(@[], nil);
             return;
         }
 
-        NSArray<JLTidalTrack *> *matches =
-            [JLTidalResponseParser tracksFromItems:json[@"items"] matchingISRC:isrc];
-        tidal::logDebug([[NSString stringWithFormat:@"ISRC lookup %@: %lu matches",
-                          isrc, (unsigned long)matches.count] UTF8String]);
-        completion(matches, nil);
+        tidal::logDebug([[NSString stringWithFormat:
+                          @"ISRC %@: filter[isrc] unavailable (%@), falling back to search",
+                          isrc, error.localizedDescription] UTF8String]);
+
+        NSString *urlStr = [NSString stringWithFormat:@"%@/v1/search/tracks?query=%@&limit=25",
+                            kTidalAPIBaseURL,
+                            JLTidalQueryValueEncode(isrc)];
+        NSURL *url = [NSURL URLWithString:urlStr];
+
+        [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json2, NSError *searchError) {
+            if (searchError) {
+                completion(nil, searchError);
+                return;
+            }
+            NSArray<JLTidalTrack *> *matches =
+                [JLTidalResponseParser tracksFromItems:json2[@"items"] matchingISRC:isrc];
+            tidal::logDebug([[NSString stringWithFormat:@"ISRC lookup %@: %lu matches via search",
+                              isrc, (unsigned long)matches.count] UTF8String]);
+            completion(matches, nil);
+        }];
     }];
 }
 
+- (void)cancelAllRequests {
+    [self.urlSession invalidateAndCancel];
+    tidal::logDebug("API session invalidated");
+}
+
 #pragma mark - Generic Request
+
+// Ceiling on requests in flight at once. Push apply, favourite-album fill and
+// the browser's favourite mutations all loop one request per item with no
+// pacing of their own, and the reactive limiter only engages after a 429 has
+// already landed -- which is not retried, so one 429 could fail a whole push
+// after some playlists had already been created remotely. Other clients pace
+// similarly (music-assistant 4/s, strawberry 3 per queue).
+static const long kMaxInFlightRequests = 4;
+
+static dispatch_semaphore_t inFlightGate(void) {
+    static dispatch_semaphore_t gate;
+    static dispatch_once_t tok;
+    dispatch_once(&tok, ^{ gate = dispatch_semaphore_create(kMaxInFlightRequests); });
+    return gate;
+}
 
 - (void)requestWithURL:(NSURL *)url
                 method:(NSString *)method
@@ -1061,16 +1208,79 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                   body:(NSDictionary *)body
                headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
             completion:(JLTidalDataCompletion)completion {
-    // Check rate limiting
-    NSTimeInterval delay = [[JLTidalRateLimiter shared] currentDelay];
-    if (delay > 0) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [self performRequestWithURL:url method:method body:body headers:extraHeaders completion:completion];
-        });
-    } else {
-        [self performRequestWithURL:url method:method body:body headers:extraHeaders completion:completion];
-    }
+    [self requestWithURL:url method:method body:body formEncoded:NO headers:extraHeaders completion:completion];
+}
+
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(NSDictionary *)body
+               headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
+     headersCompletion:(JLTidalDataHeadersCompletion)completion {
+    dispatch_semaphore_t gate = inFlightGate();
+    __block BOOL released = NO;
+    JLTidalDataHeadersCompletion gated = ^(NSDictionary *json, NSDictionary *responseHeaders, NSError *error) {
+        if (!released) {
+            released = YES;
+            dispatch_semaphore_signal(gate);
+        }
+        completion(json, responseHeaders, error);
+    };
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER);
+        NSTimeInterval delay = [[JLTidalRateLimiter shared] currentDelay];
+        if (delay > 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self performRequestWithURL:url method:method body:body formEncoded:NO headers:extraHeaders
+                                    isRetry:NO attempt:0 headersCompletion:gated];
+            });
+        } else {
+            [self performRequestWithURL:url method:method body:body formEncoded:NO headers:extraHeaders
+                                isRetry:NO attempt:0 headersCompletion:gated];
+        }
+    });
+}
+
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(NSDictionary *)body
+           formEncoded:(BOOL)formEncoded
+               headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
+            completion:(JLTidalDataCompletion)completion {
+    // Hold a slot for the whole logical request, retries included, and release
+    // it exactly once however the request ends.
+    //
+    // The wait happens on a background queue, never on the caller's thread:
+    // the decoder thread and the main thread both issue requests through here,
+    // and blocking either one behind four slow requests would stall playback
+    // or freeze the UI for as long as their timeouts.
+    dispatch_semaphore_t gate = inFlightGate();
+    __block BOOL released = NO;
+    JLTidalDataCompletion gated = ^(NSDictionary *json, NSError *error) {
+        if (!released) {
+            released = YES;
+            dispatch_semaphore_signal(gate);
+        }
+        completion(json, error);
+    };
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER);
+
+        // Check rate limiting
+        NSTimeInterval delay = [[JLTidalRateLimiter shared] currentDelay];
+        if (delay > 0) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self performRequestWithURL:url method:method body:body formEncoded:formEncoded
+                                    headers:extraHeaders completion:gated];
+            });
+        } else {
+            [self performRequestWithURL:url method:method body:body formEncoded:formEncoded
+                                headers:extraHeaders completion:gated];
+        }
+    });
 }
 
 - (void)performRequestWithURL:(NSURL *)url
@@ -1078,34 +1288,57 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                          body:(NSDictionary *)body
                       headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
                    completion:(JLTidalDataCompletion)completion {
-    [self performRequestWithURL:url method:method body:body headers:extraHeaders isRetry:NO completion:completion];
+    [self performRequestWithURL:url method:method body:body formEncoded:NO headers:extraHeaders
+                        isRetry:NO attempt:0
+              headersCompletion:^(NSDictionary *json, NSDictionary *responseHeaders, NSError *error) {
+        completion(json, error);
+    }];
 }
 
 - (void)performRequestWithURL:(NSURL *)url
                        method:(NSString *)method
                          body:(NSDictionary *)body
+                  formEncoded:(BOOL)formEncoded
+                      headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
+                   completion:(JLTidalDataCompletion)completion {
+    [self performRequestWithURL:url method:method body:body formEncoded:formEncoded headers:extraHeaders
+                        isRetry:NO attempt:0
+              headersCompletion:^(NSDictionary *json, NSDictionary *responseHeaders, NSError *error) {
+        completion(json, error);
+    }];
+}
+
+// `isRetry` tracks the one-shot 401 refresh; `attempt` tracks bounded transport
+// retries (0-based). They are independent: a refreshed token starts its
+// transport budget over.
+- (void)performRequestWithURL:(NSURL *)url
+                       method:(NSString *)method
+                         body:(NSDictionary *)body
+                  formEncoded:(BOOL)formEncoded
                       headers:(NSDictionary<NSString *, NSString *> *)extraHeaders
                       isRetry:(BOOL)isRetry
-                   completion:(JLTidalDataCompletion)completion {
+                      attempt:(NSInteger)attempt
+            headersCompletion:(JLTidalDataHeadersCompletion)completion {
     // Snapshot: the session may be swapped by AuthService mid-request;
     // token and countryCode must come from the same session object.
     JLTidalSession *session = self.session;
     if (!session.isValid) {
         // Token expired - try refresh before giving up (unless already retrying)
-        void (^refreshHandler)(void (^)(BOOL)) = self.tokenRefreshHandler;
+        void (^refreshHandler)(BOOL, void (^)(BOOL)) = self.tokenRefreshHandler;
         if (!isRetry && session.refreshToken.length > 0 && refreshHandler) {
             tidal::logDebug("Session expired, attempting token refresh before request");
-            refreshHandler(^(BOOL success) {
+            refreshHandler(NO, ^(BOOL success) {
                 if (success) {
-                    [self performRequestWithURL:url method:method body:body
-                                       headers:extraHeaders isRetry:YES completion:completion];
+                    [self performRequestWithURL:url method:method body:body formEncoded:formEncoded
+                                       headers:extraHeaders isRetry:YES attempt:0
+                              headersCompletion:completion];
                 } else {
-                    completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
+                    completion(nil, nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
                 }
             });
             return;
         }
-        completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
+        completion(nil, nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));
         return;
     }
 
@@ -1127,8 +1360,11 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
     if (session.countryCode) {
         // Add country code as query parameter if not already present
+        // percentEncodedQueryItems, not queryItems: the decoding round-trip
+        // turns a "%2B" in a search term back into a literal "+", which the
+        // server then reads as a space.
         NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
-        NSMutableArray *queryItems = [components.queryItems mutableCopy] ?: [NSMutableArray array];
+        NSMutableArray *queryItems = [components.percentEncodedQueryItems mutableCopy] ?: [NSMutableArray array];
         BOOL hasCountry = NO;
         for (NSURLQueryItem *item in queryItems) {
             if ([item.name isEqualToString:@"countryCode"]) {
@@ -1137,26 +1373,66 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
             }
         }
         if (!hasCountry) {
-            [queryItems addObject:[NSURLQueryItem queryItemWithName:@"countryCode" value:session.countryCode]];
-            components.queryItems = queryItems;
+            [queryItems addObject:[NSURLQueryItem queryItemWithName:@"countryCode"
+                                                             value:JLTidalQueryValueEncode(session.countryCode)]];
+            components.percentEncodedQueryItems = queryItems;
             request.URL = components.URL;
         }
     }
 
     if (body) {
-        [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-        NSError *jsonError;
-        request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jsonError];
-        if (jsonError) {
-            completion(nil, JLTidalError(JLTidalErrorInternal, @"Failed to serialize request body"));
-            return;
+        if (formEncoded) {
+            // The v1 endpoints bind request parameters rather than reading a
+            // JSON body: every other working client (python-tidal, strawberry,
+            // kodi, lms, music-assistant) posts these form-encoded. With JSON
+            // the playlist is created untitled and the items POST 400s.
+            NSMutableArray<NSString *> *pairs = [NSMutableArray array];
+            for (NSString *key in body) {
+                id value = body[key];
+                NSString *encoded = [value isKindOfClass:[NSString class]]
+                    ? JLTidalFormEncode(value)
+                    : JLTidalFormEncode([value description]);
+                [pairs addObject:[NSString stringWithFormat:@"%@=%@", JLTidalFormEncode(key), encoded]];
+            }
+            [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
+            request.HTTPBody = [[pairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
+        } else {
+            [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+            NSError *jsonError;
+            request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jsonError];
+            if (jsonError) {
+                completion(nil, nil, JLTidalError(JLTidalErrorInternal, @"Failed to serialize request body"));
+                return;
+            }
         }
     }
 
     NSURLSessionDataTask *task = [self.urlSession dataTaskWithRequest:request
                                                     completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        // One bounded retry ladder serves the transport-error, 429 and 5xx
+        // paths below. Without it every transient blip reached the decoder as
+        // exception_io_data, which foobar2000 reads as a broken file and skips.
+        void (^retryAfterDelay)(NSTimeInterval) = ^(NSTimeInterval delay) {
+            tidal::logDebug([[NSString stringWithFormat:
+                              @"Retrying %@ %@%@ in %.1fs (attempt %ld of %ld)",
+                              method, url.host ?: @"?", url.path ?: @"", delay,
+                              (long)(attempt + 2), (long)kTidalMaxRequestAttempts] UTF8String]);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                [self performRequestWithURL:url method:method body:body formEncoded:formEncoded
+                                    headers:extraHeaders isRetry:isRetry attempt:attempt + 1
+                          headersCompletion:completion];
+            });
+        };
+
         if (error) {
-            completion(nil, JLTidalError(JLTidalErrorNetworkFailure, error.localizedDescription));
+            if ([JLTidalHTTPResponsePolicy shouldRetryMethod:method attempt:attempt
+                                             transportFailed:YES statusCode:0]) {
+                retryAfterDelay([JLTidalHTTPResponsePolicy retryDelayForAttempt:attempt
+                                                             retryAfterSeconds:-1]);
+                return;
+            }
+            completion(nil, nil, JLTidalError(JLTidalErrorNetworkFailure, error.localizedDescription));
             return;
         }
 
@@ -1168,9 +1444,34 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         // token refresh, completion).
         NSString *retryAfterHeader = httpResponse.allHeaderFields[@"Retry-After"]
                                   ?: httpResponse.allHeaderFields[@"retry-after"];
+
+        // TIDAL explains itself in the body: {status, subStatus, userMessage}.
+        // Discarding it turned a geo-block, a quota and a forbidden mutation
+        // all into "Subscription required" -- and sent each one down the full
+        // five-tier quality cascade.
+        NSInteger subStatus = 0;
+        NSString *userMessage = nil;
+        if (httpResponse.statusCode >= 400 && data.length > 0) {
+            NSDictionary *errorBody = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([errorBody isKindOfClass:[NSDictionary class]]) {
+                id sub = errorBody[@"subStatus"];
+                if ([sub isKindOfClass:[NSNumber class]]) subStatus = [sub integerValue];
+                if ([errorBody[@"userMessage"] isKindOfClass:[NSString class]]) {
+                    userMessage = errorBody[@"userMessage"];
+                }
+            }
+            if (subStatus != 0 || userMessage.length > 0) {
+                tidal::logInfo([[NSString stringWithFormat:@"API %ld: subStatus=%ld %@",
+                                 (long)httpResponse.statusCode, (long)subStatus,
+                                 userMessage ?: @""] UTF8String]);
+            }
+        }
+
         JLTidalHTTPDecision *decision =
             [JLTidalHTTPResponsePolicy decisionForStatusCode:httpResponse.statusCode
                                             retryAfterHeader:retryAfterHeader
+                                                   subStatus:subStatus
+                                                 userMessage:userMessage
                                                      isRetry:isRetry];
 
         if (decision.action == JLTidalHTTPActionRateLimited) {
@@ -1182,31 +1483,51 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
                 retryAfter = [[JLTidalRateLimiter shared] recordRateLimitHit];
             }
             tidal::logDebug([[NSString stringWithFormat:@"Rate limited, retry after %.1fs", retryAfter] UTF8String]);
-            completion(nil, JLTidalError(JLTidalErrorRateLimited,
+            if ([JLTidalHTTPResponsePolicy shouldRetryMethod:method attempt:attempt
+                                             transportFailed:NO statusCode:429]) {
+                // Honour the server's own Retry-After here rather than only
+                // logging it, which is what let a "Retry-After: 30" become a
+                // 1s limiter gate and an immediate re-hit.
+                retryAfterDelay([JLTidalHTTPResponsePolicy retryDelayForAttempt:attempt
+                                                             retryAfterSeconds:decision.retryAfterSeconds]);
+                return;
+            }
+            completion(nil, nil, JLTidalError(JLTidalErrorRateLimited,
                 [NSString stringWithFormat:@"Rate limited, retry after %.0f seconds", retryAfter]));
             return;
         }
 
         if (decision.action == JLTidalHTTPActionRetryAuth) {
-            void (^refreshHandler)(void (^)(BOOL)) = self.tokenRefreshHandler;
+            void (^refreshHandler)(BOOL, void (^)(BOOL)) = self.tokenRefreshHandler;
             if (!refreshHandler) {
-                completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+                completion(nil, nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
                 return;
             }
-            tidal::logDebug("Got 401, attempting token refresh and retry");
-            refreshHandler(^(BOOL success) {
+            // Forced: the server rejected this token, so a local expiry check
+            // would answer "still valid" and the retry would re-send the very
+            // token that just earned the 401.
+            tidal::logDebug("Got 401, forcing token refresh and retry");
+            refreshHandler(YES, ^(BOOL success) {
                 if (success) {
-                    [self performRequestWithURL:url method:method body:body
-                                       headers:extraHeaders isRetry:YES completion:completion];
+                    [self performRequestWithURL:url method:method body:body formEncoded:formEncoded
+                                       headers:extraHeaders isRetry:YES attempt:0
+                              headersCompletion:completion];
                 } else {
-                    completion(nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
+                    completion(nil, nil, JLTidalError(JLTidalErrorNotAuthenticated, @"Authentication required"));
                 }
             });
             return;
         }
 
         if (decision.action == JLTidalHTTPActionFail) {
-            completion(nil, JLTidalError(decision.errorCode, decision.message));
+            if ([JLTidalHTTPResponsePolicy shouldRetryMethod:method attempt:attempt
+                                             transportFailed:NO
+                                                  statusCode:httpResponse.statusCode]) {
+                retryAfterDelay([JLTidalHTTPResponsePolicy retryDelayForAttempt:attempt
+                                                             retryAfterSeconds:-1]);
+                return;
+            }
+            completion(nil, nil, JLTidalError(decision.errorCode, decision.message));
             return;
         }
 
@@ -1214,7 +1535,7 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 
         // 204 No Content or empty body - return empty dict
         if (httpResponse.statusCode == 204 || !data || data.length == 0) {
-            completion(@{}, nil);
+            completion(@{}, httpResponse.allHeaderFields, nil);
             return;
         }
 
@@ -1222,11 +1543,11 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
         NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
         if (![json isKindOfClass:[NSDictionary class]]) json = nil;
         if (jsonError || !json) {
-            completion(nil, JLTidalError(JLTidalErrorInvalidResponse, @"Invalid JSON response"));
+            completion(nil, nil, JLTidalError(JLTidalErrorInvalidResponse, @"Invalid JSON response"));
             return;
         }
 
-        completion(json, nil);
+        completion(json, httpResponse.allHeaderFields, nil);
     }];
 
     [task resume];

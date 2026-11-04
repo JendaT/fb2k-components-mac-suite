@@ -85,33 +85,73 @@ static void testInvalidBase64(void) {
 }
 
 static void testDASHSegmentCounting(void) {
-    // r=139 contributes 139, S without r contributes 1, base of 2 => 142
+    // The ordinary shape: one run of 140 segments (r=139) plus a short tail
+    // segment, and one init segment at $Number$=0 => 142 URLs.
     NSString *mpd = mpdWithTimeline(@"<S t=\"0\" d=\"176128\" r=\"139\"/><S d=\"171136\"/>",
                                     @"flac", @"https://cdn.tidal.com/seg_$Number$.mp4");
     JLTidalManifestResult *r = parse(mpd, @"application/dash+xml");
-    CHECK_EQ(r.dashSegmentCount, (NSInteger)142, "segment count 2 + 139 + 1, got %ld", (long)r.dashSegmentCount);
+    CHECK_EQ(r.dashSegmentCount, (NSInteger)142, "1 init + 140 + 1, got %ld", (long)r.dashSegmentCount);
     CHECK_STREQ(r.dashMediaTemplate, @"https://cdn.tidal.com/seg_$Number$.mp4", "media template extracted");
     CHECK(r.streamURL == nil, "segmented manifest has no direct URL");
     CHECK(!r.drmProtected, "no ContentProtection -> no DRM");
     CHECK(r.rawDASHManifest != nil, "raw MPD exposed for diagnostics");
 
-    // r=0 and missing r each contribute 1: 2 + 1 + 1 + 1 = 5
+    // No <S> carries a repeat: 3 media segments + 1 init = 4. The old formula
+    // said 5 and the extra GET 404'd, discarding the whole blob -- this is the
+    // short-track case (intros, skits) that failed every time.
     mpd = mpdWithTimeline(@"<S t=\"0\" d=\"100\" r=\"0\"/><S d=\"100\"/><S d=\"100\"/>",
                           @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
     r = parse(mpd, @"application/dash+xml");
-    CHECK_EQ(r.dashSegmentCount, (NSInteger)5, "r=0 counts as 1, got %ld", (long)r.dashSegmentCount);
+    CHECK_EQ(r.dashSegmentCount, (NSInteger)4, "r=0 and absent r are one segment each, got %ld", (long)r.dashSegmentCount);
 
-    // Single S with r=10: 2 + 10 = 12. Also exercise the xml mime alias.
+    // Two runs: (5+1) + (2+1) media + 1 init = 10. The old formula said 9 and
+    // silently dropped the last segment.
+    mpd = mpdWithTimeline(@"<S t=\"0\" d=\"100\" r=\"5\"/><S d=\"80\" r=\"2\"/>",
+                          @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
+    r = parse(mpd, @"application/dash+xml");
+    CHECK_EQ(r.dashSegmentCount, (NSInteger)10, "two repeat runs both counted, got %ld", (long)r.dashSegmentCount);
+
+    // A single-segment track is playable: 1 media + 1 init = 2.
+    mpd = mpdWithTimeline(@"<S t=\"0\" d=\"100\"/>",
+                          @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
+    r = parse(mpd, @"application/dash+xml");
+    CHECK_EQ(r.dashSegmentCount, (NSInteger)2, "single-segment track accepted, got %ld", (long)r.dashSegmentCount);
+    CHECK(r.dashMediaTemplate != nil, "single-segment track keeps its template");
+
+    // Single run of 11 segments (r=10) + 1 init = 12. Also exercises the xml alias.
     mpd = mpdWithTimeline(@"<S t=\"0\" d=\"100\" r=\"10\"/>",
                           @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
     r = parse(mpd, @"text/xml");
     CHECK_EQ(r.dashSegmentCount, (NSInteger)12, "xml mime routed to DASH, got %ld", (long)r.dashSegmentCount);
 
-    // Empty timeline -> count stays 2, which fails the (> 2) sanity gate
+    // Empty timeline -> only the init segment, which fails the sanity gate
     mpd = mpdWithTimeline(@"", @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
     r = parse(mpd, @"application/dash+xml");
     CHECK_EQ(r.dashSegmentCount, (NSInteger)0, "empty timeline rejected");
     CHECK(r.dashMediaTemplate == nil, "empty timeline -> no template");
+}
+
+static void testDASHTotalDuration(void) {
+    // The ordinary shape from a live 24/96 response: 192 full segments plus a
+    // short tail, so the sample count is 380928*192 + 249643.
+    NSString *mpd = mpdWithTimeline(@"<S d=\"380928\" r=\"191\"/><S d=\"249643\"/>",
+                                    @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
+    JLTidalManifestResult *r = parse(mpd, @"application/dash+xml");
+    CHECK_EQ(r.dashTotalDuration, (int64_t)380928 * 192 + 249643,
+             "d*(r+1) summed over every <S>, got %lld", (long long)r.dashTotalDuration);
+    CHECK_EQ(r.dashTimescale, (NSInteger)44100, "timescale read from the template");
+
+    // Absent r counts once.
+    mpd = mpdWithTimeline(@"<S t=\"0\" d=\"100\"/><S d=\"50\"/>",
+                          @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
+    r = parse(mpd, @"application/dash+xml");
+    CHECK_EQ(r.dashTotalDuration, (int64_t)150, "absent r is one segment, got %lld", (long long)r.dashTotalDuration);
+
+    // A missing d makes the whole sum unknown rather than short.
+    mpd = mpdWithTimeline(@"<S d=\"100\" r=\"3\"/><S r=\"2\"/>",
+                          @"flac", @"https://cdn.tidal.com/s_$Number$.mp4");
+    r = parse(mpd, @"application/dash+xml");
+    CHECK_EQ(r.dashTotalDuration, (int64_t)0, "an <S> without d -> unknown, got %lld", (long long)r.dashTotalDuration);
 }
 
 static void testDASHTemplateValidation(void) {
@@ -196,6 +236,7 @@ int main(void) {
         testJSONManifests();
         testInvalidBase64();
         testDASHSegmentCounting();
+        testDASHTotalDuration();
         testDASHTemplateValidation();
         testDASHDRM();
         testDASHBaseURL();

@@ -53,45 +53,82 @@ static void saverError(NSString *msg) {
     _cancelled.store(true);
 }
 
+// Splits the "<trackID>|<QUALITY>" form the save menu produces.
+static void splitPinnedTrackKey(NSString *key, NSString **outTrackID,
+                                JLTidalQuality *outQuality, BOOL *outHasQuality) {
+    *outHasQuality = NO;
+    NSRange bar = [key rangeOfString:@"|"];
+    if (bar.location == NSNotFound) {
+        *outTrackID = key;
+        return;
+    }
+    *outTrackID = [key substringToIndex:bar.location];
+    NSString *token = [key substringFromIndex:NSMaxRange(bar)];
+    JLTidalQuality parsedQuality;
+    if (JLTidalQualityFromString(token, &parsedQuality)) {
+        *outQuality = parsedQuality;
+        *outHasQuality = YES;
+    }
+}
+
 #pragma mark - Entry point
 
 - (void)saveTrackIDs:(NSArray<NSString *> *)trackIDs {
     if (trackIDs.count == 0) return;
     _cancelled.store(false);
     dispatch_async(_queue, ^{
-        [self runBatch:trackIDs];
+        [self runBatch:trackIDs manualFolder:nil];
     });
 }
 
-- (void)runBatch:(NSArray<NSString *> *)trackIDs {
+- (void)saveTrackIDs:(NSArray<NSString *> *)trackIDs toFolder:(NSString *)folder {
+    if (trackIDs.count == 0 || folder.length == 0) return;
+    _cancelled.store(false);
+    NSString *destination = [folder copy];
+    dispatch_async(_queue, ^{
+        [self runBatch:trackIDs manualFolder:destination];
+    });
+}
+
+// `manualFolder` nil = the music.hq layout under the configured root.
+- (void)runBatch:(NSArray<NSString *> *)trackIDs manualFolder:(nullable NSString *)manualFolder {
     // Belt and braces: the menu is already gated, but never download when the
     // hidden feature flag is off (docs/hidden-options.md).
     if (!tidal::TidalConfig::isDownloadFeatureEnabled()) {
         saverError(@"library download is disabled (tidal.TI_download_on is not set)");
         return;
     }
-    NSString *root = [NSString stringWithUTF8String:tidal::TidalConfig::getLibraryRoot().c_str()];
+    NSString *root = manualFolder
+        ?: [NSString stringWithUTF8String:tidal::TidalConfig::getLibraryRoot().c_str()];
     if (root.length == 0) {
         saverError(@"no library root configured (Preferences > Tidal > Library)");
         return;
     }
     BOOL isDir = NO;
     if (![[NSFileManager defaultManager] fileExistsAtPath:root isDirectory:&isDir] || !isDir) {
-        saverError([NSString stringWithFormat:@"library root not reachable: %@", root]);
+        saverError([NSString stringWithFormat:@"%@ not reachable: %@",
+                    manualFolder ? @"folder" : @"library root", root]);
         return;
     }
 
-    [self loadGenreMap];
+    // The genre map only routes the library layout.
+    if (!manualFolder) [self loadGenreMap];
     saverLog([NSString stringWithFormat:@"starting batch of %lu track(s) -> %@",
               (unsigned long)trackIDs.count, root]);
 
     NSInteger saved = 0, skipped = 0, failed = 0;
-    for (NSString *trackID in trackIDs) {
+    // Entries arrive as "<trackID>" or "<trackID>|<QUALITY>" (see the save menu).
+    for (NSString *entry in trackIDs) {
         if (_cancelled.load()) {
             saverLog(@"cancelled; abandoning remaining tracks");
             break;
         }
-        switch ([self saveOneTrackID:trackID root:root]) {
+        NSString *trackID = nil;
+        JLTidalQuality pinned = JLTidalQualityLow;
+        BOOL hasPin = NO;
+        splitPinnedTrackKey(entry, &trackID, &pinned, &hasPin);
+        switch ([self saveOneTrackID:trackID root:root quality:pinned hasQuality:hasPin
+                       manualFolder:(manualFolder != nil)]) {
             case 0: saved++; break;
             case 1: skipped++; break;
             default: failed++; break;
@@ -102,7 +139,13 @@ static void saverError(NSString *msg) {
 }
 
 // Returns 0 = saved, 1 = skipped, 2 = failed.
-- (int)saveOneTrackID:(NSString *)trackID root:(NSString *)root {
+// `manualFolder`: `root` is a folder the user picked, and the album goes
+// straight into it -- no genre collection, no artist level, no prompt.
+- (int)saveOneTrackID:(NSString *)trackID
+                 root:(NSString *)root
+              quality:(JLTidalQuality)quality
+           hasQuality:(BOOL)hasQuality
+         manualFolder:(BOOL)manualFolder {
     JLTidalTrack *track = [self fetchMetadataForTrackID:trackID];
     if (!track) {
         saverError([NSString stringWithFormat:@"metadata fetch failed for track %@", trackID]);
@@ -111,37 +154,49 @@ static void saverError(NSString *msg) {
 
     NSString *albumArtist = track.albumArtist.length > 0 ? track.albumArtist : track.artist;
     BOOL isVA = [JLTidalLibraryLayout isVariousArtists:albumArtist];
-    NSString *displayName = isVA
-        ? [NSString stringWithFormat:@"VA album \"%@\"", track.album ?: track.title]
-        : (albumArtist ?: @"Unknown");
-
-    NSString *collection = [self resolveCollectionForKey:[self genreKeyForTrack:track isVA:isVA]
-                                             displayName:displayName
-                                                    root:root];
-    if (collection.length == 0) {
-        saverLog([NSString stringWithFormat:@"skipped (no collection chosen): %@ - %@",
-                  track.artist ?: @"?", track.title]);
-        return 1;
-    }
-
-    NSString *collectionDir = [root stringByAppendingPathComponent:collection];
-    NSString *artistFolder = nil;
-    if (!isVA) {
-        NSArray<NSString *> *listing = [[NSFileManager defaultManager]
-                                        contentsOfDirectoryAtPath:collectionDir error:nil] ?: @[];
-        artistFolder = [JLTidalLibraryLayout artistFolderInListing:listing artist:albumArtist];
-    }
-
     NSString *year = [JLTidalLibraryLayout yearStringFromDate:track.releaseDate];
-    NSString *albumRel = [JLTidalLibraryLayout albumPathForArtist:albumArtist
-                                                             year:year
-                                                       albumTitle:track.album ?: track.title
-                                                    isCompilation:isVA
-                                                     artistFolder:artistFolder];
-    NSString *albumDir = [collectionDir stringByAppendingPathComponent:albumRel];
+    NSString *albumDir;
+
+    if (manualFolder) {
+        albumDir = [root stringByAppendingPathComponent:
+                    [JLTidalLibraryLayout albumFolderNameForArtist:albumArtist
+                                                              year:year
+                                                        albumTitle:track.album ?: track.title
+                                                     isCompilation:isVA]];
+    } else {
+        NSString *displayName = isVA
+            ? [NSString stringWithFormat:@"VA album \"%@\"", track.album ?: track.title]
+            : (albumArtist ?: @"Unknown");
+
+        NSString *collection = [self resolveCollectionForKey:[self genreKeyForTrack:track isVA:isVA]
+                                                 displayName:displayName
+                                                        root:root];
+        if (collection.length == 0) {
+            saverLog([NSString stringWithFormat:@"skipped (no collection chosen): %@ - %@",
+                      track.artist ?: @"?", track.title]);
+            return 1;
+        }
+
+        NSString *collectionDir = [root stringByAppendingPathComponent:collection];
+        NSString *artistFolder = nil;
+        if (!isVA) {
+            NSArray<NSString *> *listing = [[NSFileManager defaultManager]
+                                            contentsOfDirectoryAtPath:collectionDir error:nil] ?: @[];
+            artistFolder = [JLTidalLibraryLayout artistFolderInListing:listing artist:albumArtist];
+        }
+
+        NSString *albumRel = [JLTidalLibraryLayout albumPathForArtist:albumArtist
+                                                                 year:year
+                                                           albumTitle:track.album ?: track.title
+                                                        isCompilation:isVA
+                                                         artistFolder:artistFolder];
+        albumDir = [collectionDir stringByAppendingPathComponent:albumRel];
+    }
 
     // Resolve the stream before deciding the extension (DASH FLAC vs direct)
-    JLTidalPlaybackInfo *info = [self resolveStreamForTrackID:trackID];
+    JLTidalPlaybackInfo *info = [self resolveStreamForTrackID:trackID
+                                                      quality:quality
+                                                   hasQuality:hasQuality];
     if (!info) {
         saverError([NSString stringWithFormat:@"stream resolution failed: %@ - %@",
                     track.artist ?: @"?", track.title]);
@@ -164,7 +219,7 @@ static void saverError(NSString *msg) {
 
     NSString *fileName = [JLTidalLibraryLayout trackFileNameForNumber:track.trackNumber
                                                            discNumber:track.discNumber
-                                                                title:track.title
+                                                                title:track.displayTitle
                                                             extension:ext];
     NSString *target = [albumDir stringByAppendingPathComponent:fileName];
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -177,6 +232,7 @@ static void saverError(NSString *msg) {
     if (isDASH) {
         std::atomic<bool> *cancelled = &_cancelled;
         audio = [[JLTidalDashCache shared] blobForTrackID:trackID
+                                                  quality:info.quality
                                             mediaTemplate:info.dashMediaTemplate
                                              segmentCount:info.dashSegmentCount
                                               isCancelled:^BOOL{ return cancelled->load(); }];
@@ -210,7 +266,7 @@ static void saverError(NSString *msg) {
         NSString *rawExt = (isDASH || !codecIsFLAC) ? @"m4a" : @"flac";
         NSString *rawName = [JLTidalLibraryLayout trackFileNameForNumber:track.trackNumber
                                                               discNumber:track.discNumber
-                                                                   title:track.title
+                                                                   title:track.displayTitle
                                                                extension:rawExt];
         target = [albumDir stringByAppendingPathComponent:rawName];
         if ([fm fileExistsAtPath:target]) {
@@ -368,7 +424,7 @@ static void saverError(NSString *msg) {
 
 - (NSDictionary<NSString *, NSString *> *)tagsForTrack:(JLTidalTrack *)track {
     NSMutableDictionary<NSString *, NSString *> *tags = [NSMutableDictionary dictionary];
-    if (track.title.length) tags[@"title"] = track.title;
+    if (track.title.length) tags[@"title"] = track.displayTitle;
     if (track.artist.length) tags[@"artist"] = track.artist;
     if (track.album.length) tags[@"album"] = track.album;
     if (track.albumArtist.length) tags[@"album_artist"] = track.albumArtist;
@@ -392,6 +448,7 @@ static void saverError(NSString *msg) {
         tags[@"date"] = [fmt stringFromDate:track.releaseDate];
     }
     if (track.isrc.length) tags[@"isrc"] = track.isrc;
+    if (track.bpm > 0) tags[@"bpm"] = [NSString stringWithFormat:@"%lld", llround(track.bpm)];
     if (track.copyright.length) tags[@"copyright"] = track.copyright;
     return tags;
 }
@@ -488,13 +545,25 @@ static void saverError(NSString *msg) {
 }
 
 - (JLTidalPlaybackInfo *)resolveStreamForTrackID:(NSString *)trackID {
+    return [self resolveStreamForTrackID:trackID quality:JLTidalQualityLow hasQuality:NO];
+}
+
+- (JLTidalPlaybackInfo *)resolveStreamForTrackID:(NSString *)trackID
+                                          quality:(JLTidalQuality)quality
+                                       hasQuality:(BOOL)hasQuality {
     __block JLTidalPlaybackInfo *result = nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackID
-                                                 completion:^(JLTidalPlaybackInfo *info, NSError *error) {
+    void (^done)(JLTidalPlaybackInfo *, NSError *) = ^(JLTidalPlaybackInfo *info, NSError *error) {
         result = info;
         dispatch_semaphore_signal(sem);
-    }];
+    };
+    // Export at the tier the playlist entry pins, so the saved file matches
+    // what the entry plays.
+    if (hasQuality) {
+        [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackID quality:quality completion:done];
+    } else {
+        [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackID completion:done];
+    }
     dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC));
     return result;
 }

@@ -28,7 +28,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### [Unreleased]
 
 #### Added
+- Browser Back restores each list as it was left, scroll position and selection included, without refetching
+- Album rows drag into a playlist as all their tracks, in the listed album order
+- `jl_tidal_lookup` service (`shared/jl_tidal_api.h`): other components can look up BPM and key from TIDAL for local files (ISRC, else artist/title/length search) and tidal:// entries, cached on disk
+- BPM tag from the TIDAL catalogue, on playlist entries and saved files
+- "Go to Album" from a track; Back returns to the search or list it came from as it was
+- Playlist rows can be played, added (optionally quality-pinned) and queued
+- "Save to folder..." saves into a folder you pick, one "Artist [YYYY] Title" folder per album
+- Hi-res DASH tracks start while they download (on-the-fly fMP4 to FLAC remux) instead of after the whole 50-250 MB track has arrived
+- "Use TIDAL ReplayGain" preference, for libraries without ReplayGain tags where Tidal tracks played quieter
 - "Add to Playlist with Quality" context submenu pins a quality tier on added entries via `tidal://track/<id>?q=<TIER>`; the pin persists with the playlist and still falls back when the tier is unavailable
+
+#### Fixed
+- Remix and other version names shown in the browser and written to saved files (were the bare title)
+- "Loading more..." no longer sticks in the status line inside an opened album
+- Pinned quality was ignored after the first track (DASH blob cache keyed by track only; prefetcher dropped the pin)
+- Transient failures (5xx, 429, network, DASH segments) are now retried 3x at 500/1000/2000 ms instead of becoming track skips
+- A 401 now forces a real token refresh instead of re-sending the rejected token
+- Preview clips are rejected instead of playing as full tracks
+- Sync and browser imports resolve their target playlist by GUID, so a concurrent delete cannot redirect them
+- Tracks shorter than about two DASH segments no longer fail (segment-count off-by-one)
+- `immersiveaudio=false` keeps Atmos editions from replacing the stereo master
+- Release dates parsed and displayed in UTC, fixing the year shift east of Greenwich
+- A 401 forces a real refresh; transient refresh failures no longer discard the stored session or need an app restart
+- Metadata failures throw instead of committing placeholder tags; list responses seed the metadata cache so imports stop re-fetching
+- Unavailable tracks fail fast; a 403 reports its real reason instead of always "Subscription required"
+- v1 mutations are form-encoded and ISRC matching uses the official filter endpoint
+- Sync: folder-fetch failures are fatal, deletion honours the playlist lock, pull waits for its imports and reports the real outcome, push no longer orphans empty playlists
+- Playback: a re-resolve resumes mid-track, seek recovers from an expired URL, abandoned DASH downloads stop
+- Browser: errors are distinguished from empty results, drill-downs carry stale-result guards, locked playlists no longer swallow adds, artist art uses a size the CDN serves
+- MQA (HI_RES) retired from the preference, pin menu and cascade; stored MQA maps to Lossless
+- Opening or importing a playlist loads every page instead of the first 100/500 tracks
+- The next-track prefetch now actually runs (position fallback, queue-aware, logs its skips), keys on the resolved quality and warms metadata; segments download four at a time; stale prefetches yield to a cold open; returning to a just-skipped track no longer fails
+- Request pacing no longer blocks the calling thread
 
 ---
 

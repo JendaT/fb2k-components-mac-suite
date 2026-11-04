@@ -77,14 +77,70 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
         NSString *sTag = [body substringWithRange:m.range];
         NSString *rStr = extractXMLAttr(sTag, @"r");
         NSInteger r = rStr.length ? [rStr integerValue] : 0;
+        // Per DASH (ISO/IEC 23009-1), an <S> describes r+1 segments: r is the
+        // count of ADDITIONAL repeats, not the total. r="-1" means "repeat to
+        // the end of the period", which a static Tidal manifest never uses and
+        // cannot be resolved without a period duration -- treat it as one.
+        if (r < 0) r = 0;
         // Clamp each contribution so a huge r cannot overflow the sum
         if (r > kMaxDASHSegmentCount) r = kMaxDASHSegmentCount + 1;
-        count += (r > 0) ? r : 1;
+        count += r + 1;
         if (count > kMaxDASHSegmentCount) {
             *stop = YES;  // clamp: caller treats the manifest as invalid
         }
     }];
     return count;
+}
+
+// Total timeline length in timescale units: each <S> covers d*(r+1). Returns 0
+// when any <S> lacks a usable d, since a partial sum would understate it.
+static int64_t sumSegmentTimelineDuration(NSString *manifestStr) {
+    NSRange tlOpen = [manifestStr rangeOfString:@"<SegmentTimeline>"];
+    if (tlOpen.location == NSNotFound) return 0;
+    NSRange tlClose = [manifestStr rangeOfString:@"</SegmentTimeline>"
+                                         options:0
+                                           range:NSMakeRange(NSMaxRange(tlOpen),
+                                                             manifestStr.length - NSMaxRange(tlOpen))];
+    if (tlClose.location == NSNotFound) return 0;
+    NSString *body = [manifestStr substringWithRange:NSMakeRange(NSMaxRange(tlOpen),
+                                                                 tlClose.location - NSMaxRange(tlOpen))];
+    NSRegularExpression *sElement = [NSRegularExpression regularExpressionWithPattern:@"<S\\b[^/>]*/?>"
+                                                                              options:0
+                                                                                error:nil];
+    __block int64_t total = 0;
+    __block BOOL valid = YES;
+    [sElement enumerateMatchesInString:body
+                               options:0
+                                 range:NSMakeRange(0, body.length)
+                            usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+        NSString *sTag = [body substringWithRange:m.range];
+        long long d = [extractXMLAttr(sTag, @"d") longLongValue];
+        NSString *rStr = extractXMLAttr(sTag, @"r");
+        long long r = rStr.length ? [rStr longLongValue] : 0;
+        if (d <= 0 || r < 0 || r > kMaxDASHSegmentCount) {
+            valid = NO;
+            *stop = YES;
+            return;
+        }
+        total += (int64_t)d * (int64_t)(r + 1);
+    }];
+    return valid ? total : 0;
+}
+
+// One codec vocabulary for both manifest flavours. Previously only the DASH
+// branch normalised, so a BTS response left info.codec nil -- and the library
+// export then wrote a FLAC stream to a .m4a file.
+static NSString *normalizeCodecToken(NSString *token) {
+    if (token.length == 0) return nil;
+    NSString *lower = [token lowercaseString];
+    if ([lower containsString:@"flac"]) return @"FLAC";
+    if ([lower containsString:@"mp4a"] || [lower containsString:@"aac"] ||
+        [lower containsString:@"m4a"]) return @"MP4A";
+    if ([lower containsString:@"ec-3"] || [lower containsString:@"eac3"]) return @"EAC3";
+    if ([lower containsString:@"ac-4"] || [lower containsString:@"ac4"]) return @"AC4";
+    if ([lower containsString:@"alac"]) return @"ALAC";
+    if ([lower containsString:@"mqa"]) return @"MQA";
+    return nil;
 }
 
 @implementation JLTidalManifestResult
@@ -155,6 +211,19 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
         tidal::logDebug("Manifest: no DRM");
     }
 
+    // The BTS manifest names its own codec; playbackinfopostpaywall does not
+    // return a top-level "codec" key, so this is the only source for it.
+    NSString *codecs = manifestDict[@"codecs"];
+    if (![codecs isKindOfClass:[NSString class]]) codecs = nil;
+    NSString *btsMime = manifestDict[@"mimeType"];
+    if (![btsMime isKindOfClass:[NSString class]]) btsMime = nil;
+    NSString *normalized = normalizeCodecToken(codecs) ?: normalizeCodecToken(btsMime);
+    if (normalized) {
+        result.normalizedCodec = normalized;
+        tidal::logDebug([[NSString stringWithFormat:@"BTS manifest codec: %@ -> %@",
+                          codecs ?: btsMime, normalized] UTF8String]);
+    }
+
     // Extract stream URL
     NSArray *urls = manifestDict[@"urls"];
     if ([urls isKindOfClass:[NSArray class]] && urls.count > 0) {
@@ -213,8 +282,19 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
                     NSString *tplTag = [manifestStr substringWithRange:tagRange];
                     NSString *mediaTpl = extractXMLAttr(tplTag, @"media");
 
-                    // Segment count = base (2) + sum of SegmentTimeline S contributions.
-                    NSInteger segCount = 1 + 1 + countSegmentTimelineSElements(manifestStr);
+                    // URL count = 1 init segment (Tidal serves it at $Number$=0)
+                    // plus every media segment the timeline describes.
+                    //
+                    // The previous formula added `r` rather than `r+1` per <S>
+                    // and compensated with a base of 2. That is exact only when
+                    // exactly one <S> carries r>0 -- the ordinary shape, which
+                    // is why it survived. With none (a track shorter than about
+                    // two segments, so every <S> stands alone) it asked for one
+                    // URL too many: the extra GET 404s and the whole assembled
+                    // blob was discarded, failing short tracks deterministically.
+                    // With two or more it asked for too few and silently
+                    // truncated the tail.
+                    NSInteger segCount = 1 + countSegmentTimelineSElements(manifestStr);
 
                     if (segCount > kMaxDASHSegmentCount) {
                         tidal::logError([[NSString stringWithFormat:
@@ -223,9 +303,13 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
                         segCount = 0;  // falls through to the incomplete branch below
                     }
 
-                    if (mediaTpl.length && [mediaTpl containsString:@"$Number$"] && segCount > 2) {
+                    // segCount == 1 means a template with no timeline behind it
+                    // (nothing but the init segment), which is not playable.
+                    if (mediaTpl.length && [mediaTpl containsString:@"$Number$"] && segCount > 1) {
                         result.dashMediaTemplate = mediaTpl;
                         result.dashSegmentCount = segCount;
+                        result.dashTimescale = [extractXMLAttr(tplTag, @"timescale") integerValue];
+                        result.dashTotalDuration = sumSegmentTimelineDuration(manifestStr);
                         tidal::logInfo([[NSString stringWithFormat:
                             @"DASH SegmentTemplate: %ld segments (incl. init at $Number$=0)",
                             (long)segCount] UTF8String]);
@@ -250,18 +334,8 @@ static NSInteger countSegmentTimelineSElements(NSString *manifestStr) {
                     NSString *repTag = [manifestStr substringWithRange:
                         NSMakeRange(repRange.location, repEnd.location + repEnd.length - repRange.location)];
                     NSString *dashCodec = extractXMLAttr(repTag, @"codecs");
-                    if (dashCodec.length) {
-                        NSString *lower = [dashCodec lowercaseString];
-                        if ([lower containsString:@"flac"]) {
-                            result.normalizedCodec = @"FLAC";
-                        } else if ([lower hasPrefix:@"mp4a"]) {
-                            result.normalizedCodec = @"MP4A";
-                        } else if ([lower hasPrefix:@"ec-3"] || [lower hasPrefix:@"eac3"]) {
-                            result.normalizedCodec = @"EAC3";
-                        } else if ([lower hasPrefix:@"ac-4"] || [lower hasPrefix:@"ac4"]) {
-                            result.normalizedCodec = @"AC4";
-                        }
-                    }
+                    NSString *normalizedDash = normalizeCodecToken(dashCodec);
+                    if (normalizedDash) result.normalizedCodec = normalizedDash;
                 }
             }
         }

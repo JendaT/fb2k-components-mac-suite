@@ -25,6 +25,12 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 @property (nonatomic, copy, readwrite, nullable) NSDate *lastRefreshAttempt;
 @property (nonatomic, copy, readwrite, nullable) NSString *lastRefreshError;
 
+@property (nonatomic, readwrite) BOOL lastRefreshWasTerminal;
+/// One poll in flight at a time (L18): the device-code timer used to fire
+/// regardless, so a slow response could overlap the next request and a stale
+/// answer for an already-redeemed code could flip an authenticated session
+/// into Error.
+@property (atomic) BOOL pollInFlight;
 @property (nonatomic, strong, nullable) NSTimer *pollTimer;
 @property (nonatomic, strong, nullable) NSTimer *timeoutTimer;
 @property (nonatomic, strong, nullable) NSTimer *refreshTimer;
@@ -63,13 +69,13 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
         // The API layer must not depend on Services, so it delegates token
         // refresh through this handler instead of calling us directly.
         __weak typeof(self) weakSelf = self;
-        [JLTidalAPI shared].tokenRefreshHandler = ^(void (^completion)(BOOL success)) {
+        [JLTidalAPI shared].tokenRefreshHandler = ^(BOOL force, void (^completion)(BOOL success)) {
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf) {
                 completion(NO);
                 return;
             }
-            [strongSelf refreshTokenIfNeededWithCompletion:completion];
+            [strongSelf refreshTokenForced:force completion:completion];
         };
     }
     return self;
@@ -90,6 +96,27 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
                                                                 object:self];
         });
     }
+}
+
+// Auth state is written from URLSession threads and read on main. Mutating it
+// from the network thread races the UI that reads it, and a Cancel click
+// landing on a successful poll could release the pending completion twice.
+// Every terminal transition goes through here first.
+- (void)onMain:(dispatch_block_t)block {
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), block);
+    }
+}
+
+// UI gating asks "is there a session at all", not "is the access token fresh
+// this second" -- an expiring token refreshes on demand at the next request.
+// Without this the browser said "Not signed in" while Preferences said
+// "Signed in, token expired" and playback worked. (L23)
+- (BOOL)hasSession {
+    JLTidalSession *session = self.session;
+    return session != nil && session.refreshToken.length > 0;
 }
 
 #pragma mark - Session Storage
@@ -135,10 +162,23 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
             [self refreshTokenIfNeededWithCompletion:^(BOOL success) {
                 if (success) {
                     self.state = JLTidalAuthStateAuthenticated;
-                    [self scheduleProactiveRefresh];
-                } else {
-                    self.state = JLTidalAuthStateIdle;
+                    return;  // finishRefreshWithSession already rescheduled
                 }
+                // Launching offline, or a hiccup inside the refresh window,
+                // used to drop the service into Idle with a perfectly good
+                // refresh token in the Keychain and no retry armed -- every
+                // feature answered "not authenticated" until the app was
+                // restarted, and Preferences offered a full re-pairing rather
+                // than a retry. A rejected grant is the only thing that
+                // genuinely ends the session.
+                if (self.lastRefreshWasTerminal) {
+                    tidal::logError("Stored refresh token was rejected; sign-in required");
+                    self.state = JLTidalAuthStateIdle;
+                    return;
+                }
+                tidal::logInfo("Startup refresh failed (transient); keeping the session and retrying");
+                self.state = JLTidalAuthStateAuthenticated;
+                [self scheduleRefreshRetry];
             }];
         } else {
             self.state = JLTidalAuthStateAuthenticated;
@@ -183,27 +223,40 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
     NSTimeInterval delay = [session.expiryDate timeIntervalSinceNow] - kTidalTokenRefreshBuffer;
     if (delay < 60) delay = 60; // At least 60s from now
 
+    [self armRefreshTimerAfter:delay isRetry:NO];
+}
+
+// Retry cadence after a transient failure. A rejected grant never gets here.
+- (void)scheduleRefreshRetry {
+    if (self.lastRefreshWasTerminal) {
+        tidal::logInfo("refreshToken: grant rejected, not retrying");
+        return;
+    }
+    [self armRefreshTimerAfter:300 isRetry:YES];
+}
+
+// Sole owner of refreshTimer (L19). Both the success path and the retry path
+// used to schedule, and finishRefreshWithSession scheduled again for every
+// drained waiter, leaking one untracked timer per refresh cycle. Creating and
+// invalidating in the same main-queue block also keeps the NSTimer on one
+// thread instead of being written on main and released off it.
+- (void)armRefreshTimerAfter:(NSTimeInterval)delay isRetry:(BOOL)isRetry {
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        weakSelf.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:delay
-                                                               repeats:NO
-                                                                 block:^(NSTimer *timer) {
-            tidal::logDebug("Proactive token refresh triggered");
-            [weakSelf refreshTokenIfNeededWithCompletion:^(BOOL success) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf->_refreshTimer invalidate];
+        strongSelf->_refreshTimer = [NSTimer scheduledTimerWithTimeInterval:delay
+                                                                    repeats:NO
+                                                                      block:^(NSTimer *timer) {
+            tidal::logDebug(isRetry ? "Token refresh retry triggered" : "Proactive token refresh triggered");
+            [weakSelf refreshTokenForced:YES completion:^(BOOL success) {
                 if (success) {
-                    tidal::logInfo("Proactive token refresh succeeded");
-                    // Schedule next refresh for the new token
-                    [weakSelf scheduleProactiveRefresh];
+                    tidal::logInfo("Token refresh succeeded");
+                    // finishRefreshWithSession arms the next one.
                 } else {
-                    tidal::logError("Proactive token refresh failed");
-                    // Retry in 5 minutes
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        weakSelf.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:300
-                                                                               repeats:NO
-                                                                                 block:^(NSTimer *retryTimer) {
-                            [weakSelf scheduleProactiveRefresh];
-                        }];
-                    });
+                    tidal::logError("Token refresh failed");
+                    [weakSelf scheduleRefreshRetry];
                 }
             }];
         }];
@@ -236,13 +289,17 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
         self.pendingDeviceCode = deviceCode.deviceCode;
         self.userCode = deviceCode.userCode;
-        self.verificationURL = deviceCode.verificationURIComplete ?: deviceCode.verificationURI;
+
+        // Prefer the completed URI: it carries the user's code, so the browser
+        // lands on an already-filled page instead of asking them to type it.
+        // (Both are scheme-normalised at the parse boundary.)
+        NSURL *linkURL = deviceCode.verificationURIComplete ?: deviceCode.verificationURI;
+        if (!linkURL) linkURL = [NSURL URLWithString:@"https://link.tidal.com"];
+        self.verificationURL = linkURL;
         self.state = JLTidalAuthStateWaitingForApproval;
 
-        // Open browser for user to authorize
-        // Use known working URL - link.tidal.com handles device authorization
-        NSURL *linkURL = [NSURL URLWithString:@"https://link.tidal.com"];
-        tidal::logDebug("Opening https://link.tidal.com for device authorization");
+        tidal::logDebug([[NSString stringWithFormat:@"Opening %@ for device authorization",
+                          linkURL.host ?: @"link.tidal.com"] UTF8String]);
         [[NSWorkspace sharedWorkspace] openURL:linkURL];
 
         // Start polling for approval
@@ -283,13 +340,32 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 }
 
 - (void)pollForToken {
-    if (!_pendingDeviceCode) {
+    NSString *deviceCode = _pendingDeviceCode;
+    if (!deviceCode) {
         [self stopTimers];
         return;
     }
+    // One in flight at a time: overlapping polls let a stale answer for an
+    // already-redeemed code arrive after success and flip the state to Error,
+    // which then makes ensureValidToken refuse despite a valid session.
+    if (self.pollInFlight) {
+        tidal::logDebug("Poll still in flight, skipping this tick");
+        return;
+    }
+    self.pollInFlight = YES;
 
-    [[JLTidalAPI shared] pollForTokenWithDeviceCode:_pendingDeviceCode
+    [[JLTidalAPI shared] pollForTokenWithDeviceCode:deviceCode
                                          completion:^(JLTidalSession *session, NSError *error) {
+        self.pollInFlight = NO;
+
+        // Discard anything answering a code we are no longer waiting on, or
+        // arriving once the flow already finished.
+        if (![deviceCode isEqualToString:self.pendingDeviceCode ?: @""] ||
+            self.state == JLTidalAuthStateAuthenticated) {
+            tidal::logDebug("Discarding stale device-code poll result");
+            return;
+        }
+
         if (session) {
             [self handleAuthSuccess:session];
         } else if (error.code == JLTidalErrorDeviceCodePending) {
@@ -307,6 +383,10 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 }
 
 - (void)handleAuthSuccess:(JLTidalSession *)session {
+    if (![NSThread isMainThread]) {
+        [self onMain:^{ [self handleAuthSuccess:session]; }];
+        return;
+    }
     [self stopTimers];
 
     self.session = session;
@@ -331,6 +411,10 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 }
 
 - (void)handleAuthError:(NSError *)error {
+    if (![NSThread isMainThread]) {
+        [self onMain:^{ [self handleAuthError:error]; }];
+        return;
+    }
     [self stopTimers];
 
     self.errorMessage = error.localizedDescription;
@@ -426,6 +510,14 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 #pragma mark - Token Refresh
 
 - (void)refreshTokenIfNeededWithCompletion:(void(^)(BOOL success))completion {
+    [self refreshTokenForced:NO completion:completion];
+}
+
+// `force` skips the local-expiry shortcut. A 401 means the server has already
+// rejected the token, so answering "not expired yet, carry on" would send it
+// straight back and turn a repairable session into a dead one that still
+// reports itself healthy in Preferences.
+- (void)refreshTokenForced:(BOOL)force completion:(void(^)(BOOL success))completion {
     JLTidalSession *session = self.session;
     if (!session.refreshToken) {
         tidal::logInfo("refreshToken: no refresh token available");
@@ -433,7 +525,7 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
         return;
     }
 
-    if (!session.needsRefresh) {
+    if (!force && !session.needsRefresh) {
         if (completion) completion(YES);
         return;
     }
@@ -486,10 +578,12 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
         [self storeSession:newSession];
         [self scheduleProactiveRefresh];
         self.lastRefreshError = nil;
+        self.lastRefreshWasTerminal = NO;
         tidal::logInfo([[NSString stringWithFormat:@"refreshToken: success, new expiry in %.0fs",
                          [newSession.expiryDate timeIntervalSinceNow]] UTF8String]);
     } else {
         self.lastRefreshError = error.localizedDescription ?: @"unknown error";
+        self.lastRefreshWasTerminal = JLTidalErrorIsTerminalAuthFailure(error);
         tidal::logError([[NSString stringWithFormat:@"refreshToken: failed - %@", error.localizedDescription] UTF8String]);
         // Don't signOut here - let the caller decide how to handle the failure.
         // Signing out aggressively wipes the refresh token before reconnect
@@ -503,9 +597,13 @@ NSNotificationName const JLTidalAuthStateDidChangeNotification = @"JLTidalAuthSt
 
 - (void)ensureValidTokenWithCompletion:(void(^)(NSError *error))completion {
     // Check if we have a session at all
+    // Gate on the session, not the state enum. A startup refresh that failed
+    // for transient reasons leaves a perfectly usable refresh token behind,
+    // and refusing here is what made every feature report "not authenticated"
+    // until the app was restarted.
     JLTidalSession *session = self.session;
-    if (_state != JLTidalAuthStateAuthenticated || !session) {
-        tidal::logError([[NSString stringWithFormat:@"ensureValidToken: not authenticated (state=%ld, session=%@) — playback will fail",
+    if (!session || session.refreshToken.length == 0) {
+        tidal::logError([[NSString stringWithFormat:@"ensureValidToken: no usable session (state=%ld, session=%@) — playback will fail",
                          (long)_state,
                          session ? @"yes" : @"no"] UTF8String]);
         completion(JLTidalError(JLTidalErrorNotAuthenticated, @"Not authenticated"));

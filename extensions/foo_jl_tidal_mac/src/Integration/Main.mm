@@ -14,6 +14,8 @@
 #include "../Core/StreamCache.h"
 #include "TidalDashCache.h"
 #include "TidalLibrarySaver.h"
+#include "TidalLookupService.h"
+#include "../API/TidalAPI.h"
 #include "../Services/TidalAuthService.h"
 #include "../Services/TidalStreamResolver.h"
 #import "../UI/TidalPreferencesController.h"
@@ -91,6 +93,12 @@ public:
         // Shut down services while fb2k infrastructure is still alive.
         // If deferred to static destructors, configStore will already be
         // torn down and any logDebug/configStore access will uBugCheck.
+        // Cancel in-flight requests first: their completions read config and
+        // log, and a response landing after teardown would re-enter services
+        // that are already gone.
+        // Lookups first: their answers land through the API's completions.
+        shutdownLookupService();
+        [[JLTidalAPI shared] cancelAllRequests];
         [[JLTidalStreamResolver shared] shutdown];
         [[JLTidalDashCache shared] shutdown];
         [[JLTidalLibrarySaver shared] shutdown];

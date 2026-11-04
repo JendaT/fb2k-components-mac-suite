@@ -33,6 +33,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSString *dashMediaTemplate;
 @property (nonatomic) NSInteger dashSegmentCount;
 
+/// Exact length of the timeline, in `dashTimescale` units (sum of d*(r+1)
+/// over every <S>). Tidal's timescale is the sample rate, so this is the
+/// track's sample count. 0 when the manifest does not say.
+@property (nonatomic) int64_t dashTotalDuration;
+@property (nonatomic) NSInteger dashTimescale;
+
 /// Canonical codec (FLAC/MP4A/EAC3/AC4) normalized from the DASH
 /// Representation codecs attribute; nil when absent or unrecognized.
 @property (nonatomic, copy, nullable) NSString *normalizedCodec;

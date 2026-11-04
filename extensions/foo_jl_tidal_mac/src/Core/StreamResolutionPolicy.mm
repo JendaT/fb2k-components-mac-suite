@@ -44,8 +44,12 @@ static JLTidalResolveDecision *decision(JLTidalResolveAction action,
 
 + (JLTidalQuality)nextLowerQuality:(JLTidalQuality)quality {
     switch (quality) {
+        // HI_RES (MQA) is skipped: TIDAL retired MQA on 2024-07-24, the
+        // official SDK marks the value deprecated, and python-tidal removed it
+        // outright. Asking for it costs a round trip that can only answer with
+        // something else. Responses that still say HI_RES are parsed normally.
         case JLTidalQualityHiResLossless:
-            return JLTidalQualityHiRes;
+            return JLTidalQualityLossless;
         case JLTidalQualityHiRes:
             return JLTidalQualityLossless;
         case JLTidalQualityLossless:
@@ -77,7 +81,20 @@ static JLTidalResolveDecision *decision(JLTidalResolveAction action,
                                             dashMediaTemplate:(NSString *)dashMediaTemplate
                                                  dashEnabled:(BOOL)dashEnabled
                                                 drmProtected:(BOOL)drmProtected
+                                                 previewOnly:(BOOL)previewOnly
+                                              previewReason:(NSString *)previewReason
                                                      quality:(JLTidalQuality)quality {
+    // A preview is a full, well-formed, playable response carrying ~30s of
+    // audio. Retrying lower would just fetch another sample, and accepting it
+    // hands fb2k a track that stops a third of the way through a seekbar built
+    // from catalogue duration. Fail with the server's own reason instead.
+    if (previewOnly) {
+        NSString *message = previewReason.length > 0
+            ? [NSString stringWithFormat:@"TIDAL returned a preview clip, not the full track (%@)", previewReason]
+            : @"TIDAL returned a preview clip, not the full track";
+        return decision(JLTidalResolveActionFail, quality, JLTidalErrorPreviewOnly, message);
+    }
+
     // Accept if we have either a direct URL OR a DASH SegmentTemplate
     // (when enabled in prefs).
     BOOL hasDASH = (dashEnabled && dashSegmentCount > 0 && dashMediaTemplate.length > 0);

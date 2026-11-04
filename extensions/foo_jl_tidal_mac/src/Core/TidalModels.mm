@@ -9,6 +9,12 @@
 #import "ManifestParser.h"
 #include "TidalLog.h"
 
+// JSON values arrive untrusted; NSNull and numbers must never reach -isEqual:
+// as if they were strings.
+static BOOL JLTidalIsString(id obj) {
+    return [obj isKindOfClass:[NSString class]];
+}
+
 static NSDateFormatter *sharedDateOnlyFormatter(void) {
     static NSDateFormatter *fmt = nil;
     static dispatch_once_t onceToken;
@@ -16,6 +22,13 @@ static NSDateFormatter *sharedDateOnlyFormatter(void) {
         fmt = [[NSDateFormatter alloc] init];
         fmt.dateFormat = @"yyyy-MM-dd";
         fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+        // TIDAL sends a plain calendar date ("2024-01-01") with no zone. Parsing
+        // it in the local zone yields local midnight, which every consumer then
+        // reads back in UTC (LibraryLayout, the export tagger), shifting the
+        // year back a day for anyone east of Greenwich -- 2024-01-01 files as
+        // 2023 in Europe/Prague. Parse and render in UTC everywhere so the date
+        // that arrives is the date that is shown, filed and tagged.
+        fmt.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
     });
     return fmt;
 }
@@ -39,6 +52,15 @@ static NSString *stringIDFromValue(id value) {
 
 @implementation JLTidalTrack
 
+- (NSString *)displayTitle {
+    NSString *title = self.title ?: @"";
+    if (self.version.length == 0 ||
+        [title rangeOfString:self.version options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return title;
+    }
+    return [NSString stringWithFormat:@"%@ (%@)", title, self.version];
+}
+
 - (instancetype)initWithDictionary:(NSDictionary *)dict {
     self = [super init];
     if (self) {
@@ -50,6 +72,26 @@ static NSString *stringIDFromValue(id value) {
         _trackNumber = [dict[@"trackNumber"] integerValue];
         _discNumber = [dict[@"volumeNumber"] integerValue];
         _isExplicit = [dict[@"explicit"] boolValue];
+
+        // Availability. Absent means "no reason to think otherwise" -- only an
+        // explicit false marks a track unplayable.
+        id allowStreaming = dict[@"allowStreaming"];
+        _allowStreaming = [allowStreaming isKindOfClass:[NSNumber class]] ? [allowStreaming boolValue] : YES;
+        id streamReady = dict[@"streamReady"];
+        _streamReady = [streamReady isKindOfClass:[NSNumber class]] ? [streamReady boolValue] : YES;
+
+        if (JLTidalIsString(dict[@"version"]) && [dict[@"version"] length] > 0) {
+            _version = dict[@"version"];
+        }
+
+        // Catalogue ReplayGain, when the response carries it.
+        id gain = dict[@"replayGain"];
+        if ([gain isKindOfClass:[NSNumber class]]) {
+            _hasReplayGain = YES;
+            _replayGain = [gain doubleValue];
+            id peak = dict[@"peak"];
+            _peakAmplitude = [peak isKindOfClass:[NSNumber class]] ? [peak doubleValue] : 1.0;
+        }
 
         // Audio quality (returned by search API per track)
         id audioQuality = dict[@"audioQuality"];
@@ -84,16 +126,22 @@ static NSString *stringIDFromValue(id value) {
             _artist = artist;
         }
 
+        // Every credited name, in response order. A collaboration otherwise
+        // loses its featured artists entirely.
+        NSArray *artists = dict[@"artists"];
+        if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
+            NSMutableArray<NSString *> *names = [NSMutableArray array];
+            for (id entry in (NSArray *)artists) {
+                if (![entry isKindOfClass:[NSDictionary class]]) continue;
+                id name = ((NSDictionary *)entry)[@"name"];
+                if (JLTidalIsString(name) && [name length] > 0) [names addObject:name];
+            }
+            if (names.count > 0) _allArtists = [names copy];
+        }
+
         // Fallback to artists array (plural) if singular artist is missing
         if (!_artist.length) {
-            NSArray *artists = dict[@"artists"];
-            if ([artists isKindOfClass:[NSArray class]] && artists.count > 0) {
-                NSDictionary *firstArtist = artists[0];
-                if ([firstArtist isKindOfClass:[NSDictionary class]]) {
-                    id firstName = firstArtist[@"name"];
-                    if ([firstName isKindOfClass:[NSString class]]) _artist = firstName;
-                }
-            }
+            _artist = _allArtists.firstObject;
         }
 
         // Album - may be nested object
@@ -101,6 +149,8 @@ static NSString *stringIDFromValue(id value) {
         if ([album isKindOfClass:[NSDictionary class]]) {
             id albumTitle = album[@"title"];
             if ([albumTitle isKindOfClass:[NSString class]]) _album = albumTitle;
+            NSString *albumID = stringIDFromValue(album[@"id"]);
+            if (albumID.length > 0) _albumID = albumID;
 
             // Album art from cover
             id cover = album[@"cover"];
@@ -144,6 +194,21 @@ static NSString *stringIDFromValue(id value) {
         id isrc = dict[@"isrc"];
         if ([isrc isKindOfClass:[NSString class]] && [isrc length] > 0) {
             _isrc = isrc;
+        }
+
+        // Tempo and key. Absent, null, 0 and "UNKNOWN" all mean the catalogue
+        // has none.
+        id bpm = dict[@"bpm"];
+        if ([bpm isKindOfClass:[NSNumber class]] && [bpm doubleValue] > 0) {
+            _bpm = [bpm doubleValue];
+        }
+        id key = dict[@"key"];
+        if (JLTidalIsString(key) && [key length] > 0 && ![key isEqualToString:@"UNKNOWN"]) {
+            _key = key;
+        }
+        id keyScale = dict[@"keyScale"];
+        if (JLTidalIsString(keyScale) && [keyScale length] > 0 && ![keyScale isEqualToString:@"UNKNOWN"]) {
+            _keyScale = keyScale;
         }
 
         // Copyright
@@ -346,9 +411,43 @@ static NSString *stringIDFromValue(id value) {
         _sampleRate = [dict[@"sampleRate"] integerValue];
         _codec = dict[@"codec"];
 
+        // ReplayGain travels with the stream response; fb2k can apply it if we
+        // pass it on, which keeps TIDAL tracks at the same level as local files
+        // in a mixed playlist.
+        id trackGain = dict[@"trackReplayGain"];
+        if ([trackGain isKindOfClass:[NSNumber class]]) {
+            _hasReplayGain = YES;
+            _trackReplayGain = [trackGain doubleValue];
+            id peak = dict[@"trackPeakAmplitude"];
+            _trackPeakAmplitude = [peak isKindOfClass:[NSNumber class]] ? [peak doubleValue] : 1.0;
+        }
+        id albumGain = dict[@"albumReplayGain"];
+        if ([albumGain isKindOfClass:[NSNumber class]]) {
+            _hasAlbumReplayGain = YES;
+            _albumReplayGain = [albumGain doubleValue];
+            id albumPeak = dict[@"albumPeakAmplitude"];
+            _albumPeakAmplitude = [albumPeak isKindOfClass:[NSNumber class]] ? [albumPeak doubleValue] : 1.0;
+        }
+
         // Parse manifest
         _manifestMimeType = dict[@"manifestMimeType"];
         _manifest = dict[@"manifest"];
+
+        // A tier-gated or unsubscribed track answers HTTP 200 with a ~30s
+        // sample. Nothing downstream can tell that from a full track -- the
+        // metadata overlay stamps the catalogue duration over the decoder's
+        // real length -- so it has to be caught here. Absent is treated as
+        // PREVIEW so a response shape change fails closed, not silently short.
+        NSString *presentation = JLTidalIsString(dict[@"assetPresentation"])
+            ? dict[@"assetPresentation"] : nil;
+        _previewOnly = ![presentation isEqualToString:@"FULL"];
+        _previewReason = JLTidalIsString(dict[@"previewReason"]) ? dict[@"previewReason"] : nil;
+        if (_previewOnly) {
+            tidal::logInfo([[NSString stringWithFormat:
+                             @"Track %@ returned a %@ asset (reason: %@)",
+                             trackID, presentation ?: @"(absent)",
+                             _previewReason ?: @"none given"] UTF8String]);
+        }
 
         tidal::logDebug([[NSString stringWithFormat:@"Playback info: quality=%@, codec=%@, manifestType=%@",
                           audioQuality ?: @"(nil)", _codec ?: @"(nil)", _manifestMimeType ?: @"(nil)"] UTF8String]);
@@ -364,6 +463,8 @@ static NSString *stringIDFromValue(id value) {
             _streamURL = parsed.streamURL;
             _dashMediaTemplate = parsed.dashMediaTemplate;
             _dashSegmentCount = parsed.dashSegmentCount;
+            _dashTotalDuration = parsed.dashTotalDuration;
+            _dashTimescale = parsed.dashTimescale;
             if (parsed.normalizedCodec) {
                 _codec = parsed.normalizedCodec;
             }
@@ -383,14 +484,21 @@ static NSString *stringIDFromValue(id value) {
 
 - (NSString *)qualityDescription {
     switch (_quality) {
+        // %.1f, not integer division: 44100 and 88200 otherwise render as
+        // "44kHz" and "88kHz" right next to fb2k's own correct sample rate.
         case JLTidalQualityHiResLossless:
-            return [NSString stringWithFormat:@"HiFi Plus (%ld-bit/%ldkHz)",
-                    (long)_bitDepth, (long)_sampleRate / 1000];
+            return [NSString stringWithFormat:@"HiFi Plus (%ld-bit/%.1fkHz)",
+                    (long)_bitDepth, _sampleRate / 1000.0];
         case JLTidalQualityHiRes:
-            return [NSString stringWithFormat:@"HiFi MQA (%ld-bit/%ldkHz)",
-                    (long)_bitDepth, (long)_sampleRate / 1000];
+            // Retired tier; only reachable when the server still answers
+            // HI_RES. Reported as plain hi-res, not as MQA.
+            return [NSString stringWithFormat:@"HiFi (%ld-bit/%.1fkHz)",
+                    (long)_bitDepth, _sampleRate / 1000.0];
         case JLTidalQualityLossless:
-            return @"Lossless (16-bit/44.1kHz)";
+            return _sampleRate > 0
+                ? [NSString stringWithFormat:@"Lossless (%ld-bit/%.1fkHz)",
+                   (long)(_bitDepth > 0 ? _bitDepth : 16), _sampleRate / 1000.0]
+                : @"Lossless (16-bit/44.1kHz)";
         case JLTidalQualityHigh:
             return @"High (320kbps)";
         case JLTidalQualityLow:

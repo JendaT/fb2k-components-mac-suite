@@ -108,18 +108,28 @@
     // No mediaMetadata in the response: nothing better to go on.
     if (mediaTags == nil) return audioQuality;
 
+    // mediaTags lists the formats Tidal actually holds, so it decides in both
+    // directions. Previously it could only cap a lossless claim downward, and a
+    // release whose audioQuality lagged behind a HIRES_LOSSLESS tag was shown
+    // as merely lossless.
+    BOOL hasHiRes = NO, hasLossless = NO;
+    for (NSString *tag in mediaTags) {
+        if ([tag isEqualToString:@"HIRES_LOSSLESS"]) hasHiRes = YES;
+        else if ([tag isEqualToString:@"LOSSLESS"] || [tag isEqualToString:@"MQA"]) hasLossless = YES;
+    }
+
+    if (hasHiRes) return @"HI_RES_LOSSLESS";
+
     BOOL claimsLossless = [audioQuality isEqualToString:@"LOSSLESS"] ||
                           [audioQuality isEqualToString:@"HI_RES"] ||
                           [audioQuality isEqualToString:@"HI_RES_LOSSLESS"];
-    if (!claimsLossless) return audioQuality;
-
-    for (NSString *tag in mediaTags) {
-        if ([tag isEqualToString:@"HIRES_LOSSLESS"] || [tag isEqualToString:@"LOSSLESS"] ||
-            [tag isEqualToString:@"MQA"]) {
-            return audioQuality;  // a lossless format really is on offer
-        }
+    if (!claimsLossless) {
+        // Tags promise lossless while audioQuality says otherwise: believe the tags.
+        return hasLossless ? @"LOSSLESS" : audioQuality;
     }
-    return @"HIGH";
+
+    // A lossless claim is only kept when a lossless format is really on offer.
+    return hasLossless ? audioQuality : @"HIGH";
 }
 
 + (BOOL)librarySectionChangeIsNoOpFromSection:(JLTidalLibrarySection)currentSection

@@ -24,6 +24,19 @@ static BOOL JLTidalIsString(id obj) {
 
 @implementation JLTidalResponseParser
 
++ (NSArray<NSString *> *)trackIDsFromJSONAPIData:(id)data {
+    if (![data isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (id entry in (NSArray *)data) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        id identifier = ((NSDictionary *)entry)[@"id"];
+        if (JLTidalIsString(identifier) && ((NSString *)identifier).length > 0) {
+            [ids addObject:identifier];
+        }
+    }
+    return [ids copy];
+}
+
 #pragma mark - OAuth token responses
 
 + (JLTidalSession *)sessionFromTokenResponse:(NSDictionary *)json {

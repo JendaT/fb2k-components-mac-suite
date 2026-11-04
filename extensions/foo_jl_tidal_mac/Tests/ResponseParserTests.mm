@@ -20,7 +20,7 @@ static NSDictionary *trackDict(NSString *trackID, NSString *title, NSString *isr
         @"title": title,
         @"duration": @200,
         @"artist": @{@"name": @"Artist"},
-        @"album": @{@"title": @"Album", @"cover": @"ab-cd"},
+        @"album": @{@"id": @77, @"title": @"Album", @"cover": @"ab-cd"},
     } mutableCopy];
     if (isrc) d[@"isrc"] = isrc;
     return d;
@@ -88,6 +88,24 @@ static void testPlainItemLists(void) {
     CHECK_STREQ(tracks[0].trackID, @"1", "track id");
     CHECK_STREQ(tracks[1].title, @"Two", "track title");
     CHECK_STREQ(tracks[0].artist, @"Artist", "nested artist name");
+    CHECK_STREQ(tracks[0].albumID, @"77", "numeric album id stringified, for Go to Album");
+    CHECK(tracks[0].bpm == 0, "no bpm field -> 0 (no BPM tag)");
+    CHECK(tracks[0].key == nil && tracks[0].keyScale == nil, "no key fields -> nil");
+
+    NSMutableDictionary *withTempo = [trackDict(@"3", @"Three", nil) mutableCopy];
+    withTempo[@"bpm"] = @(127.6);
+    withTempo[@"key"] = @"FSharp";
+    withTempo[@"keyScale"] = @"MINOR";
+    JLTidalTrack *tempo = [Parser tracksFromItems:@[withTempo]][0];
+    CHECK(tempo.bpm == 127.6, "fractional bpm kept as sent");
+    CHECK_STREQ(tempo.key, @"FSharp", "key parsed");
+    CHECK_STREQ(tempo.keyScale, @"MINOR", "key scale parsed");
+    withTempo[@"bpm"] = [NSNull null];
+    withTempo[@"key"] = @"UNKNOWN";
+    withTempo[@"keyScale"] = @"UNKNOWN";
+    tempo = [Parser tracksFromItems:@[withTempo]][0];
+    CHECK(tempo.bpm == 0, "null bpm -> 0");
+    CHECK(tempo.key == nil && tempo.keyScale == nil, "UNKNOWN key and scale -> nil");
 
     CHECK_EQ([Parser tracksFromItems:nil].count, (NSUInteger)0, "nil items -> empty, not nil");
     CHECK([Parser tracksFromItems:nil] != nil, "nil items returns array");
@@ -107,6 +125,20 @@ static void testPlainItemLists(void) {
         @{@"uuid": @"pl-1", @"title": @"Mix", @"numberOfTracks": @3}]];
     CHECK_EQ(playlists.count, (NSUInteger)1, "playlist parsed");
     CHECK_STREQ(playlists[0].playlistUUID, @"pl-1", "playlist uuid");
+}
+
+static void testDisplayTitle(void) {
+    NSMutableDictionary *d = [trackDict(@"1", @"Breakfast", nil) mutableCopy];
+    CHECK_STREQ([Parser tracksFromItems:@[d]][0].displayTitle, @"Breakfast", "no version -> title alone");
+    d[@"version"] = @"Kasper Bjorke Remix";
+    CHECK_STREQ([Parser tracksFromItems:@[d]][0].displayTitle, @"Breakfast (Kasper Bjorke Remix)",
+                "version appended, so remixes on one album differ");
+    d[@"title"] = @"Breakfast (Kasper Bjorke remix)";
+    CHECK_STREQ([Parser tracksFromItems:@[d]][0].displayTitle, @"Breakfast (Kasper Bjorke remix)",
+                "a title already carrying the version is not doubled");
+    d[@"version"] = [NSNull null];
+    d[@"title"] = @"Breakfast";
+    CHECK_STREQ([Parser tracksFromItems:@[d]][0].displayTitle, @"Breakfast", "null version -> title alone");
 }
 
 static void testWrappedItemLists(void) {
@@ -167,6 +199,7 @@ int main(void) {
         testTokenResponse();
         testRefreshResponse();
         testPlainItemLists();
+        testDisplayTitle();
         testWrappedItemLists();
         testFolderFiltering();
         testISRCMatching();

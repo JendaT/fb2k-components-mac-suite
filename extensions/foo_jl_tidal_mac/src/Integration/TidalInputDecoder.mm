@@ -7,6 +7,7 @@
 
 #import "TidalInputDecoder.h"
 #import "TidalMemoryFile.h"
+#import "TidalDashFlacFile.h"
 #import "TidalDashCache.h"
 #import "../Core/URLUtils.h"
 #import "../Core/TidalConfig.h"
@@ -15,6 +16,7 @@
 #import "../Services/TidalStreamResolver.h"
 #import "../API/TidalConstants.h"
 #import <dispatch/dispatch.h>
+#include <algorithm>
 
 namespace tidal {
 
@@ -27,6 +29,9 @@ static NSDateFormatter* sharedDateFormatter() {
         fmt = [[NSDateFormatter alloc] init];
         fmt.dateFormat = @"yyyy-MM-dd";
         fmt.locale = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+        // Must match the UTC zone the date was parsed in (TidalModels.mm),
+        // or the DATE tag renders a day earlier east of Greenwich.
+        fmt.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
     });
     return fmt;
 }
@@ -143,12 +148,30 @@ static void openDecoderForStream(service_ptr_t<input_decoder> &outDecoder,
 // at debug level (info-reader diagnostics).
 static void applyTrackMeta(file_info& p_info, JLTidalTrack* track, bool logFields) {
     if (track.title) {
-        p_info.meta_set("TITLE", [track.title UTF8String]);
+        NSString *title = track.displayTitle;
+        p_info.meta_set("TITLE", [title UTF8String]);
         if (logFields) {
-            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set TITLE=%@", track.title] UTF8String]);
+            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set TITLE=%@", title] UTF8String]);
         }
     }
-    if (track.artist) {
+    // Every credited artist, not just the first: a collaboration otherwise
+    // loses its featured names. meta_add appends additional values to the
+    // same field, which is how fb2k models multi-value tags.
+    if (track.allArtists.count > 0) {
+        BOOL first = YES;
+        for (NSString *name in track.allArtists) {
+            if (first) {
+                p_info.meta_set("ARTIST", [name UTF8String]);
+                first = NO;
+            } else {
+                p_info.meta_add("ARTIST", [name UTF8String]);
+            }
+        }
+        if (logFields) {
+            logDebug([[NSString stringWithFormat:@"TidalInfoReader: set ARTIST=%@",
+                       [track.allArtists componentsJoinedByString:@"; "]] UTF8String]);
+        }
+    } else if (track.artist) {
         p_info.meta_set("ARTIST", [track.artist UTF8String]);
         if (logFields) {
             logDebug([[NSString stringWithFormat:@"TidalInfoReader: set ARTIST=%@", track.artist] UTF8String]);
@@ -160,7 +183,10 @@ static void applyTrackMeta(file_info& p_info, JLTidalTrack* track, bool logField
     if (track.albumArtist) {
         p_info.meta_set("ALBUM ARTIST", [track.albumArtist UTF8String]);
     }
-    if (track.duration > 0) {
+    // The catalogue duration is whole seconds; the inner decoder knows the
+    // exact length. Only fill in when it has not already been established, or
+    // a 4:12.37 track reports 4:12 and the seekbar disagrees with the audio.
+    if (track.duration > 0 && p_info.get_length() <= 0) {
         p_info.set_length(track.duration);
     }
     if (track.trackNumber > 0) {
@@ -175,12 +201,57 @@ static void applyTrackMeta(file_info& p_info, JLTidalTrack* track, bool logField
     if (track.isrc) {
         p_info.meta_set("ISRC", [track.isrc UTF8String]);
     }
+    if (track.bpm > 0) {
+        p_info.meta_set("BPM", [[NSString stringWithFormat:@"%lld", llround(track.bpm)] UTF8String]);
+    }
     if (track.releaseDate) {
         p_info.meta_set("DATE", [[sharedDateFormatter() stringFromDate:track.releaseDate] UTF8String]);
     }
     if (track.copyright) {
         p_info.meta_set("COPYRIGHT", [track.copyright UTF8String]);
     }
+    if (track.isExplicit) {
+        p_info.meta_set("EXPLICIT", "1");
+    }
+    // Catalogue ReplayGain, so a TIDAL track sits at the same level as the
+    // local files around it when fb2k's ReplayGain processing is on.
+    if (track.hasReplayGain && TidalConfig::isReplayGainEnabled()) {
+        replaygain_info rg = p_info.get_replaygain();
+        rg.m_track_gain = (float)track.replayGain;
+        if (track.peakAmplitude > 0) rg.m_track_peak = (float)track.peakAmplitude;
+        p_info.set_replaygain(rg);
+    }
+}
+
+size_t stripStoredTidalReplayGain() {
+    auto pm = playlist_manager::get();
+    metadb_handle_list handles;
+    for (t_size p = 0; p < pm->get_playlist_count(); p++) {
+        metadb_handle_list items;
+        pm->playlist_get_all_items(p, items);
+        for (t_size i = 0; i < items.get_count(); i++) {
+            if (isPlayableTidalTrackURL(items[i]->get_path())) handles.add_item(items[i]);
+        }
+    }
+    handles.sort_by_pointer_remove_duplicates();
+
+    auto hints = metadb_io_v2::get()->create_hint_list();
+    size_t changed = 0;
+    for (t_size i = 0; i < handles.get_count(); i++) {
+        metadb_info_container::ptr stored;
+        if (!handles[i]->get_info_ref(stored)) continue;
+        replaygain_info rg = stored->info().get_replaygain();
+        if (!rg.is_track_gain_present() && !rg.is_album_gain_present() &&
+            !rg.is_track_peak_present() && !rg.is_album_peak_present()) continue;
+        file_info_impl copy(stored->info());
+        copy.reset_replaygain();
+        // Fresh, or the hint ranks below the info already stored and is dropped.
+        hints->add_hint(handles[i], copy, stored->stats(), true);
+        changed++;
+    }
+    // on_done() refreshes every playlist and viewer, so only when it matters.
+    if (changed > 0) hints->on_done();
+    return changed;
 }
 
 // GUIDs for this input
@@ -203,6 +274,7 @@ TidalInputDecoder::TidalInputDecoder()
 
 TidalInputDecoder::~TidalInputDecoder() {
     m_abortFlag = true;
+    [m_dashStream close];
 }
 
 void TidalInputDecoder::open(const char* p_path, abort_callback& p_abort) {
@@ -246,8 +318,18 @@ void TidalInputDecoder::resolveStream(NSString* trackIDStr, JLTidalStreamResolve
     }
 }
 
+// Milliseconds between two CFAbsoluteTime stamps, for the open-timing line.
+static long elapsedMs(CFAbsoluteTime from, CFAbsoluteTime to) {
+    return (long)((to - from) * 1000.0);
+}
+
 void TidalInputDecoder::openStream(abort_callback& p_abort) {
     logDebug(("Resolving stream for track: " + m_trackID).c_str());
+
+    // Every step below can block the playback thread, and fb2k opens the next
+    // track only when the current one runs out, so whatever this takes is
+    // heard as a gap between tracks. Time each step so the console says which.
+    const CFAbsoluteTime tStart = CFAbsoluteTimeGetCurrent();
 
     // Use dispatch semaphore for synchronous resolution
     __block JLTidalPlaybackInfo* resultInfo = nil;
@@ -262,10 +344,20 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         dispatch_semaphore_signal(semaphore);
     });
 
-    // Wait for resolution (with timeout to check abort)
+    // Wait for resolution, polling for abort. Bounded: the resolver now retries
+    // internally, and a completion that never arrives at all (a wedged
+    // connection, a handler dropped on the floor) would otherwise hang this
+    // decoder thread forever with fb2k showing "Opening..." and no way out but
+    // a force quit. Every sibling wait in this file already has a ceiling.
+    static const int kResolveTimeoutTicks = 450;  // 45s at 100ms per tick
+    int resolveTicks = 0;
     while (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
         if (p_abort.is_aborting() || m_abortFlag) {
             pfc::throw_exception_with_message<exception_aborted>("Operation aborted");
+        }
+        if (++resolveTicks > kResolveTimeoutTicks) {
+            logError(("Stream resolution timed out for track " + m_trackID).c_str());
+            pfc::throw_exception_with_message<exception_io_data>("Stream resolution timed out");
         }
     }
 
@@ -278,6 +370,7 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     }
 
     m_playbackInfo = resultInfo;
+    const CFAbsoluteTime tResolved = CFAbsoluteTimeGetCurrent();
 
     // Two delivery modes: direct URL (HIGH/LOW/legacy) or DASH segments (LOSSLESS/HiRes).
     BOOL hasDASH = (tidal::TidalConfig::isDASHEnabled()
@@ -325,6 +418,7 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         }
     }
     m_trackInfo = trackResult;
+    const CFAbsoluteTime tMeta = CFAbsoluteTimeGetCurrent();
 
     // Open underlying decoder for the stream URL
     // Log a short identifier for the stream URL (host + path basename) — full URL has secrets.
@@ -340,6 +434,7 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
 
     // Either open the direct HTTP stream, or download & concatenate DASH segments.
     service_ptr_t<file> streamFile;
+    const char *streamSource = "http";
     if (hasDASH) {
         // DASH path: assemble init + N media segments into one fMP4 file in
         // memory. Served from JLTidalDashCache — instant when a prefetch (or a
@@ -348,7 +443,24 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         NSString *tid = [NSString stringWithUTF8String:m_trackID.c_str()];
         abort_callback *pa = &p_abort;
         std::atomic<bool> *af = &m_abortFlag;
+        // A miss here means the prefetch did not cover this track (first
+        // track, shuffle, a failed prefetch) or is still downloading it.
+        BOOL cached = [[JLTidalDashCache shared] cachedBlobForTrackID:tid quality:resultInfo.quality] != nil;
+        streamSource = cached ? "prefetched" : "downloaded now";
+        if (!cached) {
+            [[JLTidalDashCache shared] abandonPrefetchesExceptTrackID:tid quality:resultInfo.quality];
+            if (openProgressive(tid, resultInfo, p_abort)) {
+                const CFAbsoluteTime tDone = CFAbsoluteTimeGetCurrent();
+                logDebug([[NSString stringWithFormat:
+                          @"Open timing for track %s: %ld ms total (resolve %ld, metadata %ld, first audio %ld [progressive])",
+                          m_trackID.c_str(), elapsedMs(tStart, tDone),
+                          elapsedMs(tStart, tResolved), elapsedMs(tResolved, tMeta),
+                          elapsedMs(tMeta, tDone)] UTF8String]);
+                return;
+            }
+        }
         NSData *assembled = [[JLTidalDashCache shared] blobForTrackID:tid
+                                                              quality:resultInfo.quality
                                                         mediaTemplate:resultInfo.dashMediaTemplate
                                                          segmentCount:resultInfo.dashSegmentCount
                                                           isCancelled:^BOOL{
@@ -419,6 +531,8 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         }
     }
 
+    const CFAbsoluteTime tStream = CFAbsoluteTimeGetCurrent();
+
     try {
         tidal::openDecoderForStream(m_decoder, m_streamURL, resultInfo.codec, streamFile, p_abort);
     } catch (const exception_aborted &) {
@@ -435,7 +549,102 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
         pfc::throw_exception_with_message<exception_io_data>("Failed to open stream decoder");
     }
 
+    const CFAbsoluteTime tDone = CFAbsoluteTimeGetCurrent();
+    logDebug([[NSString stringWithFormat:
+              @"Open timing for track %s: %ld ms total (resolve %ld, metadata %ld, stream %ld [%s], decoder %ld)",
+              m_trackID.c_str(), elapsedMs(tStart, tDone),
+              elapsedMs(tStart, tResolved), elapsedMs(tResolved, tMeta),
+              elapsedMs(tMeta, tStream), streamSource, elapsedMs(tStream, tDone)] UTF8String]);
+
     logDebug("Stream opened successfully");
+}
+
+bool TidalInputDecoder::openProgressive(NSString* trackID, JLTidalPlaybackInfo* info,
+                                        abort_callback& p_abort) {
+    // FLAC only: the remux unwraps FLAC frames, and FLAC is what Tidal serves
+    // through DASH. Anything else waits for the whole blob as before.
+    if (![info.codec isEqualToString:@"FLAC"]) return false;
+
+    JLTidalDashStream *stream = [[JLTidalDashCache shared] openStreamForTrackID:trackID
+                                                                        quality:info.quality
+                                                                  mediaTemplate:info.dashMediaTemplate
+                                                                   segmentCount:info.dashSegmentCount];
+    if (!stream) return false;  // finished meanwhile: the cached blob is faster still
+
+    // FLAC inputs only. A container demuxer probing raw FLAC can read a box
+    // "size" out of the stream header and seek to it, and on this file a far
+    // seek waits for the download -- the very stall this path removes.
+    std::vector<input_entry::ptr> candidates;
+    auto collect = [&candidates](const pfc::list_t<input_entry::ptr> &found) {
+        for (t_size i = 0; i < found.get_count(); i++) {
+            if (std::find(candidates.begin(), candidates.end(), found[i]) == candidates.end()) {
+                candidates.push_back(found[i]);
+            }
+        }
+    };
+    {
+        // Separate lists: the SDK lookups may reset the list they fill.
+        pfc::list_t<input_entry::ptr> byPath, byType;
+        input_entry::g_find_inputs_by_path(byPath, "track.flac", false);
+        collect(byPath);
+        input_entry::g_find_inputs_by_content_type(byType, "audio/flac", false);
+        collect(byType);
+    }
+
+    for (const auto &entry : candidates) {
+        // A fresh file per candidate: a rejected probe leaves its read
+        // position wherever it stopped.
+        service_ptr_t<DashFlacFile> flac = fb2k::service_new<DashFlacFile>();
+        flac->init(stream, (uint64_t)MAX(info.dashTotalDuration, 0), (uint64_t)MAX(info.dashTimescale, 0));
+        try {
+            entry->open_for_decoding(m_decoder, flac, "track.flac", p_abort);
+            logInfo(("Decoder opened the progressive stream: " + decoderName(entry)).c_str());
+            m_dashStream = stream;
+            return true;
+        } catch (const exception_aborted &) {
+            [stream close];
+            throw;
+        } catch (const std::exception &e) {
+            if (p_abort.is_aborting() || m_abortFlag) {
+                [stream close];
+                throw exception_aborted();
+            }
+            logInfo(("Decoder " + decoderName(entry) + " rejected the progressive stream: " +
+                     std::string(e.what())).c_str());
+        }
+    }
+
+    m_decoder.release();
+    [stream close];
+    logInfo("Progressive start unavailable; waiting for the whole track instead");
+    return false;
+}
+
+void TidalInputDecoder::seekProgressive(double p_seconds, abort_callback& p_abort) {
+    logInfo([[NSString stringWithFormat:@"Seek to %.1fs before the download finished: waiting for the rest of track %s",
+              p_seconds, m_trackID.c_str()] UTF8String]);
+    abort_callback *pa = &p_abort;
+    std::atomic<bool> *af = &m_abortFlag;
+    NSData *blob = [m_dashStream waitForBlobWithCancel:^BOOL{
+        return pa->is_aborting() || af->load();
+    }];
+    if (p_abort.is_aborting() || m_abortFlag) throw exception_aborted();
+    if (blob.length == 0) {
+        pfc::throw_exception_with_message<exception_io_data>("DASH segment download failed");
+    }
+
+    service_ptr_t<tidal::MemoryFile> memFile = fb2k::service_new<tidal::MemoryFile>();
+    memFile->initWithData(blob, "audio/x-flac");
+    service_ptr_t<input_decoder> full;
+    tidal::openDecoderForStream(full, m_streamURL, m_playbackInfo.codec, memFile, p_abort);
+    full->initialize(m_subsong, m_flags, p_abort);
+    full->seek(p_seconds, p_abort);
+
+    m_decoder = full;
+    [m_dashStream close];
+    m_dashStream = nil;
+    m_decodedSeconds = p_seconds;
+    m_samplesDelivered = 0;
 }
 
 bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
@@ -505,6 +714,19 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
         m_decoder = newDecoder;
         m_decoder->initialize(m_subsong, m_flags, p_abort);
 
+        // initialize() rewinds to the start (SDK/input.h), so without this the
+        // track restarts at 0:00 while fb2k's position clock keeps counting
+        // from where it was -- audio and seekbar silently disagree.
+        double resumeAt = decodedSeconds();
+        if (resumeAt > 0.0) {
+            if (!m_decoder->can_seek()) {
+                logError("Re-resolved stream is not seekable; cannot resume mid-track");
+                return false;
+            }
+            m_decoder->seek(resumeAt, p_abort);
+            logInfo([[NSString stringWithFormat:@"Resumed re-resolved stream at %.1fs", resumeAt] UTF8String]);
+        }
+
         logDebug("Successfully re-resolved stream");
         return true;
     } catch (...) {
@@ -530,15 +752,43 @@ void TidalInputDecoder::get_info(t_uint32 p_subsong, file_info& p_info, abort_ca
         }
     }
 
-    // Overlay our metadata
+    // Overlay our metadata. When the metadata fetch failed, m_trackInfo is nil
+    // and there is nothing to add -- publishing an empty overlay would have
+    // fb2k commit blank TITLE/ARTIST/ALBUM over the inner decoder's own tags.
     if (m_trackInfo) {
         applyTrackMeta(p_info, m_trackInfo, false);
+    }
+
+    // Off means Tidal tracks carry no ReplayGain at all, whatever the inner
+    // decoder or the catalogue says, so fb2k treats them like untagged files.
+    const bool useReplayGain = TidalConfig::isReplayGainEnabled();
+    if (!useReplayGain) {
+        p_info.reset_replaygain();
     }
 
     // Add quality info
     if (m_playbackInfo) {
         p_info.info_set(kTidalMetadataQuality.UTF8String, [m_playbackInfo.qualityDescription UTF8String]);
         p_info.info_set(kTidalMetadataTrackID.UTF8String, m_trackID.c_str());
+
+        // Stream-level ReplayGain beats the catalogue value when both exist:
+        // it describes the asset actually being decoded.
+        if (useReplayGain && (m_playbackInfo.hasReplayGain || m_playbackInfo.hasAlbumReplayGain)) {
+            replaygain_info rg = p_info.get_replaygain();
+            if (m_playbackInfo.hasReplayGain) {
+                rg.m_track_gain = (float)m_playbackInfo.trackReplayGain;
+                if (m_playbackInfo.trackPeakAmplitude > 0) {
+                    rg.m_track_peak = (float)m_playbackInfo.trackPeakAmplitude;
+                }
+            }
+            if (m_playbackInfo.hasAlbumReplayGain) {
+                rg.m_album_gain = (float)m_playbackInfo.albumReplayGain;
+                if (m_playbackInfo.albumPeakAmplitude > 0) {
+                    rg.m_album_peak = (float)m_playbackInfo.albumPeakAmplitude;
+                }
+            }
+            p_info.set_replaygain(rg);
+        }
     }
 }
 
@@ -558,7 +808,12 @@ void TidalInputDecoder::initialize(t_uint32 p_subsong, unsigned p_flags, abort_c
     m_initialized = true;
 
     if (m_decoder.is_valid()) {
+        // The inner demuxer may index the whole stream here rather than in
+        // open, which would put it outside the open-timing line above.
+        const CFAbsoluteTime tStart = CFAbsoluteTimeGetCurrent();
         m_decoder->initialize(p_subsong, p_flags, p_abort);
+        logDebug([[NSString stringWithFormat:@"Decoder initialize for track %s: %ld ms",
+                  m_trackID.c_str(), elapsedMs(tStart, CFAbsoluteTimeGetCurrent())] UTF8String]);
     }
 }
 
@@ -571,6 +826,11 @@ bool TidalInputDecoder::run(audio_chunk& p_chunk, abort_callback& p_abort) {
         bool more = m_decoder->run(p_chunk, p_abort);
         if (more) {
             m_samplesDelivered += p_chunk.get_sample_count();
+            // Seconds, not just samples: the sample rate is only known once a
+            // chunk has arrived, and the 403 resume needs a time to seek to.
+            if (p_chunk.get_sample_rate() > 0) {
+                m_decodedSeconds += (double)p_chunk.get_sample_count() / (double)p_chunk.get_sample_rate();
+            }
         } else {
             // EOF — detect premature EOF (track API says it's long but stream ended early).
             double declaredSec = m_trackInfo ? (double)m_trackInfo.duration : 0.0;
@@ -582,6 +842,11 @@ bool TidalInputDecoder::run(audio_chunk& p_chunk, abort_callback& p_abort) {
             }
         }
         return more;
+    } catch (const exception_aborted&) {
+        // Stop/Next during a network read is routine, not a fault. Logging it
+        // at error level printed "Decoder run() std::exception ... User abort"
+        // on every skip. Same ordering as openStream.
+        throw;
     } catch (const exception_io& e) {
         const char* msg = e.what() ? e.what() : "(no message)";
         logError([[NSString stringWithFormat:@"Decoder run() exception_io for track %s: %s",
@@ -603,12 +868,41 @@ bool TidalInputDecoder::run(audio_chunk& p_chunk, abort_callback& p_abort) {
 }
 
 void TidalInputDecoder::seek(double p_seconds, abort_callback& p_abort) {
-    if (m_decoder.is_valid()) {
-        m_decoder->seek(p_seconds, p_abort);
+    if (!m_decoder.is_valid()) return;
+    if (m_dashStream) {
+        seekProgressive(p_seconds, p_abort);
+        return;
     }
+
+    // Seeking issues a fresh ranged request, so it is the likeliest moment for
+    // an expired signed URL to surface. Previously this went uncaught and the
+    // track died outright.
+    try {
+        m_decoder->seek(p_seconds, p_abort);
+        m_decodedSeconds = p_seconds;
+        m_samplesDelivered = 0;
+        return;
+    } catch (const exception_aborted&) {
+        throw;
+    } catch (const exception_io& e) {
+        const char* msg = e.what() ? e.what() : "(no message)";
+        logError([[NSString stringWithFormat:@"Seek failed for track %s: %s",
+                  m_trackID.c_str(), msg] UTF8String]);
+        if (!(strstr(msg, "403") || strstr(msg, "Forbidden"))) throw;
+    }
+
+    m_decodedSeconds = p_seconds;   // resume target for the re-open
+    m_samplesDelivered = 0;
+    if (!tryReopen(p_abort)) {
+        logError("Seek re-resolve failed");
+        pfc::throw_exception_with_message<exception_io_data>("Stream expired and could not be re-resolved");
+    }
+    logInfo("Seek succeeded after re-resolving the stream");
 }
 
 bool TidalInputDecoder::can_seek() {
+    // The progressive stream itself cannot seek, but seekProgressive can.
+    if (m_dashStream) return true;
     if (m_decoder.is_valid()) {
         return m_decoder->can_seek();
     }
@@ -653,6 +947,11 @@ void TidalInfoReader::open(const char* p_path, abort_callback& p_abort) {
     std::string pathStr(p_path);
     logDebug(("TidalInfoReader::open called with: " + pathStr).c_str());
 
+    // Failure handling here matters more than it looks: fb2k treats a reader
+    // that returns normally as a successful read and COMMITS whatever get_info
+    // writes. Returning on abort/timeout/error meant "Reload info" while
+    // offline or rate-limited replaced good tags with "Tidal Track <id>".
+    // Only a genuinely unparsable URL keeps the placeholder path.
     auto parsed = parseURL(pathStr);
     if (!parsed.has_value() || parsed->type != TidalContentType::Track) {
         logDebug("TidalInfoReader: URL parsing failed or not a track");
@@ -680,17 +979,20 @@ void TidalInfoReader::open(const char* p_path, abort_callback& p_abort) {
     while (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
         if (p_abort.is_aborting()) {
             logDebug("TidalInfoReader: aborted while fetching metadata");
-            return;
+            pfc::throw_exception_with_message<exception_aborted>("Operation aborted");
         }
         if (++attempts > 50) {  // 5 second timeout
-            logDebug("TidalInfoReader: metadata fetch timed out");
-            return;
+            logError(("TidalInfoReader: metadata fetch timed out for track " + m_trackID).c_str());
+            pfc::throw_exception_with_message<exception_io_data>("Tidal metadata fetch timed out");
         }
     }
 
     if (fetchError) {
-        logDebug([[NSString stringWithFormat:@"TidalInfoReader: metadata fetch failed: %@",
+        logError([[NSString stringWithFormat:@"TidalInfoReader: metadata fetch failed: %@",
                    fetchError.localizedDescription] UTF8String]);
+        pfc::throw_exception_with_message<exception_io_data>(
+            [[NSString stringWithFormat:@"Tidal metadata unavailable: %@",
+              fetchError.localizedDescription] UTF8String]);
     } else if (trackResult) {
         logDebug([[NSString stringWithFormat:@"TidalInfoReader: got metadata - title=%@, artist=%@",
                    trackResult.title ?: @"(nil)", trackResult.artist ?: @"(nil)"] UTF8String]);
@@ -740,7 +1042,11 @@ bool TidalInputEntry::is_our_content_type(const char* p_type) {
 bool TidalInputEntry::is_our_path(const char* p_full_path, const char* p_extension) {
     if (!p_full_path || !*p_full_path) return false;
 
-    return isTidalURL(p_full_path);
+    // Tracks only. Claiming tidal://album/... or tidal://playlist/... admitted
+    // entries fb2k could never decode: they sat in the playlist looking normal
+    // and failed the moment they were played. Those forms are expanded by the
+    // browser instead.
+    return isPlayableTidalTrackURL(p_full_path);
 }
 
 void TidalInputEntry::open_for_decoding(service_ptr_t<input_decoder>& p_instance,
@@ -800,3 +1106,34 @@ bool TidalInputEntry::is_low_merit() {
 static service_factory_single_t<TidalInputEntry> g_tidalInputFactory;
 
 } // namespace tidal
+
+// Normalises pasted tidal.com web links to the internal tidal://track/<id>
+// form, so dragging or pasting a browser URL yields an entry with add-time
+// metadata instead of one the input has to re-parse on every open.
+//
+// Per SDK/link_resolver.h a link may only point at a playable object, never at
+// a playlist or another link, which is why only track URLs are accepted.
+namespace {
+
+class TidalLinkResolver : public link_resolver {
+public:
+    bool is_our_path(const char* p_path, const char* p_extension) override {
+        if (!p_path || !*p_path) return false;
+        // Only the web forms need rewriting; tidal:// is already canonical.
+        if (strncmp(p_path, "tidal://", 8) == 0) return false;
+        return tidal::isPlayableTidalTrackURL(p_path);
+    }
+
+    void resolve(service_ptr_t<file> p_filehint, const char* p_path,
+                 pfc::string_base& p_out, abort_callback& p_abort) override {
+        auto parsed = tidal::parseURL(std::string(p_path ? p_path : ""));
+        if (!parsed.has_value() || parsed->type != tidal::TidalContentType::Track) {
+            pfc::throw_exception_with_message<exception_io_data>("Not a Tidal track link");
+        }
+        p_out = tidal::makeTrackURL(parsed->id).c_str();
+    }
+};
+
+static service_factory_single_t<TidalLinkResolver> g_tidalLinkResolver;
+
+}  // namespace
