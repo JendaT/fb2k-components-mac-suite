@@ -65,10 +65,12 @@ extern NSNotificationName const JLDependencyStateDidChange;   // object: the man
 
 @end
 
-// The gate under a settings section; size it with preferredHeight
+// The gate under a settings section. Create it at the section's width, then
+// give it preferredHeight: the info line and a row of buttons, or only as
+// tall as the note after an install.
 @interface JLDependencyGate : NSView
 - (instancetype)initWithFrame:(NSRect)frame manager:(JLDependencyManager *)manager;
-+ (CGFloat)preferredHeight;
+- (CGFloat)preferredHeight;
 @end
 
 NS_ASSUME_NONNULL_END

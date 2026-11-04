@@ -9,6 +9,8 @@
 #include <spawn.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cmath>
 #include <ctime>
 
 using namespace jl_dep;
@@ -18,6 +20,10 @@ NSNotificationName const JLDependencyStateDidChange = @"JLDependencyStateDidChan
 namespace {
 
 const char *const kResumeKey = "jl.dependency.resume";
+
+const CGFloat kGateHeight = 62;     // the info line (two lines of 11 pt) and a row of buttons
+const CGFloat kNotePadX = 8;
+const CGFloat kNotePadY = 5;
 
 std::string utf8(NSString *s) {
     return s ? std::string(s.UTF8String ?: "") : std::string();
@@ -325,8 +331,17 @@ NSString *userComponentsFolder() {
     NSTimer *_poll;
 }
 
-+ (CGFloat)preferredHeight {
-    return 62;
+- (BOOL)showsNote {
+    return _manager.state == GateState::Available && _manager.installedNote;
+}
+
+- (CGFloat)noteTextHeight {
+    const NSRect bounds = NSMakeRect(0, 0, std::max<CGFloat>(1, self.bounds.size.width - 2 * kNotePadX), CGFLOAT_MAX);
+    return std::ceil([_label.cell cellSizeForBounds:bounds].height);
+}
+
+- (CGFloat)preferredHeight {
+    return [self showsNote] ? [self noteTextHeight] + 2 * kNotePadY : kGateHeight;
 }
 
 - (BOOL)isFlipped {
@@ -393,8 +408,11 @@ NSString *userComponentsFolder() {
     const GateState state = _manager.state;
     const CGFloat width = self.bounds.size.width;
     _label.stringValue = _manager.message ?: @"";
-    _label.frame = NSMakeRect(0, 0, width, 30);
-    const BOOL note = state == GateState::Available && _manager.installedNote;
+    const BOOL note = [self showsNote];
+    // The note sits inside its tint; the other states start at the left edge
+    // like the hints above
+    _label.frame = note ? NSMakeRect(kNotePadX, kNotePadY, width - 2 * kNotePadX, [self noteTextHeight])
+                        : NSMakeRect(0, 0, width, 30);
     _label.textColor = note ? [NSColor labelColor] : [NSColor secondaryLabelColor];
     self.wantsLayer = YES;
     self.layer.cornerRadius = 4;
