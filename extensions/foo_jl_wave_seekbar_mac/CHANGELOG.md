@@ -17,9 +17,9 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Bottom bar controls**: A cog at the bottom right on hover picks no controls (default), the mixer, or analytics (the readout and loudness summary, now shown only there); also in Preferences > Overlays.
 
-- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (drawn in green; jumps move it), and clicks near a beat play from the beat.
+- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (formed around what plays, drawn in green), and clicks near a beat jump at once, keeping the beat.
 
-- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps back are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
+- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
 
 - **Option-drag, Option-jump**: Move the whole loop by whole beats; a plain jump while looping moves playback. The loop stays set until switched off: playback outside it plays on, playback before it is caught when it comes in.
 

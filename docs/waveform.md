@@ -86,10 +86,10 @@ With the **Mixer** controls (the cog; needs BPM Analyzer), the bottom bar shows 
 
 - Jumps keep the playback position's place within its beat, count beats on the grid that holds there (following a new grid when Follow tempo changes is on), stop at the start going back and do nothing when they would reach the end.
 - **Phrase starts**: asked for up to 4 beats after a 16-beat phrase start (16 and 32-beat loops; 2 for 8, 1 for shorter) or a beat before it, the loop starts on the phrase.
-- A loop starts playing from its first beat and is drawn in green. It **stays set until the Loop button switches it off** (or a new track starts): a click or jump outside it plays from there; playback before it runs into it and loops again; past it, playback plays on and the loop waits. **Option** with a jump button, or **Option-drag** on the waveform (applied on release), moves the whole loop by whole beats. A new size keeps its start.
+- A new loop forms around what plays, without a jump back to its first beat (that would break the beat): playback wraps at its end, on the beat. It is drawn in green. It **stays set until the Loop button switches it off** (or a new track starts): a click or jump outside it plays from there; playback before it runs into it and loops again; past it, playback plays on and the loop waits. **Option** with a jump button, or **Option-drag** on the waveform (applied on release), moves the whole loop by whole beats. A new size keeps its start.
 - A narrower size applies at once: playback past the new end goes back into the loop, as far in as it was past a multiple of the new length (bar 5 of 8, narrowed to 4: bar 1). A wider one plays on past the old end in the same pass.
-- A click within 6 points of a beat plays from that beat.
-- **Without a gap or a click**: choosing the Mixer adds a "Beat loop (Waveform Seekbar)" DSP first in the playback chain (Preferences > Playback > DSP; leaving the Mixer removes it). It keeps the track's last 40 s and the audio decoded ahead; loops, new sizes, loop moves and jumps back are splices inside that audio with a 5 ms crossfade, not seeks (every seek flushes foobar2000's output, which is a gap). A forward jump without a loop still seeks: that audio is not decoded yet.
+- **Keeping the beat**: jumps count from what plays when the DSP takes them, so the beat holds however late that is. A click within 6 points of a beat jumps at once to the place nearest it at the same place within its beat as what plays (at most half a beat from the click); a click elsewhere plays from exactly there.
+- **Without a gap or a click**: choosing the Mixer adds a "Beat loop (Waveform Seekbar)" DSP first in the playback chain (Preferences > Playback > DSP; leaving the Mixer removes it). It keeps the track's last 40 s and the audio decoded ahead; loops, new sizes, loop moves and jumps are splices inside that audio with a 5 ms crossfade, not seeks (every seek flushes foobar2000's output, which is a gap). A jump beyond that audio still seeks; while the mouse is over the seekbar the decoder runs up to 2 minutes ahead.
 - **Delay**: a change is heard after foobar2000's output buffer and the audio the DSP has already handed on (30 ms steps while the mouse is over the seekbar). While the mixer is on, the seekbar sets that buffer to 100 ms (Preferences > Overlays, "Output buffer with the mixer": Unchanged, 50-200 ms) and puts your own back when the mixer goes off, or at the next launch if foobar2000 quit in between; playback restarts once at each switch. While the mouse is over the seekbar the DSP also sends short steps (otherwise 1 s steps keep the decoder from running far ahead; after 300 s of decoded audio waiting, a loop ends). The console says once how long a change takes.
 - While the DSP plays from its buffer (a loop, or after a jump back until it catches up), foobar2000's own time display may lag or stand still; the seekbar's cursor follows what plays. Without the DSP in the chain, loops run by seeking, with a short gap at each start.
 
@@ -185,6 +185,10 @@ splitter horizontal style=thin
 
 - Core Graphics: layers cached as alpha masks per track and size, coloured per theme
 - Frames redraw only the played boundary, cursor and overlays (60 FPS timer)
+
+### Mixer DSP
+
+- The cursor's clock (a visualisation stream) and the low-latency hint are released in `initquit::on_quit`: a global still holding one at exit throws `exception_service_not_found` and aborts foobar2000
 
 ## Requirements
 
