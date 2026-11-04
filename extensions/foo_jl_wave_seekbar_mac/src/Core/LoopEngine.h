@@ -72,6 +72,16 @@ struct LoopAction {
     double start = 0.0;     // Loop, Move: the loop's start
     double end = 0.0;       // Loop, Move, Resize: its end
     double to = NAN;        // Loop: where to play from (NAN: on from where it is); Jump: the target
+    // Loop with `to` NAN: past the loop's end already, go into it as far as
+    // its length goes (the beat holds), instead of letting it wait
+    bool keepPhase = false;
+    // Jump: by this much from what plays when it is taken (NAN: to `to`);
+    // relative, so the beat holds however late it is taken
+    double by = NAN;
+    // Jump to `to`: wait for the next beat of what plays (a grid of `beat`
+    // seconds through `beatAnchor`), so the target beat lands on a beat
+    double beat = 0.0;
+    double beatAnchor = 0.0;
 };
 
 // A seek of the view's own: the first frame after it is `target`; `then`
@@ -127,6 +137,7 @@ public:
         live_ = pristine_ = true;
         looping_ = engaged_ = afterBoundary_ = tailStarted_ = false;
         fadeLeft_ = 0;
+        spliceAt_ = -1;
         synced_ = false;
         pending_.reset();
         if (arm) {
@@ -308,8 +319,9 @@ private:
                 const int64_t s = frameOf(a.start), e = frameOf(a.end);
                 if (e <= s || s < bufStart_) return false;
                 // NAN: on from where it is (before the loop it runs into it,
-                // past it the loop waits)
-                const int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
+                // past it the loop waits, or with keepPhase goes into it)
+                int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
+                if (std::isnan(a.to) && a.keepPhase && pos_ >= e) to = s + (pos_ - s) % (e - s);
                 // Right after a seek, playback may start further in once decoded
                 if (to < bufStart_ || (!afterBind && to > bufEnd())) return false;
                 looping_ = true;
@@ -344,10 +356,21 @@ private:
             case LoopAction::Jump: {
                 // Anywhere held; a loop stays set: inside it plays it, before
                 // it runs into it, past it the loop waits
-                const int64_t to = frameOf(a.to);
+                const int64_t to = std::isnan(a.by) ? frameOf(a.to) : pos_ + static_cast<int64_t>(std::llround(a.by * rate_));
                 if (to < bufStart_ || to >= bufEnd()) return false;
                 live_ = false;
                 pristine_ = false;
+                if (a.beat > 0.0 && std::isnan(a.by)) {   // on the next beat of what plays
+                    const double now = timeOf(pos_);
+                    const double k = std::ceil((now - a.beatAnchor) / a.beat - 1e-9);
+                    int64_t at = frameOf(a.beatAnchor + k * a.beat);
+                    if (looping_ && engaged_ && at > loopEnd_) at = loopEnd_;
+                    if (at > pos_) {
+                        spliceAt_ = at;
+                        spliceTo_ = to;
+                        return true;
+                    }
+                }
                 moveTo(to);
                 return true;
             }
@@ -360,6 +383,7 @@ private:
     // Plays on from `to`: a crossfaded splice when it is elsewhere; a new
     // timeline segment either way (the loop may have changed)
     void moveTo(int64_t to) {
+        spliceAt_ = -1;
         if (to != pos_) {
             startFade();
             pos_ = to;
@@ -430,6 +454,10 @@ private:
             cur = newBlock();
         };
         while (n > 0) {
+            if (spliceAt_ >= 0 && pos_ >= spliceAt_) {   // a jump waiting for the beat
+                finish();
+                moveTo(spliceTo_);
+            }
             if (looping_) {
                 if (engaged_ && pos_ >= loopEnd_) {   // a pass ends: back to the start
                     finish();
@@ -445,11 +473,12 @@ private:
             int64_t avail = bufEnd() - pos_;
             if (looping_ && engaged_) avail = std::min<int64_t>(avail, loopEnd_ - pos_);
             if (loopAhead) avail = std::min<int64_t>(avail, loopStart_ - pos_);
+            if (spliceAt_ >= 0) avail = std::min<int64_t>(avail, spliceAt_ - pos_);
             if (avail <= 0) {
                 // Waiting for audio: in the loop, or with the loop ahead (it
                 // must catch playback as it comes in, which passing the audio
                 // through would not)
-                if ((looping_ && engaged_) || loopAhead || pos_ < bufEnd()) break;
+                if ((looping_ && engaged_) || loopAhead || spliceAt_ >= 0 || pos_ < bufEnd()) break;
                 finish();
                 fadeLeft_ = 0;
                 if (afterBoundary_) {                     // caught up: the new track's audio
@@ -520,6 +549,7 @@ private:
         if (!rate_ || !channels_) return;
         int64_t keep = looping_ && engaged_ ? std::min(loopStart_, pos_) : pos_;
         if (fadeLeft_ > 0) keep = std::min(keep, fadeFrom_);
+        if (spliceAt_ >= 0) keep = std::min(keep, spliceTo_);
         keep -= static_cast<int64_t>(framesFor(kHistorySeconds));
         const int64_t drop = keep - bufStart_;
         if (drop < static_cast<int64_t>(framesFor(5.0))) return;
@@ -546,6 +576,8 @@ private:
     bool inLoopSegment_ = false;    // the timeline's last segment is the loop's
     int64_t loopStart_ = 0, loopEnd_ = 0;
 
+    int64_t spliceAt_ = -1;         // a jump waiting for the beat: where, and to where
+    int64_t spliceTo_ = 0;
     int64_t fadeFrom_ = 0;          // the splice's old continuation
     size_t fadeLeft_ = 0, fadeTotal_ = 1;
     double fadeSeconds_ = kFadeSeconds;

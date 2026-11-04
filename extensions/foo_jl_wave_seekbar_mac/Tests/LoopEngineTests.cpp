@@ -300,6 +300,56 @@ void testLoopStaysSet() {
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
+void testRelativeJump() {
+    TEST_CASE("relative and on-the-beat jumps");
+    Playing p;   // live up to ~5000
+    LoopAction back = action(LoopAction::Jump, 1);
+    back.by = -1.0;
+    const double from = std::round(p.e.playingFrom() * kRate);
+    const size_t at = p.out.frames.size();
+    CHECK(p.e.act(back), "a second back from what plays");
+    runUntil(p.e, p.d, p.out, at + 500);
+    CHECK(straight(p.out, at, at + 500, from - 1000.0), "from exactly a second back, however late taken");
+
+    // On the beat: 0.5 s beats from 0; the jump waits for the next one
+    Playing q;
+    const double now = q.e.playingFrom();
+    const double next = std::ceil(now / 0.5 - 1e-9) * 0.5;
+    LoopAction onBeat = action(LoopAction::Jump, 2, 0.0, 0.0, 3.0);
+    onBeat.beat = 0.5;
+    const size_t at2 = q.out.frames.size();
+    CHECK(q.e.act(onBeat), "a jump to a beat");
+    runUntil(q.e, q.d, q.out, at2 + 2000);
+    const size_t wait = static_cast<size_t>(std::llround((next - now) * kRate));
+    CHECK(straight(q.out, at2, at2 + wait, std::round(now * kRate)), "plays on to the next beat");
+    CHECK(straight(q.out, at2 + wait, at2 + wait + 1000, 3000.0), "then the target beat, on the beat");
+    CHECK(matchesTimeline(q.e, q.out), "the timeline maps every frame");
+}
+
+void testLoopKeepsPhase() {
+    TEST_CASE("a loop made where playback is");
+    Playing p;   // live up to ~5000
+    const double from = std::round(p.e.playingFrom() * kRate);
+    const size_t at = p.out.frames.size();
+    LoopAction around = loop(1, 4.5, 5.5);
+    around.keepPhase = true;
+    CHECK(p.e.act(around), "a loop around what plays");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    const size_t toEnd = static_cast<size_t>(5500.0 - from);
+    CHECK(straight(p.out, at, at + toEnd, from), "plays on without a jump");
+    CHECK(looping(p.out, at + toEnd, at + 2000, 4500.0, 1000), "and wraps at its end, on the beat");
+
+    Playing q;
+    const double from2 = std::round(q.e.playingFrom() * kRate);
+    LoopAction behind = loop(2, 4.0, 4.5);
+    behind.keepPhase = true;
+    const size_t at2 = q.out.frames.size();
+    CHECK(q.e.act(behind), "a loop already played past");
+    runUntil(q.e, q.d, q.out, at2 + 1000);
+    const size_t phase = static_cast<size_t>(from2 - 4000.0) % 500;
+    CHECK(looping(q.out, at2, at2 + 1000, 4000.0, 500, phase), "goes into it as far as its length goes");
+}
+
 void testCrossfade() {
     TEST_CASE("crossfade");
     Engine e;   // 5 ms = 5 frames at 1000 Hz
@@ -455,6 +505,8 @@ int main() {
     testJump();
     testExit();
     testLoopStaysSet();
+    testRelativeJump();
+    testLoopKeepsPhase();
     testCrossfade();
     testForeignSeek();
     testNewTrackLive();

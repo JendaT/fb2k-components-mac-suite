@@ -405,6 +405,7 @@ struct BarSegment {
     const waveseek::PhraseGrid *_phrasesFor;
     int _phraseBeatsDrawn;
     std::vector<std::pair<CGFloat, size_t>> _phraseHits;   // x, index into _phrases
+    int _phraseNoneLogged;
 
     // The bottom bar: the cog's controls and zoom modes, and whether BPM
     // Analyzer is there for the mixer. The mixer: the loop and jump size,
@@ -1847,7 +1848,18 @@ struct BarSegment {
 // uncertain.
 - (void)drawPhraseMarkersInContext:(CGContextRef)context rect:(CGRect)rect {
     _phraseHits.clear();
-    if (!_phraseMarkers || !_phraseGrid || !(self.trackDuration > 0.0)) return;
+    if (!_phraseMarkers || !_phraseGrid || !(self.trackDuration > 0.0)) {
+        // Diagnostic: why none are drawn, once per reason
+        const int reason = !_phraseMarkers ? 1 : !_phraseGrid ? 2 : 3;
+        if (reason != _phraseNoneLogged) {
+            _phraseNoneLogged = reason;
+            FB2K_console_formatter() << "[WaveSeek] Phrase markers: none drawn ("
+                                     << (reason == 1 ? "switched off" : reason == 2 ? "no beat grid in the view" : "no track length")
+                                     << ")";
+        }
+        return;
+    }
+    _phraseNoneLogged = 0;
     const jl_beatgrid_summary &grid = _phraseGrid->summary;
     const int beats = waveseek::thinnedPhraseBeats(_phraseLength, waveseek::densestBpm(*_phraseGrid, _phraseFollowGrid),
                                                    self.trackDuration, rect.size.width, _zoom.zoom);
@@ -1855,6 +1867,15 @@ struct BarSegment {
         _phrases = waveseek::phraseMarkers(*_phraseGrid, beats, _phraseFollowGrid);
         _phraseBeatsDrawn = beats;
         _phrasesFor = _phraseGrid;
+        size_t inView = 0;
+        for (const waveseek::PhraseMarker &m : _phrases) {
+            const double a = _zoom.acrossOf(m.seconds / self.trackDuration);
+            inView += a >= 0.0 && a <= 1.0;
+        }
+        FB2K_console_formatter() << "[WaveSeek] Phrase markers: " << _phrases.size() << " every " << beats << " beats, "
+                                 << inView << " in view, " << pfc::format_int(std::lround(rect.size.width)) << " pt wide, "
+                                 << (_phrases.empty() ? 0.0 : _phrases.front().seconds) << " s first, "
+                                 << _phraseGrid->bars.size() << " bars";
     }
     const bool neutral = !_phraseBreakColours || grid.tempo_strength < jl_beatgrid_uncertain_strength;
     const CGFloat scale = [self backingScale];
@@ -2652,8 +2673,24 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 // into it, past it playback plays on and the loop waits. The cursor follows
 // the audio, so it moves when the jump is heard.
 - (void)deckSeekTo:(double)target {
+    [self deckSeekTo:target by:NAN onBeat:NO];
+}
+
+// `by` (relative to what plays when the DSP takes it, so the beat holds
+// however late) or to `target`; onBeat: wait for the next beat of what
+// plays, so the target beat lands on a beat. `target` also places the
+// fallback seek and decides what the loop does.
+- (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
     using Kind = waveseek::LoopAction::Kind;
-    const waveseek::LoopAction jump = makeAction(Kind::Jump, 0, 0, target);
+    waveseek::LoopAction jump = makeAction(Kind::Jump, 0, 0, target);
+    jump.by = by;
+    if (onBeat && std::isnan(by) && _phraseGrid) {
+        const waveseek::GridAt grid = waveseek::gridAt(*_phraseGrid, [self currentSeconds], _phraseFollowGrid);
+        if (grid.bpm > 0.0) {
+            jump.beat = 60.0 / grid.bpm;
+            jump.beatAnchor = grid.anchorSeconds;
+        }
+    }
     if (!_loop.active()) {
         if ([self deckHolds:target to:target]) [self request:jump orSeekTo:target then:nullptr];
         else [self armedSeekTo:target then:nullptr];
@@ -2853,10 +2890,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         [self moveLoopBy:count];
         return;
     }
-    const double target = waveseek::jumpTarget([self beats], [self currentSeconds], count, self.trackDuration);
+    const double now = [self currentSeconds];
+    const double target = waveseek::jumpTarget([self beats], now, count, self.trackDuration);
     if (std::isnan(target)) return;
     if ([self deckMode]) {
-        [self deckSeekTo:target];
+        [self deckSeekTo:target by:target - now onBeat:NO];   // relative: the beat holds
         return;
     }
     [self seekTo:target];
@@ -2885,11 +2923,14 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     if (!loop.active()) return;
     [self setLoop:loop];
     if ([self deckMode]) {
-        // Back to its start (a phrase start just ahead: plays into it)
-        const double to = loop.start <= now ? loop.start : NAN;
+        // Set around what plays, no jump: it wraps at its end, on the beat
+        // (past its end already: into it as far as its length goes; a phrase
+        // start just ahead: plays into it)
+        waveseek::LoopAction around = makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, NAN);
+        around.keepPhase = true;
         const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, loop.start);
         if ([self deckHolds:loop.start to:NAN]) {
-            [self request:makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, to) orSeekTo:loop.start then:&then];
+            [self request:around orSeekTo:loop.start then:&then];
         } else {
             [self armedSeekTo:loop.start then:&then];
         }
@@ -3122,11 +3163,15 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
                                                0.0, 1.0);
     double seekTime = _zoom.positionAt(across) * self.trackDuration;
-    // With the mixer, a click near a beat plays from the beat
+    // With the mixer, a click near a beat plays from the beat, on the beat
+    bool onBeat = false;
     if ([self mixerReady]) {
         const double beat = waveseek::nearestBeat([self beats], seekTime);
         const CGFloat beatX = wave.origin.x + wave.size.width * _zoom.acrossOf(beat / self.trackDuration);
-        if (!std::isnan(beat) && std::fabs(beatX - location.x) <= kBeatSnapPoints) seekTime = beat;
+        if (!std::isnan(beat) && std::fabs(beatX - location.x) <= kBeatSnapPoints) {
+            seekTime = beat;
+            onBeat = true;
+        }
     }
     // Following at a spot: the cursor stays where it was clicked
     if ([self following]) {
@@ -3139,7 +3184,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 
     // With the loop DSP, inside its audio without a seek
     if ([self deckMode]) {
-        [self deckSeekTo:seekTime];
+        [self deckSeekTo:seekTime by:NAN onBeat:onBeat];
         return;
     }
     // Seek via SDK - must be on main thread
