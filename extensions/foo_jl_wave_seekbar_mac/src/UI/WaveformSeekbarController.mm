@@ -158,12 +158,19 @@ public:
             // The view takes the new grid before the old one is released
             self.waveformView.phraseGrid = grid.get();
             _phraseGrid = grid;
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: " << pfc::format_float(grid->summary.bpm, 0, 2) << " BPM, "
+                                     << grid->bars.size() << " bars, "
+                                     << (grid->sections.empty() ? 1 : grid->sections.size()) << " grid(s)";
             break;
         }
         case jl_beatgrid::not_analysed:
             _grids->request(_currentTrack, true);
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: asked BPM Analyzer for this track";
             break;
-        default:   // queued or analysing: on_ready follows; unavailable: no markers
+        case jl_beatgrid::unavailable:
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: none for this track (no steady beat, or analysis failed)";
+            break;
+        default:   // queued or analysing: on_ready follows
             break;
     }
 }
