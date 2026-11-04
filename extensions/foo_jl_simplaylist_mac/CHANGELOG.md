@@ -2,10 +2,17 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
-## [Unreleased]
+## [1.6.1] - 2026-11-04
+
+Keeps each artist's albums in date order while browsing ReFacets and fixes the Inline header spacing.
 
 ### Added
 - **Sort library selection**: New Behavior option, on by default, re-sorts the ReFacets selection by a pattern each time it changes, so each artist's albums stay oldest first when switching artists; the pattern is editable.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+### Changed
+- **About**: New feature list; shows the layout element name (`simplaylist`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
 
 ### Fixed
 - **Inline header**: The album title sits right above its tracks instead of leaving the extra header space under it.

@@ -30,7 +30,8 @@ JL_COMPONENT_ABOUT(
     "- Sort and Remove in the context menu, undo/redo\n"
     "- Remembers the scroll position of each playlist\n"
     "- Now playing highlight and Focus Playing Now\n"
-    "- Keeps playback in its playlist while browsing the library"
+    "- Keeps playback in its playlist while browsing the library\n"
+    "- Keeps the library selection sorted, albums by date"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_simplaylist.component");

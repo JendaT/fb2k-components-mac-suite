@@ -25,10 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## SimPlaylist
 
-### [Unreleased]
+### [1.6.1] - 2026-11-04
+
+Albums stay in date order while browsing ReFacets; Inline header spacing fixed.
 
 #### Added
 - **Sort library selection**: The ReFacets selection stays sorted by a pattern (default: albums by date) when switching artists; on by default.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Changed
+- **About**: New feature list; shows the layout element name (`simplaylist`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
 
 #### Fixed
 - **Inline header**: Title sits right above its tracks; same gap after every album; new Album Spacing setting (Close / One row / Two rows).
