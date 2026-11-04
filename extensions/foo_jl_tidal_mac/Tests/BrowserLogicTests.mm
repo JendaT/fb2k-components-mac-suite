@@ -116,8 +116,16 @@ static void testBackRouting(void) {
           "top tracks with artist goes back to artist albums");
     CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeArtistTopTracks hasArtist:NO],
           "top tracks without artist collapses to root");
-    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:YES],
-          "album tracks collapses to root even with artist context");
+    // Was asserted the other way round, which is the bug: opening an album from
+    // an artist and pressing back dropped the whole artist context.
+    CHECK([Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:YES],
+          "album tracks opened from an artist goes back to that artist's albums");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:NO],
+          "album tracks opened from a search collapses to root");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeArtistAlbums hasArtist:YES],
+          "artist albums is the top of the artist path, so back leaves it");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModePlaylistTracks hasArtist:YES],
+          "playlist tracks ignores stale artist context");
     CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModePlaylistTracks hasArtist:NO],
           "playlist tracks collapses to root");
 }

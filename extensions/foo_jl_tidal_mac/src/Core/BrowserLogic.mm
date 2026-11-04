@@ -87,7 +87,11 @@
 
 + (BOOL)backReturnsToArtistAlbumsFromMode:(JLTidalBrowseMode)browseMode
                                 hasArtist:(BOOL)hasArtist {
-    return browseMode == JLTidalBrowseModeArtistTopTracks && hasArtist;
+    if (!hasArtist) return NO;
+    // Both of these are reached *from* an artist's album list, so back belongs
+    // there. Playlist tracks and library drill-downs have no artist level.
+    return browseMode == JLTidalBrowseModeArtistTopTracks ||
+           browseMode == JLTidalBrowseModeAlbumTracks;
 }
 
 #pragma mark - Mode-change no-op rules

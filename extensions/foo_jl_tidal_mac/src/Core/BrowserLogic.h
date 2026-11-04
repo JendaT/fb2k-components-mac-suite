@@ -64,6 +64,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 /// Back button: ArtistTopTracks with a live artist returns to that artist's
 /// albums; every other drill-down collapses straight to the root mode.
+/// Back steps one level: a drill-down entered from an artist returns to that
+/// artist's album list, not all the way out to the search results. Only when
+/// there is no artist context does back collapse to the root.
 + (BOOL)backReturnsToArtistAlbumsFromMode:(JLTidalBrowseMode)browseMode
                                 hasArtist:(BOOL)hasArtist;
 

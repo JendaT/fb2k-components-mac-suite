@@ -797,6 +797,8 @@ Display P3 colors contributed by @Scannou (#55).
 - Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
 
 #### Fixed
+- A long album title pushed the browser back button off-screen; the breadcrumb now truncates and its parent level is clickable
+- Back button from an album opened via an artist returned to the search results instead of the artist's albums
 - Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
 - Debug-logging preference honored after restart (cache was only synced on toggle)
 - Static-destructor logging can no longer touch torn-down fb2k services

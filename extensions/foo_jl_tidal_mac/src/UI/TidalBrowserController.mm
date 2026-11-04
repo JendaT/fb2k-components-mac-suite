@@ -127,7 +127,10 @@ public:
 @property (nonatomic, strong) NSSegmentedControl *searchTypeControl;
 @property (nonatomic, strong) NSSegmentedControl *librarySectionControl;
 @property (nonatomic, strong) NSButton *backButton;
-@property (nonatomic, strong) NSTextField *breadcrumbLabel;
+@property (nonatomic, strong) NSTextField *breadcrumbLabel;      // current level
+@property (nonatomic, strong) NSStackView *breadcrumbStack;
+@property (nonatomic, strong) NSButton *breadcrumbParentButton;  // clickable parent level
+@property (nonatomic, strong) NSTextField *breadcrumbSeparator;
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) NSTableView *tableView;
 @property (nonatomic, strong) NSTextField *statusLabel;
@@ -309,19 +312,47 @@ public:
     self.backButton.bordered = NO;
     [self.navigationBar addSubview:self.backButton];
 
+    // Parent level, e.g. the artist an album was opened from. Click to go there.
+    self.breadcrumbParentButton = [NSButton buttonWithTitle:@""
+                                                     target:self
+                                                     action:@selector(breadcrumbParentClicked:)];
+    self.breadcrumbParentButton.bordered = NO;
+    self.breadcrumbParentButton.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
+    self.breadcrumbParentButton.contentTintColor = [NSColor linkColor];
+    self.breadcrumbParentButton.hidden = YES;
+
+    self.breadcrumbSeparator = [NSTextField labelWithString:@"›"];
+    self.breadcrumbSeparator.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
+    self.breadcrumbSeparator.textColor = fb2k_ui::secondaryTextColor();
+    self.breadcrumbSeparator.hidden = YES;
+
     self.breadcrumbLabel = [NSTextField labelWithString:@""];
-    self.breadcrumbLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.breadcrumbLabel.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
     self.breadcrumbLabel.textColor = fb2k_ui::textColor();
     self.breadcrumbLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.navigationBar addSubview:self.breadcrumbLabel];
+
+    self.breadcrumbStack = [NSStackView stackViewWithViews:@[self.breadcrumbParentButton,
+                                                             self.breadcrumbSeparator,
+                                                             self.breadcrumbLabel]];
+    self.breadcrumbStack.translatesAutoresizingMaskIntoConstraints = NO;
+    self.breadcrumbStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    self.breadcrumbStack.alignment = NSLayoutAttributeCenterY;
+    self.breadcrumbStack.spacing = 4;
+    [self.navigationBar addSubview:self.breadcrumbStack];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.backButton.leadingAnchor constraintEqualToAnchor:self.navigationBar.leadingAnchor],
         [self.backButton.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
-        [self.breadcrumbLabel.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:6],
-        [self.breadcrumbLabel.trailingAnchor constraintEqualToAnchor:self.navigationBar.trailingAnchor],
-        [self.breadcrumbLabel.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
+        // Explicit size: the styling pass below drops every control's
+        // compression resistance so the panel can be narrowed, which otherwise
+        // lets a long breadcrumb squeeze the chevron to zero width.
+        [self.backButton.widthAnchor constraintEqualToConstant:18],
+        [self.backButton.heightAnchor constraintEqualToConstant:18],
+        [self.breadcrumbStack.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:6],
+        // Less-than so a short trail does not stretch; the current-level label
+        // has the lowest compression resistance, so it truncates first.
+        [self.breadcrumbStack.trailingAnchor constraintLessThanOrEqualToAnchor:self.navigationBar.trailingAnchor],
+        [self.breadcrumbStack.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
     ]];
 
     // Table view inside scroll view
@@ -370,7 +401,7 @@ public:
     for (NSView *sv in @[self.panelModeControl, self.searchField, self.searchTypeControl,
                           self.librarySectionControl, self.navigationBar, self.scrollView,
                           self.statusLabel, self.syncPullButton, self.syncPushButton,
-                          self.backButton, self.breadcrumbLabel]) {
+                          self.breadcrumbStack, self.breadcrumbLabel]) {
         [sv setContentCompressionResistancePriority:1
                                        forOrientation:NSLayoutConstraintOrientationHorizontal];
         [sv setContentHuggingPriority:1
@@ -843,11 +874,49 @@ public:
 #pragma mark - Navigation
 
 - (void)enterDrillDown:(JLTidalBrowseMode)mode title:(NSString *)title {
+    [self enterDrillDown:mode parent:nil current:title];
+}
+
+// `parent` is the level above, rendered as a clickable segment; nil for a
+// drill-down entered straight from the root.
+- (void)enterDrillDown:(JLTidalBrowseMode)mode
+                parent:(nullable NSString *)parent
+               current:(NSString *)current {
     self.browseMode = mode;
-    self.drillDownTitle = title;
-    self.breadcrumbLabel.stringValue = title;
+
+    BOOL hasParent = parent.length > 0;
+    self.breadcrumbParentButton.hidden = !hasParent;
+    self.breadcrumbSeparator.hidden = !hasParent;
+    if (hasParent) {
+        self.breadcrumbParentButton.title = parent;
+        self.breadcrumbParentButton.toolTip =
+            [NSString stringWithFormat:@"Back to %@", parent];
+    }
+    self.breadcrumbLabel.stringValue = current ?: @"";
+    self.drillDownTitle = hasParent
+        ? [NSString stringWithFormat:@"%@ › %@", parent, current ?: @""]
+        : current;
+
     [self.navigationBar setHidden:NO];
     [self setupColumnsForCurrentMode];
+    [self updateBackButtonTooltip];
+}
+
+- (void)breadcrumbParentClicked:(id)sender {
+    // The only parent level in the hierarchy is the artist.
+    if (self.currentArtist) [self drillIntoArtist:self.currentArtist];
+}
+
+// Say where back goes — one chevron with no label is otherwise a guess.
+- (void)updateBackButtonTooltip {
+    NSString *destination;
+    if ([JLTidalBrowserLogic backReturnsToArtistAlbumsFromMode:self.browseMode
+                                                     hasArtist:(self.currentArtist != nil)]) {
+        destination = self.currentArtist.name.length ? self.currentArtist.name : @"artist";
+    } else {
+        destination = (self.panelMode == JLTidalPanelModeLibrary) ? @"library" : @"search results";
+    }
+    self.backButton.toolTip = [NSString stringWithFormat:@"Back to %@", destination];
 }
 
 - (void)exitDrillDown {
@@ -1132,8 +1201,17 @@ public:
 
 - (void)drillIntoAlbum:(JLTidalAlbum *)album {
     self.currentAlbum = album;
-    [self enterDrillDown:JLTidalBrowseModeAlbumTracks
-                   title:[NSString stringWithFormat:@"%@ - %@", album.artist ?: @"", album.title]];
+    // Nested under an artist: the artist becomes a clickable parent segment.
+    // Opened straight from a search there is no level above, so the artist is
+    // folded into the flat "Artist - Album" title instead.
+    if (self.currentArtist) {
+        [self enterDrillDown:JLTidalBrowseModeAlbumTracks
+                      parent:self.currentArtist.name
+                     current:album.title];
+    } else {
+        [self enterDrillDown:JLTidalBrowseModeAlbumTracks
+                       title:[NSString stringWithFormat:@"%@ - %@", album.artist ?: @"", album.title]];
+    }
 
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
@@ -1196,9 +1274,11 @@ public:
 }
 
 - (void)loadArtistTopTracks:(JLTidalArtist *)artist {
-    // Switch to top tracks mode
-    self.browseMode = JLTidalBrowseModeArtistTopTracks;
-    [self setupColumnsForCurrentMode];
+    // Only reached when the artist has no albums, so there is no artist-albums
+    // level to return to: show the trail as plain text rather than a link that
+    // would come straight back here.
+    [self enterDrillDown:JLTidalBrowseModeArtistTopTracks
+                   title:[NSString stringWithFormat:@"%@ › Top tracks", artist.name]];
 
     [[JLTidalAPI shared] getArtistTopTracksForArtistID:artist.artistID
                                                   limit:50
