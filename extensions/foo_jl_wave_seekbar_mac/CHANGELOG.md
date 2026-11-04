@@ -33,9 +33,9 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Particles cursor effect (experimental)**: Sparks burst off the waveform at the cursor, more where the track is louder, so they follow its beat.
 
-- **Firewall cursor effect (experimental)**: A wall of flames stands on the cursor, taller where the track is loud.
+- **Firewall cursor effect (experimental)**: A wall of flames stands on the cursor, taller where the track is loud; the played part keeps burning behind it as a row of fires, each as tall as the track is loud there.
 
-- **Earthcrusher cursor effect (experimental)**: A jagged, glowing cursor leaves the waveform just behind it scorched and cracked.
+- **Earthcrusher cursor effect (experimental)**: A jagged, glowing cursor leaves the waveform just behind it scorched and cracked, in burnt shades of the wave colour.
 
 ### Changed
 - **Glow cursor effect**: Now a bloom centred on the cursor line, fading with distance and pulsing on the beat.
