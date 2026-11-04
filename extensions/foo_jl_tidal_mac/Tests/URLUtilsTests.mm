@@ -116,6 +116,46 @@ static void testIsTidalURL(void) {
     CHECK(!isTidalURL(nullptr), "null rejected");
 }
 
+static void testQualityPin(void) {
+    auto r = parseURL("tidal://track/123456");
+    CHECK(r.has_value() && !r->quality.has_value(), "no q= means no pin");
+
+    r = parseURL("tidal://track/123456?q=LOSSLESS");
+    CHECK(r.has_value(), "pinned URL parses");
+    CHECK(r->id == "123456", "pin does not disturb the id, got %s", r->id.c_str());
+    CHECK(r->quality.has_value() && *r->quality == JLTidalQualityLossless, "LOSSLESS pin read");
+
+    r = parseURL("tidal://track/1?q=HI_RES_LOSSLESS");
+    CHECK(r.has_value() && r->quality.has_value() && *r->quality == JLTidalQualityHiResLossless,
+          "HI_RES_LOSSLESS pin read");
+
+    r = parseURL("tidal://track/1?q=LOW");
+    CHECK(r.has_value() && r->quality.has_value() && *r->quality == JLTidalQualityLow, "LOW pin read");
+
+    // An unusable pin must cost the entry its pin, not its playability.
+    r = parseURL("tidal://track/123456?q=BOGUS");
+    CHECK(r.has_value() && r->id == "123456", "unknown q= still yields a playable track");
+    CHECK(!r->quality.has_value(), "unknown q= yields no pin");
+
+    r = parseURL("tidal://track/123456?q=lossless");
+    CHECK(r.has_value() && !r->quality.has_value(), "q= is case-sensitive, lowercase ignored");
+
+    r = parseURL("tidal://track/123456?other=1");
+    CHECK(r.has_value() && !r->quality.has_value(), "unrelated query param ignored");
+
+    // The pin must never widen what counts as a valid ID.
+    CHECK(!parseURL("tidal://track/12x?q=LOSSLESS").has_value(),
+          "invalid id still rejected when pinned");
+
+    CHECK(makeTrackURL("555", JLTidalQualityHiRes) == "tidal://track/555?q=HI_RES",
+          "makeTrackURL emits the pin");
+
+    auto round = parseURL(makeTrackURL("555", JLTidalQualityHigh));
+    CHECK(round.has_value() && round->id == "555" &&
+          round->quality.has_value() && *round->quality == JLTidalQualityHigh,
+          "pinned URL round-trips");
+}
+
 int main(void) {
     @autoreleasepool {
         testParseTidalScheme();
@@ -123,6 +163,7 @@ int main(void) {
         testRoundTrip();
         testIDValidation();
         testIsTidalURL();
+        testQualityPin();
     }
     return testHarnessFinish("URLUtils");
 }

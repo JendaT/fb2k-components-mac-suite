@@ -224,10 +224,26 @@ void TidalInputDecoder::open(const char* p_path, abort_callback& p_abort) {
     }
 
     m_trackID = parsed->id;
-    logDebug(("Track ID: " + m_trackID).c_str());
+    m_pinnedQuality = parsed->quality;
+    logDebug(("Track ID: " + m_trackID +
+              (m_pinnedQuality ? " (pinned " + std::string(JLTidalQualityToString(*m_pinnedQuality).UTF8String) + ")"
+                               : "")).c_str());
 
     // Resolve stream URL
     openStream(p_abort);
+}
+
+// One place decides which tier a play asks for: the entry's pin when it has
+// one, otherwise whatever the preferences say right now.
+void TidalInputDecoder::resolveStream(NSString* trackIDStr, JLTidalStreamResolverCompletion completion) {
+    if (m_pinnedQuality) {
+        [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackIDStr
+                                                        quality:*m_pinnedQuality
+                                                     completion:completion];
+    } else {
+        [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackIDStr
+                                                     completion:completion];
+    }
 }
 
 void TidalInputDecoder::openStream(abort_callback& p_abort) {
@@ -240,12 +256,11 @@ void TidalInputDecoder::openStream(abort_callback& p_abort) {
     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
     NSString* trackIDStr = [NSString stringWithUTF8String:m_trackID.c_str()];
 
-    [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackIDStr
-                                                 completion:^(JLTidalPlaybackInfo *info, NSError *error) {
+    resolveStream(trackIDStr, ^(JLTidalPlaybackInfo *info, NSError *error) {
         resultInfo = info;
         resultError = error;
         dispatch_semaphore_signal(semaphore);
-    }];
+    });
 
     // Wait for resolution (with timeout to check abort)
     while (dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
@@ -442,12 +457,11 @@ bool TidalInputDecoder::tryReopen(abort_callback& p_abort) {
 
         dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 
-        [[JLTidalStreamResolver shared] resolveStreamForTrackID:trackIDStr
-                                                     completion:^(JLTidalPlaybackInfo *info, NSError *error) {
+        resolveStream(trackIDStr, ^(JLTidalPlaybackInfo *info, NSError *error) {
             resultInfo = info;
             resultError = error;
             dispatch_semaphore_signal(semaphore);
-        }];
+        });
 
         // Wait with abort checking (max 10 seconds)
         {

@@ -32,13 +32,19 @@ typedef void (^JLTidalMetadataCompletion)(JLTidalTrack * _Nullable track, NSErro
 
 #pragma mark - Stream Resolution
 
-/// Resolve stream URL for a track
+/// Resolve stream URL for a track at the globally preferred quality.
 /// Implements quality fallback cascade if DRM is detected
 /// Uses cache when available
 - (void)resolveStreamForTrackID:(NSString *)trackID
                      completion:(JLTidalStreamResolverCompletion)completion;
 
-/// Invalidate cached stream for a track (e.g., after 403 error)
+/// Resolve at an explicit starting quality (a playlist entry's "?q=" pin).
+/// Same fallback cascade; the pin is the ceiling, not a guarantee.
+- (void)resolveStreamForTrackID:(NSString *)trackID
+                        quality:(JLTidalQuality)quality
+                     completion:(JLTidalStreamResolverCompletion)completion;
+
+/// Invalidate cached streams for a track at every quality (e.g., after 403)
 - (void)invalidateCacheForTrackID:(NSString *)trackID;
 
 #pragma mark - Metadata

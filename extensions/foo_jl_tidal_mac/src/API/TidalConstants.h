@@ -67,6 +67,25 @@ static inline NSString * JLTidalQualityToString(JLTidalQuality quality) {
     }
 }
 
+// Reverse of JLTidalQualityToString. Returns NO for anything that is not one
+// of the five exact tokens, so untrusted input (a "q=" parameter carried by a
+// playlist entry) cannot smuggle an arbitrary value into an API request.
+static inline BOOL JLTidalQualityFromString(NSString * _Nullable token,
+                                            JLTidalQuality *outQuality) {
+    if (!token || !outQuality) return NO;
+    static NSString * const names[] = {@"LOW", @"HIGH", @"LOSSLESS", @"HI_RES", @"HI_RES_LOSSLESS"};
+    static const JLTidalQuality values[] = {JLTidalQualityLow, JLTidalQualityHigh,
+                                            JLTidalQualityLossless, JLTidalQualityHiRes,
+                                            JLTidalQualityHiResLossless};
+    for (NSUInteger i = 0; i < 5; i++) {
+        if ([token isEqualToString:names[i]]) {
+            *outQuality = values[i];
+            return YES;
+        }
+    }
+    return NO;
+}
+
 // Quality fallback order (highest to lowest)
 static const JLTidalQuality kTidalQualityFallbackOrder[] = {
     JLTidalQualityHiResLossless,

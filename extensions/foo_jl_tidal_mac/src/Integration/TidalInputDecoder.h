@@ -9,7 +9,10 @@
 
 #include "../fb2k_sdk.h"
 #include "../Core/TidalModels.h"
+#import "../Services/TidalStreamResolver.h"
 #include <atomic>
+#include <optional>
+#include <string>
 
 namespace tidal {
 
@@ -49,7 +52,12 @@ private:
     // Try to reopen on 403 error
     bool tryReopen(abort_callback& p_abort);
 
+    // Ask the resolver for this entry's stream, honouring its quality pin.
+    void resolveStream(NSString* trackIDStr, JLTidalStreamResolverCompletion completion);
+
     std::string m_trackID;
+    // Quality pinned on the playlist entry ("?q="); empty = global preference.
+    std::optional<JLTidalQuality> m_pinnedQuality;
     std::string m_streamURL;
     __strong JLTidalPlaybackInfo* m_playbackInfo;
     __strong JLTidalTrack* m_trackInfo;

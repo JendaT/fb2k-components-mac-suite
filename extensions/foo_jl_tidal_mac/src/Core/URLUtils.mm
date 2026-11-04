@@ -44,6 +44,25 @@ static bool isValidContentID(TidalContentType type, const std::string& id) {
     }
 }
 
+// Read the "q=" pin off a tidal:// entry. Anything that is not one of the five
+// exact quality tokens is ignored rather than rejected: a malformed pin should
+// cost the entry its pin, not its playability, and the token never reaches an
+// API request unless it matched the allowlist.
+static std::optional<JLTidalQuality> parseQualityParam(NSURL *nsurl) {
+    NSURLComponents *components = [NSURLComponents componentsWithURL:nsurl
+                                             resolvingAgainstBaseURL:NO];
+    for (NSURLQueryItem *item in components.queryItems) {
+        if (![item.name isEqualToString:@"q"]) continue;
+        JLTidalQuality quality;
+        if (JLTidalQualityFromString(item.value, &quality)) {
+            return quality;
+        }
+        logDebug("parseURL: ignoring unrecognized q= value");
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 std::optional<TidalURL> parseURL(const std::string& url) {
     if (url.empty()) {
         logDebug("parseURL: empty URL");
@@ -87,10 +106,13 @@ std::optional<TidalURL> parseURL(const std::string& url) {
             result.type = TidalContentType::Artist;
         }
 
-        // ID is in path (e.g., "/123456")
+        // ID is in path (e.g., "/123456"). NSURL keeps any query out of .path,
+        // so a "?q=" pin does not disturb ID extraction or its validation.
         if (path.length > 1) {
             result.id = std::string([[path substringFromIndex:1] UTF8String]);
         }
+
+        result.quality = parseQualityParam(nsurl);
     }
     // Handle https://tidal.com or https://listen.tidal.com
     else if ([scheme isEqualToString:@"https"]) {
@@ -158,6 +180,12 @@ std::string toExternalURL(const TidalURL& url) {
 
 std::string makeTrackURL(const std::string& trackID) {
     NSString *result = [NSString stringWithFormat:@"tidal://track/%s", trackID.c_str()];
+    return std::string([result UTF8String]);
+}
+
+std::string makeTrackURL(const std::string& trackID, JLTidalQuality quality) {
+    NSString *result = [NSString stringWithFormat:@"tidal://track/%s?q=%@",
+                        trackID.c_str(), JLTidalQualityToString(quality)];
     return std::string([result UTF8String]);
 }
 

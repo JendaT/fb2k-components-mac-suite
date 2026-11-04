@@ -56,6 +56,17 @@ static NSString *trackURLString(NSString *trackID) {
             tidal::makeTrackURL(std::string(trackID.UTF8String ?: "")).c_str()];
 }
 
+// Sentinel for "no pin: follow the global quality preference".
+static const NSInteger kNoPinnedQuality = -1;
+
+// URL for a playlist entry, carrying a "?q=" pin when one was chosen.
+static NSString *trackURLStringPinned(NSString *trackID, NSInteger pinnedQuality) {
+    if (pinnedQuality == kNoPinnedQuality) return trackURLString(trackID);
+    return [NSString stringWithUTF8String:
+            tidal::makeTrackURL(std::string(trackID.UTF8String ?: ""),
+                                static_cast<JLTidalQuality>(pinnedQuality)).c_str()];
+}
+
 // Root container view that reports no intrinsic content size, so the host fb2k
 // column can be freely resized regardless of how wide our subviews would prefer to be.
 @interface JLTidalContainerView : NSView
@@ -505,6 +516,29 @@ public:
     NSMenu *contextMenu = [[NSMenu alloc] initWithTitle:@"Tidal Browser"];
     [contextMenu addItemWithTitle:@"Play" action:@selector(contextMenuPlay:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Add to Playlist" action:@selector(contextMenuAddToPlaylist:) keyEquivalent:@""];
+
+    // Pin a quality on the entries being added. The plain item above follows
+    // the preference at play time; these bake the tier into the entry's URL.
+    NSMenuItem *qualityParent = [[NSMenuItem alloc] initWithTitle:@"Add to Playlist with Quality"
+                                                           action:nil
+                                                    keyEquivalent:@""];
+    NSMenu *qualityMenu = [[NSMenu alloc] initWithTitle:@"Quality"];
+    struct { NSString *title; JLTidalQuality quality; } tiers[] = {
+        {@"Hi-Res Lossless", JLTidalQualityHiResLossless},
+        {@"Hi-Res",          JLTidalQualityHiRes},
+        {@"Lossless",        JLTidalQualityLossless},
+        {@"High (AAC 320)",  JLTidalQualityHigh},
+        {@"Low (AAC 96)",    JLTidalQualityLow},
+    };
+    for (const auto &tier : tiers) {
+        NSMenuItem *item = [qualityMenu addItemWithTitle:tier.title
+                                                  action:@selector(contextMenuAddToPlaylistWithQuality:)
+                                           keyEquivalent:@""];
+        item.tag = tier.quality;
+    }
+    qualityParent.submenu = qualityMenu;
+    [contextMenu addItem:qualityParent];
+
     [contextMenu addItemWithTitle:@"Queue" action:@selector(contextMenuQueue:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Import as New Playlist" action:@selector(contextMenuImportAsPlaylist:) keyEquivalent:@""];
     [contextMenu addItem:[NSMenuItem separatorItem]];
@@ -1936,6 +1970,14 @@ public:
 }
 
 - (void)contextMenuAddToPlaylist:(id)sender {
+    [self addSelectionToPlaylistWithPinnedQuality:kNoPinnedQuality];
+}
+
+- (void)contextMenuAddToPlaylistWithQuality:(NSMenuItem *)sender {
+    [self addSelectionToPlaylistWithPinnedQuality:sender.tag];
+}
+
+- (void)addSelectionToPlaylistWithPinnedQuality:(NSInteger)pinnedQuality {
     if ([self isShowingTracks]) {
         NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
         if (tracks.count == 0) return;
@@ -1945,7 +1987,7 @@ public:
 
         auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, false);
         for (JLTidalTrack *track in tracks) {
-            NSString *url = trackURLString(track.trackID);
+            NSString *url = trackURLStringPinned(track.trackID, pinnedQuality);
             notify->m_paths.add_item([url UTF8String]);
         }
         notify->startImport();
@@ -1957,7 +1999,7 @@ public:
     } else if ([self isShowingAlbums]) {
         NSInteger row = self.tableView.selectedRow;
         if (row >= 0 && row < (NSInteger)self.albumResults.count) {
-            [self addAlbumToPlaylist:self.albumResults[(NSUInteger)row]];
+            [self addAlbum:self.albumResults[(NSUInteger)row] play:NO queue:NO pinnedQuality:pinnedQuality];
         }
     }
 }
@@ -1992,8 +2034,8 @@ public:
                                     tracks.count == 1 ? @"" : @"s"];
 }
 
-// Shared implementation for the three album-add variants below.
-- (void)addAlbum:(JLTidalAlbum *)album play:(BOOL)play queue:(BOOL)queue {
+// Shared implementation for the album-add variants below.
+- (void)addAlbum:(JLTidalAlbum *)album play:(BOOL)play queue:(BOOL)queue pinnedQuality:(NSInteger)pinnedQuality {
     self.statusLabel.stringValue = queue ? @"Loading album tracks for queue..."
                                          : @"Loading album tracks...";
 
@@ -2016,7 +2058,7 @@ public:
             auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, play);
 
             for (JLTidalTrack *track in tracks) {
-                NSString *url = trackURLString(track.trackID);
+                NSString *url = trackURLStringPinned(track.trackID, pinnedQuality);
                 notify->m_paths.add_item([url UTF8String]);
             }
             notify->startImport();
@@ -2028,15 +2070,11 @@ public:
 }
 
 - (void)addAlbumToPlaylistAndQueue:(JLTidalAlbum *)album {
-    [self addAlbum:album play:NO queue:YES];
+    [self addAlbum:album play:NO queue:YES pinnedQuality:kNoPinnedQuality];
 }
 
 - (void)addAlbumToPlaylistAndPlay:(JLTidalAlbum *)album {
-    [self addAlbum:album play:YES queue:NO];
-}
-
-- (void)addAlbumToPlaylist:(JLTidalAlbum *)album {
-    [self addAlbum:album play:NO queue:NO];
+    [self addAlbum:album play:YES queue:NO pinnedQuality:kNoPinnedQuality];
 }
 
 - (void)contextMenuCopyURL:(id)sender {
@@ -2194,6 +2232,7 @@ public:
     }
     if (menuItem.action == @selector(contextMenuPlay:) ||
         menuItem.action == @selector(contextMenuAddToPlaylist:) ||
+        menuItem.action == @selector(contextMenuAddToPlaylistWithQuality:) ||
         menuItem.action == @selector(contextMenuQueue:)) {
         return [self isShowingTracks] || [self isShowingAlbums];
     }

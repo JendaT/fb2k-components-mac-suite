@@ -71,8 +71,20 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
 
 - (void)resolveStreamForTrackID:(NSString *)trackID
                      completion:(JLTidalStreamResolverCompletion)completion {
-    // Check cache first
-    JLTidalPlaybackInfo *cached = tidal::StreamCache::shared().get(std::string([trackID UTF8String]));
+    [self resolveStreamForTrackID:trackID
+                          quality:tidal::TidalConfig::getPreferredQuality()
+                       completion:completion];
+}
+
+- (void)resolveStreamForTrackID:(NSString *)trackID
+                        quality:(JLTidalQuality)quality
+                     completion:(JLTidalStreamResolverCompletion)completion {
+    // The cache is keyed by the quality that was ASKED for, not the one the
+    // cascade landed on: a HI_RES_LOSSLESS request that fell back to LOSSLESS
+    // must hit next time it is asked for HI_RES_LOSSLESS, or it re-runs the
+    // whole cascade on every play.
+    std::string trackKey([trackID UTF8String]);
+    JLTidalPlaybackInfo *cached = tidal::StreamCache::shared().get(trackKey, quality);
     if (cached) {
         completion(cached, nil);
         return;
@@ -85,11 +97,14 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             return;
         }
 
-        // Get preferred quality and start resolution with fallback
-        JLTidalQuality preferredQuality = tidal::TidalConfig::getPreferredQuality();
         [self resolveWithFallbackForTrackID:trackID
-                           startingQuality:preferredQuality
-                                completion:completion];
+                           startingQuality:quality
+                                completion:^(JLTidalPlaybackInfo *info, NSError *error) {
+            if (info) {
+                tidal::StreamCache::shared().set(trackKey, quality, info);
+            }
+            completion(info, error);
+        }];
     }];
 }
 
@@ -154,9 +169,6 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             return;
         }
 
-        // Cache and return
-        tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
-
         // Tidal answers a request for a tier a track does not carry with HIGH
         // rather than the track's real maximum, and asking lower does not help
         // (verified: an explicit LOSSLESS request for such a track still
@@ -176,7 +188,7 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
 }
 
 - (void)invalidateCacheForTrackID:(NSString *)trackID {
-    tidal::StreamCache::shared().remove(std::string([trackID UTF8String]));
+    tidal::StreamCache::shared().removeTrack(std::string([trackID UTF8String]));
 }
 
 #pragma mark - Metadata

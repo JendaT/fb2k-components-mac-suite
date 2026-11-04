@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## TIDAL Integration
+
+### [Unreleased]
+
+#### Added
+- "Add to Playlist with Quality" context submenu pins a quality tier on added entries via `tidal://track/<id>?q=<TIER>`; the pin persists with the playlist and still falls back when the tier is unavailable
+
+---
+
 ## SimPlaylist
 
 ### [1.6.1] - 2026-11-04
