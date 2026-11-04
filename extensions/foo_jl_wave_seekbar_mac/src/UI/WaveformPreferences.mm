@@ -80,6 +80,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_phraseColoursCheckbox;
     NSButton *_phraseFollowCheckbox;
     NSPopUpButton *_controlsPopup;
+    NSButton *_lockRelativeCheckbox;
     NSPopUpButton *_zoomFollowPopup;
     BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
@@ -335,6 +336,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _glassBackgroundCheckbox = [self addCheckbox:@"Glass background"
                                             hint:@"Translucent blur behind the waveform instead of the background colour."
                                                x:x y:&y width:w];
+    _lockRelativeCheckbox = [self addCheckbox:@"Locked size follows the screen"
+                                         hint:@"With Lock Width or Lock Height (right-click the seekbar), the size "
+                                               "stays the same share of the screen on another display or resolution."
+                                            x:x y:&y width:w];
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -593,6 +598,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
     // Checkboxes
     _glassBackgroundCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
+    _lockRelativeCheckbox.state = getConfigBool(kKeyLockRelative, kDefaultLockRelative) ? NSControlStateValueOn : NSControlStateValueOff;
 
     [self loadColors];
 
@@ -789,7 +795,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)checkboxChanged:(id)sender {
     using namespace waveform_config;
-    if (sender == _glassBackgroundCheckbox) {
+    if (sender == _lockRelativeCheckbox) {
+        setConfigBool(kKeyLockRelative, _lockRelativeCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _glassBackgroundCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
         [self updateStyleHint];
     } else if (sender == _cursorTimeCheckbox) {

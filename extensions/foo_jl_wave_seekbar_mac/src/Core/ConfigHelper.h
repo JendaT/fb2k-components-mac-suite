@@ -91,5 +91,8 @@ static const char* const kKeyLockWidth = "lock_width";
 static const char* const kKeyLockedWidth = "locked_width";
 static const char* const kKeyLockHeight = "lock_height";
 static const char* const kKeyLockedHeight = "locked_height";
+static const char* const kKeyLockRelative = "lock_relative";            // locked sizes kept as a share of the screen
+static const char* const kKeyLockedWidthShare = "locked_width_share";   // millionths of the screen's width
+static const char* const kKeyLockedHeightShare = "locked_height_share"; // millionths of the screen's height
 
 } // namespace waveform_config

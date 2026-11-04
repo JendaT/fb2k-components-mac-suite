@@ -44,6 +44,7 @@ public:
     BOOL _heightLocked;                             // Track if height is locked
     ListenerId _waveformListenerId;                 // For safe listener removal
     NSVisualEffectView *_glassEffectView;           // Blur background when glass mode is on
+    __weak NSWindow *_observedWindow;               // whose screen changes resize a locked width or height
     NSTimer *_analysisWatchdog;                     // Breaks a stuck "Analyzing..." state
     int _analysisRetries;                           // Re-requests already spent on this track
 }
@@ -102,6 +103,7 @@ public:
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
+    [self applyLockedSize];   // following the screen switched on or off
     // Phrase markers or beat-synced animation switched on or off
     if (![self wantsBeatGrid]) [self dropPhraseGrid];
     else if (!_phraseGrid) [self fetchPhraseGrid];
@@ -197,30 +199,24 @@ public:
         [self.view.heightAnchor constraintGreaterThanOrEqualToConstant:40]
     ]];
 
-    // Restore locked width if previously set
+    // Restore a locked width and height (sized for the screen once the view
+    // is in a window)
     using namespace waveform_config;
-    if (getConfigBool(kKeyLockWidth, false)) {
-        int64_t lockedWidth = getConfigInt(kKeyLockedWidth, 400);
-        if (lockedWidth >= 100) {
-            _widthLocked = YES;
-            _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedWidth)];
-            _widthConstraint.priority = NSLayoutPriorityRequired;
-            _widthConstraint.active = YES;
-            FB2K_console_formatter() << "[WaveSeek] Restored locked width: " << lockedWidth << " pixels";
-        }
+    if (getConfigBool(kKeyLockWidth, false) && getConfigInt(kKeyLockedWidth, 400) >= kMinLockedWidth) {
+        _widthLocked = YES;
+        _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:[self lockedLength:YES]];
+        _widthConstraint.priority = NSLayoutPriorityRequired;
+        _widthConstraint.active = YES;
     }
-
-    // Restore locked height if previously set
-    if (getConfigBool(kKeyLockHeight, false)) {
-        int64_t lockedHeight = getConfigInt(kKeyLockedHeight, 80);
-        if (lockedHeight >= 40) {
-            _heightLocked = YES;
-            _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedHeight)];
-            _heightConstraint.priority = NSLayoutPriorityRequired;
-            _heightConstraint.active = YES;
-            FB2K_console_formatter() << "[WaveSeek] Restored locked height: " << lockedHeight << " pixels";
-        }
+    if (getConfigBool(kKeyLockHeight, false) && getConfigInt(kKeyLockedHeight, 80) >= kMinLockedHeight) {
+        _heightLocked = YES;
+        _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:[self lockedLength:NO]];
+        _heightConstraint.priority = NSLayoutPriorityRequired;
+        _heightConstraint.active = YES;
     }
+    // Another display, or its resolution changed
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
+                                                 name:NSApplicationDidChangeScreenParametersNotification object:nil];
 
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
@@ -271,6 +267,19 @@ public:
 
 - (void)viewDidAppear {
     [super viewDidAppear];
+    // The window's screen sizes a locked width or height
+    if (self.view.window != _observedWindow) {
+        if (_observedWindow) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self name:NSWindowDidChangeScreenNotification
+                                                          object:_observedWindow];
+        }
+        _observedWindow = self.view.window;
+        if (_observedWindow) {
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
+                                                         name:NSWindowDidChangeScreenNotification object:_observedWindow];
+        }
+    }
+    [self applyLockedSize];
 
     // A layout change tears this element down and builds a fresh one. If the
     // scan for the current track was already in flight, its result went to the
@@ -631,80 +640,71 @@ static const int kAnalysisMaxRetries = 1;
     }
 }
 
-- (void)menuToggleLockWidth:(NSMenuItem *)sender {
+#pragma mark - Locked Size
+
+// A locked width or height: the points stored when it was locked, or while
+// it follows the screen, the same share of the window's screen as then
+- (CGFloat)lockedLength:(BOOL)width {
     using namespace waveform_config;
-
-    _widthLocked = !_widthLocked;
-
-    if (_widthLocked) {
-        // Lock to current width
-        CGFloat currentWidth = self.view.frame.size.width;
-
-        // Remove existing width constraint if any
-        if (_widthConstraint) {
-            [self.view removeConstraint:_widthConstraint];
-        }
-
-        // Create exact width constraint
-        _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:currentWidth];
-        _widthConstraint.priority = NSLayoutPriorityRequired;
-        _widthConstraint.active = YES;
-
-        // Save to config
-        setConfigBool(kKeyLockWidth, YES);
-        setConfigInt(kKeyLockedWidth, static_cast<int64_t>(currentWidth));
-
-        FB2K_console_formatter() << "[WaveSeek] Width locked to " << static_cast<int>(currentWidth) << " pixels";
-    } else {
-        // Unlock - remove constraint
-        if (_widthConstraint) {
-            [self.view removeConstraint:_widthConstraint];
-            _widthConstraint = nil;
-        }
-
-        // Save to config
-        setConfigBool(kKeyLockWidth, NO);
-
-        FB2K_console_formatter() << "[WaveSeek] Width unlocked";
+    const CGFloat minimum = width ? kMinLockedWidth : kMinLockedHeight;
+    const int64_t points = getConfigInt(width ? kKeyLockedWidth : kKeyLockedHeight, width ? 400 : 80);
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    if (!getConfigBool(kKeyLockRelative, kDefaultLockRelative) || !screen) return std::max<CGFloat>(minimum, points);
+    const CGFloat screenLength = width ? screen.frame.size.width : screen.frame.size.height;
+    if (!(screenLength > 0)) return std::max<CGFloat>(minimum, points);
+    const char *shareKey = width ? kKeyLockedWidthShare : kKeyLockedHeightShare;
+    int64_t share = getConfigInt(shareKey, 0);
+    if (share <= 0) {   // locked before shares were kept: its share of this screen
+        share = std::llround(points / screenLength * 1e6);
+        setConfigInt(shareKey, share);
     }
+    return std::max<CGFloat>(minimum, std::round(share / 1e6 * screenLength));
+}
+
+- (void)applyLockedSize {
+    if (_widthLocked && _widthConstraint) _widthConstraint.constant = [self lockedLength:YES];
+    if (_heightLocked && _heightConstraint) _heightConstraint.constant = [self lockedLength:NO];
+}
+
+- (void)screenChanged:(NSNotification *)notification {
+    [self applyLockedSize];
+}
+
+// Locks to the current length, kept in points and as a share of the screen
+- (void)lockLength:(BOOL)width {
+    using namespace waveform_config;
+    const CGFloat length = width ? self.view.frame.size.width : self.view.frame.size.height;
+    NSLayoutConstraint *__strong &constraint = width ? _widthConstraint : _heightConstraint;
+    if (constraint) constraint.active = NO;
+    constraint = [width ? self.view.widthAnchor : self.view.heightAnchor constraintEqualToConstant:length];
+    constraint.priority = NSLayoutPriorityRequired;
+    constraint.active = YES;
+    setConfigBool(width ? kKeyLockWidth : kKeyLockHeight, true);
+    setConfigInt(width ? kKeyLockedWidth : kKeyLockedHeight, static_cast<int64_t>(length));
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    const CGFloat screenLength = screen ? (width ? screen.frame.size.width : screen.frame.size.height) : 0;
+    setConfigInt(width ? kKeyLockedWidthShare : kKeyLockedHeightShare,
+                 screenLength > 0 ? std::llround(length / screenLength * 1e6) : 0);
+}
+
+- (void)unlockLength:(BOOL)width {
+    using namespace waveform_config;
+    NSLayoutConstraint *__strong &constraint = width ? _widthConstraint : _heightConstraint;
+    if (constraint) constraint.active = NO;
+    constraint = nil;
+    setConfigBool(width ? kKeyLockWidth : kKeyLockHeight, false);
+}
+
+- (void)menuToggleLockWidth:(NSMenuItem *)sender {
+    _widthLocked = !_widthLocked;
+    if (_widthLocked) [self lockLength:YES];
+    else [self unlockLength:YES];
 }
 
 - (void)menuToggleLockHeight:(NSMenuItem *)sender {
-    using namespace waveform_config;
-
     _heightLocked = !_heightLocked;
-
-    if (_heightLocked) {
-        // Lock to current height
-        CGFloat currentHeight = self.view.frame.size.height;
-
-        // Remove existing height constraint if any
-        if (_heightConstraint) {
-            [self.view removeConstraint:_heightConstraint];
-        }
-
-        // Create exact height constraint
-        _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:currentHeight];
-        _heightConstraint.priority = NSLayoutPriorityRequired;
-        _heightConstraint.active = YES;
-
-        // Save to config
-        setConfigBool(kKeyLockHeight, YES);
-        setConfigInt(kKeyLockedHeight, static_cast<int64_t>(currentHeight));
-
-        FB2K_console_formatter() << "[WaveSeek] Height locked to " << static_cast<int>(currentHeight) << " pixels";
-    } else {
-        // Unlock - remove constraint
-        if (_heightConstraint) {
-            [self.view removeConstraint:_heightConstraint];
-            _heightConstraint = nil;
-        }
-
-        // Save to config
-        setConfigBool(kKeyLockHeight, NO);
-
-        FB2K_console_formatter() << "[WaveSeek] Height unlocked";
-    }
+    if (_heightLocked) [self lockLength:NO];
+    else [self unlockLength:NO];
 }
 
 @end
