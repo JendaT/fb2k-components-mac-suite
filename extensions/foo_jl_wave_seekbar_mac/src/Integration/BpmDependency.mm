@@ -21,7 +21,6 @@ JLDependencyManager *waveseekBpmDependency(void) {
         d.assetName = @"foo_jl_bpm.fb2k-component";
         d.minVersion = @"0.1.0";   // the first with grid sections (jl_beatgrid layout 2)
         d.repository = @"JendaT/fb2k-components-mac-suite";
-        d.featureName = @"Phrase markers";
         d.dependentName = @"Waveform Seekbar";
         manager = [JLDependencyManager managerForDescriptor:d];
         manager.serviceAvailable = ^BOOL {
