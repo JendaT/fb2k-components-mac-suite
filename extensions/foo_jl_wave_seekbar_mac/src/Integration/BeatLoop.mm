@@ -71,6 +71,8 @@ public:
             m_file = file;
             m_sawFile = true;
         }
+        const double block = chunk->get_sample_rate() ? static_cast<double>(chunk->get_sample_count()) / chunk->get_sample_rate() : 0.0;
+        m_blockSeconds = m_blockSeconds > 0.0 ? 0.9 * m_blockSeconds + 0.1 * block : block;
         std::vector<Engine::Block> out;
         const bool through = m_engine.process(chunk->get_data(), chunk->get_sample_count(), chunk->get_channel_count(),
                                               chunk->get_sample_rate(), chunk->get_channel_config(), newTrack, out);
@@ -162,6 +164,7 @@ private:
         s.bufferedTo = m_engine.bufferedTo();
         s.outSeconds = m_engine.outSeconds();
         s.ahead = m_engine.aheadSeconds();
+        s.blockSeconds = m_blockSeconds;
         s.boundArmId = m_engine.boundArmId();
         s.lastActionId = m_engine.lastActionId();
         s.rejectedId = m_engine.rejectedId();
@@ -172,6 +175,7 @@ private:
     }
 
     Engine m_engine;
+    double m_blockSeconds = 0.0;
     std::atomic<double> m_latency{ 0.0 };
     uint64_t m_syncSerial = 0;
     uint64_t m_publishedVersion = UINT64_MAX;
@@ -310,6 +314,16 @@ void applyMixerBuffer(bool mixerOn, int mixerMs) {
         }
     } catch (const std::exception &e) {
         FB2K_console_formatter() << "[WaveSeek] Mixer output buffer: " << e.what();
+    }
+}
+
+int outputBufferMs() {
+    try {
+        output_manager::ptr manager;
+        if (!fb2k::std_api_try_get(manager)) return 0;
+        return static_cast<int>(std::lround(manager->getCoreConfig().m_buffer_length * 1000.0));
+    } catch (...) {
+        return 0;
     }
 }
 

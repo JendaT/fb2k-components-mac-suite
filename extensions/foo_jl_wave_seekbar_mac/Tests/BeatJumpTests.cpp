@@ -176,17 +176,17 @@ void testLoopSteps() {
     TEST_CASE("loop steps");
     const auto beats = beatTimes(grid120(), 60.0, false);
     const BeatLoop loop = makeLoop(beats, 10.43, 8, 60.0);   // 10.2 .. 14.2
-    CHECK(loopStep(loop, 12.0, 0.035).kind == LoopStep::None, "inside: nothing");
-    const LoopStep soon = loopStep(loop, 14.18, 0.035);
+    CHECK(loopStep(loop, 12.0, 0.035, true).kind == LoopStep::None, "inside: nothing");
+    const LoopStep soon = loopStep(loop, 14.18, 0.035, true);
     CHECK(soon.kind == LoopStep::Schedule, "the end within the next check: schedule");
     CHECK_NEAR(soon.value, 0.02, 1e-9, "for when it comes");
-    const LoopStep late = loopStep(loop, 14.21, 0.035);
+    const LoopStep late = loopStep(loop, 14.21, 0.035, true);
     CHECK(late.kind == LoopStep::Seek, "past the end: seek");
     CHECK_NEAR(late.value, 10.21, 1e-9, "as far into the loop as it overran");
-    CHECK(loopStep(loop, 20.0, 0.035).kind == LoopStep::Leave, "moved well past it: the loop ends");
-    CHECK(loopStep(loop, 5.0, 0.035).kind == LoopStep::Leave, "moved well before it: the loop ends");
-    CHECK(loopStep(loop, 10.0, 0.035).kind == LoopStep::None, "a hair before the start: plays into it");
-    CHECK(loopStep(BeatLoop{}, 12.0, 0.035).kind == LoopStep::None, "no loop: nothing");
+    CHECK(loopStep(loop, 20.0, 0.035, true).kind == LoopStep::None, "moved well past it: plays on, the loop waits");
+    CHECK(loopStep(loop, 5.0, 0.035, true).kind == LoopStep::None, "moved before it: plays into it");
+    CHECK(loopStep(loop, 14.21, 0.035, false).kind == LoopStep::None, "past the end but not from inside: plays on");
+    CHECK(loopStep(BeatLoop{}, 12.0, 0.035, true).kind == LoopStep::None, "no loop: nothing");
 }
 
 } // namespace

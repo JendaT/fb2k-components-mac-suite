@@ -274,6 +274,32 @@ void testExit() {
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
+void testLoopStaysSet() {
+    TEST_CASE("the loop stays set");
+    Playing p;   // live up to ~5000
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 700);
+    // Before it: plays up to it, then is caught and loops
+    size_t at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 2, 0.0, 0.0, 3.5)), "a jump before the loop");
+    runUntil(p.e, p.d, p.out, at + 2000);
+    CHECK(straight(p.out, at, at + 500, 3500.0), "plays from there up to the loop");
+    CHECK(looping(p.out, at + 500, at + 2000, 4000.0, 500), "then the loop catches it");
+    CHECK(p.e.looping(), "still set");
+    // Past it: plays on, the loop waits
+    at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 3, 0.0, 0.0, 4.7)), "a jump past the loop");
+    for (int i = 0; i < 100000 && p.e.bufferedTo() < 7.0; ++i) step(p.e, p.d, p.out);
+    CHECK(straight(p.out, at, p.out.frames.size(), 4700.0), "plays on past it, no wrap");
+    CHECK(p.e.looping(), "the loop is still set behind it");
+    // Back into it: loops again
+    at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 4, 0.0, 0.0, 4.2)), "a jump into the loop");
+    runUntil(p.e, p.d, p.out, at + 1500);
+    CHECK(looping(p.out, at, at + 1500, 4000.0, 500, 200), "loops from there");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
 void testCrossfade() {
     TEST_CASE("crossfade");
     Engine e;   // 5 ms = 5 frames at 1000 Hz
@@ -358,6 +384,12 @@ void testResponsive() {
     step(quick.e, d2, o2);
     CHECK(o1.frames.size() >= 1000, "idle: a second of loop per block (the decoder held back)");
     CHECK(o2.frames.size() <= 64, "responsive: about a block (a change is heard after little more)");
+
+    // Large blocks from the decoder: the responsive step stays short
+    Decoder big{ quick.d.next + 64, 500 };
+    Output o3;
+    step(quick.e, big, o3);
+    CHECK(o3.frames.size() <= 31, "a 500-frame block, 30 frames out");
 }
 
 void testAheadCap() {
@@ -405,6 +437,7 @@ int main() {
     testMoveForward();
     testJump();
     testExit();
+    testLoopStaysSet();
     testCrossfade();
     testForeignSeek();
     testNewTrackLive();

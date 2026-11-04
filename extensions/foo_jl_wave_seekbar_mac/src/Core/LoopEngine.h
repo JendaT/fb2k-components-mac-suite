@@ -96,12 +96,15 @@ public:
 
     static constexpr double kHistorySeconds = 40.0;
     static constexpr double kFadeSeconds = 0.005;
-    // Output per block of decoded audio while looping: it adds to the delay
-    // before a request is heard, and sets how fast the decoder runs ahead (a
-    // block per quantum). Short while a change may come (responsive: the
-    // decoder then runs about as fast as it plays), long otherwise; past
-    // kMaxAheadSeconds of decoded audio waiting the loop ends.
+    // Output per block of decoded audio while playing from the buffer: it
+    // adds to the delay before a request is heard (the next block comes when
+    // the output has taken this much), and sets how fast the decoder runs
+    // ahead (a block per quantum). While a change may come (responsive) a
+    // short fixed step, whatever the block size, until kResponsiveAheadSeconds
+    // are waiting; otherwise a long step in a loop and catching up outside
+    // one. Past kMaxAheadSeconds of decoded audio waiting the loop ends.
     static constexpr double kResponsiveQuantumSeconds = 0.03;
+    static constexpr double kResponsiveAheadSeconds = 120.0;
     static constexpr double kIdleQuantumSeconds = 1.0;
     static constexpr double kMaxAheadSeconds = 300.0;
 
@@ -122,7 +125,7 @@ public:
         inFrames_ = 0;
         outSeconds_ = 0.0;
         live_ = pristine_ = true;
-        looping_ = loopPending_ = afterBoundary_ = tailStarted_ = false;
+        looping_ = engaged_ = afterBoundary_ = tailStarted_ = false;
         fadeLeft_ = 0;
         synced_ = false;
         pending_.reset();
@@ -208,11 +211,13 @@ public:
             trim();
             return true;
         }
+        const double ahead = aheadSeconds();
+        if (looping_ && ahead > kMaxAheadSeconds) exitLoop();
         size_t want = 2 * frames;   // behind the decoder: catch up
-        if (looping_) {
-            const double ahead = aheadSeconds();
-            if (ahead > kMaxAheadSeconds) exitLoop();
-            else want = std::max(frames, framesFor(responsive_ ? kResponsiveQuantumSeconds : kIdleQuantumSeconds));
+        if (responsive_ && ahead < kResponsiveAheadSeconds) {
+            want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
+        } else if (looping_ && engaged_) {
+            want = std::max(frames, framesFor(kIdleQuantumSeconds));
         }
         emit(want, out);
         trim();
@@ -293,8 +298,9 @@ private:
             case LoopAction::Loop: {
                 const int64_t s = frameOf(a.start), e = frameOf(a.end);
                 if (e <= s || s < bufStart_) return false;
-                int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
-                if (std::isnan(a.to) && pos_ >= e) to = s;
+                // NAN: on from where it is (before the loop it runs into it,
+                // past it the loop waits)
+                const int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
                 // Right after a seek, playback may start further in once decoded
                 if (to < bufStart_ || (!afterBind && to > bufEnd())) return false;
                 looping_ = true;
@@ -308,24 +314,29 @@ private:
                 const int64_t e = frameOf(a.end);
                 if (!looping_ || e <= loopStart_) return false;
                 loopEnd_ = e;
-                // Past the new end: into it, as far as the loop's length goes
-                moveTo(pos_ >= e && pos_ >= loopStart_ ? loopStart_ + (pos_ - loopStart_) % (e - loopStart_) : pos_);
+                // Playing in it and past the new end: into it, as far as the
+                // loop's length goes
+                moveTo(engaged_ && pos_ >= e ? loopStart_ + (pos_ - loopStart_) % (e - loopStart_) : pos_);
                 return true;
             }
             case LoopAction::Move: {
                 if (!looping_) return false;
                 const int64_t s = frameOf(a.start), e = frameOf(a.end);
-                const int64_t to = pos_ + (s - loopStart_);
-                if (e <= s || s < bufStart_ || to < bufStart_ || to > bufEnd()) return false;
+                if (e <= s) return false;
+                // Playing in it: the same place in the moved loop (the end of a
+                // pass is the start of the next); outside it, shifted alike
+                const int64_t to = engaged_ ? s + (pos_ - loopStart_) % (e - s) : pos_ + (s - loopStart_);
+                if (s < bufStart_ || to < bufStart_ || to > bufEnd()) return false;
                 loopStart_ = s;
                 loopEnd_ = e;
                 moveTo(to);
                 return true;
             }
             case LoopAction::Jump: {
+                // Anywhere held; a loop stays set: inside it plays it, before
+                // it runs into it, past it the loop waits
                 const int64_t to = frameOf(a.to);
                 if (to < bufStart_ || to >= bufEnd()) return false;
-                if (looping_ && (to < loopStart_ || to >= loopEnd_)) return false;   // leave the loop first
                 live_ = false;
                 pristine_ = false;
                 moveTo(to);
@@ -357,18 +368,18 @@ private:
         if (looping_ && pos_ >= loopStart_ && pos_ < loopEnd_) {
             timeline_.push_back({ outSeconds_, timeOf(loopStart_), secondsOf(loopEnd_ - loopStart_),
                                   secondsOf(pos_ - loopStart_) });
-            loopPending_ = false;
+            engaged_ = true;
             inLoopSegment_ = true;
         } else {
             timeline_.push_back({ outSeconds_, timeOf(pos_), 0.0, 0.0 });
-            loopPending_ = looping_ && pos_ < loopStart_;   // runs into the loop
+            engaged_ = false;   // before the loop it engages at the start; past it, not
             inLoopSegment_ = false;
         }
         ++version_;
     }
 
     void exitLoop() {
-        looping_ = loopPending_ = inLoopSegment_ = false;
+        looping_ = engaged_ = inLoopSegment_ = false;
         timeline_.push_back({ outSeconds_, timeOf(pos_), 0.0, 0.0 });
         ++version_;
     }
@@ -411,20 +422,25 @@ private:
         };
         while (n > 0) {
             if (looping_) {
-                if (pos_ >= loopEnd_) {           // a pass ends: back to the start
+                if (engaged_ && pos_ >= loopEnd_) {   // a pass ends: back to the start
                     finish();
                     startFade();
                     pos_ = loopStart_;
                     if (!inLoopSegment_) pushSegment();   // the loop's segment covers every pass
-                } else if (loopPending_ && pos_ >= loopStart_) {   // ran into the loop
+                } else if (!engaged_ && pos_ >= loopStart_ && pos_ < loopEnd_) {   // ran into the loop
                     finish();
                     pushSegment();
                 }
             }
+            const bool loopAhead = looping_ && !engaged_ && pos_ < loopStart_;
             int64_t avail = bufEnd() - pos_;
-            if (looping_) avail = std::min<int64_t>(avail, loopEnd_ - pos_);
+            if (looping_ && engaged_) avail = std::min<int64_t>(avail, loopEnd_ - pos_);
+            if (loopAhead) avail = std::min<int64_t>(avail, loopStart_ - pos_);
             if (avail <= 0) {
-                if (looping_ || pos_ < bufEnd()) break;   // waiting for audio
+                // Waiting for audio: in the loop, or with the loop ahead (it
+                // must catch playback as it comes in, which passing the audio
+                // through would not)
+                if ((looping_ && engaged_) || loopAhead || pos_ < bufEnd()) break;
                 finish();
                 fadeLeft_ = 0;
                 if (afterBoundary_) {                     // caught up: the new track's audio
@@ -493,7 +509,7 @@ private:
     // a few seconds at a time
     void trim() {
         if (!rate_ || !channels_) return;
-        int64_t keep = looping_ ? std::min(loopStart_, pos_) : pos_;
+        int64_t keep = looping_ && engaged_ ? std::min(loopStart_, pos_) : pos_;
         if (fadeLeft_ > 0) keep = std::min(keep, fadeFrom_);
         keep -= static_cast<int64_t>(framesFor(kHistorySeconds));
         const int64_t drop = keep - bufStart_;
@@ -517,7 +533,7 @@ private:
     bool pristine_ = true;
     bool responsive_ = false;
     bool looping_ = false;
-    bool loopPending_ = false;      // looping, but not yet in the loop
+    bool engaged_ = false;          // a loop is set and playback is in it (before it: it engages at the start)
     bool inLoopSegment_ = false;    // the timeline's last segment is the loop's
     int64_t loopStart_ = 0, loopEnd_ = 0;
 

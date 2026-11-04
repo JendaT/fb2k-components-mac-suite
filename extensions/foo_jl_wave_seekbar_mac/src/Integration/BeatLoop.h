@@ -39,6 +39,7 @@ struct Status {
     double bufferedFrom = 0.0, bufferedTo = 0.0;   // the track audio it holds
     double outSeconds = 0.0;    // output since the seek
     double ahead = 0.0;         // decoded audio waiting, seconds
+    double blockSeconds = 0.0;  // how much audio foobar2000 hands the DSP at a time (recent average)
     uint64_t boundArmId = 0;    // the arm the last seek took
     uint64_t lastActionId = 0;
     uint64_t rejectedId = 0;
@@ -75,5 +76,7 @@ void setLowLatency(bool on);
 // put back when the mixer goes off (also at the next launch, if foobar2000
 // quit in between). Changing it restarts playback once.
 void applyMixerBuffer(bool mixerOn, int mixerMs);
+// foobar2000's output buffer setting now, ms (0 when unknown)
+int outputBufferMs();
 
 } // namespace beatloop

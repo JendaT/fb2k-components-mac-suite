@@ -33,8 +33,8 @@ constexpr double kBeatEndMargin = 0.25;
 // A beat this little ahead of the cursor counts as behind it: the loop was
 // asked for on the beat, a hair early
 constexpr double kLoopSnapAhead = 0.03;
-// Playback this far outside a loop was moved there by something else (a
-// seek from another control): the loop ends
+// Playback this far past a loop's end was moved there (a click, a jump, a
+// seek from elsewhere), not carried by playing: it plays on, the loop waits
 constexpr double kLoopSlack = 0.5;
 
 // Every beat from 0 to `duration`, ascending: the master grid's, or with
@@ -189,17 +189,20 @@ inline double wrappedIntoLoop(const BeatLoop &loop, double seconds) {
     return loop.start + (into < 0.0 ? into + loop.length() : into);
 }
 
-// What a playing loop asks for at playback position `seconds`, checked
-// again in about `lookahead` seconds
+// What a loop asks of playback at position `seconds`, checked again in
+// about `lookahead` seconds. The loop stays set until it is switched off:
+// it only acts on playback that was inside it at the last check (`wasInside`)
+// and has run on to its end; before it, playback runs into it; moved past it,
+// playback plays on.
 struct LoopStep {
-    enum Kind { None, Seek, Schedule, Leave };
+    enum Kind { None, Seek, Schedule };
     Kind kind = None;
     double value = 0.0;         // Seek: where to; Schedule: how long until the end
 };
 
-inline LoopStep loopStep(const BeatLoop &loop, double seconds, double lookahead) {
-    if (!loop.active() || !std::isfinite(seconds)) return {};
-    if (seconds < loop.start - kLoopSlack || seconds > loop.end + kLoopSlack) return { LoopStep::Leave, 0.0 };
+inline LoopStep loopStep(const BeatLoop &loop, double seconds, double lookahead, bool wasInside) {
+    if (!loop.active() || !std::isfinite(seconds) || !wasInside) return {};
+    if (seconds < loop.start || seconds > loop.end + kLoopSlack) return {};   // moved elsewhere
     // Late: back to the start, as far in as it overran, so the beat holds
     if (seconds >= loop.end) return { LoopStep::Seek, loop.start + std::fmod(seconds - loop.end, loop.length()) };
     if (loop.end - seconds <= lookahead) return { LoopStep::Schedule, loop.end - seconds };

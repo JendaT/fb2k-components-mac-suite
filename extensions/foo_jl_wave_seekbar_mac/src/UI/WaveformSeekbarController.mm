@@ -641,6 +641,17 @@ static const int kAnalysisMaxRetries = 1;
     } @catch (...) {
         console::error("[WaveSeek] Failed to open preferences");
     }
+    // Already open behind other windows: show_preferences switches the page
+    // but leaves it there, so bring it forward
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (NSWindow *window in NSApp.windows) {
+            if (window.isVisible && [window.title rangeOfString:@"Preferences" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                [window makeKeyAndOrderFront:nil];
+                break;
+            }
+        }
+        [NSApp activateIgnoringOtherApps:YES];
+    });
 }
 
 #pragma mark - Mixer Audio
