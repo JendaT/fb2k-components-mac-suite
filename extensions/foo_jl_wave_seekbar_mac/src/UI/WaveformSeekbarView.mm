@@ -2677,9 +2677,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 }
 
 // `by` (relative to what plays when the DSP takes it, so the beat holds
-// however late) or to `target`; onBeat: wait for the next beat of what
-// plays, so the target beat lands on a beat. `target` also places the
-// fallback seek and decides what the loop does.
+// however late) or to `target`; onBeat: in phase, the DSP lands at the
+// place nearest `target` at the same place within its beat as what it
+// plays, so the beat holds at once (a wait for the next beat delayed the
+// jump up to a beat). `target` also places the fallback seek and decides
+// what the loop does.
 - (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
     using Kind = waveseek::LoopAction::Kind;
     waveseek::LoopAction jump = makeAction(Kind::Jump, 0, 0, target);
@@ -3163,7 +3165,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
                                                0.0, 1.0);
     double seekTime = _zoom.positionAt(across) * self.trackDuration;
-    // With the mixer, a click near a beat plays from the beat, on the beat
+    // With the mixer, a click near a beat jumps there in phase with what plays
     bool onBeat = false;
     if ([self mixerReady]) {
         const double beat = waveseek::nearestBeat([self beats], seekTime);

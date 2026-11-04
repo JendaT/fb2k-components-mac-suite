@@ -301,7 +301,7 @@ void testLoopStaysSet() {
 }
 
 void testRelativeJump() {
-    TEST_CASE("relative and on-the-beat jumps");
+    TEST_CASE("relative jumps");
     Playing p;   // live up to ~5000
     LoopAction back = action(LoopAction::Jump, 1);
     back.by = -1.0;
@@ -310,20 +310,31 @@ void testRelativeJump() {
     CHECK(p.e.act(back), "a second back from what plays");
     runUntil(p.e, p.d, p.out, at + 500);
     CHECK(straight(p.out, at, at + 500, from - 1000.0), "from exactly a second back, however late taken");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
 
-    // On the beat: 0.5 s beats from 0; the jump waits for the next one
-    Playing q;
-    const double now = q.e.playingFrom();
-    const double next = std::ceil(now / 0.5 - 1e-9) * 0.5;
-    LoopAction onBeat = action(LoopAction::Jump, 2, 0.0, 0.0, 3.0);
-    onBeat.beat = 0.5;
-    const size_t at2 = q.out.frames.size();
-    CHECK(q.e.act(onBeat), "a jump to a beat");
-    runUntil(q.e, q.d, q.out, at2 + 2000);
-    const size_t wait = static_cast<size_t>(std::llround((next - now) * kRate));
-    CHECK(straight(q.out, at2, at2 + wait, std::round(now * kRate)), "plays on to the next beat");
-    CHECK(straight(q.out, at2 + wait, at2 + wait + 1000, 3000.0), "then the target beat, on the beat");
-    CHECK(matchesTimeline(q.e, q.out), "the timeline maps every frame");
+void testInPhaseJump() {
+    TEST_CASE("jumps in phase");
+    // 0.5 s beats from 0.1. Played 3.0 ends late in a beat (5.008, 0.82 of
+    // it: the beat before the target is nearer), 3.2 early (5.2, 0.2).
+    for (const double played : { 3.0, 3.2 }) {
+        for (const double target : { 3.1, 3.3 }) {
+            Playing p(played);
+            const double from = std::round(p.e.playingFrom() * kRate);
+            LoopAction a = action(LoopAction::Jump, 1, 0.0, 0.0, target);
+            a.beat = 0.5;
+            a.beatAnchor = 0.1;
+            const size_t at = p.out.frames.size();
+            CHECK(p.e.act(a), "a jump in phase");
+            runUntil(p.e, p.d, p.out, at + 500);
+            const double landed = p.out.frames[at];
+            const double d = std::fabs(std::fmod(from - 100.0, 500.0) - std::fmod(landed - 100.0, 500.0));
+            CHECK(std::min(d, 500.0 - d) <= 1.0, "at once, at the same place within the beat");
+            CHECK(std::fabs(landed - target * kRate) <= 251.0, "at most half a beat from the target");
+            CHECK(straight(p.out, at, at + 500, landed), "and on from there");
+            CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+        }
+    }
 }
 
 void testLoopKeepsPhase() {
@@ -506,6 +517,7 @@ int main() {
     testExit();
     testLoopStaysSet();
     testRelativeJump();
+    testInPhaseJump();
     testLoopKeepsPhase();
     testCrossfade();
     testForeignSeek();
