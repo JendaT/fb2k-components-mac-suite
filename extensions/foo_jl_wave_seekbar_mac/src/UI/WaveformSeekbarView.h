@@ -32,14 +32,18 @@ typedef struct WaveformDetail WaveformDetail;
 - (double)waveformSeekbarViewPlaybackTime:(WaveformSeekbarView *)view;
 @end
 
+// The values are waveform_config::CursorEffect's
 typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
-    WaveformCursorEffectNone = 0,      // Sharp transition
-    WaveformCursorEffectGradient = 1,  // Fade gradient at edge
-    WaveformCursorEffectGlow = 2,      // Pulsing halo/bloom
-    WaveformCursorEffectScanline = 3,  // Multiple thin vertical lines
-    WaveformCursorEffectPulse = 4,     // Breathing played area
-    WaveformCursorEffectTrail = 5,     // Motion blur trail
-    WaveformCursorEffectShimmer = 6    // Oscillating brightness bands
+    WaveformCursorEffectNone = 0,           // Sharp transition
+    WaveformCursorEffectGradient = 1,       // Fade gradient at edge
+    WaveformCursorEffectGlow = 2,           // Bloom from the cursor line, pulsing
+    WaveformCursorEffectScanline = 3,       // Multiple thin vertical lines
+    WaveformCursorEffectPulse = 4,          // Breathing played area
+    // 5 was Trail, retired: a stored 5 loads as Gradient
+    WaveformCursorEffectShimmer = 6,        // Oscillating brightness bands
+    WaveformCursorEffectParticles = 7,      // Sparks off the waveform (experimental)
+    WaveformCursorEffectFirewall = 8,       // Flames standing on the cursor (experimental)
+    WaveformCursorEffectEarthcrusher = 9    // Jagged cursor, scorched cracks behind it (experimental)
 };
 
 @interface WaveformSeekbarView : NSView

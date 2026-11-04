@@ -153,17 +153,46 @@ constexpr int kTextSizes[] = { 10, 12, 14, 16 };
 constexpr bool kDefaultTimeRuler = false;
 constexpr bool kDefaultLevelScale = true;
 constexpr int kDefaultChannelMode = ChannelsStereo;
-// Played part: dimmed by an overlay of the background, shaped at the cursor
+// Played part: dimmed by an overlay of the background, shaped at the cursor.
+// Stored under cursor_effect by number, so the numbers stay put: a retired
+// effect keeps its number and loads as another (cursorEffectFromStored).
 enum CursorEffect {
-    CursorEffectNone = 0,      // Sharp transition, no effect
-    CursorEffectGradient = 1,  // Fade gradient at edge
-    CursorEffectGlow = 2,      // Pulsing halo/bloom
-    CursorEffectScanline = 3,  // Multiple thin vertical lines
-    CursorEffectPulse = 4,     // Breathing played area
-    CursorEffectTrail = 5,     // Motion blur trail behind cursor
-    CursorEffectShimmer = 6,   // Oscillating brightness bands
+    CursorEffectNone = 0,           // Sharp transition, no effect
+    CursorEffectGradient = 1,       // Fade gradient at edge
+    CursorEffectGlow = 2,           // Bloom from the cursor line, pulsing
+    CursorEffectScanline = 3,       // Multiple thin vertical lines
+    CursorEffectPulse = 4,          // Breathing played area
+    CursorEffectTrail = 5,          // Retired (a longer Gradient): loads as Gradient
+    CursorEffectShimmer = 6,        // Oscillating brightness bands
+    CursorEffectParticles = 7,      // Sparks off the waveform, more where louder (experimental)
+    CursorEffectFirewall = 8,       // Flames standing on the cursor (experimental)
+    CursorEffectEarthcrusher = 9,   // Jagged cursor, cracked scorched waveform behind it (experimental)
     CursorEffectCount
 };
+
+// The effect to draw for a stored value: Trail as Gradient, anything unknown
+// as None (the default)
+constexpr int cursorEffectFromStored(int64_t stored) {
+    if (stored == CursorEffectTrail) return CursorEffectGradient;
+    return stored >= 0 && stored < CursorEffectCount ? (int)stored : CursorEffectNone;
+}
+
+// Effects that move by themselves: redrawn every frame while playing
+constexpr bool cursorEffectAnimates(int effect) {
+    switch (effect) {
+        case CursorEffectGlow: case CursorEffectScanline: case CursorEffectPulse: case CursorEffectShimmer:
+        case CursorEffectParticles: case CursorEffectFirewall: case CursorEffectEarthcrusher:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Animated effects whose pulse follows the beat with BPM sync on. Particles
+// burst on the music's own beats, from the waveform's level.
+constexpr bool cursorEffectSyncsToBeat(int effect) {
+    return cursorEffectAnimates(effect) && effect != CursorEffectParticles;
+}
 constexpr bool kDefaultShadePlayedPortion = true;
 constexpr int kDefaultPlayedDimming = 25;       // percent: 0 = as bright as the rest
 constexpr int kDefaultCursorEffect = CursorEffectNone;

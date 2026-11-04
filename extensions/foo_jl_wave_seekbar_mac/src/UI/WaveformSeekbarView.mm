@@ -30,15 +30,19 @@
 #include "../Core/ZoomRange.h"
 #include "../Core/PhraseMarkers.h"
 #include "../Core/BeatJump.h"
+#include "../Core/CursorFx.h"
+#include "CursorEffectPainter.h"
 #include "../Integration/BeatLoop.h"
 #include "../../../../shared/ThemeColor.h"
 #include "../../../../shared/jl_beatgrid_api.h"
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <memory>
 #include <vector>
 
 namespace analysis = waveseek::analysis;
+namespace fx = waveseek::fx;
 namespace layered = waveseek::layered;
 namespace masks = waveseek::masks;
 namespace overlay = waveseek::overlay;
@@ -164,6 +168,17 @@ void setStroke(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
     CGContextSetStrokeColorSpace(ctx, themeSpace());
     CGContextSetStrokeColor(ctx, comps);
 }
+
+fx::Colour fxColour(const theme::RGB& c) {
+    return { c.r, c.g, c.b };
+}
+
+// The experimental effects' own colours, the same in every theme: fire,
+// and the clods Earthcrusher kicks up
+const fx::Colour kFireGlow = { 1.0, 0.42, 0.08 };
+const fx::Colour kFireCore = { 1.0, 0.80, 0.40 };
+const fx::Colour kEmber = { 1.0, 0.45, 0.10 };
+const fx::Colour kClod = { 0.55, 0.42, 0.30 };
 
 NSString *str(const std::string& s) {
     return [NSString stringWithUTF8String:s.c_str()] ?: @"";
@@ -337,6 +352,13 @@ struct BarSegment {
 
     // Per-column readout values at the masks' pixel width
     analysis::Columns _readout;
+    // The experimental cursor effects: their drawing and images, the
+    // track's level envelope (for the waveform data it was built from) and
+    // this frame's sparks
+    std::unique_ptr<fx::Painter> _fxPainter;
+    fx::LevelEnvelope _fxLevels;
+    const WaveformData *_fxLevelsFor;
+    std::vector<fx::Spark> _sparks;
     NSDictionary *_placeholderAttributes;
     NSFont *_chipFont;
     theme::Tokens _tokens;
@@ -521,8 +543,7 @@ struct BarSegment {
     _split = split;
     _shadePlayedPortion = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion);
     _playedDimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100) / 100.0;
-    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
-    _cursorEffect = (WaveformCursorEffect)(effect >= 0 && effect < CursorEffectCount ? effect : kDefaultCursorEffect);
+    _cursorEffect = (WaveformCursorEffect)cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect));
     _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
     _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
     _gradientBands = (int)getConfigInt(kKeyGradientBands, kDefaultGradientBands);
@@ -676,6 +697,8 @@ struct BarSegment {
 
 - (void)setWaveformData:(const WaveformData *)waveformData {
     _waveformData = waveformData;
+    _fxLevels.clear();
+    _fxLevelsFor = nullptr;
     if (!waveformData) _zoom.reset();   // a new track, or none
     [self invalidateMasks];
 }
@@ -1310,6 +1333,8 @@ struct BarSegment {
     // Only over the track: a centred view shows space beyond its ends
     const CGFloat trackLeft = rect.origin.x + rect.size.width * std::max(0.0, _zoom.acrossOf(0.0));
     const CGFloat trackRight = rect.origin.x + rect.size.width * std::min(1.0, _zoom.acrossOf(1.0));
+    // The waveform's rect in the effects' coordinates, for those that follow it
+    const CGRect wave = CGRectOffset([self waveformRect], -rect.origin.x, -rect.origin.y);
     CGContextSaveGState(context);
     CGContextClipToRect(context, CGRectMake(trackLeft, rect.origin.y, std::max<CGFloat>(0.0, trackRight - trackLeft),
                                             rect.size.height));
@@ -1335,13 +1360,21 @@ struct BarSegment {
             [self drawPulseEffectInContext:context bounds:bounds playedWidth:playedWidth
                                    bgColor:bgDeviceColor dimOpacity:dimOpacity];
             break;
-        case WaveformCursorEffectTrail:
-            [self drawTrailEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                   bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
         case WaveformCursorEffectShimmer:
             [self drawShimmerEffectInContext:context bounds:bounds playedWidth:playedWidth
                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectParticles:
+            [self drawParticlesEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                       bgColor:bgDeviceColor dimOpacity:dimOpacity wave:wave];
+            break;
+        case WaveformCursorEffectFirewall:
+            [self drawFirewallEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectEarthcrusher:
+            [self drawEarthcrusherEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                          bgColor:bgDeviceColor dimOpacity:dimOpacity wave:wave];
             break;
     }
     CGContextRestoreGState(context);
@@ -1419,46 +1452,17 @@ struct BarSegment {
     CGGradientRelease(gradient);
 }
 
-// Effect 2: Glow - Pulsing halo at cursor position
+// Effect 2: Glow - a bloom centred on the cursor line, fading with distance,
+// pulsing (on the beat with sync on). On a dark background it lightens what
+// is under it, the waveform too; on a light one the accent's haze is kept
+// faint, as it darkens.
 - (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Draw solid dimming first
-    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-
-    // Pulsing glow at cursor
-    CGFloat time = [self animationTime];
-    CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
-    CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
-    CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
-
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    // Glow uses waveform color
-    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) return;
-
-    CGFloat glowAlpha = 0.3 + pulse * 0.4;  // 0.3-0.7 alpha
-    CGFloat components[8] = {
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, glowAlpha,
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    // Draw glow on both sides of cursor
-    CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(playedWidth - glowWidth, 0, glowWidth * 2, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth - glowWidth, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth + glowWidth, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const float pulse = (float)waveseek::oscillator([self animationTime], [self animationFrequencyWithDefault:1.0]);
+    const bool dark = [self effectsOnDark];
+    [self fxPainter].glow(context, bounds, playedWidth, fxColour(_tokens.accent),
+                          fxColour(dark ? _tokens.hot : _tokens.cursor), pulse, dark ? 1.0f : 0.5f, dark);
 }
 
 // Effect 3: Scanline - Animated lines traveling near cursor
@@ -1521,40 +1525,6 @@ struct BarSegment {
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
 
-// Effect 5: Trail - Motion blur trail behind cursor
-- (void)drawTrailEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    CGFloat trailLength = 40.0;  // Trail extends 40px behind cursor
-
-    // Draw solid dimming for area before trail
-    if (playedWidth > trailLength) {
-        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
-        CGContextSetFillColorWithColor(context, dimColor.CGColor);
-        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
-    }
-
-    // Draw gradient trail
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    CGFloat components[8] = {
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    CGFloat trailStart = MAX(0, playedWidth - trailLength);
-    CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(trailStart, 0, trailLength, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(trailStart, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
-}
-
 // Effect 6: Shimmer - Oscillating brightness bands
 - (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
@@ -1589,8 +1559,192 @@ struct BarSegment {
     }
 }
 
+#pragma mark - Cursor Effects (experimental)
 
+- (fx::Painter &)fxPainter {
+    if (!_fxPainter) _fxPainter = std::make_unique<fx::Painter>(themeSpace());
+    return *_fxPainter;
+}
 
+// The background the effects draw over is dark: their light then lightens
+// what is under it rather than painting over it
+- (bool)effectsOnDark {
+    return theme::isDark(_tokens.background);
+}
+
+// The track's level envelope, built from its fine blocks on first use
+- (const fx::LevelEnvelope &)fxLevels {
+    const WaveformData *data = self.waveformData;
+    if (data != _fxLevelsFor) {
+        _fxLevels.clear();
+        _fxLevelsFor = data;
+        if (data && data->isValid() && data->sampleRate > 0 && data->blockFrames > 0) {
+            const bool stereo = data->channelCount == 2 && data->blockRms[1].size() == data->blockRms[0].size();
+            _fxLevels.build(data->blockRms[0].data(), stereo ? data->blockRms[1].data() : nullptr,
+                            data->blockRms[0].size(), (double)data->blockFrames / data->sampleRate);
+        }
+    }
+    return _fxLevels;
+}
+
+// How far the waveform reaches above and below a lane's centre at x (points
+// from its left edge), roughly as each style draws it, for sparks thrown
+// off its edge
+- (void)edgesAtX:(CGFloat)x lane:(int)lane amplitude:(CGFloat)amplitude top:(CGFloat *)top bottom:(CGFloat *)bottom {
+    *top = *bottom = 0.0;
+    const analysis::Columns& r = _readout;
+    const long c = (long)std::floor(x * [self backingScale]) - _maskOffsetPx;
+    if (r.channels == 0 || c < 0 || c >= (long)r.count) return;
+    const bool two = r.channels == 2;
+    auto up = [&](int ch) { return std::max(0.0f, r.max[ch][c]); };
+    auto down = [&](int ch) { return std::max(0.0f, -r.min[ch][c]); };
+    float t, b;
+    if (_split) {
+        t = std::max(up(0), down(0));
+        b = two ? std::max(up(1), down(1)) : t;
+    } else if ([self laneCount] == 1) {
+        t = two ? std::max(up(0), up(1)) : up(0);
+        b = two ? std::max(down(0), down(1)) : down(0);
+    } else {
+        const int ch = two ? lane : 0;
+        t = up(ch);
+        b = down(ch);
+    }
+    switch (familyOf(_style)) {
+        case FamilyLayered: {
+            // Mirrored on a dBFS axis; in Split L up, R down
+            auto frac = [](float peak) { return layered::fraction(peak > 0.0f ? 20.0f * std::log10(peak) : -INFINITY); };
+            if (_split) {
+                t = frac(t);
+                b = frac(b);
+            } else {
+                t = b = frac(std::max(t, b));
+            }
+            break;
+        }
+        case FamilyClassic:
+            if (!_split) t = b = std::max(t, b);
+            break;
+        case FamilySimple:
+            break;
+    }
+    *top = std::min(1.0f, t) * amplitude;
+    *bottom = std::min(1.0f, b) * amplitude;
+}
+
+// Where sparks go: the cursor's x at a playback time, and the waveform's
+// lanes and edges, in the effects' coordinates
+- (fx::SparkGeometry)sparkGeometryForBounds:(CGRect)bounds wave:(CGRect)wave {
+    fx::SparkGeometry g;
+    const Lanes lanes = lanesFor(wave.size.height, 1.0, [self laneCount], familyOf(_style));
+    g.lanes = lanes.count;
+    for (int l = 0; l < lanes.count; ++l) g.centre[l] = wave.origin.y + lanes.center[l];
+    g.amplitude = lanes.amplitude;
+    g.xAt = [self cursorXAtTimeForWidth:bounds.size.width];
+    const CGFloat amplitude = lanes.amplitude;
+    g.edges = [self, amplitude](CGFloat x, int lane, CGFloat& top, CGFloat& bottom) {
+        [self edgesAtX:x lane:lane amplitude:amplitude top:&top bottom:&bottom];
+    };
+    return g;
+}
+
+// The cursor's x at a playback time (seconds), across `width`
+- (std::function<CGFloat(double)>)cursorXAtTimeForWidth:(CGFloat)width {
+    const waveseek::ZoomRange zoom = _zoom;
+    const double duration = self.trackDuration;
+    return [zoom, duration, width](double t) {
+        return duration > 0.0 ? (CGFloat)(width * zoom.acrossOf(t / duration)) : (CGFloat)NAN;
+    };
+}
+
+// Effect 7: Particles - sparks thrown off the waveform at the cursor, more and
+// farther the louder the track is there, so they burst on its beats by
+// themselves. A function of the playback time: nothing kept between frames.
+- (void)drawParticlesEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                             bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity wave:(CGRect)wave {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return;
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::particleSparks(),
+                 [&levels](double t) { return levels.burst(t); }, _sparks);
+    const bool dark = [self effectsOnDark];
+    [self fxPainter].sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave],
+                            fxColour(dark ? _tokens.hot : _tokens.deep), fxColour(_tokens.accent), dark);
+}
+
+// The pulse of Firewall and Earthcrusher: 0..1, on the beat with sync on
+- (float)effectPulse {
+    return (float)waveseek::oscillator([self animationTime], [self animationFrequencyWithDefault:1.5]);
+}
+
+// The track's smoothed level now, 0..1; middling without a waveform
+- (float)effectLevel {
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return 0.5f;
+    return std::min(1.0f, levels.smooth(self.playbackPosition * self.trackDuration));
+}
+
+// Effect 8: Firewall - the flames themselves stand on the cursor
+// (drawEffectCursorInContext); here, under the loop and markers, their warm
+// light and the embers drifting off them
+- (void)drawFirewallEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                            bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const bool dark = [self effectsOnDark];
+    fx::Painter& painter = [self fxPainter];
+    painter.glow(context, bounds, playedWidth, kFireGlow, kFireCore, [self effectPulse], 0.8f, dark, 0.0f);
+    if (self.trackDuration <= 0.0) return;
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::emberSparks(),
+                 [&levels](double t) { return 0.4f + levels.burst(t); }, _sparks);
+    painter.embers(context, _sparks, bounds, [self cursorXAtTimeForWidth:bounds.size.width], dark);
+}
+
+// Effect 9: Earthcrusher - behind the jagged cursor (drawEffectCursorInContext)
+// the 20-40 pt of waveform it just went over lies scorched and cracked, the
+// freshest cracks still glowing, longer where the track is loud; clods and
+// hot bits are kicked up on its beats
+- (void)drawEarthcrusherEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                                bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity wave:(CGRect)wave {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    if (!_masks[0] || _maskWidth == 0) return;   // no waveform drawn to crack
+    fx::Painter& painter = [self fxPainter];
+    const float level = [self effectLevel];
+    const CGFloat zone = 20.0 + 20.0 * level;
+    const float flicker = 0.75f + 0.25f * fx::noise1((float)std::fmod(CFAbsoluteTimeGetCurrent(), 1000.0) * 9.0f, 77u);
+    // The waveform's silhouette where it was drawn; the cracks anchored at
+    // the track's start so they stay put on it as the zone moves along
+    const CGFloat scale = [self backingScale];
+    const CGRect maskRect = CGRectMake(_maskOffsetPx / scale, wave.origin.y, _maskWidth / scale, wave.size.height);
+    painter.scorch(context, CGRectMake(playedWidth - zone, wave.origin.y, zone, wave.size.height), _masks[0], maskRect,
+                   scale, bounds.size.width * _zoom.acrossOf(0.0), 0.6f + 0.4f * level, flicker,
+                   [self effectsOnDark]);
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return;
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::debrisSparks(),
+                 [&levels](double t) { return levels.burst(t); }, _sparks);
+    painter.sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave], kEmber, kClod, false);
+}
+
+// Firewall and Earthcrusher draw the cursor themselves while the played part
+// (and so the effect) shows
+- (BOOL)effectDrawsCursor {
+    if (!self.shadePlayedPortion || self.playedDimming <= 0.0 || self.playbackPosition <= 0.0) return NO;
+    return self.cursorEffect == WaveformCursorEffectFirewall || self.cursorEffect == WaveformCursorEffectEarthcrusher;
+}
+
+// The cursor at x in `rect` as the effect draws it: flames, or a jagged line
+- (void)drawEffectCursorInContext:(CGContextRef)context rect:(CGRect)rect x:(CGFloat)x {
+    fx::Painter& painter = [self fxPainter];
+    const float pulse = [self effectPulse];
+    const float level = [self effectLevel];
+    if (self.cursorEffect == WaveformCursorEffectFirewall) {
+        // Higher where the track is loud, flaring with the pulse
+        painter.fireWall(context, rect, x, 0.35f + 0.8f * level + 0.25f * pulse, CFAbsoluteTimeGetCurrent());
+    } else {
+        painter.jaggedCursor(context, rect, x, CFAbsoluteTimeGetCurrent(), 2.0f + 2.5f * pulse + 1.5f * level);
+    }
+}
 
 - (void)drawPlaceholderInContext:(CGContextRef)context rect:(CGRect)rect {
     NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
@@ -1616,13 +1770,17 @@ struct BarSegment {
     const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * across) * scale) + 0.5) / scale,
                                CGRectGetMaxX(rect) - 0.5 / scale);
 
-    CGContextSaveGState(context);
-    setStroke(context, _tokens.cursor, 1.0);
-    CGContextSetLineWidth(context, 1.0);
-    CGContextMoveToPoint(context, x, rect.origin.y);
-    CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
-    CGContextStrokePath(context);
-    CGContextRestoreGState(context);
+    if ([self effectDrawsCursor]) {
+        [self drawEffectCursorInContext:context rect:rect x:x];
+    } else {
+        CGContextSaveGState(context);
+        setStroke(context, _tokens.cursor, 1.0);
+        CGContextSetLineWidth(context, 1.0);
+        CGContextMoveToPoint(context, x, rect.origin.y);
+        CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
+        CGContextStrokePath(context);
+        CGContextRestoreGState(context);
+    }
 
     if (!self.showCursorTime) return;
     NSDictionary *attrs = @{

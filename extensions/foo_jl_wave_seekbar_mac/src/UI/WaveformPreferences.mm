@@ -551,9 +551,18 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y += 26 + kRowGap;
 
     y = [self addHeading:@"Cursor effect" x:x y:y width:w];
-    _cursorEffectPopup = [self addPopup:@[ @"None", @"Gradient", @"Glow", @"Scanline", @"Pulse", @"Trail", @"Shimmer" ]
+    // Each item's tag is the stored value; Trail (5) is retired and not offered
+    _cursorEffectPopup = [self addPopup:@[ @"None", @"Gradient", @"Glow", @"Scanline", @"Pulse", @"Shimmer",
+                                           @"Particles (experimental)", @"Firewall (experimental)",
+                                           @"Earthcrusher (experimental)" ]
                                  action:@selector(cursorEffectChanged:) x:x y:&y width:w];
-    [self addHint:@"How the dimming meets the cursor; Glow, Scanline, Pulse and Shimmer animate."
+    const int effectTags[] = { CursorEffectNone, CursorEffectGradient, CursorEffectGlow, CursorEffectScanline,
+                               CursorEffectPulse, CursorEffectShimmer, CursorEffectParticles, CursorEffectFirewall,
+                               CursorEffectEarthcrusher };
+    for (NSInteger i = 0; i < _cursorEffectPopup.numberOfItems && i < (NSInteger)std::size(effectTags); ++i) {
+        [_cursorEffectPopup itemAtIndex:i].tag = effectTags[i];
+    }
+    [self addHint:@"How the dimming meets the cursor; all but None and Gradient animate."
                 x:x y:&y width:w lines:1];
     y += kRowGap;
 
@@ -637,8 +646,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const int64_t dimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100);
     _playedDimmingSlider.integerValue = dimming;
     _playedDimmingLabel.stringValue = [NSString stringWithFormat:@"%lld%%", dimming];
-    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
-    [_cursorEffectPopup selectItemAtIndex:(effect >= 0 && effect < CursorEffectCount) ? effect : kDefaultCursorEffect];
+    [_cursorEffectPopup selectItemWithTag:cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect))];
     _bpmSyncCheckbox.state = getConfigBool(kKeyBpmSync, kDefaultBpmSync) ? NSControlStateValueOn : NSControlStateValueOff;
     [self updatePlayedControls];
     _cursorTimeCheckbox.state = getConfigBool(kKeyCursorTime, kDefaultCursorTime) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -891,20 +899,19 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)cursorEffectChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyCursorEffect, _cursorEffectPopup.indexOfSelectedItem);
+    setConfigInt(kKeyCursorEffect, _cursorEffectPopup.selectedTag);
     [self updatePlayedControls];
     [self notifySettingsChanged];
 }
 
-// Dimming and the effect apply while shading is on; BPM sync to the animated effects
+// Dimming and the effect apply while shading is on; BPM sync to the effects
+// that pulse
 - (void)updatePlayedControls {
     using namespace waveform_config;
     const bool shade = _shadePlayedCheckbox.state == NSControlStateValueOn;
     _playedDimmingSlider.enabled = shade;
     _cursorEffectPopup.enabled = shade;
-    const NSInteger effect = _cursorEffectPopup.indexOfSelectedItem;
-    _bpmSyncCheckbox.enabled = shade && (effect == CursorEffectGlow || effect == CursorEffectScanline ||
-                                         effect == CursorEffectPulse || effect == CursorEffectShimmer);
+    _bpmSyncCheckbox.enabled = shade && cursorEffectSyncsToBeat((int)_cursorEffectPopup.selectedTag);
 }
 
 // Without BPM Analyzer the group is greyed out; the length and colours

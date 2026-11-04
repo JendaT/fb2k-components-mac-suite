@@ -130,9 +130,7 @@ public:
     if (!getConfigBool(kKeyBpmSync, kDefaultBpmSync) || !getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion)) {
         return NO;
     }
-    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
-    return effect == CursorEffectGlow || effect == CursorEffectScanline || effect == CursorEffectPulse ||
-           effect == CursorEffectShimmer;
+    return cursorEffectSyncsToBeat(cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect)));
 }
 
 // The current track's grid from BPM Analyzer when it is wanted:
@@ -556,19 +554,9 @@ static const int kAnalysisMaxRetries = 1;
                                             std::floor(position) != std::floor(oldTime);
 
                     // Animated cursor effects need continuous redraw to stay smooth
-                    BOOL animatedEffect = NO;
-                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
-                        switch (self.waveformView.cursorEffect) {
-                            case WaveformCursorEffectGlow:
-                            case WaveformCursorEffectScanline:
-                            case WaveformCursorEffectPulse:
-                            case WaveformCursorEffectShimmer:
-                                animatedEffect = YES;
-                                break;
-                            default:
-                                break;
-                        }
-                    }
+                    const BOOL animatedEffect = self.waveformView.shadePlayedPortion &&
+                                                self.waveformView.playedDimming > 0 &&
+                                                waveform_config::cursorEffectAnimates((int)self.waveformView.cursorEffect);
 
                     if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
