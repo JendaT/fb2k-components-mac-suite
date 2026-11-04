@@ -16,6 +16,7 @@
 #include "../Core/WaveformGeometry.h"
 #include "../Core/PhraseMarkers.h"
 #include "../../../../shared/jl_beatgrid_api.h"
+#include "../Integration/BeatLoop.h"
 #include <cmath>
 #include <memory>
 
@@ -104,6 +105,9 @@ public:
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
     [self applyLockedSize];   // following the screen switched on or off
+    // The mixer's gapless loop needs its DSP in the playback chain
+    beatloop::setInChain(waveform_config::getConfigInt(waveform_config::kKeyControlsMode,
+                                                       waveform_config::kDefaultControlsMode) == waveform_config::ControlsMixer);
     // Phrase markers or beat-synced animation switched on or off
     if (![self wantsBeatGrid]) [self dropPhraseGrid];
     else if (!_phraseGrid) [self fetchPhraseGrid];
@@ -217,6 +221,8 @@ public:
     // Another display, or its resolution changed
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
                                                  name:NSApplicationDidChangeScreenParametersNotification object:nil];
+
+    beatloop::setInChain(getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer);
 
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
@@ -399,6 +405,7 @@ public:
 }
 
 - (void)handlePlaybackTime:(double)time {
+    time = [self.waveformView displayedTimeFor:time];
     if (self.waveformView.trackDuration > 0) {
         self.waveformView.playbackPosition = time / self.waveformView.trackDuration;
         [self.waveformView refreshDisplay];
@@ -528,6 +535,7 @@ static const int kAnalysisMaxRetries = 1;
                 double position = pc->playback_get_position();
                 // A beat loop keeps going while the view is out of sight
                 [self.waveformView followLoopAt:position];
+                position = [self.waveformView displayedTimeFor:position];
                 if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;

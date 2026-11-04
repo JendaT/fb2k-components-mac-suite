@@ -80,6 +80,9 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 // A beat loop, if one is on: called with the playback position at every
 // position check while playing; seeks back to the loop's start on time
 - (void)followLoopAt:(double)seconds;
+// The track time to show for foobar2000's playback position: while the
+// loop DSP holds the playback, where its passes are, else `seconds`
+- (double)displayedTimeFor:(double)seconds;
 
 // Actions
 - (void)clearWaveform;
