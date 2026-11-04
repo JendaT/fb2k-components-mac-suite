@@ -46,8 +46,8 @@
 #define EFFECTS_DSP_VERSION_INT 100
 
 // Tidal Integration
-#define TIDAL_VERSION "0.3.1"
-#define TIDAL_VERSION_INT 031
+#define TIDAL_VERSION "0.4.0"
+#define TIDAL_VERSION_INT 040
 
 // Spectrum Analyzer
 #define SPECTRUM_VERSION "1.1.0"

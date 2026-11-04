@@ -44,13 +44,17 @@ JL_COMPONENT_ABOUT(
     "Features:\n"
     "- Sign in with a device code; tokens stored in Keychain\n"
     "- Plays tidal:// and tidal.com track links\n"
-    "- Quality from 96 kbps AAC up to 16-bit lossless FLAC\n"
+    "- Quality from 96 kbps AAC up to 24-bit/192 kHz FLAC\n"
     "- Steps down in quality on DRM or subscription limits\n"
-    "- Prefetches the next track to cut lossless start delay\n"
+    "- Hi-res tracks start while they download\n"
+    "- Prefetches the next track to cut start delay\n"
     "- Search tracks, albums and artists\n"
     "- Browse favorite tracks, albums and playlists\n"
+    "- Drag tracks or whole albums into playlists\n"
+    "- Pin a quality per playlist entry\n"
     "- Playlist import and pull/push sync with Tidal\n"
-    "- Track tags (ISRC, date, copyright) and cover art"
+    "- Track tags (ISRC, BPM, date, copyright, ReplayGain) and cover art\n"
+    "- BPM and key lookup for other components"
 );
 
 // Validate bundle filename

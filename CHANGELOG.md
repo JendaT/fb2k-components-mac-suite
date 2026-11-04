@@ -23,47 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## TIDAL Integration
-
-### [Unreleased]
-
-#### Added
-- Browser Back restores each list as it was left, scroll position and selection included, without refetching
-- Album rows drag into a playlist as all their tracks, in the listed album order
-- `jl_tidal_lookup` service (`shared/jl_tidal_api.h`): other components can look up BPM and key from TIDAL for local files (ISRC, else artist/title/length search) and tidal:// entries, cached on disk
-- BPM tag from the TIDAL catalogue, on playlist entries and saved files
-- "Go to Album" from a track; Back returns to the search or list it came from as it was
-- Playlist rows can be played, added (optionally quality-pinned) and queued
-- "Save to folder..." saves into a folder you pick, one "Artist [YYYY] Title" folder per album
-- Hi-res DASH tracks start while they download (on-the-fly fMP4 to FLAC remux) instead of after the whole 50-250 MB track has arrived
-- "Use TIDAL ReplayGain" preference, for libraries without ReplayGain tags where Tidal tracks played quieter
-- "Add to Playlist with Quality" context submenu pins a quality tier on added entries via `tidal://track/<id>?q=<TIER>`; the pin persists with the playlist and still falls back when the tier is unavailable
-
-#### Fixed
-- Remix and other version names shown in the browser and written to saved files (were the bare title)
-- "Loading more..." no longer sticks in the status line inside an opened album
-- Pinned quality was ignored after the first track (DASH blob cache keyed by track only; prefetcher dropped the pin)
-- Transient failures (5xx, 429, network, DASH segments) are now retried 3x at 500/1000/2000 ms instead of becoming track skips
-- A 401 now forces a real token refresh instead of re-sending the rejected token
-- Preview clips are rejected instead of playing as full tracks
-- Sync and browser imports resolve their target playlist by GUID, so a concurrent delete cannot redirect them
-- Tracks shorter than about two DASH segments no longer fail (segment-count off-by-one)
-- `immersiveaudio=false` keeps Atmos editions from replacing the stereo master
-- Release dates parsed and displayed in UTC, fixing the year shift east of Greenwich
-- A 401 forces a real refresh; transient refresh failures no longer discard the stored session or need an app restart
-- Metadata failures throw instead of committing placeholder tags; list responses seed the metadata cache so imports stop re-fetching
-- Unavailable tracks fail fast; a 403 reports its real reason instead of always "Subscription required"
-- v1 mutations are form-encoded and ISRC matching uses the official filter endpoint
-- Sync: folder-fetch failures are fatal, deletion honours the playlist lock, pull waits for its imports and reports the real outcome, push no longer orphans empty playlists
-- Playback: a re-resolve resumes mid-track, seek recovers from an expired URL, abandoned DASH downloads stop
-- Browser: errors are distinguished from empty results, drill-downs carry stale-result guards, locked playlists no longer swallow adds, artist art uses a size the CDN serves
-- MQA (HI_RES) retired from the preference, pin menu and cascade; stored MQA maps to Lossless
-- Opening or importing a playlist loads every page instead of the first 100/500 tracks
-- The next-track prefetch now actually runs (position fallback, queue-aware, logs its skips), keys on the resolved quality and warms metadata; segments download four at a time; stale prefetches yield to a cold open; returning to a just-skipped track no longer fails
-- Request pacing no longer blocks the calling thread
-
----
-
 ## SimPlaylist
 
 ### [1.6.1] - 2026-11-04
@@ -827,32 +786,54 @@ Display P3 colors contributed by @Scannou (#55).
 
 ## Tidal Integration
 
-### [Unreleased]
+### [0.4.0] - 2026-11-04
 
 #### Added
-- Browser status line preference: show nothing, email, or username
-- Library download (Save to library) hidden behind the `tidal.TI_download_on` config-store gate, off by default
-- Save to library (music.hq): personal playlist context-menu export of selected tidal:// tracks into a configured library root using the music.hq layout (genre collection / artist / `Artist [YYYY] Title`, with `[Releases]` and `[Compilations]` slots). Genre resolution: existing artist folder on disk > remembered choice > one-time picker. DASH FLAC remuxed losslessly to tagged `.flac` via ffmpeg; `cover.jpg` fetched per album; existing files skipped. Gated by the Preferences > Library folder setting (unset hides the feature)
-- DASH prefetch: the next track in the active playlist is resolved and its segments pre-assembled into an in-memory blob cache while the current track plays, so lossless/hi-res tracks open instantly instead of stalling ~3-4s on the segment download. Byte-capped (~320 MB), cleared on quit
-- Pure Core modules extracted from SDK/network code (testability refactor, no functional change): `ManifestParser`, `StreamResolutionPolicy`, `HTTPResponsePolicy`, `ResponseParser` (replacing 11 inline API-parsing loops), `SyncPlanner`, `BrowserLogic`, `DashCachePolicy`, `TidalLog`
-- Standalone unit-test suite (425 checks, 11 binaries, ASan+UBSan) gating every build via `Scripts/run_tests.sh`
+- **Lossless by default**: LOSSLESS FLAC via DASH for LOSSLESS subscribers.*
+- **Progressive hi-res playback**: FLAC DASH tracks start on the first segment instead of after the whole download.
+- **Next-track prefetch**: The next track is assembled while the current one plays, so it opens without a stall.
+- **Back keeps your place**: Browser levels come back with their rows, scroll position and selection, without refetching.
+- **Go to Album**: Track context menu opens the track's album.
+- **Drag albums**: Album rows drag as all their tracks, in the listed order.
+- **Clickable trail**: The artist in "Artist › Album" jumps back to that artist's albums.
+- **Play playlists**: Playlist rows offer Play, Add to Playlist and Queue.
+- **Add to Playlist with Quality**: Pins a quality tier on added entries.
+- **BPM tag**: From the TIDAL catalogue, on playlist entries and saved files.
+- **Lookup service**: `jl_tidal_lookup` gives other components BPM, key and track ID from TIDAL, for local files and tidal:// entries.
+- **ReplayGain preference**: "Use TIDAL ReplayGain", for libraries without ReplayGain tags.
+- **Status line preference**: The browser shows nothing, the email or the username.
+- **Save to library / Save to folder...**: Hidden by default (`tidal.TI_download_on`); saves tagged FLAC with cover art.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names.
+
+#### Changed
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **About**: Shows the layout element name (`tidal-browser`) and the preferences path; the MIT license line replaces the copyright notice.
+- **Preferences title**: Same size as foobar2000's own page titles.
+- **MQA retired**: Removed from the quality preference, pin menu and cascade; a stored MQA preference maps to Lossless.
+- **Track tags**: All credited artists, the version in the title, the explicit flag and ReplayGain.
+- **Artist discography**: Includes EPs, singles and compilations.
 
 #### Fixed
-- A long album title pushed the browser back button off-screen; the breadcrumb now truncates and its parent level is clickable
-- Back button from an album opened via an artist returned to the search results instead of the artist's albums
-- Decoder open failures now log the chosen decoder and the exception instead of silently skipping the track
-- Debug-logging preference honored after restart (cache was only synced on toggle)
-- Static-destructor logging can no longer touch torn-down fb2k services
-- Pull sync no longer truncates playlists at 200 tracks (all sync fetches paginate to completeness); a failed remote fetch can no longer wipe a local playlist (excluded from the plan instead of diffing as empty)
-- fb2k playlist state read only on the main thread in sync previews; sync shared state serialized; request bursts bounded to 4 concurrent
-- Token refresh is single-flight (concurrent callers get the real result instead of a 1s sleep guess); sign-out during refresh can no longer resurrect a session
-- Two crash fixes (nil dictionary key in push-sync apply, std::string(NULL) in DASH 403 re-open) plus 58 review fixes: JSON type guards, album-art data cache, stale-response guards, leak fix, dedupe
-- Playback failed with "Unsupported file format", intermittently across restarts: the `?token=` query corrupted the extension foobar2000 parses, and only the first input claiming that extension was tried even though several claim it and only one accepts a given stream
+- **"Unsupported file format"**: Intermittent playback failure across restarts.
+- **Transient failures**: Network errors, 429 and 5xx are retried instead of skipping the track.
+- **Pinned quality**: No longer ignored after the first track.
+- **Quality badge**: Shows the formats TIDAL actually holds.
+- **Sign-in**: A 401 forces a real refresh; a transient refresh failure keeps the session; a failed startup refresh no longer needs a restart.
+- **Preview clips and unavailable tracks**: Rejected at once; a 403 reports its real reason.
+- **Playback**: Atmos editions no longer replace the stereo master; short tracks play; a mid-track re-resolve resumes in place; faster track changes.
+- **Remix and version names**: Shown in the browser and in saved files.
+- **Browser**: Back steps one level and stays visible; "Loading more..." no longer sticks; errors no longer read as empty results; playlists and albums load past 100 tracks.
+- **Metadata**: A failed fetch keeps existing tags; release dates are shown in UTC.
+- **Sync**: No truncation at 200 tracks; a failed fetch can no longer wipe or delete a playlist; imports reach the right playlist; pull and push report their real outcome.
+- **Crashes**: Two crash fixes, plus 58 code review fixes.
+- **DASH segments**: Correct segment count and init segment; FLAC goes to the FLAC decoder.*
 
 #### Security
-- tidal:// content IDs validated before use in authenticated API paths (blocks request forgery via crafted playlists); search/ISRC query values strictly encoded; path traversal guards on library export paths; request logs redacted to host+path; DASH manifest bomb hardening
+- **Hardening**: tidal:// IDs validated before use in API paths; query values strictly encoded; library export paths sanitized; logs redacted to host and path; DASH size limits.
 
-### [0.3.1] - 2026-06-17
+\* Developed as 0.3.1, which was never published.
+
+### [0.3.1] - developed 2026-06-17, never published (ships in 0.4.0)
 
 LOSSLESS FLAC playback now works for LOSSLESS subscribers by default. DASH segment parser rewritten against `python-tidal` semantics.
 
