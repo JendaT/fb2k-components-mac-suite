@@ -301,15 +301,15 @@ Tab completion is available for component names.
 
 ```bash
 # 1. Rebase your branch onto latest main
-git fetch origin && git rebase origin/main
+# Follow the Safe Worktree Rebase Procedure in CLAUDE.md
 
 # 2. Use the merge script (from main repo)
 ./Scripts/ff-merge.sh biography
 ```
 
-The `ff-merge.sh` script:
-1. Rebases the component branch onto main
-2. Pushes the rebased branch
+The `ff-merge.sh` script never rebases. It:
+1. Refuses unless run from the main checkout, with the worktree clean, on its branch, with nothing in progress, and on top of `origin/main`
+2. Pushes the branch; the push is rejected if it would overwrite commits pushed from elsewhere
 3. Fast-forward merges to main (no merge commit)
 4. Pushes main
 
@@ -326,15 +326,15 @@ The `ff-merge.sh` script:
 Each worktree contains:
 
 - **CLAUDE.md** - Instructions for Claude Code (workflow, build commands)
-- **BACKLOG.md** - Feature backlog with status tracking
+- **BACKLOG.md** - Feature backlog with status tracking. Location: the ignored `extensions/*/BACKLOG.md` if there is one, otherwise `BACKLOG.md` at the worktree root
 
 ### Daily Workflow
 
 | Task | Command |
 |------|---------|
 | Start work | `fb2k-dev <component>` |
-| Sync with main | `git fetch origin && git rebase origin/main` |
-| Merge to main | `./Scripts/ff-merge.sh <component>` |
+| Sync with main | Safe Worktree Rebase Procedure in `CLAUDE.md` |
+| Merge to main | `./Scripts/ff-merge.sh <worktree-dir> [branch]` |
 | Release | `./Scripts/release_component.sh <component>` |
 | List worktrees | `git worktree list` |
 

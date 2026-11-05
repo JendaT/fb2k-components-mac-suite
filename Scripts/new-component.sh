@@ -202,11 +202,6 @@ if [ ! -d "$WORKTREE_DIR" ]; then
     if [ -d "$PROJECT_ROOT/SDK-2026-10-01" ]; then
         ln -s "$PROJECT_ROOT/SDK-2026-10-01" "$WORKTREE_DIR/SDK-2026-10-01"
     fi
-
-    # Symlink shared
-    if [ -d "$PROJECT_ROOT/shared" ]; then
-        ln -s "$PROJECT_ROOT/shared" "$WORKTREE_DIR/shared"
-    fi
 fi
 
 # Create a blank BACKLOG.md in any worktree that has none
