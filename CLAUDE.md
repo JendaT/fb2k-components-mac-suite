@@ -23,8 +23,8 @@ Pattern: branch `dev/<name>` maps to `extensions/foo_jl_<name>_mac/`.
 
 ## Merge to Main
 1. Ensure all changes committed
-2. Run: `git fetch origin && git rebase origin/main`
-3. From main repo: `./Scripts/ff-merge.sh <name>`
+2. Rebase per the Safe Worktree Rebase Procedure (`feature/intake-*`: merge main in instead, see `CLAUDE.local.md`).
+3. From main repo: `./Scripts/ff-merge.sh <name>`. It refuses unless the worktree is clean, on `dev/<name>` and on top of `origin/main`. For other branch names: `./Scripts/ff-merge.sh <worktree-dir> <branch>`.
 
 ## Build & Test (CRITICAL)
 
@@ -74,6 +74,8 @@ Two changelogs exist:
 ```
 
 ## Backlog Management
+**Location:** the file listed by `git ls-files -oi --exclude-standard -- 'extensions/*/BACKLOG.md'`, otherwise `BACKLOG.md` at the worktree root. If `git ls-files BACKLOG.md` lists the root file, it is Tidal's leftover until your next rebase: don't use it. If neither exists, create one at the root. Never force-add a backlog.
+
 **At session start:** Check BACKLOG.md to see current state.
 
 **During session:**
@@ -118,8 +120,8 @@ Worktrees are **active development environments** with uncommitted work. NEVER u
 
 | Command | Why Dangerous |
 |---------|---------------|
-| `git checkout --theirs <file>` | Replaces local file with main's version, discarding all local changes |
-| `git rebase -X theirs` | Auto-resolves all conflicts in favor of main, discarding local changes |
+| `git checkout --theirs <file>` | Replaces the file with one side of the conflict and discards the other. During a rebase "theirs" is your branch and "ours" is main, the reverse of a merge. |
+| `git rebase -X theirs` | Auto-resolves conflicts for your branch and silently drops main's side, with no review. |
 | `git stash drop` | Permanently deletes stashed changes |
 | `git reset --hard` | Destroys all uncommitted changes |
 
@@ -149,7 +151,7 @@ git stash pop
 
 # Step 6: If stash pop FAILS (uncommitted work conflicts with rebased code):
 #   The stash is PRESERVED (git does not drop it on conflict)
-#   CLEAN working tree: git checkout -- .
+#   CLEAN working tree: git reset --merge
 #   STOP and report to user:
 #     - Which files from the stash conflict
 #     - The stash ref (so user can manually resolve)
@@ -222,11 +224,11 @@ A sub-agent knows only its brief. Each brief states:
 ### Merging and Releases
 - Every merge to main and every release needs the user's explicit approval. An ambiguous reply is not approval.
 - Merge one branch at a time:
-  1. Copy the worktree's root `BACKLOG.md` aside, rebase per the Safe Worktree Rebase Procedure, restore the backlog. Main tracks a root `BACKLOG.md`, so a rebase overwrites the ignored local one without warning.
-  2. Run `./Scripts/build.sh` for each component the branch changes or that uses a changed `shared/` file.
-  3. `git fetch origin` and confirm `git merge-base --is-ancestor origin/main HEAD`. If main moved, go back to step 1: `ff-merge.sh` would rebase again and merge an unbuilt result.
-  4. Run `./Scripts/ff-merge.sh <name>` from the main checkout.
-  5. Confirm `git ls-remote origin main` matches the branch tip. With fast-forward merges, step 2 was the build of main.
+  1. Commit your work and move untracked files out of the tree: `ff-merge.sh` refuses anything else.
+  2. Rebase per the Safe Worktree Rebase Procedure.
+  3. Run `./Scripts/build.sh` for each component the branch changes or that uses a changed `shared/` file.
+  4. Run `./Scripts/ff-merge.sh <name>` from the main checkout. If it refuses because main moved, go back to step 2.
+  5. Confirm `git ls-remote origin main` matches the branch tip. With fast-forward merges, step 3 was the build of main.
 - Stashes are shared by all worktrees. Before the procedure's `git stash pop`, check `git stash list`: if your stash isn't on top, pop it by exact ref.
 - After merging, remove temporary worktrees and branches. `dev/<component>` worktrees are permanent; keep them.
 - Changelog, Backlog Management and Knowledge Base apply as written; the orchestrator makes sure their updates land with the change. Only the orchestrator edits `BACKLOG.md`. Parallel agents report changelog entries instead of writing them.
