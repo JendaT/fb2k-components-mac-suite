@@ -342,7 +342,7 @@ Each worktree contains:
 
 - `Scripts/worktree-setup.sh` - Creates all worktrees with SDK symlinks
 - `Scripts/ff-merge.sh <component>` - Fast-forward merge to main
-- `Scripts/init-worktree-docs.sh` - Creates CLAUDE.md and BACKLOG.md in worktrees
+- `Scripts/init-worktree-docs.sh` - Creates a blank BACKLOG.md in worktrees that have none; never overwrites one
 - `Scripts/new-component.sh <name> "<Display Name>"` - Scaffolds a new component
 
 ### Adding a New Component
