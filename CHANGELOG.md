@@ -786,7 +786,7 @@ Display P3 colors contributed by @Scannou (#55).
 
 ## Tidal Integration
 
-### [0.4.0] - 2026-11-04
+### [0.4.0] - 2026-11-06
 
 #### Added
 - **Lossless by default**: LOSSLESS FLAC via DASH for LOSSLESS subscribers.*
