@@ -31,6 +31,11 @@ static const char* const kUseReplayGain = "use_replaygain";
 // from the preferences UI: toggled by writing the config store directly, see
 // docs/hidden-options.md. Full key: "tidal.TI_download_on".
 static const char* const kDownloadEnabled = "TI_download_on";
+// Hidden switch for the temporary playlist-GUID probe (TidalGuidProbe.mm):
+// 0 off (default), 1 run A at next start, 2 run B at next start, 3 done.
+// Not in the preferences UI, see docs/hidden-options.md. Full key:
+// "tidal.TI_guid_probe".
+static const char* const kGuidProbe = "TI_guid_probe";
 
 // Default values
 constexpr int kDefaultPreferredQuality = static_cast<int>(JLTidalQualityHiResLossless);
