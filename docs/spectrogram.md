@@ -140,7 +140,7 @@ Theme, custom, and panel colors are Display P3, as in the other components (`sha
 
 ## Layout Editor
 
-Add Spectrogram to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
 - `spectrogram` (recommended)
 - `Spectrogram`
 - `foo_jl_spectrogram`
@@ -148,7 +148,7 @@ Add Spectrogram to your layout using any of these names:
 
 Example layout:
 ```
-splitter vertical
+splitter horizontal style=thin
   waveform-seekbar
   spectrogram
   simplaylist
