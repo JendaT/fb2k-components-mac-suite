@@ -21,6 +21,7 @@ COMPONENTS=(
     playback-controls
     spectrum
     vectorscope
+    remote
 )
 
 echo "=== foobar2000 Worktree Setup ==="
