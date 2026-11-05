@@ -13,7 +13,6 @@
 #include "../Core/KeychainHelper.h"
 #include "../Core/StreamCache.h"
 #include "TidalDashCache.h"
-#include "TidalGuidProbe.h"
 #include "TidalLibrarySaver.h"
 #include "TidalLookupService.h"
 #include "../API/TidalAPI.h"
@@ -89,8 +88,6 @@ public:
         } else {
             logInfo("Component loaded (not authenticated - configure in Preferences)");
         }
-
-        scheduleGuidProbeIfArmed();
     }
 
     void on_quit() override {
