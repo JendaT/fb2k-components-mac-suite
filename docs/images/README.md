@@ -32,6 +32,10 @@ Place screenshots in this directory with the following filenames:
 - `vectorscope-panel.png`, `vectorscope-bands.png` - Three-band correlation; band-colored trace
 - `vectorscope-settings.png` - Preferences page
 
+## Spectrogram
+- `spectrogram-inferno.png`, `spectrogram-viridis.png`, `spectrogram-p3-amber.png` - Spectrogram panel (reassigned mode) with the Inferno, Viridis and P3 amber colormaps, cropped to the panel's right end
+- `spectrogram-settings.png` - Preferences page (cards: Analysis, Colours, Display, Layout, Labels)
+
 ## Queue Manager
 - `queuemanager-overview.png` - Queue with queued tracks
 
