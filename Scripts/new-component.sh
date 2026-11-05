@@ -209,7 +209,7 @@ if [ ! -d "$WORKTREE_DIR" ]; then
     fi
 fi
 
-# Create CLAUDE.md and BACKLOG.md in worktree
+# Create a blank BACKLOG.md in any worktree that has none
 "$SCRIPT_DIR/init-worktree-docs.sh" 2>/dev/null || true
 
 echo ""
