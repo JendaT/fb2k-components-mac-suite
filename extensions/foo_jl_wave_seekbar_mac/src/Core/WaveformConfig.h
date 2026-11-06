@@ -208,6 +208,7 @@ constexpr bool kDefaultPhraseFollowGrid = true;
 constexpr int kDefaultControlsMode = ControlsNone;
 constexpr int kDefaultMixerOutputBufferMs = 100;   // a loop or jump change is heard after about this
 constexpr int kMixerOutputBufferChoices[] = { 0, 50, 100, 150, 200 };
+constexpr bool kDefaultSnapToBeat = true;        // mixer: a click jumps to the nearest beat, keeping the beat
 constexpr bool kDefaultLockRelative = true;     // a locked size stays in proportion on another display
 constexpr int kMinLockedWidth = 100;            // points; the element's own minimum size
 constexpr int kMinLockedHeight = 40;

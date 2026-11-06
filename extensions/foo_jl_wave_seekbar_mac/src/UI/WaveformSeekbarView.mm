@@ -241,12 +241,20 @@ const CGFloat kClipMarkerHeight = 5.0;
 const CGFloat kBarSegmentPadX = 5.0;
 const CGFloat kBarGroupGap = 7.0;
 const CGFloat kBarIconSize = 11.0;
-const CGFloat kBeatSnapPoints = 6.0;        // with the mixer on, a click this near a beat seeks to it
 const double kLoopLookahead = 2.5 / 60.0;   // the loop's end within 2.5 position checks: seek on time
 const double kSeekLanded = 0.15;            // the playback position this near a seek's target shows it
 const double kSeekTimeout = 1.0;            // a seek not shown by then is taken as done
 const double kDeckMargin = 0.05;            // a splice target this far inside the DSP's audio, at least
 const uint32_t kLoopColor = 0x35C27A;
+// With Snap on, the line at the beat a click would go to
+const CGFloat kSnapLineAlpha = 0.7;
+// The decode-ahead reserve while the mixer has the track's beats: 32 beats
+// and 2 s, at least 20 s; none in the track's last two reserves and 10 s,
+// so it drains before the next track
+const double kReserveBeats = 32.0;
+const double kReserveExtraSeconds = 2.0;
+const double kReserveMinSeconds = 20.0;
+const double kReserveTailSeconds = 10.0;
 
 // Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
 // pans. A wheel notch is one line; trackpad scroll comes in points.
@@ -305,8 +313,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 } // namespace
 
 // The bottom bar, left to right: with the mixer, the jumps with the size
-// menu among them and the loop (of that size); always the cog with the
-// controls' and the zoom's modes
+// menu among them, Snap and the loop (of that size); always the cog with
+// the controls' and the zoom's modes
 typedef NS_ENUM(NSInteger, BarControl) {
     BarControlNone = 0,
     BarControlBack32,
@@ -316,6 +324,7 @@ typedef NS_ENUM(NSInteger, BarControl) {
     BarControlForwardSize,
     BarControlForward16,
     BarControlForward32,
+    BarControlSnap,
     BarControlLoop,
     BarControlCog,
 };
@@ -406,6 +415,10 @@ struct BarSegment {
     int _phraseBeatsDrawn;
     std::vector<std::pair<CGFloat, size_t>> _phraseHits;   // x, index into _phrases
     int _phraseNoneLogged;
+    // trustedGrid(*_phraseGrid): the beats, jumps, loops and beat-synced
+    // effects go by it (sections that don't fit give way to the master);
+    // the markers show the grid as stored
+    std::unique_ptr<waveseek::PhraseGrid> _trustedGrid;
 
     // The bottom bar: the cog's controls and zoom modes, and whether BPM
     // Analyzer is there for the mixer. The mixer: the loop and jump size,
@@ -417,6 +430,7 @@ struct BarSegment {
     bool _barMenuOpen;
     NSMutableDictionary<NSString *, NSImage *> *_barIcons;   // by symbol and colour
     int _beatSize;
+    bool _snapToBeat;               // clicks go to the nearest beat, in phase; a line shows it on hover
     std::vector<double> _beats;
     const waveseek::PhraseGrid *_beatsFor;
     bool _beatsFollow;
@@ -436,12 +450,15 @@ struct BarSegment {
     CFAbsoluteTime _armAt;
     CFAbsoluteTime _loopCheckAfter;
     uint64_t _requestId;
+    double _requestTarget;          // where it plays from, for the console when it is turned down
+    bool _requestNoted;             // say so in the console when it is turned down (not for a drag)
     double _fallbackTarget;
     bool _fallbackHasThen;
     waveseek::LoopAction _fallbackThen;
     std::vector<double> _syncSamples;
     uint64_t _syncEpoch;
     bool _lowLatency;
+    double _reserve;                // the decode-ahead reserve asked of the DSP, seconds
     CFAbsoluteTime _latencyNoteAt;
     // The visualisation clock less the audio actually heard (measured while
     // the audio is untouched; 0 when the clock is exact)
@@ -451,6 +468,11 @@ struct BarSegment {
     CFAbsoluteTime _loopRearmAt;
     CFAbsoluteTime _timingNoteAt;
     bool _wasInsideLoop;            // playback was in the loop at the last check (seek-based looping)
+    // A click's drag: the seeks it makes are not noted in the console, and
+    // with Snap the beat it went to last (NAN: none yet), so staying on one
+    // beat doesn't jump again
+    bool _dragSeeking;
+    double _dragBeat;
     double _measuredLag;
     // Option-dragging the loop: the beat under the mouse when it began, the
     // loop then, and where it would go
@@ -493,6 +515,8 @@ struct BarSegment {
     [self reloadSettings];
 
     _pendingSeek = NAN;
+    _requestTarget = NAN;
+    _dragBeat = NAN;
     _followSpot = 0.5;
     jl_beatgrid::ptr grids;
     _haveBeatGrids = fb2k::std_api_try_get(grids);
@@ -593,6 +617,7 @@ struct BarSegment {
     const int64_t size = getConfigInt(kKeyBeatSize, waveseek::kDefaultBeatSize);
     _beatSize = std::find(std::begin(waveseek::kBeatSizeChoices), std::end(waveseek::kBeatSizeChoices), size)
                     != std::end(waveseek::kBeatSizeChoices) ? (int)size : waveseek::kDefaultBeatSize;
+    _snapToBeat = getConfigBool(kKeySnapToBeat, kDefaultSnapToBeat);
     _barIcons = nil;   // the text size may have changed
     if (_controlsMode != ControlsMixer) [self endLoop];
     [self updateColorsForAppearance];
@@ -713,6 +738,7 @@ struct BarSegment {
 
 - (void)setPhraseGrid:(const waveseek::PhraseGrid *)phraseGrid {
     _phraseGrid = phraseGrid;
+    _trustedGrid = phraseGrid ? std::make_unique<waveseek::PhraseGrid>(waveseek::trustedGrid(*phraseGrid)) : nullptr;
     _phrases.clear();
     _phrasesFor = nullptr;
     _phraseHits.clear();
@@ -1383,9 +1409,9 @@ struct BarSegment {
 }
 
 // The grid at the playback position: following a new grid when the
-// markers do
+// markers do, on the trusted sections
 - (waveseek::GridAt)gridAtPlayback {
-    return waveseek::gridAt(*_phraseGrid, self.playbackPosition * self.trackDuration, _phraseFollowGrid);
+    return waveseek::gridAt(*_trustedGrid, self.playbackPosition * self.trackDuration, _phraseFollowGrid);
 }
 
 // The animation rate: with sync on, the beat grid's tempo when there is one
@@ -1809,6 +1835,13 @@ struct BarSegment {
     }
 
     if (!self.showCursorTime) return;
+    [self drawChip:str(overlay::formatClock(self.playbackPosition * self.trackDuration)) atX:x rect:rect
+           context:context];
+}
+
+// `text` in the cursor's chip beside a line at `x`, at the top of `rect`
+// (left of the line near the right edge); none in a view too short for it
+- (void)drawChip:(NSString *)text atX:(CGFloat)x rect:(CGRect)rect context:(CGContextRef)context {
     NSDictionary *attrs = @{
         NSFontAttributeName: _chipFont,
         NSForegroundColorAttributeName: [NSColor colorWithDisplayP3Red:_tokens.cursorText.r
@@ -1816,8 +1849,7 @@ struct BarSegment {
                                                                    blue:_tokens.cursorText.b
                                                                   alpha:1.0]
     };
-    NSString *time = str(overlay::formatClock(self.playbackPosition * self.trackDuration));
-    const NSSize textSize = [time sizeWithAttributes:attrs];
+    const NSSize textSize = [text sizeWithAttributes:attrs];
     const CGFloat chipW = std::ceil(textSize.width + 2 * TS(kChipPadX));
     const CGFloat chipH = std::ceil(textSize.height + 2 * TS(kChipPadY));
     if (chipH + 2 * kChipOffset > rect.size.height) return;
@@ -1834,7 +1866,7 @@ struct BarSegment {
     CGPathRelease(shape);
     CGContextRestoreGState(context);
 
-    [time drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
+    [text drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
 }
 
 #pragma mark - Phrase Markers
@@ -1998,6 +2030,7 @@ struct BarSegment {
 
 - (void)drawOverlaysInContext:(CGContextRef)context rect:(CGRect)rect {
     using namespace waveform_config;
+    if ([self snapLineShownFor:rect]) [self drawSnapLineInContext:context rect:rect];   // under the bar
     [self drawBarInContext:context rect:rect];
     if (_zoom.zoomed()) [self drawZoomButtonInContext:context rect:rect];
     const int summary = [self summaryShown];
@@ -2008,6 +2041,32 @@ struct BarSegment {
         ![self isOverZoomButton] && ![self isOverBar]) {
         [self drawReadoutInContext:context rect:rect];
     }
+}
+
+// With Snap on in the mixer, while the mouse is over the waveform (not the
+// bar or the zoom button, not dragging the loop)
+- (BOOL)snapLineShownFor:(CGRect)wave {
+    return _snapToBeat && _hovering && !_loopDragging && _hoverX >= wave.origin.x && _hoverX < CGRectGetMaxX(wave) &&
+           [self mixerReady] && ![self isOverZoomButton] && ![self isOverBar];
+}
+
+// Where a click would go: a line at the beat nearest the mouse (at any
+// zoom; zoomed out the beats are a few points apart) and its time in the
+// cursor's chip
+- (void)drawSnapLineInContext:(CGContextRef)context rect:(CGRect)rect {
+    const double beat = waveseek::nearestBeat([self beats], [self secondsAtX:_hoverX]);
+    if (std::isnan(beat)) return;
+    const double across = _zoom.acrossOf(beat / self.trackDuration);
+    if (across < 0.0 || across > 1.0) return;   // beyond the part shown
+    const CGFloat scale = [self backingScale];
+    const CGRect line = [self cursorRectFor:rect];
+    const CGFloat x = std::min(std::round((rect.origin.x + rect.size.width * across) * scale) / scale,
+                               CGRectGetMaxX(rect) - 1.0);
+    CGContextSaveGState(context);
+    setFill(context, _tokens.cursor, kSnapLineAlpha);
+    CGContextFillRect(context, CGRectMake(x, line.origin.y, 1.0, line.size.height));
+    CGContextRestoreGState(context);
+    [self drawChip:str(overlay::formatClockCentis(beat)) atX:x + 0.5 rect:line context:context];
 }
 
 // Where the bottom row's badges end on the right: the waveform's edge, or
@@ -2062,10 +2121,24 @@ struct BarSegment {
 }
 
 - (NSAttributedString *)text:(NSString *)s color:(uint32_t)color bold:(BOOL)bold {
+    return [self text:s colour:p3(color) bold:bold];
+}
+
+- (NSAttributedString *)text:(NSString *)s colour:(NSColor *)colour bold:(BOOL)bold {
     return [[NSAttributedString alloc] initWithString:s attributes:@{
         NSFontAttributeName: bold ? _overlayBoldFont : _overlayFont,
-        NSForegroundColorAttributeName: p3(color)
+        NSForegroundColorAttributeName: colour
     }];
+}
+
+// The system's accent colour as it shows on a dark background: the
+// overlays are dark in every theme
+- (NSColor *)accentOnOverlay {
+    __block NSColor *colour = nil;
+    [[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua] performAsCurrentDrawingAppearance:^{
+        colour = [NSColor.controlAccentColor colorUsingColorSpace:NSColorSpace.displayP3ColorSpace];
+    }];
+    return colour ?: p3(kOverlayValue);
 }
 
 // `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips`, bottom right
@@ -2367,12 +2440,13 @@ struct BarSegment {
 
 #pragma mark - Bottom Bar
 
-// Every beat of the grid shown (following a new grid when the markers do);
-// a new list ends the loop, whose beats were the old one's
+// Every beat of the grid shown (following a new grid when the markers do),
+// on the trusted sections: one that doesn't fit its bars takes the master's
+// beats; a new list ends the loop, whose beats were the old one's
 - (const std::vector<double> &)beats {
     if (_beatsFor != _phraseGrid || _beatsFollow != _phraseFollowGrid || _beatsDuration != self.trackDuration) {
-        _beats = _phraseGrid ? waveseek::beatTimes(*_phraseGrid, self.trackDuration, _phraseFollowGrid)
-                             : std::vector<double>();
+        _beats = _trustedGrid ? waveseek::beatTimes(*_trustedGrid, self.trackDuration, _phraseFollowGrid)
+                              : std::vector<double>();
         _beatsFor = _phraseGrid;
         _beatsFollow = _phraseFollowGrid;
         _beatsDuration = self.trackDuration;
@@ -2421,8 +2495,9 @@ struct BarSegment {
 }
 
 // The bar at the bottom right of the waveform, while it shows: the cog,
-// with the mixer's jumps and loop to its left (the cog alone when those
-// don't fit). `box` gets the box around them, null when none.
+// with the mixer's jumps, Snap and loop to its left (without ‹32 and 32›
+// when they don't fit, the cog alone when that still doesn't). `box` gets
+// the box around them, null when none.
 - (std::vector<BarSegment>)barSegmentsFor:(CGRect)wave box:(CGRect *)box {
     if (box) *box = CGRectNull;
     if (![self barShown]) return {};
@@ -2431,18 +2506,20 @@ struct BarSegment {
     const CGFloat bottom = wave.origin.y + kBadgeInset;
     NSImage *cog = [self barIcon:@"gearshape" color:kOverlayLabel];
 
-    auto layout = [&](bool mixer, CGRect *outBox) {
+    // 0: the whole mixer; 1: without ‹32 and 32›; 2: the cog alone
+    auto layout = [&](int stage, CGRect *outBox) {
         std::vector<BarSegment> segments;
-        if (mixer) {
+        if (stage < 2) {
             NSString *size = [NSString stringWithFormat:@"%d▾", _beatSize];
-            segments = {
-                { BarControlBack32, @"‹32" }, { BarControlBack16, @"‹16" }, { BarControlBackSize, @"‹" },
-                { BarControlSizeMenu, size }, { BarControlForwardSize, @"›" }, { BarControlForward16, @"16›" },
-                { BarControlForward32, @"32›" },
-                { BarControlLoop, @"Loop", true },
-            };
+            if (stage == 0) segments.push_back({ BarControlBack32, @"‹32" });
+            segments.insert(segments.end(), {
+                { BarControlBack16, @"‹16" }, { BarControlBackSize, @"‹" }, { BarControlSizeMenu, size },
+                { BarControlForwardSize, @"›" }, { BarControlForward16, @"16›" },
+            });
+            if (stage == 0) segments.push_back({ BarControlForward32, @"32›" });
+            segments.insert(segments.end(), { { BarControlSnap, @"Snap", true }, { BarControlLoop, @"Loop" } });
         }
-        segments.push_back({ BarControlCog, cog ? nil : @"Controls", mixer });
+        segments.push_back({ BarControlCog, cog ? nil : @"Controls", stage < 2 });
         CGFloat total = 0.0;
         for (BarSegment &s : segments) {
             const CGFloat content = s.title ? [s.title sizeWithAttributes:attributes].width : cog.size.width;
@@ -2460,9 +2537,9 @@ struct BarSegment {
     };
 
     CGRect frame;
-    const bool mixer = [self mixerReady];
-    std::vector<BarSegment> segments = layout(mixer, &frame);
-    if (frame.origin.x < wave.origin.x + kBadgeInset && mixer) segments = layout(false, &frame);
+    int stage = [self mixerReady] ? 0 : 2;
+    std::vector<BarSegment> segments = layout(stage, &frame);
+    while (frame.origin.x < wave.origin.x + kBadgeInset && stage < 2) segments = layout(++stage, &frame);
     if (frame.origin.x < wave.origin.x + kBadgeInset || CGRectGetMaxY(frame) > CGRectGetMaxY(wave)) return {};
     if (box) *box = frame;
     return segments;
@@ -2489,7 +2566,9 @@ struct BarSegment {
             CGContextFillRect(context, CGRectMake(x, s.rect.origin.y + 4.0, 1.0 / scale, s.rect.size.height - 8.0));
         }
         const bool hot = (_hovering && CGRectContainsPoint(s.rect, mouse)) || (s.control == BarControlCog && _barMenuOpen);
+        // The toggles while on: Loop in the loop's colour, Snap in the accent
         const bool looping = s.control == BarControlLoop && _loop.active();
+        const bool snapping = s.control == BarControlSnap && _snapToBeat;
         const uint32_t color = looping ? kLoopColor : hot ? kOverlayValue : kOverlayLabel;
         if (!s.title) {
             NSImage *icon = [self barIcon:@"gearshape" color:color];
@@ -2497,7 +2576,8 @@ struct BarSegment {
             [icon drawInRect:NSMakeRect(std::round(CGRectGetMidX(s.rect) - size.width / 2),
                                         std::round(CGRectGetMidY(s.rect) - size.height / 2), size.width, size.height)];
         } else {
-            NSAttributedString *label = [self text:s.title color:color bold:looping];
+            NSAttributedString *label = [self text:s.title colour:snapping ? [self accentOnOverlay] : p3(color)
+                                              bold:looping || snapping];
             [label drawAtPoint:NSMakePoint(std::round(CGRectGetMidX(s.rect) - label.size.width / 2),
                                            s.rect.origin.y + TS(kBadgePadY))];
         }
@@ -2653,6 +2733,8 @@ struct BarSegment {
 // A request to the DSP; when it is turned down, the seek instead
 - (void)request:(waveseek::LoopAction)action orSeekTo:(double)target then:(const waveseek::LoopAction *)then {
     _requestId = beatloop::act(action);
+    _requestTarget = std::isfinite(action.to) ? action.to : target;
+    _requestNoted = !_dragSeeking;
     _fallbackTarget = target;
     _fallbackHasThen = then != nullptr;
     if (then) _fallbackThen = *then;
@@ -2681,35 +2763,63 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 // place nearest `target` at the same place within its beat as what it
 // plays, so the beat holds at once (a wait for the next beat delayed the
 // jump up to a beat). `target` also places the fallback seek and decides
-// what the loop does.
+// what the loop does. The fallback seek's own `then` plays from its `to`:
+// after a seek there is nothing to be relative to or in phase with.
 - (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
     using Kind = waveseek::LoopAction::Kind;
-    waveseek::LoopAction jump = makeAction(Kind::Jump, 0, 0, target);
-    jump.by = by;
-    if (onBeat && std::isnan(by) && _phraseGrid) {
-        const waveseek::GridAt grid = waveseek::gridAt(*_phraseGrid, [self currentSeconds], _phraseFollowGrid);
-        if (grid.bpm > 0.0) {
-            jump.beat = 60.0 / grid.bpm;
-            jump.beatAnchor = grid.anchorSeconds;
+    // How the direct request finds where to play from: relative, in phase,
+    // or from `target`
+    auto direct = [&](waveseek::LoopAction a) {
+        a.by = by;
+        if (onBeat && std::isnan(by) && _trustedGrid) {
+            const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, [self currentSeconds], _phraseFollowGrid);
+            if (grid.bpm > 0.0) {
+                a.beat = 60.0 / grid.bpm;
+                a.beatAnchor = grid.anchorSeconds;
+            }
         }
-    }
+        return a;
+    };
+    const waveseek::LoopAction jump = direct(makeAction(Kind::Jump, 0, 0, target));
     if (!_loop.active()) {
-        if ([self deckHolds:target to:target]) [self request:jump orSeekTo:target then:nullptr];
-        else [self armedSeekTo:target then:nullptr];
+        if ([self deckHolds:target to:target]) {
+            [self request:jump orSeekTo:target then:nullptr];
+        } else {
+            [self noteSeekFor:target];
+            [self armedSeekTo:target then:nullptr];
+        }
         return;
     }
     // The seek when the DSP does not hold the audio: inside the loop from
     // its start (playing on from the target once decoded), before it from
     // the target with the loop set ahead, past it just the target
     const bool inside = _loop.contains(target), before = target < _loop.start;
-    const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, target);
+    const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, target);   // after a seek
     const double seekTarget = inside ? _loop.start : target;
     const waveseek::LoopAction *then = inside || before ? &setLoop : nullptr;
     if ([self deckHolds:target to:target]) {
-        [self request:(_deck.looping || !then) ? jump : setLoop orSeekTo:seekTarget then:then];
+        [self request:(_deck.looping || !then) ? jump : direct(setLoop) orSeekTo:seekTarget then:then];
     } else {
+        [self noteSeekFor:target];
         [self armedSeekTo:seekTarget then:then];
     }
+}
+
+// A jump, click or loop that becomes a seek (the view finds its target not
+// held, or the DSP turns it down), once in the console: a seek is a gap and
+// lands late, so the beat goes. With the audio the DSP held. Not for a
+// drag: it seeks at every move.
+- (void)noteSeekFor:(double)target {
+    if (_dragSeeking) return;
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer: jump target " << pfc::format_float(target, 0, 2) << " s not in the DSP's audio ";
+    if ([self deckReady]) {
+        out << "(it holds " << pfc::format_float(_deck.bufferedFrom, 0, 2) << "-" << pfc::format_float(_deck.bufferedTo, 0, 2)
+            << " s)";
+    } else {
+        out << "(it has no track time yet)";
+    }
+    out << "; seeking, which does not keep the beat";
 }
 
 // The DSP's status, once per position check: our seek taken, a seek from
@@ -2743,7 +2853,10 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     if (_armId == 0 && _deck.synced && _deck.pristine && _deck.live && self.playing) [self measureClock:seconds];
     if (_requestId != 0 && _deck.rejectedId == _requestId) {
         _requestId = 0;
-        if (!std::isnan(_fallbackTarget)) [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
+        if (!std::isnan(_fallbackTarget)) {
+            if (_requestNoted) [self noteSeekFor:_requestTarget];
+            [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
+        }
     } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
         if (_deck.lastTakenId == _requestId) {
             FB2K_console_formatter() << "[WaveSeek] Mixer: request taken by the DSP after "
@@ -2822,12 +2935,32 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 }
 
 // While a change may come (the mouse over the seekbar, a menu or a drag),
-// short steps from the DSP and foobar2000's low-latency hint
+// short steps from the DSP and foobar2000's low-latency hint; only with the
+// track's beats (not for a stream, or a track without a grid)
 - (void)updateLowLatency {
-    const bool on = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging);
+    const bool on = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging) && [self mixerReady];
     if (on == _lowLatency) return;
     _lowLatency = on;
     beatloop::setLowLatency(on);
+}
+
+// While the mixer has the track's beats, the DSP keeps 32 beats and 2 s
+// (at least 20 s) decoded ahead of `seconds` when no change is expected,
+// so a forward jump within it plays without a seek. None in the track's
+// last two reserves and 10 s: it drains, and the next track starts as
+// without it. None for a stream or a track without a grid.
+- (void)updateReserveAt:(double)seconds {
+    double reserve = 0.0;
+    if ([self deckMode] && [self mixerReady] && _trustedGrid && std::isfinite(seconds)) {
+        const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, seconds, _phraseFollowGrid);
+        if (grid.bpm > 0.0) {
+            const double r = std::max(kReserveMinSeconds, kReserveBeats * 60.0 / grid.bpm + kReserveExtraSeconds);
+            if (self.trackDuration - seconds > 2.0 * r + kReserveTailSeconds) reserve = r;
+        }
+    }
+    if (reserve == _reserve) return;
+    _reserve = reserve;
+    beatloop::setReserve(reserve);
 }
 
 #pragma mark - Mixer Actions
@@ -2845,6 +2978,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         case BarControlForward16: [self jumpBeats:16]; break;
         case BarControlForward32: [self jumpBeats:32]; break;
         case BarControlLoop: [self toggleLoop]; break;
+        case BarControlSnap: [self toggleSnap]; break;
         case BarControlSizeMenu: [self showSizeMenuFor:segment]; break;
         case BarControlNone: break;
     }
@@ -2870,11 +3004,13 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     if ([self deckMode]) {
         const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, moved.start, moved.end, target);
         const double delta = moved.start - _loop.start;
-        if ([self deckHolds:moved.start to:NAN] && _deck.looping &&
-            _deck.bufferedTo - kDeckMargin >= std::max(moved.start, now + delta)) {
+        const bool held = [self deckHolds:moved.start to:NAN] &&
+                          _deck.bufferedTo - kDeckMargin >= std::max(moved.start, now + delta);
+        if (held && _deck.looping) {
             [self request:makeAction(waveseek::LoopAction::Move, moved.start, moved.end, NAN) orSeekTo:moved.start
                      then:&then];
         } else {
+            if (!held) [self noteSeekFor:moved.start];
             [self armedSeekTo:moved.start then:&then];
         }
         [self setLoop:moved];
@@ -2902,11 +3038,12 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     [self seekTo:target];
 }
 
-// Where the 16-beat phrases (and new grids) start, for a loop to catch
+// Where the 16-beat phrases (and new grids) start, for a loop to catch: on
+// the trusted sections, as the beats
 - (std::vector<double>)phraseStartTimes {
     std::vector<double> out;
-    if (!_phraseGrid) return out;
-    for (const waveseek::PhraseMarker &m : waveseek::phraseMarkers(*_phraseGrid, 16, _phraseFollowGrid)) {
+    if (!_trustedGrid) return out;
+    for (const waveseek::PhraseMarker &m : waveseek::phraseMarkers(*_trustedGrid, 16, _phraseFollowGrid)) {
         out.push_back(m.seconds);
     }
     return out;
@@ -2934,12 +3071,19 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         if ([self deckHolds:loop.start to:NAN]) {
             [self request:around orSeekTo:loop.start then:&then];
         } else {
+            [self noteSeekFor:loop.start];
             [self armedSeekTo:loop.start then:&then];
         }
         if (_latencyNoteAt == 0) _latencyNoteAt = CFAbsoluteTimeGetCurrent() + 1.0;
         return;
     }
     [self seekTo:loop.start];
+}
+
+// Snap on or off, saved and sent to every seekbar
+- (void)toggleSnap {
+    waveform_config::setConfigBool(waveform_config::kKeySnapToBeat, !_snapToBeat);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
 }
 
 - (void)showSizeMenuFor:(const BarSegment &)segment {
@@ -2996,6 +3140,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     [self pollDeck:seconds];
     [self updateLowLatency];
     const double position = [self displayedTimeFor:seconds];
+    [self updateReserveAt:position];
     const bool wasInside = _wasInsideLoop;
     _wasInsideLoop = _loop.active() && _loop.contains(position);
     if (!_loop.active()) return;
@@ -3114,6 +3259,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     // and skip to the next track
     const CGFloat x = p.x;
     _seeking = x < CGRectGetMaxX([self waveformRect]);
+    _dragBeat = NAN;
     if (_seeking) [self handleSeekWithEvent:event];
 }
 
@@ -3127,7 +3273,12 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         [self setNeedsDisplay:YES];
         return;
     }
-    if (_seeking) [self handleSeekWithEvent:event];
+    if (_seeking) {
+        _dragSeeking = YES;
+        [self handleSeekWithEvent:event];
+        _dragSeeking = NO;
+        [self setNeedsDisplay:YES];   // Snap's line follows the mouse
+    }
 }
 
 - (void)mouseUp:(NSEvent *)event {
@@ -3165,23 +3316,24 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
                                                0.0, 1.0);
     double seekTime = _zoom.positionAt(across) * self.trackDuration;
-    // With the mixer, a click near a beat jumps there in phase with what plays
+    // With the mixer and Snap on, a click goes to the nearest beat, in phase
+    // with what plays (at most half a beat from it); with Snap off exactly
+    // where it is. A drag that stays nearest the same beat doesn't jump again.
     bool onBeat = false;
-    if ([self mixerReady]) {
+    if ([self mixerReady] && _snapToBeat) {
         const double beat = waveseek::nearestBeat([self beats], seekTime);
-        const CGFloat beatX = wave.origin.x + wave.size.width * _zoom.acrossOf(beat / self.trackDuration);
-        if (!std::isnan(beat) && std::fabs(beatX - location.x) <= kBeatSnapPoints) {
+        if (!std::isnan(beat)) {
+            if (_dragSeeking && beat == _dragBeat) return;
+            _dragBeat = beat;
             seekTime = beat;
             onBeat = true;
         }
     }
-    // Following at a spot: the cursor stays where it was clicked
+    // Following at a spot: the cursor stays where it was clicked (not at the
+    // beat Snap took the click to)
     if ([self following]) {
-        const double clicked = _zoom.acrossOf(seekTime / self.trackDuration);
-        if (clicked >= 0.0 && clicked <= 1.0) {
-            _followSpot = clicked;
-            _followSpotSet = true;
-        }
+        _followSpot = across;
+        _followSpotSet = true;
     }
 
     // With the loop DSP, inside its audio without a seek

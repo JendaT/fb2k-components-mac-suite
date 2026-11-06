@@ -82,6 +82,7 @@ static const char* const kKeyZoomFollow = "zoom_follow";                 // Zoom
 static const char* const kKeyMixerOutputBufferMs = "mixer_output_buffer_ms";   // foobar2000's output buffer while the mixer is on; 0 leaves it
 static const char* const kKeyMixerSavedBufferMs = "mixer_saved_output_buffer_ms"; // the user's own, put back when the mixer goes off
 static const char* const kKeyBeatSize = "beat_size";                     // loop and jump length in beats: 1 to 32
+static const char* const kKeySnapToBeat = "snap_to_beat";               // mixer: clicks and the hover line on the nearest beat
 static const char* const kKeyGridMode = "grid_mode";                // 0 master grid (1 follow regions: later)
 static const char* const kKeyCacheSizeMB = "cache_size_mb";
 static const char* const kKeyCacheRetentionDays = "cache_retention_days";

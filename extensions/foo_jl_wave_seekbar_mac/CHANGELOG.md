@@ -17,7 +17,15 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Bottom bar controls**: A cog at the bottom right on hover picks no controls (default), the mixer, or analytics (the readout and loudness summary, now shown only there); also in Preferences > Overlays.
 
-- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (formed around what plays, drawn in green), and clicks near a beat jump at once, keeping the beat.
+- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (formed around what plays, drawn in green), and with Snap clicks jump at once to the nearest beat, keeping the beat.
+
+- **Snap**: Mixer bar toggle (on by default): clicks and drags go to the nearest beat in time with what plays and hovering shows that beat with its time; off, clicks go exactly where clicked.
+
+- **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
+
+- **Decode-ahead reserve**: With a beat grid, the mixer's DSP keeps 32 beats (at least 20 s) decoded ahead so forward jumps play without a seek; it drains in the track's last minute.
+
+- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held.
 
 - **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
 
@@ -52,6 +60,8 @@ All notable changes to Waveform Seekbar will be documented in this file.
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
 
 ### Technical
+- `trustedGrid` / `sectionFit` (`PhraseMarkers.h`): a section fits with at least 8 bars within 15 ms and 3 in 4 heard beats matched (half of those judged) and a tempo 0.45-2.25x the master's; unit-tested on two real grids.
+- `LoopEngine`: opt-in decode-ahead reserve (`setReserveSeconds`), requests turned down across a track change, and one target resolution for Jump and Loop (by, in phase, absolute; a seek's own then from its `to`); unit-tested.
 - `LoopEngine.h`: the gapless loop's audio side (record, repeat, hold the decoded audio, leave without a break) and the timeline that maps output frames to track time, unit-tested with frame-numbered audio. `ZoomRange` gains following and centring on whole pixels; while following, masks cover a view's width more on each side and draw at whole-pixel offsets.
 - `BeatJump.h`: the grid's beats (master or section by section), beat numbers, jumps, loops and the loop's step at each position check, unit-tested.
 - `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.

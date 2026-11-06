@@ -371,7 +371,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Follow tempo changes**: Phrase markers and beat-synced effects move to a new grid where the tempo changes or the track is edited.
 - **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
 - **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
-- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the beat; clicks near a beat jump at once, in time.
+- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the beat; with Snap, clicks jump at once to the nearest beat, in time.
+- **Snap**: Mixer bar toggle (on by default): clicks go to the nearest beat and hovering shows it; off, clicks go exactly where clicked.
+- **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
+- **Decode-ahead reserve**: With a beat grid, the mixer keeps 32 beats decoded ahead so forward jumps play without a seek.
+- **Seek notes in the console**: A jump, click or loop that still has to seek says so.
 - **Gapless loops**: A "Beat loop" DSP plays loops, new sizes, loop moves and jumps without a gap or a click.
 - **Option-drag, Option-jump**: Move the whole loop by whole beats. The loop stays set until switched off.
 - **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.

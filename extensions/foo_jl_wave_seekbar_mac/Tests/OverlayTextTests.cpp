@@ -50,6 +50,18 @@ void testClock() {
     CHECK_STR(formatClock(-3), "0:00", "negative clamps");
 }
 
+void testClockCentis() {
+    g_context = "clock centis";
+    CHECK_STR(formatClockCentis(0), "0:00.00", "zero");
+    CHECK_STR(formatClockCentis(12.3456), "0:12.35", "rounds to the nearest hundredth");
+    CHECK_STR(formatClockCentis(12.344), "0:12.34", "rounds down too");
+    CHECK_STR(formatClockCentis(59.996), "1:00.00", "rounding carries into the minute");
+    CHECK_STR(formatClockCentis(612.07), "10:12.07", "leading zero in the hundredths");
+    CHECK_STR(formatClockCentis(3725.25), "1:02:05.25", "hours");
+    CHECK_STR(formatClockCentis(-3), "0:00.00", "negative clamps");
+    CHECK_STR(formatClockCentis(NAN), "0:00.00", "NaN clamps");
+}
+
 void testPlacement() {
     g_context = "placement";
     CHECK_FLOAT_EQ(readoutX(100, 1000), 110, "right of the mouse");
@@ -85,6 +97,7 @@ void testRuler() {
 int main() {
     testNumbers();
     testClock();
+    testClockCentis();
     testPlacement();
     testRuler();
     TEST_MAIN_END();

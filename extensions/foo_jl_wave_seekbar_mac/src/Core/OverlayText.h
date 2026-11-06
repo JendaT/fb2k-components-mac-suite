@@ -53,6 +53,18 @@ inline std::string formatClock(double seconds, bool tenths = false) {
     return buf;
 }
 
+// m:ss.cc, a point in time to the nearest hundredth (a beat's time; 59.996
+// is 1:00.00); h:mm:ss.cc from an hour on
+inline std::string formatClockCentis(double seconds) {
+    if (!(seconds > 0.0)) seconds = 0.0;
+    const long long centis = std::llround(seconds * 100.0);
+    const long long whole = centis / 100, h = whole / 3600, m = (whole / 60) % 60, s = whole % 60, c = centis % 100;
+    char buf[40];
+    if (h > 0) std::snprintf(buf, sizeof buf, "%lld:%02lld:%02lld.%02lld", h, m, s, c);
+    else std::snprintf(buf, sizeof buf, "%lld:%02lld.%02lld", whole / 60, s, c);
+    return buf;
+}
+
 // Time ruler: the smallest major interval (seconds) that keeps labels at
 // least kRulerLabelSpacing points apart. Minor ticks go at a quarter of it.
 // Past the spec's 10 min, longer intervals keep long mixes readable.
