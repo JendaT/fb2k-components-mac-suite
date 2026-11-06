@@ -463,6 +463,27 @@ void testNewTrackLive() {
     CHECK(after.frames.front() == 200.0, "from its own frame 200");
 }
 
+void testLoopPastTrackEnd() {
+    TEST_CASE("a loop ending past the track's last frame");
+    Playing p;   // decoded up to ~5000
+    const double decoded = p.e.bufferedTo();
+    CHECK(p.e.act(loop(1, 4.5, decoded + 1.0, 4.6)), "a loop whose end is not decoded yet");
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 100);
+    // The track ends before the loop's end: the next track arrives
+    const double end = p.e.bufferedTo();
+    Decoder next{ 0 };
+    const size_t at = p.out.frames.size();
+    for (int i = 0; i < 400 && !p.e.live(); ++i) step(p.e, next, p.out, i == 0);
+    CHECK(!p.e.looping(), "the loop that can't wrap ends");
+    CHECK(p.e.live() && p.e.synced(), "the track's rest and the new track's held audio play out: live on it");
+    // The old track to its last frame, straight into the new one's first
+    const double last = std::round(end * kRate) - 1.0;
+    bool joined = false;
+    for (size_t i = 0; i + 1 < p.out.frames.size(); ++i) joined |= p.out.frames[i] == last && p.out.frames[i + 1] == 0.0;
+    CHECK(joined && p.out.frames.size() > at, "no stall: the old track to its last frame, then the new one from its first");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
 void testNewTrackBehindLoop() {
     TEST_CASE("a new track behind a loop");
     Playing p;
@@ -547,7 +568,7 @@ void testLoopEngagedWhileLive() {
     Playing r;
     r.e.act(loop(1, 3.0, 3.5));
     step(r.e, r.d, r.out);
-    r.e.act(action(LoopAction::Resize, 2, 0.0, 6.0));
+    r.e.act(action(LoopAction::Resize, 2, 0.0, 5.1));   // its end decoded (one that isn't: testLoopPastTrackEnd)
     runUntil(r.e, r.d, r.out, r.out.frames.size() + 300);
     Decoder next{ 0 };
     for (int i = 0; i < 5; ++i) step(r.e, next, r.out, i == 0);
@@ -1209,6 +1230,7 @@ int main() {
     testForeignSeek();
     testNewTrackLive();
     testNewTrackBehindLoop();
+    testLoopPastTrackEnd();
     testNewTrackLiveLoopWaiting();
     testLoopEngagedWhileLive();
     testNewTrackBehindWaitingLoop();

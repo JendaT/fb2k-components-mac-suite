@@ -245,6 +245,10 @@ public:
                 looping_ = engaged_ = inLoopSegment_ = false;
                 startOver(channels, rate, config, newTrack);
             } else {
+                // A loop playing that ends past the track's last frame (its
+                // reported length can be an estimate) can never wrap: the
+                // rest of the track and then the new one play on
+                if (looping_ && engaged_ && loopEnd_ > bufEnd()) exitLoop();
                 afterBoundary_ = true;
                 boundaryIsTrack_ = newTrack;
                 boundaryFrame_ = inFrames_;
