@@ -28,7 +28,10 @@
 //  drains, and the change to the next track happens live (short steps in
 //  a loop go on whatever the cap). A change while the audio passes
 //  through starts over on the new track and ends a loop waiting behind
-//  playback.
+//  playback; one behind the buffer ends it once the old track's audio is
+//  out. Every track or format change in the audio held after a change
+//  behind the buffer (a short track can be whole in it) gets a timeline
+//  segment where its first frame goes out.
 //
 //  Track times come from a sync: a seek of the view's own (its target is
 //  frame 0), the view's measurement of foobar2000's position while the
@@ -232,6 +235,7 @@ public:
             bufStart_ = pos_ = inFrames_;
         }
         const bool newFormat = channels != channels_ || rate != rate_;
+        typename Held::Starts starts = Held::Nothing;
         if ((newTrack || newFormat) && !afterBoundary_) {
             if (live_) {
                 // In step with the decoder (never with a loop engaged or
@@ -244,18 +248,24 @@ public:
                 afterBoundary_ = true;
                 boundaryIsTrack_ = newTrack;
                 boundaryFrame_ = inFrames_;
+                starts = newTrack ? Held::Track : Held::Format;
             }
-        } else if (afterBoundary_ && newTrack) {   // another track behind it: that one is next
-            boundaryIsTrack_ = true;
-            boundaryFrame_ = inFrames_;
+        } else if (afterBoundary_ && (newTrack || channels != tailChannels_ || rate != tailRate_)) {
+            // Another change inside the audio held (a short track can be
+            // whole in it): its own segment where it goes out, as the first
+            // one's; the last one decides the time after the audio held
+            boundaryIsTrack_ = newTrack;
+            if (newTrack) boundaryFrame_ = inFrames_;
+            starts = newTrack ? Held::Track : Held::Format;
         }
         if (afterBoundary_) {
-            Block b;
-            b.channels = channels;
-            b.rate = rate;
-            b.config = config;
-            b.samples.assign(data, data + frames * channels);
-            tail_.push_back(std::move(b));
+            Held h;
+            h.block.channels = channels;
+            h.block.rate = rate;
+            h.block.config = config;
+            h.block.samples.assign(data, data + frames * channels);
+            h.starts = starts;
+            tail_.push_back(std::move(h));
             tailSeconds_ += static_cast<double>(frames) / rate;
             tailChannels_ = channels;
             tailRate_ = rate;
@@ -599,11 +609,22 @@ private:
         size_t sent = 0;
         while (sent < n && !tail_.empty()) {
             if (!tailStarted_) {
+                // The old track's buffer is done: a loop waiting behind
+                // playback ends without a segment (its frames and time are
+                // that buffer's), so a later Exit, or the limit on the audio
+                // waiting, leaves the new track's time alone. One engaged or
+                // ahead never gets here (emit waits for it).
                 tailStarted_ = true;
-                timeline_.push_back({ outSeconds_, boundaryIsTrack_ ? 0.0 : NAN, 0.0, 0.0 });
+                looping_ = engaged_ = inLoopSegment_ = false;
                 ++version_;
             }
-            Block &front = tail_.front();
+            Held &held = tail_.front();
+            if (held.starts != Held::Nothing) {   // a track (time 0) or a format (time unknown) starts here
+                timeline_.push_back({ outSeconds_, held.starts == Held::Track ? 0.0 : NAN, 0.0, 0.0 });
+                held.starts = Held::Nothing;
+                ++version_;
+            }
+            Block &front = held.block;
             const size_t k = std::min(n - sent, front.frames());
             Block piece;
             piece.channels = front.channels;
@@ -625,7 +646,9 @@ private:
         return sent;
     }
 
-    // All of the new track sent: live on it, its frame 0 at the change
+    // All the audio held sent: live on its last track, its frame 0 where
+    // that track's segment begins; not synced when a format change came
+    // last (frames at two rates do not count the track's time)
     void leaveBoundary() {
         channels_ = tailChannels_;
         rate_ = tailRate_;
@@ -682,12 +705,19 @@ private:
     size_t fadeLeft_ = 0, fadeTotal_ = 1;
     double fadeSeconds_ = kFadeSeconds;
 
-    // After a track (or format) change while behind the decoder: its audio, as it came
+    // After a track (or format) change while behind the decoder: its audio,
+    // as it came, each block marked with a change its first frame begins
+    // (the first block's, and any later track or format inside it)
+    struct Held {
+        enum Starts { Nothing, Track, Format };
+        Block block;
+        Starts starts = Nothing;
+    };
     bool afterBoundary_ = false;
-    bool boundaryIsTrack_ = false;
+    bool boundaryIsTrack_ = false;  // the last change held is a track's (else a format's)
     bool tailStarted_ = false;
-    int64_t boundaryFrame_ = 0;
-    std::deque<Block> tail_;
+    int64_t boundaryFrame_ = 0;     // the last track's frame 0
+    std::deque<Held> tail_;
     double tailSeconds_ = 0.0;
     unsigned tailChannels_ = 0, tailRate_ = 0, tailConfig_ = 0;
 

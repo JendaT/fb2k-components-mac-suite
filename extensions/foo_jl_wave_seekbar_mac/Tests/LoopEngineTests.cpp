@@ -9,8 +9,10 @@
 //  into the audio decoded ahead, jumps, leaving a loop, catching up with
 //  the decoder, the crossfade, a new track behind a loop, a new track while
 //  passing through with a loop waiting (it ends), a waiting loop engaged
-//  while passing through, the end of the stream, and the timeline that
-//  maps the output to track time. Then the
+//  while passing through, a waiting loop across a change behind the buffer
+//  (it ends with the old track's audio), two tracks or a format change
+//  inside the audio held after such a change, the end of the stream, and
+//  the timeline that maps the output to track time. Then the
 //  reserve (decoded audio kept ahead while no change is expected): built
 //  and held, around a hover, across a track change, a second after each
 //  sync; requests taken while the old track still plays across a change,
@@ -552,6 +554,132 @@ void testLoopEngagedWhileLive() {
     CHECK(!r.e.live() && r.e.looping(), "a new track behind it: still in the loop, from the buffer");
 }
 
+// A loop waiting behind playback across a change behind the buffer: it ends
+// once the old track's audio is out (its frames are that buffer's), so the
+// view's Exit for the new track, arriving while the new track's audio goes
+// out, leaves the new track's time alone
+void testNewTrackBehindWaitingLoop() {
+    TEST_CASE("a waiting loop through a track change behind the buffer");
+    Playing p;   // live up to ~5000
+    CHECK(p.e.act(loop(1, 4.0, 4.5, 4.0)), "(a loop, playing in it)");
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 1000);
+    Decoder next{ 0 };
+    for (int i = 0; i < 4; ++i) step(p.e, next, p.out, i == 0);   // the next track, held behind the loop
+    const double lastOld = static_cast<double>(p.d.next - 1);
+    const size_t at = p.out.frames.size();
+    CHECK(lastOld > 4800.0 && p.e.act(action(LoopAction::Jump, 2, 0.0, 0.0, 4.7)) && p.e.looping(),
+          "a jump past the loop's end, in the old track's buffer: taken, the loop waits");
+    const size_t change = at + static_cast<size_t>(lastOld - 4700.0) + 1;
+    for (int i = 0; i < 1000 && p.out.frames.size() <= change; ++i) step(p.e, next, p.out);
+    CHECK(!p.e.live() && p.out.frames.size() > change && !p.e.looping(),
+          "the new track's audio going out: the loop ended with the old track's");
+    CHECK(p.e.act(action(LoopAction::Exit, 3)), "the view's Exit for the new track");
+    for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, next, p.out);
+    runUntil(p.e, next, p.out, p.out.frames.size() + 500);
+    CHECK(p.e.live() && p.e.synced() && !p.e.looping(), "live on the new track, synced");
+    CHECK(straight(p.out, at, change, 4700.0) && straight(p.out, change, p.out.frames.size(), 0.0),
+          "the old track to its last decoded frame, then the new one from its first");
+    const double end = static_cast<double>(p.out.frames.size()) / kRate;
+    CHECK_NEAR(trackTimeAt(p.e.timeline(), end) * kRate, p.out.frames.back() + 1.0, 1e-6,
+               "the timeline gives the new track's time, not the old one's end");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// A short track whole inside the audio held behind a loop, then the start
+// of the next: each track's first frame gets its own segment (time 0), and
+// once past the audio held the engine is synced to the last one's frame 0
+void testTwoTracksHeld() {
+    TEST_CASE("two track changes inside the audio held");
+    Playing p;   // live up to ~5000
+    p.e.act(loop(1, 4.0, 4.5, 4.0));
+    runUntil(p.e, p.d, p.out, p.out.frames.size() + 1000);
+    const double lastOld = static_cast<double>(p.d.next - 1);
+    Decoder interlude{ 0 };
+    for (int i = 0; i < 5; ++i) step(p.e, interlude, p.out, i == 0);   // 320 frames, all of it
+    Decoder next{ 0 };
+    for (int i = 0; i < 3; ++i) step(p.e, next, p.out, i == 0);
+    CHECK(p.e.looping() && !p.e.live() && p.e.aheadSeconds() > 0.5, "(both held behind the loop)");
+    const double from = std::round(p.e.playingFrom() * kRate);
+    const size_t at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Exit, 2)), "the loop left");
+    for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, next, p.out);
+    runUntil(p.e, next, p.out, p.out.frames.size() + 500);
+    const size_t b = at + static_cast<size_t>(lastOld - from) + 1;   // the interlude's first frame out
+    const size_t c = b + 320;                                         // the next track's
+    CHECK(straight(p.out, at, b, from) && straight(p.out, b, c, 0.0) && straight(p.out, c, p.out.frames.size(), 0.0),
+          "the old track to its last decoded frame, the interlude whole, then the next track from its first");
+    CHECK(p.e.live() && p.e.synced(), "live on the next track, synced");
+    int starts = 0;
+    for (const LoopSegment &s : p.e.timeline()) {
+        const double out = s.first * kRate;
+        starts += s.from == 0.0 && (std::fabs(out - static_cast<double>(b)) < 1e-6 || std::fabs(out - static_cast<double>(c)) < 1e-6);
+    }
+    CHECK(starts == 2, "a segment at each track's first frame");
+    const double end = static_cast<double>(p.out.frames.size()) / kRate;
+    CHECK_NEAR(trackTimeAt(p.e.timeline(), end) * kRate, p.out.frames.back() + 1.0, 1e-6,
+               "the timeline gives the next track's time, not the interlude's length over it");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+    LoopAction back = action(LoopAction::Jump, 3);
+    back.by = -0.2;
+    const double onFrom = p.out.frames.back() + 1.0;
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(back) && std::fabs(p.e.playingFrom() * kRate - (onFrom - 200.0)) < 1e-6,
+          "a jump back on the next track: its own time");
+    runUntil(p.e, next, p.out, j + 200);
+    CHECK(straight(p.out, j, j + 200, onFrom - 200.0), "and lands exactly there");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// The timeline's segment starting at `output` seconds, if there is one
+const LoopSegment *segmentAt(const Engine &e, double output) {
+    for (const LoopSegment &s : e.timeline()) {
+        if (std::fabs(s.first - output) < 1e-9) return &s;
+    }
+    return nullptr;
+}
+
+// A new format inside the audio held, no track change with it: as at a
+// first change that is only a format, its time is unknown (NAN from its
+// first frame), and past the audio held the engine is synced only when a
+// track started after it (frames at two rates do not count a track's time)
+void testFormatChangeHeld() {
+    TEST_CASE("a format change inside the audio held");
+    for (const bool trackFirst : { true, false }) {
+        Playing p;   // live up to ~5000
+        p.e.act(loop(1, 4.0, 4.5, 4.0));
+        runUntil(p.e, p.d, p.out, p.out.frames.size() + 1000);
+        const double lastOld = static_cast<double>(p.d.next - 1);
+        // Track first: a new track, then the same one on at 2000 Hz. Format
+        // first: the old track on at 2000 Hz, then a new track at 2000 Hz.
+        Decoder held{ trackFirst ? 0 : p.d.next };
+        held.rate = trackFirst ? kRate : 2000;
+        const double firstRate = held.rate;
+        for (int i = 0; i < 3; ++i) step(p.e, held, p.out, trackFirst && i == 0);
+        if (trackFirst) held.rate = 2000;
+        else held.next = 0;
+        for (int i = 0; i < 3; ++i) step(p.e, held, p.out, !trackFirst && i == 0);
+        const double from = std::round(p.e.playingFrom() * kRate);
+        const double exitAt = p.e.outSeconds();
+        p.e.act(action(LoopAction::Exit, 2));
+        for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, held, p.out);
+        runUntil(p.e, held, p.out, p.out.frames.size() + 200);
+        const double heldAt = exitAt + (lastOld - from + 1.0) / kRate;   // the audio held starts going out
+        const double secondAt = heldAt + 3.0 * 64.0 / firstRate;         // the second change's first frame
+        const LoopSegment *first = segmentAt(p.e, heldAt), *second = segmentAt(p.e, secondAt);
+        if (trackFirst) {
+            CHECK(first && first->from == 0.0 && second && std::isnan(second->from),
+                  "the track's first frame at time 0, then the new format's time unknown");
+            CHECK(p.e.live() && !p.e.synced(), "past the audio held: live, not synced (a request seeks)");
+            CHECK(!p.e.act(action(LoopAction::Jump, 3, 0.0, 0.0, 0.1)) && p.e.rejectedId() == 3, "a jump: turned down");
+        } else {
+            CHECK(first && std::isnan(first->from) && second && second->from == 0.0,
+                  "the new format's time unknown, then the track's first frame at time 0");
+            CHECK(p.e.live() && p.e.synced() && std::fabs(p.e.playingFrom() * 2000.0 - static_cast<double>(held.next)) < 1e-6,
+                  "past the audio held: live, synced to the track's frame 0");
+        }
+    }
+}
+
 // Hovering in a loop near a track's end (cap 0): still short steps, so a
 // change to the loop is heard at once; the cap is for draining to go live,
 // which a loop does not
@@ -1083,6 +1211,9 @@ int main() {
     testNewTrackBehindLoop();
     testNewTrackLiveLoopWaiting();
     testLoopEngagedWhileLive();
+    testNewTrackBehindWaitingLoop();
+    testTwoTracksHeld();
+    testFormatChangeHeld();
     testCapInLoop();
     testResponsive();
     testStandby();
