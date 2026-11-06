@@ -13,13 +13,16 @@ SimPlaylist automatically groups tracks by album and displays album artwork alon
 
 ### Header Display Styles
 
-Three configurable header display modes to match your preference:
+Four configurable header display modes to match your preference:
 
 | Style | Description |
 |-------|-------------|
 | **Above tracks** | Header row appears above track rows with separator line |
 | **Album art aligned** | Header text starts at left edge, aligned with album art |
-| **Inline** | Compact header style with smaller text, no separator line |
+| **Inline** | Header is the album's first row, beside the top of the album art, no separator line |
+| **Under album art** | Header text is drawn in the art column, below the album art |
+
+With **Inline**, **Album Spacing** (Close / One row / Two rows) replaces Group Header Spacing. The spacing follows whichever ends lower, the tracks or the album art, so every album is separated by the same gap. The art is sized to whole rows for this, within half a row of the Album Art Size setting.
 
 <!-- Screenshot: Comparison of header styles -->
 
@@ -41,12 +44,18 @@ Efficiently handles playlists of any size with smooth scrolling performance.
 
 ### Keyboard Navigation
 
-Full keyboard support:
-- **Arrow keys** - Navigate between tracks
-- **Page Up/Down** - Scroll by page
-- **Home/End** - Jump to beginning/end
-- **Enter** - Play selected track
+Full keyboard support (hold Shift with the movement keys to extend the selection):
+- **Arrow keys** - Move between tracks
+- **Page Up/Down** - Move the focus by a page
+- **Home/End** - Jump to the first/last track
+- **Enter** - Play the focused track
 - **Space** - Toggle play/pause
+- **Delete/Backspace** - Remove the selected tracks
+- **Q** - Add the selected tracks to the playback queue
+- **Cmd+A** - Select all
+- **Cmd+Z / Cmd+Shift+Z** - Undo / redo playlist changes
+- **Cmd+F** - foobar2000's search
+- **Ctrl+scroll** - Resize the album art column
 
 ### Drag & Drop Reordering
 
@@ -54,7 +63,26 @@ Reorder tracks within the playlist using drag and drop.
 
 ### Context Menu
 
-Right-click for the standard foobar2000 context menu with all playback and metadata options.
+Right-click for the standard foobar2000 context menu with all playback and metadata options, plus Remove, Sort, Reload Info and Focus Playing Now.
+
+### Keep Playback in Its Playlist
+
+Stops library browsing from changing what plays next. Enabled by default; toggle under **Preferences > Display > SimPlaylist > Behavior**.
+
+**The problem it solves:** foobar2000 tracks two playlists independently — the *active* playlist (the one displayed) and the *playing* playlist (the one playback continues in when the current track ends). On the Mac, browsing the media library with ReFacets silently redirects the playing playlist to a hidden playlist that mirrors your library selection. The track you're listening to keeps playing, but the moment it ends, playback jumps to the first browsed track and abandons your playlist. No native foobar2000 setting prevents this.
+
+**What SimPlaylist does:** there is no notification when the redirect happens, but it is detectable — foobar2000 still knows which playlist the current track is actually playing from. SimPlaylist watches for the mismatch and immediately points playback continuation back at that playlist. You can browse ReFacets freely while listening; what plays next never changes.
+
+Notes:
+- Deliberately starting playback from ReFacets (double-click) works as before — that is a real playback start, not a redirect, so the guard stays out of the way.
+- The playback queue is unaffected either way; queued tracks always play first.
+- Every restore is logged to the foobar2000 console (`View > Console`), so you can verify the guard is working.
+
+### Sort Library Selection
+
+Keeps the albums you browse in your own order, for example by release date. On by default; toggle **Sort library selection by** under **Preferences > Display > SimPlaylist > Behavior**.
+
+Clicking an artist (or anything else) in ReFacets refills the hidden **Library Viewer Selection** playlist in ReFacets' own order, albums A–Z by title, and ReFacets has no setting to change that. A sort from the right-click Sort menu lasts only until the next click. With this option on, SimPlaylist re-sorts that playlist by your pattern every time its contents change. The default pattern, `%album artist% - %date% - %album% - %discnumber% - %tracknumber%`, lists each artist's albums oldest first. Other playlists are never touched.
 
 ## Configuration
 
@@ -68,12 +96,15 @@ Access settings via **Preferences > Display > SimPlaylist**
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Album Art Size | Size of album artwork in pixels | 80 |
-| Header Display | Header style (Above/Aligned/Inline) | Above tracks |
+| Header Display | Header style (Above/Aligned/Inline/Under art) | Above tracks |
+| Album Spacing | Inline only: empty rows between albums (Close/One row/Two rows) | One row |
 | Highlight Now Playing | Show yellow highlight on playing track | Off |
+| Keep playback in its playlist | Prevent library browsing (ReFacets) from changing what plays next | On |
+| Sort library selection by | Re-sort the ReFacets selection by a pattern each time it changes | On |
 
 ## Layout Editor
 
-Add SimPlaylist to your layout using any of these names:
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the playlist, and click **Apply**:
 - `simplaylist` (recommended)
 - `SimPlaylist`
 - `foo_jl_simplaylist`
@@ -88,7 +119,7 @@ splitter horizontal
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 (Big Sur) or later
+- macOS 12.0 (Monterey) or later
 
 ## Links
 

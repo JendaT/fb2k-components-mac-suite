@@ -2,6 +2,22 @@
 
 All notable changes to foo_jl_scrobble (Last.fm Scrobbler) will be documented in this file.
 
+## [1.4.1] - 2026-10-12
+
+### Changed
+- **Scrobble timing**: Submitted at the next track change, pause, stop or quit instead of mid-play, so a scrobble no longer shows on the profile next to its own Now Playing entry — contributed by [@Scannou](https://github.com/Scannou) (#29)
+- **Widget layout**: Computed in one geometry pass shared by drawing and click handling; style switches no longer force a redraw.
+- **Requirements**: macOS 12 or later (was 11); current Xcode can no longer build for macOS 11.
+
+### Fixed
+- **Quit mid-track**: The last scrobble is saved at shutdown and submitted on next launch with its original start time.
+- **Listening streak**: No longer one day too high when nothing has been scrobbled today.
+- **Stop after scrobble**: A track already scrobbled is no longer queued a second time on stop.
+
+### Technical
+- **Testable core**: Playback tracking, Last.fm signing/parsing, error policy, queue/dedup, streak logic and widget layout moved into pure modules; unit tests (`Scripts/run_tests.sh`) gate every build.
+- **Queue persistence**: Queue writes go through one serial queue; shutdown saves synchronously.
+
 ## [1.4.0] - 2026-05-17
 
 ### Added

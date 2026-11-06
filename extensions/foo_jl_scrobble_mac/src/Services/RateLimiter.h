@@ -13,11 +13,19 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface RateLimiter : NSObject
 
-/// Initialize with rate and burst capacity
+/// Monotonic clock returning seconds; injectable for deterministic tests
+typedef double (^RateLimiterClock)(void);
+
+/// Initialize with rate and burst capacity, using the system clock
 /// @param rate Tokens replenished per second
 /// @param capacity Maximum tokens that can accumulate
 - (instancetype)initWithTokensPerSecond:(double)rate
-                          burstCapacity:(NSInteger)capacity NS_DESIGNATED_INITIALIZER;
+                          burstCapacity:(NSInteger)capacity;
+
+/// Initialize with an injected clock (tests); pass nil for the system clock
+- (instancetype)initWithTokensPerSecond:(double)rate
+                          burstCapacity:(NSInteger)capacity
+                                  clock:(nullable RateLimiterClock)clock NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 

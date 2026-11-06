@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/WaveformSeekbarView.h"
@@ -17,12 +18,18 @@ JL_COMPONENT_ABOUT(
     "Waveform Seekbar",
     WAVEFORM_VERSION,
     "Waveform seekbar for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
-    "- Complete waveform display\n"
-    "- Click-to-seek functionality\n"
-    "- Stereo and mono display modes\n"
-    "- Dark mode support\n"
-    "- Waveform caching\n"
+    "- Full-track waveform with per-track loudness analysis (BS.1770)\n"
+    "- Layered, Simple (two-tone, glow, heat) and Classic (solid, heat map, rainbow) styles\n"
+    "- Stereo, mono or split (L up, R down) channels\n"
+    "- Hover readout, loudness summary and clip markers\n"
+    "- Time ruler and dB level scale\n"
+    "- Click or drag to seek\n"
+    "- Played part dimming with animated cursor effects, optionally synced to BPM\n"
+    "- Phosphor and other color themes in Display P3, light/dark colors, glass background\n"
+    "- Waveform cache with size and age limits\n"
     "- Lock width/height via context menu"
 );
 
@@ -47,16 +54,7 @@ namespace {
         // Layout editor recognizes components by name - support all variations
         // This ensures backward compatibility when renaming components
         bool match_name(const char* name) override {
-            return strcmp(name, "Waveform Seekbar") == 0 ||
-                   strcmp(name, "waveform_seekbar") == 0 ||
-                   strcmp(name, "waveform-seekbar") == 0 ||
-                   strcmp(name, "waveform-seekbar-mac") == 0 ||
-                   strcmp(name, "wave_seekbar") == 0 ||
-                   // Legacy names (pre-jl prefix)
-                   strcmp(name, "foo_wave_seekbar") == 0 ||
-                   // New jl-prefixed names
-                   strcmp(name, "foo_jl_wave_seekbar") == 0 ||
-                   strcmp(name, "jl_wave_seekbar") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {

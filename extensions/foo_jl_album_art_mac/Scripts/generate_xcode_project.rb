@@ -50,6 +50,10 @@ uuid_quartz_framework = generate_uuid
 uuid_quartz_framework_ref = generate_uuid
 uuid_security_framework = generate_uuid
 uuid_security_framework_ref = generate_uuid
+uuid_network_framework = generate_uuid
+uuid_network_framework_ref = generate_uuid
+uuid_uti_framework = generate_uuid
+uuid_uti_framework_ref = generate_uuid
 uuid_sqlite_lib = generate_uuid
 uuid_sqlite_lib_ref = generate_uuid
 uuid_compression_lib = generate_uuid
@@ -74,15 +78,19 @@ uuid_pfc_lib_ref = generate_uuid
 core_files = Dir.glob("src/Core/*.{cpp,h,mm}").map { |f| File.basename(f) }
 ui_files = Dir.glob("src/UI/*.{cpp,h,mm}").map { |f| File.basename(f) }
 integration_files = Dir.glob("src/Integration/*.{cpp,h,mm}").map { |f| File.basename(f) }
+shared_files = Dir.glob("../../shared/*.{cpp,h,mm}").map { |f| File.basename(f) }
 
 # Collect resource files (XIB, etc.)
 resource_files = Dir.glob("Resources/*.xib").map { |f| File.basename(f) }
+
+# Shared group UUID
+uuid_shared_group = generate_uuid
 
 # Generate UUIDs for all source files
 file_uuids = {}
 file_ref_uuids = {}
 
-[core_files, ui_files, integration_files].flatten.each do |file|
+[core_files, ui_files, integration_files, shared_files].flatten.each do |file|
   file_uuids[file] = generate_uuid
   file_ref_uuids[file] = generate_uuid
 end
@@ -100,6 +108,7 @@ puts "Generating Xcode project structure..."
 puts "  Core files: #{core_files.join(', ')}"
 puts "  UI files: #{ui_files.join(', ')}"
 puts "  Integration files: #{integration_files.join(', ')}"
+puts "  Shared files: #{shared_files.join(', ')}"
 puts "  Resource files: #{resource_files.join(', ')}"
 
 # Create the .xcodeproj bundle
@@ -119,7 +128,7 @@ pbxproj_content = <<~PBXPROJ
 PBXPROJ
 
 # Add build file entries for source files
-[['Core', core_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['UI', ui_files], ['Integration', integration_files], ['Shared', shared_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')  # Don't compile headers
     pbxproj_content += "\t\t#{file_uuids[file]} /* #{file} in Sources */ = {isa = PBXBuildFile; fileRef = #{file_ref_uuids[file]} /* #{file} */; };\n"
@@ -135,6 +144,8 @@ end
 pbxproj_content += "\t\t#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_cocoa_framework_ref} /* Cocoa.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_quartz_framework_ref} /* QuartzCore.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework} /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_security_framework_ref} /* Security.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_network_framework} /* Network.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_network_framework_ref} /* Network.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_uti_framework} /* UniformTypeIdentifiers.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_uti_framework_ref} /* UniformTypeIdentifiers.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_sqlite_lib_ref} /* libsqlite3.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib} /* libcompression.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_compression_lib_ref} /* libcompression.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_zlib} /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_zlib_ref} /* libz.tbd */; };\n"
@@ -144,7 +155,7 @@ pbxproj_content += "\t\t#{uuid_sdk_lib} /* libfoobar2000_SDK.a in Frameworks */ 
 pbxproj_content += "\t\t#{uuid_helpers_lib} /* libfoobar2000_SDK_helpers.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */; };\n"
 pbxproj_content += "\t\t#{uuid_component_client_lib} /* libfoobar2000_component_client.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */; };\n"
 pbxproj_content += "\t\t#{uuid_shared_lib} /* libshared.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_shared_lib_ref} /* libshared.a */; };\n"
-pbxproj_content += "\t\t#{uuid_pfc_lib} /* libpfc-Mac.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_pfc_lib_ref} /* libpfc-Mac.a */; };\n"
+pbxproj_content += "\t\t#{uuid_pfc_lib} /* libpfc.a in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_pfc_lib_ref} /* libpfc.a */; };\n"
 
 pbxproj_content += <<~PBXPROJ
 /* End PBXBuildFile section */
@@ -165,13 +176,29 @@ PBXPROJ
       'text'
     end
 
-    pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = #{file}; sourceTree = \"<group>\"; };\n"
+    # Quote paths: characters like '+' are invalid in unquoted plist tokens
+    pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; path = \"#{file}\"; sourceTree = \"<group>\"; };\n"
   end
+end
+
+# Add file references for shared files (with relative path to shared directory)
+shared_files.each do |file|
+  file_type = if file.end_with?('.h')
+    'sourcecode.c.h'
+  elsif file.end_with?('.mm')
+    'sourcecode.cpp.objcpp'
+  elsif file.end_with?('.cpp')
+    'sourcecode.cpp.cpp'
+  else
+    'text'
+  end
+
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = #{file_type}; name = \"#{file}\"; path = \"../../../shared/#{file}\"; sourceTree = \"<group>\"; };\n"
 end
 
 # Add XIB file references
 resource_files.each do |file|
-  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = #{file}; sourceTree = \"<group>\"; };\n"
+  pbxproj_content += "\t\t#{file_ref_uuids[file]} /* #{file} */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = \"#{file}\"; sourceTree = \"<group>\"; };\n"
 end
 
 # Add product reference
@@ -184,6 +211,8 @@ pbxproj_content += "\t\t#{uuid_infoplist} /* Info.plist */ = {isa = PBXFileRefer
 pbxproj_content += "\t\t#{uuid_cocoa_framework_ref} /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework_ref} /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework_ref} /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };\n"
+pbxproj_content += "\t\t#{uuid_network_framework_ref} /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };\n"
+pbxproj_content += "\t\t#{uuid_uti_framework_ref} /* UniformTypeIdentifiers.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UniformTypeIdentifiers.framework; path = System/Library/Frameworks/UniformTypeIdentifiers.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib_ref} /* libcompression.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libcompression.tbd; path = usr/lib/libcompression.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_zlib_ref} /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };\n"
@@ -193,7 +222,7 @@ pbxproj_content += "\t\t#{uuid_sdk_lib_ref} /* libfoobar2000_SDK.a */ = {isa = P
 pbxproj_content += "\t\t#{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libfoobar2000_SDK_helpers.a; path = \"#{SDK_PATH}/foobar2000/helpers/build/Release/libfoobar2000_SDK_helpers.a\"; sourceTree = \"<group>\"; };\n"
 pbxproj_content += "\t\t#{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libfoobar2000_component_client.a; path = \"#{SDK_PATH}/foobar2000/foobar2000_component_client/build/Release/libfoobar2000_component_client.a\"; sourceTree = \"<group>\"; };\n"
 pbxproj_content += "\t\t#{uuid_shared_lib_ref} /* libshared.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libshared.a; path = \"#{SDK_PATH}/foobar2000/shared/build/Release/libshared.a\"; sourceTree = \"<group>\"; };\n"
-pbxproj_content += "\t\t#{uuid_pfc_lib_ref} /* libpfc-Mac.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = \"libpfc-Mac.a\"; path = \"#{SDK_PATH}/pfc/build/Release/libpfc-Mac.a\"; sourceTree = \"<group>\"; };\n"
+pbxproj_content += "\t\t#{uuid_pfc_lib_ref} /* libpfc.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = \"libpfc.a\"; path = \"#{SDK_PATH}/pfc/build/Release/libpfc.a\"; sourceTree = \"<group>\"; };\n"
 
 pbxproj_content += <<~PBXPROJ
 /* End PBXFileReference section */
@@ -206,6 +235,8 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */,
 				#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */,
 				#{uuid_security_framework} /* Security.framework in Frameworks */,
+				#{uuid_network_framework} /* Network.framework in Frameworks */,
+				#{uuid_uti_framework} /* UniformTypeIdentifiers.framework in Frameworks */,
 				#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */,
 				#{uuid_compression_lib} /* libcompression.tbd in Frameworks */,
 				#{uuid_zlib} /* libz.tbd in Frameworks */,
@@ -213,7 +244,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_helpers_lib} /* libfoobar2000_SDK_helpers.a in Frameworks */,
 				#{uuid_component_client_lib} /* libfoobar2000_component_client.a in Frameworks */,
 				#{uuid_shared_lib} /* libshared.a in Frameworks */,
-				#{uuid_pfc_lib} /* libpfc-Mac.a in Frameworks */,
+				#{uuid_pfc_lib} /* libpfc.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -236,6 +267,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_core_group} /* Core */,
 				#{uuid_ui_group} /* UI */,
 				#{uuid_integration_group} /* Integration */,
+				#{uuid_shared_group} /* Shared */,
 			);
 			path = src;
 			sourceTree = "<group>";
@@ -282,6 +314,20 @@ pbxproj_content += <<~PBXPROJ
 			path = Integration;
 			sourceTree = "<group>";
 		};
+		#{uuid_shared_group} /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+PBXPROJ
+
+shared_files.each do |file|
+  pbxproj_content += "\t\t\t\t#{file_ref_uuids[file]} /* #{file} */,\n"
+end
+
+pbxproj_content += <<~PBXPROJ
+			);
+			name = Shared;
+			sourceTree = "<group>";
+		};
 		#{uuid_resources_group} /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -303,6 +349,8 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework_ref} /* Cocoa.framework */,
 				#{uuid_quartz_framework_ref} /* QuartzCore.framework */,
 				#{uuid_security_framework_ref} /* Security.framework */,
+				#{uuid_network_framework_ref} /* Network.framework */,
+				#{uuid_uti_framework_ref} /* UniformTypeIdentifiers.framework */,
 				#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */,
 				#{uuid_compression_lib_ref} /* libcompression.tbd */,
 				#{uuid_zlib_ref} /* libz.tbd */,
@@ -310,7 +358,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_helpers_lib_ref} /* libfoobar2000_SDK_helpers.a */,
 				#{uuid_component_client_lib_ref} /* libfoobar2000_component_client.a */,
 				#{uuid_shared_lib_ref} /* libshared.a */,
-				#{uuid_pfc_lib_ref} /* libpfc-Mac.a */,
+				#{uuid_pfc_lib_ref} /* libpfc.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -401,7 +449,7 @@ pbxproj_content += <<~PBXPROJ
 PBXPROJ
 
 # Add all source files (not headers) to sources build phase
-[['Core', core_files], ['UI', ui_files], ['Integration', integration_files]].each do |group, files|
+[['Core', core_files], ['UI', ui_files], ['Integration', integration_files], ['Shared', shared_files]].each do |group, files|
   files.each do |file|
     next if file.end_with?('.h')
     pbxproj_content += "\t\t\t\t#{file_uuids[file]} /* #{file} in Sources */,\n"
@@ -420,7 +468,7 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
@@ -453,7 +501,7 @@ pbxproj_content += <<~PBXPROJ
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
@@ -465,7 +513,7 @@ pbxproj_content += <<~PBXPROJ
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
@@ -492,7 +540,7 @@ pbxproj_content += <<~PBXPROJ
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = macosx;
 			};

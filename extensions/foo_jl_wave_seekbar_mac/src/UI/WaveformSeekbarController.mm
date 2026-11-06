@@ -11,6 +11,9 @@
 #import "../Core/WaveformService.h"
 #import "../Core/WaveformData.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/WaveformConfig.h"
+#include "../Core/WaveformGeometry.h"
+#include <cmath>
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -22,6 +25,10 @@
     NSLayoutConstraint *_heightConstraint;          // Current height constraint
     BOOL _widthLocked;                              // Track if width is locked
     BOOL _heightLocked;                             // Track if height is locked
+    ListenerId _waveformListenerId;                 // For safe listener removal
+    NSVisualEffectView *_glassEffectView;           // Blur background when glass mode is on
+    NSTimer *_analysisWatchdog;                     // Breaks a stuck "Analyzing..." state
+    int _analysisRetries;                           // Re-requests already spent on this track
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
@@ -39,11 +46,44 @@
 }
 
 - (void)loadView {
+    // Container hosts an optional blur view behind the waveform (glass mode)
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    container.wantsLayer = YES;
+    container.layer.cornerRadius = 6.0;
+    container.layer.masksToBounds = YES;
+
     // Create the waveform view programmatically
-    WaveformSeekbarView *view = [[WaveformSeekbarView alloc] initWithFrame:NSMakeRect(0, 0, 400, 80)];
+    WaveformSeekbarView *view = [[WaveformSeekbarView alloc] initWithFrame:container.bounds];
+    view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     view.delegate = self;  // Set delegate for context menu events
     self.waveformView = view;
-    self.view = view;
+
+    [container addSubview:view];
+    self.view = container;
+
+    [self updateGlassBackground];
+}
+
+- (void)updateGlassBackground {
+    using namespace waveform_config;
+    BOOL glass = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
+    if (glass == (_glassEffectView != nil)) return;
+
+    if (glass) {
+        _glassEffectView = [[NSVisualEffectView alloc] initWithFrame:self.view.bounds];
+        _glassEffectView.material = NSVisualEffectMaterialSidebar;
+        _glassEffectView.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+        _glassEffectView.state = NSVisualEffectStateActive;
+        _glassEffectView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self.view addSubview:_glassEffectView positioned:NSWindowBelow relativeTo:self.waveformView];
+    } else {
+        [_glassEffectView removeFromSuperview];
+        _glassEffectView = nil;
+    }
+}
+
+- (void)handleSettingsChanged:(NSNotification *)notification {
+    [self updateGlassBackground];
 }
 
 - (void)viewDidLoad {
@@ -84,9 +124,15 @@
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
 
-    // Register for waveform ready notifications
+    // Observe settings changes for glass background toggle without restart
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleSettingsChanged:)
+                                                 name:@"WaveformSeekbarSettingsChanged"
+                                               object:nil];
+
+    // Register for waveform ready notifications (store ID for safe removal)
     __weak typeof(self) weakSelf = self;
-    getWaveformService().addListener([weakSelf](const metadb_handle_ptr& track, const WaveformData* waveform) {
+    _waveformListenerId = getWaveformService().addListener([weakSelf](const metadb_handle_ptr& track, const WaveformData* waveform) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
 
@@ -101,6 +147,21 @@
     [self syncWithCurrentPlayback];
 }
 
+- (void)viewDidAppear {
+    [super viewDidAppear];
+
+    // A layout change tears this element down and builds a fresh one. If the
+    // scan for the current track was already in flight, its result went to the
+    // controller that requested it, so this instance would sit on "Analyzing..."
+    // until the next track. Re-request whenever we appear without a waveform.
+    if (!_storedWaveform && !_currentTrack.is_valid()) {
+        [self syncWithCurrentPlayback];
+    } else if (!_storedWaveform && _currentTrack.is_valid()) {
+        getWaveformService().requestWaveform(_currentTrack, nullptr);
+        [self startAnalysisWatchdog];
+    }
+}
+
 - (void)viewWillDisappear {
     [super viewWillDisappear];
     [self stopPositionTimer];
@@ -108,11 +169,11 @@
 
 - (void)dealloc {
     [self stopPositionTimer];
+    [self stopAnalysisWatchdog];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     PlaybackCallbackManager::instance().unregisterController(self);
-    // Remove our listener from the waveform service
-    // Note: This removes ALL listeners. Safe because typically only one controller exists.
-    // The weak reference pattern in addListener prevents crashes if multiple exist.
-    getWaveformService().removeAllListeners();
+    // Remove only our listener from the waveform service
+    getWaveformService().removeListener(_waveformListenerId);
 }
 
 #pragma mark - Playback State Sync
@@ -127,18 +188,10 @@
             if (pc->get_now_playing(track) && track.is_valid()) {
                 file_info_impl info;
                 double duration = 0;
+                double bpm = 0;
                 if (track->get_info_async(info)) {
                     duration = info.get_length();
-                }
-
-                // Get BPM from track info (check common field names)
-                double bpm = 0;
-                const char* bpmStr = info.meta_get("BPM", 0);
-                if (!bpmStr) bpmStr = info.meta_get("bpm", 0);
-                if (!bpmStr) bpmStr = info.meta_get("TBPM", 0);
-                if (!bpmStr) bpmStr = info.meta_get("TEMPO", 0);
-                if (bpmStr) {
-                    bpm = atof(bpmStr);
+                    bpm = extractBpmFromInfo(info);
                 }
                 [self handleNewTrack:track duration:duration bpm:bpm];
 
@@ -176,7 +229,9 @@
 
     // Request waveform
     if (track.is_valid()) {
+        _analysisRetries = 0;
         getWaveformService().requestWaveform(track, nullptr);
+        [self startAnalysisWatchdog];
     }
 
     // Start timer for smooth position updates
@@ -189,6 +244,7 @@
     _storedWaveform.reset();  // Release stored waveform
 
     [self stopPositionTimer];
+    [self stopAnalysisWatchdog];
 
     self.waveformView.trackDuration = 0.0;
     self.waveformView.playbackPosition = 0.0;
@@ -227,6 +283,7 @@
 
 - (void)updateWaveformData:(const WaveformData *)waveform {
     self.waveformView.analyzing = NO;  // Analysis complete
+    [self stopAnalysisWatchdog];
 
     if (!waveform || !waveform->isValid()) {
         _storedWaveform.reset();
@@ -239,6 +296,47 @@
     }
 
     [self.waveformView refreshDisplay];
+}
+
+#pragma mark - Analysis Watchdog
+
+// Longest a scan is allowed to run before we assume its result is never coming.
+// Generous enough for a long track on a slow or network volume.
+static const NSTimeInterval kAnalysisTimeout = 30.0;
+static const int kAnalysisMaxRetries = 1;
+
+- (void)startAnalysisWatchdog {
+    [self stopAnalysisWatchdog];
+
+    __weak typeof(self) weakSelf = self;
+    _analysisWatchdog = [NSTimer scheduledTimerWithTimeInterval:kAnalysisTimeout
+                                                        repeats:NO
+                                                          block:^(NSTimer * _Nonnull timer) {
+        [weakSelf handleAnalysisTimeout];
+    }];
+}
+
+- (void)stopAnalysisWatchdog {
+    [_analysisWatchdog invalidate];
+    _analysisWatchdog = nil;
+}
+
+- (void)handleAnalysisTimeout {
+    _analysisWatchdog = nil;
+
+    if (!self.waveformView.analyzing) return;
+
+    if (_currentTrack.is_valid() && _analysisRetries < kAnalysisMaxRetries) {
+        _analysisRetries++;
+        FB2K_console_formatter() << "[WaveSeek] Analysis timed out, re-requesting waveform";
+        getWaveformService().requestWaveform(_currentTrack, nullptr);
+        [self startAnalysisWatchdog];
+        return;
+    }
+
+    // Give up rather than latch on "Analyzing..." indefinitely
+    FB2K_console_formatter() << "[WaveSeek] Analysis timed out, giving up on this track";
+    [self updateWaveformData:nullptr];
 }
 
 #pragma mark - Position Timer
@@ -270,23 +368,68 @@
 }
 
 - (void)updatePosition:(NSTimer *)timer {
-    if (_isPaused) return;
+    @autoreleasepool {
+        if (_isPaused) return;
+        if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
 
-    try {
-        auto pc = playback_control::get();
-        if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
-            double position = pc->playback_get_position();
-            if (self.waveformView.trackDuration > 0) {
-                self.waveformView.playbackPosition = position / self.waveformView.trackDuration;
-                [self.waveformView refreshDisplay];
+        try {
+            auto pc = playback_control::get();
+            if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
+                double position = pc->playback_get_position();
+                if (self.waveformView.trackDuration > 0) {
+                    double newPos = position / self.waveformView.trackDuration;
+
+                    // Redraw once the cursor moves at least a quarter pixel, or
+                    // the time chip reaches the next second
+                    CGFloat viewWidth = self.waveformView.bounds.size.width;
+                    double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
+                    const bool nextSecond = self.waveformView.showCursorTime &&
+                                            std::floor(position) != std::floor(oldTime);
+
+                    // Animated cursor effects need continuous redraw to stay smooth
+                    BOOL animatedEffect = NO;
+                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
+                        switch (self.waveformView.cursorEffect) {
+                            case WaveformCursorEffectGlow:
+                            case WaveformCursorEffectScanline:
+                            case WaveformCursorEffectPulse:
+                            case WaveformCursorEffectShimmer:
+                                animatedEffect = YES;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
+                        self.waveformView.playbackPosition = newPos;
+                        [self.waveformView refreshDisplay];
+                    }
+                }
             }
+        } catch (...) {
+            // Ignore errors during timer update
         }
-    } catch (...) {
-        // Ignore errors during timer update
     }
 }
 
 #pragma mark - WaveformSeekbarViewDelegate
+
+- (void)waveformSeekbarView:(WaveformSeekbarView *)view requestsSeekToTime:(double)time {
+    try {
+        auto pc = playback_control::get();
+        if (pc.is_valid()) {
+            pc->playback_seek(time);
+        }
+    } catch (const std::exception& e) {
+        pfc::string_formatter msg;
+        msg << "[WaveSeek] Seek error: " << e.what();
+        console::error(msg.c_str());
+    } catch (...) {
+        console::error("[WaveSeek] Unknown seek error");
+    }
+}
 
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point {
     FB2K_console_formatter() << "[WaveSeek] Context menu requested";
@@ -311,7 +454,28 @@
     lockHeightItem.state = _heightLocked ? NSControlStateValueOn : NSControlStateValueOff;
     [menu addItem:lockHeightItem];
 
+    [menu addItem:[NSMenuItem separatorItem]];
+
+    // Preferences menu item
+    NSMenuItem *preferencesItem = [[NSMenuItem alloc]
+        initWithTitle:@"Preferences..."
+        action:@selector(menuShowPreferences:)
+        keyEquivalent:@""];
+    preferencesItem.target = self;
+    [menu addItem:preferencesItem];
+
     [menu popUpMenuPositioningItem:nil atLocation:point inView:view];
+}
+
+- (void)menuShowPreferences:(NSMenuItem *)sender {
+    @try {
+        auto uiControl = ui_control::get();
+        if (uiControl.is_valid()) {
+            uiControl->show_preferences(waveform_config::guid_preferences_page);
+        }
+    } @catch (...) {
+        console::error("[WaveSeek] Failed to open preferences");
+    }
 }
 
 - (void)menuToggleLockWidth:(NSMenuItem *)sender {

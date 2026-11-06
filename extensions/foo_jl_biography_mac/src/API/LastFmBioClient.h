@@ -55,11 +55,6 @@ typedef void (^LastFmSimilarArtistsCompletion)(NSArray * _Nullable artists, NSEr
                       token:(BiographyRequest *)token
                  completion:(LastFmSimilarArtistsCompletion)completion;
 
-/// Parse artist info response into BiographyData builder fields
-/// @param response The JSON response from artist.getinfo
-/// @return Dictionary with parsed fields (biography, tags, images, etc.)
-+ (NSDictionary *)parseArtistInfoResponse:(NSDictionary *)response;
-
 /// Cancel all pending requests
 - (void)cancelAllRequests;
 

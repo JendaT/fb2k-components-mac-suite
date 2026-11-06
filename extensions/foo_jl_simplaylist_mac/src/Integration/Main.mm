@@ -7,26 +7,31 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 
 #import "../UI/SimPlaylistView.h"
 #import "../UI/SimPlaylistController.h"
 #import "PlaylistCallbacks.h"
-#import "../../../../shared/JLConstraintDebugger.h"
 
 // Component version declaration with unified branding
 JL_COMPONENT_ABOUT(
     "SimPlaylist",
     SIMPLAYLIST_VERSION,
     "Simple playlist view for foobar2000 macOS\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
-    "- Album grouping with cover art display\n"
-    "- Three header display styles\n"
-    "- Subgroup support (disc numbers)\n"
-    "- Virtual scrolling for large playlists\n"
-    "- Keyboard navigation\n"
-    "- Now playing highlighting\n"
-    "- Drag & drop reordering"
+    "- Album grouping with cover art, configurable patterns\n"
+    "- Four header display styles, disc subgroups\n"
+    "- Built-in, component-provided and custom columns\n"
+    "- Queue column; Q queues the selected tracks\n"
+    "- Drag & drop reordering, drops from Finder and album list\n"
+    "- Sort and Remove in the context menu, undo/redo\n"
+    "- Remembers the scroll position of each playlist\n"
+    "- Now playing highlight and Focus Playing Now\n"
+    "- Keeps playback in its playlist while browsing the library\n"
+    "- Keeps the library selection sorted, albums by date"
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_simplaylist.component");
@@ -51,15 +56,7 @@ namespace {
         // Layout editor recognizes components by name - support all variations
         // This ensures backward compatibility when renaming components
         bool match_name(const char* name) override {
-            return strcmp(name, "SimPlaylist") == 0 ||
-                   strcmp(name, "simplaylist") == 0 ||
-                   strcmp(name, "sim_playlist") == 0 ||
-                   strcmp(name, "Simple Playlist") == 0 ||
-                   // Legacy names (pre-jl prefix)
-                   strcmp(name, "foo_simplaylist") == 0 ||
-                   // New jl-prefixed names
-                   strcmp(name, "foo_jl_simplaylist") == 0 ||
-                   strcmp(name, "jl_simplaylist") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {
@@ -75,18 +72,13 @@ namespace {
 }
 
 // Initialization handler
+namespace {
+
 class simplaylist_init : public initquit {
 public:
     void on_init() override {
         SimPlaylistCallbackManager::instance().initCallbacks();
         console::info("[SimPlaylist] Component initialized");
-
-        // Constraint debugger - uncomment to debug resize issues
-        // [JLConstraintDebugger enable];
-        // [JLConstraintDebugger setVerboseLogging:YES];
-        // dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        //     [JLConstraintDebugger dumpAllWindows];
-        // });
     }
 
     void on_quit() override {
@@ -96,3 +88,5 @@ public:
 };
 
 FB2K_SERVICE_FACTORY(simplaylist_init);
+
+}  // namespace

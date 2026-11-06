@@ -1,5 +1,6 @@
 #import "StreamResolver.h"
 #import "YtDlpWrapper.h"
+#import "MixcloudAPI.h"
 #import "../Core/CloudConfig.h"
 #import "../Core/URLUtils.h"
 #import "../Core/StreamCache.h"
@@ -180,6 +181,50 @@ ResolveResult StreamResolver::doResolve(const std::string& internalURL,
     // Determine service from URL
     ParsedCloudURL parsed = URLUtils::parseURL(internalURL);
     CloudService service = parsed.service;
+
+    // For Mixcloud tracks, fetch tracklist from API and populate chapters
+    if (service == CloudService::Mixcloud && result.trackInfo.has_value()) {
+        // yt-dlp doesn't extract Mixcloud tracklist, fetch it directly
+        logDebug("StreamResolver: fetching Mixcloud tracklist for " + parsed.username + "/" + parsed.slug);
+
+        auto tracklistResult = MixcloudAPI::shared().fetchTracklist(
+            parsed.username, parsed.slug, abortFlag);
+
+        if (tracklistResult.success && !tracklistResult.sections.empty()) {
+            TrackInfo& info = result.trackInfo.value();
+
+            // Use uploader name as artist (not tracklist artists)
+            if (!tracklistResult.uploaderName.empty()) {
+                info.artist = tracklistResult.uploaderName;
+                info.uploader = tracklistResult.uploaderName;
+            }
+
+            // Convert Mixcloud sections to chapters
+            info.chapters.clear();
+            for (size_t i = 0; i < tracklistResult.sections.size(); ++i) {
+                const auto& section = tracklistResult.sections[i];
+
+                Chapter chapter;
+                chapter.title = section.songName;
+                chapter.artist = section.artistName;
+                chapter.startTime = section.startSeconds;
+
+                // End time is the start of the next section, or 0 (until end)
+                if (i + 1 < tracklistResult.sections.size()) {
+                    chapter.endTime = tracklistResult.sections[i + 1].startSeconds;
+                } else {
+                    chapter.endTime = info.duration;  // Use track duration as end
+                }
+
+                info.chapters.push_back(std::move(chapter));
+            }
+
+            logDebug("StreamResolver: added " + std::to_string(info.chapters.size()) +
+                     " chapters from Mixcloud tracklist");
+        } else {
+            logDebug("StreamResolver: no tracklist available for this Mixcloud track");
+        }
+    }
 
     // Cache stream URL
     StreamCache::shared().set(internalURL, result.streamURL, service);

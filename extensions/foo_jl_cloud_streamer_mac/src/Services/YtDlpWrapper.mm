@@ -221,7 +221,13 @@ YtDlpResult YtDlpWrapper::extractMetadata(
 
     if (result.success && !result.streamURL.empty()) {
         // streamURL contains JSON in this case
-        result.trackInfo = parseMetadataJSON(result.streamURL, cloudURL);
+        result.trackInfo = YtDlpParser::parseMetadataJSON(result.streamURL, cloudURL);
+        if (!result.trackInfo.has_value()) {
+            logDebug("Failed to parse yt-dlp JSON");
+        } else if (!result.trackInfo->chapters.empty()) {
+            logDebug("Parsed " + std::to_string(result.trackInfo->chapters.size()) +
+                     " chapters from yt-dlp");
+        }
         // Get stream URL from parsed trackInfo
         if (result.trackInfo.has_value() && !result.trackInfo->streamURL.empty()) {
             result.streamURL = result.trackInfo->streamURL;
@@ -375,7 +381,7 @@ YtDlpResult YtDlpWrapper::execute(
         std::string errorOutput = [errorStr UTF8String] ?: "";
 
         if (task.terminationStatus != 0) {
-            result.error = parseErrorOutput(errorOutput);
+            result.error = YtDlpParser::parseErrorOutput(errorOutput);
             if (result.error == JLCloudError::None) {
                 result.error = JLCloudError::YtDlpFailed;
             }
@@ -394,200 +400,59 @@ YtDlpResult YtDlpWrapper::execute(
     }
 }
 
-std::optional<TrackInfo> YtDlpWrapper::parseMetadataJSON(const std::string& json, const std::string& originalURL) {
-    @autoreleasepool {
-        NSData* jsonData = [[NSString stringWithUTF8String:json.c_str()] dataUsingEncoding:NSUTF8StringEncoding];
-        if (!jsonData) {
-            return std::nullopt;
-        }
+YtDlpSearchResult YtDlpWrapper::search(
+    const std::string& query,
+    int maxResults,
+    std::atomic<bool>* abortFlag,
+    int timeoutSeconds
+) {
+    YtDlpSearchResult result;
 
-        NSError* error = nil;
-        NSDictionary* dict = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&error];
-        if (!dict || ![dict isKindOfClass:[NSDictionary class]]) {
-            logDebug("Failed to parse yt-dlp JSON");
-            return std::nullopt;
-        }
-
-        TrackInfo info;
-        info.internalURL = originalURL;
-
-        // Parse common fields
-        if (NSString* title = dict[@"title"]) {
-            info.title = [title UTF8String] ?: "";
-        }
-        if (NSString* uploader = dict[@"uploader"]) {
-            info.uploader = [uploader UTF8String] ?: "";
-        }
-        if (NSString* artist = dict[@"artist"]) {
-            info.artist = [artist UTF8String] ?: "";
-        }
-        if (NSString* album = dict[@"album"]) {
-            info.album = [album UTF8String] ?: "";
-        }
-        if (NSString* description = dict[@"description"]) {
-            info.description = [description UTF8String] ?: "";
-        }
-
-        // Duration
-        if (NSNumber* duration = dict[@"duration"]) {
-            info.duration = [duration doubleValue];
-        }
-
-        // Thumbnail
-        if (NSString* thumbnail = dict[@"thumbnail"]) {
-            info.thumbnailURL = [thumbnail UTF8String] ?: "";
-        }
-
-        // Upload date
-        if (NSString* uploadDate = dict[@"upload_date"]) {
-            info.uploadDate = [uploadDate UTF8String] ?: "";
-        }
-
-        // Tags
-        if (NSArray* tags = dict[@"tags"]) {
-            for (NSString* tag in tags) {
-                if ([tag isKindOfClass:[NSString class]]) {
-                    info.tags.push_back([tag UTF8String] ?: "");
-                }
-            }
-        }
-
-        // Web URL
-        if (NSString* webpageUrl = dict[@"webpage_url"]) {
-            info.webURL = [webpageUrl UTF8String] ?: "";
-        }
-
-        // Parse chapters/tracklist
-        NSArray* chapters = dict[@"chapters"];
-        if ([chapters isKindOfClass:[NSArray class]] && chapters.count > 0) {
-            for (NSDictionary* chapterDict in chapters) {
-                if (![chapterDict isKindOfClass:[NSDictionary class]]) continue;
-
-                Chapter chapter;
-
-                if (NSString* title = chapterDict[@"title"]) {
-                    chapter.title = [title UTF8String] ?: "";
-                }
-
-                if (NSNumber* startTime = chapterDict[@"start_time"]) {
-                    chapter.startTime = [startTime doubleValue];
-                }
-
-                if (NSNumber* endTime = chapterDict[@"end_time"]) {
-                    chapter.endTime = [endTime doubleValue];
-                }
-
-                // Some extractors put artist in a separate field
-                if (NSString* artist = chapterDict[@"artist"]) {
-                    chapter.artist = [artist UTF8String] ?: "";
-                }
-
-                if (!chapter.title.empty()) {
-                    info.chapters.push_back(chapter);
-                }
-            }
-
-            if (!info.chapters.empty()) {
-                logDebug("Parsed " + std::to_string(info.chapters.size()) + " chapters from yt-dlp");
-            }
-        }
-
-        // Extract stream URL from formats array
-        // Prefer HTTP format (direct download) over HLS/DASH
-        NSArray* formats = dict[@"formats"];
-        if ([formats isKindOfClass:[NSArray class]] && formats.count > 0) {
-            // Look for HTTP format first (format_id == "http")
-            for (NSDictionary* format in formats) {
-                if ([format isKindOfClass:[NSDictionary class]]) {
-                    NSString* formatId = format[@"format_id"];
-                    if ([formatId isEqualToString:@"http"]) {
-                        NSString* url = format[@"url"];
-                        if (url && [url isKindOfClass:[NSString class]] && url.length > 0) {
-                            info.streamURL = [url UTF8String];
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // If no HTTP format found, use first format with a URL
-            if (info.streamURL.empty()) {
-                for (NSDictionary* format in formats) {
-                    if ([format isKindOfClass:[NSDictionary class]]) {
-                        NSString* url = format[@"url"];
-                        if (url && [url isKindOfClass:[NSString class]] && url.length > 0) {
-                            info.streamURL = [url UTF8String];
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Also check for top-level "url" field (simpler extractors)
-        if (info.streamURL.empty()) {
-            if (NSString* directUrl = dict[@"url"]) {
-                if ([directUrl isKindOfClass:[NSString class]] && directUrl.length > 0) {
-                    info.streamURL = [directUrl UTF8String];
-                }
-            }
-        }
-
-        // Determine service
-        info.service = URLUtils::getService(originalURL);
-
-        // If artist is empty, use uploader
-        if (info.artist.empty() && !info.uploader.empty()) {
-            info.artist = info.uploader;
-        }
-
-        return info;
-    }
-}
-
-JLCloudError YtDlpWrapper::parseErrorOutput(const std::string& errorOutput) {
-    if (errorOutput.empty()) {
-        return JLCloudError::None;
+    if (query.empty()) {
+        result.error = JLCloudError::SearchNoResults;
+        result.errorMessage = "Empty search query";
+        return result;
     }
 
-    // Check for common error patterns
-    if (errorOutput.find("This video is not available") != std::string::npos ||
-        errorOutput.find("Video unavailable") != std::string::npos ||
-        errorOutput.find("not available") != std::string::npos) {
-        return JLCloudError::TrackUnavailable;
+    // Clamp maxResults to 1-50 range
+    maxResults = std::max(1, std::min(50, maxResults));
+
+    // Build search query: scsearch<N>:<query>
+    std::string searchQuery = "scsearch" + std::to_string(maxResults) + ":" + query;
+
+    std::vector<std::string> args;
+    args.push_back("--flat-playlist");  // Don't extract full info for each entry
+    args.push_back("-J");               // JSON output
+    args.push_back("--no-warnings");
+    args.push_back(searchQuery);
+
+    YtDlpResult execResult = execute(args, YtDlpOperation::Search, abortFlag, timeoutSeconds);
+
+    if (!execResult.success) {
+        result.error = execResult.error;
+        result.errorMessage = execResult.errorMessage;
+
+        // Map specific errors for search context
+        if (result.error == JLCloudError::Cancelled) {
+            result.error = JLCloudError::SearchCancelled;
+        } else if (result.error == JLCloudError::Timeout) {
+            result.error = JLCloudError::SearchTimeout;
+        }
+        return result;
     }
 
-    if (errorOutput.find("geo") != std::string::npos ||
-        errorOutput.find("country") != std::string::npos ||
-        errorOutput.find("region") != std::string::npos) {
-        return JLCloudError::GeoRestricted;
+    // Parse JSON output
+    result.entries = YtDlpParser::parseSearchJSON(execResult.streamURL);
+
+    if (result.entries.empty()) {
+        result.error = JLCloudError::SearchNoResults;
+        result.errorMessage = "No results found";
+        return result;
     }
 
-    if (errorOutput.find("403") != std::string::npos) {
-        return JLCloudError::StreamExpired;
-    }
-
-    if (errorOutput.find("login") != std::string::npos ||
-        errorOutput.find("sign in") != std::string::npos ||
-        errorOutput.find("authentication") != std::string::npos) {
-        return JLCloudError::AuthRequired;
-    }
-
-    if (errorOutput.find("rate limit") != std::string::npos ||
-        errorOutput.find("too many") != std::string::npos) {
-        return JLCloudError::RateLimited;
-    }
-
-    if (errorOutput.find("no suitable format") != std::string::npos ||
-        errorOutput.find("Requested format") != std::string::npos) {
-        return JLCloudError::FormatNotFound;
-    }
-
-    if (errorOutput.find("Unsupported URL") != std::string::npos) {
-        return JLCloudError::UnsupportedURL;
-    }
-
-    return JLCloudError::YtDlpFailed;
+    result.success = true;
+    logDebug("Search returned " + std::to_string(result.entries.size()) + " results");
+    return result;
 }
 
 } // namespace cloud_streamer

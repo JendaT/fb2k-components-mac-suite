@@ -28,6 +28,7 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
     TreeModelChangeTypeMove         // Node moved
 };
 
+// Main-thread-only singleton: mutates unsynchronized state and posts change notifications on the main queue
 @interface TreeModel : NSObject
 
 // Singleton - all organizer panels share the same tree
@@ -47,8 +48,22 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 
 // Search
 - (nullable TreeNode *)findPlaylistWithName:(NSString *)name;
-- (nullable TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;
 - (nullable TreeNode *)findFolderAtPath:(NSString *)path;
+
+// Path-encoded foobar2000 names
+// Computes the foobar2000 playlist name for a node (path-encoded if setting is ON)
+- (NSString *)foobarNameForNode:(TreeNode *)node;
+// Finds a tree node by its foobar2000 encoded name
+- (nullable TreeNode *)findPlaylistForFoobarName:(NSString *)foobarName;
+// Migration between plain and encoded names
+- (void)migrateToPathEncodedNames;
+- (void)migrateFromPathEncodedNames;
+// One-time repair for corrupted foobar names (from verifyEncodedNames double-encoding)
+- (void)repairCorruptedFoobarNames;
+// Count leaf names that would collide when migrating OFF
+- (NSInteger)countPathEncodingCollisions;
+// Migration generation counter (increments on batch rename operations)
+@property (nonatomic, assign) NSUInteger migrationGeneration;
 
 // Playlist sync
 - (void)handlePlaylistCreated:(NSString *)name;
@@ -60,14 +75,6 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 - (void)loadFromConfig;
 - (void)saveToConfig;
 - (NSString *)toYaml;  // Export tree as YAML
-- (NSInteger)importFromYaml:(NSString *)yaml;  // Import/merge YAML into tree, returns count
-
-// Expanded state
-- (NSSet<NSString *> *)expandedFolderPaths;
-- (void)setExpandedFolderPaths:(NSSet<NSString *> *)paths;
-
-// Default tree (for first run)
-- (void)createDefaultTree;
 
 @end
 

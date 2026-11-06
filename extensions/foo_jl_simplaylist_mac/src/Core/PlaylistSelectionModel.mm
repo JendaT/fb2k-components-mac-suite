@@ -64,14 +64,9 @@
     if (range.location == NSNotFound || range.length == 0) return;
 
     if (hasCmd) {
-        // Cmd+click on group: toggle group selection
-        BOOL allSelected = YES;
-        for (NSUInteger i = range.location; i < range.location + range.length; i++) {
-            if (![_selectedIndices containsIndex:i]) {
-                allSelected = NO;
-                break;
-            }
-        }
+        // Cmd+click on group: toggle group selection. One range query instead of
+        // one containsIndex: per track - a group can hold thousands.
+        BOOL allSelected = [_selectedIndices containsIndexesInRange:range];
         if (allSelected) {
             [_selectedIndices removeIndexesInRange:range];
         } else {

@@ -1,0 +1,1279 @@
+//
+//  SpectrumView.mm
+//  foo_jl_spectrum_mac
+//
+
+#import "SpectrumView.h"
+#include "../Core/SpectrumConfig.h"
+#include "../../../../shared/UIStyles.h"
+#include "../../../../shared/ThemeColor.h"
+#include <algorithm>
+#include <vector>
+#include <cmath>
+
+@implementation SpectrumView {
+    std::vector<float> _bars;
+    std::vector<float> _shadow;
+    std::vector<float> _peaks;
+    std::vector<float> _side;   // side channel in Mid + side mode, else empty
+
+    // Cached settings (refreshed via reloadSettings)
+    int      _barStyle;
+    int      _drawMode;
+    int      _curveStyle;  // spectrum_config::CurveStyle
+    int      _colorBarBrightness;  // strength of the loudest color bar, %
+    bool     _vertical;
+    bool     _autoBars;
+    int      _gapPercent;
+    int      _cfgMinHz;    // configured range
+    int      _cfgMaxHz;
+    double   _sampleRate;  // of the audio shown; 0 until known
+    double   _minHz;       // range drawn: the configured one, limited to Nyquist
+    double   _maxHz;
+    int      _freqScale;   // spectrum_config::FreqScale
+
+    // Transient plot geometry (set each drawRect). Frequency runs along one
+    // axis, magnitude along the other, depending on orientation.
+    CGFloat  _pOx, _pOy;   // plot origin (left, bottom)
+    CGFloat  _pFreq;       // pixels along the frequency axis
+    CGFloat  _pMag;        // pixels along the magnitude axis
+    bool     _peakHold;
+    bool     _shadowFill;
+    bool     _showDbGuides;
+    int      _topDb;       // level at the top of the plot
+    int      _rangeDb;     // dB from the top of the plot to the bottom
+    bool     _showFreqAxis;
+    bool     _showLegend;   // Live / Peak hold legend in Curve mode
+    int      _gridOpacity;
+    bool     _glass;
+    uint32_t _barColorLight;
+    uint32_t _bgColorLight;
+    uint32_t _barColorDark;
+    uint32_t _bgColorDark;
+    uint32_t _gridColorLight;
+    uint32_t _gridColorDark;
+
+    // Per-bar frequency labels (bars mode). Text and sizes are cached per bar
+    // count; lane layout is recomputed each drawRect from the plot length.
+    NSArray<NSString *> *_barLabels;
+    CGFloat  _barLabelMaxW;
+    CGFloat  _barLabelH;
+    NSInteger _blLanes;    // 1 or 2 staggered rows/columns
+    NSInteger _blStride;   // label every Nth bar
+    CGFloat  _blLaneSize;  // row height (horizontal) or column width (vertical)
+
+    BOOL     _freqAxisDrawn;  // frequency labels drawn this frame
+
+    // Readout under the mouse while it is over the plot.
+    BOOL     _hovering;
+    NSPoint  _hoverPoint;
+    NSTrackingArea *_tracking;
+}
+
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        self.wantsLayer = YES;
+        [self reloadSettings];
+    }
+    return self;
+}
+
+- (BOOL)isFlipped { return NO; }  // origin bottom-left: bars grow upward
+
+- (void)reloadSettings {
+    using namespace spectrum_config;
+    _barStyle      = (int)getConfigInt(kKeyBarStyle, kDefaultBarStyle);
+    _drawMode      = (int)getConfigInt(kKeyDrawMode, kDefaultDrawMode);
+    _curveStyle    = (int)getConfigInt(kKeyCurveStyle, kDefaultCurveStyle);
+    _colorBarBrightness = (int)getConfigInt(kKeyColorBarBrightness, kDefaultColorBarBrightness);
+    _vertical      = getConfigInt(kKeyOrientation, kDefaultOrientation) == OrientationVertical;
+    _autoBars      = getConfigInt(kKeyBarCount, kDefaultBarCount) == kBarCountAuto;
+    _gapPercent    = (int)getConfigInt(kKeyGapPercent, kDefaultGapPercent);
+    _cfgMinHz      = (int)getConfigInt(kKeyMinHz, kDefaultMinHz);
+    _cfgMaxHz      = (int)getConfigInt(kKeyMaxHz, kDefaultMaxHz);
+    // Same clamps as SpectrumAnalyzer::configure(), so fractionForHz: cannot
+    // divide by zero or take log10 of a non-positive bound.
+    if (_cfgMinHz < 10) _cfgMinHz = 10;
+    if (_cfgMaxHz <= _cfgMinHz + 100) _cfgMaxHz = _cfgMinHz + 100;
+    [self updateFrequencyRange];
+    _freqScale     = (int)getConfigInt(kKeyFreqScale, kDefaultFreqScale);
+    _peakHold      = getConfigBool(kKeyPeakHold, kDefaultPeakHold);
+    _shadowFill    = getConfigBool(kKeyShadowFill, kDefaultShadowFill);
+    _showDbGuides  = getConfigBool(kKeyShowDbGuides, kDefaultShowDbGuides);
+    _topDb         = getTopDb();
+    _rangeDb       = getRangeDb();
+    _showFreqAxis  = getConfigBool(kKeyShowFreqAxis, kDefaultShowFreqAxis);
+    _showLegend    = getConfigBool(kKeyShowLegend, kDefaultShowLegend);
+    _gridOpacity   = (int)getConfigInt(kKeyGridOpacity, kDefaultGridOpacity);
+    _glass         = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
+    _barColorLight = (uint32_t)getConfigInt(kKeyBarColorLight, kDefaultBarColorLight);
+    _bgColorLight  = (uint32_t)getConfigInt(kKeyBgColorLight, kDefaultBgColorLight);
+    _barColorDark  = (uint32_t)getConfigInt(kKeyBarColorDark, kDefaultBarColorDark);
+    _bgColorDark   = (uint32_t)getConfigInt(kKeyBgColorDark, kDefaultBgColorDark);
+    _gridColorLight = (uint32_t)getConfigInt(kKeyGridColorLight, kDefaultGridColorLight);
+    _gridColorDark  = (uint32_t)getConfigInt(kKeyGridColorDark, kDefaultGridColorDark);
+    _barLabels = nil;  // frequency range or scale may have changed
+    [self setNeedsDisplay:YES];
+}
+
+// The analyzer stops at half the sample rate (SpectrumAnalyzer::rebuildBands);
+// the grid, labels and readout follow it so they line up with the curve.
+- (void)updateFrequencyRange {
+    const double nyquist = (_sampleRate > 0 ? _sampleRate : 44100.0) * 0.5;
+    _minHz = std::min<double>(_cfgMinHz, nyquist - 1);
+    _maxHz = std::min<double>(_cfgMaxHz, nyquist);
+}
+
+- (void)setSampleRate:(double)rate {
+    if (rate == _sampleRate) return;
+    _sampleRate = rate;
+    [self updateFrequencyRange];
+    _barLabels = nil;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setBarsData:(const float *)bars
+             shadow:(const float *)shadow
+              peaks:(const float *)peaks
+               side:(const float *)side
+              count:(NSInteger)count {
+    if (count < 0) count = 0;
+    _bars.assign(bars, bars + count);
+    _shadow.assign(shadow, shadow + count);
+    _peaks.assign(peaks, peaks + count);
+    if (side) _side.assign(side, side + count);
+    else      _side.clear();
+    [self setNeedsDisplay:YES];
+}
+
+#pragma mark - Color helpers
+
+// Theme colours are Display P3 (shared/ThemeColor.h).
+static NSColor *colorFromARGB(uint32_t argb) {
+    return JLColorFromARGB(argb);
+}
+
+// Mix in Display P3. blendedColorWithFraction: may convert to a
+// standard-gamut space first, which would clip saturated theme colours.
+static NSColor *blendP3(NSColor *a, CGFloat fraction, NSColor *b) {
+    NSColorSpace *p3 = [NSColorSpace displayP3ColorSpace];
+    NSColor *x = [a colorUsingColorSpace:p3], *y = [b colorUsingColorSpace:p3];
+    if (!x || !y) return nil;
+    const CGFloat t = fraction < 0 ? 0 : (fraction > 1 ? 1 : fraction);
+    return [NSColor colorWithDisplayP3Red:x.redComponent + (y.redComponent - x.redComponent) * t
+                                    green:x.greenComponent + (y.greenComponent - x.greenComponent) * t
+                                     blue:x.blueComponent + (y.blueComponent - x.blueComponent) * t
+                                    alpha:x.alphaComponent + (y.alphaComponent - x.alphaComponent) * t];
+}
+
+// HSB colour built in sRGB terms, its numbers then read as Display P3 like
+// every other theme colour. nil when it cannot be converted.
+static NSColor *hueColorP3(CGFloat h, CGFloat s, CGFloat b) {
+    NSColor *rgb = [[NSColor colorWithHue:h saturation:s brightness:b alpha:1.0]
+                    colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    if (!rgb) return nil;
+    return [NSColor colorWithDisplayP3Red:rgb.redComponent green:rgb.greenComponent blue:rgb.blueComponent alpha:1.0];
+}
+
+// Two-colour gradient interpolated in Display P3.
+static NSGradient *gradientP3(NSColor *from, NSColor *to) {
+    const CGFloat locations[2] = {0.0, 1.0};
+    return [[NSGradient alloc] initWithColors:@[from, to] atLocations:locations
+                                   colorSpace:[NSColorSpace displayP3ColorSpace]];
+}
+
+- (NSColor *)barColor {
+    return colorFromARGB(fb2k_ui::isDarkMode() ? _barColorDark : _barColorLight);
+}
+
+- (NSColor *)bgColor {
+    return colorFromARGB(fb2k_ui::isDarkMode() ? _bgColorDark : _bgColorLight);
+}
+
+// Side-channel line: the bar colour's complementary hue, so it reads as a
+// separate signal in every theme.
+- (NSColor *)sideColor {
+    NSColor *c = [[self barColor] colorUsingColorSpace:[NSColorSpace displayP3ColorSpace]];
+    if (!c) return [NSColor systemOrangeColor];
+    CGFloat h, s, b, a;
+    [c getHue:&h saturation:&s brightness:&b alpha:&a];
+    h += 0.5; if (h >= 1.0) h -= 1.0;
+    return hueColorP3(h, MAX(s, 0.55), MAX(b, 0.75)) ?: [NSColor systemOrangeColor];
+}
+
+- (void)drawSideLine {
+    if (_side.size() != _bars.size() || _side.empty()) return;
+    NSBezierPath *line = [self linePathForValues:_side];
+    line.lineWidth = 1.5;
+    [[self sideColor] setStroke];
+    [line stroke];
+}
+
+- (NSColor *)gridColor {
+    return colorFromARGB(fb2k_ui::isDarkMode() ? _gridColorDark : _gridColorLight);
+}
+
+- (NSColor *)gridLineColor {
+    CGFloat a = _gridOpacity / 100.0;
+    if (a < 0) a = 0; else if (a > 1) a = 1;
+    return [[self gridColor] colorWithAlphaComponent:a];
+}
+
+- (NSColor *)gridLabelColor {
+    // Labels must stay readable whatever the grid looks like, so they do not
+    // take the grid's color or opacity (a theme's grid is often a dark grey
+    // meant to recede). They are the background pushed most of the way to
+    // white, or to black on a light background. Opacity 0 still hides the
+    // whole grid, labels included.
+    if (_gridOpacity <= 0) return [NSColor clearColor];
+    NSColor *bg = [[self bgColor] colorUsingColorSpace:[NSColorSpace displayP3ColorSpace]];
+    if (!bg) return NSColor.secondaryLabelColor;
+    return blendP3(bg, 0.62, [self inkColor]) ?: NSColor.secondaryLabelColor;
+}
+
+// Labels at the decades (100, 1k, 10k), brighter so they are easy to find.
+- (NSColor *)decadeLabelColor {
+    if (_gridOpacity <= 0) return [NSColor clearColor];
+    NSColor *bg = [[self bgColor] colorUsingColorSpace:[NSColorSpace displayP3ColorSpace]];
+    if (!bg) return NSColor.labelColor;
+    return blendP3(bg, 0.92, [self inkColor]) ?: NSColor.labelColor;
+}
+
+// White on a dark background, black on a light one.
+- (NSColor *)inkColor {
+    NSColor *bg = [[self bgColor] colorUsingColorSpace:[NSColorSpace displayP3ColorSpace]];
+    if (!bg) return NSColor.labelColor;
+    const CGFloat luminance = 0.2126 * bg.redComponent + 0.7152 * bg.greenComponent + 0.0722 * bg.blueComponent;
+    return luminance < 0.5 ? NSColor.whiteColor : NSColor.blackColor;
+}
+
+// Fraction 0..1 across the plot width for a given frequency, matching the
+// analyzer's band mapping so gridlines line up with the bars.
+- (CGFloat)fractionForHz:(double)f {
+    using namespace spectrum_config;
+    const double lo = freqScalePos(_freqScale, _minHz);
+    const double hi = freqScalePos(_freqScale, _maxHz);
+    return (CGFloat)((freqScalePos(_freqScale, f) - lo) / (hi - lo));
+}
+
+// Inverse of fractionForHz:.
+- (double)hzForFraction:(CGFloat)t {
+    using namespace spectrum_config;
+    const double lo = freqScalePos(_freqScale, _minHz);
+    const double hi = freqScalePos(_freqScale, _maxHz);
+    return freqScaleHz(_freqScale, lo + (hi - lo) * t);
+}
+
+#pragma mark - Drawing
+
+// Map a frequency fraction (0..1) and magnitude (0..1) to a screen point,
+// honoring the current orientation. Uses the transient plot geometry.
+- (CGPoint)mapF:(CGFloat)f mag:(CGFloat)m {
+    if (_vertical) return CGPointMake(_pOx + m * _pMag, _pOy + f * _pFreq);
+    return CGPointMake(_pOx + f * _pFreq, _pOy + m * _pMag);
+}
+
+// Axis labels: monospaced, large enough to read at a glance next to a busy
+// spectrum. Decade labels are set heavier.
+static const CGFloat kLabelFontSize = 11.0;
+static const NSFontWeight kLabelWeight = NSFontWeightRegular;
+static const NSFontWeight kDecadeLabelWeight = NSFontWeightSemibold;
+
+static NSFont *labelFont(NSFontWeight weight) {
+    NSFont *f = [NSFont monospacedSystemFontOfSize:kLabelFontSize weight:weight];
+    if (!f) f = [NSFont monospacedDigitSystemFontOfSize:kLabelFontSize weight:weight];
+    return f ?: [NSFont systemFontOfSize:kLabelFontSize];
+}
+
+// Text attributes that tolerate a nil font or color. A nil value in a
+// dictionary literal throws, and an exception thrown while AppKit draws the
+// view is swallowed mid-transaction, which can corrupt memory and crash the
+// app later on.
+static NSDictionary *textAttrs(NSFont *font, NSColor *color) {
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithCapacity:2];
+    d[NSFontAttributeName] = font ?: [NSFont systemFontOfSize:kLabelFontSize];
+    if (color) d[NSForegroundColorAttributeName] = color;
+    return d;
+}
+
+// The magnitude axis needs a wide margin for "-80" labels; the frequency
+// axis a thinner one. Which screen edge holds which depends on orientation.
+// Beside a horizontal plot the dB column widens to its widest label.
+static const CGFloat kDbThick = 42.0;    // along the magnitude axis
+static const CGFloat kDbLabelGap = 6.0;  // plot edge to dB label
+static const CGFloat kFreqThick = 22.0;  // along the frequency axis
+// Empty border on each side of the view. None: in a foobar2000 layout the
+// panel sits flush against its neighbours, so the plot and its labels run
+// edge to edge.
+static const CGFloat kMarginLeft = 0.0;
+static const CGFloat kMarginTop = 0.0;
+static const CGFloat kMarginRight = 0.0;
+static const CGFloat kMarginBottom = 0.0;
+
+static NSFont *dbLabelFont() {
+    return labelFont(kLabelWeight);
+}
+
+// Frequency gridlines at these fractions of the grid opacity: the decades
+// (100 Hz, 1 kHz, 10 kHz) stand out without glaring, the lines between them
+// recede further. dB lines take the full opacity.
+static const CGFloat kDecadeGridAlpha = 0.7;
+static const CGFloat kMinorGridAlpha = 0.45;
+
+// Curve mode: the live curve is the strong line; peak hold a thin, faded one
+// in the same colour.
+static const CGFloat kLiveLineWidth = 1.75;
+static const CGFloat kPeakLineWidth = 1.0;
+static const CGFloat kPeakLineAlpha = 0.45;
+
+// Plot length along the frequency axis. Only the dB-label margin shortens it
+// (the frequency-label margin runs across the other axis), so it is known
+// before bar labels are laid out.
+- (CGFloat)freqAxisLengthForSize:(NSSize)size drawDb:(BOOL *)drawDb drawFreq:(BOOL *)drawFreq {
+    const CGFloat W = size.width - kMarginLeft - kMarginRight;
+    const CGFloat H = size.height - kMarginTop - kMarginBottom;
+    if (_vertical) {
+        *drawDb   = _showDbGuides && (H > 50.0);   // dB labels along the bottom
+        *drawFreq = _showFreqAxis && (W > 80.0);   // freq labels along the right
+        return H - (*drawDb ? kFreqThick : 0.0);
+    }
+    *drawDb   = _showDbGuides && (W > 80.0);       // dB labels along the right
+    *drawFreq = _showFreqAxis && (H > 50.0);       // freq labels along the bottom
+    return W - (*drawDb ? [self dbColumnWidth] : 0.0);
+}
+
+// The dB guides, top line first: (level, label). Numbers only, as on studio
+// analyzers; the topmost line names the unit.
+- (std::vector<std::pair<int, NSString *>>)dbGuides {
+    std::vector<std::pair<int, NSString *>> guides;
+    const float range = _rangeDb;
+    if (range <= 0) return guides;
+    const float floorDb = _topDb - range;
+    const int step = range > 90 ? 20 : 10;
+    const int startDb = (int)(std::floor((double)_topDb / step) * step);   // at or below Top
+    for (int db = startDb; db > (int)floorDb; db -= step) {
+        guides.emplace_back(db, db == startDb ? [NSString stringWithFormat:@"%d dB", db]
+                                              : [NSString stringWithFormat:@"%d", db]);
+    }
+    return guides;
+}
+
+// Wide enough for every label beside the horizontal plot, the unit included.
+- (CGFloat)dbColumnWidth {
+    NSDictionary *attrs = textAttrs(dbLabelFont(), NSColor.labelColor);
+    CGFloat widest = 0;
+    for (const auto &g : [self dbGuides])
+        widest = std::max(widest, [g.second sizeWithAttributes:attrs].width);
+    return std::max(kDbThick, std::ceil(kDbLabelGap + widest + 2.0));
+}
+
+- (NSInteger)autoBarCount {
+    BOOL drawDb, drawFreq;
+    const CGFloat len = [self freqAxisLengthForSize:self.bounds.size drawDb:&drawDb drawFreq:&drawFreq];
+    const double pitch = _drawMode == spectrum_config::DrawModeCurve ? spectrum_config::kCurvePointPitch
+                                                                     : spectrum_config::kAutoBarPitch;
+    const NSInteger n = (NSInteger)std::floor(len / pitch);
+    return std::max<NSInteger>(16, std::min<NSInteger>(n, spectrum_config::kMaxBarCount));
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    const BOOL viewSized = _autoBars || _drawMode == spectrum_config::DrawModeCurve;
+    if (viewSized && [self.delegate respondsToSelector:@selector(spectrumView:autoBarCountChanged:)]) {
+        [self.delegate spectrumView:self autoBarCountChanged:[self autoBarCount]];
+    }
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    // An exception must not leave drawRect: - AppKit swallows it in the middle
+    // of its display transaction, which can corrupt memory and crash
+    // foobar2000 later. Log it and skip the frame instead.
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    CGContextSaveGState(ctx);
+    @try {
+        [self drawSpectrum];
+    } @catch (NSException *e) {
+        NSLog(@"foo_jl_spectrum: drawing failed: %@", e);
+    }
+    CGContextRestoreGState(ctx);
+}
+
+- (void)drawSpectrum {
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+    const CGRect bounds = self.bounds;
+    // The layout below works inside the outer margin.
+    const CGFloat W = bounds.size.width - kMarginLeft - kMarginRight;
+    const CGFloat H = bounds.size.height - kMarginTop - kMarginBottom;
+
+    if (!_glass) {
+        CGContextSetFillColorWithColor(ctx, [self bgColor].CGColor);
+        CGContextFillRect(ctx, bounds);
+    }
+
+    const NSInteger n = (NSInteger)_bars.size();
+    if (n <= 0) { [self drawPlaceholder:bounds]; return; }
+
+    BOOL drawDb, drawFreq;
+    CGFloat rightMargin = 0, bottomMargin = 0;
+    const CGFloat freqLen = [self freqAxisLengthForSize:bounds.size
+                                                 drawDb:&drawDb
+                                               drawFreq:&drawFreq];
+    if (_vertical) bottomMargin = H - freqLen;
+    else           rightMargin  = W - freqLen;
+
+    // The frequency-label margin does not change the plot's length along the
+    // frequency axis, so bar labels can be laid out against that length first.
+    const BOOL barLabels = drawFreq && _drawMode == spectrum_config::DrawModeBars;
+    CGFloat freqMargin = _vertical ? kDbThick : kFreqThick;
+    if (barLabels) {
+        if (freqLen <= 1.0) return;
+        [self layoutBarLabelsForCount:n length:freqLen crossSpace:(_vertical ? W : H)];
+        freqMargin = _blLanes * _blLaneSize + (_vertical ? 4.0 : 2.0);
+    }
+    if (drawFreq) {
+        if (_vertical) rightMargin = freqMargin; else bottomMargin = freqMargin;
+    }
+
+    const CGFloat plotW = W - rightMargin;
+    const CGFloat plotH = H - bottomMargin;
+    if (plotW <= 1.0 || plotH <= 1.0) return;
+
+    _pOx = kMarginLeft;
+    _pOy = kMarginBottom + bottomMargin;
+    _pFreq = _vertical ? plotH : plotW;
+    _pMag  = _vertical ? plotW : plotH;
+
+    // Grid behind the spectrum. In bars mode the bars themselves mark the
+    // frequency axis, so each gets a label instead of frequency gridlines.
+    _freqAxisDrawn = drawFreq;
+    if (barLabels)     [self drawBarLabelsCount:n];
+    else if (drawFreq) [self drawFreqAxisInContext:ctx];
+    if (drawDb)        [self drawDbGuidesInContext:ctx];
+
+    NSColor *base = [self barColor];
+    const BOOL dark = fb2k_ui::isDarkMode();
+    // blendP3 returns nil when it cannot convert the colors.
+    NSColor *shadowColor = blendP3(base, 0.6, [NSColor grayColor]) ?: base;
+    NSColor *capColor = (dark ? blendP3(base, 0.7, [NSColor whiteColor])
+                              : blendP3(base, 0.5, [NSColor blackColor])) ?: base;
+
+    if (_drawMode == spectrum_config::DrawModeCurve) {
+        [self drawCurveBase:base shadow:shadowColor cap:capColor context:ctx];
+    } else {
+        [self drawBarsBase:base shadow:shadowColor cap:capColor count:n context:ctx];
+    }
+
+    if (_hovering) [self drawReadoutInContext:ctx];
+}
+
+#pragma mark - Bars
+
+- (void)drawBarsBase:(NSColor *)base
+              shadow:(NSColor *)shadowColor
+                 cap:(NSColor *)capColor
+               count:(NSInteger)n
+             context:(CGContextRef)ctx {
+    using namespace spectrum_config;
+    const CGFloat slot = _pFreq / (CGFloat)n;
+    CGFloat gap = slot * (_gapPercent / 100.0);
+    if (gap > slot - 1.0) gap = slot - 1.0;
+    if (gap < 0) gap = 0;
+
+    // Snap bar edges to device pixels. With narrow slots (e.g. "Auto" at
+    // 2pt/bar) a fractional gap is antialiased into two faint pixels or
+    // vanishes depending on its sub-pixel phase, so neighbouring bars look
+    // fused in a repeating pattern. Any non-zero gap is at least 1px wide.
+    const CGFloat scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
+    auto snap = [&](CGFloat v) { return std::round(v * scale) / scale; };
+    const CGFloat px = 1.0 / scale;
+    CGFloat gapSnapped = snap(gap);
+    if (_gapPercent > 0 && gapSnapped < px) gapSnapped = px;
+    const CGFloat gapLead = std::floor(gapSnapped * scale / 2.0) / scale;
+
+    struct Span { CGFloat off, th; };
+    std::vector<Span> spans((size_t)n);
+    for (NSInteger i = 0; i < n; ++i) {
+        const CGFloat a = snap((CGFloat)i * slot), b = snap((CGFloat)(i + 1) * slot);
+        CGFloat off = a + gapLead, th = (b - a) - gapSnapped;
+        if (th < px) { off = a; th = std::max(px, b - a); }  // too narrow for a gap
+        spans[(size_t)i] = {off, th};
+    }
+
+    auto clamp01 = [](float v) -> CGFloat { return v < 0 ? 0 : (v > 1 ? 1 : v); };
+    auto barRect = [&](NSInteger i, CGFloat m) {
+        return [self barRectAtOffset:spans[(size_t)i].off thickness:spans[(size_t)i].th magnitude:m];
+    };
+
+    // Each layer is drawn for all bars before the next (bars never overlap),
+    // and single-colour layers go out as one path fill. With an "Auto" bar
+    // count there can be ~1000 bars per frame.
+    if (_shadowFill) {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat sv = clamp01(_shadow[i]);
+            if (sv > clamp01(_bars[i]) + 0.005)
+                CGContextAddRect(ctx, barRect(i, sv));
+        }
+        CGContextSetFillColorWithColor(ctx, shadowColor.CGColor);
+        CGContextFillPath(ctx);
+    }
+
+    if (_barStyle == BarStyleGradient) {
+        NSColor *lo = blendP3(base, 0.55, [NSColor blackColor]) ?: base;
+        NSColor *hi = blendP3(base, 0.25, [NSColor whiteColor]) ?: base;
+        NSGradient *grad = gradientP3(lo, hi);
+        const CGFloat angle = _vertical ? 0.0 : 90.0;  // along the magnitude axis
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag >= 1.0)
+                [grad drawInRect:barRect(i, bv) angle:angle];
+        }
+    } else if (_barStyle == BarStyleSpectrum) {
+        const CGFloat brightness = fb2k_ui::isDarkMode() ? 1.0 : 0.9;
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag < 1.0) continue;
+            CGFloat h = 0.66 - 0.75 * (CGFloat)i / (CGFloat)MAX(1, n - 1);
+            if (h < 0) h = 0;
+            NSColor *c = hueColorP3(h, 0.85, brightness);
+            if (!c) continue;
+            CGContextSetFillColorWithColor(ctx, c.CGColor);
+            CGContextFillRect(ctx, barRect(i, bv));
+        }
+    } else {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat bv = clamp01(_bars[i]);
+            if (bv * _pMag >= 1.0)
+                CGContextAddRect(ctx, barRect(i, bv));
+        }
+        CGContextSetFillColorWithColor(ctx, base.CGColor);
+        CGContextFillPath(ctx);
+    }
+
+    [self drawSideLine];
+
+    if (_peakHold) {
+        CGContextBeginPath(ctx);
+        for (NSInteger i = 0; i < n; ++i) {
+            const CGFloat pv = clamp01(_peaks[i]);
+            if (pv > 0.001)
+                CGContextAddRect(ctx, [self capRectAtOffset:spans[(size_t)i].off thickness:spans[(size_t)i].th magnitude:pv]);
+        }
+        CGContextSetFillColorWithColor(ctx, capColor.CGColor);
+        CGContextFillPath(ctx);
+    }
+}
+
+// A bar filled from the baseline (magnitude 0) to `m`, `th` thick along freq.
+- (CGRect)barRectAtOffset:(CGFloat)off thickness:(CGFloat)th magnitude:(CGFloat)m {
+    if (_vertical) return CGRectMake(_pOx, _pOy + off, m * _pMag, th);
+    return CGRectMake(_pOx + off, _pOy, th, m * _pMag);
+}
+
+// A thin peak cap at magnitude `m`.
+- (CGRect)capRectAtOffset:(CGFloat)off thickness:(CGFloat)th magnitude:(CGFloat)m {
+    if (_vertical) return CGRectMake(_pOx + m * _pMag, _pOy + off, 2.0, th);
+    return CGRectMake(_pOx + off, _pOy + m * _pMag, th, 2.0);
+}
+
+#pragma mark - Curve
+
+- (void)drawCurveBase:(NSColor *)base
+               shadow:(NSColor *)shadowColor
+                  cap:(NSColor *)capColor
+              context:(CGContextRef)ctx {
+    using namespace spectrum_config;
+    const BOOL colorBars = _curveStyle == CurveStyleColorBars || _curveStyle == CurveStyleLineColorBars;
+    const BOOL hasLine = _curveStyle != CurveStyleColorBars;
+
+    // Shadow area behind, then the fill, then the instantaneous curve and peak line.
+    if (_shadowFill && !colorBars) {
+        [[shadowColor colorWithAlphaComponent:0.35] setFill];
+        [[self areaPathForValues:_shadow] fill];
+    }
+
+    if (colorBars) {
+        CGContextSaveGState(ctx);
+        // With a line the stripes only fill the area under it.
+        if (hasLine) [[self areaPathForValues:_bars] addClip];
+        // In the theme's own colour: one colour per theme.
+        [self drawColorBarsColor:base context:ctx];
+        CGContextRestoreGState(ctx);
+    } else if (_curveStyle == CurveStyleFilled) {
+        NSBezierPath *area = [self areaPathForValues:_bars];
+        NSGradient *grad = gradientP3([base colorWithAlphaComponent:0.10], [base colorWithAlphaComponent:0.65]);
+        [grad drawInBezierPath:area angle:(_vertical ? 0.0 : 90.0)];
+    }
+    [self drawSideLine];
+    if (!hasLine) return;
+
+    // Peak hold first, thin and faded, so the live curve on top is the one
+    // the eye follows.
+    if (_peakHold) {
+        NSBezierPath *peak = [self linePathForValues:_peaks];
+        peak.lineWidth = kPeakLineWidth;
+        [[base colorWithAlphaComponent:kPeakLineAlpha] setStroke];
+        [peak stroke];
+    }
+
+    NSBezierPath *line = [self linePathForValues:_bars];
+    line.lineWidth = kLiveLineWidth;
+    line.lineJoinStyle = NSLineJoinStyleRound;
+    [base setStroke];
+    [line stroke];
+
+    [self drawLegendBase:base];
+}
+
+// "Live" and "Peak hold" with their line styles, in the plot's top-left
+// corner, so nothing has to be guessed. Left out where it would crowd.
+- (void)drawLegendBase:(NSColor *)base {
+    if (!_showLegend || _gridOpacity <= 0 || _pFreq < 280.0 || _pMag < 120.0) return;
+    NSDictionary *attrs = textAttrs(labelFont(kLabelWeight), [self gridLabelColor]);
+    const CGFloat swatch = 16.0, gap = 6.0, spacing = 18.0;
+    const CGFloat lineH = [@"Live" sizeWithAttributes:attrs].height;
+    // Just below the loud end of the plot.
+    const CGPoint corner = _vertical ? CGPointMake(_pOx + 10.0, _pOy + _pFreq - 10.0 - lineH)
+                                     : CGPointMake(_pOx + 10.0, _pOy + _pMag - 10.0 - lineH);
+    CGFloat x = corner.x;
+    const auto entry = [&](NSString *text, CGFloat width, NSColor *color) {
+        NSBezierPath *s = [NSBezierPath bezierPath];
+        s.lineWidth = width;
+        [s moveToPoint:NSMakePoint(x, corner.y + lineH / 2.0)];
+        [s lineToPoint:NSMakePoint(x + swatch, corner.y + lineH / 2.0)];
+        [color setStroke];
+        [s stroke];
+        x += swatch + gap;
+        [text drawAtPoint:NSMakePoint(x, corner.y) withAttributes:attrs];
+        x += [text sizeWithAttributes:attrs].width + spacing;
+    };
+    entry(@"Live", kLiveLineWidth, base);
+    if (_peakHold) entry(@"Peak hold", kPeakLineWidth, [base colorWithAlphaComponent:kPeakLineAlpha]);
+}
+
+// Level (0..1 of the dB window) to stripe strength (0..1): the square of
+// the level, as on MiniMeters. Loud bands stand out, and mid-level ones (most
+// of a mix above the bass) still show; a steeper curve leaves only the bass.
+static CGFloat colorBarStrength(CGFloat level) {
+    if (level <= 0.0) return 0.0;
+    const CGFloat x = MIN(1.0, level);
+    return x * x;
+}
+
+// One stripe per band over the full magnitude range, in the high-contrast
+// peak-line colour: the louder the band, the more opaque its stripe, so
+// dominant frequencies stand out. The brightness setting caps how strong the
+// loudest stripe gets. Drawn as a single gradient along the frequency axis
+// with a stop at each band centre, which blends neighbouring bands smoothly.
+- (void)drawColorBarsColor:(NSColor *)color context:(CGContextRef)ctx {
+    const size_t n = _bars.size();
+    if (n == 0) return;
+    NSColorSpace *p3 = [NSColorSpace displayP3ColorSpace];
+    NSColor *h = [color colorUsingColorSpace:p3];
+    if (!h) return;
+    const CGFloat h3[3] = {h.redComponent, h.greenComponent, h.blueComponent};
+
+    const CGFloat maxStrength = MIN(100, MAX(0, _colorBarBrightness)) / 100.0;
+    std::vector<CGFloat> comps(n * 4), locs(n);
+    for (size_t i = 0; i < n; ++i) {
+        const CGFloat a = maxStrength * colorBarStrength(_bars[i]);
+        for (int c = 0; c < 3; ++c) comps[i * 4 + c] = h3[c];
+        comps[i * 4 + 3] = a;
+        locs[i] = ((CGFloat)i + 0.5) / (CGFloat)n;
+    }
+    CGGradientRef grad = CGGradientCreateWithColorComponents(p3.CGColorSpace, comps.data(), locs.data(), n);
+    if (!grad) return;
+
+    CGContextSaveGState(ctx);
+    const CGPoint lo = [self mapF:0.0 mag:0.0], hi = [self mapF:1.0 mag:1.0];
+    CGContextClipToRect(ctx, CGRectMake(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y));
+    CGContextDrawLinearGradient(ctx, grad, lo, [self mapF:1.0 mag:0.0], 0);
+    CGContextRestoreGState(ctx);
+    CGGradientRelease(grad);
+}
+
+// Curve knots sit at band centres ((i + 0.5) / n) so they line up with the
+// frequency grid. The first and last bands are held flat out to the plot
+// edges (0 and 1) so the curve spans the full width instead of stopping
+// half a band short at each end. Knots are in (frequency, magnitude) space;
+// mapF:mag: is affine, so Bezier control points map through it unchanged.
+- (std::vector<CGPoint>)curveKnotsForValues:(const std::vector<float> &)v {
+    std::vector<CGPoint> k;
+    const NSInteger n = (NSInteger)v.size();
+    if (n <= 0) return k;
+    auto clamped = [&](NSInteger i) -> CGFloat {
+        CGFloat m = v[i]; return m < 0 ? 0 : (m > 1 ? 1 : m);
+    };
+    k.reserve(n + 2);
+    k.push_back(CGPointMake(0.0, clamped(0)));
+    for (NSInteger i = 0; i < n; ++i) {
+        k.push_back(CGPointMake(((CGFloat)i + 0.5) / n, clamped(i)));
+    }
+    k.push_back(CGPointMake(1.0, clamped(n - 1)));
+    return k;
+}
+
+// Append a smooth curve through the knots, assuming the path's current point
+// is already at k[0]. Uses Steffen's monotone cubic tangents: the curve never
+// overshoots past neighbouring knots, so peaks stay where the data puts them
+// and the curve cannot leave the 0..1 magnitude range. It also lies flat
+// between two knots on the floor, so with `liftAtFloor` those spans are left
+// out: a line meets the floor and stops instead of tracing the plot's bottom
+// edge where (or while) there is no signal.
+- (void)appendSmoothCurve:(const std::vector<CGPoint> &)k
+                   toPath:(NSBezierPath *)p
+              liftAtFloor:(BOOL)liftAtFloor {
+    const size_t n = k.size();
+    if (n < 2) return;
+
+    std::vector<CGFloat> slope(n - 1), tangent(n, 0.0);
+    for (size_t i = 0; i + 1 < n; ++i) {
+        const CGFloat h = k[i + 1].x - k[i].x;
+        slope[i] = h > 0 ? (k[i + 1].y - k[i].y) / h : 0.0;
+    }
+    tangent[0] = slope[0];
+    tangent[n - 1] = slope[n - 2];
+    for (size_t i = 1; i + 1 < n; ++i) {
+        const CGFloat s0 = slope[i - 1], s1 = slope[i];
+        if (s0 * s1 <= 0) continue;  // local extremum or flat: zero tangent
+        const CGFloat h0 = k[i].x - k[i - 1].x, h1 = k[i + 1].x - k[i].x;
+        const CGFloat pm = (s0 * h1 + s1 * h0) / (h0 + h1);
+        const CGFloat lim = std::min({std::fabs(s0), std::fabs(s1), 0.5 * std::fabs(pm)});
+        tangent[i] = (s0 > 0 ? 2.0 : -2.0) * lim;
+    }
+
+    static const CGFloat kFloor = 0.001;
+    bool lifted = false;
+    for (size_t i = 0; i + 1 < n; ++i) {
+        if (liftAtFloor && k[i].y <= kFloor && k[i + 1].y <= kFloor) { lifted = true; continue; }
+        if (lifted) { [p moveToPoint:[self mapF:k[i].x mag:k[i].y]]; lifted = false; }
+        const CGFloat h3 = (k[i + 1].x - k[i].x) / 3.0;
+        [p curveToPoint:[self mapF:k[i + 1].x mag:k[i + 1].y]
+          controlPoint1:[self mapF:k[i].x + h3 mag:k[i].y + tangent[i] * h3]
+          controlPoint2:[self mapF:k[i + 1].x - h3 mag:k[i + 1].y - tangent[i + 1] * h3]];
+    }
+}
+
+- (NSBezierPath *)areaPathForValues:(const std::vector<float> &)v {
+    NSBezierPath *p = [NSBezierPath bezierPath];
+    const std::vector<CGPoint> k = [self curveKnotsForValues:v];
+    if (k.empty()) return p;
+    [p moveToPoint:[self mapF:0.0 mag:0.0]];
+    [p lineToPoint:[self mapF:k[0].x mag:k[0].y]];
+    [self appendSmoothCurve:k toPath:p liftAtFloor:NO];
+    [p lineToPoint:[self mapF:1.0 mag:0.0]];
+    [p closePath];
+    return p;
+}
+
+- (NSBezierPath *)linePathForValues:(const std::vector<float> &)v {
+    NSBezierPath *p = [NSBezierPath bezierPath];
+    const std::vector<CGPoint> k = [self curveKnotsForValues:v];
+    if (k.empty()) return p;
+    [p moveToPoint:[self mapF:k[0].x mag:k[0].y]];
+    [self appendSmoothCurve:k toPath:p liftAtFloor:YES];
+    return p;
+}
+
+#pragma mark - Grids
+
+// dB guides: lines of constant magnitude across the frequency axis.
+- (void)drawDbGuidesInContext:(CGContextRef)ctx {
+    const float range   = _rangeDb;
+    const float floorDb = _topDb - range;
+    if (range <= 0) return;
+
+    NSDictionary *attrs = textAttrs(dbLabelFont(), [self gridLabelColor]);
+    CGContextSetLineWidth(ctx, 1.0);
+    NSColor *lineColor = [self gridLineColor];
+    // Labels go top line first; one that would overlap the previous label is
+    // left out (its line stays), so short or narrow panels keep every other one.
+    CGFloat lastLabelEdge = CGFLOAT_MAX;
+    const CGFloat labelGap = 2.0;
+    const auto clampStart = [](CGFloat start, CGFloat size, CGFloat length) {
+        return std::max<CGFloat>(0.0, std::min<CGFloat>(start, length - size));
+    };
+
+    for (const auto &[db, label] : [self dbGuides]) {
+        CGFloat v = (db - floorDb) / range;
+        // Per line: drawing a label sets the context's colors to its own.
+        CGContextSetStrokeColorWithColor(ctx, lineColor.CGColor);
+        NSSize sz = [label sizeWithAttributes:attrs];
+
+        if (_vertical) {
+            CGFloat x = std::round(_pOx + v * _pMag) + 0.5;
+            CGContextBeginPath(ctx);
+            CGContextMoveToPoint(ctx, x, _pOy);
+            CGContextAddLineToPoint(ctx, x, _pOy + _pFreq);
+            CGContextStrokePath(ctx);
+            // Centred on the line, but kept whole at the view's edges. Lower
+            // levels run to the left.
+            const CGFloat lx = clampStart(x - sz.width / 2, sz.width, self.bounds.size.width);
+            if (lx + sz.width + labelGap > lastLabelEdge) continue;
+            lastLabelEdge = lx;
+            [label drawAtPoint:NSMakePoint(lx, kMarginBottom + (_pOy - kMarginBottom - sz.height) / 2)
+                withAttributes:attrs];
+        } else {
+            CGFloat y = std::round(_pOy + v * _pMag) + 0.5;
+            CGContextBeginPath(ctx);
+            CGContextMoveToPoint(ctx, _pOx, y);
+            CGContextAddLineToPoint(ctx, _pOx + _pFreq, y);
+            CGContextStrokePath(ctx);
+            // Centred on the line, but kept whole at the view's edges: the
+            // label of a line at the very top sits just below it.
+            const CGFloat ly = clampStart(y - sz.height / 2, sz.height, self.bounds.size.height);
+            if (ly + sz.height + labelGap > lastLabelEdge) continue;
+            lastLabelEdge = ly;
+            [label drawAtPoint:NSMakePoint(_pOx + _pFreq + kDbLabelGap, ly) withAttributes:attrs];
+        }
+    }
+}
+
+// Frequency axis: lines of constant frequency across the magnitude axis.
+- (void)drawFreqAxisInContext:(CGContextRef)ctx {
+    NSDictionary *attrs = textAttrs(labelFont(kLabelWeight), [self gridLabelColor]);
+    NSDictionary *decadeAttrs = textAttrs(labelFont(kDecadeLabelWeight), [self decadeLabelColor]);
+    CGContextSetLineWidth(ctx, 1.0);
+    NSColor *full = [self gridLineColor];
+    NSColor *major = [full colorWithAlphaComponent:full.alphaComponent * kDecadeGridAlpha];
+    NSColor *minor = [full colorWithAlphaComponent:full.alphaComponent * kMinorGridAlpha];
+
+    const std::vector<double> ticks = [self freqAxisTicks];
+    if (ticks.empty()) return;
+
+    for (double f : ticks) {
+        const CGFloat a = std::round(_pFreq * [self fractionForHz:f]) + 0.5;
+        // Decades (100 Hz, 1 kHz, 10 kHz) stand out; the lines between are fainter.
+        const double mantissa = f / std::pow(10.0, std::floor(std::log10(f) + 1e-9));
+        const bool isMajor = _freqScale == spectrum_config::FreqScaleLinear || std::fabs(mantissa - 1.0) < 1e-6;
+        CGContextSetStrokeColorWithColor(ctx, (isMajor ? major : minor).CGColor);
+        CGContextBeginPath(ctx);
+        if (_vertical) {
+            CGContextMoveToPoint(ctx, _pOx, _pOy + a);
+            CGContextAddLineToPoint(ctx, _pOx + _pMag, _pOy + a);
+        } else {
+            CGContextMoveToPoint(ctx, _pOx + a, _pOy);
+            CGContextAddLineToPoint(ctx, _pOx + a, _pOy + _pMag);
+        }
+        CGContextStrokePath(ctx);
+    }
+
+    // Labels are centred on their line but clamped inside the plot, so the
+    // range ends stay labelled. On log scales decades go first, then 2x and
+    // 5x, then 3x, 4x, 6x and 8x (20 30 40 50 60 80 100 200 ... 20k); a label
+    // that would come too close to one already placed is left out, so narrow
+    // panels and the squeezed bass of the soft-log scale keep only the first tiers.
+    struct Placed { NSString *label; NSSize size; CGFloat start, ext; bool decade; };
+    const auto mantissaOf = [](double f) { return f / std::pow(10.0, std::floor(std::log10(f) + 1e-9)); };
+    auto place = [&](double f) -> Placed {
+        NSString *label = (f >= 1000.0)
+            ? [NSString stringWithFormat:@"%gk", f / 1000.0]
+            : [NSString stringWithFormat:@"%g", f];
+        const bool decade = _freqScale != spectrum_config::FreqScaleLinear && std::fabs(mantissaOf(f) - 1.0) < 1e-6;
+        const NSSize sz = [label sizeWithAttributes:decade ? decadeAttrs : attrs];
+        const CGFloat ext = _vertical ? sz.height : sz.width;
+        CGFloat s = _pFreq * [self fractionForHz:f] - ext / 2;
+        s = std::max<CGFloat>(0.0, std::min<CGFloat>(s, _pFreq - ext));
+        return {label, sz, s, ext, decade};
+    };
+    auto draw = [&](const Placed &p) {
+        NSPoint at = _vertical ? NSMakePoint(_pOx + _pMag + 5, _pOy + p.start)
+                               : NSMakePoint(_pOx + p.start, kMarginBottom + (_pOy - kMarginBottom - p.size.height) / 2 + 1);
+        [p.label drawAtPoint:at withAttributes:p.decade ? decadeAttrs : attrs];
+    };
+
+    const CGFloat pad = _vertical ? 6.0 : 14.0;
+    const auto rank = [&](size_t i) {
+        if (_freqScale == spectrum_config::FreqScaleLinear) return 1;
+        const double m = mantissaOf(ticks[i]);
+        if (std::fabs(m - 1.0) < 1e-6) return 1;
+        if (std::fabs(m - 2.0) < 1e-6 || std::fabs(m - 5.0) < 1e-6) return 2;
+        for (double k : {3.0, 4.0, 6.0, 8.0})
+            if (std::fabs(m - k) < 1e-6) return 3;
+        return 4;   // gridline only
+    };
+    std::vector<Placed> placed;
+    for (int tier = 1; tier <= 3; ++tier) {
+        for (size_t i = 0; i < ticks.size(); ++i) {
+            if (rank(i) != tier) continue;
+            const Placed p = place(ticks[i]);
+            const bool clear = std::none_of(placed.begin(), placed.end(), [&](const Placed &q) {
+                return p.start < q.start + q.ext + pad && q.start < p.start + p.ext + pad;
+            });
+            if (clear) placed.push_back(p);
+        }
+    }
+    for (const Placed &p : placed) draw(p);
+}
+
+// Gridline frequencies, ascending. Log scales use 1..9 x 10^e, adding 1.5x
+// (and 1.25x/1.75x) when that decade's 1x..2x span is wide enough, so the top
+// octave (10k-20k) is not left empty. Linear scale uses a round step ~50px apart.
+- (std::vector<double>)freqAxisTicks {
+    std::vector<double> ticks;
+    if (_pFreq <= 1.0) return ticks;
+
+    if (_freqScale != spectrum_config::FreqScaleLinear) {
+        for (int e = 1; e <= 5; ++e) {
+            const double decade = std::pow(10.0, e);
+            // Per decade: the soft-log scale squeezes the low ones.
+            const CGFloat oneToTwo = _pFreq * ([self fractionForHz:2.0 * decade] -
+                                               [self fractionForHz:decade]);
+            std::vector<double> mant = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+            if (oneToTwo >= 48.0)  mant.push_back(1.5);
+            if (oneToTwo >= 120.0) { mant.push_back(1.25); mant.push_back(1.75); }
+            std::sort(mant.begin(), mant.end());
+
+            for (double m : mant) {
+                const double f = m * decade;
+                if (f < _minHz) continue;
+                if (f > _maxHz) break;
+                ticks.push_back(f);
+            }
+        }
+    } else {
+        const double target = (_maxHz - _minHz) * 50.0 / _pFreq;  // Hz per ~50px
+        const double p = std::pow(10.0, std::floor(std::log10(target)));
+        double step = 10.0 * p;
+        for (double m : {1.0, 2.0, 5.0}) {
+            if (m * p >= target) { step = m * p; break; }
+        }
+        for (double f = std::ceil(_minHz / step) * step; f <= _maxHz + 0.5; f += step) {
+            ticks.push_back(f);
+        }
+    }
+    return ticks;
+}
+
+#pragma mark - Bar labels
+
+// Compact 3-significant-digit frequency in the style of hardware analyzers:
+// 21.5, 147, 1k14, 12k5, 20k.
+static NSString *compactHz(double f) {
+    if (f <= 0) return @"0";
+    const int digits = (int)std::floor(std::log10(f)) + 1;
+    const double scale = std::pow(10.0, 3 - digits);
+    f = std::round(f * scale) / scale;
+
+    const bool kilo = f >= 1000.0;
+    const double v = kilo ? f / 1000.0 : f;
+    const int intDigits = v >= 100 ? 3 : (v >= 10 ? 2 : 1);
+    NSString *s = [NSString stringWithFormat:@"%.*f", std::max(0, 3 - intDigits), v];
+    if ([s containsString:@"."]) {
+        while ([s hasSuffix:@"0"]) s = [s substringToIndex:s.length - 1];
+        if ([s hasSuffix:@"."]) s = [s substringToIndex:s.length - 1];
+    }
+    if (!kilo) return s;
+    return [s containsString:@"."] ? [s stringByReplacingOccurrencesOfString:@"." withString:@"k"]
+                                   : [s stringByAppendingString:@"k"];
+}
+
+- (NSDictionary *)barLabelAttrs {
+    return textAttrs([NSFont systemFontOfSize:kLabelFontSize - 1 weight:kLabelWeight], [self gridLabelColor]);
+}
+
+// Label text matches the analyzer's band centres: geometric mean of the band
+// edges on a log scale (fraction (i + 0.5) / n), arithmetic mean on linear.
+- (void)ensureBarLabelsForCount:(NSInteger)n {
+    if (_barLabels && (NSInteger)_barLabels.count == n) return;
+    NSDictionary *attrs = [self barLabelAttrs];
+    NSMutableArray<NSString *> *labels = [NSMutableArray arrayWithCapacity:n];
+    CGFloat maxW = 0, h = 0;
+    for (NSInteger i = 0; i < n; ++i) {
+        NSString *s = compactHz([self hzForFraction:((CGFloat)i + 0.5) / n]);
+        NSSize sz = [s sizeWithAttributes:attrs];
+        maxW = MAX(maxW, sz.width);
+        h = MAX(h, sz.height);
+        [labels addObject:s];
+    }
+    _barLabels = labels;
+    _barLabelMaxW = std::ceil(maxW);
+    _barLabelH = std::ceil(h);
+}
+
+// One lane when every bar fits a label; otherwise two staggered lanes (as on
+// RME DigiCheck) and, if still too dense, a label every Nth bar.
+- (void)layoutBarLabelsForCount:(NSInteger)n length:(CGFloat)len crossSpace:(CGFloat)cross {
+    [self ensureBarLabelsForCount:n];
+    const CGFloat slot = len / (CGFloat)n;
+    const CGFloat need = (_vertical ? _barLabelH : _barLabelMaxW + 3.0) + 1.0;
+    const BOOL roomForTwo = cross >= (_vertical ? 160.0 : 90.0);
+
+    _blLaneSize = _vertical ? _barLabelMaxW + 4.0 : _barLabelH;
+    if (slot >= need || !roomForTwo) {
+        _blLanes = 1;
+        _blStride = (NSInteger)std::ceil(need / slot);
+    } else {
+        _blLanes = 2;
+        _blStride = (NSInteger)std::ceil(need / (2.0 * slot));
+    }
+    if (_blStride < 1) _blStride = 1;
+}
+
+- (void)drawBarLabelsCount:(NSInteger)n {
+    if ((NSInteger)_barLabels.count != n) return;
+    NSDictionary *attrs = [self barLabelAttrs];
+    const CGFloat slot = _pFreq / (CGFloat)n;
+    CGFloat laneEnd[2] = {-1000.0, -1000.0};
+
+    for (NSInteger i = 0, k = 0; i < n; i += _blStride, ++k) {
+        NSString *label = _barLabels[i];
+        NSSize sz = [label sizeWithAttributes:attrs];
+        const CGFloat ext = _vertical ? sz.height : sz.width;
+        const NSInteger lane = _blLanes > 1 ? (k % 2) : 0;
+
+        // Centre on the bar, clamp inside the plot, skip on collision.
+        CGFloat s = ((CGFloat)i + 0.5) * slot - ext / 2;
+        s = std::max<CGFloat>(0.0, std::min<CGFloat>(s, _pFreq - ext));
+        if (s < laneEnd[lane] + 1.0) continue;
+        laneEnd[lane] = s + ext;
+
+        NSPoint p;
+        if (_vertical) {
+            p = NSMakePoint(_pOx + _pMag + 4.0 + lane * _blLaneSize, _pOy + s);
+        } else {
+            p = NSMakePoint(_pOx + s, _pOy - 1.0 - (lane + 1) * _blLaneSize);
+        }
+        [label drawAtPoint:p withAttributes:attrs];
+    }
+}
+
+#pragma mark - Readout
+
+// Exact frequency for the readout; finer than the axis labels.
+static NSString *readoutHz(double f) {
+    if (f >= 10000.0) return [NSString stringWithFormat:@"%.1f kHz", f / 1000.0];
+    if (f >= 1000.0)  return [NSString stringWithFormat:@"%.2f kHz", f / 1000.0];
+    return [NSString stringWithFormat:@"%.0f Hz", f];
+}
+
+// Nearest equal-tempered note (A4 = 440 Hz) and the offset from it in cents.
+static NSString *noteName(double f) {
+    if (f <= 0) return @"";
+    static NSString *const names[] = {@"C", @"C#", @"D", @"D#", @"E", @"F",
+                                      @"F#", @"G", @"G#", @"A", @"A#", @"B"};
+    const double midi = 69.0 + 12.0 * std::log2(f / 440.0);
+    const long nearest = std::lround(midi);
+    const long cents = std::lround((midi - static_cast<double>(nearest)) * 100.0);
+    const long octave = nearest / 12 - 1;
+    const long index = ((nearest % 12) + 12) % 12;
+    return [NSString stringWithFormat:@"%@%ld %+ld\u00A2", names[index], octave, cents];
+}
+
+// The live level (0..1) at frequency fraction t, between the curve's knots.
+- (CGFloat)levelAtFraction:(CGFloat)t {
+    const NSInteger n = (NSInteger)_bars.size();
+    if (n <= 0) return 0;
+    const CGFloat x = t * n - 0.5;
+    const NSInteger i0 = std::clamp<NSInteger>((NSInteger)std::floor(x), 0, n - 1);
+    const NSInteger i1 = std::min<NSInteger>(i0 + 1, n - 1);
+    const CGFloat u = std::clamp<CGFloat>(x - (CGFloat)i0, 0.0, 1.0);
+    const CGFloat v = _bars[(size_t)i0] * (1.0 - u) + _bars[(size_t)i1] * u;
+    return std::clamp<CGFloat>(v, 0.0, 1.0);
+}
+
+// Under the mouse: dashed crosshair through the live curve, a dot on it, a
+// box with frequency, note and level, and the frequency on the axis.
+- (void)drawReadoutInContext:(CGContextRef)ctx {
+    if (_pFreq <= 1.0 || _pMag <= 1.0) return;
+    const CGFloat along = _vertical ? _hoverPoint.y - _pOy : _hoverPoint.x - _pOx;
+    const CGFloat across = _vertical ? _hoverPoint.x - _pOx : _hoverPoint.y - _pOy;
+    if (along < 0 || along > _pFreq || across < 0 || across > _pMag) return;   // over the labels
+    CGFloat t = along / _pFreq;
+    CGFloat m;
+    if (_drawMode == spectrum_config::DrawModeBars) {
+        // The bar under the mouse: its level, at its centre frequency.
+        const NSInteger n = (NSInteger)_bars.size();
+        const NSInteger i = std::clamp<NSInteger>((NSInteger)(t * n), 0, n - 1);
+        t = ((CGFloat)i + 0.5) / (CGFloat)n;
+        m = std::clamp<CGFloat>(_bars[(size_t)i], 0.0, 1.0);
+    } else {
+        m = [self levelAtFraction:t];
+    }
+    const double hz = [self hzForFraction:t];
+    const double db = (_topDb - _rangeDb) + m * _rangeDb;
+
+    NSColor *base = [self barColor];
+    NSColor *ink = [self inkColor];
+    NSColor *bg = [self bgColor];
+
+    // Crosshair, pixel aligned.
+    const CGFloat dash[] = {3.0, 3.0};
+    CGContextSaveGState(ctx);
+    CGContextSetLineWidth(ctx, 1.0);
+    CGContextSetLineDash(ctx, 0, dash, 2);
+    CGContextSetStrokeColorWithColor(ctx, [ink colorWithAlphaComponent:0.35].CGColor);
+    CGPoint a = [self mapF:t mag:0.0], b = [self mapF:t mag:1.0];
+    CGPoint c = [self mapF:0.0 mag:m], d = [self mapF:1.0 mag:m];
+    if (_vertical) { a.y = b.y = std::round(a.y) + 0.5; c.x = d.x = std::round(c.x) + 0.5; }
+    else           { a.x = b.x = std::round(a.x) + 0.5; c.y = d.y = std::round(c.y) + 0.5; }
+    CGContextBeginPath(ctx);
+    CGContextMoveToPoint(ctx, a.x, a.y);
+    CGContextAddLineToPoint(ctx, b.x, b.y);
+    CGContextMoveToPoint(ctx, c.x, c.y);
+    CGContextAddLineToPoint(ctx, d.x, d.y);
+    CGContextStrokePath(ctx);
+    CGContextRestoreGState(ctx);
+
+    // The point on the live curve.
+    const CGPoint p = [self mapF:t mag:m];
+    NSBezierPath *dot = [NSBezierPath bezierPathWithOvalInRect:NSMakeRect(p.x - 4.0, p.y - 4.0, 8.0, 8.0)];
+    [bg setFill];
+    [dot fill];
+    dot.lineWidth = kLiveLineWidth;
+    [base setStroke];
+    [dot stroke];
+
+    // Box: "702 Hz  F5 +9¢  -21.6 dB", the note in the theme colour.
+    NSFont *font = labelFont(NSFontWeightMedium);
+    NSDictionary *inkAttrs = textAttrs(font, ink);
+    NSDictionary *noteAttrs = textAttrs(font, base);
+    NSMutableAttributedString *text = [[NSMutableAttributedString alloc]
+        initWithString:[readoutHz(hz) stringByAppendingString:@"   "] attributes:inkAttrs];
+    [text appendAttributedString:[[NSAttributedString alloc]
+        initWithString:[noteName(hz) stringByAppendingString:@"   "] attributes:noteAttrs]];
+    NSString *level = m <= 0.0 ? [NSString stringWithFormat:@"< %.0f dB", (double)(_topDb - _rangeDb)]
+                               : [NSString stringWithFormat:@"%.1f dB", db];
+    [text appendAttributedString:[[NSAttributedString alloc] initWithString:level attributes:inkAttrs]];
+
+    const NSSize sz = text.size;
+    const CGFloat padX = 10.0, padY = 6.0, off = 12.0;
+    const CGFloat bw = std::ceil(sz.width) + 2 * padX, bh = std::ceil(sz.height) + 2 * padY;
+    const CGRect plot = _vertical ? CGRectMake(_pOx, _pOy, _pMag, _pFreq) : CGRectMake(_pOx, _pOy, _pFreq, _pMag);
+    CGFloat x = p.x + off, y = p.y + off;
+    if (x + bw > CGRectGetMaxX(plot)) x = p.x - off - bw;
+    if (y + bh > CGRectGetMaxY(plot)) y = p.y - off - bh;
+    x = std::clamp<CGFloat>(x, CGRectGetMinX(plot), std::max(CGRectGetMinX(plot), CGRectGetMaxX(plot) - bw));
+    y = std::clamp<CGFloat>(y, CGRectGetMinY(plot), std::max(CGRectGetMinY(plot), CGRectGetMaxY(plot) - bh));
+    NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(x, y, bw, bh) xRadius:6 yRadius:6];
+    [[bg colorWithAlphaComponent:0.92] setFill];
+    [box fill];
+    box.lineWidth = 1.0;
+    [[ink colorWithAlphaComponent:0.18] setStroke];
+    [box stroke];
+    [text drawAtPoint:NSMakePoint(x + padX, y + padY)];
+
+    // The frequency on the axis, over the labels there.
+    if (!_freqAxisDrawn || _drawMode != spectrum_config::DrawModeCurve) return;
+    NSString *tag = hz >= 1000.0 ? [NSString stringWithFormat:@"%.2fk", hz / 1000.0]
+                                 : [NSString stringWithFormat:@"%.0f", hz];
+    NSDictionary *tagAttrs = textAttrs(labelFont(NSFontWeightSemibold), bg);
+    const NSSize ts = [tag sizeWithAttributes:tagAttrs];
+    const CGFloat tw = std::ceil(ts.width) + 10.0, th = std::ceil(ts.height) + 2.0;
+    CGRect pill;
+    if (_vertical) {
+        // Kept inside the view: the label column can be narrower than the tag.
+        const CGFloat px = std::min<CGFloat>(_pOx + _pMag + 3.0, self.bounds.size.width - tw);
+        pill = CGRectMake(px, std::round(a.y - th / 2.0), tw, th);
+    } else {
+        const CGFloat px = std::max<CGFloat>(_pOx, std::min<CGFloat>(std::round(a.x - tw / 2.0), _pOx + _pFreq - tw));
+        pill = CGRectMake(px, kMarginBottom + (_pOy - kMarginBottom - th) / 2.0 + 1.0, tw, th);
+    }
+    NSBezierPath *pillPath = [NSBezierPath bezierPathWithRoundedRect:pill xRadius:4 yRadius:4];
+    [[ink colorWithAlphaComponent:0.9] setFill];
+    [pillPath fill];
+    [tag drawAtPoint:NSMakePoint(pill.origin.x + 5.0, pill.origin.y + 1.0) withAttributes:tagAttrs];
+}
+
+- (void)drawPlaceholder:(CGRect)bounds {
+    NSString *msg = @"Spectrum Analyzer";
+    NSDictionary *attrs = textAttrs([NSFont systemFontOfSize:11], [NSColor tertiaryLabelColor]);
+    NSSize sz = [msg sizeWithAttributes:attrs];
+    NSPoint p = NSMakePoint((bounds.size.width - sz.width) / 2,
+                            (bounds.size.height - sz.height) / 2);
+    [msg drawAtPoint:p withAttributes:attrs];
+}
+
+#pragma mark - Window changes
+
+- (void)viewDidMoveToWindow {
+    [super viewDidMoveToWindow];
+    _hovering = NO;   // no mouseExited: when the view changes windows (full screen)
+    if ([self.delegate respondsToSelector:@selector(spectrumViewDidMoveToWindow:)]) {
+        [self.delegate spectrumViewDidMoveToWindow:self];
+    }
+}
+
+- (void)viewDidHide {
+    [super viewDidHide];
+    _hovering = NO;   // nor when it is hidden (tab switch)
+}
+
+#pragma mark - Appearance changes
+
+- (void)viewDidChangeEffectiveAppearance {
+    [super viewDidChangeEffectiveAppearance];
+    [self setNeedsDisplay:YES];
+}
+
+#pragma mark - Mouse
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+
+// Double-click toggles full screen; ctrl-click opens the context menu.
+- (void)mouseDown:(NSEvent *)event {
+    if (event.modifierFlags & NSEventModifierFlagControl) {
+        [self rightMouseDown:event];
+        return;
+    }
+    if (event.clickCount == 2 &&
+        [self.delegate respondsToSelector:@selector(spectrumViewRequestsFullScreenToggle:)]) {
+        [self.delegate spectrumViewRequestsFullScreenToggle:self];
+    }
+}
+
+// The readout follows the mouse while it is over the view.
+- (void)updateTrackingAreas {
+    [super updateTrackingAreas];
+    if (_tracking) [self removeTrackingArea:_tracking];
+    _tracking = [[NSTrackingArea alloc]
+        initWithRect:NSZeroRect
+             options:NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved | NSTrackingActiveAlways |
+                     NSTrackingInVisibleRect
+               owner:self
+            userInfo:nil];
+    [self addTrackingArea:_tracking];
+    // Rebuilt after layout changes, which can move the view from under a
+    // still mouse without a mouseExited:.
+    if (_hovering && self.window) {
+        const NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+        if (!NSPointInRect(p, self.bounds)) _hovering = NO;
+    }
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    _hovering = YES;
+    _hoverPoint = [self convertPoint:event.locationInWindow fromView:nil];
+    [self setNeedsDisplay:YES];
+    [super mouseEntered:event];
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    _hovering = YES;
+    _hoverPoint = [self convertPoint:event.locationInWindow fromView:nil];
+    [self setNeedsDisplay:YES];
+    [super mouseMoved:event];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    _hovering = NO;
+    [self setNeedsDisplay:YES];
+    [super mouseExited:event];
+}
+
+#pragma mark - Context menu
+
+- (void)rightMouseDown:(NSEvent *)event {
+    NSPoint pt = [self convertPoint:event.locationInWindow fromView:nil];
+    if ([self.delegate respondsToSelector:@selector(spectrumViewRequestsContextMenu:atPoint:)]) {
+        [self.delegate spectrumViewRequestsContextMenu:self atPoint:pt];
+    } else {
+        [super rightMouseDown:event];
+    }
+}
+
+@end

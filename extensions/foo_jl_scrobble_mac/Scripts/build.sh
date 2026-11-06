@@ -38,6 +38,12 @@ BUILD_OPTS=""
 [ "$CLEAN_FIRST" = true ] && BUILD_OPTS="$BUILD_OPTS --clean"
 [ "$REGENERATE" = true ] && BUILD_OPTS="$BUILD_OPTS --regenerate"
 
+# Unit tests gate the build: pure-logic Core/Services code must pass before compiling
+if ! "$SCRIPT_DIR/run_tests.sh"; then
+    echo "==>   TESTS FAILED - build aborted"
+    exit 1
+fi
+
 # Run build
 if do_build $BUILD_OPTS; then
     # Install if requested

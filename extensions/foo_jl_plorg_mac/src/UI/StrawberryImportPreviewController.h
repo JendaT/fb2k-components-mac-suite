@@ -16,13 +16,13 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, assign) int64_t playlistId;
 @property (nonatomic, assign) NSInteger trackCount;
 @property (nonatomic, assign) BOOL isSelected;
-@property (nonatomic, strong) NSMutableArray<NSString *> *trackPaths;  // Cached track paths
+@property (nonatomic, strong, readonly) NSMutableArray<NSString *> *trackPaths;  // Cached track paths
 @end
 
 // Represents a folder in the preview tree
 @interface StrawberryPreviewFolder : NSObject
 @property (nonatomic, copy) NSString *name;
-@property (nonatomic, strong) NSMutableArray *children;  // StrawberryPreviewFolder or StrawberryPlaylistItem
+@property (nonatomic, strong, readonly) NSMutableArray<NSObject *> *children;  // Elements are StrawberryPreviewFolder or StrawberryPlaylistItem only
 @property (nonatomic, assign) BOOL isExpanded;
 - (BOOL)isFolder;
 - (NSInteger)totalTrackCount;

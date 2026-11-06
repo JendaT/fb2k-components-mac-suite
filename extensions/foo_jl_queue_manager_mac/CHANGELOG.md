@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.2.0] - 2026-10-02
+
+### Added
+
+- **Stop After Queue**: Stops playback when the last queued track finishes; toggle from Playback menu, context menu or preferences (off by default).
+- **Stop only once**: Optional mode that turns Stop After Queue off after it stops playback.
+- **Queue restore**: Queue is saved on quit and re-added on launch (on by default).
+- **Context menu**: Right-click in Queue Manager for the Stop After Queue toggles.
+- **Multi-row drag reorder**: Dragging several selected rows moves them together in order; previously only the first row moved.
+
+### Fixed
+
+- **Reorder flicker**: Each reorder no longer rebuilds the view and resets the selection twice.
+- **Frozen view**: View no longer stops updating after a failed reorder.
+- **Reorder after playlist edits**: Tracks whose source playlist changed are kept instead of lost.
+- **Malformed drops**: Drops referencing a nonexistent playlist are rejected.
+- **Duration display**: Malformed track lengths show `--:--` instead of garbage.
+- **Build**: Compiles again after shared `UIStyles.h` dropped `selectedBackgroundColorForGlass()`.
+
+### Changed
+
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **Column metadata**: `queue_config::kAvailableColumns` is the single source of truth.
+- **Dead code**: Unused `QueueHeaderView` removed from the binary.
+- **Component description**: No longer advertises configurable columns, which are not implemented yet.
+
+### Technical
+
+- **SDK-free Core units**: `QueueReorderPlanner`, `QueueFormatting`, `QueueDropParser`, `QueuePersistence` and `StopAfterQueuePolicy` compile and test standalone.
+- **Test suite**: 3300+ checks run by `Scripts/run_tests.sh` gate every build.
+- **queue_ops**: Queue rebuild and playlist lookups moved out of the controller.
+- **Frozen GUIDs**: Component and preferences GUIDs documented as frozen; fb2k resolves saved layouts by GUID.
+
 ## [1.1.2] - 2026-02-09
 
 ### Changed

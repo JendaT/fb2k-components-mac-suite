@@ -12,7 +12,7 @@
 + (instancetype)folderWithName:(NSString *)name {
     TreeNode *node = [[TreeNode alloc] init];
     node.nodeType = TreeNodeTypeFolder;
-    node.name = name;
+    node.name = name ?: @"";  // Ensure name is never nil
     node.children = [NSMutableArray array];
     node.isExpanded = NO;
     return node;
@@ -21,7 +21,7 @@
 + (instancetype)playlistWithName:(NSString *)name {
     TreeNode *node = [[TreeNode alloc] init];
     node.nodeType = TreeNodeTypePlaylist;
-    node.name = name;
+    node.name = name ?: @"";  // Ensure name is never nil
     node.children = nil;
     return node;
 }
@@ -34,6 +34,18 @@
 
 - (NSInteger)childCount {
     return self.children ? (NSInteger)self.children.count : 0;
+}
+
+static NSString * const kNodePathDelimiter = @" \u00BB ";
+
+- (NSString *)displayName {
+    if (self.isFolder) return self.name;
+    // If inside a parent folder and name contains delimiter, show only the last component
+    if (self.parent && [self.name containsString:kNodePathDelimiter]) {
+        NSArray<NSString *> *parts = [self.name componentsSeparatedByString:kNodePathDelimiter];
+        return parts.lastObject;
+    }
+    return self.name;
 }
 
 #pragma mark - Child Management
@@ -99,14 +111,15 @@
 }
 
 + (instancetype)fromDictionary:(NSDictionary *)dict {
-    if (!dict) return nil;
+    if (![dict isKindOfClass:[NSDictionary class]]) return nil;
 
-    NSString *folderName = dict[@"folder"];
-    NSString *playlistName = dict[@"playlist"];
+    NSString *folderName = [dict[@"folder"] isKindOfClass:[NSString class]] ? dict[@"folder"] : nil;
+    NSString *playlistName = [dict[@"playlist"] isKindOfClass:[NSString class]] ? dict[@"playlist"] : nil;
 
     if (folderName) {
         TreeNode *folder = [TreeNode folderWithName:folderName];
-        folder.isExpanded = [dict[@"expanded"] boolValue];
+        NSNumber *expanded = dict[@"expanded"];
+        folder.isExpanded = [expanded isKindOfClass:[NSNumber class]] && [expanded boolValue];
 
         NSArray *items = dict[@"items"];
         if ([items isKindOfClass:[NSArray class]]) {
@@ -144,7 +157,7 @@
     NSString *result = format;
 
     // Replace variables
-    result = [result stringByReplacingOccurrencesOfString:@"%node_name%" withString:self.name ?: @""];
+    result = [result stringByReplacingOccurrencesOfString:@"%node_name%" withString:self.displayName ?: @""];
     result = [result stringByReplacingOccurrencesOfString:@"%is_folder%" withString:self.isFolder ? @"1" : @""];
 
     // Count: child count for folders, item count for playlists
@@ -162,9 +175,12 @@
 - (NSString *)evaluateSimpleIf:(NSString *)input {
     NSString *result = input;
     NSInteger maxIterations = 10;
+    NSInteger searchFrom = 0;
 
     while (maxIterations-- > 0) {
-        NSRange ifRange = [result rangeOfString:@"$if("];
+        NSRange ifRange = [result rangeOfString:@"$if("
+                                        options:0
+                                          range:NSMakeRange(searchFrom, result.length - searchFrom)];
         if (ifRange.location == NSNotFound) break;
 
         // Find the matching closing paren, respecting quotes
@@ -201,8 +217,9 @@
         }
 
         if (parenDepth != 0 || args.count < 2) {
-            // Malformed - skip
-            break;
+            // Malformed - leave as literal text and keep scanning
+            searchFrom = ifRange.location + 4;
+            continue;
         }
 
         // Pad to 3 args if needed
@@ -211,10 +228,13 @@
         }
 
         NSString *condition = [self stripQuotes:args[0]];
+        if ([condition containsString:@"$if("]) {
+            condition = [self evaluateSimpleIf:condition];
+        }
         NSString *trueText = [self stripQuotes:args[1]];
         NSString *falseText = [self stripQuotes:args[2]];
 
-        // Condition is true if non-empty
+        // Condition is true if non-empty: any non-empty string is truthy, including "0"
         NSString *replacement = (condition.length > 0) ? trueText : falseText;
 
         // Replace the entire $if(...) with result
@@ -225,6 +245,7 @@
     return result;
 }
 
+// Quotes only delimit literal text; there is no escape for a literal apostrophe in format strings
 - (NSString *)stripQuotes:(NSString *)str {
     NSString *trimmed = [str stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (trimmed.length >= 2 &&

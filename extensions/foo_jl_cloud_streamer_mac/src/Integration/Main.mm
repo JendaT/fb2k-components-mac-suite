@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #include "../Core/CloudConfig.h"
 #include "../Core/StreamCache.h"
@@ -14,6 +15,7 @@
 #include "../Core/ThumbnailCache.h"
 #include "../Services/StreamResolver.h"
 #import "../UI/CloudPreferencesController.h"
+#import "../UI/CloudBrowserController.h"
 
 // Early static initialization check (runs when dylib loads)
 namespace {
@@ -31,7 +33,17 @@ JL_COMPONENT_ABOUT(
     "Cloud Streamer",
     CLOUD_STREAMER_VERSION,
     "Stream Mixcloud and SoundCloud content directly in your playlist.\n"
-    "Requires yt-dlp to be installed (via Homebrew)."
+    "Requires yt-dlp (a Homebrew install is detected automatically).\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
+    "Features:\n"
+    "- Plays Mixcloud and SoundCloud track and mix links\n"
+    "- Search panel for SoundCloud and Mixcloud\n"
+    "- Add results by double-click, Enter or drag to a playlist\n"
+    "- Title, artist, date, genre and duration tags\n"
+    "- Cover art from track thumbnails\n"
+    "- Mixcloud tracklists stored as a CUE sheet\n"
+    "- Cached stream URLs, metadata and thumbnails"
 );
 
 // Validate bundle filename
@@ -116,5 +128,44 @@ public:
 };
 
 preferences_page_factory_t<cloud_streamer_preferences_page> g_prefs_factory;
+
+} // anonymous namespace
+
+// Cloud Browser UI Element registration
+namespace {
+
+// Cloud Browser GUID
+// {86DBA3F9-AD73-47E7-829F-0D2C5B9E0D01}
+static const GUID g_guid_cloud_browser = {
+    0x86dba3f9, 0xad73, 0x47e7, { 0x82, 0x9f, 0x0d, 0x2c, 0x5b, 0x9e, 0x0d, 0x01 }
+};
+
+class cloud_browser_ui_element : public ui_element_mac {
+public:
+    // Create instance of the controller
+    service_ptr instantiate(service_ptr arg) override {
+        @autoreleasepool {
+            CloudBrowserController* controller = [[CloudBrowserController alloc] init];
+            return fb2k::wrapNSObject(controller);
+        }
+    }
+
+    // Match by name for layout editor
+    bool match_name(const char* name) override {
+        return JLMatchesLayoutName(name);
+    }
+
+    // Display name in layout editor
+    fb2k::stringRef get_name() override {
+        return fb2k::makeString("Cloud Browser");
+    }
+
+    // Unique GUID
+    GUID get_guid() override {
+        return g_guid_cloud_browser;
+    }
+};
+
+FB2K_SERVICE_FACTORY(cloud_browser_ui_element);
 
 } // anonymous namespace

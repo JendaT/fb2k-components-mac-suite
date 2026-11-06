@@ -12,21 +12,29 @@
     NSInteger _burstCapacity;
     double _availableTokens;
     CFAbsoluteTime _lastRefillTime;
+    BiographyClockSource _clock;
 }
 
 - (instancetype)initWithTokensPerSecond:(double)rate burstCapacity:(NSInteger)capacity {
+    return [self initWithTokensPerSecond:rate burstCapacity:capacity clockSource:nil];
+}
+
+- (instancetype)initWithTokensPerSecond:(double)rate
+                          burstCapacity:(NSInteger)capacity
+                            clockSource:(BiographyClockSource)clock {
     self = [super init];
     if (self) {
         _tokensPerSecond = rate;
         _burstCapacity = capacity;
         _availableTokens = capacity;  // Start full
-        _lastRefillTime = CFAbsoluteTimeGetCurrent();
+        _clock = clock ?: ^double { return CFAbsoluteTimeGetCurrent(); };
+        _lastRefillTime = _clock();
     }
     return self;
 }
 
 - (void)refillTokens {
-    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime now = _clock();
     CFAbsoluteTime elapsed = now - _lastRefillTime;
 
     if (elapsed > 0) {
@@ -37,30 +45,36 @@
 }
 
 - (BOOL)tryAcquire {
-    [self refillTokens];
+    @synchronized(self) {
+        [self refillTokens];
 
-    if (_availableTokens >= 1.0) {
-        _availableTokens -= 1.0;
-        return YES;
+        if (_availableTokens >= 1.0) {
+            _availableTokens -= 1.0;
+            return YES;
+        }
+
+        return NO;
     }
-
-    return NO;
 }
 
 - (NSTimeInterval)waitTimeForNextToken {
-    [self refillTokens];
+    @synchronized(self) {
+        [self refillTokens];
 
-    if (_availableTokens >= 1.0) {
-        return 0;
+        if (_availableTokens >= 1.0) {
+            return 0;
+        }
+
+        double tokensNeeded = 1.0 - _availableTokens;
+        return tokensNeeded / _tokensPerSecond;
     }
-
-    double tokensNeeded = 1.0 - _availableTokens;
-    return tokensNeeded / _tokensPerSecond;
 }
 
 - (double)availableTokens {
-    [self refillTokens];
-    return _availableTokens;
+    @synchronized(self) {
+        [self refillTokens];
+        return _availableTokens;
+    }
 }
 
 @end

@@ -32,7 +32,15 @@ typedef NS_ENUM(NSInteger, TreeNodeType) {
 @property (nonatomic, readonly) BOOL isFolder;
 @property (nonatomic, readonly) NSInteger childCount;
 
-// Child management (folders only)
+/// Display name: last component after delimiter for playlists inside folders,
+/// or full name otherwise. Use this for UI display instead of `name`.
+@property (nonatomic, readonly) NSString *displayName;
+
+// Child management (folders only).
+// No-op contract: playlist nodes cannot take children, so on a playlist these
+// methods silently do nothing (childAtIndex returns nil). A nil child is
+// ignored. insertChild clamps out-of-range indexes; removeChildAtIndex and
+// childAtIndex ignore them.
 - (void)addChild:(TreeNode *)child;
 - (void)insertChild:(TreeNode *)child atIndex:(NSInteger)index;
 - (void)removeChild:(TreeNode *)child;

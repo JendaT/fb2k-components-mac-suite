@@ -9,31 +9,10 @@
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/GroupBuilder.h"
+#import "TestHarness.h"
 
 #include <string>
 #include <vector>
-
-static int g_failures = 0;
-static int g_checks = 0;
-static std::string g_context;
-
-#define CHECK(cond, what)                                                        \
-    do {                                                                         \
-        g_checks++;                                                             \
-        if (!(cond)) {                                                          \
-            g_failures++;                                                       \
-            printf("FAIL [%s] %s\n", g_context.c_str(), what);                  \
-        }                                                                       \
-    } while (0)
-
-static void checkArray(NSArray *got, NSArray *want, const char *what) {
-    g_checks++;
-    if (![got isEqualToArray:want]) {
-        g_failures++;
-        printf("FAIL [%s] %s: got %s, expected %s\n", g_context.c_str(), what,
-               got.description.UTF8String, want.description.UTF8String);
-    }
-}
 
 // Test track data: parallel header/subgroup arrays. artKey is "art<i>".
 struct FakeTracks {
@@ -141,6 +120,7 @@ int main(void) {
             snprintf(what, sizeof(what), "split at %zu: groups match", split);
             checkArray(chunked.groupStarts, full.groupStarts, what);
             checkArray(chunked.groupHeaders, full.groupHeaders, what);
+            checkArray(chunked.groupArtKeys, full.groupArtKeys, what);
             checkArray(chunked.subgroupStarts, full.subgroupStarts, what);
             checkArray(chunked.subgroupHeaders, full.subgroupHeaders, what);
         }
@@ -182,6 +162,26 @@ int main(void) {
         checkArray(r.groupStarts, @[@0, @1], "partial results up to cancellation");
     }
 
+    // --- Invalid UTF-8 from tags: guarded conversion yields "", never nil ---
+    // Regression for the documented crash fix in GroupBuilder.h:
+    // stringWithUTF8String: returns nil on invalid UTF-8; addObject:nil throws.
+    {
+        g_context = "invalid-utf8";
+        FakeTracks t;
+        t.headers = {"\xC3\x28", "\xC3\x28", "B"};
+        t.subgroups = {"\xC3\x28", "", ""};
+        BuildResult r;
+        std::string cur;
+        SubgroupDetector det(true);
+        bool ok = simplaylist::buildGroups(0, 3, true, true, cur, det, t.callbacks(),
+                                           r.groupStarts, r.groupHeaders, r.groupArtKeys,
+                                           r.subgroupStarts, r.subgroupHeaders);
+        CHECK(ok, "completes despite invalid UTF-8");
+        checkArray(r.groupStarts, @[@0, @2], "grouping compares raw bytes");
+        checkArray(r.groupHeaders, @[@"", @"B"], "invalid UTF-8 header becomes empty string");
+        checkArray(r.subgroupHeaders, @[@""], "invalid UTF-8 subgroup becomes empty string");
+    }
+
     // --- Empty range is a no-op ---
     {
         g_context = "empty-range";
@@ -196,9 +196,7 @@ int main(void) {
         checkArray(r.groupStarts, @[], "no groups");
     }
 
-    printf("%s: %d checks, %d failures\n",
-           g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
-    return g_failures == 0 ? 0 : 1;
+    TEST_MAIN_END();
 
     }
 }

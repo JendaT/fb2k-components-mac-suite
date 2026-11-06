@@ -11,10 +11,12 @@ static const NSUInteger kMaxNoImageKeySetSize = 50000;
 @interface AlbumArtCache ()
 // Strong image storage — no surprise evictions unlike NSCache
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSImage *> *imageStore;
-@property (nonatomic, strong) NSMutableArray<NSString *> *imageKeyOrder;  // LRU order (oldest first)
+@property (nonatomic, strong) NSMutableArray<NSString *> *imageKeyOrder;  // Insertion order, oldest first (FIFO eviction; hits do not refresh recency)
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *imageBytes;  // Per-key decoded size, for the byte budget
+@property (nonatomic, assign) NSUInteger imageStoreBytes;  // Running sum of imageBytes
 
 @property (nonatomic, strong) NSMutableSet<NSString *> *noImageKeys;  // Keys where we tried and found no art
-@property (nonatomic, strong) NSMutableArray<NSString *> *noImageKeyOrder;   // LRU order for eviction
+@property (nonatomic, strong) NSMutableArray<NSString *> *noImageKeyOrder;   // Insertion order for FIFO eviction
 
 @property (nonatomic, strong) NSOperationQueue *loadQueue;
 @property (nonatomic, strong) NSMutableSet<NSString *> *pendingLoads;
@@ -40,7 +42,10 @@ static NSImage *_placeholderImage = nil;
     if (self) {
         _imageStore = [NSMutableDictionary dictionary];
         _imageKeyOrder = [NSMutableArray array];
+        _imageBytes = [NSMutableDictionary dictionary];
+        _imageStoreBytes = 0;
         _maxImageCount = 1000;
+        _maxImageBytes = 256 * 1024 * 1024;
 
         _noImageKeys = [NSMutableSet set];
         _noImageKeyOrder = [NSMutableArray array];
@@ -66,7 +71,8 @@ static NSImage *_placeholderImage = nil;
 }
 
 + (NSImage *)placeholderImage {
-    if (!_placeholderImage) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
         // Create a simple placeholder with music note icon
         NSSize size = NSMakeSize(128, 128);
         _placeholderImage = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect dstRect) {
@@ -86,11 +92,14 @@ static NSImage *_placeholderImage = nil;
             [musicNote drawAtPoint:point withAttributes:attrs];
             return YES;
         }];
-    }
+    });
     return _placeholderImage;
 }
 
 - (nullable NSImage *)cachedImageForKey:(NSString *)key {
+    // dispatch_assert_queue, not NSAssert: assertions are compiled out in
+    // Release, and the image store has no lock behind the convention.
+    dispatch_assert_queue(dispatch_get_main_queue());
     return _imageStore[key];
 }
 
@@ -108,35 +117,86 @@ static NSImage *_placeholderImage = nil;
     return noImage;
 }
 
-// Insert image into store with LRU eviction when over maxImageCount.
-// Evicts oldest 10% in a batch to amortize the cost.
+// Decoded footprint of an image: 4 bytes per pixel at its largest
+// representation. Art is downscaled to 512 px on load, so this is ~1 MB at
+// worst — but the count cap alone would still allow ~1 GB resident.
+static NSUInteger EstimatedImageBytes(NSImage *image) {
+    NSUInteger widest = 0;
+    NSUInteger tallest = 0;
+    for (NSImageRep *rep in image.representations) {
+        widest = MAX(widest, (NSUInteger)MAX(rep.pixelsWide, 0));
+        tallest = MAX(tallest, (NSUInteger)MAX(rep.pixelsHigh, 0));
+    }
+    if (widest == 0 || tallest == 0) {
+        // Vector or size-only representation: fall back to the logical size.
+        widest = (NSUInteger)MAX(image.size.width, 1.0);
+        tallest = (NSUInteger)MAX(image.size.height, 1.0);
+    }
+    return widest * tallest * 4;
+}
+
+// Insert image into store with FIFO eviction, bounded by BOTH maxImageCount and
+// maxImageBytes. Eviction happens only here, on insert — never behind a
+// caller's back, which is why this is a plain dictionary and not an NSCache
+// (a surprise eviction would blank art that is currently on screen).
 // Must be called on main thread (imageStore/imageKeyOrder are main-thread-only).
-- (void)storeImage:(NSImage *)image forKey:(NSString *)key {
+// Returns NO when the image was rejected: the caller must then blacklist the key,
+// or the next draw pass finds it neither cached nor known-bad and decodes it again.
+- (BOOL)storeImage:(NSImage *)image forKey:(NSString *)key {
+    dispatch_assert_queue(dispatch_get_main_queue());
     if (_imageStore[key]) {
-        // Already stored — just move to end of LRU order
+        // Already stored — a re-store counts as a fresh insertion, so move the
+        // key to the end of the eviction order (plain cache hits do not).
         [_imageKeyOrder removeObject:key];
         [_imageKeyOrder addObject:key];
-        return;
+        return YES;
     }
 
-    // Evict oldest entries if at capacity
+    NSUInteger bytes = EstimatedImageBytes(image);
+
+    // One image big enough to need a quarter of the budget would evict most of
+    // the cache to make room for itself. Unreachable while loads are downscaled
+    // to 512 px (~1 MB); this keeps that an assumption, not a load-bearing one.
+    if (bytes > _maxImageBytes / 4) return NO;
+
+    // Work out how many of the oldest entries have to go for both budgets to
+    // fit, then remove them in one pass so the order array is compacted once.
+    NSUInteger evictCount = 0;
+    NSUInteger reclaimed = 0;
     if (_imageKeyOrder.count >= _maxImageCount) {
-        NSUInteger evictCount = _maxImageCount / 10;
-        if (evictCount < 1) evictCount = 1;
-        NSArray *toEvict = [_imageKeyOrder subarrayWithRange:NSMakeRange(0, evictCount)];
-        for (NSString *evictKey in toEvict) {
+        evictCount = MAX((NSUInteger)1, _maxImageCount / 10);
+        evictCount = MIN(evictCount, _imageKeyOrder.count);
+        for (NSUInteger i = 0; i < evictCount; i++) {
+            reclaimed += [_imageBytes[_imageKeyOrder[i]] unsignedIntegerValue];
+        }
+    }
+    while (evictCount < _imageKeyOrder.count &&
+           (_imageStoreBytes - reclaimed) + bytes > _maxImageBytes) {
+        reclaimed += [_imageBytes[_imageKeyOrder[evictCount]] unsignedIntegerValue];
+        evictCount++;
+    }
+
+    if (evictCount > 0) {
+        for (NSUInteger i = 0; i < evictCount; i++) {
+            NSString *evictKey = _imageKeyOrder[i];
             [_imageStore removeObjectForKey:evictKey];
+            [_imageBytes removeObjectForKey:evictKey];
         }
         [_imageKeyOrder removeObjectsInRange:NSMakeRange(0, evictCount)];
+        _imageStoreBytes -= reclaimed;
     }
 
     _imageStore[key] = image;
+    _imageBytes[key] = @(bytes);
     [_imageKeyOrder addObject:key];
+    _imageStoreBytes += bytes;
+    return YES;
 }
 
 - (void)loadImageForKey:(NSString *)key
                  handle:(metadb_handle_ptr)handle
              completion:(void (^)(NSImage * _Nullable image))completion {
+    dispatch_assert_queue(dispatch_get_main_queue());
 
     // Check image store first (strong references — no surprise eviction)
     NSImage *cached = _imageStore[key];
@@ -231,18 +291,23 @@ static NSImage *_placeholderImage = nil;
                             }
                         } catch (...) {}
 
-                        if (albumStr.length() > 0) {
-                            NSString *album = [NSString stringWithUTF8String:albumStr.get_ptr()];
+                        // stringWithUTF8String: returns nil on invalid UTF-8 in tags
+                        NSString *album = (albumStr.length() > 0)
+                            ? [NSString stringWithUTF8String:albumStr.get_ptr()] : nil;
+                        NSString *artist = (artistStr.length() > 0)
+                            ? [NSString stringWithUTF8String:artistStr.get_ptr()] : nil;
+                        if (album) {
                             for (NSString *ext in @[@"jpg", @"png", @"jpeg"]) {
                                 // %album%.ext  e.g. "().jpg", "Revolver.jpg"
-                                [coverNames addObject:[album stringByAppendingPathExtension:ext]];
+                                NSString *name = [album stringByAppendingPathExtension:ext];
+                                if (name) [coverNames addObject:name];
                             }
-                            if (artistStr.length() > 0) {
-                                NSString *artist = [NSString stringWithUTF8String:artistStr.get_ptr()];
+                            if (artist) {
                                 for (NSString *ext in @[@"jpg", @"png", @"jpeg"]) {
                                     // %artist% - %album%.ext  e.g. "Sigur Ros - ().jpg"
-                                    NSString *name = [NSString stringWithFormat:@"%@ - %@", artist, album];
-                                    [coverNames addObject:[name stringByAppendingPathExtension:ext]];
+                                    NSString *name = [[NSString stringWithFormat:@"%@ - %@", artist, album]
+                                                      stringByAppendingPathExtension:ext];
+                                    if (name) [coverNames addObject:name];
                                 }
                             }
                         }
@@ -258,14 +323,20 @@ static NSImage *_placeholderImage = nil;
                         ]];
 
                         for (NSString *name in coverNames) {
+                            // Tag-derived names must stay inside the track's directory:
+                            // a "/" or ".." in ALBUM/ARTIST could never match a real
+                            // in-directory file anyway, only escape it.
+                            if ([name containsString:@"/"] || [name containsString:@".."]) continue;
                             NSString *coverPath = [directory stringByAppendingPathComponent:name];
                             if ([fm fileExistsAtPath:coverPath]) {
                                 image = [[NSImage alloc] initWithContentsOfFile:coverPath];
                                 if (image) {
-                                    if (image.size.width > 512 || image.size.height > 512) {
-                                        image = [self resizeImage:image toMaxSize:512];
-                                    }
-                                    break;
+                                    // resizeImage: returns nil for an image it
+                                    // cannot render; keep trying the remaining
+                                    // candidate names rather than giving up on
+                                    // the directory because of one bad file.
+                                    image = [self resizeImage:image toMaxSize:512];
+                                    if (image) break;
                                 }
                             }
                         }
@@ -273,7 +344,7 @@ static NSImage *_placeholderImage = nil;
                 }
             }
         } @catch (NSException *exception) {
-            FB2K_console_formatter() << "[SimPlaylist] Album art file load error: " << exception.reason.UTF8String;
+            FB2K_console_formatter() << "[SimPlaylist] Album art file load error: " << (exception.reason.UTF8String ?: "unknown");
         }
 
         // Second try: use album_art_manager_v2 which handles all fb2k path schemes
@@ -345,8 +416,7 @@ static NSImage *_placeholderImage = nil;
                                                                            length:data->size()];
                                         if (imageData) {
                                             image = [[NSImage alloc] initWithData:imageData];
-                                            if (image && (image.size.width > 512 ||
-                                                          image.size.height > 512)) {
+                                            if (image) {
                                                 image = [self resizeImage:image toMaxSize:512];
                                             }
                                         }
@@ -361,7 +431,7 @@ static NSImage *_placeholderImage = nil;
                     }
                 }
             } @catch (NSException *exception) {
-                FB2K_console_formatter() << "[SimPlaylist] Album art SDK error: " << exception.reason.UTF8String;
+                FB2K_console_formatter() << "[SimPlaylist] Album art SDK error: " << (exception.reason.UTF8String ?: "unknown");
             }
         }
 
@@ -376,9 +446,10 @@ static NSImage *_placeholderImage = nil;
             NSArray *completions = [strongSelf->_pendingCompletions[keyCopy] copy];
             [strongSelf->_pendingCompletions removeObjectForKey:keyCopy];
 
-            if (image) {
-                [strongSelf storeImage:image forKey:keyCopy];
-            } else {
+            // A rejected image (too large for the byte budget) must be blacklisted
+            // like a missing one, or every redraw re-decodes it.
+            BOOL stored = image && [strongSelf storeImage:image forKey:keyCopy];
+            if (!stored) {
                 // Mark this key as having no image to prevent repeated load attempts
                 if (![strongSelf->_noImageKeys containsObject:keyCopy]) {
                     if (strongSelf->_noImageKeys.count >= kMaxNoImageKeySetSize) {
@@ -403,15 +474,47 @@ static NSImage *_placeholderImage = nil;
     }];
 }
 
-- (NSImage *)resizeImage:(NSImage *)sourceImage toMaxSize:(CGFloat)maxSize {
-    NSSize originalSize = sourceImage.size;
-    CGFloat scale = MIN(maxSize / originalSize.width, maxSize / originalSize.height);
-
-    if (scale >= 1.0) {
-        return sourceImage;  // Already small enough
+// Pixel dimensions of the largest representation, or NSZeroSize if none of the
+// representations report usable pixel counts.
+//
+// NSImage.size is in *points*: it is the pixel count divided by the DPI recorded
+// in the file's metadata. A cover with huge pixel dimensions and an absurd DPI
+// therefore reports a sub-pixel size, which used to produce a zero-size resize
+// target and send the full-resolution image onward — precisely the case the
+// byte budget exists to prevent. Pixels are the quantity that determines both
+// the decode cost and the resident bytes, so scale against them.
+static NSSize LargestPixelSize(NSImage *image) {
+    NSSize best = NSZeroSize;
+    for (NSImageRep *rep in image.representations) {
+        if (rep.pixelsWide <= 0 || rep.pixelsHigh <= 0) continue;  // vector rep
+        if ((CGFloat)rep.pixelsWide * rep.pixelsHigh > best.width * best.height) {
+            best = NSMakeSize(rep.pixelsWide, rep.pixelsHigh);
+        }
     }
+    return best;
+}
 
-    NSSize newSize = NSMakeSize(round(originalSize.width * scale), round(originalSize.height * scale));
+// Returns nil when the image cannot be rendered. Every failure path here fails
+// *closed*: returning the source image instead would hand back a
+// full-resolution decode that the caller believes is capped at maxSize, which
+// defeats the cache's byte budget. The callers already treat nil as "no art".
+- (nullable NSImage *)resizeImage:(NSImage *)sourceImage toMaxSize:(CGFloat)maxSize {
+    NSSize originalSize = LargestPixelSize(sourceImage);
+    if (originalSize.width <= 0 || originalSize.height <= 0) {
+        // No bitmap representation reported pixel dimensions. Fall back to the
+        // point size so genuine vector art (rare for cover art) still renders.
+        originalSize = sourceImage.size;
+    }
+    if (originalSize.width <= 0 || originalSize.height <= 0) {
+        return nil;  // Degenerate metadata — nothing sane to render
+    }
+    // Always render into a fresh bitmap rep, even when no downscale is needed,
+    // so the JPEG/PNG decode cost is paid here on the load queue instead of on
+    // the main thread at first draw.
+    CGFloat scale = MIN(1.0, MIN(maxSize / originalSize.width, maxSize / originalSize.height));
+
+    NSSize newSize = NSMakeSize(MAX(1.0, round(originalSize.width * scale)),
+                                MAX(1.0, round(originalSize.height * scale)));
 
     NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL
@@ -424,10 +527,17 @@ static NSImage *_placeholderImage = nil;
                   colorSpaceName:NSCalibratedRGBColorSpace
                      bytesPerRow:0
                     bitsPerPixel:0];
+    // Allocation can fail on hostile/huge decoded images; passing nil onward
+    // would raise on a background queue thread.
+    if (!rep) return nil;
     rep.size = newSize;
 
     [NSGraphicsContext saveGraphicsState];
     NSGraphicsContext *ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
+    if (!ctx) {
+        [NSGraphicsContext restoreGraphicsState];
+        return nil;
+    }
     [NSGraphicsContext setCurrentContext:ctx];
     ctx.imageInterpolation = NSImageInterpolationHigh;
     [sourceImage drawInRect:NSMakeRect(0, 0, newSize.width, newSize.height)
@@ -465,7 +575,7 @@ static NSImage *_placeholderImage = nil;
 
     [_pendingLock lock];
 
-    NSMutableArray<NSString *> *staleKeys = [NSMutableArray array];
+    NSMutableSet<NSString *> *staleKeys = [NSMutableSet set];
     for (NSString *key in _noImageKeys) {
         if ([key containsString:posixPrefix] ||
                 (macVolumePrefix && [key hasPrefix:macVolumePrefix])) {
@@ -474,8 +584,17 @@ static NSImage *_placeholderImage = nil;
     }
 
     if (staleKeys.count > 0) {
-        [_noImageKeys minusSet:[NSSet setWithArray:staleKeys]];
-        [_noImageKeyOrder removeObjectsInArray:staleKeys];
+        [_noImageKeys minusSet:staleKeys];
+        // One filtered pass instead of removeObjectsInArray:, which is O(n*m)
+        // under the lock on the main thread.
+        NSMutableArray<NSString *> *keptOrder =
+            [NSMutableArray arrayWithCapacity:_noImageKeyOrder.count];
+        for (NSString *key in _noImageKeyOrder) {
+            if (![staleKeys containsObject:key]) {
+                [keptOrder addObject:key];
+            }
+        }
+        [_noImageKeyOrder setArray:keptOrder];
         FB2K_console_formatter() << "[SimPlaylist] Volume mounted at "
             << mountPath.UTF8String << " — cleared " << (int)staleKeys.count
             << " stale noImageKey(s); cover art will be retried.";
@@ -485,8 +604,11 @@ static NSImage *_placeholderImage = nil;
 }
 
 - (void)clearCache {
+    dispatch_assert_queue(dispatch_get_main_queue());
     [_imageStore removeAllObjects];
     [_imageKeyOrder removeAllObjects];
+    [_imageBytes removeAllObjects];
+    _imageStoreBytes = 0;
 
     [_pendingLock lock];
     [_loadQueue cancelAllOperations];

@@ -69,7 +69,7 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
         }
 
         // Wait for rate limiter
-        [self waitForRateLimiter];
+        [self waitForRateLimiter:token];
 
         // Check cancellation again after wait
         if (token.isCancelled) {
@@ -81,7 +81,9 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 
         // Build request URL
         NSURL *url = [self artistInfoURLForArtist:artistName];
+#if DEBUG
         NSLog(@"[Biography] Fetching from URL: %@", url);
+#endif
 
         // Make request
         NSURLSessionDataTask *task = [self.session dataTaskWithURL:url
@@ -166,7 +168,7 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
             return;
         }
 
-        [self waitForRateLimiter];
+        [self waitForRateLimiter:token];
 
         if (token.isCancelled) {
             completion(nil, [self errorWithCode:LastFmBioErrorCodeCancelled message:@"Request cancelled"]);
@@ -205,13 +207,11 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
 }
 
 - (void)cancelAllRequests {
-    [self.session invalidateAndCancel];
-
-    // Create new session for future requests
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
-    config.timeoutIntervalForRequest = kDefaultRequestTimeout;
-    config.HTTPAdditionalHeaders = @{@"User-Agent": kBiographyUserAgent};
-    self.session = [NSURLSession sessionWithConfiguration:config];
+    [self.session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
+        for (NSURLSessionTask *task in tasks) {
+            [task cancel];
+        }
+    }];
 }
 
 #pragma mark - URL Building
@@ -241,119 +241,19 @@ NSString * const LastFmBioErrorDomain = @"com.foobar2000.biography.lastfm";
     return components.URL;
 }
 
-#pragma mark - Response Parsing
-
-+ (NSDictionary *)parseArtistInfoResponse:(NSDictionary *)response {
-    NSMutableDictionary *result = [NSMutableDictionary dictionary];
-
-    // Artist name (may be corrected)
-    result[@"name"] = response[@"name"] ?: @"";
-
-    // MusicBrainz ID
-    if (response[@"mbid"] && [response[@"mbid"] length] > 0) {
-        result[@"mbid"] = response[@"mbid"];
-    }
-
-    // Biography
-    NSDictionary *bio = response[@"bio"];
-    if (bio) {
-        NSString *content = bio[@"content"];
-        NSString *summary = bio[@"summary"];
-
-        // Clean up HTML from biography
-        if (content.length > 0) {
-            result[@"biography"] = [self cleanBiographyText:content];
-        }
-        if (summary.length > 0) {
-            result[@"biographySummary"] = [self cleanBiographyText:summary];
-        }
-    }
-
-    // Tags
-    NSArray *tags = response[@"tags"][@"tag"];
-    if ([tags isKindOfClass:[NSArray class]] && tags.count > 0) {
-        NSMutableArray *tagNames = [NSMutableArray array];
-        for (NSDictionary *tag in tags) {
-            if ([tag isKindOfClass:[NSDictionary class]] && tag[@"name"]) {
-                [tagNames addObject:tag[@"name"]];
-            }
-        }
-        result[@"tags"] = [tagNames copy];
-    }
-
-    // Images (get largest available)
-    NSArray *images = response[@"image"];
-    if ([images isKindOfClass:[NSArray class]]) {
-        NSURL *imageURL = nil;
-        for (NSDictionary *image in [images reverseObjectEnumerator]) {
-            NSString *urlString = image[@"#text"];
-            if (urlString.length > 0) {
-                imageURL = [NSURL URLWithString:urlString];
-                if (imageURL) break;
-            }
-        }
-        if (imageURL) {
-            result[@"imageURL"] = imageURL;
-        }
-    }
-
-    // Stats
-    NSDictionary *stats = response[@"stats"];
-    if (stats) {
-        result[@"listeners"] = @([stats[@"listeners"] integerValue]);
-        result[@"playcount"] = @([stats[@"playcount"] integerValue]);
-    }
-
-    // Similar artists (if included)
-    NSArray *similar = response[@"similar"][@"artist"];
-    if ([similar isKindOfClass:[NSArray class]]) {
-        result[@"similarArtists"] = similar;
-    }
-
-    return [result copy];
-}
-
-+ (NSString *)cleanBiographyText:(NSString *)text {
-    if (!text) return nil;
-
-    // Remove HTML tags
-    NSRegularExpression *htmlRegex = [NSRegularExpression regularExpressionWithPattern:@"<[^>]+>"
-                                                                               options:0
-                                                                                 error:nil];
-    NSString *cleaned = [htmlRegex stringByReplacingMatchesInString:text
-                                                            options:0
-                                                              range:NSMakeRange(0, text.length)
-                                                       withTemplate:@""];
-
-    // Decode HTML entities
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&amp;" withString:@"&"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&lt;" withString:@"<"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&gt;" withString:@">"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&quot;" withString:@"\""];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&#39;" withString:@"'"];
-    cleaned = [cleaned stringByReplacingOccurrencesOfString:@"&nbsp;" withString:@" "];
-
-    // Trim whitespace
-    cleaned = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-
-    // Remove "Read more on Last.fm" suffix
-    NSRange readMoreRange = [cleaned rangeOfString:@"Read more on Last.fm"
-                                           options:NSCaseInsensitiveSearch | NSBackwardsSearch];
-    if (readMoreRange.location != NSNotFound) {
-        cleaned = [[cleaned substringToIndex:readMoreRange.location]
-                   stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    }
-
-    return cleaned;
-}
-
 #pragma mark - Helpers
 
-- (void)waitForRateLimiter {
+- (void)waitForRateLimiter:(BiographyRequest *)token {
+    NSTimeInterval totalWaited = 0;
+    static const NSTimeInterval kMaxSleepInterval = 0.1;
+    static const NSTimeInterval kMaxTotalWait = 5.0;
+
     while (![self.rateLimiter tryAcquire]) {
-        NSTimeInterval waitTime = self.rateLimiter.waitTimeForNextToken;
+        if (token.isCancelled || totalWaited >= kMaxTotalWait) return;
+        NSTimeInterval waitTime = MIN(self.rateLimiter.waitTimeForNextToken, kMaxSleepInterval);
         if (waitTime > 0) {
             [NSThread sleepForTimeInterval:waitTime];
+            totalWaited += waitTime;
         }
     }
 }

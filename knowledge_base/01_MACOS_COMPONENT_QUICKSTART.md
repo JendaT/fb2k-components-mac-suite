@@ -6,11 +6,11 @@ This guide covers creating a new foobar2000 macOS component from scratch, includ
 
 ## Prerequisites
 
-- **macOS 11+** (Big Sur or later)
-- **Xcode 12+** with Command Line Tools
+- **macOS 12+** (Monterey or later)
+- **Xcode 15+** with Command Line Tools
 - **Ruby** (for project generation scripts)
 - **foobar2000 for Mac** installed for testing
-- **foobar2000 SDK** (2025-03-07 or later)
+- **foobar2000 SDK** 2026-10-01 (requires C++20)
 
 ## 1. Naming Convention
 
@@ -29,7 +29,7 @@ Examples:
 Create your project directory at the same level as the SDK:
 ```
 /path/to/foobar2000/
-├── SDK-2025-03-07/          # Official SDK
+├── SDK-2026-10-01/          # Official SDK
 ├── foo_scrobble_mac/        # Existing reference project
 └── foo_[your_name]_mac/     # Your new component
 ```
@@ -196,38 +196,27 @@ namespace {
 | `libfoobar2000_SDK_helpers.a` | `helpers/build/Release/` | Helper utilities |
 | `libfoobar2000_component_client.a` | `foobar2000_component_client/build/Release/` | Component loader |
 | `libshared.a` | `shared/build/Release/` | Shared utilities |
-| `libpfc-Mac.a` | `pfc/build/Release/` | Platform foundation |
+| `libpfc.a` | `pfc/build/Release/` | Platform foundation |
 | `Cocoa.framework` | System | macOS UI framework |
 
 ### Building SDK Libraries
 
-Before building your component, build the SDK libraries:
-
-```bash
-cd /path/to/SDK-2025-03-07
-
-# Build all SDK projects in Release mode
-xcodebuild -project foobar2000/SDK/foobar2000_SDK.xcodeproj -configuration Release
-xcodebuild -project foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj -configuration Release
-xcodebuild -project foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release
-xcodebuild -project foobar2000/shared/shared.xcodeproj -configuration Release
-xcodebuild -project pfc/pfc.xcodeproj -configuration Release
-```
+Before building your component, build the SDK libraries once, in the order and with the `MACOSX_DEPLOYMENT_TARGET=12.0` override given in the main [README](../README.md#building-from-source) (pfc, SDK, shared, helpers, component_client). These are the only direct `xcodebuild` calls; components build through their `Scripts/build.sh`.
 
 ### Header Search Paths
 ```
-$(PROJECT_DIR)/../SDK-2025-03-07
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000
-$(PROJECT_DIR)/../SDK-2025-03-07/pfc
+$(PROJECT_DIR)/../SDK-2026-10-01
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000
+$(PROJECT_DIR)/../SDK-2026-10-01/pfc
 ```
 
 ### Library Search Paths
 ```
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/SDK/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/helpers/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/foobar2000_component_client/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/foobar2000/shared/build/Release
-$(PROJECT_DIR)/../SDK-2025-03-07/pfc/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/SDK/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/helpers/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/foobar2000_component_client/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/foobar2000/shared/build/Release
+$(PROJECT_DIR)/../SDK-2026-10-01/pfc/build/Release
 ```
 
 ## 6. Build Configuration
@@ -238,8 +227,8 @@ $(PROJECT_DIR)/../SDK-2025-03-07/pfc/build/Release
 |---------|-------|
 | Product Type | `com.apple.product-type.bundle` |
 | Bundle Extension | `component` |
-| Deployment Target | `11.0` (Big Sur - verify against SDK minimum) |
-| C++ Language Standard | `gnu++17` (or `gnu++20`) |
+| Deployment Target | `12.0` (Monterey; Xcode 27 cannot target 11) |
+| C++ Language Standard | `gnu++20` (required since SDK 2026-09-16) |
 | Objective-C ARC | `YES` |
 | Code Signing | Automatic |
 
@@ -260,19 +249,14 @@ cd foo_mycomponent_mac
 ruby Scripts/generate_xcode_project.rb
 ```
 
-### Step 2: Build
+### Step 2: Build and Install for Testing
 ```bash
-xcodebuild -project foo_mycomponent.xcodeproj -configuration Release
+./Scripts/build.sh --install
 ```
 
-### Step 3: Install for Testing
-```bash
-# Copy to foobar2000 components folder
-cp -r build/Release/foo_mycomponent.component \
-  ~/Library/foobar2000-v2/user-components/
-```
+`build.sh` keeps its output in the local `build/` folder (calling `xcodebuild` directly builds into DerivedData instead), and `--install` copies `build/Release/foo_mycomponent.component` to `~/Library/foobar2000-v2/user-components/foo_mycomponent/`, the same layout Preferences > Components creates.
 
-### Step 4: Verify in foobar2000
+### Step 3: Verify in foobar2000
 1. Launch foobar2000 for Mac
 2. Open Preferences > Components
 3. Your component should appear in the list
@@ -281,7 +265,7 @@ cp -r build/Release/foo_mycomponent.component \
 ## 8. Common Issues
 
 ### Build Fails: Missing Headers
-- Ensure SDK is at correct relative path (`../SDK-2025-03-07/`)
+- Ensure SDK is at correct relative path (`../SDK-2026-10-01/`)
 - Verify header search paths in Xcode project
 
 ### Build Fails: Missing Libraries
@@ -311,4 +295,4 @@ After your skeleton compiles:
 
 - [foobar2000 SDK Documentation](https://www.foobar2000.org/SDK)
 - [Hydrogenaudio Development Wiki](https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Development:Overview)
-- [foo_sample in SDK](../SDK-2025-03-07/foobar2000/foo_sample/) - Reference implementation
+- [foo_sample in SDK](../SDK-2026-10-01/foobar2000/foo_sample/) - Reference implementation

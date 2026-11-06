@@ -3,10 +3,11 @@
 //  foo_simplaylist_mac
 //
 
+// Deliberately no ConfigHelper or fb2k_sdk import: this file is the pure model,
+// JSON codec and layout transforms, and must stay compilable without the
+// foobar2000 SDK so Tests/ColumnDefinitionTests.mm can link it standalone.
+// Everything config-backed or SDK-backed lives in ColumnDefinitionStore.mm.
 #import "ColumnDefinition.h"
-#import "ConfigHelper.h"
-#import "../fb2k_sdk.h"
-#import <foobar2000/SDK/playlistColumnProvider.h>
 
 @implementation ColumnDefinition
 
@@ -76,91 +77,6 @@
         default:
             return @"left";
     }
-}
-
-+ (NSArray<ColumnDefinition *> *)defaultColumns {
-    // First try to load from saved config
-    std::string savedJSON = simplaylist_config::getConfigString(
-        simplaylist_config::kColumns, "");
-
-    if (!savedJSON.empty()) {
-        NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
-        NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
-        if (columns.count > 0) {
-            // Clean up any orphaned custom columns
-            NSArray<ColumnDefinition *> *cleaned = [self removeOrphanedColumns:columns];
-            if (cleaned.count != columns.count) {
-                // Some columns were removed - save the cleaned list
-                NSString *cleanedJSON = [self columnsToJSON:cleaned];
-                simplaylist_config::setConfigString(
-                    simplaylist_config::kColumns, cleanedJSON.UTF8String);
-                FB2K_console_formatter() << "[SimPlaylist] Removed "
-                    << (columns.count - cleaned.count) << " orphaned custom column(s)";
-                return cleaned;
-            }
-
-        // Migration: remove legacy ">" pattern from Playing columns now that the 
-        // native ▶ drawing in SimPlaylistView handles the indicator.
-        // TODO: This migration for Playing column can be removed in future. Let's keep it until end of 2026.
-        BOOL migrated = NO;
-        NSMutableArray<ColumnDefinition *> *migrating = [cleaned mutableCopy];
-        for (ColumnDefinition *col in migrating) {
-            if ([col.name isEqualToString:@"Playing"] &&
-                [col.pattern isEqualToString:@"$if(%isplaying%,>,)"]) {
-                col.pattern = @"";
-                migrated = YES;
-            }
-        }
-        if (migrated) {
-            NSString *migratedJSON = [self columnsToJSON:migrating];
-            simplaylist_config::setConfigString(
-                simplaylist_config::kColumns, migratedJSON.UTF8String);
-            FB2K_console_formatter() << "[SimPlaylist] Migrated Playing column: removed legacy > pattern";
-            return migrating;
-        }
-
-        return columns;
-        }
-    }
-
-    // Fall back to hardcoded default JSON
-    const char* jsonCStr = simplaylist_config::getDefaultColumnsJSON();
-    NSString *jsonString = [NSString stringWithUTF8String:jsonCStr];
-
-    NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
-    if (columns.count > 0) {
-        return columns;
-    }
-
-    // Final fallback to hardcoded defaults
-    return @[
-        [ColumnDefinition columnWithName:@"Playing"
-                                 pattern:@""
-                                   width:24
-                               alignment:ColumnAlignmentCenter],
-
-        [ColumnDefinition columnWithName:@"#"
-                                 pattern:@"%tracknumber%"
-                                   width:32
-                               alignment:ColumnAlignmentRight],
-
-        [ColumnDefinition columnWithName:@"Title"
-                                 pattern:@"%title%"
-                                   width:250
-                               alignment:ColumnAlignmentLeft
-                              autoResize:YES],
-
-        [ColumnDefinition columnWithName:@"Artist"
-                                 pattern:@"%artist%"
-                                   width:150
-                               alignment:ColumnAlignmentLeft
-                              autoResize:YES],
-
-        [ColumnDefinition columnWithName:@"Duration"
-                                 pattern:@"%length%"
-                                   width:50
-                               alignment:ColumnAlignmentRight]
-    ];
 }
 
 + (NSArray<ColumnDefinition *> *)availableColumnTemplates {
@@ -260,148 +176,31 @@
     ];
 }
 
-+ (NSArray<ColumnDefinition *> *)columnsFromSDKProviders {
-    // Returns columns from SDK playlistColumnProvider services
-    // (e.g., playback statistics: Play Count, First/Last Played, Date Added, Rating)
-    // Note: foobar's Custom Playlist Columns are stored in binary cfg_var blob - not accessible
+#pragma mark - Pure transforms
 
-    NSMutableArray<ColumnDefinition *> *columns = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenNames = [NSMutableSet set];
-
-    @try {
-
-        // Enumerate all playlistColumnProvider services
-        for (auto provider : fb2k::playlistColumnProvider::enumerate()) {
-            size_t numCols = provider->numColumns();
-
-            for (size_t i = 0; i < numCols; i++) {
-                fb2k::stringRef nameRef = provider->columnName(i);
-                fb2k::stringRef patternRef = provider->columnFormatSpec(i);
-                unsigned flags = provider->columnFlags(i);
-
-                if (!nameRef.is_valid() || !patternRef.is_valid()) continue;
-
-                NSString *name = [NSString stringWithUTF8String:nameRef->c_str()];
-                NSString *pattern = [NSString stringWithUTF8String:patternRef->c_str()];
-
-                // Skip if empty or already seen
-                if (!name || name.length == 0 || !pattern || pattern.length == 0) continue;
-                if ([seenNames containsObject:name]) continue;
-                [seenNames addObject:name];
-
-                // Determine alignment from flags
-                ColumnAlignment alignment = ColumnAlignmentLeft;
-                if (flags & fb2k::playlistColumnProvider::flag_alignRight) {
-                    alignment = ColumnAlignmentRight;
-                } else if (flags & fb2k::playlistColumnProvider::flag_alignCenter) {
-                    alignment = ColumnAlignmentCenter;
-                }
-
-                ColumnDefinition *col = [ColumnDefinition columnWithName:name
-                                                                  pattern:pattern
-                                                                    width:100
-                                                                alignment:alignment];
-                [columns addObject:col];
-            }
-        }
-    } @catch (NSException *exception) {
-        // Ignore enumeration errors
-    }
-
-    return columns;
-}
-
-#pragma mark - Custom Columns
-
-+ (NSArray<ColumnDefinition *> *)customColumns {
-    std::string jsonStr = simplaylist_config::getConfigString(
-        simplaylist_config::kCustomColumns,
-        simplaylist_config::getDefaultCustomColumnsJSON()
-    );
-
-    if (jsonStr.empty()) {
-        return @[];
-    }
-
-    NSString *json = [NSString stringWithUTF8String:jsonStr.c_str()];
-    return [self columnsFromJSON:json];
-}
-
-+ (void)saveCustomColumns:(NSArray<ColumnDefinition *> *)columns {
-    NSString *json = [self columnsToJSON:columns];
-    simplaylist_config::setConfigString(
-        simplaylist_config::kCustomColumns,
-        json.UTF8String
-    );
-}
-
-+ (void)addCustomColumn:(ColumnDefinition *)column {
-    NSMutableArray *columns = [[self customColumns] mutableCopy];
-    [columns addObject:column];
-    [self saveCustomColumns:columns];
-}
-
-+ (void)removeCustomColumnAtIndex:(NSUInteger)index {
-    NSMutableArray *columns = [[self customColumns] mutableCopy];
-    if (index < columns.count) {
-        [columns removeObjectAtIndex:index];
-        [self saveCustomColumns:columns];
-    }
-}
-
-+ (NSArray<ColumnDefinition *> *)removeOrphanedColumns:(NSArray<ColumnDefinition *> *)columns {
-    // Build set of all known column names (templates + SDK providers + custom definitions)
-    NSMutableSet<NSString *> *knownNames = [NSMutableSet set];
-
-    // Add built-in template names
-    for (ColumnDefinition *col in [self availableColumnTemplates]) {
-        [knownNames addObject:col.name];
-    }
-
-    // Add SDK provider column names
-    for (ColumnDefinition *col in [self columnsFromSDKProviders]) {
-        [knownNames addObject:col.name];
-    }
-
-    // Add user-defined custom column names
-    for (ColumnDefinition *col in [self customColumns]) {
-        [knownNames addObject:col.name];
-    }
-
-    // Filter to only columns with known names
-    NSMutableArray<ColumnDefinition *> *result = [NSMutableArray array];
++ (NSArray<ColumnDefinition *> *)columns:(NSArray<ColumnDefinition *> *)columns
+                    filteredToKnownNames:(NSSet<NSString *> *)knownNames {
+    NSMutableArray<ColumnDefinition *> *result = [NSMutableArray arrayWithCapacity:columns.count];
     for (ColumnDefinition *col in columns) {
-        if ([knownNames containsObject:col.name]) {
+        if (col.name && [knownNames containsObject:col.name]) {
             [result addObject:col];
         }
     }
-
     return result;
 }
 
-+ (void)syncCustomColumnRenameFrom:(NSString *)oldName to:(NSString *)newName {
-    if (!oldName || !newName || [oldName isEqualToString:newName]) {
-        return;
-    }
++ (nullable NSArray<ColumnDefinition *> *)columns:(NSArray<ColumnDefinition *> *)columns
+                                      renamedFrom:(NSString *)oldName
+                                               to:(NSString *)newName {
+    if (!oldName || !newName || [oldName isEqualToString:newName]) return nil;
 
-    // Load current visible columns
-    std::string savedJSON = simplaylist_config::getConfigString(
-        simplaylist_config::kColumns, "");
-    if (savedJSON.empty()) {
-        return;
-    }
-
-    NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
-    NSArray<ColumnDefinition *> *columns = [self columnsFromJSON:jsonString];
-    if (columns.count == 0) {
-        return;
-    }
-
-    // Find and update any column with the old name
     BOOL changed = NO;
-    NSMutableArray<ColumnDefinition *> *updated = [NSMutableArray array];
+    NSMutableArray<ColumnDefinition *> *updated = [NSMutableArray arrayWithCapacity:columns.count];
     for (ColumnDefinition *col in columns) {
         if ([col.name isEqualToString:oldName]) {
+            // Copy rather than mutate: the caller's array may be a live layout
+            // still held by a panel, and renaming in place would change what it
+            // is showing without it knowing.
             ColumnDefinition *renamed = [col copy];
             renamed.name = newName;
             [updated addObject:renamed];
@@ -410,14 +209,30 @@
             [updated addObject:col];
         }
     }
-
-    // Save if any columns were renamed
-    if (changed) {
-        NSString *updatedJSON = [self columnsToJSON:updated];
-        simplaylist_config::setConfigString(
-            simplaylist_config::kColumns, updatedJSON.UTF8String);
-    }
+    return changed ? updated : nil;
 }
+
++ (nullable NSArray<ColumnDefinition *> *)columnsByMigratingLegacyPlayingPattern:
+    (NSArray<ColumnDefinition *> *)columns {
+    static NSString *const kLegacyPlayingPattern = @"$if(%isplaying%,>,)";
+
+    BOOL migrated = NO;
+    NSMutableArray<ColumnDefinition *> *updated = [NSMutableArray arrayWithCapacity:columns.count];
+    for (ColumnDefinition *col in columns) {
+        if ([col.name isEqualToString:@"Playing"] &&
+            [col.pattern isEqualToString:kLegacyPlayingPattern]) {
+            ColumnDefinition *fixed = [col copy];
+            fixed.pattern = @"";
+            [updated addObject:fixed];
+            migrated = YES;
+        } else {
+            [updated addObject:col];
+        }
+    }
+    return migrated ? updated : nil;
+}
+
+#pragma mark - JSON codec
 
 + (NSArray<ColumnDefinition *> *)columnsFromJSON:(NSString *)jsonString {
     if (!jsonString || jsonString.length == 0) {
@@ -426,12 +241,20 @@
 
     NSError *error = nil;
     NSData *jsonData = [jsonString dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:jsonData
-                                                         options:0
-                                                           error:&error];
-    if (error || !json) {
+    if (!jsonData) {
+        // Unencodable string (e.g. unpaired surrogates); JSONObjectWithData:
+        // would throw on nil data.
         return @[];
     }
+    // A top-level JSON array parses fine and is NOT a dictionary; subscripting
+    // it would raise NSInvalidArgumentException on every panel construction.
+    id root = [NSJSONSerialization JSONObjectWithData:jsonData
+                                              options:0
+                                                error:&error];
+    if (error || ![root isKindOfClass:[NSDictionary class]]) {
+        return @[];
+    }
+    NSDictionary *json = root;
 
     NSArray *columnsArray = json[@"columns"];
     if (![columnsArray isKindOfClass:[NSArray class]]) {
@@ -450,7 +273,14 @@
         NSNumber *autoResizeNum = colDict[@"auto_resize"];
         NSNumber *clickableNum = colDict[@"clickable"];
 
-        if (!name || !pattern) continue;
+        // Corrupted config can put non-strings/non-numbers here; wrong types
+        // crash later on isEqualToString:/doubleValue sends.
+        if (![name isKindOfClass:[NSString class]] ||
+            ![pattern isKindOfClass:[NSString class]]) continue;
+        if (widthNum && ![widthNum isKindOfClass:[NSNumber class]]) widthNum = nil;
+        if (alignmentStr && ![alignmentStr isKindOfClass:[NSString class]]) alignmentStr = nil;
+        if (autoResizeNum && ![autoResizeNum isKindOfClass:[NSNumber class]]) autoResizeNum = nil;
+        if (clickableNum && ![clickableNum isKindOfClass:[NSNumber class]]) clickableNum = nil;
 
         // Migration: "Track no" removed - use "#" instead (v1.1.7+)
         if ([name isEqualToString:@"Track no"]) {
@@ -460,7 +290,12 @@
         ColumnDefinition *col = [[ColumnDefinition alloc] init];
         col.name = name;
         col.pattern = pattern;
-        col.width = widthNum ? [widthNum doubleValue] : 100;
+        // Persisted width may be NaN/Inf/non-positive; that would flow into
+        // NSRect math and hit-testing. Fall back to the default and cap.
+        // (No higher floor: stock columns legitimately persist widths of 24.)
+        double width = widthNum ? [widthNum doubleValue] : 100;
+        if (!isfinite(width) || width <= 0) width = 100;
+        col.width = MIN(10000.0, width);
         col.alignment = alignmentStr ? [self alignmentFromString:alignmentStr] : ColumnAlignmentLeft;
         col.autoResize = autoResizeNum ? [autoResizeNum boolValue] : NO;
         col.clickable = clickableNum ? [clickableNum boolValue] : NO;
@@ -471,14 +306,21 @@
     return result;
 }
 
-+ (NSString *)columnsToJSON:(NSArray<ColumnDefinition *> *)columns {
++ (nullable NSString *)columnsToJSON:(NSArray<ColumnDefinition *> *)columns {
     NSMutableArray *columnsArray = [NSMutableArray array];
 
     for (ColumnDefinition *col in columns) {
         NSMutableDictionary *colDict = [NSMutableDictionary dictionary];
-        colDict[@"name"] = col.name;
-        colDict[@"pattern"] = col.pattern;
-        colDict[@"width"] = @(col.width);
+        // nil field would crash the dictionary literal-style assignment
+        colDict[@"name"] = col.name ?: @"";
+        colDict[@"pattern"] = col.pattern ?: @"";
+        // A NaN or infinite width makes +dataWithJSONObject: *raise*
+        // NSInvalidArgumentException rather than set `error`, so the guard
+        // below would never see it. Clamp to the same fallback the read path
+        // applies — which exists because such widths are known to occur.
+        double width = col.width;
+        if (!isfinite(width) || width <= 0) width = 100;
+        colDict[@"width"] = @(width);
         colDict[@"alignment"] = [self stringFromAlignment:col.alignment];
         if (col.autoResize) {
             colDict[@"auto_resize"] = @YES;
@@ -490,14 +332,20 @@
     }
 
     NSDictionary *json = @{@"columns": columnsArray};
+    // Belt and braces after the width clamp above: anything else unserialisable
+    // would raise out of dataWithJSONObject: instead of reporting an error.
+    if (![NSJSONSerialization isValidJSONObject:json]) {
+        return nil;
+    }
     NSError *error = nil;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:json
                                                        options:NSJSONWritingPrettyPrinted
                                                          error:&error];
     if (error || !jsonData) {
-        return @"";
+        return nil;
     }
 
+    // nil if the data is not valid UTF-8; callers must not persist that either.
     return [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
 }
 

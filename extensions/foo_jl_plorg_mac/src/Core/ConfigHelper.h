@@ -25,19 +25,33 @@ static const char* const kSingleClickActivate = "single_click_activate";
 static const char* const kDoubleClickPlay = "double_click_play";
 static const char* const kAutoRevealPlaying = "auto_reveal_playing";
 static const char* const kShowIcons = "show_icons";
-static const char* const kSyncPlaylists = "sync_playlists";           // Auto-sync with foobar playlists
 static const char* const kShowTreeLines = "show_tree_lines";           // Show tree connection lines
 static const char* const kTransparentBackground = "transparent_background"; // Glass effect background
+static const char* const kPathEncodedNames = "path_encoded_names";     // Encode folder path in foobar2000 playlist names
+static const char* const kCheckCorruptedOnStartup = "check_corrupted_on_startup"; // Check for corrupted playlists on startup
+static const char* const kAutoVolumeSync = "auto_volume_sync";                   // Auto-repair volume UUIDs on startup (network drives)
+static const char* const kAutoRestartAfterVolumeSync = "auto_restart_after_volume_sync"; // Prompt for restart after a UUID repair (opt-in)
+static const char* const kVolumeSelfHeal = "volume_self_heal";                   // Self-register mounted volumes that have no working bookmark
 
-// Default values
-static const char* const kDefaultNodeFormat = "%node_name%$if(%is_folder%,' ['%count%']',)";
+// Default values.
+//
+// The Network Volumes group defaults to OFF: automatic volume-UUID repair
+// rewrites playlist files and migrates foobar2000's metadata cache, which is
+// the right trade for someone whose library lives on an SMB share that
+// remounts, and unnecessary machinery for everyone else. Opt in from
+// Preferences > Playlist Organizer > Network Volumes.
+static const char* const kDefaultNodeFormat = "%node_name%";
 static const bool kDefaultSingleClickActivate = false;
 static const bool kDefaultDoubleClickPlay = true;
 static const bool kDefaultAutoRevealPlaying = true;
-static const bool kDefaultShowIcons = true;
-static const bool kDefaultSyncPlaylists = true;
-static const bool kDefaultShowTreeLines = true;
+static const bool kDefaultShowIcons = false;
+static const bool kDefaultShowTreeLines = false;
 static const bool kDefaultTransparentBackground = true;
+static const bool kDefaultPathEncodedNames = true;
+static const bool kDefaultCheckCorruptedOnStartup = false;
+static const bool kDefaultAutoVolumeSync = false;
+static const bool kDefaultAutoRestartAfterVolumeSync = false;
+static const bool kDefaultVolumeSelfHeal = false;
 
 // Integer config
 inline int64_t getConfigInt(const char* key, int64_t defaultVal) {
@@ -81,7 +95,10 @@ inline NSString* getConfigString(const char* key, const char* defaultVal) {
 
         fb2k::stringRef value = store->getConfigString(fullKey.c_str());
         if (value.is_valid() && value->length() > 0) {
-            return [NSString stringWithUTF8String:value->c_str()];
+            NSString *result = [NSString stringWithUTF8String:value->c_str()];
+            if (result) {
+                return result;
+            }
         }
         return defaultVal ? [NSString stringWithUTF8String:defaultVal] : @"";
     } catch (...) {
@@ -117,13 +134,9 @@ inline NSString* getConfigFilePath() {
 }
 
 inline NSString* loadTreeFromFile() {
-    NSString *path = getConfigFilePath();
-    NSError *error = nil;
-    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:&error];
-    if (error) {
-        return nil;
-    }
-    return content;
+    return [NSString stringWithContentsOfFile:getConfigFilePath()
+                                     encoding:NSUTF8StringEncoding
+                                        error:NULL];
 }
 
 inline BOOL saveTreeToFile(NSString* yaml) {

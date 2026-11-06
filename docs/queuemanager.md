@@ -8,7 +8,7 @@ A visual playback queue manager for foobar2000 macOS - functionality that exists
 
 See all queued tracks in a familiar table view interface. The queue shows tracks waiting to be played in order.
 
-<!-- Screenshot: Queue Manager with items -->
+![Queue Manager with queued tracks](images/queuemanager-overview.png)
 
 ### Drag & Drop Reordering
 
@@ -18,23 +18,26 @@ Rearrange queue order by dragging items. Move tracks up or down to change when t
 
 Queue state syncs in real-time. When tracks are added or removed from the queue (via context menu or other means), the display updates immediately.
 
-### Configurable Columns
+### Queue Restore After Restart
 
-Choose which information to display:
+foobar2000 empties the playback queue when it quits. Queue Manager saves the queue on quit and re-adds it on the next launch, keeping each track's playlist position when that position still holds the same track. Enabled by default; turn off with **Restore queue after restart** in preferences.
 
-| Column | Description |
-|--------|-------------|
-| # | Queue position (1-based) |
-| Artist - Title | Combined artist and title |
-| Artist | Artist name only |
-| Title | Track title only |
-| Album | Album name |
-| Duration | Track length |
-| Codec | Audio format |
-| Bitrate | Bitrate in kbps |
-| Path | File path |
+### Stop After Queue
 
-Right-click on the column header to show/hide columns.
+With **Stop After Queue** on, playback stops when the last queued track finishes instead of continuing in the playlist. Toggle it from **Playback > Stop After Queue**, the Queue Manager context menu, or preferences. Off by default.
+
+- Queuing more tracks while the last one plays cancels the pending stop; the stop moves to the new end of the queue.
+- Skipping past the last queued track also cancels it.
+- Only the queue running out during playback triggers it; clearing the queue by hand does not.
+- **Turn off after it stops playback once** (preferences or context menu) makes it one-shot: after it stops playback, Stop After Queue switches itself off.
+
+### Columns
+
+The queue shows three columns: **#** (queue position), **Artist - Title** and **Duration**. Drag the header dividers to resize them. Choosing other columns is not implemented yet.
+
+### Status Bar
+
+The bar at the bottom shows how many items are queued.
 
 ### Keyboard Shortcuts
 
@@ -43,19 +46,12 @@ Right-click on the column header to show/hide columns.
 | Delete/Backspace | Remove selected from queue |
 | Enter | Play selected item |
 | Cmd+A | Select all |
-| Escape | Deselect all |
 
 ### Context Menu
 
-Right-click on items for:
-- **Play** - Start playing the selected item
-- **Remove from Queue** - Remove selected items
-- **Clear Queue** - Remove all items from queue
-- **Show in Playlist** - Navigate to the track's source playlist
-
-### Empty State
-
-When the queue is empty, a helpful message explains how to add items.
+Right-click anywhere in Queue Manager for:
+- **Stop After Queue** - Stop playback when the queue runs out
+- **Turn Off After Stopping Once** - Make Stop After Queue one-shot (available while Stop After Queue is on)
 
 ## Adding Tracks to Queue
 
@@ -66,20 +62,22 @@ Or use the keyboard shortcut (if configured).
 
 ## Configuration
 
-Access settings via **Preferences > Display > Queue Manager** (if available).
+Access settings via **Preferences > Display > Queue Manager**.
 
 ### Available Settings
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Show Status Bar | Display item count at bottom | On |
-| Alternating Rows | Alternating row background colors | On |
+| Transparent background (glass effect) | Translucent background; takes effect after restart | On |
+| Restore queue after restart | Save the queue on quit and re-add it on launch | On |
+| Stop after queue | Stop when the last queued track finishes | Off |
+| Turn off after it stops playback once | Stop after queue switches itself off after stopping once | Off |
 
 ## Layout Editor
 
-Add Queue Manager to your layout using any of these names:
-- `Queue Manager` (recommended)
-- `queue_manager`
+Open **View → Layout → Edit Layout...**, add a line with one of these names where you want the panel, and click **Apply**:
+- `queue_manager` (recommended)
+- `Queue Manager`
 - `QueueManager`
 - `Queue`
 - `foo_jl_queue_manager`
@@ -88,13 +86,13 @@ Example layout:
 ```
 splitter vertical
   simplaylist
-  Queue Manager
+  queue_manager
 ```
 
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 (Big Sur) or later
+- macOS 12.0 (Monterey) or later
 
 ## Links
 

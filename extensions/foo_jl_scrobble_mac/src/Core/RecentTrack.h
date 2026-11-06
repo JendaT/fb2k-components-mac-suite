@@ -32,6 +32,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Human-readable relative time string (e.g., "now", "2m ago", "1h ago", "3d ago")
 - (NSString *)relativeTimeString;
 
+/// Same as relativeTimeString, computed against an explicit reference date (testable)
+- (NSString *)relativeTimeStringAtDate:(NSDate *)now;
+
 @end
 
 NS_ASSUME_NONNULL_END

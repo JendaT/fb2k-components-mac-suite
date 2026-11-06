@@ -2,6 +2,79 @@
 
 All notable changes to SimPlaylist will be documented in this file.
 
+## [1.6.1] - 2026-11-04
+
+Keeps each artist's albums in date order while browsing ReFacets and fixes the Inline header spacing.
+
+### Added
+- **Sort library selection**: New Behavior option, on by default, re-sorts the ReFacets selection by a pattern each time it changes, so each artist's albums stay oldest first when switching artists; the pattern is editable.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+### Changed
+- **About**: New feature list; shows the layout element name (`simplaylist`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+
+### Fixed
+- **Inline header**: The album title sits right above its tracks instead of leaving the extra header space under it.
+- **Inline album spacing**: Every album is followed by the same gap, whether the tracks or the album art end lower; new **Album Spacing** setting (Close / One row / Two rows) replaces Group Header Spacing for Inline.
+
+## [1.6.0] - 2026-10-12
+
+Adds Sort and Remove to the right-click menu and accepts drops from the album
+list; fixes five ways of silently losing settings, two hangs and the misplaced
+drop indicator. Requires macOS 12.
+
+### Added
+- **Sort submenu**: Right-click Sort by disc and track number, Sort by..., Randomize, Reverse, or by album, artist, file path, title or track number; sorts only the selection when 2+ tracks are selected (#20).
+- **Remove**: Right-click Remove deletes the selected tracks (thanks @Scannou, #34).
+- **Drops from the album list**: Tracks dragged from the album list are inserted in album list order with their exact subsongs (thanks @alies-dev, #38).
+
+### Fixed
+
+**Settings no longer lost**
+- **Custom column rename**: No longer undone by the next column resize and the column deleted on the following launch.
+- **Columns at startup**: A hiccup while another component registers its columns no longer wipes columns from the layout.
+- **Subgroups**: Clearing the subgroup pattern no longer discards the other subgroups a preset defines.
+- **Preset edits**: No longer silently discarded when the stored preset index is out of range.
+- **Deleting or reordering playlists**: No longer saves scroll positions and group data under another playlist's name, or applies a drag reorder to the wrong playlist.
+
+**Hangs and memory**
+- **Delete with nothing selected**: No longer hangs foobar2000.
+- **Oversized cover art**: No longer re-decoded on every redraw across four threads.
+- **Album art memory**: Capped at 256 MB as well as by image count; could previously reach about 1 GB.
+
+**Grouping and preferences**
+- **Preset switching**: Choosing a grouping preset takes effect immediately.
+- **Preset and display size at launch**: Applied on startup instead of the first preset and 22 pt rows.
+- **Glass background toggle**: No longer blanks the panel until restart.
+- **Custom columns**: Adding, removing or renaming one shows up without a restart.
+- **Subgroup options**: Toggling either redraws with the new setting.
+- **Pattern editing**: Typing a grouping pattern is responsive, and leaving the field rebuilds the playlist once.
+
+**Dragging, keys and selection**
+- **Drop indicator**: Follows the cursor; in grouped playlists it sat up to 150 px too low.
+- **Drop scroll jump**: Dropping after scrolling far no longer jumps the view back to an earlier position.
+- **File drops with spaces in the path**: No longer fail with "Access denied" (thanks @alies-dev, #38).
+- **Compilations**: Dropped Various Artists albums keep their running order instead of scattering by performer.
+- **Tidal multi-disc albums**: Dropped discs no longer interleave.
+- **Home and End**: Jump to the first and last track in grouped playlists.
+- **Shift-click after switching playlists**: No longer extends from the previous playlist's anchor.
+- **Two panels**: One rebuilding no longer cancels the other's grouping.
+- **Hidden column headers**: Headers behind the album-art strip are no longer interactive.
+- **Crash guards**: Several paths where a foobar2000 error closed the app now skip a frame instead.
+
+### Changed
+- **macOS 12 required**: Current Xcode no longer builds for macOS 11.
+- **Faster hit-testing**: Finding the row under the pointer in large grouped playlists no longer runs four nested searches (10,338 lookups to none on 20,000 groups).
+- **foobar2000 SDK 2026-10-01**: Built against the current SDK.
+- **Internal cleanup**: About 1,100 lines of unused rendering code removed; the column layout has a single writer; settings changes apply in a defined order.
+- **Tests**: Grew from about 104,000 to 112,000 checks.
+
+## [1.5.1] - 2026-07-07
+
+### Added
+- **Keep playback in its playlist**: New behavior option (default on) that stops library browsing from changing what plays next. foobar2000 for Mac redirects playback continuation to the browsed ReFacets selection, so finishing a track while browsing jumped playback to the first visible library track and abandoned your playlist. SimPlaylist now detects the redirect and points continuation back at the playlist the current track is playing from. Starting playback from ReFacets deliberately (double-click) still works as before.
+
 ## [1.5.0] - 2026-07-02
 
 ### Added

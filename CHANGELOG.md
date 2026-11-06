@@ -16,12 +16,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Distribution packaging scripts
 
 ### Changed
+- **SDK**: Built against foobar2000 SDK 2026-10-01; components now compile as C++20 and link the renamed `libpfc.a`.
+- **Requires macOS 12**: All components now target macOS 12, as Xcode 27 cannot build for macOS 11.
 - Preferences page titles now match foobar2000's built-in style (non-bold)
 - Unified copyright notices across all extensions
 
 ---
 
 ## SimPlaylist
+
+### [1.6.1] - 2026-11-04
+
+Albums stay in date order while browsing ReFacets; Inline header spacing fixed.
+
+#### Added
+- **Sort library selection**: The ReFacets selection stays sorted by a pattern (default: albums by date) when switching artists; on by default.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Changed
+- **About**: New feature list; shows the layout element name (`simplaylist`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+
+#### Fixed
+- **Inline header**: Title sits right above its tracks; same gap after every album; new Album Spacing setting (Close / One row / Two rows).
+
+### [1.6.0] - 2026-10-12
+
+Sort and Remove in the right-click menu, album list drops, and a large bug-fix pass. Requires macOS 12.
+
+#### Added
+- **Sort submenu**: Right-click Sort by disc and track number, Sort by..., Randomize, Reverse, or by album/artist/path/title/track number; selection-only when 2+ tracks are selected (#20)
+- **Remove**: Right-click Remove deletes the selected tracks (thanks @Scannou, #34)
+- **Drops from the album list**: Inserted in album list order with exact subsongs (thanks @alies-dev, #38)
+
+#### Fixed
+- **Settings loss**: Custom column renames, columns at startup, extra subgroups, preset edits, and positions saved under the wrong playlist after deleting or reordering playlists
+- **Hangs and memory**: Delete with nothing selected, oversized cover art re-decoding on every redraw, album art cache reaching ~1 GB
+- **Preferences**: Preset switching, preset and display size at launch, glass toggle blanking the panel, custom columns needing a restart, subgroup toggles, sluggish pattern editing
+- **Dragging**: Drop indicator 150 px too low, drop scroll jump, file drops with spaces in the path (thanks @alies-dev, #38), compilation and Tidal multi-disc running order
+- **Keys and selection**: Home/End in grouped playlists, shift-click after switching playlists, two panels cancelling each other's grouping, hidden column headers staying interactive
+- **Crash guards**: Several paths where a foobar2000 error closed the app now skip a frame instead
+
+#### Changed
+- **macOS 12 required**; built against foobar2000 SDK 2026-10-01
+- **Faster hit-testing** in large grouped playlists (10,338 lookups to none on 20,000 groups)
+- **Internal cleanup**: ~1,100 lines of unused rendering code removed; single column-layout writer; ordered settings propagation; tests grew to ~112,000 checks
+
+### [1.5.1] - 2026-07-07
+
+#### Added
+- "Keep playback in its playlist" behavior option (default on) — prevents ReFacets library browsing from redirecting playback continuation; finishing a track no longer jumps playback to the browsed selection
 
 ### [1.5.0] - 2026-07-02
 
@@ -223,6 +267,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Playlist Organizer
 
+### [1.5.1] - 2026-09-25
+
+#### Changed
+- **Requires macOS 12**: built with Xcode 27, which cannot target macOS 11
+
+#### Fixed
+- **Crash on restart after a repair**: the migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database
+- **Database growth**: rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and needs no VACUUM
+- **Migration speed**: 29.1s down to 4.6s on a 2.35 GB database, byte-identical result
+- **Faster restart after a repair**: instant APFS clone for the working copy; relaunch no longer waits on cleanup
+- **Reclaiming old bloat**: the staged copy is compacted when mostly free pages, recovering space lost to earlier versions
+
+#### Added
+- **`Scripts/volume_registry_prune.sh`**: removes unused volume bookmarks for the music share; dry run by default, refuses to write while foobar2000 runs
+
+### [1.5.0] - 2026-08-26
+
+#### Added
+- **Automatic Volume UUID Sync**: Repairs stale `mac-volume://` UUIDs in playlists after SMB/Tailscale remounts. Off by default
+- **Volume self-heal**: Registers a mounted volume foobar2000 has no working bookmark for, then remaps the stale playlists. Off by default
+- **Metadb cache migration**: Moves cached metadata to the live UUID after foobar2000 quits; backed up, transactional, verified and compacted
+- **Finder file drop**: Drop files or folders onto a playlist node to append them (thanks @Scannou, #36)
+- **FTH Theme Import**: Imports tree and tracks from old Windows foo_plorg themes (developed as 1.4.0)
+- **Corrupted Playlist Detection**: Finds and safely removes playlists foobar2000 cannot load (developed as 1.4.0)
+- **`Scripts/metadb_cleanup.sh`**: Offline tool that reclaims metadb space from dead-UUID copies
+
+#### Changed
+- **Testable core**: Pure logic extracted into Foundation-only modules; 270 unit checks gate every build
+- **Network Volumes off by default**: Power-user feature; opt in from Preferences
+
+#### Fixed
+- **Restart after repair**: No longer reopens foobar2000 while the database is being written ("database is locked", "metadb is corrupted")
+- **Concurrent migrations**: Only one migration runs per session; two were observed running at once
+- **Database growth**: Migrations now compact the file, which previously kept its largest-ever size permanently
+- **Lower-case UUIDs**: Cached metadata could be deleted instead of migrated when a UUID was stored in lower case
+- **Config load failure**: No longer mistaken for an empty configuration, which could replace the saved folder tree
+- **Malformed input crashes**: FTH, DeaDBeeF, YAML, Vox and drag-payload parsers hardened
+- **Path traversal**: Crafted playlist paths can no longer escape their drive
+- **Import databases**: Vox and Strawberry libraries opened read-only
+- **Repair Volume UUIDs window**: Close cancels cleanly; backup failure re-enables it; reopening reuses the window
+- **Build tooling**: Failed project regeneration aborts the build; compiler warnings no longer filtered out
+
+### [1.4.0] - developed 2026-02-14, never published (ships in 1.5.0)
+
+#### Added
+- FTH Theme Import: import playlist tree structure and tracks from old Windows foo_plorg theme files, with Windows-to-macOS path mapping
+- Corrupted Playlist Detection: file-based corruption checks plus crash-marker system for SDK-level crashers; safe filesystem-based removal; preference and "Check Now" button
+
+#### Fixed
+- Nil safety in path encoding prevents crash on nil tree node names
+- Import exception handling resets view state on failure
+- Playlist item count access skipped for known-bad playlists to prevent startup crashes
+
+### [1.3.2] - 2026-01-15
+
+#### Added
+- Network Volume UUID Remapping tool: manual repair window for orphaned playlist entries; scans for `mac-volume://` references, detects current UUID for mounted volumes, backs up before applying
+
 ### [1.3.0] - 2026-01-03
 
 #### Added
@@ -255,6 +357,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Waveform Seekbar
 
+### [2.0.0] - 2026-10-30
+
+Redesign and Display P3 colours contributed by @Scannou (#49, #55).
+
+#### Added
+- **Layered style**: Each channel's peak envelope around its momentary loudness body on a dBFS axis, tinted by spectral balance.
+- **Simple styles**: Two-tone, Glow and Heat: L and R lanes on black, linear, with an RMS core.
+- **Split channels**: L above and R below one centre line, for every style.
+- **Loudness analysis**: Integrated loudness, LRA, true peak, PLR, clip runs, correlation and Lo/Mid/Hi energy per track.
+- **Hover readout, loudness summary and clip markers**: Optional overlays with the analysis.
+- **Scales**: Optional time ruler and dB level scale.
+- **Elapsed time**: Optional m:ss chip beside the cursor.
+- **Colour themes**: Presets shared with Spectrum Analyzer, phosphors first.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names.*
+
+#### Changed
+- **Defaults**: Two-tone in P4 white with the level scale, readout and clip markers; settings that were never changed take them too.
+- **Display P3 colours**: Full saturation on wide-gamut screens; stored colours look more saturated than before.
+- **Drawing**: Smooth per-pixel-column waveform; 8 pt margin top and bottom.
+- **Playback cursor**: Theme-coloured, within the waveform area.
+- **Cache**: Entries 10-20x larger; every track is analysed again once.
+- **Preferences**: Cards with a hint under each control.
+- **Parallel analysis**: Long local tracks are analysed in parallel segments (thanks @alies-dev, #40).*
+- **macOS 12, About, preferences title**: See 1.2.1.*
+
+#### Fixed
+- **Played-part dimming**: Matches the background colour exactly.
+- **Analyzing state, scan cancellation, colour drift**: See 1.2.1.*
+
+\* Developed as 1.2.1, which was never published.
+
+### [1.2.1] - developed 2026-10-19, never published (ships in 2.0.0)
+
+#### Added
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Changed
+- **Minimum macOS**: Raised to 12.0 (Monterey).
+- **Waveform analysis**: Long tracks decode in parallel segments; a 2 hour MP3 mix is analyzed in ~0.4s instead of ~4s (thanks @alies-dev, #40).
+- **About**: Shows the layout element name (`waveform-seekbar`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+
+#### Fixed
+- **Analyzing state**: No longer stuck on "Analyzing..." after a layout change.
+- **Scan cancellation**: Skipping tracks stops the previous track's analysis instead of leaving it running.
+- Colors drifted one step darker on each preferences save/reload cycle (ARGB truncation)
+- Undefined behaviour in `WaveformData` position accessors for negative/NaN positions
+
+### [1.2.0] - 2026-07-02
+
+#### Added
+- Glass background option: translucent blur background, same effect as SimPlaylist; toggles live without restart
+- Background color wells support transparency; translucent background tints the glass blur
+- "Preferences..." context menu item opens the seekbar preferences page directly
+
+#### Fixed
+- Choppy playback cursor movement (redraw threshold now pixel-based, animated cursor effects redraw continuously)
+- Played-portion shading no longer paints the opaque background color over the glass blur
+- Stale waveform scans no longer overwrite the current track on rapid track changes
+- Cache store/lookup race and listener deadlock fixes
+
 ### [1.1.0] - 2025-12-29
 
 #### Added
@@ -276,6 +439,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Last.fm Scrobbler
+
+### [1.4.1] - 2026-10-12
+
+#### Changed
+- **Scrobble timing**: Submitted at the next track change, pause, stop or quit instead of mid-play — by [@Scannou](https://github.com/Scannou)
+- **Widget layout**: Computed in one geometry pass shared by drawing and click handling.
+- **Testable core**: Core logic moved into pure modules; unit tests gate every build.
+- **Requirements**: macOS 12 or later (was 11).
+
+#### Fixed
+- **Quit mid-track**: The last scrobble is saved at shutdown and submitted on next launch.
+- **Listening streak**: No longer one day too high when nothing has been scrobbled today.
+- **Stop after scrobble**: A track already scrobbled is no longer queued a second time on stop.
 
 ### [1.4.0] - 2026-05-17
 
@@ -341,6 +517,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Album Art
 
+### [1.1.0] - 2026-07-09
+
+#### Added
+- Fetch Missing Artwork: search Cover Art Archive, iTunes, Deezer, and TIDAL (optional) for album art via right-click
+- Lightbox preview with type filters and multi-type selection; save to album folder and/or embed into file tags
+- Unit test suite gating every build
+
+#### Fixed
+- Save-to-folder failed for track paths containing spaces
+- Restarted searches could complete with stale or missing results
+- Thumbnails could attach to the wrong results; footer clicks could open the wrong image
+- First search after startup could falsely report offline; offline state now actually disables the menu item
+- Track changes now cancel in-flight searches and clear stale results
+- "Save Selected" could silently save fewer images than claimed; lightbox window leaked on every presentation
+- Remembered "embed" preference was ignored for multi-image saves; remembered choices can now be reset from the context menu
+
 ### [1.0.2] - 2025-12-30
 
 #### Fixed
@@ -364,6 +556,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Queue Manager
+
+### [1.2.0] - 2026-10-02
+
+#### Added
+- **Stop After Queue**: Stops playback when the last queued track finishes; Playback menu, context menu or preferences (off by default).
+- **Stop only once**: Optional mode that turns Stop After Queue off after it stops playback.
+- **Queue restore**: Queue is saved on quit and re-added on launch (on by default).
+- **Context menu**: Right-click in Queue Manager for the Stop After Queue toggles.
+- **Multi-row drag reorder**: Selected rows move together; previously only the first row moved.
+
+#### Fixed
+- **Reorder flicker**: Each reorder no longer rebuilds the view and resets the selection twice.
+- **Frozen view**: View no longer stops updating after a failed reorder.
+- **Reorder after playlist edits**: Tracks whose source playlist changed are kept instead of lost.
+- **Malformed drops**: Drops referencing a nonexistent playlist are rejected.
+- **Duration display**: Malformed track lengths show `--:--` instead of garbage.
+
+#### Changed
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **Column metadata**: Consolidated into a single source of truth; unused `QueueHeaderView` removed.
 
 ### [1.1.2] - 2026-02-09
 
@@ -411,6 +623,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Biography
 
+### [1.1.0] - 2026-07-17
+
+#### Added
+- Artist image gallery (Fanart.tv, TheAudioDB, Deezer) with full-screen lightbox viewer
+- MusicBrainz MBID lookup when Last.fm returns none (unlocks Fanart.tv coverage)
+- Wikipedia biography fallback resolved via MusicBrainz -> Wikidata -> Wikipedia
+- Dual-layer artist image cache with request coalescing
+
+#### Changed
+- Testable-core refactor (SimPlaylist pattern): SDK-free Core logic with 9 unit test suites gating the build
+
+#### Fixed
+- Data race in the gallery coordinator's multi-source completion tracking
+- Fanart.tv client crash on malformed MusicBrainz IDs
+
 ### [1.0.0] - 2025-12-30
 
 #### Added
@@ -448,3 +675,200 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Customizable track info rows using titleformat expressions
 - Drag-to-reorder buttons in editing mode
 - Compact and normal display modes
+
+## Spectrum Analyzer
+
+### [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+#### Changed
+- **Display P3 colors**: Full saturation on wide-gamut screens; stored colors look more saturated than before.
+- **Color mixing**: Shadow, peak caps, gradient bars and color bars keep the saturation.
+- **Color wells**: Read and write P3.
+
+### [1.0.0] - 2026-10-20
+
+#### Added
+- **Own FFT**: Analyses PCM from the visualisation stream with its own vDSP FFT (Blackman-Harris or Hann window, 1024-32768); steep roll-offs such as a CD master's cut-off show as a cliff instead of a leakage floor.
+- **Mid + side**: Stereo setting that adds the side channel as a second line in the complementary hue.
+- **Curve detail**: Full detail or 1/24 to 1/3 octave smoothing; Curve mode draws one point per point of panel width.
+- **Top and Range**: Fixed dB window; Top 0 to -60 dB, Range 60, 80, 90 or 120 dB.
+- **Hover readout**: Crosshair with frequency, nearest note with cents, and level; replaces click and hold.
+- **Presets**: Default, Classic bars, RTA 1/3 octave, Fine detail and Mid + side.
+- **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first.
+- **Legend**: Optional Live / Peak hold key in Curve mode.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Changed
+- **Defaults**: Curve with line and color bars, P3 amber, 90 dB range, FFT 2048, compact-bass log scale, RMS averaging at 255 ms, 1.0 dB/oct slope; settings that were never changed take them too.
+- **Peak line**: Holds 920 ms, then falls at a steady 12 dB/s (setting now in dB/s); 0.3.0 values convert.
+- **RMS averaging**: Own Averaging time setting (0-500 ms); 0.3.0 values carry over.
+- **Frequency labels**: More labels (2x and 5x, then 3x, 4x, 6x and 8x) where they fit; decades bolder.
+- **Preferences**: Display, Analysis, Motion and Appearance sections; rows that do not apply are hidden or say why they are disabled; the page scrolls.
+- **About**: Shows the layout element name (`spectrum`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+
+#### Fixed
+- **Drawing exceptions**: A nil font or color can no longer throw inside drawing and crash foobar2000 later.
+- **Low sample rates**: Grid, labels and readout stop at half the sample rate, like the spectrum.
+- **Bar edges**: Wide bars read the FFT bins whose centre lies inside them, not the bin below.
+
+### [0.3.0] - 2026-10-12
+
+#### Added
+- **Full-screen view**: Double-click or context menu opens a native full-screen spectrum; Esc or double-click leaves it.
+- **Logarithmic (compact bass) scale**: Bottom octaves take far less width than on a pure log axis.
+- **RMS averaging**: Averages power per bin over 0-200 ms for even, analyzer-style motion.
+- **Spectral slope**: 0-6 dB/octave tilt around 1 kHz.
+- **Curve styles**: Filled, Line, Color bars, Line + color bars.
+
+#### Changed
+- **Display-synced redraw**: macOS 14+ redraws in step with the screen refresh; motion is frame-rate independent.
+
+### [0.2.0] - 2026-10-09
+
+#### Added
+- **Auto bar count**: Fits the panel width (one bar per 2 points), up to 2048 bars; new 384/512 presets.
+- **Per-bar frequency labels**: Each bar labelled with its centre frequency in Bars mode.
+- **Frequency readout**: Click and hold for the exact frequency under the cursor.
+- **Denser frequency axis**: Extra ticks in the 10-20 kHz range; round steps on the linear scale.
+
+#### Changed
+- **Settings changes and resizes**: Bars keep their levels instead of blanking.
+- **Drawing**: Batched bar paths, one gradient per frame, pixel-snapped bar edges.
+
+#### Fixed
+- **Small FFT sizes**: Lowest bands no longer read the DC bin.
+
+### [0.1.0] - 2026-10-03
+
+#### Added
+- Initial release, contributed by @Scannou
+- **Analyzer core**: Real-time FFT bars from the core visualisation stream; log/linear band mapping; sub-bin low-end bands interpolated; 0..-80 dB display window shared by bars and grid.
+- **Dynamics**: Attack/decay smoothing plus three fall timescales (bar, shadow envelope, peak line with hold).
+- **Rendering**: Solid / gradient / spectrum bar styles; bars or smooth full-width curve; horizontal or vertical orientation; dB scale and frequency axis; glass background.
+- **Preferences**: Bar count up to 256, FFT size, frequency scale/range, smoothing, fall rates, peak hold, grid color/opacity, light/dark colors, 10 color theme presets.
+- **Lifecycle**: Streams released via `initquit` before service teardown (fixes abort on quit).
+
+## Vectorscope
+
+### [1.1.0] - 2026-10-30
+
+Display P3 colors contributed by @Scannou (#55).
+
+#### Changed
+- **Display P3 colors**: Full saturation on wide-gamut screens; stored colors look more saturated than before.
+- **Afterglow trace**: Keeps the theme's saturation, as do the grid and correlation bars.
+- **Color wells**: Read and write P3.
+
+### [1.0.0] - 2026-10-20
+
+#### Added
+- **Phosphor themes**: P31 green, P3 amber, P4 white and P7 blue, listed first; theme names and colors match the Spectrum Analyzer.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Changed
+- **Themes**: "Default (Phosphor Green)" is now "Classic (Green)", "Blue" is "Default (Blue)", and Amber gives way to P3 amber; the selector shows the preset matching the current colors, so edited colors read as Custom.
+- **Defaults**: P4 white with a band-colored trace and a band correlation meter on the right; afterglow 101 ms, brightness 74%, bar thickness 12 pt, response time 284 ms, low crossover 160 Hz, grid opacity 32%; settings that were never changed take them too.
+- **About**: Shows the layout element name (`vectorscope`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+
+### [0.1.0] - 2026-10-12
+
+#### Added
+- Initial release, contributed by @Scannou
+- **Scope**: Goniometer or Lissajous style with afterglow trace (lines or dots), -6/-12 dB guides and L/R/M/S axes.
+- **Band colors**: Optional low/mid/high colored trace.
+- **Gain**: Auto gain that keeps the trace inside the scope, or fixed 0 to +36 dB.
+- **Correlation meter**: Broadband or low/mid/high bars, configurable position, thickness and recent-range hold.
+- **Appearance**: 11 color presets with light/dark colors, glass background.
+
+## Tidal Integration
+
+### [0.4.0] - 2026-11-06
+
+#### Added
+- **Lossless by default**: LOSSLESS FLAC via DASH for LOSSLESS subscribers.*
+- **Progressive hi-res playback**: FLAC DASH tracks start on the first segment instead of after the whole download.
+- **Next-track prefetch**: The next track is assembled while the current one plays, so it opens without a stall.
+- **Back keeps your place**: Browser levels come back with their rows, scroll position and selection, without refetching.
+- **Go to Album**: Track context menu opens the track's album.
+- **Drag albums**: Album rows drag as all their tracks, in the listed order.
+- **Clickable trail**: The artist in "Artist › Album" jumps back to that artist's albums.
+- **Play playlists**: Playlist rows offer Play, Add to Playlist and Queue.
+- **Add to Playlist with Quality**: Pins a quality tier on added entries.
+- **BPM tag**: From the TIDAL catalogue, on playlist entries and saved files.
+- **Lookup service**: `jl_tidal_lookup` gives other components BPM, key and track ID from TIDAL, for local files and tidal:// entries.
+- **ReplayGain preference**: "Use TIDAL ReplayGain", for libraries without ReplayGain tags.
+- **Status line preference**: The browser shows nothing, the email or the username.
+- **Save to library / Save to folder...**: Hidden by default (`tidal.TI_download_on`); saves tagged FLAC with cover art.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names.
+
+#### Changed
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **About**: Shows the layout element name (`tidal-browser`) and the preferences path; the MIT license line replaces the copyright notice.
+- **Preferences title**: Same size as foobar2000's own page titles.
+- **MQA retired**: Removed from the quality preference, pin menu and cascade; a stored MQA preference maps to Lossless.
+- **Track tags**: All credited artists, the version in the title, the explicit flag and ReplayGain.
+- **Artist discography**: Includes EPs, singles and compilations.
+
+#### Fixed
+- **"Unsupported file format"**: Intermittent playback failure across restarts.
+- **Transient failures**: Network errors, 429 and 5xx are retried instead of skipping the track.
+- **Pinned quality**: No longer ignored after the first track.
+- **Quality badge**: Shows the formats TIDAL actually holds.
+- **Sign-in**: A 401 forces a real refresh; a transient refresh failure keeps the session; a failed startup refresh no longer needs a restart.
+- **Preview clips and unavailable tracks**: Rejected at once; a 403 reports its real reason.
+- **Playback**: Atmos editions no longer replace the stereo master; short tracks play; a mid-track re-resolve resumes in place; faster track changes.
+- **Remix and version names**: Shown in the browser and in saved files.
+- **Browser**: Back steps one level and stays visible; "Loading more..." no longer sticks; errors no longer read as empty results; playlists and albums load past 100 tracks.
+- **Metadata**: A failed fetch keeps existing tags; release dates are shown in UTC.
+- **Sync**: No truncation at 200 tracks; a failed fetch can no longer wipe or delete a playlist; imports reach the right playlist; pull and push report their real outcome.
+- **Crashes**: Two crash fixes, plus 58 code review fixes.
+- **DASH segments**: Correct segment count and init segment; FLAC goes to the FLAC decoder.*
+
+#### Security
+- **Hardening**: tidal:// IDs validated before use in API paths; query values strictly encoded; library export paths sanitized; logs redacted to host and path; DASH size limits.
+
+\* Developed as 0.3.1, which was never published.
+
+### [0.3.1] - developed 2026-06-17, never published (ships in 0.4.0)
+
+LOSSLESS FLAC playback now works for LOSSLESS subscribers by default. DASH segment parser rewritten against `python-tidal` semantics.
+
+#### Added
+- LOSSLESS FLAC by default for LOSSLESS subscribers (preference checkbox ticked by default; untick to fall back to 320kbps HIGH)
+- Raw MPD manifest XML logged when DASH is enabled, for easier diagnosis
+
+#### Fixed
+- Segment count derived from `<SegmentTimeline><S r="N"/>` elements (was: `mediaPresentationDuration / segmentDuration`, undercounted)
+- `media[$Number$=0]` treated as the init segment, no separate init download (was: separate init + media[1..N], producing malformed fMP4)
+- FLAC content type routed via `audio/x-flac` so fb2k picks the FLAC decoder (was: always `audio/mp4`)
+- DASH codec normalisation for `flac`, `mp4a.*`, `ec-3`, `ac-4`
+
+### [0.3.0] - 2026-05-17
+
+Fixes the long-standing "playback stops until restart" cascade and restores drag-drop to SimPlaylist + free column resizing. Adds token-state visibility, Year/Tracks columns in the album browser, and an experimental DASH toggle for true LOSSLESS.
+
+#### Added
+- Album browser: Year and Tracks columns
+- Preferences: token status line with expiry countdown and last-refresh outcome
+- Preferences: experimental DASH toggle for true LOSSLESS (off by default, untested)
+- Stream-open diagnostics and premature-EOF detection always logged
+
+#### Fixed
+- Playback cascade through the playlist on aborted preloads (decoder treated cancellations as track failures)
+- Tidal browser column can be resized freely in fb2k layouts
+- Drag-drop to SimPlaylist (URL emitted as NSPasteboardTypeURL)
+- Reconnect button no longer hangs on success path
+- Refresh-token rotation honoured; 401 auto-retry transparent
+
+#### Changed
+- Quality-fallback log is unambiguous about silent API downgrades
+- Refresh/token logs always visible regardless of debug-logging setting
+
+### [0.2.0] - 2026-02-13
+
+#### Added
+- Initial public release: browser, search, library, playlists, sync, ISRC matching, album art

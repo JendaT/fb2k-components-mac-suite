@@ -8,6 +8,16 @@
 #pragma once
 
 #include "../fb2k_sdk.h"
+#include <cstdlib>
+
+// Extract BPM from track metadata (checks common field names)
+inline double extractBpmFromInfo(const file_info& info) {
+    const char* bpmStr = info.meta_get("BPM", 0);
+    if (!bpmStr) bpmStr = info.meta_get("bpm", 0);
+    if (!bpmStr) bpmStr = info.meta_get("TBPM", 0);
+    if (!bpmStr) bpmStr = info.meta_get("TEMPO", 0);
+    return bpmStr ? atof(bpmStr) : 0.0;
+}
 
 // Forward declaration
 #ifdef __OBJC__

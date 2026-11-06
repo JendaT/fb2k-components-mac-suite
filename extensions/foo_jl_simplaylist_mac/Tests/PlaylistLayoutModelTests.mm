@@ -16,39 +16,10 @@
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/PlaylistLayoutModel.h"
+#import "TestHarness.h"
 
 #include <vector>
 #include <string>
-
-// ---------------------------------------------------------------------------
-// Test harness
-// ---------------------------------------------------------------------------
-
-static int g_failures = 0;
-static int g_checks = 0;
-static std::string g_context;
-
-#define CHECK_EQ(actual, expected, what)                                          \
-    do {                                                                          \
-        g_checks++;                                                              \
-        long long a__ = (long long)(actual), e__ = (long long)(expected);        \
-        if (a__ != e__) {                                                        \
-            g_failures++;                                                        \
-            printf("FAIL [%s] %s: got %lld, expected %lld\n",                    \
-                   g_context.c_str(), what, a__, e__);                           \
-        }                                                                        \
-    } while (0)
-
-#define CHECK_FLOAT_EQ(actual, expected, what)                                    \
-    do {                                                                          \
-        g_checks++;                                                              \
-        double a__ = (actual), e__ = (expected);                                 \
-        if (fabs(a__ - e__) > 0.001) {                                           \
-            g_failures++;                                                        \
-            printf("FAIL [%s] %s: got %f, expected %f\n",                        \
-                   g_context.c_str(), what, a__, e__);                           \
-        }                                                                        \
-    } while (0)
 
 // Deterministic PRNG (seeded) so failures are reproducible.
 static uint64_t g_rngState = 0;
@@ -353,9 +324,7 @@ int main(void) {
         verifyFixture(f, name);
     }
 
-    printf("%s: %d checks, %d failures\n",
-           g_failures == 0 ? "TESTS PASSED" : "TESTS FAILED", g_checks, g_failures);
-    return g_failures == 0 ? 0 : 1;
+    TEST_MAIN_END();
 
     }
 }

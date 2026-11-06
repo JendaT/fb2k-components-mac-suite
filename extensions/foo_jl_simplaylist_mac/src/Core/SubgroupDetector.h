@@ -21,7 +21,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <string>
+#include <unistd.h>
 
 struct SubgroupDetector {
     std::string currentSubgroup;   // Tracks the current subgroup value
@@ -38,7 +40,16 @@ struct SubgroupDetector {
         , debugEnabled(enableDebug)
     {
         if (debugEnabled) {
-            debugFile = fopen("/tmp/simplaylist_subgroup_debug.txt", "a");
+            // Per-user temp dir + O_NOFOLLOW instead of a fixed world-writable
+            // /tmp path (symlink-follow hazard, CWE-377).
+            NSString *path = [NSTemporaryDirectory()
+                stringByAppendingPathComponent:@"simplaylist_subgroup_debug.txt"];
+            int fd = open(path.fileSystemRepresentation,
+                          O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW, 0600);
+            if (fd >= 0) {
+                debugFile = fdopen(fd, "a");
+                if (!debugFile) close(fd);
+            }
             if (debugFile) {
                 fprintf(debugFile, "\n=== New SubgroupDetector created (showFirst=%d) ===\n", showFirst);
                 fflush(debugFile);
@@ -134,11 +145,15 @@ struct SubgroupDetector {
 
         if (shouldAdd) {
             [subgroupStarts addObject:@(playlistIndex)];
-            [subgroupHeaders addObject:[NSString stringWithUTF8String:formattedSubgroup]];
+            // nil on invalid UTF-8 — addObject:nil would throw
+            [subgroupHeaders addObject:([NSString stringWithUTF8String:formattedSubgroup] ?: @"")];
         }
 
-        // Always update currentSubgroup when formatted value is non-empty
-        currentSubgroup = formattedSubgroup;
+        // Track the latest non-empty subgroup value; when unchanged the copy
+        // would be a no-op, so skip the strlen+memcpy in this hot loop.
+        if (isDifferentSubgroup) {
+            currentSubgroup = formattedSubgroup;
+        }
 
         return shouldAdd;
     }

@@ -8,12 +8,12 @@
 #include "WaveformService.h"
 #include "WaveformConfig.h"
 #include "ConfigHelper.h"
+#include <algorithm>
 #include <dispatch/dispatch.h>
 
-// Singleton instance
-static WaveformService g_service;
-
+// Construct-on-first-use singleton to avoid static initialization order issues
 WaveformService& getWaveformService() {
+    static WaveformService g_service;
     return g_service;
 }
 
@@ -70,21 +70,34 @@ void WaveformService::requestWaveform(const metadb_handle_ptr& track, WaveformRe
         return;
     }
 
-    // Update pending track
+    // Update pending track (serialized with scan completion check)
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);
+
+        // Double-check cache under lock to prevent race with concurrent store
+        auto rechecked = m_cache.getWaveform(track);
+        if (rechecked) {
+            if (callback) {
+                callback(track, *rechecked);
+            }
+            notifyListeners(track, &(*rechecked));
+            return;
+        }
+
         m_pendingTrack = track;
     }
 
     // Scan asynchronously
     m_scanner.scanAsync(track, [this, track, callback](std::optional<WaveformData> result, const char* error) {
-        // Check if this is still the pending track
+        // Clear the pending slot if this result is the one it was waiting for.
+        // The result is delivered either way: listeners filter by track themselves,
+        // and dropping it here used to strand the UI in its "analyzing" state
+        // forever when the pending track was replaced mid-scan (layout reload).
         {
             std::lock_guard<std::mutex> lock(m_pendingMutex);
-            if (!m_pendingTrack.is_valid() || m_pendingTrack->get_location() != track->get_location()) {
-                return;  // Track changed, ignore result
+            if (m_pendingTrack.is_valid() && m_pendingTrack->get_location() == track->get_location()) {
+                m_pendingTrack.release();
             }
-            m_pendingTrack.release();
         }
 
         if (result) {
@@ -134,9 +147,22 @@ std::optional<WaveformData> WaveformService::getCachedWaveform(const metadb_hand
     return m_cache.getWaveform(track);
 }
 
-void WaveformService::addListener(WaveformListener listener) {
+ListenerId WaveformService::addListener(WaveformListener listener) {
     std::lock_guard<std::mutex> lock(m_listenerMutex);
-    m_listeners.push_back(std::move(listener));
+    ListenerId id = m_nextListenerId++;
+    m_listeners.push_back({id, std::move(listener)});
+    return id;
+}
+
+void WaveformService::removeListener(ListenerId id) {
+    if (id == InvalidListenerId) return;
+
+    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    m_listeners.erase(
+        std::remove_if(m_listeners.begin(), m_listeners.end(),
+            [id](const ListenerEntry& entry) { return entry.id == id; }),
+        m_listeners.end()
+    );
 }
 
 void WaveformService::removeAllListeners() {
@@ -145,11 +171,16 @@ void WaveformService::removeAllListeners() {
 }
 
 void WaveformService::notifyListeners(const metadb_handle_ptr& track, const WaveformData* waveform) {
-    std::lock_guard<std::mutex> lock(m_listenerMutex);
+    // Snapshot listeners under lock, then invoke outside the lock to prevent deadlocks
+    std::vector<ListenerEntry> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(m_listenerMutex);
+        snapshot = m_listeners;
+    }
 
-    for (const auto& listener : m_listeners) {
-        if (listener) {
-            listener(track, waveform);
+    for (const auto& entry : snapshot) {
+        if (entry.callback) {
+            entry.callback(track, waveform);
         }
     }
 }
@@ -173,4 +204,9 @@ void WaveformService::pruneCache() {
 
 void WaveformService::clearCache() {
     m_cache.clearCache();
+}
+
+WaveformService::CacheStats WaveformService::getCacheStats() const {
+    auto raw = m_cache.getStats();
+    return {raw.entryCount, raw.totalSizeBytes, raw.oldestAccessDays};
 }

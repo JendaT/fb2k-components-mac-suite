@@ -7,11 +7,15 @@
 
 #include "QueueOperations.h"
 #include "QueueConfig.h"
+#include "QueueFormatting.h"
 #include <unordered_map>
 
 namespace queue_ops {
 
 titleformat_object::ptr getCompiledScript(const char* formatString) {
+    // Main-thread only (see header) and unbounded — acceptable while callers
+    // use a small fixed set of patterns; revisit if patterns become
+    // user-configurable.
     static std::unordered_map<std::string, titleformat_object::ptr> cache;
 
     std::string key(formatString);
@@ -40,9 +44,10 @@ std::vector<t_playback_queue_item> getContentsVector() {
     pfc::list_t<t_playback_queue_item> list;
     getContents(list);
 
+    const size_t count = list.get_count();
     std::vector<t_playback_queue_item> result;
-    result.reserve(list.get_count());
-    for (size_t i = 0; i < list.get_count(); i++) {
+    result.reserve(count);
+    for (size_t i = 0; i < count; i++) {
         result.push_back(list[i]);
     }
     return result;
@@ -82,6 +87,74 @@ void addItemFromPlaylist(size_t playlist, size_t item) {
 void addOrphanItem(metadb_handle_ptr handle) {
     auto pm = playlist_manager::get();
     pm->queue_add_item(handle);
+}
+
+void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
+                    const std::vector<size_t>& order) {
+    clear();
+    for (size_t oldIndex : order) {
+        if (oldIndex >= contents.size()) continue;
+        const auto& item = contents[oldIndex];
+        if (!isOrphanItem(item) && isItemValid(item)) {
+            addItemFromPlaylist(item.m_playlist, item.m_item);
+        } else {
+            // Playlist reference stale (or item was always an orphan):
+            // keep the track in the queue via its handle
+            addOrphanItem(item.m_handle);
+        }
+    }
+}
+
+std::vector<queue_persist::SavedEntry> captureForPersistence() {
+    std::vector<queue_persist::SavedEntry> result;
+    for (const auto& item : getContentsVector()) {
+        if (!item.m_handle.is_valid()) continue;
+        queue_persist::SavedEntry e;
+        e.path = item.m_handle->get_path();
+        e.subsong = item.m_handle->get_subsong_index();
+        if (!isOrphanItem(item)) {
+            e.playlist = item.m_playlist;
+            e.item = item.m_item;
+        }
+        result.push_back(std::move(e));
+    }
+    return result;
+}
+
+size_t restoreFromPersistence(const std::vector<queue_persist::SavedEntry>& entries) {
+    auto db = metadb::get();
+    size_t added = 0;
+    for (const auto& e : entries) {
+        metadb_handle_ptr handle = db->handle_create(e.path.c_str(), e.subsong);
+        if (!handle.is_valid()) continue;
+
+        t_playback_queue_item probe;
+        probe.m_handle = handle;
+        probe.m_playlist = e.playlist == queue_persist::kNoPlaylist
+            ? queue_config::kOrphanPlaylistIndex : e.playlist;
+        probe.m_item = e.item;
+
+        if (!isOrphanItem(probe) && isItemValid(probe)) {
+            addItemFromPlaylist(probe.m_playlist, probe.m_item);
+        } else {
+            // Playlist changed or entry was an orphan: keep the track anyway
+            addOrphanItem(handle);
+        }
+        added++;
+    }
+    return added;
+}
+
+size_t playlistCount() {
+    return playlist_manager::get()->get_playlist_count();
+}
+
+size_t activePlaylist() {
+    return playlist_manager::get()->get_active_playlist();
+}
+
+size_t playlistItemCount(size_t playlist) {
+    return playlist_manager::get()->playlist_get_item_count(playlist);
 }
 
 bool isItemValid(const t_playback_queue_item& item) {
@@ -164,26 +237,7 @@ pfc::string8 formatDuration(const t_playback_queue_item& item) {
         return result;
     }
 
-    double length = item.m_handle->get_length();
-    if (length <= 0) {
-        result = "--:--";
-        return result;
-    }
-
-    int seconds = static_cast<int>(length);
-    int minutes = seconds / 60;
-    seconds = seconds % 60;
-
-    if (minutes >= 60) {
-        int hours = minutes / 60;
-        minutes = minutes % 60;
-        result << hours << ":"
-               << pfc::format_int(minutes, 2) << ":"
-               << pfc::format_int(seconds, 2);
-    } else {
-        result << minutes << ":" << pfc::format_int(seconds, 2);
-    }
-
+    result = queue_format::formatDurationSeconds(item.m_handle->get_length()).c_str();
     return result;
 }
 

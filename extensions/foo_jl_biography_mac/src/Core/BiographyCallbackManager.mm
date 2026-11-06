@@ -6,11 +6,10 @@
 //
 
 #import "BiographyCallbackManager.h"
-#import "../UI/BiographyController.h"
 #include <vector>
 
-// Registered controllers (weak references to avoid retain cycles)
-static std::vector<__weak BiographyController*> g_controllers;
+// Registered observers (weak references to avoid retain cycles) (ARCH-4: uses protocol, not UI class)
+static std::vector<__weak id<BiographyArtistObserver>> g_controllers;
 static std::mutex g_controllersMutex;
 
 BiographyCallbackManager& BiographyCallbackManager::instance() {
@@ -18,7 +17,7 @@ BiographyCallbackManager& BiographyCallbackManager::instance() {
     return manager;
 }
 
-void BiographyCallbackManager::registerController(BiographyController* controller) {
+void BiographyCallbackManager::registerController(id<BiographyArtistObserver> controller) {
     std::lock_guard<std::mutex> lock(g_controllersMutex);
 
     // Check if already registered
@@ -29,16 +28,38 @@ void BiographyCallbackManager::registerController(BiographyController* controlle
     g_controllers.push_back(controller);
 }
 
-void BiographyCallbackManager::unregisterController(BiographyController* controller) {
+void BiographyCallbackManager::unregisterController(id<BiographyArtistObserver> controller) {
     std::lock_guard<std::mutex> lock(g_controllersMutex);
 
     g_controllers.erase(
         std::remove_if(g_controllers.begin(), g_controllers.end(),
-            [controller](const __weak BiographyController* weak) {
+            [controller](const __weak id<BiographyArtistObserver> weak) {
                 return weak == nil || weak == controller;
             }),
         g_controllers.end()
     );
+}
+
+// ARCH-3: Helper to snapshot controllers under lock, then iterate outside lock
+static NSArray<id<BiographyArtistObserver>> *snapshotControllers() {
+    NSMutableArray *snapshot = [NSMutableArray array];
+    std::lock_guard<std::mutex> lock(g_controllersMutex);
+
+    // ARCH-13: Prune nil entries while iterating
+    g_controllers.erase(
+        std::remove_if(g_controllers.begin(), g_controllers.end(),
+            [&snapshot](const __weak id<BiographyArtistObserver> weak) {
+                id<BiographyArtistObserver> strong = weak;
+                if (strong) {
+                    [snapshot addObject:strong];
+                    return false;
+                }
+                return true;
+            }),
+        g_controllers.end()
+    );
+
+    return snapshot;
 }
 
 void BiographyCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
@@ -47,21 +68,15 @@ void BiographyCallbackManager::onPlaybackNewTrack(metadb_handle_ptr track) {
         m_playingTrack = track;
     }
 
-    // Get the track to display (selected if available, else playing)
     metadb_handle_ptr displayTrack = getCurrentTrack();
     std::string artist = extractArtistFromTrack(displayTrack);
 
-    // Notify controllers on main thread
     dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
-
+        NSArray<id<BiographyArtistObserver>> *controllers = snapshotControllers();
         NSString* artistName = artist.empty() ? nil : [NSString stringWithUTF8String:artist.c_str()];
 
-        for (__weak BiographyController* weak : g_controllers) {
-            BiographyController* controller = weak;
-            if (controller) {
-                [controller handleArtistChange:artistName];
-            }
+        for (id<BiographyArtistObserver> controller in controllers) {
+            [controller handleArtistChange:artistName];
         }
     });
 }
@@ -72,44 +87,36 @@ void BiographyCallbackManager::onPlaybackStop(play_control::t_stop_reason reason
         m_playingTrack.release();
     }
 
-    // Check if there's a selected track to fall back to
     metadb_handle_ptr selectedTrack = getSelectedTrack();
     std::string artist = extractArtistFromTrack(selectedTrack);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        NSArray<id<BiographyArtistObserver>> *controllers = snapshotControllers();
 
-        for (__weak BiographyController* weak : g_controllers) {
-            BiographyController* controller = weak;
-            if (controller) {
-                if (!artist.empty()) {
-                    NSString* artistName = [NSString stringWithUTF8String:artist.c_str()];
-                    [controller handleArtistChange:artistName];
-                } else {
-                    [controller handlePlaybackStop];
-                }
+        for (id<BiographyArtistObserver> controller in controllers) {
+            if (!artist.empty()) {
+                NSString* artistName = [NSString stringWithUTF8String:artist.c_str()];
+                [controller handleArtistChange:artistName];
+            } else {
+                [controller handlePlaybackStop];
             }
         }
     });
 }
 
 void BiographyCallbackManager::onSelectionChanged() {
-    // Get the track to display (selected if available, else playing)
     metadb_handle_ptr displayTrack = getCurrentTrack();
     std::string artist = extractArtistFromTrack(displayTrack);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        std::lock_guard<std::mutex> lock(g_controllersMutex);
+        NSArray<id<BiographyArtistObserver>> *controllers = snapshotControllers();
 
-        for (__weak BiographyController* weak : g_controllers) {
-            BiographyController* controller = weak;
-            if (controller) {
-                if (!artist.empty()) {
-                    NSString* artistName = [NSString stringWithUTF8String:artist.c_str()];
-                    [controller handleArtistChange:artistName];
-                } else {
-                    [controller handlePlaybackStop];
-                }
+        for (id<BiographyArtistObserver> controller in controllers) {
+            if (!artist.empty()) {
+                NSString* artistName = [NSString stringWithUTF8String:artist.c_str()];
+                [controller handleArtistChange:artistName];
+            } else {
+                [controller handlePlaybackStop];
             }
         }
     });

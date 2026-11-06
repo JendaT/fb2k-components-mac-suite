@@ -12,18 +12,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Internal state for a streak discovery operation
+/// Internal state for a streak discovery operation. The walk itself
+/// (streak/day counters, retry backoff) lives in a scrobble::StreakWalker
+/// ivar declared in the implementation; this object owns the async
+/// context around it.
 @interface LastFmStreakDiscoveryState : NSObject
 @property (nonatomic, copy) NSString *username;
 @property (nonatomic, strong) NSUUID *token;
 @property (nonatomic, assign) BOOL cancelled;
-@property (nonatomic, assign) NSInteger currentStreak;
-@property (nonatomic, assign) NSInteger daysChecked;
-@property (nonatomic, assign) BOOL scrobbledToday;
 @property (nonatomic, assign) BOOL useBatchStrategy;      // YES = batch, NO = daily queries
 @property (nonatomic, assign) CGFloat estimatedDailyRate;
-@property (nonatomic, assign) NSInteger retryCount;
-@property (nonatomic, assign) NSTimeInterval currentBackoff;
 @property (nonatomic, copy, nullable) LastFmStreakProgressBlock progressBlock;
 @property (nonatomic, copy) LastFmStreakCompletion completionBlock;
 @end

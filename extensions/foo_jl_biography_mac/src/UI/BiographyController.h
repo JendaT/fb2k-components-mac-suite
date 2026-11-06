@@ -8,6 +8,7 @@
 #pragma once
 
 #import <Cocoa/Cocoa.h>
+#import "../Core/BiographyCallbackManager.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -22,7 +23,7 @@ typedef NS_ENUM(NSInteger, BiographyViewState) {
 
 @class BiographyData;
 
-@interface BiographyController : NSViewController
+@interface BiographyController : NSViewController <BiographyArtistObserver>
 
 /// Current view state
 @property (nonatomic, assign, readonly) BiographyViewState viewState;

@@ -12,13 +12,21 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Monotonic time source in seconds. Injectable so token math is unit-testable.
+typedef double (^BiographyClockSource)(void);
+
 @interface BiographyRateLimiter : NSObject
 
-/// Initialize with rate and burst capacity
+/// Initialize with rate and burst capacity, using the real clock
 /// @param rate Tokens replenished per second
 /// @param capacity Maximum tokens that can accumulate
 - (instancetype)initWithTokensPerSecond:(double)rate
-                          burstCapacity:(NSInteger)capacity NS_DESIGNATED_INITIALIZER;
+                          burstCapacity:(NSInteger)capacity;
+
+/// Initialize with an injectable clock (tests pass a fake advancing clock)
+- (instancetype)initWithTokensPerSecond:(double)rate
+                          burstCapacity:(NSInteger)capacity
+                            clockSource:(nullable BiographyClockSource)clock NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
