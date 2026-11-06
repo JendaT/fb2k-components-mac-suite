@@ -4,12 +4,14 @@
 //
 //  Phrase markers from a beat grid: positions, states, offsets, the
 //  re-anchor point, the phrase phase, thinning, following the grid
-//  section by section, which sections fit their bars, and the trusted grid
-//  (on 102's real grid too).
+//  section by section, which sections fit their bars and tempo, and the
+//  trusted grid (on 102's and 104's real grids too) with the phrase phase
+//  of its master spans.
 //
 
 #include "TestSupport.h"
 #include "Grid102Fixture.h"
+#include "Grid104Fixture.h"
 #include "../src/Core/PhraseMarkers.h"
 
 using namespace waveseek;
@@ -262,6 +264,32 @@ void testSectionFit() {
         CHECK(fit.judged == judged[k] && fit.good == good[k], "102: each section's good bars of those judged");
         CHECK(fit.fits() == (k == 1), "102: only section 1 (139 BPM) fits");
     }
+
+    // A tempo outside 0.45 .. 2.25 times the master's (128 BPM) does not
+    // fit, however good its bars
+    auto atTempo = [&](double bpm) {
+        PhraseGrid t = fitGrid(barsOf({ { 16, on } }));
+        t.sections[0].bpm = bpm;
+        return sectionFit(t, 0);
+    };
+    CHECK(atTempo(128.0 * 2.25).fits() && atTempo(128.0 * 0.45).fits(), "2.25 and 0.45 times the master's: fits");
+    CHECK(!atTempo(128.0 * 2.3).fits() && !atTempo(128.0 * 0.44).fits(), "2.3 and 0.44 times: does not");
+    CHECK(atTempo(128.0 * 3.0).good == 16 && !atTempo(128.0 * 3.0).tempoNear, "a triple: every bar good, the tempo not");
+    CHECK(atTempo(128.0 * 0.85).fits() && atTempo(128.0 * 2.0).fits(), "0.85 and 2 times: fits");
+    PhraseGrid noMaster = fitGrid(barsOf({ { 16, on } }));
+    noMaster.summary.bpm = 0.0;
+    noMaster.sections[0].bpm = 400.0;
+    CHECK(sectionFits(noMaster, 0), "no master tempo: by its bars alone");
+
+    // 104: the 423 BPM section has all its judged bars good, but it is three
+    // times the master's 141
+    const PhraseGrid gs = grid104::grid();
+    const size_t judged104[] = { 85, 35, 142 }, good104[] = { 85, 35, 141 };
+    for (size_t k = 0; k < 3; ++k) {
+        const SectionFit fit = sectionFit(gs, k);
+        CHECK(fit.judged == judged104[k] && fit.good == good104[k], "104: each section's good bars of those judged");
+        CHECK(fit.fits() == (k != 1), "104: section 1 (423 BPM, 3x) does not fit");
+    }
 }
 
 // 120 BPM from 0.2 s, bars from beat 1, 32-beat phrases from bar 2; the
@@ -345,6 +373,44 @@ void testTrustedGrid() {
 
     const PhraseGrid one = lockedGrid(16);
     CHECK(trustedGrid(one).sections.empty() && trustedGrid(one).bars.size() == 16, "one grid: unchanged");
+
+    // The master's phrase phase unconfident: the span counts phrases as the
+    // section before it does (on the master's beats, phrases from its bar 1,
+    // the master's beat 5); 56 beats before the span's bar 0 (the master's
+    // beat 61), so from the span's bar 2
+    PhraseGrid unsure = fourSections();
+    unsure.summary.phrase_confidence = 0.05f;
+    unsure.sections[0].phrase_phase_bars = 1;
+    unsure.sections[0].phrase_confidence = 0.6f;
+    const PhraseGrid u = trustedGrid(unsure);
+    CHECK(u.sections.size() == 3 && u.sections[1].phrase_phase_bars == 2 && u.sections[1].phrase_confidence == 0.6f,
+          "unconfident master: the span takes the phrase phase of the section before it");
+    std::vector<double> before, after;
+    for (const PhraseMarker &m : phraseMarkers(u, 32, true)) {
+        if (m.phrase < 0 || m.section > 1) continue;
+        (m.section == 0 ? before : after).push_back(m.seconds);
+    }
+    bool inPhase = !before.empty() && !after.empty();
+    for (double t : after) {
+        const double phrases = (t - before.front()) / 16.0;   // 32 beats of 0.5 s
+        inPhase &= std::fabs(phrases - std::round(phrases)) < 1e-9;
+    }
+    CHECK(inPhase && after.front() < 30.2 + 16.0, "its phrases go on from the section's");
+
+    // Not when that section is off the master's beats, or its phrases don't
+    // start on the span's bars (its bars from beat 3, the master's from 1):
+    // the master's own, as before
+    PhraseGrid offBeats = unsure;
+    offBeats.sections[0].anchor_seconds = 0.21;
+    PhraseGrid offBars = unsure;
+    offBars.sections[0].bar_phase = 3;
+    PhraseGrid unsureFirst = unsure;
+    unsureFirst.sections[0].phrase_confidence = 0.1f;
+    for (const PhraseGrid *g : { &offBeats, &offBars, &unsureFirst }) {
+        const PhraseGrid t = trustedGrid(*g);
+        CHECK(t.sections.size() == 3 && t.sections[1].phrase_phase_bars == 3 && t.sections[1].phrase_confidence == 0.05f,
+              "off the master's beats, off its bars or unconfident itself: the master's phrase phase, unconfident");
+    }
 }
 
 // 102: the master's beats where the sections don't fit, and phrase starts
@@ -364,21 +430,40 @@ void testTrusted102() {
     CHECK_NEAR(t.sections[2].start_seconds, a + 1322 * beat, 1e-9, "the master again from its beat nearest 570.76 s");
     CHECK(t.sections[2].bar_count == 56, "with the master's last 56 bars");
 
-    const auto markers = phraseMarkers(t, 16, true);
-    size_t intro = 0;
-    bool onIntroPhrases = true, onMaster = true;
-    for (const PhraseMarker &m : markers) {
-        if (m.phrase < 0) continue;
-        const double n = (m.seconds - a) / beat;
-        onMaster &= std::fabs(n - std::round(n)) * beat < 1e-9;
-        if (m.section != 0) continue;
-        // From the master's bar 0 (its beat 1), every 16 beats
-        onIntroPhrases &= std::fabs(m.seconds - (a + (1 + 16 * static_cast<double>(intro)) * beat)) < 1e-9;
-        intro++;
+    // The master's phrase phase is unconfident: the master spans count
+    // phrases as section 1 does (on the master's beats, phrases from its
+    // bar 6, the master's beat 269): the intro from its bar 3, the outro
+    // (bar 0 on the master's beat 1325) from its bar 0
+    CHECK(t.sections[0].phrase_phase_bars == 3 && t.sections[0].phrase_confidence == stored.sections[1].phrase_confidence,
+          "the intro takes section 1's phrase phase");
+    CHECK(t.sections[2].phrase_phase_bars == 0 && t.sections[2].phrase_confidence == stored.sections[1].phrase_confidence,
+          "and so does the outro");
+
+    for (int phraseBeats : { 16, 32 }) {
+        const auto markers = phraseMarkers(t, phraseBeats, true);
+        size_t intro = 0;
+        bool onIntroPhrases = true, onMaster = true, inPhase = true;
+        for (const PhraseMarker &m : markers) {
+            if (m.phrase < 0) continue;
+            const double n = (m.seconds - a) / beat;
+            onMaster &= std::fabs(n - std::round(n)) * beat < 1e-9;
+            // Section 1's phrases start on the master's beats 269 + k * phraseBeats
+            const long fromSection1 = std::lround(n) - 269;
+            inPhase &= ((fromSection1 % phraseBeats) + phraseBeats) % phraseBeats == 0;
+            if (m.section != 0) continue;
+            // From the master's beat 13 (the intro's bar 3), every phraseBeats
+            onIntroPhrases &= std::fabs(m.seconds - (a + (13 + phraseBeats * static_cast<double>(intro)) * beat)) < 1e-9;
+            intro++;
+        }
+        if (phraseBeats == 16) {
+            CHECK(intro == 15, "16 beats: 15 phrase starts in the intro");
+        } else {
+            CHECK(intro == 8, "32 beats: 8 phrase starts in the intro");
+        }
+        CHECK(onIntroPhrases, "the intro's phrases from its bar 3");
+        CHECK(inPhase, "every phrase start in phase with section 1's");
+        CHECK(onMaster, "every phrase start on a master beat");
     }
-    CHECK(intro == 16, "16 phrase starts in the intro");
-    CHECK(onIntroPhrases, "the intro's every 16 of the master's beats from its first bar");
-    CHECK(onMaster, "every phrase start on a master beat");
 
     double storedWorst = 0.0;
     for (const PhraseMarker &m : phraseMarkers(stored, 16, true)) {
@@ -387,6 +472,37 @@ void testTrusted102() {
         storedWorst = std::max(storedWorst, std::fabs(n - std::round(n)) * beat);
     }
     CHECK(storedWorst > 0.1, "the stored intro's phrase starts were off the master's beats");
+}
+
+// 104: the 423 BPM section (three times the master's 141) gives way to the
+// master; the 141 sections around it are on the master's beats
+void testTrusted104() {
+    TEST_CASE("trusted grid on 104");
+    const PhraseGrid stored = grid104::grid();
+    const PhraseGrid t = trustedGrid(stored);
+    const double a = stored.summary.anchor_seconds, beat = 60.0 / 141.0;
+    CHECK(t.sections.size() == 3, "section 0, the master, section 2");
+    if (t.sections.size() != 3) return;
+    bool all141 = true;
+    for (const jl_grid_section &s : t.sections) all141 &= s.bpm == 141.0;
+    CHECK(all141, "141 BPM throughout");
+    CHECK(t.sections[0].bar_count == 91 && t.sections[2].bar_count == 165, "sections 0 and 2 kept with their bars");
+    const long from = std::lround((156.19239181238322 - a) / beat);
+    CHECK_NEAR(t.sections[1].start_seconds, a + static_cast<double>(from) * beat, 1e-9,
+               "the master from its beat nearest 156.19 s");
+    CHECK(t.sections[1].phrase_phase_bars >= 0 && t.sections[1].phrase_confidence == stored.summary.phrase_confidence,
+          "with the master's own phrase phase (confident)");
+    // Its phrase starts are the master grid's own over its span
+    std::vector<double> span, master;
+    for (const PhraseMarker &m : phraseMarkers(t, 32, true)) {
+        if (m.section == 1 && m.phrase >= 0) span.push_back(m.seconds);
+    }
+    for (const PhraseMarker &m : phraseMarkers(stored, 32, false)) {
+        if (m.seconds >= t.sections[1].start_seconds && m.seconds < t.sections[2].start_seconds) master.push_back(m.seconds);
+    }
+    bool same = !span.empty() && span.size() == master.size();
+    for (size_t i = 0; same && i < span.size(); ++i) same = std::fabs(span[i] - master[i]) < 1e-9;
+    CHECK(same, "its phrases where the master's are");
 }
 
 int main() {
@@ -400,5 +516,6 @@ int main() {
     testSectionFit();
     testTrustedGrid();
     testTrusted102();
+    testTrusted104();
     return testsupport::summarize("PhraseMarkersTests");
 }

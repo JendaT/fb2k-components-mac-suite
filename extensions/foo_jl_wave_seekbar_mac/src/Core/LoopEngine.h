@@ -21,8 +21,9 @@
 //  change is expected, so a forward jump within it is a splice too: a
 //  second after a sync it plays from the buffer and lets the decoder run
 //  ahead at twice its pace until the reserve is there, then holds it. After
-//  a track change behind the buffer it catches up first, whatever the
-//  reserve, and builds it again on the new track.
+//  a track change behind the buffer it catches up first, outside a loop,
+//  whatever the reserve and hovering or not, and builds it again on the
+//  new track.
 //
 //  Track times come from a sync: a seek of the view's own (its target is
 //  frame 0), the view's measurement of foobar2000's position while the
@@ -264,10 +265,13 @@ public:
         }
         const double ahead = aheadSeconds();
         if (looping_ && ahead > kMaxAheadSeconds) exitLoop();
-        // Behind the decoder: catch up (after a track change behind the
-        // buffer always, so the new track gets its own buffer and time)
+        // Behind the decoder: catch up. After a track change behind the
+        // buffer always, outside a loop, hovering or not, so the new track
+        // gets its own buffer and time and requests are taken again (short
+        // steps would never empty the audio waiting after the change)
+        const bool catchUp = afterBoundary_ && !(looping_ && engaged_);
         size_t want = 2 * frames;
-        if (responsive_ && ahead < kResponsiveAheadSeconds) {
+        if (!catchUp && responsive_ && ahead < kResponsiveAheadSeconds) {
             want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
         } else if (looping_ && engaged_) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));

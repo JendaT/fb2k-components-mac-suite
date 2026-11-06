@@ -11,8 +11,9 @@
 //  stream, and the timeline that maps the output to track time. Then the
 //  reserve (decoded audio kept ahead while no change is expected): built
 //  and held, around a hover, across a track change, a second after each
-//  sync; requests turned down across a track change; where a jump or a
-//  loop plays from (relative, in phase, and a seek's own at its target).
+//  sync; requests turned down across a track change, and taken again once
+//  past it while hovering; where a jump or a loop plays from (relative, in
+//  phase, and a seek's own at its target).
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
 //  number (track time x 1000), so the output shows exactly which frames
@@ -641,6 +642,46 @@ void testReserveTrackChange() {
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
+// Hovering (responsive) across a gapless change: the short steps would never
+// empty the new track's audio waiting behind the old one's, so every request
+// would seek; it catches up instead and takes requests again
+void testResponsiveTrackChange() {
+    TEST_CASE("a gapless track change while hovering");
+    Playing p;
+    p.d.size = kBlock;
+    p.e.setResponsive(true);
+    for (int i = 0; i < 50; ++i) step(p.e, p.d, p.out);
+    CHECK(!p.e.live() && p.e.aheadSeconds() > 3.0, "(hovering: short steps from the buffer, the decoder ahead)");
+    const size_t oldLeft = static_cast<size_t>(p.d.next - std::llround(p.e.playingFrom() * kRate));
+    const size_t change = p.out.frames.size() + oldLeft;
+    Decoder next{ 0, kBlock };
+    step(p.e, next, p.out, true);
+    CHECK(!p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)) && p.e.rejectedId() == 1,
+          "across the change: a request is turned down (the view seeks)");
+
+    int blocks = 1;
+    for (; blocks < 2000 && !p.e.live(); ++blocks) step(p.e, next, p.out);
+    CHECK(p.e.live() && p.e.synced() && blocks <= static_cast<int>(oldLeft / kBlock) + 5,
+          "it catches up at twice the decoder's pace while hovering: live on the new track, synced");
+    CHECK(straight(p.out, 0, change, 2000.0), "the old track to its last decoded frame");
+    CHECK(straight(p.out, change, p.out.frames.size(), 0.0), "then the new track from its first frame");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+
+    // Still hovering: short steps on the new track, and requests taken
+    const size_t at = p.out.frames.size();
+    step(p.e, next, p.out);
+    CHECK(!p.e.live() && p.out.frames.size() - at <= 30, "short steps from the buffer again");
+    for (int i = 0; i < 20; ++i) step(p.e, next, p.out);
+    LoopAction forward = action(LoopAction::Jump, 2);
+    forward.by = 0.5;
+    const double from = std::round(p.e.playingFrom() * kRate);
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(forward) && p.e.rejectedId() == 1, "a jump half a second forward on the new track: taken, no seek");
+    runUntil(p.e, next, p.out, j + 200);
+    CHECK(straight(p.out, change, j, 0.0) && straight(p.out, j, j + 200, from + 500.0), "and lands exactly there");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
 void testReserveWaitsForTheClock() {
     TEST_CASE("the reserve waits a second after each sync");
     Engine e;
@@ -798,6 +839,7 @@ int main() {
     testReserveHeld();
     testReserveAroundHover();
     testReserveTrackChange();
+    testResponsiveTrackChange();
     testReserveWaitsForTheClock();
     testNoReserve();
     testSeekRequestAtTarget();

@@ -5,12 +5,14 @@
 //  Beat jumps and loops on a beat grid: the beat list (master and section
 //  by section), beat numbers, jumps that keep the place in the beat, the
 //  nearest beat, loops from the beat behind the cursor, and the loop's
-//  step at each position check; the trusted grid's beats (102's real grid,
-//  a real tempo change) and gridAt agreeing with the beat list.
+//  step at each position check; the trusted grid's beats (102's and 104's
+//  real grids, a real tempo change, tempo multiples) and gridAt agreeing
+//  with the beat list.
 //
 
 #include "TestSupport.h"
 #include "Grid102Fixture.h"
+#include "Grid104Fixture.h"
 #include "../src/Core/BeatJump.h"
 
 using namespace waveseek;
@@ -239,6 +241,36 @@ void testTrusted102() {
     CHECK_NEAR(jumpTarget(followed, 600.0, -16, duration) - 600.0, -16 * 60.0 / 138.0, 1e-9, "570-624 s: 138 BPM");
 }
 
+// "104 Loud - Green Star Movement": the stored sections run 141, 423 from
+// 156.2 s and 141 from 178.6 s, all fitting their bars; 423 is three times
+// the master's tempo (the beat stays 141)
+void testTrusted104() {
+    TEST_CASE("trusted beats on 104");
+    const PhraseGrid stored = grid104::grid();
+    const double duration = grid104::kDuration;
+    const PhraseGrid trusted = trustedGrid(stored);
+    const auto master = beatTimes(stored, duration, false);
+    const auto beats = beatTimes(trusted, duration, true);
+    auto within = [](const std::vector<double> &v, double from, double to) {
+        std::vector<double> out;
+        for (double t : v) {
+            if (t >= from && t < to) out.push_back(t);
+        }
+        return out;
+    };
+    const auto spanBeats = within(beats, 156.0, 179.0), spanMaster = within(master, 156.0, 179.0);
+    CHECK(spanMaster.size() == 54 && spanBeats.size() == spanMaster.size(), "156-179 s: the master's 54 beats");
+    CHECK_NEAR(largestDifference(spanBeats, spanMaster), 0.0, 1e-9, "following the trusted grid: the master's 141 grid there");
+    CHECK_NEAR(largestDifference(beats, master), 0.0, 1e-9, "and end to end");
+    CHECK(gridAtAgrees(trusted, beats), "gridAt places every beat of the list");
+    CHECK(gridAt(trusted, 165.0, true).bpm == 141.0, "gridAt in the 423 section's span: 141 BPM");
+    CHECK_NEAR(jumpTarget(beats, 160.0, 4, duration) - 160.0, 4 * 60.0 / 141.0, 1e-9, "4 beats there are 141 BPM beats");
+
+    // What the stored sections gave: 423 BPM beats
+    const auto followed = beatTimes(stored, duration, true);
+    CHECK_NEAR(jumpTarget(followed, 160.0, 4, duration) - 160.0, 4 * 60.0 / 423.0, 1e-9, "the stored section: 423 BPM");
+}
+
 // A real tempo change, with its bars on both sides good: still followed
 PhraseGrid measuredTwoGrids(jl_bar_stat secondBars) {
     PhraseGrid g = twoGrids();               // 120 BPM, then 150 from 30.1 s
@@ -273,6 +305,28 @@ void testTrustedTempoChange() {
     CHECK_NEAR(gridAt(master, 40.0, true).bpm, 120.0, 1e-12, "gridAt: the master's tempo");
 }
 
+// A change to 0.85 times the master's tempo with good bars (as in "108 Loud
+// - Symbiosis", 128 BPM in a 150 BPM track): followed. To three times it
+// (as in "104 Loud - Green Star Movement"): the master, however good its bars.
+void testTrustedTempoMultiple() {
+    TEST_CASE("trusted beats and tempo multiples");
+    const jl_bar_stat good{ -2, 4, static_cast<uint8_t>(jl_pulse_unit), 0 };
+    PhraseGrid slower = measuredTwoGrids(good);       // 120 BPM, then from 30.1 s
+    slower.sections[1].bpm = 102.0;                   // 0.85 x 120
+    const PhraseGrid kept = trustedGrid(slower);
+    CHECK(kept.sections.size() == 2 && kept.sections[1].bpm == 102.0, "0.85x with good bars: kept");
+    const auto beats = beatTimes(kept, 60.0, true);
+    CHECK_NEAR(jumpTarget(beats, 40.0, 4, 60.0) - 40.0, 4 * 60.0 / 102.0, 1e-9, "after the change, 102 BPM beats");
+    CHECK(gridAtAgrees(kept, beats), "gridAt places every beat of the list");
+
+    PhraseGrid triple = measuredTwoGrids(good);
+    triple.sections[1].bpm = 360.0;                   // 3 x 120
+    const PhraseGrid master = trustedGrid(triple);
+    CHECK(master.sections.size() == 2 && master.sections[1].bpm == 120.0, "3x with good bars: the master over its span");
+    CHECK_NEAR(largestDifference(beatTimes(master, 60.0, true), beatTimes(triple, 60.0, false)), 0.0, 1e-9,
+               "its beats throughout");
+}
+
 // A new grid's beat 0 a little before its start: gridAt switches there, as
 // the beat list does
 void testGridAtSwitch() {
@@ -297,7 +351,9 @@ int main() {
     testPhraseCatch();
     testLoopSteps();
     testTrusted102();
+    testTrusted104();
     testTrustedTempoChange();
+    testTrustedTempoMultiple();
     testGridAtSwitch();
     return testsupport::summarize("BeatJumpTests");
 }

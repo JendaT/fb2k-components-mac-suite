@@ -8,7 +8,8 @@
 //  On the master grid, or following the grid where it changes: section by
 //  section, each counting its own phrases on its own tempo. Also the
 //  trusted grid for beats, jumps and loops: sections that don't fit their
-//  own bars give way to the master grid.
+//  own bars, or run at a multiple of the master's tempo, give way to the
+//  master grid.
 //  Header-only, tested standalone; the view only draws what this returns.
 //
 
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -201,14 +203,20 @@ inline GridAt gridAt(const PhraseGrid &grid, double seconds, bool follow) {
 // pulse level jl_classify_phrase counts) that is not off-beat say anything.
 // Such a bar is good within kSectionFitMs of its grid beats with 3 in 4 of
 // the beats it heard matched; the section fits with at least
-// kSectionFitMinGood good bars, half or more of those judged.
+// kSectionFitMinGood good bars, half or more of those judged. Whatever its
+// bars say, a section whose tempo is outside kSectionTempoMin ..
+// kSectionTempoMax of the master's does not fit: that is a multiple of the
+// beat the analysis locked onto (a triple, a third), not a change of tempo.
 constexpr int kSectionFitMs = 15;
 constexpr size_t kSectionFitMinGood = 8;
+constexpr double kSectionTempoMin = 0.45;
+constexpr double kSectionTempoMax = 2.25;
 
 struct SectionFit {
     size_t judged = 0;          // bars with a beat on them
     size_t good = 0;            // of those, on the section's grid
-    bool fits() const { return good >= kSectionFitMinGood && good * 2 >= judged; }
+    bool tempoNear = true;      // within kSectionTempoMin .. kSectionTempoMax of the master's (or no master tempo)
+    bool fits() const { return tempoNear && good >= kSectionFitMinGood && good * 2 >= judged; }
 };
 
 // Section `k`'s bars against its grid; nothing judged when it has no tempo
@@ -218,6 +226,10 @@ inline SectionFit sectionFit(const PhraseGrid &grid, size_t k) {
     if (k >= grid.sections.size()) return fit;
     const jl_grid_section &s = grid.sections[k];
     if (!(s.bpm > 0.0) || static_cast<size_t>(s.first_bar) + s.bar_count > grid.sectionBars.size()) return fit;
+    if (grid.summary.bpm > 0.0) {
+        const double ratio = s.bpm / grid.summary.bpm;
+        fit.tempoNear = ratio >= kSectionTempoMin && ratio <= kSectionTempoMax;
+    }
     for (uint32_t i = 0; i < s.bar_count; ++i) {
         const jl_bar_stat &b = grid.sectionBars[s.first_bar + i];
         if (b.pulse < jl_phrase_no_pulse_level * jl_pulse_unit || (b.flags & jl_bar_offbeat)) continue;
@@ -288,17 +300,57 @@ inline jl_grid_section masterSpan(const PhraseGrid &grid, bool first, double fro
     return s;
 }
 
+// Whether a grid's phrase phase is one to count phrases from
+inline bool confidentPhrasePhase(int phrasePhaseBars, float phraseConfidence) {
+    return phrasePhaseBars >= 0 && phraseConfidence >= jl_phrase_min_confidence;
+}
+
+// Section `n`'s phrase phase (it is on the master's beats) in the bars of
+// `span`, a master span: its phrases start on the same master beats; -1
+// when they don't start on the span's bars
+inline int phrasePhaseIn(const jl_beatgrid_summary &m, const jl_grid_section &span, const jl_grid_section &n) {
+    const long spanBar0 = masterBeatNear(m, span.anchor_seconds) + jl_section_first_bar_beat(span);
+    const long phrase0 = masterBeatNear(m, n.anchor_seconds) + jl_section_first_bar_beat(n) + 4L * n.phrase_phase_bars;
+    const long beats = phrase0 - spanBar0;
+    if (beats % 4 != 0) return -1;
+    return static_cast<int>(((beats / 4) % 8 + 8) % 8);
+}
+
+// A master span whose master's phrase phase is unconfident counts its
+// phrases as a neighbouring section on the master's beats does, the more
+// confident of the two (`before`, `after`: the fitting sections around it,
+// or null); with neither, from its own first bar as before
+inline void neighbourPhrasePhase(const jl_beatgrid_summary &m, jl_grid_section &span, const jl_grid_section *before,
+                                 const jl_grid_section *after) {
+    const jl_grid_section *from = nullptr;
+    int phase = -1;
+    for (const jl_grid_section *n : { before, after }) {
+        if (!n || !confidentPhrasePhase(n->phrase_phase_bars, n->phrase_confidence) || !onMasterBeats(m, *n)) continue;
+        if (from && n->phrase_confidence <= from->phrase_confidence) continue;
+        const int p = phrasePhaseIn(m, span, *n);
+        if (p < 0) continue;
+        from = n;
+        phase = p;
+    }
+    if (!from) return;
+    span.phrase_phase_bars = static_cast<int8_t>(phase);
+    span.phrase_confidence = from->phrase_confidence;
+}
+
 } // namespace detail
 
 // The grid to place beats, jumps and loops on (beatTimes, gridAt,
-// phraseMarkers read it as any grid). Every section that doesn't fit its
-// own bars (sectionFits) gives way to the master grid over its span,
-// neighbouring ones merged into one master section that starts on the
-// master's beat nearest the first one's start; a fitting section on the
-// master's beats (onMasterBeats) takes the master's exact tempo and beat,
-// keeping its own bars and phrase count. So where the master grid holds,
-// the beats are the master's without a join. A track on one grid, or
-// without a master tempo, comes back as it is.
+// phraseMarkers read it as any grid). Every section that doesn't fit
+// (sectionFits: its own bars, a tempo near the master's) gives way to the
+// master grid over its span, neighbouring ones merged into one master
+// section that starts on the master's beat nearest the first one's start;
+// it counts phrases from the master's phrase phase, or where that is
+// unconfident from a neighbouring section's on the master's beats
+// (neighbourPhrasePhase). A fitting section on the master's beats
+// (onMasterBeats) takes the master's exact tempo and beat, keeping its own
+// bars and phrase count. So where the master grid holds, the beats are the
+// master's without a join. A track on one grid, or without a master tempo,
+// comes back as it is.
 inline PhraseGrid trustedGrid(const PhraseGrid &grid) {
     const jl_beatgrid_summary &m = grid.summary;
     if (!grid.hasSections() || !(m.bpm >= 1.0) || !(m.bpm <= 1000.0) || !std::isfinite(m.anchor_seconds)) return grid;
@@ -325,7 +377,13 @@ inline PhraseGrid trustedGrid(const PhraseGrid &grid) {
         size_t next = k + 1;
         while (next < n && !sectionFits(grid, next)) ++next;
         const double to = next < n ? grid.sections[next].start_seconds : std::numeric_limits<double>::infinity();
-        out.sections.push_back(detail::masterSpan(grid, k == 0, s.start_seconds, to, out.sectionBars));
+        jl_grid_section span = detail::masterSpan(grid, k == 0, s.start_seconds, to, out.sectionBars);
+        if (!detail::confidentPhrasePhase(m.phrase_phase_bars, m.phrase_confidence)) {
+            // Sections k - 1 and `next` fit (the span holds all that don't)
+            detail::neighbourPhrasePhase(m, span, k > 0 ? &grid.sections[k - 1] : nullptr,
+                                         next < n ? &grid.sections[next] : nullptr);
+        }
+        out.sections.push_back(span);
         k = next;
     }
     return out;
