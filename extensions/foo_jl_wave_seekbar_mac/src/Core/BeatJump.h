@@ -40,7 +40,8 @@ constexpr double kLoopSlack = 0.5;
 // Every beat from 0 to `duration`, ascending: the master grid's, or with
 // `follow` and sections each section's own grid, from its first beat up to
 // the next section's first beat. An earlier grid's beat closer than half
-// its beat to the next grid's first beat is left out.
+// its beat to the next grid's first beat is left out. Beats to jump, snap
+// and loop on come from trustedGrid(grid) (PhraseMarkers.h).
 inline std::vector<double> beatTimes(const PhraseGrid &grid, double duration, bool follow) {
     std::vector<double> out;
     if (!(duration > 0.0)) return out;
