@@ -235,6 +235,17 @@ void testTrusted102() {
     CHECK_NEAR(jumpTarget(beats, 600.0, -16, duration) - 600.0, -16 * beat, 1e-9, "and at 600 s");
     CHECK_NEAR(jumpTarget(beats, 650.0, 4, duration) - 650.0, 4 * beat, 1e-9, "and in the outro");
 
+    // A 16-beat loop asked for at 106.9 s, 3 beats into the 139 section (on
+    // the master's beats): from the beat behind the cursor (247), not the
+    // section's start 3 beats back (244, mid-phrase)
+    std::vector<double> everyMarker;
+    for (const PhraseMarker &m : phraseMarkers(trusted, 16, true)) everyMarker.push_back(m.seconds);
+    const double a = stored.summary.anchor_seconds;
+    CHECK_NEAR(makeLoop(beats, 106.9, 16, duration, loopPhraseStarts(trusted, 16, true)).start, a + 247 * beat, 1e-9,
+               "a loop at 106.9 s: from the beat behind the cursor");
+    CHECK_NEAR(makeLoop(beats, 106.9, 16, duration, everyMarker).start, a + 244 * beat, 1e-9,
+               "(every marker, the section start among them, caught it 3 beats early)");
+
     // What the stored sections gave: 6.3 ms a beat off in the intro, 3.1 ms at 600 s
     const auto followed = beatTimes(stored, duration, true);
     CHECK_NEAR(jumpTarget(followed, 30.0, 16, duration) - 30.0, 16 * 60.0 / 137.0, 1e-9, "the stored intro: 137 BPM");

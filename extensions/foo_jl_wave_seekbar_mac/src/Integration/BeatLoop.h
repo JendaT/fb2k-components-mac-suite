@@ -73,12 +73,18 @@ void releaseClock();
 // (the decoder then runs ahead about as fast as it plays)
 void setLowLatency(bool on);
 
-// While no change is expected (low latency off) the DSP keeps this many
-// seconds of decoded audio ahead, so a forward jump within it plays without
-// a seek; it reports them to foobar2000 as its latency. 0 (the default):
-// it passes the audio through whenever it can. See
-// LoopEngine::setReserveSeconds.
-void setReserve(double seconds);
+// While no change is expected (low latency off) the DSP keeps `seconds` of
+// decoded audio ahead, so a forward jump within it plays without a seek; it
+// reports them to foobar2000 as its latency. 0: it passes the audio through
+// whenever it can. `aheadCap` bounds the decoded audio waiting, the
+// reserve's and while hovering alike (INFINITY: no bound); towards a track's
+// end it goes down to 0 so the change to the next track happens live. See
+// LoopEngine::setReserveSeconds and setAheadCapSeconds.
+// The view sends both at every position check: a pair older than
+// kReserveFreshSeconds lapses (no reserve, no cap), so a seekbar that went
+// away or stopped its checks leaves nothing behind.
+constexpr double kReserveFreshSeconds = 1.0;
+void setReserve(double seconds, double aheadCap);
 
 // foobar2000's output buffer is what delays every change. While the mixer
 // is on it is set to `mixerMs` (0: left alone); the user's own is kept and

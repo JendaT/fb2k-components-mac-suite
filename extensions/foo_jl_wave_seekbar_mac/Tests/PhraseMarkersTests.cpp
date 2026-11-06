@@ -6,7 +6,7 @@
 //  re-anchor point, the phrase phase, thinning, following the grid
 //  section by section, which sections fit their bars and tempo, and the
 //  trusted grid (on 102's and 104's real grids too) with the phrase phase
-//  of its master spans.
+//  of its master spans, and the phrase starts a loop catches on it.
 //
 
 #include "TestSupport.h"
@@ -505,6 +505,50 @@ void testTrusted104() {
     CHECK(same, "its phrases where the master's are");
 }
 
+// The phrase starts a loop catches: a section's start only where the grid
+// changes there. On 102 the trusted grid's section starts (master span to
+// the 139 section on the master's beats, and back) carry the master's beats
+// on: mid-phrase, left out.
+void testLoopPhraseStarts() {
+    TEST_CASE("phrase starts for a loop to catch");
+    const PhraseGrid stored = grid102::grid();
+    const PhraseGrid t = trustedGrid(stored);
+    const double a = stored.summary.anchor_seconds, beat = 60.0 / 139.0;
+    CHECK(!gridChangesAt(t, 1) && !gridChangesAt(t, 2), "102: no grid change where the trusted sections meet");
+    const std::vector<double> starts = loopPhraseStarts(t, 16, true);
+    size_t phrases = 0;
+    for (const PhraseMarker &m : phraseMarkers(t, 16, true)) phrases += m.phrase >= 0;
+    bool inPhase = true;
+    for (double s : starts) {
+        const double n = (s - a) / beat;
+        const long fromSection1 = std::lround(n) - 269;   // section 1's phrases start on the master's beat 269
+        inPhase &= std::fabs(n - std::round(n)) * beat < 1e-9 && ((fromSection1 % 16) + 16) % 16 == 0;
+    }
+    CHECK(starts.size() == phrases && phrases > 0, "102: the phrase starts alone, not the two section starts");
+    CHECK(inPhase, "every one a 16-beat phrase start in phase with section 1's");
+    const PhraseGrid t104 = trustedGrid(grid104::grid());
+    CHECK(!gridChangesAt(t104, 1) && !gridChangesAt(t104, 2), "104: all on the master's beats, no change either");
+
+    // A real tempo change: its start is kept
+    const PhraseGrid change = twoTempoGrid();
+    CHECK(gridChangesAt(change, 1), "128 to 140 BPM: a change");
+    const std::vector<double> kept = loopPhraseStarts(change, 32, true);
+    CHECK(kept.size() == 4 + 1 + 5 && std::fabs(kept[4] - 60.2) < 1e-9, "its start kept between the phrases");
+    PhraseGrid faster = twoTempoGrid();
+    faster.sections[1].anchor_seconds = 0.1 + 140.0 * 60.0 / 140.0;   // 140 of its own beats after the first's beat 0
+    CHECK(gridChangesAt(faster, 1), "a new tempo from a whole number of its beats: still a change");
+    // The same tempo with its beat moved: a change; moved by whole beats: none
+    PhraseGrid moved = twoTempoGrid();
+    moved.sections[1].bpm = 128.0;
+    moved.sections[1].anchor_seconds = 0.1 + 128.5 * 60.0 / 128.0;
+    CHECK(gridChangesAt(moved, 1), "the same tempo, half a beat off: a change");
+    moved.sections[1].anchor_seconds = 0.1 + 128.0 * 60.0 / 128.0 + 0.0005;
+    CHECK(!gridChangesAt(moved, 1), "on a whole beat (within 1 ms): none");
+    CHECK(loopPhraseStarts(moved, 32, true).size() == phraseMarkers(moved, 32, true).size() - 1,
+          "and its start left out");
+    CHECK(loopPhraseStarts(change, 32, false).size() == 8, "not following: the master's phrases");
+}
+
 int main() {
     testSparseBeats();
     testPositions();
@@ -517,5 +561,6 @@ int main() {
     testTrustedGrid();
     testTrusted102();
     testTrusted104();
+    testLoopPhraseStarts();
     return testsupport::summarize("PhraseMarkersTests");
 }

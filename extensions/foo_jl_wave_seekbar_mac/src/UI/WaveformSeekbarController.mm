@@ -501,7 +501,8 @@ static const int kAnalysisMaxRetries = 1;
 #pragma mark - Position Timer
 
 - (void)startPositionTimer {
-    [self stopPositionTimer];
+    [_positionTimer invalidate];    // restarted: the view's decode-ahead goes on
+    _positionTimer = nil;
 
     // 60 FPS for smooth animation
     // Use block-based timer with weak self to avoid retain cycle
@@ -522,6 +523,7 @@ static const int kAnalysisMaxRetries = 1;
 }
 
 - (void)stopPositionTimer {
+    if (_positionTimer) [self.waveformView positionChecksStopped];
     [_positionTimer invalidate];
     _positionTimer = nil;
 }

@@ -42,6 +42,10 @@ struct Bridge {
     uint64_t syncSerial = 0;
     uint64_t syncEpoch = 0;
     double syncT0 = 0.0;
+    // The reserve and the cap as the view last sent them, and when
+    double reserve = 0.0;
+    double aheadCap = INFINITY;
+    Clock::time_point reserveAt;
     beatloop::Status status;
 
     static Bridge &get() {
@@ -52,7 +56,6 @@ struct Bridge {
 
 std::atomic<int> g_instances{ 0 };
 std::atomic<bool> g_responsive{ false };
-std::atomic<double> g_reserve{ 0.0 };
 
 class dsp_beat_loop : public dsp_impl_base {
 public:
@@ -65,7 +68,6 @@ public:
     bool on_chunk(audio_chunk *chunk, abort_callback &) override {
         takeRequests();
         m_engine.setResponsive(g_responsive.load(std::memory_order_relaxed));
-        m_engine.setReserveSeconds(g_reserve.load(std::memory_order_relaxed));
         // A gapless change to another track: its frame 0 is here
         dsp_track_t file;
         get_cur_file(file);
@@ -128,6 +130,7 @@ private:
         bool haveSync = false;
         uint64_t epoch = 0;
         double t0 = 0.0;
+        double reserve = 0.0, aheadCap = INFINITY;   // lapsed: neither
         {
             Bridge &b = Bridge::get();
             std::lock_guard<std::mutex> guard(b.lock);
@@ -139,7 +142,13 @@ private:
                 epoch = b.syncEpoch;
                 t0 = b.syncT0;
             }
+            if (std::chrono::duration<double>(Clock::now() - b.reserveAt).count() <= beatloop::kReserveFreshSeconds) {
+                reserve = b.reserve;
+                aheadCap = b.aheadCap;
+            }
         }
+        m_engine.setReserveSeconds(reserve);
+        m_engine.setAheadCapSeconds(aheadCap);
         if (haveSync) m_engine.sync(epoch, t0);
         for (const waveseek::LoopAction &a : actions) m_engine.act(a);
         if (!queuedAt.empty()) {
@@ -306,8 +315,12 @@ void setLowLatency(bool on) {
     }
 }
 
-void setReserve(double seconds) {
-    g_reserve.store(seconds, std::memory_order_relaxed);   // the engine bounds it
+void setReserve(double seconds, double aheadCap) {
+    Bridge &b = Bridge::get();
+    std::lock_guard<std::mutex> guard(b.lock);
+    b.reserve = seconds;    // the engine bounds both
+    b.aheadCap = aheadCap;
+    b.reserveAt = Clock::now();
 }
 
 void applyMixerBuffer(bool mixerOn, int mixerMs) {

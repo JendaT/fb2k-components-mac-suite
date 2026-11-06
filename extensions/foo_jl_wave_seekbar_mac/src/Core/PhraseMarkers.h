@@ -9,7 +9,7 @@
 //  section, each counting its own phrases on its own tempo. Also the
 //  trusted grid for beats, jumps and loops: sections that don't fit their
 //  own bars, or run at a multiple of the master's tempo, give way to the
-//  master grid.
+//  master grid; and the phrase starts a loop catches on it.
 //  Header-only, tested standalone; the view only draws what this returns.
 //
 
@@ -385,6 +385,33 @@ inline PhraseGrid trustedGrid(const PhraseGrid &grid) {
         }
         out.sections.push_back(span);
         k = next;
+    }
+    return out;
+}
+
+// Whether the grid changes where section `k` starts: a tempo of its own, or
+// its beat 0 off the beats of the section before (by more than
+// kSameBeatSeconds from a whole number of them). Where a master span meets
+// a section on the master's beats (trustedGrid) the beats carry on and it
+// does not.
+inline bool gridChangesAt(const PhraseGrid &grid, size_t k) {
+    if (k == 0 || k >= grid.sections.size()) return false;
+    const jl_grid_section &before = grid.sections[k - 1], &s = grid.sections[k];
+    if (!(before.bpm > 0.0) || !(s.bpm > 0.0) || std::fabs(s.bpm - before.bpm) > 1e-9 * s.bpm) return true;
+    const double period = 60.0 / s.bpm;
+    const double beats = (s.anchor_seconds - before.anchor_seconds) / period;
+    return std::fabs(beats - std::round(beats)) * period > kSameBeatSeconds;
+}
+
+// Where a loop catches a phrase start (BeatJump.h makeLoop), on `grid` (the
+// trusted grid): its phrase markers `phraseBeats` apart, and a section's
+// start only where the grid changes there (gridChangesAt); elsewhere it is
+// mid-phrase, and a loop caught by it would start off the phrase.
+inline std::vector<double> loopPhraseStarts(const PhraseGrid &grid, int phraseBeats, bool follow) {
+    std::vector<double> out;
+    for (const PhraseMarker &m : phraseMarkers(grid, phraseBeats, follow)) {
+        if (m.phrase < 0 && !gridChangesAt(grid, m.section)) continue;
+        out.push_back(m.seconds);
     }
     return out;
 }

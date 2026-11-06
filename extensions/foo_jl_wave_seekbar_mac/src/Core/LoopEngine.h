@@ -23,14 +23,17 @@
 //  ahead at twice its pace until the reserve is there, then holds it. After
 //  a track change behind the buffer it catches up first, outside a loop,
 //  whatever the reserve and hovering or not, and builds it again on the
-//  new track.
+//  new track. A cap bounds the audio waiting, the reserve's and hovering's
+//  alike: towards a track's end the view lowers it, the audio waiting
+//  drains, and the change to the next track happens live.
 //
 //  Track times come from a sync: a seek of the view's own (its target is
 //  frame 0), the view's measurement of foobar2000's position while the
 //  audio is untouched, or a gapless track change (time 0). Without one the
 //  engine passes audio through and turns requests down; the view then seeks.
-//  It turns them down too while the audio waiting crosses a track change
-//  (the old track's buffer would judge them).
+//  It turns them down too once the next track's audio goes out after a
+//  change behind the buffer, until it is live on the new track (the old
+//  track's buffer would judge them).
 //
 //  The engine logs what the output plays (a timeline in output seconds
 //  since the seek), so the view maps the audible time to a track position.
@@ -94,6 +97,12 @@ struct LoopAction {
     // waiting for one, however late it is taken (at most half a beat from `to`)
     double beat = 0.0;
     double beatAnchor = 0.0;
+    // In phase onto the grid `to` is on, when that is another (a tempo
+    // change, a section off the beats of what plays): the place within the
+    // beat comes from what plays on (beat, beatAnchor), the landing is on
+    // this grid. toBeat 0: the same grid as beat and beatAnchor.
+    double toBeat = 0.0;
+    double toBeatAnchor = 0.0;
 };
 
 // A seek of the view's own: the first frame after it is `target`; `then`
@@ -144,6 +153,16 @@ public:
     // the audio through whenever it can
     void setReserveSeconds(double seconds) {
         reserve_ = std::isfinite(seconds) ? std::clamp(seconds, 0.0, kResponsiveAheadSeconds) : 0.0;
+    }
+
+    // At most this much decoded audio waiting, for the reserve and while
+    // responsive alike; above it the audio waiting drains (catching up, half
+    // a second per second played). Towards a track's end the view lowers it
+    // to 0, so the decoder does not cross into the next track early and the
+    // change happens live. INFINITY or NAN (the default): no cap but
+    // kResponsiveAheadSeconds. Loops keep their own limit (kMaxAheadSeconds).
+    void setAheadCapSeconds(double seconds) {
+        aheadCap_ = std::isnan(seconds) ? INFINITY : std::max(0.0, seconds);
     }
 
     // Crossfade length at a splice; 0 splices hard (the tests)
@@ -247,11 +266,14 @@ public:
         // with nothing changed, so a request is taken within a step rather
         // than a whole block (the decoder runs ahead meanwhile; the output is
         // still the input, so nothing is heard). With a reserve, likewise
-        // once the output has passed live for a while since the sync.
+        // once the output has passed live for a while since the sync. Both
+        // within the cap: at 0 it passes the audio through.
+        const double reserve = std::min(reserve_, aheadCap_);
+        const double responsiveAhead = std::min(kResponsiveAheadSeconds, aheadCap_);
         const bool reserveDue =
-            reserve_ > 0.0 && liveFrames_ >= static_cast<int64_t>(framesFor(kReserveSettleSeconds));
-        if (live_ && (responsive_ || reserveDue) && synced_ && !afterBoundary_ &&
-            aheadSeconds() < kResponsiveAheadSeconds) {
+            reserve > 0.0 && liveFrames_ >= static_cast<int64_t>(framesFor(kReserveSettleSeconds));
+        if (live_ && synced_ && !afterBoundary_ &&
+            ((responsive_ && aheadSeconds() < responsiveAhead) || reserveDue)) {
             live_ = false;
             pristine_ = false;
             pos_ = bufEnd() - static_cast<int64_t>(frames);   // this block is next out
@@ -271,18 +293,18 @@ public:
         // steps would never empty the audio waiting after the change)
         const bool catchUp = afterBoundary_ && !(looping_ && engaged_);
         size_t want = 2 * frames;
-        if (!catchUp && responsive_ && ahead < kResponsiveAheadSeconds) {
+        if (!catchUp && responsive_ && ahead < responsiveAhead) {
             want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
         } else if (looping_ && engaged_) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));
-        } else if (reserve_ > 0.0 && !afterBoundary_) {
+        } else if (reserve > 0.0 && !afterBoundary_) {
             // By what waited before this block: short of the reserve, half a
             // block out, so the decoder runs ahead at twice its pace; in it,
-            // a block per block; well over it (after a change was expected),
-            // catching up drains it back
+            // a block per block; well over it (after a change was expected)
+            // or over the cap, catching up drains it back
             const double waiting = ahead - static_cast<double>(frames) / rate;
-            if (waiting < reserve_) want = std::max<size_t>(1, frames / 2);
-            else if (waiting <= reserve_ + kReserveSlackSeconds) want = frames;
+            if (waiting < reserve) want = std::max<size_t>(1, frames / 2);
+            else if (waiting <= reserve + kReserveSlackSeconds && waiting <= aheadCap_) want = frames;
         }
         emit(want, out);
         trim();
@@ -364,8 +386,12 @@ private:
         if (!afterBind && std::isfinite(a.beat) && a.beat > 0.0 && std::isfinite(a.beatAnchor)) {
             const double now = (timeOf(pos_) - a.beatAnchor) / a.beat;
             const double phase = now - std::floor(now);
-            const double at = (a.to - a.beatAnchor) / a.beat;
-            return frameOf(a.beatAnchor + (std::round(at - phase) + phase) * a.beat);
+            // Lands on the target's grid (the same one unless toBeat says otherwise)
+            const bool other = std::isfinite(a.toBeat) && a.toBeat > 0.0 && std::isfinite(a.toBeatAnchor);
+            const double beat = other ? a.toBeat : a.beat;
+            const double anchor = other ? a.toBeatAnchor : a.beatAnchor;
+            const double at = (a.to - anchor) / beat;
+            return frameOf(anchor + (std::round(at - phase) + phase) * beat);
         }
         return frameOf(a.to);
     }
@@ -375,9 +401,11 @@ private:
             if (looping_) exitLoop();
             return true;
         }
-        // Across a track change the audio waiting is partly the next track's,
-        // and the buffer the old one's: the view seeks instead
-        if (!synced_ || channels_ == 0 || afterBoundary_) return false;
+        // Once the next track's audio goes out (a change behind the buffer)
+        // the buffer is the old track's and the view the new one's: the view
+        // seeks instead. Before that the old track still plays from its
+        // buffer, which judges a request as ever.
+        if (!synced_ || channels_ == 0 || (afterBoundary_ && tailStarted_)) return false;
         switch (a.kind) {
             case LoopAction::Loop: {
                 const int64_t s = frameOf(a.start), e = frameOf(a.end);
@@ -625,6 +653,7 @@ private:
     bool pristine_ = true;
     bool responsive_ = false;
     double reserve_ = 0.0;          // decoded seconds to keep ahead while not responsive
+    double aheadCap_ = INFINITY;    // at most this much decoded audio waiting (the reserve, responsive)
     // Output passed live since the last sync (the view's seek or measurement,
     // a track change); the reserve waits for kReserveSettleSeconds of it
     int64_t liveFrames_ = 0;

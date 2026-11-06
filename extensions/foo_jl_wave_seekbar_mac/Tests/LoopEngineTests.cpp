@@ -11,9 +11,11 @@
 //  stream, and the timeline that maps the output to track time. Then the
 //  reserve (decoded audio kept ahead while no change is expected): built
 //  and held, around a hover, across a track change, a second after each
-//  sync; requests turned down across a track change, and taken again once
-//  past it while hovering; where a jump or a loop plays from (relative, in
-//  phase, and a seek's own at its target).
+//  sync; requests taken while the old track still plays across a change,
+//  turned down once the new one's audio goes out, and taken again once past
+//  it while hovering; the cap on the audio waiting (towards a track's end,
+//  while hovering); where a jump or a loop plays from (relative, in phase,
+//  in phase onto another grid, and a seek's own at its target).
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
 //  number (track time x 1000), so the output shows exactly which frames
@@ -342,6 +344,48 @@ void testInPhaseJump() {
     }
 }
 
+// In phase onto another grid: the place within the beat from what plays on
+// its grid, the landing on the target's (the view's example: 120 BPM from
+// 0.2 s where it plays, 102 BPM from 30.1 s at the target)
+void testInPhaseOtherGrid() {
+    TEST_CASE("jumps in phase onto another grid");
+    const double beatA = 0.5, anchorA = 0.2, beatB = 60.0 / 102.0, anchorB = 30.1, to = 31.865;
+    for (const bool other : { true, false }) {
+        Engine e;
+        e.setFadeSeconds(0.0);
+        e.flush(nullptr);
+        e.sync(e.epoch(), 20.0);
+        e.setResponsive(true);   // the decoder runs ahead, past the target
+        Decoder d{ 20000, 100 };
+        Output out;
+        for (int i = 0; i < 1000 && e.playingFrom() < 25.35; ++i) step(e, d, out);
+        const double now = e.playingFrom();
+        const double phase = (now - anchorA) / beatA - std::floor((now - anchorA) / beatA);
+        const double onB = anchorB + (std::round((to - anchorB) / beatB - phase) + phase) * beatB;
+        const double onA = anchorA + (std::round((to - anchorA) / beatA - phase) + phase) * beatA;
+        LoopAction a = action(LoopAction::Jump, 1, 0.0, 0.0, to);
+        a.beat = beatA;
+        a.beatAnchor = anchorA;
+        if (other) {
+            a.toBeat = beatB;
+            a.toBeatAnchor = anchorB;
+        }
+        const size_t at = out.frames.size();
+        CHECK(e.act(a), other ? "a jump in phase onto the 102 BPM grid" : "toBeat 0: on the grid of what plays");
+        runUntil(e, d, out, at + 300);
+        const double landed = out.frames[at];
+        if (other) {
+            CHECK(std::fabs(landed - onB * kRate) <= 1.0, "at the same place within its beat on the target's grid");
+            CHECK(std::fabs(landed - to * kRate) <= beatB * kRate / 2.0 + 1.0, "at most half a 102 BPM beat from the target");
+            CHECK(std::fabs(landed - onA * kRate) > 100.0, "not where the 120 BPM grid carried on would put it");
+        } else {
+            CHECK(std::fabs(landed - onA * kRate) <= 1.0, "as before: the 120 BPM grid carried on to the target");
+        }
+        CHECK(straight(out, at, at + 300, landed), "and on from there");
+        CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+    }
+}
+
 void testLoopKeepsPhase() {
     TEST_CASE("a loop made where playback is");
     Playing p;   // live up to ~5000
@@ -606,16 +650,20 @@ void testReserveTrackChange() {
     const size_t change = p.out.frames.size() + oldLeft;
     Decoder next{ 0, kBlock };
     step(p.e, next, p.out, true);
+    // The old track plays on from its buffer (requests then: see
+    // testRequestsBeforeTheChange) until the new track's audio goes out
+    int blocks = 1;
+    for (; blocks < 1000 && p.out.frames.size() <= change; ++blocks) step(p.e, next, p.out);
+    CHECK(!p.e.live() && p.out.frames.size() > change, "(the new track's audio going out, not live on it yet)");
 
     CHECK(!p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)) && p.e.rejectedId() == 1,
-          "across the change: a jump into the old track's history is turned down (the view seeks)");
+          "then a jump into the old track's history is turned down (the view seeks)");
     LoopAction back = action(LoopAction::Jump, 2);
     back.by = -1.0;
     CHECK(!p.e.act(back) && p.e.rejectedId() == 2, "a relative jump too");
     CHECK(!p.e.act(loop(3, 4.0, 4.5, 4.0)) && p.e.rejectedId() == 3, "and a loop");
     CHECK(p.e.act(action(LoopAction::Exit, 4)) && p.e.rejectedId() == 3, "leaving a loop still works");
 
-    int blocks = 1;
     for (; blocks < 1000 && !p.e.live(); ++blocks) step(p.e, next, p.out);
     CHECK(p.e.live() && p.e.synced() && blocks <= static_cast<int>(oldLeft / kBlock) + 5,
           "it catches up at twice the decoder's pace, whatever the reserve: live on the new track, synced");
@@ -656,10 +704,12 @@ void testResponsiveTrackChange() {
     const size_t change = p.out.frames.size() + oldLeft;
     Decoder next{ 0, kBlock };
     step(p.e, next, p.out, true);
-    CHECK(!p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)) && p.e.rejectedId() == 1,
-          "across the change: a request is turned down (the view seeks)");
-
     int blocks = 1;
+    for (; blocks < 2000 && p.out.frames.size() <= change; ++blocks) step(p.e, next, p.out);
+    CHECK(!p.e.live() && p.out.frames.size() > change && !p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)) &&
+              p.e.rejectedId() == 1,
+          "once the new track's audio goes out: a request is turned down (the view seeks)");
+
     for (; blocks < 2000 && !p.e.live(); ++blocks) step(p.e, next, p.out);
     CHECK(p.e.live() && p.e.synced() && blocks <= static_cast<int>(oldLeft / kBlock) + 5,
           "it catches up at twice the decoder's pace while hovering: live on the new track, synced");
@@ -679,6 +729,112 @@ void testResponsiveTrackChange() {
     CHECK(p.e.act(forward) && p.e.rejectedId() == 1, "a jump half a second forward on the new track: taken, no seek");
     runUntil(p.e, next, p.out, j + 200);
     CHECK(straight(p.out, change, j, 0.0) && straight(p.out, j, j + 200, from + 500.0), "and lands exactly there");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// A gapless change behind the buffer, before the new track's audio goes
+// out: the old track still plays from its buffer, which judges a request as
+// ever (hovering near a track's end has the decoder cross it early); the
+// new track then follows the old one's last decoded frame
+void testRequestsBeforeTheChange() {
+    TEST_CASE("requests while the old track still plays across a change");
+    Playing p;
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(kReserve);
+    for (int i = 0; i < 1000 && p.e.aheadSeconds() < kReserve; ++i) step(p.e, p.d, p.out);
+    const double lastOld = static_cast<double>(p.d.next - 1);
+    Decoder next{ 0, kBlock };
+    step(p.e, next, p.out, true);
+
+    const double from = std::round(p.e.playingFrom() * kRate);
+    LoopAction back = action(LoopAction::Jump, 1);
+    back.by = -1.0;
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(back) && p.e.rejectedId() == 0, "a jump a second back in the old track: taken, no seek");
+    runUntil(p.e, next, p.out, j + 300);
+    CHECK(straight(p.out, j, j + 300, from - 1000.0), "and lands exactly there");
+
+    const double to = (lastOld - 1000.0) / kRate;   // a second before the old track's last decoded frame
+    const size_t k = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 2, 0.0, 0.0, to)) && p.e.rejectedId() == 0,
+          "a jump forward in its buffer: taken too");
+    for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, next, p.out);
+    CHECK(p.e.live() && p.e.synced(), "then it catches up: live on the new track, synced");
+    const size_t change = k + 1001;   // lastOld - 1000 .. lastOld
+    CHECK(straight(p.out, k, change, lastOld - 1000.0) && straight(p.out, change, p.out.frames.size(), 0.0),
+          "the old track from there to its last decoded frame, then the new track from its first");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// Towards a track's end the view lowers the cap with the time left,
+// (left - 20 s) / 2: the reserve follows it down (catching up), the decoder
+// stays well short of the track's end, and the change to the next track
+// happens live, as without a reserve
+void testCapTowardsTheEnd() {
+    TEST_CASE("the cap towards a track's end");
+    constexpr double kEnd = 60.0;   // the track's length
+    Playing p;                      // at 5 s
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(20.0);
+    auto capAt = [&](double t) { return std::max(0.0, (kEnd - t - 20.0) / 2.0); };
+    bool underCap = true, liveToTheEnd = true, relapsed = false;
+    double most = 0.0, liveFrom = NAN;
+    while (p.d.next < static_cast<int64_t>(kEnd * kRate)) {
+        const double cap = capAt(p.e.playingFrom());
+        p.e.setAheadCapSeconds(cap);
+        step(p.e, p.d, p.out);
+        underCap &= p.e.aheadSeconds() <= cap + 0.06;   // a block's half over it at most
+        most = std::max(most, p.e.aheadSeconds());
+        relapsed |= !std::isnan(liveFrom) && !p.e.live();
+        if (p.e.live() && std::isnan(liveFrom) && most >= 1.0) liveFrom = p.e.playingFrom();
+        if (p.e.playingFrom() > kEnd - 15.0) liveToTheEnd &= p.e.live();
+    }
+    CHECK(most >= 10.0, "the reserve builds up to the cap (17.5 s at 5 s, less as the end nears)");
+    CHECK(underCap, "never more than the cap ahead");
+    CHECK(liveFrom >= kEnd - 25.0 && liveFrom <= kEnd - 15.0, "live again about 20 s before the end");
+    CHECK(!relapsed && liveToTheEnd && p.e.live() && p.e.aheadSeconds() == 0.0,
+          "and live from then to the end: the decoder never crosses into the next track ahead");
+
+    const size_t change = p.out.frames.size();
+    Decoder next{ 0, kBlock };
+    step(p.e, next, p.out, true);
+    const LoopSegment &last = p.e.timeline().back();
+    CHECK(p.e.live() && p.e.synced() && last.from == 0.0 && std::fabs(last.first * kRate - static_cast<double>(change)) < 1e-6,
+          "the next track passes straight through, synced at its frame 0");
+    CHECK(straight(p.out, 0, change, 2000.0) && straight(p.out, change, p.out.frames.size(), 0.0),
+          "the old track to its end, then the new one, nothing skipped or doubled");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// Hovering, the decoder runs ahead only up to the cap, and drains when the
+// cap comes down
+void testCapWhileHovering() {
+    TEST_CASE("the cap while hovering");
+    Playing p;
+    p.d.size = kBlock;
+    p.e.setResponsive(true);
+    p.e.setAheadCapSeconds(3.0);
+    double most = 0.0;
+    for (int i = 0; i < 300; ++i) {
+        step(p.e, p.d, p.out);
+        most = std::max(most, p.e.aheadSeconds());
+    }
+    CHECK(most >= 2.9 && most <= 3.0 + 0.1, "up to the cap, not 120 s");
+    p.e.setAheadCapSeconds(1.0);
+    for (int i = 0; i < 40; ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.aheadSeconds() <= 1.1 && !p.e.live(), "a lower cap: it drains to it, short steps from the buffer there");
+    p.e.setAheadCapSeconds(0.0);
+    for (int i = 0; i < 40 && !p.e.live(); ++i) step(p.e, p.d, p.out);
+    bool stays = p.e.live();
+    for (int i = 0; i < 10; ++i) {
+        step(p.e, p.d, p.out);
+        stays &= p.e.live();
+    }
+    CHECK(stays, "a cap of 0: it catches up and passes through, hovering or not");
+    p.e.setAheadCapSeconds(NAN);
+    for (int i = 0; i < 300; ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.aheadSeconds() > 10.0, "no cap: on towards 120 s, as before");
+    CHECK(straight(p.out, 0, p.out.frames.size(), 2000.0), "the same audio throughout, nothing skipped or doubled");
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
 }
 
@@ -826,6 +982,7 @@ int main() {
     testLoopStaysSet();
     testRelativeJump();
     testInPhaseJump();
+    testInPhaseOtherGrid();
     testLoopKeepsPhase();
     testCrossfade();
     testForeignSeek();
@@ -840,6 +997,9 @@ int main() {
     testReserveAroundHover();
     testReserveTrackChange();
     testResponsiveTrackChange();
+    testRequestsBeforeTheChange();
+    testCapTowardsTheEnd();
+    testCapWhileHovering();
     testReserveWaitsForTheClock();
     testNoReserve();
     testSeekRequestAtTarget();

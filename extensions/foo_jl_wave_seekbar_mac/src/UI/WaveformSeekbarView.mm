@@ -249,12 +249,13 @@ const uint32_t kLoopColor = 0x35C27A;
 // With Snap on, the line at the beat a click would go to
 const CGFloat kSnapLineAlpha = 0.7;
 // The decode-ahead reserve while the mixer has the track's beats: 32 beats
-// and 2 s, at least 20 s; none in the track's last two reserves and 10 s,
-// so it drains before the next track
+// and 2 s, at least 20 s. The audio decoded ahead (the reserve's, or while
+// hovering) stays under half of what is left of the track before its last
+// kAheadEndSeconds, so it drains towards the end and the next track starts live.
 const double kReserveBeats = 32.0;
 const double kReserveExtraSeconds = 2.0;
 const double kReserveMinSeconds = 20.0;
-const double kReserveTailSeconds = 10.0;
+const double kAheadEndSeconds = 20.0;
 
 // Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
 // pans. A wheel notch is one line; trackpad scroll comes in points.
@@ -458,7 +459,6 @@ struct BarSegment {
     std::vector<double> _syncSamples;
     uint64_t _syncEpoch;
     bool _lowLatency;
-    double _reserve;                // the decode-ahead reserve asked of the DSP, seconds
     CFAbsoluteTime _latencyNoteAt;
     // The visualisation clock less the audio actually heard (measured while
     // the audio is untouched; 0 when the clock is exact)
@@ -545,6 +545,7 @@ struct BarSegment {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    beatloop::setReserve(0.0, INFINITY);   // a seekbar that goes away asks no decode-ahead
     [self invalidateMasks];
     if (_deviceRGBColorSpace) CGColorSpaceRelease(_deviceRGBColorSpace);
 }
@@ -2762,25 +2763,40 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 // however late) or to `target`; onBeat: in phase, the DSP lands at the
 // place nearest `target` at the same place within its beat as what it
 // plays, so the beat holds at once (a wait for the next beat delayed the
-// jump up to a beat). `target` also places the fallback seek and decides
-// what the loop does. The fallback seek's own `then` plays from its `to`:
-// after a seek there is nothing to be relative to or in phase with.
+// jump up to a beat): the place within the beat on the grid of what plays,
+// the landing on the grid that holds at `target` (another one across a
+// tempo change). `target` also places the fallback seek and decides what
+// the loop does. The fallback seek's own `then` plays from its `to`: after
+// a seek there is nothing to be relative to or in phase with.
 - (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
     using Kind = waveseek::LoopAction::Kind;
+    waveseek::GridAt playing{}, landing{};
+    if (onBeat && std::isnan(by) && _trustedGrid) {
+        playing = waveseek::gridAt(*_trustedGrid, [self currentSeconds], _phraseFollowGrid);
+        landing = waveseek::gridAt(*_trustedGrid, target, _phraseFollowGrid);
+    }
+    const bool inPhase = playing.bpm > 0.0 && landing.bpm > 0.0;
+    // In phase from a beat at the loop's end or past it, the landing is
+    // within half a beat of it, inside the loop about half the time: aimed
+    // half a beat later it is between that beat and the next, past the loop
+    double to = target, heldTo = target;
+    if (inPhase && _loop.active() && target >= _loop.end) {
+        to = target + 0.5 * 60.0 / landing.bpm;
+        heldTo = target + 60.0 / landing.bpm;
+    }
     // How the direct request finds where to play from: relative, in phase,
     // or from `target`
     auto direct = [&](waveseek::LoopAction a) {
         a.by = by;
-        if (onBeat && std::isnan(by) && _trustedGrid) {
-            const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, [self currentSeconds], _phraseFollowGrid);
-            if (grid.bpm > 0.0) {
-                a.beat = 60.0 / grid.bpm;
-                a.beatAnchor = grid.anchorSeconds;
-            }
+        if (inPhase) {
+            a.beat = 60.0 / playing.bpm;
+            a.beatAnchor = playing.anchorSeconds;
+            a.toBeat = 60.0 / landing.bpm;
+            a.toBeatAnchor = landing.anchorSeconds;
         }
         return a;
     };
-    const waveseek::LoopAction jump = direct(makeAction(Kind::Jump, 0, 0, target));
+    const waveseek::LoopAction jump = direct(makeAction(Kind::Jump, 0, 0, to));
     if (!_loop.active()) {
         if ([self deckHolds:target to:target]) {
             [self request:jump orSeekTo:target then:nullptr];
@@ -2797,7 +2813,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, target);   // after a seek
     const double seekTarget = inside ? _loop.start : target;
     const waveseek::LoopAction *then = inside || before ? &setLoop : nullptr;
-    if ([self deckHolds:target to:target]) {
+    if ([self deckHolds:target to:heldTo]) {
         [self request:(_deck.looping || !then) ? jump : direct(setLoop) orSeekTo:seekTarget then:then];
     } else {
         [self noteSeekFor:target];
@@ -2944,23 +2960,32 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     beatloop::setLowLatency(on);
 }
 
-// While the mixer has the track's beats, the DSP keeps 32 beats and 2 s
-// (at least 20 s) decoded ahead of `seconds` when no change is expected,
-// so a forward jump within it plays without a seek. None in the track's
-// last two reserves and 10 s: it drains, and the next track starts as
-// without it. None for a stream or a track without a grid.
+// The DSP's decode-ahead at `seconds`, sent at every position check (not
+// refreshed, it lapses within a second). The reserve: while the mixer has
+// the track's beats, 32 beats and 2 s (at least 20 s) decoded ahead when no
+// change is expected, so a forward jump within it plays without a seek;
+// none for a stream or a track without a grid. The cap, on the reserve and
+// on hovering alike: half of what is left of the track before its last
+// kAheadEndSeconds. The audio waiting drains as fast as the cap comes down
+// (half a second per second), so it is gone 20 s before the end and the
+// next track starts live, as without the DSP; no cap for an unknown length.
 - (void)updateReserveAt:(double)seconds {
     double reserve = 0.0;
     if ([self deckMode] && [self mixerReady] && _trustedGrid && std::isfinite(seconds)) {
         const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, seconds, _phraseFollowGrid);
         if (grid.bpm > 0.0) {
-            const double r = std::max(kReserveMinSeconds, kReserveBeats * 60.0 / grid.bpm + kReserveExtraSeconds);
-            if (self.trackDuration - seconds > 2.0 * r + kReserveTailSeconds) reserve = r;
+            reserve = std::max(kReserveMinSeconds, kReserveBeats * 60.0 / grid.bpm + kReserveExtraSeconds);
         }
     }
-    if (reserve == _reserve) return;
-    _reserve = reserve;
-    beatloop::setReserve(reserve);
+    double cap = INFINITY;
+    if (self.trackDuration > 0.0 && std::isfinite(seconds)) {
+        cap = std::max(0.0, (self.trackDuration - seconds - kAheadEndSeconds) / 2.0);
+    }
+    beatloop::setReserve(reserve, cap);
+}
+
+- (void)positionChecksStopped {
+    beatloop::setReserve(0.0, INFINITY);
 }
 
 #pragma mark - Mixer Actions
@@ -3039,14 +3064,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 }
 
 // Where the 16-beat phrases (and new grids) start, for a loop to catch: on
-// the trusted sections, as the beats
+// the trusted sections, as the beats; a section's start only where the
+// grid changes there (loopPhraseStarts)
 - (std::vector<double>)phraseStartTimes {
-    std::vector<double> out;
-    if (!_trustedGrid) return out;
-    for (const waveseek::PhraseMarker &m : waveseek::phraseMarkers(*_trustedGrid, 16, _phraseFollowGrid)) {
-        out.push_back(m.seconds);
-    }
-    return out;
+    if (!_trustedGrid) return {};
+    return waveseek::loopPhraseStarts(*_trustedGrid, 16, _phraseFollowGrid);
 }
 
 // A loop of the chosen length from the beat behind the cursor (or a phrase
@@ -3227,12 +3249,19 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 
 - (void)mouseDown:(NSEvent *)event {
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    for (const BarSegment &segment : [self barSegmentsFor:[self waveformRect] box:nullptr]) {
+    CGRect bar;
+    for (const BarSegment &segment : [self barSegmentsFor:[self waveformRect] box:&bar]) {
         if (CGRectContainsPoint(segment.rect, p)) {
             _seeking = NO;
             [self performBarControl:segment];
             return;
         }
+    }
+    // In the bar between its groups: nothing (no seek; Snap's line does not
+    // show there either)
+    if (CGRectContainsPoint(bar, p)) {
+        _seeking = NO;
+        return;
     }
     // Option-drag moves the loop, by whole beats
     if ((event.modifierFlags & NSEventModifierFlagOption) && _loop.active() && [self mixerReady] &&
