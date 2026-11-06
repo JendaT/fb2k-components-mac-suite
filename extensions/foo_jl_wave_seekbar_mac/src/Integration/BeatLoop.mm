@@ -14,11 +14,14 @@
 #include "../Core/ConfigHelper.h"
 #include "BeatLoop.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <chrono>
 #include <deque>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -46,16 +49,28 @@ struct Bridge {
     double reserve = 0.0;
     double aheadCap = INFINITY;
     Clock::time_point reserveAt;
+    // The seekbars whose low latency is on, each with when it last said so
+    std::vector<std::pair<const void *, Clock::time_point>> lowLatency;
     beatloop::Status status;
 
     static Bridge &get() {
         static Bridge bridge;
         return bridge;
     }
+
+    // Under the lock: whether a seekbar's low latency is on (the lapsed go)
+    bool lowLatencyOn(Clock::time_point now) {
+        lowLatency.erase(std::remove_if(lowLatency.begin(), lowLatency.end(),
+                                        [&](const std::pair<const void *, Clock::time_point> &entry) {
+                                            return std::chrono::duration<double>(now - entry.second).count() >
+                                                   beatloop::kFreshSeconds;
+                                        }),
+                         lowLatency.end());
+        return !lowLatency.empty();
+    }
 };
 
 std::atomic<int> g_instances{ 0 };
-std::atomic<bool> g_responsive{ false };
 
 class dsp_beat_loop : public dsp_impl_base {
 public:
@@ -67,7 +82,6 @@ public:
 
     bool on_chunk(audio_chunk *chunk, abort_callback &) override {
         takeRequests();
-        m_engine.setResponsive(g_responsive.load(std::memory_order_relaxed));
         // A gapless change to another track: its frame 0 is here
         dsp_track_t file;
         get_cur_file(file);
@@ -131,9 +145,11 @@ private:
         uint64_t epoch = 0;
         double t0 = 0.0;
         double reserve = 0.0, aheadCap = INFINITY;   // lapsed: neither
+        bool responsive = false;
         {
             Bridge &b = Bridge::get();
             std::lock_guard<std::mutex> guard(b.lock);
+            const Clock::time_point now = Clock::now();
             actions.swap(b.actions);
             queuedAt.swap(b.queuedAt);
             if (b.syncSerial != m_syncSerial) {
@@ -142,11 +158,13 @@ private:
                 epoch = b.syncEpoch;
                 t0 = b.syncT0;
             }
-            if (std::chrono::duration<double>(Clock::now() - b.reserveAt).count() <= beatloop::kReserveFreshSeconds) {
+            if (std::chrono::duration<double>(now - b.reserveAt).count() <= beatloop::kFreshSeconds) {
                 reserve = b.reserve;
                 aheadCap = b.aheadCap;
             }
+            responsive = b.lowLatencyOn(now);
         }
+        m_engine.setResponsive(responsive);
         m_engine.setReserveSeconds(reserve);
         m_engine.setAheadCapSeconds(aheadCap);
         if (haveSync) m_engine.sync(epoch, t0);
@@ -211,7 +229,51 @@ dsp_factory_nopreset_t<dsp_beat_loop> g_beat_loop_factory;
 visualisation_stream::ptr g_clock;
 service_ptr g_liveEdit;
 bool g_liveEditMissing = false;
+bool g_liveEditWatched = false;
 bool g_quitting = false;
+
+bool lowLatencyWanted() {
+    Bridge &b = Bridge::get();
+    std::lock_guard<std::mutex> guard(b.lock);
+    return b.lowLatencyOn(Clock::now());
+}
+
+void holdLiveEdit(bool want);
+
+// While the hint is held, a look twice per kFreshSeconds: it goes once no
+// seekbar's low latency is on (the last one lapsed: it went away or
+// stopped its checks without saying so)
+void watchLiveEdit() {
+    if (g_liveEditWatched) return;
+    g_liveEditWatched = true;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(beatloop::kFreshSeconds / 2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        g_liveEditWatched = false;
+        if (g_liveEdit.is_valid()) holdLiveEdit(lowLatencyWanted());
+    });
+}
+
+// Main thread: foobar2000's low-latency hint, held while a seekbar wants it
+void holdLiveEdit(bool want) {
+    if (!want || g_quitting) {
+        g_liveEdit.release();
+        return;
+    }
+    if (!g_liveEdit.is_valid() && !g_liveEditMissing) {
+        try {
+            dsp_config_manager_v3::ptr manager;
+            if (dsp_config_manager_v3::tryGet(manager)) g_liveEdit = manager->acquire_live_edit_scope();
+            else {
+                g_liveEditMissing = true;
+                FB2K_console_formatter() << "[WaveSeek] Beat loop: this foobar2000 has no low-latency hint; changes to a "
+                                            "loop are heard after the output buffer (Preferences > Playback > Output)";
+            }
+        } catch (...) {
+            g_liveEditMissing = true;
+        }
+    }
+    if (g_liveEdit.is_valid()) watchLiveEdit();
+}
 
 } // namespace
 
@@ -295,24 +357,20 @@ void releaseClock() {
     g_clock.release();
 }
 
-void setLowLatency(bool on) {
-    g_responsive.store(on, std::memory_order_relaxed);
-    if (!on) {
-        g_liveEdit.release();
-        return;
+void setLowLatency(const void *owner, bool on) {
+    bool want = false;
+    {
+        Bridge &b = Bridge::get();
+        std::lock_guard<std::mutex> guard(b.lock);
+        const Clock::time_point now = Clock::now();
+        auto mine = std::find_if(b.lowLatency.begin(), b.lowLatency.end(),
+                                 [&](const std::pair<const void *, Clock::time_point> &entry) { return entry.first == owner; });
+        if (on && mine != b.lowLatency.end()) mine->second = now;
+        else if (on) b.lowLatency.emplace_back(owner, now);
+        else if (mine != b.lowLatency.end()) b.lowLatency.erase(mine);
+        want = b.lowLatencyOn(now);
     }
-    if (g_liveEdit.is_valid() || g_liveEditMissing || g_quitting) return;
-    try {
-        dsp_config_manager_v3::ptr manager;
-        if (dsp_config_manager_v3::tryGet(manager)) g_liveEdit = manager->acquire_live_edit_scope();
-        else {
-            g_liveEditMissing = true;
-            FB2K_console_formatter() << "[WaveSeek] Beat loop: this foobar2000 has no low-latency hint; changes to a "
-                                        "loop are heard after the output buffer (Preferences > Playback > Output)";
-        }
-    } catch (...) {
-        g_liveEditMissing = true;
-    }
+    holdLiveEdit(want);
 }
 
 void setReserve(double seconds, double aheadCap) {

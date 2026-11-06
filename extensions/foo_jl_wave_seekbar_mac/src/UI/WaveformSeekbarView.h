@@ -87,8 +87,8 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 // The track time to show for foobar2000's playback position: while the
 // loop DSP holds the playback, where its passes are, else `seconds`
 - (double)displayedTimeFor:(double)seconds;
-// The position checks (followLoopAt:) stopped: no decode-ahead is asked of
-// the loop DSP until they come again
+// The position checks (followLoopAt:) stopped: no decode-ahead or short
+// steps are asked of the loop DSP until they come again
 - (void)positionChecksStopped;
 
 // Actions

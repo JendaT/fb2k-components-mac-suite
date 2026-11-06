@@ -7,14 +7,17 @@
 //  seek, new lengths taking effect at once (wrapping into a shorter loop,
 //  running on into a longer one), moves back into the history and forward
 //  into the audio decoded ahead, jumps, leaving a loop, catching up with
-//  the decoder, the crossfade, a new track behind a loop, the end of the
-//  stream, and the timeline that maps the output to track time. Then the
+//  the decoder, the crossfade, a new track behind a loop, a new track while
+//  passing through with a loop waiting (it ends), a waiting loop engaged
+//  while passing through, the end of the stream, and the timeline that
+//  maps the output to track time. Then the
 //  reserve (decoded audio kept ahead while no change is expected): built
 //  and held, around a hover, across a track change, a second after each
 //  sync; requests taken while the old track still plays across a change,
 //  turned down once the new one's audio goes out, and taken again once past
 //  it while hovering; the cap on the audio waiting (towards a track's end,
-//  while hovering); where a jump or a loop plays from (relative, in phase,
+//  while hovering, not on the short steps in a loop); where a jump or a
+//  loop plays from (relative, in phase,
 //  in phase onto another grid, and a seek's own at its target).
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
@@ -479,6 +482,96 @@ void testNewTrackBehindLoop() {
     bool reaches = false;
     for (double v : rest.frames) reaches |= v == 0.0;
     CHECK(reaches, "the new track plays from its first frame");
+}
+
+// Passing through with a loop waiting behind playback, then a gapless
+// change: in step with the decoder on the new track, which ends the loop
+// (the view ends it too once the new track is heard)
+void testNewTrackLiveLoopWaiting() {
+    TEST_CASE("a gapless track change with a loop waiting");
+    Playing p;   // live up to ~5000
+    CHECK(p.e.act(loop(1, 3.0, 3.5)), "(a loop behind playback: it waits)");
+    step(p.e, p.d, p.out);
+    CHECK(p.e.live() && p.e.looping(), "(caught up: live, the loop still set)");
+    const size_t change = p.out.frames.size();
+    Decoder next{ 0 };
+    step(p.e, next, p.out, true);
+    const LoopSegment &last = p.e.timeline().back();
+    CHECK(p.e.live() && p.e.synced() && !p.e.looping(), "in step: live, synced to the new track, the loop ended");
+    CHECK(last.from == 0.0 && last.loop == 0.0 && std::fabs(last.first * kRate - static_cast<double>(change)) < 1e-6,
+          "the new track's own timeline segment at its frame 0");
+    runUntil(p.e, next, p.out, change + 1000);
+    CHECK(p.e.live() && p.e.aheadSeconds() == 0.0, "passing through, nothing held back behind it");
+    CHECK(straight(p.out, change, p.out.frames.size(), 0.0), "the new track from its first frame");
+    LoopAction back = action(LoopAction::Jump, 2);
+    back.by = -0.5;
+    const double from = p.out.frames.back() + 1.0;   // the new track's next frame
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(back) && p.e.rejectedId() == 0, "a jump half a second back: taken");
+    runUntil(p.e, next, p.out, j + 200);
+    CHECK(from > 500.0 && straight(p.out, j, j + 200, from - 500.0), "it plays the new track's history");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// A loop waiting while passing through, made longer (or moved) to take in
+// what plays: the loop plays from the buffer (it wraps at its end) instead
+// of the audio passing through under a loop segment
+void testLoopEngagedWhileLive() {
+    TEST_CASE("a waiting loop engaged while passing through");
+    Playing p;   // live up to ~5000
+    p.e.act(loop(1, 3.0, 3.5));
+    step(p.e, p.d, p.out);
+    CHECK(p.e.live() && p.e.looping(), "(live, the loop waiting)");
+    const double from = std::round(p.e.playingFrom() * kRate);
+    const size_t at = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Resize, 2, 0.0, 6.0)) && !p.e.live(), "longer, past what plays: from the buffer");
+    runUntil(p.e, p.d, p.out, at + 4000);
+    const size_t toEnd = static_cast<size_t>(6000.0 - from);
+    CHECK(straight(p.out, at, at + toEnd, from) && looping(p.out, at + toEnd, at + 4000, 3000.0, 3000),
+          "plays on to the new end, then wraps to the loop's start");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+
+    Playing q;
+    q.e.act(loop(1, 3.0, 3.5));
+    step(q.e, q.d, q.out);
+    const double from2 = std::round(q.e.playingFrom() * kRate);
+    const size_t at2 = q.out.frames.size();
+    CHECK(q.e.act(action(LoopAction::Move, 2, 2.5, 3.0)) && !q.e.live(), "moved half a second back: from the buffer");
+    runUntil(q.e, q.d, q.out, at2 + 300);
+    CHECK(straight(q.out, at2, at2 + 300, from2 - 500.0), "playback shifted with it, as the timeline says");
+    CHECK(matchesTimeline(q.e, q.out), "the timeline maps every frame");
+
+    // A gapless change while in the loop: the loop holds the new track back
+    Playing r;
+    r.e.act(loop(1, 3.0, 3.5));
+    step(r.e, r.d, r.out);
+    r.e.act(action(LoopAction::Resize, 2, 0.0, 6.0));
+    runUntil(r.e, r.d, r.out, r.out.frames.size() + 300);
+    Decoder next{ 0 };
+    for (int i = 0; i < 5; ++i) step(r.e, next, r.out, i == 0);
+    CHECK(!r.e.live() && r.e.looping(), "a new track behind it: still in the loop, from the buffer");
+}
+
+// Hovering in a loop near a track's end (cap 0): still short steps, so a
+// change to the loop is heard at once; the cap is for draining to go live,
+// which a loop does not
+void testCapInLoop() {
+    TEST_CASE("the cap in a loop while hovering");
+    Playing p;
+    p.e.setResponsive(true);
+    p.e.setAheadCapSeconds(0.0);
+    CHECK(p.e.act(loop(1, 4.0, 4.5, 4.0)), "(a loop, playing in it)");
+    bool shortSteps = true;
+    for (int i = 0; i < 50; ++i) {
+        const size_t at = p.out.frames.size();
+        step(p.e, p.d, p.out);
+        shortSteps &= p.out.frames.size() - at == static_cast<size_t>(Engine::kResponsiveQuantumSeconds * kRate);
+    }
+    CHECK(shortSteps && p.e.looping(), "30 frames out per block, as without a cap");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+    p.e.act(action(LoopAction::Exit, 2));
+    for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.live(), "out of the loop the cap holds: it catches up and passes through");
 }
 
 void testResponsive() {
@@ -988,6 +1081,9 @@ int main() {
     testForeignSeek();
     testNewTrackLive();
     testNewTrackBehindLoop();
+    testNewTrackLiveLoopWaiting();
+    testLoopEngagedWhileLive();
+    testCapInLoop();
     testResponsive();
     testStandby();
     testAheadCap();

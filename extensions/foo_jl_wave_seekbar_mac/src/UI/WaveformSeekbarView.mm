@@ -546,6 +546,7 @@ struct BarSegment {
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     beatloop::setReserve(0.0, INFINITY);   // a seekbar that goes away asks no decode-ahead
+    beatloop::setLowLatency((__bridge const void *)self, false);   // nor short steps or the hint
     [self invalidateMasks];
     if (_deviceRGBColorSpace) CGColorSpaceRelease(_deviceRGBColorSpace);
 }
@@ -2776,11 +2777,12 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         landing = waveseek::gridAt(*_trustedGrid, target, _phraseFollowGrid);
     }
     const bool inPhase = playing.bpm > 0.0 && landing.bpm > 0.0;
-    // In phase from a beat at the loop's end or past it, the landing is
-    // within half a beat of it, inside the loop about half the time: aimed
-    // half a beat later it is between that beat and the next, past the loop
+    // In phase from the beat at the loop's end, the landing is within half
+    // a beat of it, inside the loop about half the time: aimed half a beat
+    // later it is between that beat and the next, past the loop. From a
+    // beat further on it is past the loop anyway, within half a beat of it.
     double to = target, heldTo = target;
-    if (inPhase && _loop.active() && target >= _loop.end) {
+    if (inPhase && _loop.active() && target >= _loop.end && target < _loop.end + 0.5 * 60.0 / landing.bpm) {
         to = target + 0.5 * 60.0 / landing.bpm;
         heldTo = target + 60.0 / landing.bpm;
     }
@@ -2952,12 +2954,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 
 // While a change may come (the mouse over the seekbar, a menu or a drag),
 // short steps from the DSP and foobar2000's low-latency hint; only with the
-// track's beats (not for a stream, or a track without a grid)
+// track's beats (not for a stream, or a track without a grid). Sent at
+// every position check too (not renewed, it lapses within a second).
 - (void)updateLowLatency {
-    const bool on = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging) && [self mixerReady];
-    if (on == _lowLatency) return;
-    _lowLatency = on;
-    beatloop::setLowLatency(on);
+    _lowLatency = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging) && [self mixerReady];
+    beatloop::setLowLatency((__bridge const void *)self, _lowLatency);
 }
 
 // The DSP's decode-ahead at `seconds`, sent at every position check (not
@@ -2986,6 +2987,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
 
 - (void)positionChecksStopped {
     beatloop::setReserve(0.0, INFINITY);
+    beatloop::setLowLatency((__bridge const void *)self, false);   // the next check sends it again
 }
 
 #pragma mark - Mixer Actions

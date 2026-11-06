@@ -25,7 +25,10 @@
 //  whatever the reserve and hovering or not, and builds it again on the
 //  new track. A cap bounds the audio waiting, the reserve's and hovering's
 //  alike: towards a track's end the view lowers it, the audio waiting
-//  drains, and the change to the next track happens live.
+//  drains, and the change to the next track happens live (short steps in
+//  a loop go on whatever the cap). A change while the audio passes
+//  through starts over on the new track and ends a loop waiting behind
+//  playback.
 //
 //  Track times come from a sync: a seek of the view's own (its target is
 //  frame 0), the view's measurement of foobar2000's position while the
@@ -160,7 +163,8 @@ public:
     // a second per second played). Towards a track's end the view lowers it
     // to 0, so the decoder does not cross into the next track early and the
     // change happens live. INFINITY or NAN (the default): no cap but
-    // kResponsiveAheadSeconds. Loops keep their own limit (kMaxAheadSeconds).
+    // kResponsiveAheadSeconds. Playback in a loop keeps its short steps and
+    // its own limit (kMaxAheadSeconds).
     void setAheadCapSeconds(double seconds) {
         aheadCap_ = std::isnan(seconds) ? INFINITY : std::max(0.0, seconds);
     }
@@ -229,7 +233,12 @@ public:
         }
         const bool newFormat = channels != channels_ || rate != rate_;
         if ((newTrack || newFormat) && !afterBoundary_) {
-            if (live_ && !looping_) {
+            if (live_) {
+                // In step with the decoder (never with a loop engaged or
+                // ahead, see emit and moveTo): a loop waiting behind
+                // playback ends, as the new track ends it in the view; its
+                // frames are the old buffer's
+                looping_ = engaged_ = inLoopSegment_ = false;
                 startOver(channels, rate, config, newTrack);
             } else {
                 afterBoundary_ = true;
@@ -267,7 +276,9 @@ public:
         // than a whole block (the decoder runs ahead meanwhile; the output is
         // still the input, so nothing is heard). With a reserve, likewise
         // once the output has passed live for a while since the sync. Both
-        // within the cap: at 0 it passes the audio through.
+        // within the cap: at 0 it passes the audio through. In a loop the
+        // short steps go on whatever the cap (it bounds the audio waiting so
+        // that it drains and goes live, which a loop does not)
         const double reserve = std::min(reserve_, aheadCap_);
         const double responsiveAhead = std::min(kResponsiveAheadSeconds, aheadCap_);
         const bool reserveDue =
@@ -291,11 +302,12 @@ public:
         // buffer always, outside a loop, hovering or not, so the new track
         // gets its own buffer and time and requests are taken again (short
         // steps would never empty the audio waiting after the change)
-        const bool catchUp = afterBoundary_ && !(looping_ && engaged_);
+        const bool inLoop = looping_ && engaged_;
+        const bool catchUp = afterBoundary_ && !inLoop;
         size_t want = 2 * frames;
-        if (!catchUp && responsive_ && ahead < responsiveAhead) {
+        if (!catchUp && responsive_ && ahead < (inLoop ? kResponsiveAheadSeconds : responsiveAhead)) {
             want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
-        } else if (looping_ && engaged_) {
+        } else if (inLoop) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));
         } else if (reserve > 0.0 && !afterBoundary_) {
             // By what waited before this block: short of the reserve, half a
@@ -468,14 +480,18 @@ private:
     }
 
     // Plays on from `to`: a crossfaded splice when it is elsewhere; a new
-    // timeline segment either way (the loop may have changed)
+    // timeline segment either way (the loop may have changed). A splice, or
+    // playback in the loop, plays from the buffer: a new length or a move of
+    // a loop waiting while the audio passes through may take in what plays.
     void moveTo(int64_t to) {
         if (to != pos_) {
             startFade();
             pos_ = to;
             pristine_ = false;
+            live_ = false;
         }
         pushSegment();
+        if (engaged_) live_ = false;
     }
 
     void startFade() {
