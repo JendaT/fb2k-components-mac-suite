@@ -22,6 +22,8 @@ DISPLAY_NAMES=(
     [biography]="Artist Biography"
     [cloud-streamer]="Cloud Streamer"
     [playback-controls]="Playback Controls"
+    [spectrum]="Spectrum Analyzer"
+    [vectorscope]="Vectorscope"
 )
 
 # Generate BACKLOG.md for a component

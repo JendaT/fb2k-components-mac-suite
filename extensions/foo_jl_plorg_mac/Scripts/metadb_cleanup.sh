@@ -124,12 +124,13 @@ for entry in d.get("paths", {}).values():
     fi
 fi
 
-# Dedup + validate before anything is interpolated into SQL; KEEP_SET
-# mirrors KEEP_VALID for O(1) membership tests during analysis.
+# Dedup + validate before anything is interpolated into SQL. KEEP_SET mirrors
+# KEEP_VALID as a |-delimited string for cheap membership tests during analysis
+# (associative arrays need bash 4; macOS ships bash 3.2 at /bin/bash).
 declare -a KEEP_VALID=()
-declare -A KEEP_SET=()
+KEEP_SET="|"
 for u in $(printf '%s\n' "${KEEP[@]:-}" | sort -u); do
-    [[ "$u" =~ $UUID_RE ]] && { KEEP_VALID+=("$u"); KEEP_SET["$u"]=1; }
+    [[ "$u" =~ $UUID_RE ]] && { KEEP_VALID+=("$u"); KEEP_SET="${KEEP_SET}${u}|"; }
 done
 
 if [ "${#KEEP_VALID[@]}" -eq 0 ]; then
@@ -160,7 +161,7 @@ while IFS='|' read -r uuid count; do
         echo "  $uuid ($count rows) - malformed, skipped"
         continue
     fi
-    if [ -n "${KEEP_SET[$uuid]:-}" ]; then
+    if [[ "$KEEP_SET" == *"|$uuid|"* ]]; then
         echo "  $uuid ($count rows) - KEEP (referenced/live)"
     else
         echo "  $uuid ($count rows) - DELETE (dead, unreferenced)"

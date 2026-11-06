@@ -87,7 +87,11 @@
 
 + (BOOL)backReturnsToArtistAlbumsFromMode:(JLTidalBrowseMode)browseMode
                                 hasArtist:(BOOL)hasArtist {
-    return browseMode == JLTidalBrowseModeArtistTopTracks && hasArtist;
+    if (!hasArtist) return NO;
+    // Both of these are reached *from* an artist's album list, so back belongs
+    // there. Playlist tracks and library drill-downs have no artist level.
+    return browseMode == JLTidalBrowseModeArtistTopTracks ||
+           browseMode == JLTidalBrowseModeAlbumTracks;
 }
 
 #pragma mark - Mode-change no-op rules
@@ -96,6 +100,36 @@
                                 toType:(JLTidalSearchType)newType
                             browseMode:(JLTidalBrowseMode)browseMode {
     return newType == currentType && browseMode == JLTidalBrowseModeSearchResults;
+}
+
+
++ (nullable NSString *)displayQualityForAudioQuality:(nullable NSString *)audioQuality
+                                           mediaTags:(nullable NSArray<NSString *> *)mediaTags {
+    // No mediaMetadata in the response: nothing better to go on.
+    if (mediaTags == nil) return audioQuality;
+
+    // mediaTags lists the formats Tidal actually holds, so it decides in both
+    // directions. Previously it could only cap a lossless claim downward, and a
+    // release whose audioQuality lagged behind a HIRES_LOSSLESS tag was shown
+    // as merely lossless.
+    BOOL hasHiRes = NO, hasLossless = NO;
+    for (NSString *tag in mediaTags) {
+        if ([tag isEqualToString:@"HIRES_LOSSLESS"]) hasHiRes = YES;
+        else if ([tag isEqualToString:@"LOSSLESS"] || [tag isEqualToString:@"MQA"]) hasLossless = YES;
+    }
+
+    if (hasHiRes) return @"HI_RES_LOSSLESS";
+
+    BOOL claimsLossless = [audioQuality isEqualToString:@"LOSSLESS"] ||
+                          [audioQuality isEqualToString:@"HI_RES"] ||
+                          [audioQuality isEqualToString:@"HI_RES_LOSSLESS"];
+    if (!claimsLossless) {
+        // Tags promise lossless while audioQuality says otherwise: believe the tags.
+        return hasLossless ? @"LOSSLESS" : audioQuality;
+    }
+
+    // A lossless claim is only kept when a lossless format is really on offer.
+    return hasLossless ? audioQuality : @"HIGH";
 }
 
 + (BOOL)librarySectionChangeIsNoOpFromSection:(JLTidalLibrarySection)currentSection

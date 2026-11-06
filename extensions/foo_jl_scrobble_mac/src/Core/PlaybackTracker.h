@@ -55,6 +55,12 @@ public:
     /// Playback position advanced to `time` (seconds into the track).
     /// Accumulates only plausible forward progress: deltas that are
     /// negative or >= 2s are seeks/jumps and must not count as listening.
+    ///
+    /// Never emits `scrobble`: once a track crosses the eligibility threshold
+    /// it simply stays eligible, and the submission happens at the next
+    /// playback boundary (beginTrack / onStop / onPause). Submitting
+    /// mid-playback would put the scrobble on the profile alongside the
+    /// still-playing Now Playing entry.
     PlaybackDecision onTime(double time) {
         PlaybackDecision decision;
         if (!m_hasTrack) return decision;
@@ -71,11 +77,6 @@ public:
             decision.sendNowPlaying = true;
         }
 
-        if (!m_scrobbled && canScrobble()) {
-            m_scrobbled = true;
-            decision.scrobble = true;
-            decision.timestamp = m_trackStartTime;
-        }
         return decision;
     }
 
@@ -87,7 +88,8 @@ public:
     /// Playback stopped. When `startingAnother`, the upcoming beginTrack()
     /// finalizes the current track instead, so nothing happens here.
     /// Otherwise the current track is scrobbled iff it qualifies and was
-    /// not already scrobbled mid-play, then tracking ends.
+    /// not already scrobbled at an earlier boundary (a pause), then
+    /// tracking ends.
     PlaybackDecision onStop(bool startingAnother) {
         PlaybackDecision decision;
         if (startingAnother) return decision;
@@ -95,6 +97,18 @@ public:
         decision = finalizeDecision();
         m_hasTrack = false;
         return decision;
+    }
+
+    /// Playback was paused or resumed. Pausing is a boundary: the track is
+    /// scrobbled iff it already earned it, so a listen is not lost when the
+    /// user pauses and never comes back. Tracking continues either way —
+    /// resuming keeps accumulating, and the already-scrobbled flag prevents
+    /// a second submission for the same play.
+    PlaybackDecision onPause(bool paused) {
+        PlaybackDecision decision;
+        if (!paused) return decision;
+
+        return finalizeDecision();
     }
 
     /// Track metadata was edited in place: duration/validity may change,

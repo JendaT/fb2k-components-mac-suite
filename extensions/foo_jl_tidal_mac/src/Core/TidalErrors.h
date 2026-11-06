@@ -31,6 +31,7 @@ typedef NS_ENUM(NSInteger, JLTidalErrorCode) {
     JLTidalErrorServerError = 203,
     JLTidalErrorTrackNotFound = 204,
     JLTidalErrorSubscriptionRequired = 205,
+    JLTidalErrorAccessDenied = 206,       // 403 that is NOT a subscription problem
 
     // Stream errors (3xx)
     JLTidalErrorStreamNotAvailable = 300,
@@ -38,6 +39,7 @@ typedef NS_ENUM(NSInteger, JLTidalErrorCode) {
     JLTidalErrorStreamExpired = 302,
     JLTidalErrorQualityNotAvailable = 303,
     JLTidalErrorManifestParseFailed = 304,
+    JLTidalErrorPreviewOnly = 305,
 
     // URL errors (4xx)
     JLTidalErrorInvalidURL = 400,
@@ -63,6 +65,20 @@ static inline NSError *JLTidalError(JLTidalErrorCode code, NSString * _Nullable 
 }
 
 // Helper to check if error is retryable
+/// A refresh failure the refresh token cannot recover from: the grant itself
+/// was rejected, so retrying posts the same dead token forever and only a new
+/// device pairing helps. Everything else (offline, 5xx, 429) is transient and
+/// must NOT cost the user their stored session.
+///
+/// The terminal set is the five codes TIDAL's own Auth.md names as logout
+/// triggers; anything unrecognised is treated as transient, because wrongly
+/// keeping a dead token costs a retry while wrongly wiping a live one costs a
+/// full re-pairing.
+static inline BOOL JLTidalErrorIsTerminalAuthFailure(NSError *error) {
+    return error.code == JLTidalErrorInvalidGrant ||
+           error.code == JLTidalErrorAuthorizationDenied;
+}
+
 static inline BOOL JLTidalErrorIsRetryable(NSError *error) {
     if (![error.domain isEqualToString:JLTidalErrorDomain]) {
         return NO;

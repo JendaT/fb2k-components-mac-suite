@@ -105,6 +105,14 @@ static const NSUInteger kMaxComponentLength = 180;
             [self sanitizeComponent:title]];
 }
 
++ (NSString *)albumFolderNameForArtist:(NSString *)artist
+                                  year:(NSString *)year
+                            albumTitle:(NSString *)title
+                         isCompilation:(BOOL)isCompilation {
+    return isCompilation ? [self compilationFolderNameForYear:year title:title]
+                         : [self releaseFolderNameForArtist:artist year:year title:title];
+}
+
 + (NSString *)albumPathForArtist:(NSString *)artist
                             year:(NSString *)year
                       albumTitle:(NSString *)title

@@ -28,6 +28,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// on a serial background queue. Safe to call repeatedly — batches append.
 - (void)saveTrackIDs:(NSArray<NSString *> *)trackIDs;
 
+/// Same, into a folder the user picked instead of the library layout: each
+/// album lands in `folder/Artist [YYYY] Title/`, with no genre collection or
+/// artist level and no genre prompt. Needs no library root.
+- (void)saveTrackIDs:(NSArray<NSString *> *)trackIDs toFolder:(NSString *)folder;
+
 /// Abandon queued/remaining work (called on component quit).
 - (void)shutdown;
 

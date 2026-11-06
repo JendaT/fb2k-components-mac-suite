@@ -8,136 +8,98 @@
 
 An interactive waveform display and seekbar for foobar2000 macOS.
 
+## Screenshots
+
+![Waveform Seekbar in the Layered style with Split channels, the hover readout and the loudness summary](../../docs/images/waveform-layered-split.png)
+
+![Waveform Seekbar in the Two-tone style (P31 green) with Split channels](../../docs/images/waveform-twotone-split.png)
+
+![Waveform Seekbar in the Glow style with Split channels](../../docs/images/waveform-glow-split.png)
+
+![Waveform Seekbar in the Heat style with Split channels](../../docs/images/waveform-heat-split.png)
+
+![Waveform Seekbar in the Classic Solid style](../../docs/images/waveform-classic-solid.png)
+
 ## Requirements
 
 - foobar2000 for Mac 2.x
-- macOS 11.0+ (Big Sur or later)
-- Xcode 12+ with Command Line Tools (for building from source)
+- macOS 12.0+ (Monterey or later)
+- Xcode 15+ with Command Line Tools (for building from source)
 - Ruby (for project generation)
 
 ## Quick Start
 
-### Build and Test Install
+### Build and Install
 
 ```bash
-# One-command build and install for testing
-./Scripts/test_install.sh
+# From this directory
+./Scripts/build.sh --install            # Run tests, build Release and install
+./Scripts/build.sh --clean --install    # Clean rebuild and install
+./Scripts/build.sh --regenerate --install  # After adding/removing source files
 
 # Restart foobar2000, then add the UI element
 ```
 
 ### From Binary
 
-1. Download `foo_jl_wave_seekbar.fb2k-component` from Releases
-2. Create folder: `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/`
-3. Copy `foo_jl_wave_seekbar.component` into that folder
-4. Restart foobar2000
+1. Download `foo_jl_wave_seekbar.fb2k-component` from [Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform)
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the file
+3. Restart foobar2000 when it asks
 
 ## Build Scripts
 
-All scripts are located in the `Scripts/` directory.
+All scripts are located in the `Scripts/` directory and share `shared/scripts/lib.sh`.
 
-### test_install.sh
+| Script | Purpose |
+|--------|---------|
+| `build.sh` | Run tests, then build (`--debug`, `--release`, `--clean`, `--regenerate`, `--install`) |
+| `run_tests.sh` | Compile and run the Core unit tests standalone |
+| `install.sh` | Install a pre-built component (`--config Debug`) |
+| `clean.sh` | Remove the build directory and the generated Xcode project |
+| `generate_xcode_project.rb` | Generate the Xcode project from `src/` |
 
-The primary script for development - performs a clean build and installs to foobar2000 for testing.
-
-```bash
-./Scripts/test_install.sh           # Clean build (Release) and install
-./Scripts/test_install.sh --debug   # Build Debug configuration
-./Scripts/test_install.sh --no-clean # Skip cleaning, faster rebuild
-./Scripts/test_install.sh --regenerate # Force regenerate Xcode project
-```
-
-### build.sh
-
-Build the component with various options.
-
-```bash
-./Scripts/build.sh                  # Build Release
-./Scripts/build.sh --debug          # Build Debug
-./Scripts/build.sh --clean          # Clean before building
-./Scripts/build.sh --regenerate     # Regenerate Xcode project first
-./Scripts/build.sh --install        # Build and install
-./Scripts/build.sh --clean --install # Full clean build and install
-```
-
-### install.sh
-
-Install a pre-built component to foobar2000.
-
-```bash
-./Scripts/install.sh                # Install Release build
-./Scripts/install.sh --config Debug # Install Debug build
-```
-
-### clean.sh
-
-Remove build artifacts.
-
-```bash
-./Scripts/clean.sh           # Clean build directory
-./Scripts/clean.sh --all     # Also remove generated Xcode project
-```
-
-### generate_xcode_project.rb
-
-Generate the Xcode project from source files.
-
-```bash
-ruby Scripts/generate_xcode_project.rb
-```
-
-This script:
-- Discovers all source files in `src/`
-- Configures SDK library linking
-- Sets up framework dependencies
-- Creates `foo_jl_wave_seekbar.xcodeproj`
-
-## Manual Build Commands
-
-If you prefer using xcodebuild directly:
-
-```bash
-# Generate project (required first time)
-ruby Scripts/generate_xcode_project.rb
-
-# Build Release
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Release build
-
-# Build Debug
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar -configuration Debug build
-
-# Clean
-xcodebuild -project foo_jl_wave_seekbar.xcodeproj -target foo_jl_wave_seekbar clean
-```
+Never call `xcodebuild` directly; `build.sh` keeps output in the local `build/` directory so `install.sh` copies the binary you just built.
 
 ## Usage
 
 ### Adding to Layout
 
-1. Right-click on the foobar2000 window
-2. Select "Add UI Element"
-3. Choose "Waveform Seekbar" from the list
+Open **View → Layout → Edit Layout...**, add a line with `waveform-seekbar` inside a splitter where you want the panel, and click **Apply**.
+
+Layout names: `waveform-seekbar` (also `Waveform Seekbar`, `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar`).
 
 ### Seeking
 
 - **Click** anywhere on the waveform to seek to that position
-- **Drag** to preview position before releasing
+- **Drag** to scrub; playback follows the mouse
+- The level scale beside the waveform does not seek
 
 ### Configuration
 
 Access settings in **Preferences > Display > Waveform Seekbar**
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Display Mode | Stereo (separate L/R) or Mono (combined) | Stereo |
-| Shade Played | Dim the portion already played | On |
-| Flip Display | Reverse waveform direction | Off |
-| Waveform Color | Color for the waveform peaks | Blue |
-| Played Color | Overlay color for played portion | Semi-transparent |
-| Background | Background color | Theme-dependent |
-| Cache Size | Maximum disk space for waveform cache | 2048 MB |
-| Cache Retention | Days to keep unused waveform data | 180 days |
+Settings sit on four cards, plus the cache. Keys and values carried over from before the redesign keep their meaning (`waveform_style` 0-2, `display_mode`, `shade_played`, `played_dimming`, `cursor_effect`, `bpm_sync`, `gradient_bands`, colours, cache, lock size):
+
+| Card | Setting | Description | Default |
+|------|---------|-------------|---------|
+| Appearance | Style | Layered (peak envelope around a momentary loudness body tinted by the spectral balance, on a dBFS axis, L and R in their own lanes); Simple: Two-tone, Glow, Heat (split L/R lanes on black, linear); Classic: Solid, Heat map, Rainbow (the original styles) | Simple — Two-tone |
+| Appearance | Body tint | Layered: the body darker where bass dominates, lighter where highs do: Off, Subtle, Strong | Off |
+| Appearance | Gradient bands | Classic Solid: steps from the centre out (0 = flat, up to 32) | 8 |
+| Appearance | Channels | Stereo (L / R apart), Mono (mixed into one) or Split (L up, R down around one centre line) | Stereo |
+| Appearance | Colours | Theme preset (the Spectrum Analyzer themes) and its light / dark waveform and background colours; editing a colour switches to Custom | P4 white |
+| Appearance | Glass background | Translucent blur instead of the background colour | Off |
+| Scales | Time ruler below the waveform | Ticks and m:ss labels; off gives the waveform full height | Off |
+| Scales | Level scale on the right | dB labels in a gutter; off gives the waveform full width | On |
+| Overlays | Text size | Readout, summary, cursor time and scale labels: 10, 12, 14 or 16 pt | 14 pt |
+| Overlays | Readout on hover | Time, LUFS-S, peak, crest, correlation and Lo/Mid/Hi split under the mouse; click seeks. Follows the mouse, or sits top right, or bottom right above the summary | On, follows the mouse |
+| Overlays | Elapsed time on the cursor | m:ss chip beside the playback cursor | Off |
+| Overlays | Loudness summary | Integrated, LRA, true peak, PLR, clip count: Off, On hover, Always | On hover |
+| Overlays | Clip markers | Red ticks on the top edge where the audio hits full scale (0 dBFS) for 3+ samples in a row; Brightness 20-100 % | On, 67 % |
+| Played part | Shade played portion | Dim the part already played with the background colour | On |
+| Played part | Dimming | How strongly it is dimmed (0-100 %) | 25 % |
+| Played part | Cursor effect | None, Gradient, Glow, Scanline, Pulse, Trail, Shimmer at the cursor | None |
+| Played part | Sync animations to track BPM | Animated effects follow the BPM tag | Off |
+| Cache | Max size / Keep for | Disk space and days to keep unused analysis | 2048 MB, 180 days |
 
 ## Project Structure
 
@@ -145,8 +107,15 @@ Access settings in **Preferences > Display > Waveform Seekbar**
 foo_jl_wave_seekbar_mac/
 ├── src/
 │   ├── Core/                        # Platform-agnostic logic
-│   │   ├── WaveformData.h/cpp       # Peak data structure (2048 buckets)
-│   │   ├── WaveformScanner.h/cpp    # Audio scanning with vDSP
+│   │   ├── WaveformData.h/cpp       # Cached per-track analysis (blocks, hops, summary)
+│   │   ├── TrackAnalyzer.h/cpp      # Analysis pass: loudness, LRA, true peak, bands, clips
+│   │   ├── ColumnAggregator.h/cpp   # Per-column values for a view width
+│   │   ├── LayeredShape.h           # Layered style geometry
+│   │   ├── SimpleShape.h            # Simple styles' lane geometry
+│   │   ├── ThemeTokens.h/cpp        # OKLCH colour tokens
+│   │   ├── OverlayText.h            # Overlay / scale formatting
+│   │   ├── WaveformThemes.h         # Theme presets
+│   │   ├── WaveformScanner.h/cpp    # Async decode through the analyser
 │   │   ├── WaveformCache.h/cpp      # SQLite persistence (WAL mode)
 │   │   ├── WaveformService.h/cpp    # Coordination layer
 │   │   ├── WaveformConfig.h/cpp     # Configuration (cfg_var)
@@ -163,9 +132,11 @@ foo_jl_wave_seekbar_mac/
 │   └── Prefix.pch                   # Precompiled header
 ├── Resources/
 │   └── Info.plist                   # Bundle metadata
+├── Tests/                           # Standalone unit tests for src/Core
 ├── Scripts/
 │   ├── generate_xcode_project.rb    # Project generator
-│   ├── build.sh                     # Build script
+│   ├── build.sh                     # Build script (runs the unit tests first)
+│   ├── run_tests.sh                 # Unit tests
 │   ├── install.sh                   # Install script
 │   ├── clean.sh                     # Clean script
 │   └── test_install.sh              # Build + install for testing
@@ -176,22 +147,21 @@ foo_jl_wave_seekbar_mac/
 
 ## Technical Details
 
-### Waveform Data
+### Analysis
 
-- Fixed resolution of 2048 buckets per track
-- Stores min/max/RMS values per channel (up to stereo)
-- Compressed with zlib for storage (~10-15KB per stereo track)
-- Little-endian serialization for portability
+One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks), cached:
+- Fine blocks of ~900-1000 frames (fewer, larger blocks past ~5.5 min): sample min/max and RMS per channel
+- 100 ms hops: K-weighted (BS.1770) power, plain power and L*R per channel, Lo/Mid/Hi band power (250 Hz / 2 kHz Linkwitz-Riley, as the Vectorscope)
+- Clip runs: 3+ consecutive samples at |x| >= 0.9999
+- Summary: integrated loudness (BS.1770-4 gating), LRA (EBU Tech 3342), true peak (4x oversampled), PLR, clip count
+- Loudness, true peak and clips take every channel (surround weighted 1.41, LFE left out); the first two are drawn
+- Per-column values are aggregated from the blocks at draw time, so a resize never re-decodes
+- Stored zlib-compressed with levels in 0.01 dB steps and samples in 16 bits up to +6 dBFS (~100-300 KB per track)
 
 ### Scanning Performance
 
-| Track Duration | Typical Scan Time |
-|----------------|-------------------|
-| 3 min (FLAC)   | ~0.5-1.0 sec |
-| 10 min (FLAC)  | ~1.5-2.5 sec |
-| 3 min (MP3)    | ~0.3-0.5 sec |
-
-- Uses Apple Accelerate framework (vDSP) for SIMD optimization
+- Local tracks longer than about a minute are analysed in up to 64 segments in parallel on the foobar2000 CPU thread pool, one decoder per worker; each segment starts 1 s early so the filters settle, and segments join into exactly one sequential pass (unit-tested)
+- Remote, non-seekable and slow-seeking inputs, and any segment failure, use one sequential pass (about 0.9 s of analysis per 10 minutes of stereo on top of decoding)
 - Background scanning with GCD
 - Cancellation support for track changes
 
@@ -205,10 +175,11 @@ foo_jl_wave_seekbar_mac/
 
 ### Rendering
 
-- Core Graphics (Quartz 2D) for native performance
-- Layer-backed view for smooth animation
-- 60 FPS timer for position updates
-- Retina display support via `backingScaleFactor`
+- The waveform's layers are cached as greyscale masks per track, pixel size and style family, then coloured into one composite per theme and style; a theme change recolours without re-analysis
+- Frames draw the composite, dim the played part with an overlay of the background shaped by the cursor effect, then the cursor and overlays
+- One column per screen pixel (merged blocks on narrow views, interpolated on wide ones)
+- Deep / hot / guide colours derive from the theme accent in OKLCH
+- Unit tests (`Scripts/run_tests.sh`, run by `build.sh`) cover the analysis, column aggregation, shapes, colour tokens and overlay formatting
 
 ## Troubleshooting
 
@@ -216,7 +187,7 @@ foo_jl_wave_seekbar_mac/
 
 1. Check Preferences > Components for error messages
 2. Verify the component is in `~/Library/foobar2000-v2/user-components/foo_jl_wave_seekbar/foo_jl_wave_seekbar.component`
-3. Try rebuilding with `./Scripts/test_install.sh --regenerate`
+3. Try rebuilding with `./Scripts/build.sh --regenerate --install`
 
 ### Waveform not displaying
 
@@ -226,8 +197,8 @@ foo_jl_wave_seekbar_mac/
 
 ### Build errors
 
-1. Ensure SDK is built: `cd ../SDK-2025-03-07 && xcodebuild`
-2. Regenerate project: `./Scripts/clean.sh --all && ./Scripts/test_install.sh`
+1. Ensure the SDK is built (see [Building from Source](../../README.md#building-from-source) in the main README)
+2. Regenerate the project: `./Scripts/clean.sh && ./Scripts/build.sh --install`
 
 ## Credits
 
@@ -240,12 +211,4 @@ MIT License - see LICENSE file
 
 ## Changelog
 
-### 1.0.0 (2024)
-
-- Initial release
-- Waveform display with stereo/mono modes
-- Interactive click-to-seek
-- SQLite caching with WAL mode
-- Dark mode support
-- Full preferences page with color customization
-- Universal binary (arm64 + x86_64)
+See [CHANGELOG.md](CHANGELOG.md).

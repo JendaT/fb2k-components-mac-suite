@@ -1,36 +1,37 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-10-02
 
 ### Added
 
-- **Multi-row drag reorder**: dragging a multi-row selection now moves all selected rows as a contiguous block (previously only the first row moved, silently); `QueueReorderPlanner` generalized to multi-source moves with an exhaustive test sweep
-
-### Fixed (review follow-ups)
-
-- **Reorder debounce**: `isReorderingInProgress` was checked in a deferred block that always ran after the flag was cleared, so it never suppressed anything and every reorder triggered a redundant second full reload; the check now runs synchronously when the SDK callback arrives on the main thread
-- **Reorder failure safety**: if an SDK call throws mid flush-and-readd, the flag is reset and the view reloaded instead of freezing updates permanently; queue items whose playlist reference went stale are re-added as orphans instead of pointing at wrong tracks
-- **Drop validation**: SimPlaylist drops now reject payloads referencing a nonexistent playlist (forged pasteboard data or playlist deleted mid-drag)
-
-### Changed
-
-- **Testable Core extraction**: Pure logic moved into SDK-free Core units with standalone unit tests that gate every build (same pattern as SimPlaylist)
-  - `QueueReorderPlanner`: drag-reorder move planning extracted from QueueManagerController (also removes a leftover dead loop in the drop handler)
-  - `QueueFormatting`: duration and status bar text formatting extracted from QueueOperations and the controller
-  - `QueueDropParser`: SimPlaylist drag payload decoding/validation extracted from the controller; malformed payloads are now rejected up front
+- **Stop After Queue**: Stops playback when the last queued track finishes; toggle from Playback menu, context menu or preferences (off by default).
+- **Stop only once**: Optional mode that turns Stop After Queue off after it stops playback.
+- **Queue restore**: Queue is saved on quit and re-added on launch (on by default).
+- **Context menu**: Right-click in Queue Manager for the Stop After Queue toggles.
+- **Multi-row drag reorder**: Dragging several selected rows moves them together in order; previously only the first row moved.
 
 ### Fixed
 
-- **Build**: Component failed to compile after shared UIStyles.h dropped `selectedBackgroundColorForGlass()`; QueueRowView now uses `selectedBackgroundColor()` like SimPlaylist
-- **Code review cleanups**: duration formatting now rejects NaN/infinite/overflow track lengths (was undefined behavior); title-format error handling deduplicated into `queue_ops::formatItem`; orphan sentinel uses named constants; selection recoloring only visits instantiated rows; queue callback dispatch skips work when no views are registered; dead `setupKeyboardHandling` removed; magic numbers named
+- **Reorder flicker**: Each reorder no longer rebuilds the view and resets the selection twice.
+- **Frozen view**: View no longer stops updating after a failed reorder.
+- **Reorder after playlist edits**: Tracks whose source playlist changed are kept instead of lost.
+- **Malformed drops**: Drops referencing a nonexistent playlist are rejected.
+- **Duration display**: Malformed track lengths show `--:--` instead of garbage.
+- **Build**: Compiles again after shared `UIStyles.h` dropped `selectedBackgroundColorForGlass()`.
 
-- **Column metadata**: `queue_config::kAvailableColumns` is now the single source of truth for column identifiers, titles, widths, and title formats; controller and item wrapper read from it instead of hardcoding copies
-- **Component identity**: placeholder GUIDs replaced with real UUIDs (saved layouts re-match the element by name), component URL corrected, description no longer advertises unimplemented configurable columns
-- **Removed**: dead `QueueHeaderView` class (controller uses native `NSTableHeaderView` since 1.1.2); queue-rebuild and playlist lookups moved from the controller into `queue_ops`
+### Changed
+
+- **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **Column metadata**: `queue_config::kAvailableColumns` is the single source of truth.
+- **Dead code**: Unused `QueueHeaderView` removed from the binary.
+- **Component description**: No longer advertises configurable columns, which are not implemented yet.
 
 ### Technical
 
-- New `Tests/` suite (3300+ checks) compiled standalone with clang, run by `Scripts/run_tests.sh` as a gating phase in `Scripts/build.sh`
+- **SDK-free Core units**: `QueueReorderPlanner`, `QueueFormatting`, `QueueDropParser`, `QueuePersistence` and `StopAfterQueuePolicy` compile and test standalone.
+- **Test suite**: 3300+ checks run by `Scripts/run_tests.sh` gate every build.
+- **queue_ops**: Queue rebuild and playlist lookups moved out of the controller.
+- **Frozen GUIDs**: Component and preferences GUIDs documented as frozen; fb2k resolves saved layouts by GUID.
 
 ## [1.1.2] - 2026-02-09
 

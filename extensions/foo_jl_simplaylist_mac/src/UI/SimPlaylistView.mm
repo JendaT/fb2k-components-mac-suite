@@ -9,6 +9,8 @@
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ColumnDefinition.h"
 #import "../Core/ConfigHelper.h"
+#include "../Core/GroupPadding.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/PlaylistLayoutModel.h"
 #import "../Core/PlaylistSelectionModel.h"
 #import "../Core/DecorationStore.h"
@@ -17,9 +19,38 @@
 #include <unistd.h>
 #include <vector>
 
-NSString *const SimPlaylistSettingsChangedNotification = @"SimPlaylistSettingsChanged";
 NSPasteboardType const SimPlaylistPasteboardType = @"com.foobar2000.simplaylist.rows";
 NSPasteboardType const TidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
+// foobar2000 native drag types (album list): one [path, subsong] pair, or an array of them.
+static NSPasteboardType const Fb2kLocationPasteboardType = @"com.foobar2000.location";
+static NSPasteboardType const Fb2kLocationsPasteboardType = @"com.foobar2000.locations";
+
+static void appendFb2kLocation(id entry, NSMutableArray<NSString *> *paths, NSMutableArray<NSNumber *> *subsongs) {
+    if (![entry isKindOfClass:[NSArray class]] || [(NSArray *)entry count] < 2) return;
+    id path = ((NSArray *)entry)[0];
+    id subsong = ((NSArray *)entry)[1];
+    if (![path isKindOfClass:[NSString class]] || [(NSString *)path length] == 0 ||
+        ![subsong isKindOfClass:[NSNumber class]]) return;
+    [paths addObject:path];
+    [subsongs addObject:subsong];
+}
+
+static BOOL readFb2kLocations(NSPasteboard *pb, NSMutableArray<NSString *> *paths, NSMutableArray<NSNumber *> *subsongs) {
+    BOOL multiple = [pb.types containsObject:Fb2kLocationsPasteboardType];
+    NSPasteboardType type = multiple ? Fb2kLocationsPasteboardType : Fb2kLocationPasteboardType;
+    NSData *data = [pb dataForType:type];
+    id plist = data ? [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable
+                                                                 format:nil error:nil] : nil;
+    if (multiple) {
+        if (![plist isKindOfClass:[NSArray class]]) return NO;
+        for (id entry in (NSArray *)plist) {
+            appendFb2kLocation(entry, paths, subsongs);
+        }
+    } else {
+        appendFb2kLocation(plist, paths, subsongs);
+    }
+    return paths.count > 0;
+}
 
 // Decoration RGBA (0xRRGGBBAA from jl_decorator_api) to NSColor; 0 = nil.
 static NSColor *colorFromRGBA(uint32_t rgba) {
@@ -201,6 +232,9 @@ static NSString *formatGroupDuration(double seconds) {
     _groupHeaderSpacing = simplaylist_config::getConfigInt(
         simplaylist_config::kGroupHeaderSpacing,
         simplaylist_config::kDefaultGroupHeaderSpacing);
+    _inlineAlbumSpacing = simplaylist_config::getConfigInt(
+        simplaylist_config::kInlineAlbumSpacing,
+        simplaylist_config::kDefaultInlineAlbumSpacing);
 
     [self updateHeaderHeightForSpacing];
 
@@ -220,22 +254,27 @@ static NSString *formatGroupDuration(double seconds) {
     [self registerForDraggedTypes:@[
         SimPlaylistPasteboardType,
         TidalBrowserPasteboardType,
+        Fb2kLocationPasteboardType,
+        Fb2kLocationsPasteboardType,
         NSPasteboardTypeFileURL,
         NSPasteboardTypeURL,    // Web URLs (e.g., from Cloud Browser)
         NSPasteboardTypeString  // Plain text URLs as fallback
     ]];
 
-    // Register for settings changes
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleSettingsChanged:)
-                                                 name:SimPlaylistSettingsChangedNotification
-                                               object:nil];
-
-    // Register for lightweight redraw requests
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleRedrawNeeded:)
-                                                 name:@"SimPlaylistRedrawNeeded"
-                                               object:nil];
+    // Deliberately NOT a notification observer. The view used to register for
+    // SettingsChanged/RedrawNeeded itself, alongside the controller, and the
+    // controller's handler then computed group padding from rowHeight and
+    // headerDisplayStyle — two values this view owns and re-reads. That only
+    // worked because the view is constructed (and so registered) before the
+    // controller, and NSNotificationCenter happens to deliver in registration
+    // order: undocumented, unasserted, and load-bearing for exactly the Display
+    // Size and Header Style preferences that exist to change geometry.
+    //
+    // The controller owns this view and is its only constructor, so it now
+    // calls -reloadSettings explicitly at the top of both handlers. The
+    // ordering is a program statement rather than a delivery-order accident,
+    // and -reloadSettings (which ends in -reloadData) runs once per change
+    // instead of twice.
 }
 
 // The draw path queries two optional delegate methods per row / per group, so
@@ -299,16 +338,6 @@ static NSString *formatGroupDuration(double seconds) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)handleSettingsChanged:(NSNotification *)notification {
-    [self reloadSettings];
-}
-
-- (void)handleRedrawNeeded:(NSNotification *)notification {
-    // Lightweight redraw - just reload visual settings and redraw
-    [self reloadSettings];
-    [self setNeedsDisplay:YES];
-}
-
 - (void)reloadSettings {
     using namespace simplaylist_config;
     _displaySize = getConfigInt(kDisplaySize, kDefaultDisplaySize);
@@ -325,6 +354,7 @@ static NSString *formatGroupDuration(double seconds) {
     _showGroupDuration = getConfigBool(kShowGroupDuration, kDefaultShowGroupDuration);
     _queueDisplayStyle = getConfigInt(kQueueDisplayStyle, kDefaultQueueDisplayStyle);
     _groupHeaderSpacing = getConfigInt(kGroupHeaderSpacing, kDefaultGroupHeaderSpacing);
+    _inlineAlbumSpacing = getConfigInt(kInlineAlbumSpacing, kDefaultInlineAlbumSpacing);
     _debugRendering = getConfigBool(kDebugRendering, kDefaultDebugRendering);
 
     [self updateHeaderHeightForSpacing];
@@ -333,8 +363,14 @@ static NSString *formatGroupDuration(double seconds) {
     [self reloadData];
 }
 
-// Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12
+// Header height based on spacing setting: Compact (0) = row height, Normal (1) = +6, Larger (2) = +12.
+// The Inline header is a plain row: its title sits right above the tracks, and
+// the space between albums comes from Album Spacing instead (GroupPadding.h).
 - (void)updateHeaderHeightForSpacing {
+    if (_layout.headerDisplayStyle == 2) {
+        _layout.headerHeight = _layout.rowHeight;
+        return;
+    }
     switch (_groupHeaderSpacing) {
         case 0:  _layout.headerHeight = _layout.rowHeight; break;      // Compact - same as track rows
         case 2:  _layout.headerHeight = _layout.rowHeight + 12; break; // Larger - generous padding
@@ -433,7 +469,13 @@ static NSString *formatGroupDuration(double seconds) {
     return [_layout rowCount];
 }
 
-#pragma mark - Row Mapping (O(log g) using binary search) — forwards to PlaylistLayoutModel
+// Row mapping — forwards to PlaylistLayoutModel, which precomputes each group's
+// header row and binary-searches the group and subgroup arrays for the rest.
+// The banner here used to claim a flat O(log g), which was wrong: before the
+// header rows were precomputed these queries nested up to four searches. See
+// the note on _groupHeaderRows in PlaylistLayoutModel.mm, and the measured
+// probe counts in Tests/RowMappingBudgetTests.mm.
+#pragma mark - Row Mapping
 
 - (NSInteger)groupIndexForRow:(NSInteger)row {
     return [_layout groupIndexForRow:row];
@@ -756,9 +798,9 @@ static NSString *formatGroupDuration(double seconds) {
         lineStartX = textX + textSize.width + 12;
         lineY = rect.origin.y + rect.size.height / 2;
     } else if (_layout.headerDisplayStyle == 2) {
-        // Style 2 (Inline): text at top of row
+        // Style 2 (Inline): a plain row, text centred like the tracks below it
         textX = _groupColumnWidth + _decorationGutterWidth + 8;
-        textY = rect.origin.y + 2;
+        textY = rect.origin.y + (rect.size.height - textSize.height) / 2;
         lineStartX = lineEndX + 1;  // No line for style 2
         lineY = 0;
     } else {
@@ -1200,15 +1242,22 @@ static NSParagraphStyle *paragraphStyleForAlignment(ColumnAlignment alignment) {
         // Style 3: No header row, album art at group top
         CGFloat headerOffset = (_layout.headerDisplayStyle == 0 || _layout.headerDisplayStyle == 1) ? _layout.headerHeight : 0;
 
+        // Style 2 sizes the art to whole rows (GroupPadding.h), so it ends the
+        // same distance above the next album whatever the configured size.
+        const BOOL inlineStyle = (_layout.headerDisplayStyle == 2);
+        CGFloat inset = inlineStyle ? simplaylist::kInlineArtInset : padding;
+        CGFloat configuredSize = inlineStyle ? simplaylist::inlineArtSize(_albumArtSize, _layout.rowHeight)
+                                             : _albumArtSize;
+
         // Calculate available height for album art (below header if present, minus padding)
-        CGFloat availableHeight = groupHeight - headerOffset - padding * 2;
+        CGFloat availableHeight = groupHeight - headerOffset - inset * 2;
 
         // Use configured size, bounded only by available height
-        CGFloat artSize = MIN(_albumArtSize, availableHeight);
+        CGFloat artSize = MIN(configuredSize, availableHeight);
         artSize = MAX(artSize, 32);  // Minimum 32px
 
         // Album art position - below header row if present, otherwise at group top
-        CGFloat artY = groupTop + headerOffset + padding;
+        CGFloat artY = groupTop + headerOffset + inset;
         CGFloat artX = (_groupColumnWidth - artSize) / 2;  // Center horizontally
         if (artX < padding) artX = padding;
         NSRect artRect = NSMakeRect(artX, artY, artSize, artSize);
@@ -1895,7 +1944,9 @@ static BOOL isSupportedURLString(NSString *str) {
         // Option key = copy, otherwise move
         BOOL optionKeyHeld = ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0;
         return optionKeyHeld ? NSDragOperationCopy : NSDragOperationMove;
-    } else if ([pb.types containsObject:NSPasteboardTypeFileURL]) {
+    } else if ([pb.types containsObject:Fb2kLocationsPasteboardType] ||
+               [pb.types containsObject:Fb2kLocationPasteboardType] ||
+               [pb.types containsObject:NSPasteboardTypeFileURL]) {
         return NSDragOperationCopy;
     } else if ([pb.types containsObject:NSPasteboardTypeURL]) {
         // Web URLs (e.g., from Cloud Browser)
@@ -2169,6 +2220,23 @@ static NSDictionary *validatedDragData(id unarchived) {
             return YES;
         }
         // Fall through to other handlers if Tidal data couldn't be read
+    }
+
+    // Preferred over the file URL: paths are already in fb2k form.
+    if ([pb.types containsObject:Fb2kLocationsPasteboardType] ||
+        [pb.types containsObject:Fb2kLocationPasteboardType]) {
+        NSMutableArray<NSString *> *paths = [NSMutableArray array];
+        NSMutableArray<NSNumber *> *subsongs = [NSMutableArray array];
+        if (readFb2kLocations(pb, paths, subsongs)) {
+            FB2K_console_formatter() << "[SimPlaylist] fb2k locations drop: " << paths.count << " tracks";
+            if ([_delegate respondsToSelector:@selector(playlistView:didReceiveDroppedLocations:subsongs:atRow:)]) {
+                [_delegate playlistView:self didReceiveDroppedLocations:paths subsongs:subsongs atRow:_dropTargetRow];
+            }
+            _dropTargetRow = -1;
+            [self setNeedsDisplay:YES];
+            return YES;
+        }
+        FB2K_console_formatter() << "[SimPlaylist] Ignoring fb2k locations drop with unexpected shape";
     }
 
     // File drop from Finder or media library

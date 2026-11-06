@@ -103,10 +103,13 @@ src/
     QueueReorderPlanner.h/cpp  # Drag-reorder move planning (SDK-free, tested)
     QueueFormatting.h/cpp    # Duration/status text formatting (SDK-free, tested)
     QueueDropParser.h/mm     # SimPlaylist drag payload decoding (Foundation-only, tested)
+    QueuePersistence.h/cpp   # Saved-queue serialization for restore on restart (SDK-free, tested)
+    StopAfterQueuePolicy.h/cpp  # Stop After Queue decisions (SDK-free, tested)
   Integration/
     Main.mm                  # UI element registration
     QueueCallbackManager.h/mm  # Singleton callback dispatcher
-    QueueCallback.mm         # playback_queue_callback service
+    QueueCallback.mm         # playback_queue_callback service, initquit (queue save/restore)
+    StopAfterQueue.h/mm      # Stop After Queue SDK glue, play_callback, Playback menu command
   UI/
     QueueManagerController.h/mm  # Main NSViewController
     QueueItemWrapper.h/mm    # Safe wrapper for t_playback_queue_item

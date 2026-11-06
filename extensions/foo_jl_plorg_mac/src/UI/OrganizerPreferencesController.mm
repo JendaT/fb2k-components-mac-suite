@@ -7,6 +7,7 @@
 #import "../Core/TreeModel.h"
 #import "../Core/ConfigHelper.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 @interface OrganizerPreferencesController ()
 @property (nonatomic, strong) NSButton *singleClickActivateCheckbox;
@@ -69,6 +70,7 @@
     // Title (non-bold, matches foobar2000 style)
     NSTextField *title = JLCreatePreferencesTitle(@"Playlist Organizer Settings");
     addRow(title, 28);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // Behavior section
     NSTextField *behaviorLabel = [NSTextField labelWithString:@"Behavior:"];
@@ -228,7 +230,7 @@
     BOOL autoVolumeSync = plorg_config::getConfigBool(plorg_config::kAutoVolumeSync, plorg_config::kDefaultAutoVolumeSync);
     BOOL autoRestartAfterSync = plorg_config::getConfigBool(plorg_config::kAutoRestartAfterVolumeSync, plorg_config::kDefaultAutoRestartAfterVolumeSync);
     BOOL volumeSelfHeal = plorg_config::getConfigBool(plorg_config::kVolumeSelfHeal, plorg_config::kDefaultVolumeSelfHeal);
-    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, "%node_name%");
+    NSString *format = plorg_config::getConfigString(plorg_config::kNodeFormat, plorg_config::kDefaultNodeFormat);
 
     self.singleClickActivateCheckbox.state = singleClick ? NSControlStateValueOn : NSControlStateValueOff;
     self.doubleClickPlayCheckbox.state = doubleClickPlay ? NSControlStateValueOn : NSControlStateValueOff;
@@ -294,7 +296,7 @@
     self.autoVolumeSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoVolumeSync);
     self.autoRestartAfterSyncCheckbox.state = stateFor(plorg_config::kDefaultAutoRestartAfterVolumeSync);
     self.volumeSelfHealCheckbox.state = stateFor(plorg_config::kDefaultVolumeSelfHeal);
-    self.nodeFormatField.stringValue = @"%node_name%";
+    self.nodeFormatField.stringValue = @(plorg_config::kDefaultNodeFormat);
     [self saveSettings];
 
     // Handle path encoding separately (triggers migration if changing)
@@ -351,6 +353,10 @@
 
     // Notify that settings changed
     [[NSNotificationCenter defaultCenter] postNotificationName:@"PlorgSettingsChanged" object:nil];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

@@ -15,9 +15,11 @@
 
 // Always-on diagnostic when DASH is enabled — gives us ground truth XML on
 // the first user report. Truncated to 4 KB to keep log readable.
-static void dumpRawManifestIfNeeded(JLTidalPlaybackInfo *info) {
+static void dumpRawManifestIfNeeded(JLTidalPlaybackInfo *info, BOOL dashEnabled) {
     NSString *rawMPD = info.rawDASHManifest;
-    if (rawMPD && tidal::TidalConfig::isDASHEnabled()) {
+    // Gated on debug logging as well as DASH: this dumped 4 KB of XML to the
+    // console on every single resolve.
+    if (rawMPD && dashEnabled && tidal::isDebugLoggingCached()) {
         NSString *dump = rawMPD.length > 4096
             ? [rawMPD substringToIndex:4096]
             : rawMPD;
@@ -71,10 +73,39 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
 
 - (void)resolveStreamForTrackID:(NSString *)trackID
                      completion:(JLTidalStreamResolverCompletion)completion {
-    // Check cache first
-    JLTidalPlaybackInfo *cached = tidal::StreamCache::shared().get(std::string([trackID UTF8String]));
+    [self resolveStreamForTrackID:trackID
+                          quality:tidal::TidalConfig::getPreferredQuality()
+                       completion:completion];
+}
+
+- (void)resolveStreamForTrackID:(NSString *)trackID
+                        quality:(JLTidalQuality)quality
+                     completion:(JLTidalStreamResolverCompletion)completion {
+    // The cache is keyed by the quality that was ASKED for, not the one the
+    // cascade landed on: a HI_RES_LOSSLESS request that fell back to LOSSLESS
+    // must hit next time it is asked for HI_RES_LOSSLESS, or it re-runs the
+    // whole cascade on every play.
+    std::string trackKey([trackID UTF8String]);
+    JLTidalPlaybackInfo *cached = tidal::StreamCache::shared().get(trackKey, quality);
     if (cached) {
         completion(cached, nil);
+        return;
+    }
+
+    // Availability is known before any stream request when the track came from
+    // a list response. A withdrawn or region-locked track otherwise costs a
+    // 404, or five playbackinfo requests down the cascade for a 403, every time
+    // it is played AND again on every prefetch.
+    __block JLTidalTrack *known = nil;
+    dispatch_sync(self.metadataQueue, ^{
+        known = self.metadataCache[trackID];
+    });
+    if (known && (!known.allowStreaming || !known.streamReady)) {
+        tidal::logInfo([[NSString stringWithFormat:
+                         @"Track %@ is not streamable (allowStreaming=%d streamReady=%d)",
+                         trackID, known.allowStreaming, known.streamReady] UTF8String]);
+        completion(nil, JLTidalError(JLTidalErrorStreamNotAvailable,
+                                     @"Track is not available for streaming"));
         return;
     }
 
@@ -85,11 +116,14 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             return;
         }
 
-        // Get preferred quality and start resolution with fallback
-        JLTidalQuality preferredQuality = tidal::TidalConfig::getPreferredQuality();
         [self resolveWithFallbackForTrackID:trackID
-                           startingQuality:preferredQuality
-                                completion:completion];
+                           startingQuality:quality
+                                completion:^(JLTidalPlaybackInfo *info, NSError *error) {
+            if (info) {
+                tidal::StreamCache::shared().set(trackKey, quality, info);
+            }
+            completion(info, error);
+        }];
     }];
 }
 
@@ -98,6 +132,11 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
                           completion:(JLTidalStreamResolverCompletion)completion {
     tidal::logDebug([[NSString stringWithFormat:@"Trying quality %@ for track %@",
                       JLTidalQualityToString(quality), trackID] UTF8String]);
+
+    // Snapshot config BEFORE the request. The completion runs on the URL
+    // session's queue and could land after fb2k has torn down configStore,
+    // whose accessor bug-checks rather than throws.
+    BOOL dashEnabled = tidal::TidalConfig::isDASHEnabled();
 
     [[JLTidalAPI shared] getPlaybackInfoForTrackID:trackID
                                            quality:quality
@@ -125,18 +164,23 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
         JLTidalPlaybackInfo *info = [[JLTidalPlaybackInfo alloc] initWithDictionary:json
                                                                             trackID:trackID
                                                                     requestedQuality:quality];
-        dumpRawManifestIfNeeded(info);
+        dumpRawManifestIfNeeded(info, dashEnabled);
 
         JLTidalResolveDecision *decision =
             [JLTidalStreamResolutionPolicy decisionForPlaybackWithDirectURL:(info.streamURL != nil)
                                                            dashSegmentCount:info.dashSegmentCount
                                                           dashMediaTemplate:info.dashMediaTemplate
-                                                                dashEnabled:tidal::TidalConfig::isDASHEnabled()
+                                                                dashEnabled:dashEnabled
                                                                drmProtected:info.isDRMProtected
+                                                                previewOnly:info.isPreviewOnly
+                                                              previewReason:info.previewReason
                                                                     quality:quality];
 
         if (decision.action != JLTidalResolveActionAccept) {
-            if (decision.failureCode == JLTidalErrorDRMProtected) {
+            if (decision.failureCode == JLTidalErrorPreviewOnly) {
+                tidal::logError([[NSString stringWithFormat:@"Track %@: %@",
+                                  trackID, decision.failureMessage] UTF8String]);
+            } else if (decision.failureCode == JLTidalErrorDRMProtected) {
                 tidal::logInfo([[NSString stringWithFormat:@"Quality %@ is DRM-protected for track %@; falling back",
                                  JLTidalQualityToString(quality), trackID] UTF8String]);
             } else {
@@ -154,17 +198,18 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             return;
         }
 
-        // Cache and return
-        tidal::StreamCache::shared().set(std::string([trackID UTF8String]), info);
-
-        NSString *requestedStr = JLTidalQualityToString(quality);
-        NSString *gotStr = info.qualityDescription;
-        if ([requestedStr isEqualToString:gotStr] || [gotStr containsString:requestedStr]) {
+        // Tidal answers a request for a tier a track does not carry with HIGH
+        // rather than the track's real maximum, and asking lower does not help
+        // (verified: an explicit LOSSLESS request for such a track still
+        // returns HIGH). So report what we got and move on — no extra requests.
+        if (info.quality >= quality) {
             tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@ at %@",
-                             trackID, gotStr] UTF8String]);
+                             trackID, info.qualityDescription] UTF8String]);
         } else {
-            tidal::logInfo([[NSString stringWithFormat:@"Resolved track %@: requested %@, got %@ (silent downgrade by API)",
-                             trackID, requestedStr, gotStr] UTF8String]);
+            tidal::logInfo([[NSString stringWithFormat:
+                             @"Resolved track %@ at %@ (%@ not available for this track)",
+                             trackID, info.qualityDescription,
+                             JLTidalQualityToString(quality)] UTF8String]);
         }
 
         completion(info, nil);
@@ -172,7 +217,7 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
 }
 
 - (void)invalidateCacheForTrackID:(NSString *)trackID {
-    tidal::StreamCache::shared().remove(std::string([trackID UTF8String]));
+    tidal::StreamCache::shared().removeTrack(std::string([trackID UTF8String]));
 }
 
 #pragma mark - Metadata
@@ -249,6 +294,23 @@ static const NSUInteger kMaxMetadataCacheSize = 500;
             completion(track, nil);
         }];
     }];
+}
+
+- (void)seedMetadataForTracks:(NSArray<JLTidalTrack *> *)tracks {
+    if (tracks.count == 0) return;
+    dispatch_async(self.metadataQueue, ^{
+        for (JLTidalTrack *track in tracks) {
+            if (track.trackID.length == 0) continue;
+            // Never overwrite: a cached entry may have come from the richer
+            // per-track endpoint, and a list entry carries less.
+            if (self.metadataCache[track.trackID]) continue;
+            if (self.metadataCache.count >= kMaxMetadataCacheSize) break;
+            self.metadataCache[track.trackID] = track;
+        }
+        tidal::logDebug([[NSString stringWithFormat:@"Seeded metadata cache with %lu track(s), now %lu",
+                          (unsigned long)tracks.count,
+                          (unsigned long)self.metadataCache.count] UTF8String]);
+    });
 }
 
 @end

@@ -15,11 +15,18 @@ namespace queue_config {
 static const char* const kKeyVisibleColumns = "visible_columns";
 static const char* const kKeyColumnWidthsJson = "column_widths_json";
 static const char* const kKeyTransparentBackground = "transparent_background";
+static const char* const kKeyPersistQueue = "persist_queue";
+static const char* const kKeySavedQueue = "saved_queue";
+static const char* const kKeyStopAfterQueue = "stop_after_queue";
+static const char* const kKeyStopAfterQueueOnce = "stop_after_queue_once";
 
 // Default values
 static const char* const kDefaultVisibleColumns = "queue_index,artist_title,duration";
 static const char* const kDefaultColumnWidthsJson = "{}";
 static const bool kDefaultTransparentBackground = true;
+static const bool kDefaultPersistQueue = true;
+static const bool kDefaultStopAfterQueue = false;
+static const bool kDefaultStopAfterQueueOnce = false;
 
 // Column identifiers
 static const char* const kColumnQueueIndex = "queue_index";

@@ -22,7 +22,7 @@ end
 FB2K_SDK = if ENV['FB2K_SDK_PATH'] && !ENV['FB2K_SDK_PATH'].empty?
              File.expand_path(ENV['FB2K_SDK_PATH'])
            else
-             File.join(REPO_ROOT, "SDK-2025-03-07")
+             File.join(REPO_ROOT, "SDK-2026-10-01")
            end
 
 unless File.directory?(FB2K_SDK)
@@ -60,13 +60,13 @@ component_dirs.each do |component_dir|
     arguments = ["clang++"]
 
     if ext == ".mm" || ext == ".h"
-      arguments += ["-x", "objective-c++", "-std=gnu++17", "-fobjc-arc"]
+      arguments += ["-x", "objective-c++", "-std=gnu++20", "-fobjc-arc"]
     else
-      arguments += ["-std=gnu++17"]
+      arguments += ["-std=gnu++20"]
     end
 
     arguments += [
-      "-mmacosx-version-min=11.0",
+      "-mmacosx-version-min=12.0",
       "-DFOOBAR2000_HAVE_CFG_VAR_LEGACY=1",
       "-isysroot", SYSTEM_SDK,
       "-I#{FB2K_SDK}",
@@ -98,13 +98,13 @@ shared_files.each do |source_file|
   arguments = ["clang++"]
 
   if ext == ".mm" || ext == ".h"
-    arguments += ["-x", "objective-c++", "-std=gnu++17", "-fobjc-arc"]
+    arguments += ["-x", "objective-c++", "-std=gnu++20", "-fobjc-arc"]
   else
-    arguments += ["-std=gnu++17"]
+    arguments += ["-std=gnu++20"]
   end
 
   arguments += [
-    "-mmacosx-version-min=11.0",
+    "-mmacosx-version-min=12.0",
     "-DFOOBAR2000_HAVE_CFG_VAR_LEGACY=1",
     "-isysroot", SYSTEM_SDK,
     "-I#{FB2K_SDK}",

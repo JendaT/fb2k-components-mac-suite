@@ -25,6 +25,9 @@ public:
     void onItemsAdded(t_size base, t_size count, std::shared_ptr<metadb_handle_list> handles);
     void onItemsRemoved(t_size newCount);
     void onItemsReordered();
+    // The set of playlists changed (created / removed / reordered), so every
+    // raw t_size playlist index a controller holds may now point elsewhere.
+    void onPlaylistSetChanged();
     void onSelectionChanged();
     void onFocusChanged(t_size from, t_size to);
     void onItemsModified();
@@ -39,6 +42,10 @@ public:
 
     // Metadb event dispatch — fires when tags are read/updated in background
     void onMetadbChanged(std::shared_ptr<metadb_handle_list> changed);
+
+    // Re-sort the library viewer's selection playlist now, if the option is on.
+    // Main thread, outside playlist callbacks (the preferences page).
+    void sortLibrarySelection();
 
     // Lifecycle - call from initquit
     void initCallbacks();

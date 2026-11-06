@@ -27,6 +27,18 @@ clang++ -std=c++17 -O1 -Wall \
     "$PROJECT_DIR/src/Core/QueueFormatting.cpp" \
     -o "$TEST_BUILD_DIR/formatting_tests"
 
+echo "==> Compiling unit tests (QueuePersistence)..."
+clang++ -std=c++17 -O1 -Wall \
+    "$PROJECT_DIR/Tests/QueuePersistenceTests.cpp" \
+    "$PROJECT_DIR/src/Core/QueuePersistence.cpp" \
+    -o "$TEST_BUILD_DIR/persistence_tests"
+
+echo "==> Compiling unit tests (StopAfterQueuePolicy)..."
+clang++ -std=c++17 -O1 -Wall \
+    "$PROJECT_DIR/Tests/StopAfterQueuePolicyTests.cpp" \
+    "$PROJECT_DIR/src/Core/StopAfterQueuePolicy.cpp" \
+    -o "$TEST_BUILD_DIR/stopafterqueue_tests"
+
 echo "==> Compiling unit tests (QueueDropParser)..."
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/QueueDropParserTests.mm" \
@@ -37,4 +49,6 @@ clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/reorder_tests"
 "$TEST_BUILD_DIR/formatting_tests"
+"$TEST_BUILD_DIR/persistence_tests"
+"$TEST_BUILD_DIR/stopafterqueue_tests"
 "$TEST_BUILD_DIR/dropparser_tests"

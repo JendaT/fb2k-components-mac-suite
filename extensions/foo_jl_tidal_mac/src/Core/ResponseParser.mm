@@ -18,7 +18,24 @@ static BOOL JLTidalIsDictionary(id obj) {
     return [obj isKindOfClass:[NSDictionary class]];
 }
 
+static BOOL JLTidalIsString(id obj) {
+    return [obj isKindOfClass:[NSString class]];
+}
+
 @implementation JLTidalResponseParser
+
++ (NSArray<NSString *> *)trackIDsFromJSONAPIData:(id)data {
+    if (![data isKindOfClass:[NSArray class]]) return @[];
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (id entry in (NSArray *)data) {
+        if (![entry isKindOfClass:[NSDictionary class]]) continue;
+        id identifier = ((NSDictionary *)entry)[@"id"];
+        if (JLTidalIsString(identifier) && ((NSString *)identifier).length > 0) {
+            [ids addObject:identifier];
+        }
+    }
+    return [ids copy];
+}
 
 #pragma mark - OAuth token responses
 
@@ -35,14 +52,16 @@ static BOOL JLTidalIsDictionary(id obj) {
     NSDictionary *user = JLTidalIsDictionary(json[@"user"]) ? json[@"user"] : nil;
     id rawUserId = user[@"userId"];
     NSString *userId = (rawUserId && rawUserId != [NSNull null]) ? [rawUserId description] : nil;
-    NSString *username = user[@"username"];
-    NSString *countryCode = user[@"countryCode"];
+    NSString *username = JLTidalIsString(user[@"username"]) ? user[@"username"] : nil;
+    NSString *email = JLTidalIsString(user[@"email"]) ? user[@"email"] : nil;
+    NSString *countryCode = JLTidalIsString(user[@"countryCode"]) ? user[@"countryCode"] : nil;
 
     return [[JLTidalSession alloc] initWithAccessToken:accessToken
                                           refreshToken:refreshToken
                                              expiresIn:expiresIn.doubleValue
                                                 userId:userId
                                               username:username
+                                                 email:email
                                            countryCode:countryCode];
 }
 
@@ -63,6 +82,7 @@ static BOOL JLTidalIsDictionary(id obj) {
                                                  expiresIn:expiresIn.doubleValue
                                                     userId:currentSession.userId
                                                   username:currentSession.username
+                                                     email:currentSession.email
                                                countryCode:currentSession.countryCode];
     }
     return [currentSession sessionByUpdatingAccessToken:accessToken

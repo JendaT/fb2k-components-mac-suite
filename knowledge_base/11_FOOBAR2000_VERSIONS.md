@@ -1,7 +1,7 @@
 # foobar2000 and SDK Versions
 
-**Revision:** 1.0
-**Last Updated:** 2026-01-04
+**Revision:** 1.1
+**Last Updated:** 2026-10-09
 
 This document tracks foobar2000 and SDK versions, known compatibility issues, and version management.
 
@@ -11,10 +11,10 @@ This document tracks foobar2000 and SDK versions, known compatibility issues, an
 
 | Item | Version | Notes |
 |------|---------|-------|
-| foobar2000 for Mac | 2.25.4 | Stable release |
-| SDK | 2025-03-07 | Latest available |
-| Xcode | 16.x | Required for builds |
-| macOS minimum | 11 (Big Sur) | Both Intel and Apple Silicon |
+| foobar2000 for Mac | 2.26 | Stable release |
+| SDK | 2026-10-01 | Latest available; requires C++20 |
+| Xcode | 27.x | Cannot target macOS 11 |
+| macOS minimum | 12 (Monterey) | Both Intel and Apple Silicon |
 
 ---
 
@@ -42,7 +42,24 @@ Reports of crashes from users running 2.26 preview versions. This is a beta/prev
 
 ## SDK Changelog Highlights
 
-### 2025-03-07 (Current)
+### 2026-10-01 (Current)
+- Windows-only fixes (PFC<=>shared.dll hooking in ARM64EC mode); now_playing_album_art_notify doc fix
+
+### 2026-09-17
+- Windows-only fix (32-bit link of the 09-16 hooking workaround)
+
+### 2026-09-16 (major)
+- **C++20 required** (component projects must build as `gnu++20`)
+- `FOOBAR2000_TARGET_VERSION=81` (foobar2000 v2.0+) by default
+- Published 2.25/2.26 APIs: dark mode, `retro` UI mode detection, `playback_control_v4`, `output_entry_v4`, `input_decoder_v5`, skipTrack, playOn, converter post-actions
+- `abort_callback` spec rewritten (see `abort_callback.h`)
+- File attributes: "remote" now means high-latency internet only; "network" covers internet and SMB shares
+- Removed: `library_index`, `filesystem_transacted`, `packet_decoder_streamparse`, `pfc::int_specs_t`, `TEMPLATE_CONSTRUCTOR_*`
+- PFC: `throw()` specs changed to `noexcept`
+- helpers-mac: the `foobar2000-mac-class-suffix` hack is now discouraged (use unique class names or Swift)
+- Not in the change log: the pfc Xcode target was renamed `pfc-Mac` -> `pfc`, so the library is now `libpfc.a`
+
+### 2025-03-07
 - Reverted C++20 to C++17 in some projects as C++20 is not yet required
 
 ### 2024-12-03
@@ -141,12 +158,12 @@ When crash reports come from 2.26 users:
 
 The SDK is stored at:
 ```
-/Users/jendalen/Projects/Foobar2000/SDK-2025-03-07/
+/Users/jendalen/Projects/Foobar2000/SDK-2026-10-01/
 ```
 
 Configuration in `shared/sdk_config.rb`:
 ```ruby
-DEFAULT_SDK_DIR = "SDK-2025-03-07"
+DEFAULT_SDK_DIR = "SDK-2026-10-01"
 ```
 
 To use a different SDK version, set environment variable:
@@ -161,7 +178,21 @@ export FB2K_SDK_PATH="/path/to/different/SDK"
 SDK releases are announced at:
 - https://www.foobar2000.org/changelog-sdk
 
-Current SDK (2025-03-07) is the latest as of January 2026.
+Current SDK (2026-10-01) is the latest as of October 2026.
+
+### Upgrading the SDK
+
+1. Download `SDK-<date>.7z` from foobar2000.org/SDK and extract it to the repo root as `SDK-<date>/` (gitignored). Keep the old one until every worktree has moved.
+2. Build the five libraries in the order given in the README. Xcode 27 rejects the SDK projects' macOS 11 target, so pass `MACOSX_DEPLOYMENT_TARGET=12.0` on the `xcodebuild` command line instead of editing the SDK.
+3. Check every library exists under its `build/Release/` directory; product names can change (2026-09-16 renamed `libpfc-Mac.a` to `libpfc.a`).
+4. Update `DEFAULT_SDK_DIR` in `shared/sdk_config.rb` and the SDK name in `Scripts/worktree-setup.sh`, `Scripts/new-component.sh`, `Scripts/generate_compile_commands.rb`.
+5. Symlink the new SDK into each worktree (`ln -s <repo>/SDK-<date> <worktree>/SDK-<date>`).
+6. Rebuild every component with `./Scripts/build.sh --clean --regenerate`.
+
+**Fresh worktree gotchas** (not SDK-related, but they hit any clean rebuild):
+- Biography and Scrobble need their gitignored `SecretConfig.h`; symlink it from the main checkout.
+- Effects DSP's `build.sh` ignores `--regenerate`; run `ruby Scripts/generate_xcode_project.rb` first.
+- Playback Controls has no project generator; its `.xcodeproj` is local and untracked.
 
 ---
 

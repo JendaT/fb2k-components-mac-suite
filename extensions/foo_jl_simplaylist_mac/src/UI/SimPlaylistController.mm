@@ -9,11 +9,16 @@
 #import "SimPlaylistView.h"
 #import "SimPlaylistHeaderBar.h"
 #import "../Core/ColumnDefinition.h"
+#import "../Core/ColumnDefinitionStore.h"
 #import "../Core/GroupPreset.h"
+#import "../Core/GroupPresetStore.h"
 #import "../Core/TitleFormatHelper.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/AlbumArtCache.h"
 #import "../Core/ReorderPlanner.h"
+#import "../Core/ImportSorter.h"
+#include "../Core/GroupPadding.h"
 #import "../Core/SubgroupDetector.h"
 #import "../Core/GroupBuilder.h"
 #import "../Core/DecorationStore.h"
@@ -59,37 +64,35 @@ public:
         if (items.get_count() > 0) {
             auto pm = playlist_manager::get();
             if (m_playlistIndex < pm->get_playlist_count()) {
-                // Sort by (album artist, album, tracknumber-as-integer, path fallback).
-                // Track number is parsed as an integer so ordering is 1, 2 ... 12, 13.
-                // Path is a tiebreaker for tracks with no track number metadata.
+                // Ordering lives in the pure simplaylist::planImportOrder so the
+                // compilation rule (see ImportSorter.h) is unit-tested; here we
+                // only format the titleformat fields it needs.
                 metadb_handle_list itemsCopy(items);
                 t_size count = itemsCopy.get_count();
 
                 auto albumArtistScript = simplaylist::TitleFormatHelper::compileWithCache("%album artist%");
                 auto albumScript       = simplaylist::TitleFormatHelper::compileWithCache("%album%");
+                auto discNumScript     = simplaylist::TitleFormatHelper::compileWithCache("%discnumber%");
                 auto trackNumScript    = simplaylist::TitleFormatHelper::compileWithCache("%tracknumber%");
                 auto pathScript        = simplaylist::TitleFormatHelper::compileWithCache("%path_sort%");
 
-                // Build sort keys once per track to avoid repeated formatting
-                using SortKey = std::tuple<std::string, std::string, int, std::string>;
-                std::vector<SortKey> keys;
+                std::vector<simplaylist::ImportSortKey> keys;
                 keys.reserve(count);
                 for (t_size i = 0; i < count; i++) {
                     auto h = itemsCopy.get_item(i);
-                    std::string albumArtist = simplaylist::TitleFormatHelper::format(h, albumArtistScript);
-                    std::string album       = simplaylist::TitleFormatHelper::format(h, albumScript);
-                    std::string trackStr    = simplaylist::TitleFormatHelper::format(h, trackNumScript);
-                    std::string path        = simplaylist::TitleFormatHelper::format(h, pathScript);
-                    int trackNum = trackStr.empty() ? 0 : std::atoi(trackStr.c_str());
-                    keys.emplace_back(std::move(albumArtist), std::move(album), trackNum, std::move(path));
+                    simplaylist::ImportSortKey k;
+                    k.albumArtist = simplaylist::TitleFormatHelper::format(h, albumArtistScript);
+                    k.album       = simplaylist::TitleFormatHelper::format(h, albumScript);
+                    k.path        = simplaylist::TitleFormatHelper::format(h, pathScript);
+                    std::string discStr  = simplaylist::TitleFormatHelper::format(h, discNumScript);
+                    std::string trackStr = simplaylist::TitleFormatHelper::format(h, trackNumScript);
+                    // atoi yields 0 for the "?" titleformat emits when a field is absent
+                    k.disc  = discStr.empty()  ? 0 : std::atoi(discStr.c_str());
+                    k.track = trackStr.empty() ? 0 : std::atoi(trackStr.c_str());
+                    keys.push_back(std::move(k));
                 }
 
-                // Sort indices by key; stable_sort preserves original order for equal keys
-                std::vector<t_size> order(count);
-                std::iota(order.begin(), order.end(), 0);
-                std::stable_sort(order.begin(), order.end(), [&](t_size a, t_size b) {
-                    return keys[a] < keys[b];
-                });
+                std::vector<size_t> order = simplaylist::planImportOrder(keys);
 
                 metadb_handle_list sortedItems;
                 sortedItems.prealloc(count);
@@ -144,7 +147,9 @@ static void importFilesToPlaylistAsync(t_size playlistIndex, t_size insertAt, NS
     auto notify = fb2k::service_new<SimPlaylistImportNotify>(playlistIndex, insertAt);
 
     for (NSURL* url in sortedURLs) {
-        if (url.isFileURL) {
+        // Scheme-less absolute path: a file, and absoluteString would stay percent-encoded.
+        BOOL schemelessPath = (url.scheme.length == 0 && [url.path hasPrefix:@"/"]);
+        if (url.isFileURL || schemelessPath) {
             // File URL - use path
             NSString* path = url.path;
             if (path && path.length > 0) {
@@ -205,6 +210,10 @@ struct ReloadOperation {
     contextmenu_manager::ptr _contextMenuManagerV1;
     // Store handles for custom menu actions (Reload Info)
     metadb_handle_list _contextMenuHandles;
+    // Blur layer behind the header and scroll view while glass mode is on.
+    // A subview of the controller's permanent root view — see
+    // -updateGlassEffectView: for why the root is never replaced.
+    NSVisualEffectView *_glassEffectView;
     // Active reload operations for progress tracking
     std::vector<ReloadOperation> _reloadOperations;
     // Pre-compiled title format scripts for columns (rebuilt when columns change)
@@ -267,10 +276,8 @@ struct ReloadOperation {
 - (instancetype)init {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
-        _columns = [ColumnDefinition defaultColumns];
-        [self recompileColumnScripts];
-        _groupPresets = [GroupPreset defaultPresets];
-        _activePresetIndex = 0;
+        [self reloadColumnsFromConfig];
+        [self reloadPresetsFromConfig];
         _currentPlaylistIndex = -1;
         _scrollAnchorIndices = [NSMutableDictionary dictionary];
         _scrollRestorePlaylistIndex = -1;
@@ -297,13 +304,10 @@ struct ReloadOperation {
             simplaylist_config::kHeaderAccentColor,
             simplaylist_config::kDefaultHeaderAccentColor));
 
-    // Create container view - use glass helper for transparent mode
-    NSView *container;
-    if (glassBackground) {
-        container = fb2k_ui::createGlassContainer(NSMakeRect(0, 0, 400, 300));
-    } else {
-        container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
-    }
+    // The root view is created once and kept for the controller's lifetime;
+    // glass mode is a blur layer added beneath the content, not a different
+    // root. See -updateGlassEffectView:.
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 300)];
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     self.view = container;
 
@@ -345,11 +349,17 @@ struct ReloadOperation {
         simplaylist_config::kDefaultAlbumArtSize);
     _playlistView.glassBackground = glassBackground;
     _playlistView.wantsLayer = YES;  // Layer backing for smooth drawing
+    // Row height, subgroup height, header style and spacing come from config
+    // here, the same as after a settings change. Until this call existed they
+    // only did the latter: commonInit hard-codes the 22 pt default row height,
+    // so Compact and Large users got 22 pt rows after every launch.
+    [_playlistView reloadSettings];
 
     // Configure scroll view and set document view
     _scrollView.documentView = _playlistView;
     fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
     [container addSubview:_scrollView];
+    [self updateGlassEffectView:glassBackground];
 
     // Observe scroll changes to sync header
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -365,16 +375,27 @@ struct ReloadOperation {
                                                object:_scrollView];
     _scrollView.postsFrameChangedNotifications = YES;
 
-    // Observe settings changes from preferences
+    // Observe settings changes from preferences. The controller is the sole
+    // observer for the whole panel: it drives [_playlistView reloadSettings]
+    // explicitly rather than letting the view register alongside it and relying
+    // on notification delivery order (see the note in SimPlaylistView.mm).
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleSettingsChanged:)
-                                                 name:@"SimPlaylistSettingsChanged"
+                                                 name:SimPlaylistSettingsChangedNotification
                                                object:nil];
 
     // Observe lightweight redraw requests (for settings that don't affect grouping)
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleRedrawNeeded:)
-                                                 name:@"SimPlaylistRedrawNeeded"
+                                                 name:SimPlaylistRedrawNeededNotification
+                                               object:nil];
+
+    // Observe custom-column catalogue changes (add / remove / rename). Until
+    // this existed the editor posted to nobody, so a new or renamed column was
+    // invisible until foobar2000 restarted.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleColumnsChanged:)
+                                                 name:SimPlaylistColumnsChangedNotification
                                                object:nil];
 
     // Row decorator providers (intake doc 04 Part A): enumerate once at panel
@@ -419,21 +440,43 @@ struct ReloadOperation {
     [self autoResizeColumns];
 }
 
+// Add or remove the blur layer behind the header and scroll view.
+//
+// This used to build a new NSVisualEffectView or NSView, move the header and
+// scroll view into it, and assign it to self.view. -[NSViewController setView:]
+// does not re-parent: the host's split and tab containers kept displaying the
+// old root, now emptied of its subviews, so toggling Glass background blanked
+// every panel until restart — the opposite of the live toggle it announced.
+// Adding and removing a background subview under a permanent root is the
+// pattern the waveform seekbar uses, and it needs no cooperation from the host.
+- (void)updateGlassEffectView:(BOOL)glass {
+    if (glass == (_glassEffectView != nil)) return;
+
+    if (glass) {
+        // Shared helper, so the material and blending match the other
+        // components' glass mode.
+        _glassEffectView = (NSVisualEffectView *)fb2k_ui::createGlassContainer(self.view.bounds);
+        _glassEffectView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [self.view addSubview:_glassEffectView positioned:NSWindowBelow relativeTo:nil];
+    } else {
+        [_glassEffectView removeFromSuperview];
+        _glassEffectView = nil;
+    }
+}
+
 - (void)handleSettingsChanged:(NSNotification *)notification {
+    // First, so the rest of this method sees current geometry. rowHeight and
+    // headerDisplayStyle live on the view and feed the group padding computed
+    // below; reading them before the view has re-read config yields padding for
+    // the OLD Display Size / Header Style, which is what made those two
+    // preferences depend on notification delivery order.
+    [_playlistView reloadSettings];
+
     // Save current scroll position before rebuilding
     NSDictionary *savedAnchor = [self captureScrollAnchor];
 
     // Reload group presets from config
-    std::string savedJSON = simplaylist_config::getConfigString(
-        simplaylist_config::kGroupPresets, "");
-    if (!savedJSON.empty()) {
-        NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
-        _groupPresets = [GroupPreset presetsFromJSON:jsonString];
-        _activePresetIndex = [GroupPreset activeIndexFromJSON:jsonString];
-    } else {
-        _groupPresets = [GroupPreset defaultPresets];
-        _activePresetIndex = 0;
-    }
+    [self reloadPresetsFromConfig];
 
     // Reload header size and accent mode from config
     fb2k_ui::SizeVariant headerSize = static_cast<fb2k_ui::SizeVariant>(
@@ -457,25 +500,7 @@ struct ReloadOperation {
     BOOL glassBackground = simplaylist_config::getConfigBool(
         simplaylist_config::kGlassBackground,
         simplaylist_config::kDefaultGlassBackground);
-    BOOL currentlyGlass = [self.view isKindOfClass:[NSVisualEffectView class]];
-    if (glassBackground != currentlyGlass) {
-        NSView *newContainer;
-        if (glassBackground) {
-            newContainer = fb2k_ui::createGlassContainer(self.view.frame);
-        } else {
-            newContainer = [[NSView alloc] initWithFrame:self.view.frame];
-        }
-        newContainer.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-
-        // Transfer subviews to new container
-        [_headerBar removeFromSuperview];
-        [_scrollView removeFromSuperview];
-        [newContainer addSubview:_headerBar];
-        [newContainer addSubview:_scrollView];
-
-        // Replace the view (NSViewController manages parent insertion)
-        self.view = newContainer;
-    }
+    [self updateGlassEffectView:glassBackground];
     _headerBar.glassBackground = glassBackground;
     _playlistView.glassBackground = glassBackground;
     fb2k_ui::configureScrollViewForGlass(_scrollView, glassBackground);
@@ -504,7 +529,38 @@ struct ReloadOperation {
     [_headerBar setNeedsDisplay:YES];
 }
 
+// The custom-column catalogue changed: a column was added, removed or renamed
+// in the Custom Columns preferences page.
+//
+// Re-reading the visible layout from config is what makes the change take
+// effect, and it must happen before anything else writes kColumns back. The
+// editor's rename path rewrites kColumns via syncCustomColumnRenameFrom:to:,
+// but live panels went on holding the pre-rename ColumnDefinition objects; the
+// next column resize then persisted that stale array straight over the rename,
+// and on the following launch orphan cleanup found a visible column matching no
+// definition and silently deleted it. Refreshing here breaks that chain at the
+// first link.
+//
+// -reloadColumnsFromConfig is the same path init takes: it reads kColumns,
+// drops columns whose custom definition no longer exists, and applies the
+// Playing migration — so a deleted custom column also disappears from the
+// header here rather than at the next restart.
+- (void)handleColumnsChanged:(NSNotification *)notification {
+    [self reloadColumnsFromConfig];
+
+    _headerBar.columns = _columns;
+    _playlistView.columns = _columns;
+    [_headerBar setNeedsDisplay:YES];
+    // Cached strings are keyed by column position; the set just changed.
+    [_playlistView clearFormattedValuesCache];
+    [_playlistView setNeedsDisplay:YES];
+}
+
 - (void)handleRedrawNeeded:(NSNotification *)notification {
+    // Keep the view's own config-derived state current first, for the same
+    // reason as in -handleSettingsChanged:.
+    [_playlistView reloadSettings];
+
     // Lightweight redraw for settings that don't affect grouping (e.g., dim parentheses, now playing shading)
     // Re-read group duration setting in case it just toggled, then refresh the durations array.
     _playlistView.showGroupDuration = simplaylist_config::getConfigBool(
@@ -801,10 +857,22 @@ struct ReloadOperation {
                                  (isFirstLoad || (NSInteger)activePlaylist != _currentPlaylistIndex));
 
     // Save scroll anchor for BOTH playlist switches AND same-playlist refreshes
-    // This prevents visual jumping when items are added/removed
-    // IMPORTANT: Skip saving if a drag is in progress - drag can trigger playlist switches
-    // when hovering over another playlist, and we don't want to save the mid-drag position
-    if (!isFirstLoad && !_playlistView.isDragging) {
+    // This prevents visual jumping when items are added/removed.
+    //
+    // During a drag, skip it only when SWITCHING: hovering over another
+    // playlist mid-drag makes it active, and the outgoing playlist's viewport
+    // may hold a mid-drag (autoscrolled) position that must not be saved.
+    // A same-playlist refresh during a drag is the drop itself landing —
+    // isDragging is still YES then, because AppKit clears it in
+    // draggingSession:endedAtPoint:, after performDragOperation, while the
+    // reorder callbacks are already queued on the main queue. Skipping the
+    // capture there left the anchor from the last rebuild BEFORE the user
+    // scrolled away, and the synchronous detection path's inline restore then
+    // jumped the view back to it (the playlist over 500 groups has no group
+    // cache, so every drop took that path). The viewport at the drop is
+    // exactly the position to keep.
+    const BOOL dragSwitch = isSwitchingPlaylist && _playlistView.isDragging;
+    if (!isFirstLoad && !dragSwitch) {
         // Only save when the viewport reflects the user's position (a restore
         // has run, or there was nothing to restore) - never overwrite a good
         // anchor with a pre-restore viewport.
@@ -1081,22 +1149,6 @@ struct ReloadOperation {
     [_scrollView reflectScrolledClipView:clipView];
 }
 
-// Shared padding calculation for album art minimum group height
-static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgroupsInGroup,
-                                           CGFloat albumArtSize, CGFloat rowHeight,
-                                           NSInteger headerStyle) {
-    // Clamp albumArtSize to prevent overflow with extreme config values
-    albumArtSize = MIN(MAX(albumArtSize, 0.0), 1000.0);
-    CGFloat padding = 6.0;
-    NSInteger minContentRows = (rowHeight > 0) ? (NSInteger)ceil((albumArtSize + padding * 2) / rowHeight) : 0;
-
-    NSInteger minPadding = (headerStyle == 3) ? 1 : 0;
-    NSInteger extraHeaderSpace = (headerStyle == 2) ? 1 : 0;
-    NSInteger extraTextSpace = (headerStyle == 3) ? 1 : 0;
-
-    return MAX(minPadding, minContentRows - trackCount - subgroupsInGroup - extraHeaderSpace + extraTextSpace);
-}
-
 // Drops the view back to an ungrouped flat list. The derived caches are rebuilt
 // from the now-empty arrays rather than hand-cleared, which is what the rebuild
 // methods do for empty input anyway. Callers own itemCount.
@@ -1140,6 +1192,7 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
     CGFloat rowHeight = _playlistView.rowHeight;
     CGFloat albumArtSize = _playlistView.albumArtSize;
     NSInteger headerStyle = _playlistView.headerDisplayStyle;
+    NSInteger inlineSpacing = _playlistView.inlineAlbumSpacing;
 
     NSMutableArray<NSNumber *> *paddingRows = [NSMutableArray arrayWithCapacity:groupStarts.count];
     for (NSUInteger g = 0; g < groupStarts.count; g++) {
@@ -1148,8 +1201,8 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
         NSInteger trackCount = groupEnd - groupStart;
         NSInteger subgroupsInGroup = (g < _playlistView.subgroupCountPerGroup.count)
             ? [_playlistView.subgroupCountPerGroup[g] integerValue] : 0;
-        [paddingRows addObject:@(calculatePaddingForGroup(trackCount, subgroupsInGroup,
-                                                          albumArtSize, rowHeight, headerStyle))];
+        [paddingRows addObject:@(simplaylist::paddingRowsForGroup(trackCount, subgroupsInGroup, albumArtSize,
+                                                                  rowHeight, headerStyle, inlineSpacing))];
     }
     _playlistView.groupPaddingRows = paddingRows;
     [_playlistView rebuildPaddingCache];
@@ -1513,10 +1566,28 @@ static NSInteger calculatePaddingForGroup(NSInteger trackCount, NSInteger subgro
 // GROUP CACHE PERSISTENCE
 // =============================================================================
 
-// Build the preset hash string for cache validation: "headerPattern|subgroupPattern"
+// Build the preset hash string for cache validation:
+// "headerPattern|subgroupPattern|showFirstSubgroup|hideSingleSubgroup"
+//
+// The two flags belong in the key because the persisted subgroupStarts /
+// subgroupHeaders arrays are a function of them, not just of the patterns:
+// SubgroupDetector is constructed with showFirstSubgroup, and hideSingleSubgroup
+// suppresses emission for groups with one subgroup. Toggling either used to
+// leave both the hash and the item count unchanged, so the stale cache was
+// accepted and a layout built under the old flag was displayed until background
+// validation re-applied — the exact path whose comments describe historic
+// scroll-anchor corruption. Extending the string invalidates every existing
+// cache entry once, which is the intended effect.
 static NSString *presetHashForPreset(GroupPreset *preset) {
     NSString *sub = [preset subgroupPattern] ?: @"";
-    return [NSString stringWithFormat:@"%@|%@", preset.headerPattern, sub];
+    bool showFirst = simplaylist_config::getConfigBool(
+        simplaylist_config::kShowFirstSubgroupHeader,
+        simplaylist_config::kDefaultShowFirstSubgroupHeader);
+    bool hideSingle = simplaylist_config::getConfigBool(
+        simplaylist_config::kHideSingleSubgroup,
+        simplaylist_config::kDefaultHideSingleSubgroup);
+    return [NSString stringWithFormat:@"%@|%@|%d|%d",
+            preset.headerPattern, sub, showFirst ? 1 : 0, hideSingle ? 1 : 0];
 }
 
 // Maximum group count for caching. configStore is designed for small config
@@ -1951,6 +2022,69 @@ static BOOL validCachedStringArray(NSArray *arr) {
     [self refreshSelectionTracking];
 }
 
+// A playlist was created, removed, or the tab order was rearranged.
+//
+// Every raw t_size index this controller holds may now refer to a different
+// playlist: creating one above the current playlist shifts it up, removing one
+// shifts it down, and a reorder can move it anywhere. Until this handler
+// existed none of those three events was observed at all, so the indices simply
+// went stale and the next save wrote the current view's group boundaries and
+// scroll anchor under whichever playlist had inherited the old index.
+//
+// Runs on the main queue after the SDK has finished mutating, so
+// get_active_playlist() is authoritative here.
+- (void)handlePlaylistSetChanged {
+    auto pm = playlist_manager::get();
+    t_size active = pm->get_active_playlist();
+
+    // The viewport still shows the current playlist's rows whatever happened to
+    // the indices, so capture its position before discarding the old keys.
+    NSDictionary *liveAnchor = nil;
+    if (_currentPlaylistIndex >= 0 && _scrollPositionEstablished && !_playlistView.isDragging) {
+        liveAnchor = [self captureScrollAnchor];
+    }
+
+    // Everything below is keyed by an index that may no longer mean what it
+    // did. Dropping the lot is safe: anchors for other playlists are persisted
+    // separately under sanitised playlist *names*, and are re-seeded from there
+    // on the next switch-in. Keeping them would restore one playlist's scroll
+    // position onto another.
+    [_scrollAnchorIndices removeAllObjects];
+    _scrollRestorePlaylistIndex = -1;
+    _pendingCenterPlaylist = -1;
+    _pendingCenterIndex = -1;
+
+    if (active == SIZE_MAX) {
+        _currentPlaylistIndex = -1;
+        _playlistView.sourcePlaylistIndex = -1;
+        return;
+    }
+
+    _currentPlaylistIndex = (NSInteger)active;
+    _playlistView.sourcePlaylistIndex = active;  // drag validation
+    if (liveAnchor) {
+        _scrollAnchorIndices[@(_currentPlaylistIndex)] = liveAnchor;
+    }
+}
+
+// Resolve the playlist a user action should act on.
+//
+// _currentPlaylistIndex is a cached raw index, refreshed on playlist switch and
+// by -handlePlaylistSetChanged above. A user action arrives from AppKit rather
+// than the SDK, so it can still land in the window between the playlist set
+// changing and this controller being told. Every mutating delegate resolves
+// through here and does nothing when the cache and the live active playlist
+// disagree: the rows on screen belong to the old playlist, so applying the
+// action to whichever playlist inherited the index would mutate the wrong
+// tracks. A rebuild is already on its way in that case.
+- (BOOL)resolveActivePlaylist:(t_size *)outPlaylist {
+    if (_currentPlaylistIndex < 0) return NO;
+    t_size active = playlist_manager::get()->get_active_playlist();
+    if (active == SIZE_MAX || (NSInteger)active != _currentPlaylistIndex) return NO;
+    if (outPlaylist) *outPlaylist = active;
+    return YES;
+}
+
 - (void)handleItemsAdded:(NSInteger)base count:(NSInteger)count addedHandles:(std::shared_ptr<metadb_handle_list>)handles {
     // Detect Finder-open replacement pattern before doing the standard rebuild.
     if (base == 0 && count > 0 && _activePlaylistJustCleared && !_internalModification) {
@@ -2136,15 +2270,28 @@ static BOOL validCachedStringArray(NSArray *arr) {
 
     // Copy indices and capture current playlist for the async block
     NSIndexSet *indicesCopy = [selectedPlaylistIndices copy];
+    // The indices belong to the playlist on screen, which can trail the active
+    // one; pushing them into a different playlist would select arbitrary rows
+    // there.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
-    if (activePlaylist == SIZE_MAX) return;
 
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
     if (itemCount == 0) return;
 
     // Deferred one runloop turn (SDK calls must be on the main thread)
+    __weak SimPlaylistController *weakSelf = self;
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Re-validate after the hop: a switch or an add/remove in between means
+        // the captured indices no longer name the same tracks.
+        SimPlaylistController *strongSelf = weakSelf;
+        t_size stillActive;
+        if (!strongSelf || ![strongSelf resolveActivePlaylist:&stillActive] ||
+            stillActive != activePlaylist || pm->playlist_get_item_count(activePlaylist) != itemCount) {
+            return;
+        }
+
         // Build new state bit array directly from NSIndexSet - O(selection count)
         __block bit_array_bittable newState(itemCount);
 
@@ -2160,10 +2307,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view didDoubleClickRow:(NSInteger)row {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     // Get playlist index using the view's row mapping
     NSInteger playlistIndex = [view playlistIndexForRow:row];
@@ -2208,10 +2355,10 @@ static BOOL validCachedStringArray(NSArray *arr) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view requestContextMenuForRows:(NSIndexSet *)playlistIndices atPoint:(NSPoint)point {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
     // Collect indices to array first (can't modify C++ objects in blocks)
@@ -2286,6 +2433,8 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
         [self appendReloadSectionToMenu:menu];
 
+        [self appendSortSubmenuToMenu:menu selectedCount:handles.get_count()];
+
         [self buildNSMenu:menu fromMenuItem:root contextManager:_contextMenuManager];
 
         // Decorator provider actions (e.g. intake propose/approve)
@@ -2308,6 +2457,9 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
     [self appendReloadSectionToMenu:menu];
 
+    // _contextMenuHandles was set by the caller before falling back here.
+    [self appendSortSubmenuToMenu:menu selectedCount:_contextMenuHandles.get_count()];
+
     [self buildNSMenuFromNode:menu parentNode:root contextManager:cmm baseID:0];
 
     // Decorator provider actions (e.g. intake propose/approve)
@@ -2329,6 +2481,15 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     reloadItem.target = self;
     [menu addItem:reloadItem];
 
+    // "Remove" - deletes the selected tracks from the playlist, matching the
+    // native playlist UI and foobar2000's "Edit / Selection / Remove" command.
+    NSMenuItem *removeItem = [[NSMenuItem alloc] initWithTitle:@"Remove"
+                                                       action:@selector(removeSelectedTracksClicked:)
+                                                keyEquivalent:@""];
+    removeItem.target = self;
+    [menu addItem:removeItem];
+
+    // Show progress for any active reload operations
     _reloadOperations.erase(
         std::remove_if(_reloadOperations.begin(), _reloadOperations.end(),
             [](const ReloadOperation& op) { return op.completed; }),
@@ -2350,6 +2511,177 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 
 // Append the custom "Focus Playing Now" navigation item at the very bottom of
 // the context menu (both the v2 and v1 menu builders call this last).
+#pragma mark - Sort submenu
+
+// The Sort submenu (GitHub issue #20) sorts through the documented
+// playlist_manager API rather than proxying the host's own Sort commands.
+//
+// The host does register Sort under edit_part2_sort and
+// edit_part2_selection_sort, as one dynamic mainmenu command per group that
+// expands to exactly these eight entries. But it reports every entry disabled
+// unless its own playlist view is the context: a startup dump with foobar2000
+// frontmost and an ordinary unlocked 8,732-item playlist active showed all of
+// them — and Remove duplicates — flagged disabled. SimPlaylist can never be
+// that context, so a proxied submenu is permanently greyed out, and executing
+// entries the host marks disabled would rely on undocumented behaviour.
+//
+// Labels and order match the host's menu, plus disc-and-track first. The field sorts use the field the
+// label names; playlist_sort_by_format with a null pattern is the SDK's
+// randomize; Reverse is planned by the tested simplaylist::planReverse.
+enum : NSInteger {
+    kSortActionPrompt = 1,   // "Sort by..." — ask for a title-formatting pattern
+    kSortActionRandomize,
+    kSortActionReverse,
+    kSortActionPattern,      // representedObject holds the pattern
+};
+
+// Entries on menu items carry the action in the tag and "sort only the
+// selection" in the high bit, so a click acts on what the menu was built for.
+static const NSInteger kSortSelectionOnlyFlag = 1 << 16;
+
+- (NSMenuItem *)sortItemWithTitle:(NSString *)title action:(NSInteger)action
+                          pattern:(NSString *)pattern selectionOnly:(BOOL)selectionOnly
+                          enabled:(BOOL)enabled {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title
+                                                  action:@selector(sortMenuItemClicked:)
+                                           keyEquivalent:@""];
+    item.target = self;
+    item.tag = action | (selectionOnly ? kSortSelectionOnlyFlag : 0);
+    item.representedObject = pattern;
+    item.enabled = enabled;
+    return item;
+}
+
+// With two or more tracks selected the user means "sort these", so the item
+// reads "Sort Selection" and every entry acts on the selection only — the
+// same split the host makes with its two Sort groups. Otherwise it sorts the
+// whole playlist.
+- (void)appendSortSubmenuToMenu:(NSMenu *)menu selectedCount:(NSUInteger)selectedCount {
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
+    auto pm = playlist_manager::get();
+    if (pm->playlist_get_item_count(playlist) < 2) return;  // nothing to order
+
+    const BOOL selectionOnly = (selectedCount > 1);
+    // A lock that forbids reordering (for example an autoplaylist) makes every
+    // entry a no-op, so show them disabled rather than fail silently.
+    const BOOL enabled = !(pm->playlist_lock_is_present(playlist) &&
+                           (pm->playlist_lock_get_filter_mask(playlist) & playlist_lock::filter_reorder));
+
+    NSMenu *submenu = [[NSMenu alloc] initWithTitle:@"Sort"];
+    [submenu setAutoenablesItems:NO];
+    // First, and not in the host's menu: restoring an album's running order is
+    // the sort people reach for most, and needs both fields. Zero-padded so
+    // disc 10 follows disc 9 and a missing disc number sorts as disc 0; ties
+    // keep their order. Across several albums it interleaves them, as the
+    // host's track-number sort does — it is meant for one album's tracks.
+    [submenu addItem:[self sortItemWithTitle:@"Sort by disc and track number" action:kSortActionPattern
+                                     pattern:@"$num(%discnumber%,3)$num(%tracknumber%,4)"
+                               selectionOnly:selectionOnly enabled:enabled]];
+    [submenu addItem:[self sortItemWithTitle:@"Sort by..." action:kSortActionPrompt
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    [submenu addItem:[self sortItemWithTitle:@"Randomize" action:kSortActionRandomize
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    [submenu addItem:[self sortItemWithTitle:@"Reverse" action:kSortActionReverse
+                                     pattern:nil selectionOnly:selectionOnly enabled:enabled]];
+    static NSArray<NSArray<NSString *> *> *const kFieldSorts = @[
+        @[@"Sort by album", @"%album%"],
+        @[@"Sort by artist", @"%artist%"],
+        @[@"Sort by file path", @"%path%"],
+        @[@"Sort by title", @"%title%"],
+        @[@"Sort by track number", @"%tracknumber%"],
+    ];
+    for (NSArray<NSString *> *entry in kFieldSorts) {
+        [submenu addItem:[self sortItemWithTitle:entry[0] action:kSortActionPattern
+                                         pattern:entry[1] selectionOnly:selectionOnly enabled:enabled]];
+    }
+
+    // Named for what it will do, so sorting a selection is never a surprise
+    // on a playlist too long to see all of.
+    NSMenuItem *sortItem = [[NSMenuItem alloc] initWithTitle:(selectionOnly ? @"Sort Selection" : @"Sort")
+                                                      action:nil
+                                               keyEquivalent:@""];
+    sortItem.submenu = submenu;
+    [menu addItem:sortItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+}
+
+// Ask for a title-formatting pattern, remembering the last one used.
+// Returns nil if the user cancels or enters nothing.
+- (nullable NSString *)promptForSortPattern {
+    std::string last = simplaylist_config::getConfigString(simplaylist_config::kLastSortPattern, "");
+    NSString *initial = [NSString stringWithUTF8String:last.c_str()] ?: @"";
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Sort by";
+    alert.informativeText = @"Title formatting pattern, for example %album artist% - %date% - %album%";
+    [alert addButtonWithTitle:@"Sort"];
+    [alert addButtonWithTitle:@"Cancel"];
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 320, 24)];
+    field.stringValue = initial.length ? initial : @"%artist%";
+    alert.accessoryView = field;
+    alert.window.initialFirstResponder = field;
+
+    if ([alert runModal] != NSAlertFirstButtonReturn) return nil;
+    NSString *pattern = [field.stringValue stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (pattern.length == 0) return nil;
+    simplaylist_config::setConfigString(simplaylist_config::kLastSortPattern, pattern.UTF8String);
+    return pattern;
+}
+
+- (void)sortMenuItemClicked:(NSMenuItem *)sender {
+    const NSInteger action = sender.tag & ~kSortSelectionOnlyFlag;
+    const bool selectionOnly = (sender.tag & kSortSelectionOnlyFlag) != 0;
+    NSString *pattern = [sender.representedObject isKindOfClass:[NSString class]] ? sender.representedObject : nil;
+
+    // Modal, so before resolving the playlist: the prompt spins the run loop,
+    // during which the active playlist can change.
+    if (action == kSortActionPrompt) {
+        pattern = [self promptForSortPattern];
+        if (!pattern) return;
+    }
+
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
+
+    runGuardedSDKAction("Sort playlist", ^{
+        auto pm = playlist_manager::get();
+        // Each sort is one undoable step, like the host's own.
+        pm->playlist_undo_backup(playlist);
+
+        switch (action) {
+            case kSortActionRandomize:
+                // A null pattern is the SDK's documented randomize.
+                pm->playlist_sort_by_format(playlist, nullptr, selectionOnly);
+                break;
+            case kSortActionReverse: {
+                const t_size count = pm->playlist_get_item_count(playlist);
+                std::vector<size_t> positions;
+                if (selectionOnly) {
+                    bit_array_bittable mask(count);
+                    pm->playlist_get_selection_mask(playlist, mask);
+                    for (t_size i = 0; i < count; i++) if (mask.get(i)) positions.push_back(i);
+                } else {
+                    positions.resize(count);
+                    for (t_size i = 0; i < count; i++) positions[i] = i;
+                }
+                std::vector<size_t> order = simplaylist::planReverse(count, positions);
+                pm->playlist_reorder_items(playlist, order.data(), order.size());
+                break;
+            }
+            case kSortActionPrompt:
+            case kSortActionPattern:
+                if (pattern.length) {
+                    pm->playlist_sort_by_format(playlist, pattern.UTF8String, selectionOnly);
+                }
+                break;
+            default:
+                break;
+        }
+    });
+}
+
 - (void)appendFocusPlayingNowItemToMenu:(NSMenu *)menu {
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -2508,6 +2840,10 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
     });
 }
 
+- (void)removeSelectedTracksClicked:(NSMenuItem *)sender {
+    [self removeSelectedTracks];
+}
+
 - (void)reloadInfoClicked:(NSMenuItem *)sender {
     if (_contextMenuHandles.get_count() == 0) return;
 
@@ -2554,15 +2890,45 @@ static void runGuardedSDKAction(const char *what, void (NS_NOESCAPE ^block)(void
 }
 
 - (void)playlistViewDidRequestRemoveSelection:(SimPlaylistView *)view {
-    // Empty selection: nothing to remove. Without this guard, lastIndex below
-    // returns NSNotFound and the focus-recalculation loop runs ~2^63 times,
-    // freezing the app.
-    if (view.selectedIndices.count == 0) return;
+    [self removeSelectedTracks];
+}
 
+// Remove the currently selected tracks from the active playlist. Shared by the
+// context-menu "Remove" item and the Delete key. Removal is performed directly
+// against the playlist (reliable across UI ports); we also commit the view
+// selection to the core first so foobar2000's own "Edit / Selection / Remove"
+// command and its shortcut operate on exactly the same tracks when invoked.
+- (void)removeSelectedTracks {
+    SimPlaylistView *view = _playlistView;
+    // Empty selection: nothing to remove. Without this guard, lastIndex in
+    // removeSelectedTracksFromView: returns NSNotFound and the focus-recalculation
+    // loop runs ~2^63 times, freezing the app.
+    if (!view || view.selectedIndices.count == 0) return;
+
+    // selectedIndices are row numbers in the playlist on screen. If the active
+    // playlist has moved on and the panel has not caught up yet, removing them
+    // from the active one would delete unrelated tracks from another playlist.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
     auto pm = playlist_manager::get();
-    t_size activePlaylist = pm->get_active_playlist();
 
-    if (activePlaylist == SIZE_MAX) return;
+    // Keep the core's active-playlist selection in sync with what's highlighted
+    // here (the view normally syncs asynchronously) so the native
+    // "Edit / Selection / Remove" command targets the same tracks.
+    t_size itemCount = pm->playlist_get_item_count(activePlaylist);
+    __block bit_array_bittable selMask(itemCount);
+    [view.selectedIndices enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx < itemCount) selMask.set((t_size)idx, true);
+    }];
+    pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), selMask);
+
+    [self removeSelectedTracksFromView:view];
+}
+
+- (void)removeSelectedTracksFromView:(SimPlaylistView *)view {
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
+    auto pm = playlist_manager::get();
 
     // Check if playlist is locked
     if (pm->playlist_lock_is_present(activePlaylist)) {
@@ -2656,10 +3022,11 @@ static BOOL isRemotePath(const char *path) {
 }
 
 - (NSImage *)playlistView:(SimPlaylistView *)view albumArtForGroupAtPlaylistIndex:(NSInteger)playlistIndex {
-    if (playlistIndex < 0 || _currentPlaylistIndex < 0) return nil;
+    if (playlistIndex < 0) return nil;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return nil;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     metadb_handle_ptr handle;
     if (!pm->playlist_get_item_handle(handle, activePlaylist, (t_size)playlistIndex)) {
@@ -2720,9 +3087,10 @@ static BOOL isRemotePath(const char *path) {
 }
 
 - (void)playlistView:(SimPlaylistView *)view didRequestQueueTracks:(NSIndexSet *)playlistIndices {
-    if (_currentPlaylistIndex < 0 || playlistIndices.count == 0) return;
+    if (playlistIndices.count == 0) return;
+    t_size playlist;
+    if (![self resolveActivePlaylist:&playlist]) return;
     auto pm = playlist_manager::get();
-    t_size playlist = (t_size)_currentPlaylistIndex;
     // The view selection can be stale relative to the playlist - skip
     // out-of-range indices, matching the other selection consumers.
     t_size itemCount = pm->playlist_get_item_count(playlist);
@@ -2885,13 +3253,44 @@ static NSString *const kQueuePositionSentinel = @"__queue_position__";
 // Single writer for the persisted column layout. An empty serialization must
 // never reach setConfigString: writing "" is the DELETE idiom (ConfigHelper.h),
 // so a failed serialize would wipe the user's columns back to the defaults.
+// Every write of the visible column layout goes through the store's single
+// entry point, which refuses to persist a failed serialisation — storing the
+// empty string would delete the layout rather than save it.
 - (void)persistColumns {
-    NSString *columnsJSON = [ColumnDefinition columnsToJSON:_columns];
-    if (columnsJSON.length == 0) {
-        FB2K_console_formatter() << "[SimPlaylist] Column layout not saved: serialization failed";
-        return;
+    [ColumnDefinition persistVisibleColumns:_columns reason:"panel column layout"];
+}
+
+// Read the visible layout from config into _columns, applying whatever repairs
+// the store reports and writing them back exactly once.
+//
+// The store used to persist those repairs itself, from inside a getter, which
+// left kColumns with four writers and no owner. The controller holds the live
+// layout, so the decision to save belongs here.
+// Load the preset list and the active index from config.
+//
+// The single path for both, used at init and on every settings change. init
+// used to assign _activePresetIndex = 0 (unchanged since the initial commit)
+// and only the settings handler read the saved index, so after every restart
+// panels grouped by preset 0 while Preferences showed the user's real choice —
+// until the first unrelated settings change happened to fix it. The handler
+// also re-parsed the JSON with its own fallback policy (empty list, grouping
+// silently off) where the Store falls back to the built-in presets. Both now
+// go through the Store, and the index is clamped here rather than trusted: an
+// out-of-range value would otherwise yield a nil preset and no grouping.
+- (void)reloadPresetsFromConfig {
+    _groupPresets = [GroupPreset defaultPresets];
+    NSInteger index = [GroupPreset defaultActivePresetIndex];
+    if (index < 0 || index >= (NSInteger)_groupPresets.count) index = 0;
+    _activePresetIndex = index;
+}
+
+- (void)reloadColumnsFromConfig {
+    BOOL needsPersist = NO;
+    _columns = [ColumnDefinition loadVisibleColumnsNeedingPersist:&needsPersist];
+    [self recompileColumnScripts];
+    if (needsPersist) {
+        [self persistColumns];
     }
-    simplaylist_config::setConfigString(simplaylist_config::kColumns, columnsJSON.UTF8String);
 }
 
 - (void)headerBar:(SimPlaylistHeaderBar *)bar didFinishResizingColumn:(NSInteger)columnIndex {
@@ -3099,10 +3498,10 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 }
 
 - (void)playlistView:(SimPlaylistView *)view didReorderRows:(NSIndexSet *)sourceRowIndices toRow:(NSInteger)destinationRow operation:(NSDragOperation)operation {
-    if (_currentPlaylistIndex < 0) return;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     BOOL isDuplicate = (operation == NSDragOperationCopy);
 
     // Check if playlist is locked
@@ -3200,9 +3599,12 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row {
     if (_currentPlaylistIndex < 0) return;
     if (urls.count == 0) return;
+    // Previously unguarded: a -1 _currentPlaylistIndex cast straight to t_size
+    // became SIZE_MAX and was handed to the SDK as a playlist number.
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
 
     // Check if playlist is locked
     if (pm->playlist_lock_is_present(activePlaylist)) {
@@ -3220,11 +3622,46 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
     importFilesToPlaylistAsync(activePlaylist, insertAt, urls);
 }
 
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedLocations:(NSArray<NSString *> *)paths subsongs:(NSArray<NSNumber *> *)subsongs atRow:(NSInteger)row {
+    if (paths.count == 0 || paths.count != subsongs.count) return;
+
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return;
+    auto pm = playlist_manager::get();
+
+    if (pm->playlist_lock_is_present(activePlaylist)) {
+        t_uint32 lockMask = pm->playlist_lock_get_filter_mask(activePlaylist);
+        if (lockMask & playlist_lock::filter_add) {
+            return;
+        }
+    }
+
+    NSInteger dropIdx = insertionIndexForDropRow(view, row);
+    t_size insertAt = (dropIdx >= 0) ? (t_size)dropIdx : SIZE_MAX;  // SIZE_MAX: append at end
+
+    // Direct handles keep source order and exact subsongs; process_locations would expand cue sheets.
+    auto db = metadb::get();
+    metadb_handle_list handles;
+    handles.prealloc(paths.count);
+    for (NSUInteger i = 0; i < paths.count; i++) {
+        handles.add_item(db->handle_create(paths[i].UTF8String, subsongs[i].unsignedIntValue));
+    }
+
+    pm->playlist_undo_backup(activePlaylist);
+    pm->playlist_set_selection(activePlaylist, pfc::bit_array_true(), pfc::bit_array_false());
+    t_size first = pm->playlist_insert_items(activePlaylist, insertAt, handles, pfc::bit_array_val(true));
+    if (first != SIZE_MAX) {
+        pm->playlist_set_focus_item(activePlaylist, first);
+    } else {
+        FB2K_console_formatter() << "[SimPlaylist] Inserting " << handles.get_count() << " dropped tracks failed";
+    }
+}
+
 - (NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices {
-    if (_currentPlaylistIndex < 0) return nil;
+    t_size activePlaylist;
+    if (![self resolveActivePlaylist:&activePlaylist]) return nil;
 
     auto pm = playlist_manager::get();
-    t_size activePlaylist = (t_size)_currentPlaylistIndex;
     t_size itemCount = pm->playlist_get_item_count(activePlaylist);
 
     NSMutableArray<NSString *> *paths = [NSMutableArray arrayWithCapacity:indices.count];
@@ -3249,9 +3686,11 @@ static NSInteger insertionIndexForDropRow(SimPlaylistView *view, NSInteger row) 
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedPaths:(NSArray<NSString *> *)paths fromPlaylist:(NSInteger)sourcePlaylist sourceIndices:(NSIndexSet *)sourceIndices atRow:(NSInteger)row operation:(NSDragOperation)operation {
     if (_currentPlaylistIndex < 0) return;
     if (paths.count == 0) return;
+    // Previously unguarded, same SIZE_MAX hazard as the URL drop above.
+    t_size destPlaylist;
+    if (![self resolveActivePlaylist:&destPlaylist]) return;
 
     auto pm = playlist_manager::get();
-    t_size destPlaylist = (t_size)_currentPlaylistIndex;
     BOOL isMove = (operation == NSDragOperationMove);
 
     // Check if destination playlist is locked for add

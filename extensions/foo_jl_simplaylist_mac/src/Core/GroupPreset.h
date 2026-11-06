@@ -62,8 +62,8 @@ typedef NS_ENUM(NSInteger, GroupDisplayType) {
 // Get currently active preset index from JSON
 + (NSInteger)activeIndexFromJSON:(NSString *)jsonString;
 
-// Default presets
-+ (NSArray<GroupPreset *> *)defaultPresets;
+// Config-backed accessors (+defaultPresets, +defaultActivePresetIndex) live in
+// GroupPresetStore.h so this file stays free of the foobar2000 SDK.
 
 // Convert display type from/to string
 + (GroupDisplayType)displayTypeFromString:(NSString *)str;

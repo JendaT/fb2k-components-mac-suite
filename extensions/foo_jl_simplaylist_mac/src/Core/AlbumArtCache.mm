@@ -331,8 +331,12 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
                             if ([fm fileExistsAtPath:coverPath]) {
                                 image = [[NSImage alloc] initWithContentsOfFile:coverPath];
                                 if (image) {
+                                    // resizeImage: returns nil for an image it
+                                    // cannot render; keep trying the remaining
+                                    // candidate names rather than giving up on
+                                    // the directory because of one bad file.
                                     image = [self resizeImage:image toMaxSize:512];
-                                    break;
+                                    if (image) break;
                                 }
                             }
                         }
@@ -470,17 +474,47 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
     }];
 }
 
-- (NSImage *)resizeImage:(NSImage *)sourceImage toMaxSize:(CGFloat)maxSize {
-    NSSize originalSize = sourceImage.size;
+// Pixel dimensions of the largest representation, or NSZeroSize if none of the
+// representations report usable pixel counts.
+//
+// NSImage.size is in *points*: it is the pixel count divided by the DPI recorded
+// in the file's metadata. A cover with huge pixel dimensions and an absurd DPI
+// therefore reports a sub-pixel size, which used to produce a zero-size resize
+// target and send the full-resolution image onward — precisely the case the
+// byte budget exists to prevent. Pixels are the quantity that determines both
+// the decode cost and the resident bytes, so scale against them.
+static NSSize LargestPixelSize(NSImage *image) {
+    NSSize best = NSZeroSize;
+    for (NSImageRep *rep in image.representations) {
+        if (rep.pixelsWide <= 0 || rep.pixelsHigh <= 0) continue;  // vector rep
+        if ((CGFloat)rep.pixelsWide * rep.pixelsHigh > best.width * best.height) {
+            best = NSMakeSize(rep.pixelsWide, rep.pixelsHigh);
+        }
+    }
+    return best;
+}
+
+// Returns nil when the image cannot be rendered. Every failure path here fails
+// *closed*: returning the source image instead would hand back a
+// full-resolution decode that the caller believes is capped at maxSize, which
+// defeats the cache's byte budget. The callers already treat nil as "no art".
+- (nullable NSImage *)resizeImage:(NSImage *)sourceImage toMaxSize:(CGFloat)maxSize {
+    NSSize originalSize = LargestPixelSize(sourceImage);
     if (originalSize.width <= 0 || originalSize.height <= 0) {
-        return sourceImage;  // Degenerate metadata — nothing sane to render
+        // No bitmap representation reported pixel dimensions. Fall back to the
+        // point size so genuine vector art (rare for cover art) still renders.
+        originalSize = sourceImage.size;
+    }
+    if (originalSize.width <= 0 || originalSize.height <= 0) {
+        return nil;  // Degenerate metadata — nothing sane to render
     }
     // Always render into a fresh bitmap rep, even when no downscale is needed,
     // so the JPEG/PNG decode cost is paid here on the load queue instead of on
     // the main thread at first draw.
     CGFloat scale = MIN(1.0, MIN(maxSize / originalSize.width, maxSize / originalSize.height));
 
-    NSSize newSize = NSMakeSize(round(originalSize.width * scale), round(originalSize.height * scale));
+    NSSize newSize = NSMakeSize(MAX(1.0, round(originalSize.width * scale)),
+                                MAX(1.0, round(originalSize.height * scale)));
 
     NSBitmapImageRep *rep = [[NSBitmapImageRep alloc]
         initWithBitmapDataPlanes:NULL
@@ -495,14 +529,14 @@ static NSUInteger EstimatedImageBytes(NSImage *image) {
                     bitsPerPixel:0];
     // Allocation can fail on hostile/huge decoded images; passing nil onward
     // would raise on a background queue thread.
-    if (!rep) return sourceImage;
+    if (!rep) return nil;
     rep.size = newSize;
 
     [NSGraphicsContext saveGraphicsState];
     NSGraphicsContext *ctx = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
     if (!ctx) {
         [NSGraphicsContext restoreGraphicsState];
-        return sourceImage;
+        return nil;
     }
     [NSGraphicsContext setCurrentContext:ctx];
     ctx.imageInterpolation = NSImageInterpolationHigh;

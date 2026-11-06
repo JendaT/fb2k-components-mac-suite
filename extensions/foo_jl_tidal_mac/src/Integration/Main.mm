@@ -7,12 +7,15 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #include "../Core/TidalConfig.h"
 #include "../Core/KeychainHelper.h"
 #include "../Core/StreamCache.h"
 #include "TidalDashCache.h"
 #include "TidalLibrarySaver.h"
+#include "TidalLookupService.h"
+#include "../API/TidalAPI.h"
 #include "../Services/TidalAuthService.h"
 #include "../Services/TidalStreamResolver.h"
 #import "../UI/TidalPreferencesController.h"
@@ -34,8 +37,24 @@ namespace {
 JL_COMPONENT_ABOUT(
     "Tidal Integration",
     TIDAL_VERSION,
-    "Stream Tidal content directly in your playlist.\n"
-    "Supports HiFi and lossless audio quality with automatic DRM fallback."
+    "Stream Tidal tracks in your playlists and browse the Tidal catalog.\n"
+    "Requires a Tidal account; quality depends on your subscription.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
+    "Features:\n"
+    "- Sign in with a device code; tokens stored in Keychain\n"
+    "- Plays tidal:// and tidal.com track links\n"
+    "- Quality from 96 kbps AAC up to 24-bit/192 kHz FLAC\n"
+    "- Steps down in quality on DRM or subscription limits\n"
+    "- Hi-res tracks start while they download\n"
+    "- Prefetches the next track to cut start delay\n"
+    "- Search tracks, albums and artists\n"
+    "- Browse favorite tracks, albums and playlists\n"
+    "- Drag tracks or whole albums into playlists\n"
+    "- Pin a quality per playlist entry\n"
+    "- Playlist import and pull/push sync with Tidal\n"
+    "- Track tags (ISRC, BPM, date, copyright, ReplayGain) and cover art\n"
+    "- BPM and key lookup for other components"
 );
 
 // Validate bundle filename
@@ -78,6 +97,12 @@ public:
         // Shut down services while fb2k infrastructure is still alive.
         // If deferred to static destructors, configStore will already be
         // torn down and any logDebug/configStore access will uBugCheck.
+        // Cancel in-flight requests first: their completions read config and
+        // log, and a response landing after teardown would re-enter services
+        // that are already gone.
+        // Lookups first: their answers land through the API's completions.
+        shutdownLookupService();
+        [[JLTidalAPI shared] cancelAllRequests];
         [[JLTidalStreamResolver shared] shutdown];
         [[JLTidalDashCache shared] shutdown];
         [[JLTidalLibrarySaver shared] shutdown];
@@ -146,11 +171,7 @@ public:
     }
 
     bool match_name(const char* name) override {
-        return strcmp(name, "Tidal Browser") == 0 ||
-               strcmp(name, "tidal-browser") == 0 ||
-               strcmp(name, "tidal_browser") == 0 ||
-               strcmp(name, "TidalBrowser") == 0 ||
-               strcmp(name, "foo_jl_tidal_browser") == 0;
+        return JLMatchesLayoutName(name);
     }
 
     fb2k::stringRef get_name() override {

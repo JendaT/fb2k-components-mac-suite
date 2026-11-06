@@ -3,8 +3,10 @@
 //  foo_simplaylist_mac
 //
 
+// Deliberately no ConfigHelper import: this file is the pure model + JSON codec
+// and must stay compilable without the foobar2000 SDK so the unit tests can
+// link it standalone. Config-backed accessors live in GroupPresetStore.mm.
 #import "GroupPreset.h"
-#import "ConfigHelper.h"
 
 @implementation SubgroupDefinition
 
@@ -48,41 +50,6 @@
         case GroupDisplayTypeArtist: return @"artist";
         default: return @"text";
     }
-}
-
-+ (NSArray<GroupPreset *> *)defaultPresets {
-    // First try to load from saved config
-    std::string savedJSON = simplaylist_config::getConfigString(
-        simplaylist_config::kGroupPresets, "");
-
-    if (!savedJSON.empty()) {
-        NSString *jsonString = [NSString stringWithUTF8String:savedJSON.c_str()];
-        NSArray<GroupPreset *> *presets = [self presetsFromJSON:jsonString];
-        if (presets.count > 0) {
-            return presets;
-        }
-    }
-
-    // Fall back to hardcoded default JSON
-    const char* jsonCStr = simplaylist_config::getDefaultGroupPresetsJSON();
-    NSString *jsonString = [NSString stringWithUTF8String:jsonCStr];
-
-    NSArray<GroupPreset *> *presets = [self presetsFromJSON:jsonString];
-    if (presets.count > 0) {
-        return presets;
-    }
-
-    // Final fallback: create basic preset
-    GroupPreset *basic = [GroupPreset presetWithName:@"Album"];
-    basic.sortingPattern = @"%path_sort%";
-    basic.headerPattern = @"[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]";
-    basic.groupColumnPattern = @"[%album%]";
-    basic.groupColumnDisplayType = GroupDisplayTypeFront;
-    basic.subgroups = @[
-        [SubgroupDefinition subgroupWithPattern:@"[Disc %discnumber%]" displayType:GroupDisplayTypeText]
-    ];
-
-    return @[basic];
 }
 
 + (NSInteger)activeIndexFromJSON:(NSString *)jsonString {
@@ -241,13 +208,21 @@
     return @"";
 }
 
+// Mirror image of -subgroupPattern: both address subgroups[0] and nothing else.
+//
+// The empty case used to assign @[], discarding the whole array. A preset whose
+// JSON defines two or more subgroups therefore lost all of them the first time
+// the single-line preferences field was cleared, and since the UI only ever
+// surfaces subgroup 0 the user could not see the others existed, let alone that
+// they had gone. Clearing element 0's pattern instead is what the getter's
+// contract implies, loses nothing, and still reads back as "" — consumers gate
+// on `subgroupPattern.length > 0`, so an empty element 0 disables subgrouping
+// exactly as an empty array did.
 - (void)setSubgroupPattern:(NSString *)pattern {
-    if (pattern.length == 0) {
-        self.subgroups = @[];
-    } else if (self.subgroups.count > 0) {
+    if (self.subgroups.count > 0) {
         SubgroupDefinition *sub = self.subgroups[0];
-        sub.pattern = pattern;
-    } else {
+        sub.pattern = pattern ?: @"";
+    } else if (pattern.length > 0) {
         self.subgroups = @[[SubgroupDefinition subgroupWithPattern:pattern displayType:GroupDisplayTypeText]];
     }
 }

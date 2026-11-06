@@ -9,15 +9,19 @@
 #import "../Services/TidalAuthService.h"
 #import "../Core/TidalConfig.h"
 #import "../Core/StreamCache.h"
+#import "../Integration/TidalInputDecoder.h"
 #import "../API/TidalConstants.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 // Single source of truth for the quality popup: index in this array ==
 // popup item index. Used by both loadSettings and qualityChanged: so the
 // two directions of the mapping cannot drift apart.
+// HI_RES (MQA) is deliberately absent: TIDAL retired MQA on 2024-07-24 and the
+// official SDK marks the value deprecated. A profile that still stores it is
+// migrated to LOSSLESS by TidalConfig::getPreferredQuality.
 static const JLTidalQuality kQualityPopupOrder[] = {
     JLTidalQualityHiResLossless,
-    JLTidalQualityHiRes,
     JLTidalQualityLossless,
     JLTidalQualityHigh,
     JLTidalQualityLow,
@@ -50,8 +54,10 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
 
 // Settings
 @property (nonatomic, strong) NSPopUpButton *qualityPopup;
+@property (nonatomic, strong) NSPopUpButton *signInDisplayPopup;
 @property (nonatomic, strong) NSButton *debugCheckbox;
 @property (nonatomic, strong) NSButton *dashCheckbox;
+@property (nonatomic, strong) NSButton *replayGainCheckbox;
 @property (nonatomic, strong) NSTextField *libraryPathField;
 
 // Cached user info
@@ -131,6 +137,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     // ===== Title =====
     NSTextField *title = JLCreatePreferencesTitle(@"Tidal Integration");
     addRow(title, 30);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // ===== Account Section =====
     NSTextField *accountLabel = [NSTextField labelWithString:@"Account"];
@@ -232,7 +239,6 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
 
     self.qualityPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [self.qualityPopup addItemWithTitle:@"HiFi Plus (up to 24-bit/192kHz)"];
-    [self.qualityPopup addItemWithTitle:@"HiFi (up to 24-bit/96kHz MQA)"];
     [self.qualityPopup addItemWithTitle:@"Lossless (16-bit/44.1kHz FLAC)"];
     [self.qualityPopup addItemWithTitle:@"High (320kbps AAC)"];
     [self.qualityPopup addItemWithTitle:@"Normal (96kbps AAC)"];
@@ -246,7 +252,20 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     qualityNote.textColor = [NSColor tertiaryLabelColor];
     qualityNote.font = [NSFont systemFontOfSize:10];
     [qualityNote.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
-    addIndentedRow(qualityNote, 36 + sectionGap);
+    addIndentedRow(qualityNote, 36);
+
+    self.replayGainCheckbox = [NSButton checkboxWithTitle:@"Use TIDAL ReplayGain"
+                                                   target:self
+                                                   action:@selector(replayGainChanged:)];
+    addIndentedRow(self.replayGainCheckbox, rowHeight);
+
+    NSTextField *replayGainNote = [NSTextField wrappingLabelWithString:
+        @"Turn off if your local files have no ReplayGain tags: with foobar2000's "
+        @"ReplayGain processing on, Tidal tracks would otherwise play quieter."];
+    replayGainNote.textColor = [NSColor tertiaryLabelColor];
+    replayGainNote.font = [NSFont systemFontOfSize:10];
+    [replayGainNote.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
+    addIndentedRow(replayGainNote, 36 + sectionGap);
 
     // ===== Debug Section =====
     NSTextField *debugLabel = [NSTextField labelWithString:@"Advanced"];
@@ -262,9 +281,27 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     self.dashCheckbox = [NSButton checkboxWithTitle:@"Download LOSSLESS via DASH segments"
                                              target:self
                                              action:@selector(dashChanged:)];
-    addIndentedRow(self.dashCheckbox, rowHeight + sectionGap);
+    addIndentedRow(self.dashCheckbox, rowHeight + 4);
+
+    NSTextField *signInDisplayLabel = [NSTextField labelWithString:@"Browser status line:"];
+    signInDisplayLabel.font = [NSFont systemFontOfSize:11];
+    signInDisplayLabel.textColor = [NSColor labelColor];
+    addIndentedRow(signInDisplayLabel, rowHeight - 4);
+
+    self.signInDisplayPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    // Order must match tidal::SignInDisplay (Hidden, Email, Username)
+    [self.signInDisplayPopup addItemWithTitle:@"Show nothing"];
+    [self.signInDisplayPopup addItemWithTitle:@"Show email"];
+    [self.signInDisplayPopup addItemWithTitle:@"Show username"];
+    [self.signInDisplayPopup setTarget:self];
+    [self.signInDisplayPopup setAction:@selector(signInDisplayChanged:)];
+    addIndentedRow(self.signInDisplayPopup, rowHeight + sectionGap);
 
     // ===== Library Section (personal music.hq export) =====
+    // Hidden behind tidal.TI_download_on in the fb2k config store; see
+    // docs/hidden-options.md. Built only when enabled, so the rows below simply
+    // do not advance the layout when the feature is off.
+    if (tidal::TidalConfig::isDownloadFeatureEnabled()) {
     NSTextField *libraryLabel = [NSTextField labelWithString:@"Library"];
     libraryLabel.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     libraryLabel.textColor = [NSColor secondaryLabelColor];
@@ -303,6 +340,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     libraryNote.font = [NSFont systemFontOfSize:10];
     [libraryNote.widthAnchor constraintLessThanOrEqualToConstant:380].active = YES;
     addIndentedRow(libraryNote, 40);
+    }  // isDownloadFeatureEnabled
 
     self.view = container;
 }
@@ -324,10 +362,19 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     // DASH experimental toggle
     self.dashCheckbox.state = tidal::TidalConfig::isDASHEnabled() ? NSControlStateValueOn : NSControlStateValueOff;
 
+    self.replayGainCheckbox.state = tidal::TidalConfig::isReplayGainEnabled()
+        ? NSControlStateValueOn : NSControlStateValueOff;
+
+    // Browser status line (index order matches tidal::SignInDisplay)
+    [self.signInDisplayPopup selectItemAtIndex:tidal::TidalConfig::getSignInDisplay()];
+
     [self updateLibraryPathField];
 }
 
 - (void)updateLibraryPathField {
+    // Not built when the download feature is gated off
+    if (!self.libraryPathField) return;
+
     std::string root = tidal::TidalConfig::getLibraryRoot();
     if (root.empty()) {
         self.libraryPathField.stringValue = @"Not configured";
@@ -559,7 +606,7 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
 
     // Try refreshing the token first
     __weak typeof(self) weakSelf = self;
-    [[JLTidalAuthService shared] refreshTokenIfNeededWithCompletion:^(BOOL success) {
+    [[JLTidalAuthService shared] refreshTokenForced:YES completion:^(BOOL success) {
         dispatch_async(dispatch_get_main_queue(), ^{
             typeof(self) strongSelf = weakSelf;
             if (!strongSelf) return;
@@ -569,9 +616,26 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
                 // State was already Authenticated, so setState: won't fire a notification.
                 // Must update UI explicitly.
                 [strongSelf updateAuthUI];
-            } else {
-                // Refresh failed - sign out cleanly, then start full OAuth flow
-                tidal::logInfo("Reconnect: refresh failed, starting full OAuth flow");
+                return;
+            }
+
+            // The outage that makes the user click Reconnect is usually the
+            // same outage that makes the refresh fail, so wiping the session
+            // here turned a self-healing state into a full re-pairing -- on a
+            // network that cannot complete a device flow either. Only a
+            // rejected grant is worth discarding the tokens for.
+            if (![[JLTidalAuthService shared] lastRefreshWasTerminal]) {
+                NSString *detail = [[JLTidalAuthService shared] lastRefreshError] ?: @"unknown error";
+                tidal::logInfo([[NSString stringWithFormat:
+                                 @"Reconnect: refresh failed transiently (%@); keeping the session",
+                                 detail] UTF8String]);
+                [strongSelf updateAuthUI];
+                return;
+            }
+
+            {
+                // Refresh rejected - sign out cleanly, then start full OAuth flow
+                tidal::logInfo("Reconnect: refresh token rejected, starting full OAuth flow");
                 [[JLTidalAuthService shared] signOut];
                 [[JLTidalAuthService shared] startAuthenticationWithCompletion:^(BOOL authSuccess, NSError *error) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -600,6 +664,13 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     tidal::TidalConfig::setDebugLoggingEnabled(enabled);
 }
 
+- (void)signInDisplayChanged:(id)sender {
+    tidal::TidalConfig::setSignInDisplay((int)self.signInDisplayPopup.indexOfSelectedItem);
+    // The browser panel refreshes its status line on this notification.
+    [[NSNotificationCenter defaultCenter] postNotificationName:JLTidalAuthStateDidChangeNotification
+                                                        object:nil];
+}
+
 - (void)chooseLibraryRoot:(id)sender {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     panel.canChooseFiles = NO;
@@ -618,12 +689,36 @@ static JLTidalQuality qualityForPopupIndex(NSInteger index) {
     [self updateLibraryPathField];
 }
 
+- (void)replayGainChanged:(id)sender {
+    bool enabled = (self.replayGainCheckbox.state == NSControlStateValueOn);
+    tidal::TidalConfig::setReplayGainEnabled(enabled);
+    if (enabled) {
+        // Stored info cannot be restored without re-reading it; playback picks
+        // the values up at open, and Reload info brings them back elsewhere.
+        tidal::logInfo("TIDAL ReplayGain on: applies from the next track opened");
+        return;
+    }
+    // Stored info carries the values the info reader wrote; clear them now
+    // rather than waiting for each track to be read again.
+    try {
+        size_t changed = tidal::stripStoredTidalReplayGain();
+        tidal::logInfo([[NSString stringWithFormat:@"TIDAL ReplayGain off: cleared stored values on %zu track(s)",
+                         changed] UTF8String]);
+    } catch (const std::exception &e) {
+        tidal::logError((std::string("TIDAL ReplayGain off: could not clear stored values: ") + e.what()).c_str());
+    }
+}
+
 - (void)dashChanged:(id)sender {
     bool enabled = (self.dashCheckbox.state == NSControlStateValueOn);
     tidal::TidalConfig::setDASHEnabled(enabled);
     // Stream cache may hold pre-DASH entries — clear so the next play re-resolves
     // and picks up DASH-vs-direct selection based on the new setting.
     tidal::StreamCache::shared().clear();
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

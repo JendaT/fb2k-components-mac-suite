@@ -47,6 +47,14 @@ extern NSString *const JLTidalLibraryCompilationsSlot;  // "[Compilations]"
 + (NSString *)compilationFolderNameForYear:(nullable NSString *)year
                                      title:(nullable NSString *)title;
 
+/// The album folder's own name, with no slot or artist level above it:
+/// "Artist [YYYY] Title", or "VA [YYYY] Title" for a compilation. Used when
+/// the user picks the destination folder by hand ("Save to folder...").
++ (NSString *)albumFolderNameForArtist:(nullable NSString *)artist
+                                  year:(nullable NSString *)year
+                            albumTitle:(nullable NSString *)title
+                         isCompilation:(BOOL)isCompilation;
+
 /// Relative album path below a genre-collection folder, per the slot rules:
 ///   compilation           -> "[Compilations]/VA [YYYY] Title"
 ///   artistFolder non-nil  -> "<artistFolder>/Artist [YYYY] Title"

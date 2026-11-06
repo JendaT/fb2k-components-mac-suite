@@ -119,6 +119,37 @@ static uint64_t nextRand() {
     return g_rng;
 }
 
+// Naive ground truth for planReverse: pull the items at the (sanitised)
+// positions out, reverse that list, and write it back into the same slots.
+static std::vector<size_t> simulateReverse(size_t itemCount, std::vector<size_t> positions) {
+    std::set<size_t> uniq;
+    for (size_t p : positions) if (p < itemCount) uniq.insert(p);
+    std::vector<size_t> slots(uniq.begin(), uniq.end());
+    std::vector<size_t> list(itemCount);
+    for (size_t i = 0; i < itemCount; i++) list[i] = i;
+    std::vector<size_t> picked;
+    for (size_t s : slots) picked.push_back(list[s]);
+    std::reverse(picked.begin(), picked.end());
+    for (size_t k = 0; k < slots.size(); k++) list[slots[k]] = picked[k];
+    return list;
+}
+
+static void checkReverse(size_t n, const std::vector<size_t> &positions, const char *what) {
+    std::vector<size_t> got = simplaylist::planReverse(n, positions);
+    std::vector<size_t> want = simulateReverse(n, positions);
+    g_checks++;
+    if (got != want) {
+        g_failures++;
+        printf("FAIL [reverse] %s (n=%zu, %zu positions)\n", what, n, positions.size());
+    }
+    // Always a valid permutation of 0..n-1, whatever the input.
+    std::vector<size_t> sorted = got;
+    std::sort(sorted.begin(), sorted.end());
+    bool perm = sorted.size() == n;
+    for (size_t i = 0; perm && i < n; i++) perm = (sorted[i] == i);
+    CHECK(perm, "reverse yields a permutation");
+}
+
 int main() {
     // Hand-built edge cases
     checkCase(5, {1}, 4, "single forward");
@@ -161,6 +192,39 @@ int main() {
         }
         size_t dest = nextRand() % (n + 1);  // 0..n inclusive (n = end)
         checkCase(n, sources, dest, "random");
+    }
+
+    // --- planReverse ---
+    g_context = "reverse";
+    {
+        std::vector<size_t> all = {0, 1, 2, 3, 4};
+        std::vector<size_t> got = simplaylist::planReverse(5, all);
+        CHECK((got == std::vector<size_t>{4, 3, 2, 1, 0}), "whole list reversed");
+        CHECK((simplaylist::planReverse(5, {}) == std::vector<size_t>{0, 1, 2, 3, 4}),
+              "no positions is the identity");
+        CHECK((simplaylist::planReverse(5, {1, 3}) == std::vector<size_t>{0, 3, 2, 1, 4}),
+              "only the selected slots swap; the item between them stays");
+        CHECK((simplaylist::planReverse(5, {2}) == std::vector<size_t>{0, 1, 2, 3, 4}),
+              "a single selected item stays put");
+        CHECK(simplaylist::planReverse(0, {}).empty(), "empty playlist");
+        // Reversal is its own inverse: applying the permutation twice restores order.
+        std::vector<size_t> once = simplaylist::planReverse(6, {0, 2, 3, 5});
+        std::vector<size_t> twice(6);
+        for (size_t i = 0; i < 6; i++) twice[i] = once[once[i]];
+        CHECK((twice == std::vector<size_t>{0, 1, 2, 3, 4, 5}), "reverse twice is the identity");
+    }
+    // Hostile input: unsorted, duplicated and out-of-range positions (a stale selection).
+    checkReverse(5, {3, 1}, "unsorted");
+    checkReverse(5, {1, 1, 3}, "duplicate");
+    checkReverse(5, {1, 9, 3}, "out of range ignored");
+    checkReverse(3, {7, 8}, "all out of range");
+    for (int iter = 0; iter < 2000; iter++) {
+        size_t n = nextRand() % 30;
+        std::vector<size_t> positions;
+        for (size_t i = 0; i < n + 3; i++) {
+            if (nextRand() % 3 == 0) positions.push_back(nextRand() % (n + 3));
+        }
+        checkReverse(n, positions, "random");
     }
 
     TEST_MAIN_END();

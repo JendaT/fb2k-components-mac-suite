@@ -149,10 +149,12 @@ typedef NS_ENUM(NSInteger, FpliteLineResult) {
 // --- Metadb migration SQL ---
 
 // Build the SQL script that moves cached rows from each dead UUID to its
-// live target across the main metadb table and all metadb_index_* tables:
-// copy under the rewritten name (INSERT OR IGNORE; both tables have a unique
-// primary key on the name/filename column), then DELETE the source rows in
-// the same transaction so dead-UUID copies do not accumulate across remounts.
+// live target across the main metadb table and all metadb_index_* tables by
+// renaming them in place (UPDATE OR IGNORE; both tables have a unique primary
+// key on the name/filename column), then DELETEing whatever the rename could
+// not claim, so dead-UUID copies do not accumulate across remounts.
+// Renaming rather than copying keeps the file from doubling in size, which in
+// turn removes the VACUUM that used to be needed to give the pages back.
 // Each DELETE only removes rows the REPLACE actually rewrote: LIKE is ASCII
 // case-insensitive but REPLACE is case-sensitive, so a row whose stored UUID
 // case differs from the remap key is left untouched instead of destroyed.

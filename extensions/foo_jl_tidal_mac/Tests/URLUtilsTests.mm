@@ -116,6 +116,64 @@ static void testIsTidalURL(void) {
     CHECK(!isTidalURL(nullptr), "null rejected");
 }
 
+static void testQualityPin(void) {
+    auto r = parseURL("tidal://track/123456");
+    CHECK(r.has_value() && !r->quality.has_value(), "no q= means no pin");
+
+    r = parseURL("tidal://track/123456?q=LOSSLESS");
+    CHECK(r.has_value(), "pinned URL parses");
+    CHECK(r->id == "123456", "pin does not disturb the id, got %s", r->id.c_str());
+    CHECK(r->quality.has_value() && *r->quality == JLTidalQualityLossless, "LOSSLESS pin read");
+
+    r = parseURL("tidal://track/1?q=HI_RES_LOSSLESS");
+    CHECK(r.has_value() && r->quality.has_value() && *r->quality == JLTidalQualityHiResLossless,
+          "HI_RES_LOSSLESS pin read");
+
+    r = parseURL("tidal://track/1?q=LOW");
+    CHECK(r.has_value() && r->quality.has_value() && *r->quality == JLTidalQualityLow, "LOW pin read");
+
+    // An unusable pin must cost the entry its pin, not its playability.
+    r = parseURL("tidal://track/123456?q=BOGUS");
+    CHECK(r.has_value() && r->id == "123456", "unknown q= still yields a playable track");
+    CHECK(!r->quality.has_value(), "unknown q= yields no pin");
+
+    r = parseURL("tidal://track/123456?q=lossless");
+    CHECK(r.has_value() && !r->quality.has_value(), "q= is case-sensitive, lowercase ignored");
+
+    r = parseURL("tidal://track/123456?other=1");
+    CHECK(r.has_value() && !r->quality.has_value(), "unrelated query param ignored");
+
+    // The pin must never widen what counts as a valid ID.
+    CHECK(!parseURL("tidal://track/12x?q=LOSSLESS").has_value(),
+          "invalid id still rejected when pinned");
+
+    CHECK(makeTrackURL("555", JLTidalQualityHiRes) == "tidal://track/555?q=HI_RES",
+          "makeTrackURL emits the pin");
+
+    auto round = parseURL(makeTrackURL("555", JLTidalQualityHigh));
+    CHECK(round.has_value() && round->id == "555" &&
+          round->quality.has_value() && *round->quality == JLTidalQualityHigh,
+          "pinned URL round-trips");
+}
+
+// Only a track is playable. Album/playlist/artist URLs are Tidal URLs but must
+// not be claimed by the input, or they enter a playlist and die at play time.
+static void testPlayableTrackPredicate(void) {
+    CHECK(isPlayableTidalTrackURL("tidal://track/123456"), "internal track URL is playable");
+    CHECK(isPlayableTidalTrackURL("tidal://track/123456?q=LOSSLESS"), "pinned track is playable");
+    CHECK(isPlayableTidalTrackURL("https://tidal.com/browse/track/123456"), "web track URL is playable");
+    CHECK(isPlayableTidalTrackURL("https://listen.tidal.com/track/777"), "listen track URL is playable");
+
+    CHECK(!isPlayableTidalTrackURL("tidal://album/987"), "album URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://playlist/abc-def"), "playlist URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://artist/42"), "artist URL is not playable");
+    CHECK(!isPlayableTidalTrackURL("tidal://track/12x"), "invalid id is not playable");
+    CHECK(!isPlayableTidalTrackURL("https://example.com/track/1"), "non-tidal host is not playable");
+    CHECK(!isPlayableTidalTrackURL("/Users/x/music.flac"), "local path is not playable");
+    CHECK(!isPlayableTidalTrackURL(""), "empty is not playable");
+    CHECK(!isPlayableTidalTrackURL(nullptr), "null is not playable");
+}
+
 int main(void) {
     @autoreleasepool {
         testParseTidalScheme();
@@ -123,6 +181,8 @@ int main(void) {
         testRoundTrip();
         testIDValidation();
         testIsTidalURL();
+        testQualityPin();
+        testPlayableTrackPredicate();
     }
     return testHarnessFinish("URLUtils");
 }

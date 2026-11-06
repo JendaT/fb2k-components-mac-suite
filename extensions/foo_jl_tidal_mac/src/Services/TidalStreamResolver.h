@@ -32,13 +32,19 @@ typedef void (^JLTidalMetadataCompletion)(JLTidalTrack * _Nullable track, NSErro
 
 #pragma mark - Stream Resolution
 
-/// Resolve stream URL for a track
+/// Resolve stream URL for a track at the globally preferred quality.
 /// Implements quality fallback cascade if DRM is detected
 /// Uses cache when available
 - (void)resolveStreamForTrackID:(NSString *)trackID
                      completion:(JLTidalStreamResolverCompletion)completion;
 
-/// Invalidate cached stream for a track (e.g., after 403 error)
+/// Resolve at an explicit starting quality (a playlist entry's "?q=" pin).
+/// Same fallback cascade; the pin is the ceiling, not a guarantee.
+- (void)resolveStreamForTrackID:(NSString *)trackID
+                        quality:(JLTidalQuality)quality
+                     completion:(JLTidalStreamResolverCompletion)completion;
+
+/// Invalidate cached streams for a track at every quality (e.g., after 403)
 - (void)invalidateCacheForTrackID:(NSString *)trackID;
 
 #pragma mark - Metadata
@@ -46,6 +52,13 @@ typedef void (^JLTidalMetadataCompletion)(JLTidalTrack * _Nullable track, NSErro
 /// Get track metadata (uses cache)
 - (void)getMetadataForTrackID:(NSString *)trackID
                    completion:(JLTidalMetadataCompletion)completion;
+
+/// Pre-populate the metadata cache from an already-parsed list response.
+///
+/// fb2k opens an info reader per imported location, so without this a
+/// favourites pull of N tracks issues N authenticated GETs for data the
+/// browser and the sync engine already hold fully parsed in memory.
+- (void)seedMetadataForTracks:(NSArray<JLTidalTrack *> *)tracks;
 
 @end
 

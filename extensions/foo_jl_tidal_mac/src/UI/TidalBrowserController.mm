@@ -13,7 +13,9 @@
 #import "../Core/TidalPlaylistSync.h"
 #import "../Core/URLUtils.h"
 #import "../API/TidalAPI.h"
+#import "../Services/TidalAlbumTrackStore.h"
 #import "../Services/TidalAuthService.h"
+#import "../Services/TidalStreamResolver.h"
 #include "../fb2k_sdk.h"
 #import "../../../../shared/UIStyles.h"
 
@@ -49,11 +51,51 @@ static const NSInteger kPageSize = 50;
 // Pasteboard type for drag operations
 NSString * const JLTidalBrowserPasteboardType = @"com.foobar2000.tidal.browser.rows";
 
+// Private: which album a dragged album row is, read back by the data provider.
+static NSString * const kAlbumIDPasteboardType = @"com.foobar2000.tidal.browser.album-id";
+
+// How long a drop waits for album track lists still being fetched. Lists are
+// fetched from the moment a row is selected, so this is normally not reached.
+static const NSTimeInterval kAlbumDropWait = 10.0;
+
+// Albums whose track lists are fetched ahead when selected.
+static const NSUInteger kMaxPrefetchedAlbums = 25;
+
+static NSString *albumURLString(NSString *albumID) {
+    return [NSString stringWithFormat:@"tidal://album/%@", albumID];
+}
+
+// The drag format Tidal-aware drop targets (SimPlaylist) read: every track
+// URL of the drag, in order, on each pasteboard item.
+static NSData *browserDragArchive(NSArray<NSString *> *urls) {
+    NSDictionary *dragDict = @{@"type": @"tidal", @"urls": [urls copy]};
+    NSError *archiveError = nil;
+    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragDict
+                                         requiringSecureCoding:YES
+                                                         error:&archiveError];
+    if (!data) {
+        tidal::logError([[NSString stringWithFormat:@"Drag archive failed: %@",
+                          archiveError.localizedDescription] UTF8String]);
+    }
+    return data;
+}
+
 // Canonical tidal://track/<id> URL for playlist insertion and drag payloads.
 // Single funnel delegating to the shared C++ builder in URLUtils.
 static NSString *trackURLString(NSString *trackID) {
     return [NSString stringWithUTF8String:
             tidal::makeTrackURL(std::string(trackID.UTF8String ?: "")).c_str()];
+}
+
+// Sentinel for "no pin: follow the global quality preference".
+static const NSInteger kNoPinnedQuality = -1;
+
+// URL for a playlist entry, carrying a "?q=" pin when one was chosen.
+static NSString *trackURLStringPinned(NSString *trackID, NSInteger pinnedQuality) {
+    if (pinnedQuality == kNoPinnedQuality) return trackURLString(trackID);
+    return [NSString stringWithUTF8String:
+            tidal::makeTrackURL(std::string(trackID.UTF8String ?: ""),
+                                static_cast<JLTidalQuality>(pinnedQuality)).c_str()];
 }
 
 // Root container view that reports no intrinsic content size, so the host fb2k
@@ -66,36 +108,67 @@ static NSString *trackURLString(NSString *trackID) {
 }
 @end
 
-// Notify class to keep paths alive during async import and handle playback
+// Notify class to keep paths alive during async import and handle playback.
+//
+// The target is pinned by GUID, not index: process_locations_async returns
+// immediately, and anything that removes or reorders a playlist in the
+// meantime (the user, or a sync pull) would leave a captured index pointing
+// at someone else's playlist by the time the import lands.
 class TidalPlayNotify : public process_locations_notify {
 public:
-    t_size m_playlistIndex;
+    GUID m_playlistGUID;
+    t_size m_playlistIndex;  // fallback only, for hosts without playlist_manager_v5
     t_size m_insertAt;
     pfc::string_list_impl m_paths;  // Keeps paths alive during async operation
     bool m_shouldPlay;
     bool m_shouldQueue;
 
     TidalPlayNotify(t_size playlistIndex, t_size insertAt, bool shouldPlay = true, bool shouldQueue = false)
-        : m_playlistIndex(playlistIndex), m_insertAt(insertAt),
-          m_shouldPlay(shouldPlay), m_shouldQueue(shouldQueue) {}
+        : m_playlistGUID(pfc::guid_null), m_playlistIndex(playlistIndex), m_insertAt(insertAt),
+          m_shouldPlay(shouldPlay), m_shouldQueue(shouldQueue) {
+        playlist_manager_v5::ptr pm5;
+        if (playlist_manager_v5::tryGet(pm5)) {
+            m_playlistGUID = pm5->playlist_get_guid(playlistIndex);
+        }
+    }
+
+    t_size resolveIndex() const {
+        playlist_manager_v5::ptr pm5;
+        if (playlist_manager_v5::tryGet(pm5) && m_playlistGUID != pfc::guid_null) {
+            return pm5->find_playlist_by_guid(m_playlistGUID);
+        }
+        return m_playlistIndex;
+    }
 
     void on_completion(metadb_handle_list_cref items) override {
         if (items.get_count() > 0) {
             auto pm = playlist_manager::get();
-            if (m_playlistIndex < pm->get_playlist_count()) {
-                pm->playlist_undo_backup(m_playlistIndex);
-                pm->playlist_insert_items(m_playlistIndex, m_insertAt, items, pfc::bit_array_val(true));
+            t_size playlistIndex = resolveIndex();
+            if (playlistIndex < pm->get_playlist_count()) {
+                pm->playlist_undo_backup(playlistIndex);
+                // The return value is the base index of what was actually
+                // inserted, or SIZE_MAX when the insert was refused (an
+                // autoplaylist, or any locked playlist). Acting on m_insertAt
+                // regardless meant "playing" a row that was never added.
+                t_size base = pm->playlist_insert_items(playlistIndex, m_insertAt, items,
+                                                        pfc::bit_array_val(true));
+                if (base == SIZE_MAX) {
+                    tidal::logError("Playlist refused the insert (locked or autoplaylist); nothing was added");
+                    return;
+                }
 
                 if (m_shouldPlay) {
-                    pm->playlist_execute_default_action(m_playlistIndex, m_insertAt);
+                    pm->playlist_execute_default_action(playlistIndex, base);
                 }
 
                 if (m_shouldQueue) {
                     // Queue each inserted item
                     for (t_size i = 0; i < items.get_count(); i++) {
-                        pm->queue_add_item_playlist(m_playlistIndex, m_insertAt + i);
+                        pm->queue_add_item_playlist(playlistIndex, base + i);
                     }
                 }
+            } else {
+                tidal::logError("Import: target playlist no longer exists, tracks dropped");
             }
         }
     }
@@ -120,14 +193,43 @@ public:
     }
 };
 
-@interface JLTidalBrowserController ()
+/// One level of the browser as it was left: its rows, the pages loaded, the
+/// scroll position and the selection. Every drill-down pushes the level it
+/// leaves and Back pops it, so going back never refetches a list or drops
+/// it at the top -- the levels share the result arrays, and without this
+/// opening an album lost the list it was opened from.
+@interface JLTidalBrowserReturnPoint : NSObject
+@property (nonatomic) JLTidalBrowseMode browseMode;
+@property (nonatomic, copy) NSArray<JLTidalTrack *> *tracks;
+@property (nonatomic, copy) NSArray<JLTidalAlbum *> *albums;
+@property (nonatomic, copy) NSArray<JLTidalArtist *> *artists;
+@property (nonatomic, copy) NSArray<JLTidalPlaylist *> *playlists;
+@property (nonatomic) NSInteger offset;
+@property (nonatomic) BOOL hasMore;
+@property (nonatomic, strong, nullable) JLTidalAlbum *album;
+@property (nonatomic, strong, nullable) JLTidalArtist *artist;
+@property (nonatomic, strong, nullable) JLTidalPlaylist *playlist;
+@property (nonatomic, copy, nullable) NSString *breadcrumbParent;
+@property (nonatomic, copy, nullable) NSString *breadcrumbCurrent;
+@property (nonatomic) NSPoint scrollOrigin;
+@property (nonatomic, copy, nullable) NSString *status;
+@property (nonatomic, copy) NSIndexSet *selection;
+@property (nonatomic, copy) NSString *label;    // "search results", a playlist name...
+@end
+@implementation JLTidalBrowserReturnPoint
+@end
+
+@interface JLTidalBrowserController () <NSPasteboardItemDataProvider>
 // UI elements
 @property (nonatomic, strong) NSSegmentedControl *panelModeControl;
 @property (nonatomic, strong) NSSearchField *searchField;
 @property (nonatomic, strong) NSSegmentedControl *searchTypeControl;
 @property (nonatomic, strong) NSSegmentedControl *librarySectionControl;
 @property (nonatomic, strong) NSButton *backButton;
-@property (nonatomic, strong) NSTextField *breadcrumbLabel;
+@property (nonatomic, strong) NSTextField *breadcrumbLabel;      // current level
+@property (nonatomic, strong) NSStackView *breadcrumbStack;
+@property (nonatomic, strong) NSButton *breadcrumbParentButton;  // clickable parent level
+@property (nonatomic, strong) NSTextField *breadcrumbSeparator;
 @property (nonatomic, strong) NSScrollView *scrollView;
 @property (nonatomic, strong) NSTableView *tableView;
 @property (nonatomic, strong) NSTextField *statusLabel;
@@ -150,6 +252,9 @@ public:
 @property (nonatomic, assign) NSInteger currentOffset;
 @property (nonatomic, assign) BOOL hasMoreResults;
 @property (nonatomic, assign) BOOL isLoadingMore;
+/// True from the start of a sync preview until its apply has fully finished,
+/// imports included. Guards against a second sync overlapping the first.
+@property (nonatomic, assign) BOOL syncInProgress;
 
 // Result arrays (only one is active at a time based on browseMode)
 @property (nonatomic, strong) NSMutableArray<JLTidalTrack *> *trackResults;
@@ -162,6 +267,13 @@ public:
 @property (nonatomic, strong, nullable) JLTidalAlbum *currentAlbum;
 @property (nonatomic, strong, nullable) JLTidalArtist *currentArtist;
 @property (nonatomic, strong, nullable) JLTidalPlaylist *currentPlaylist;
+// The levels below the current one, innermost last. Empty at the root.
+@property (nonatomic, strong) NSMutableArray<JLTidalBrowserReturnPoint *> *backStack;
+
+// Album drag in progress: the albums in row order, and their track URLs once
+// a drop has asked for them.
+@property (nonatomic, copy, nullable) NSArray<JLTidalAlbum *> *draggedAlbums;
+@property (nonatomic, copy, nullable) NSArray<NSString *> *draggedAlbumTrackURLs;
 @end
 
 @implementation JLTidalBrowserController
@@ -175,6 +287,7 @@ public:
         _albumResults = [NSMutableArray array];
         _artistResults = [NSMutableArray array];
         _playlistResults = [NSMutableArray array];
+        _backStack = [NSMutableArray array];
         _isSearching = NO;
         _isLoadingMore = NO;
         _hasMoreResults = NO;
@@ -309,19 +422,47 @@ public:
     self.backButton.bordered = NO;
     [self.navigationBar addSubview:self.backButton];
 
+    // Parent level, e.g. the artist an album was opened from. Click to go there.
+    self.breadcrumbParentButton = [NSButton buttonWithTitle:@""
+                                                     target:self
+                                                     action:@selector(breadcrumbParentClicked:)];
+    self.breadcrumbParentButton.bordered = NO;
+    self.breadcrumbParentButton.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
+    self.breadcrumbParentButton.contentTintColor = [NSColor linkColor];
+    self.breadcrumbParentButton.hidden = YES;
+
+    self.breadcrumbSeparator = [NSTextField labelWithString:@"›"];
+    self.breadcrumbSeparator.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
+    self.breadcrumbSeparator.textColor = fb2k_ui::secondaryTextColor();
+    self.breadcrumbSeparator.hidden = YES;
+
     self.breadcrumbLabel = [NSTextField labelWithString:@""];
-    self.breadcrumbLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.breadcrumbLabel.font = [NSFont boldSystemFontOfSize:[NSFont smallSystemFontSize]];
     self.breadcrumbLabel.textColor = fb2k_ui::textColor();
     self.breadcrumbLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-    [self.navigationBar addSubview:self.breadcrumbLabel];
+
+    self.breadcrumbStack = [NSStackView stackViewWithViews:@[self.breadcrumbParentButton,
+                                                             self.breadcrumbSeparator,
+                                                             self.breadcrumbLabel]];
+    self.breadcrumbStack.translatesAutoresizingMaskIntoConstraints = NO;
+    self.breadcrumbStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    self.breadcrumbStack.alignment = NSLayoutAttributeCenterY;
+    self.breadcrumbStack.spacing = 4;
+    [self.navigationBar addSubview:self.breadcrumbStack];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.backButton.leadingAnchor constraintEqualToAnchor:self.navigationBar.leadingAnchor],
         [self.backButton.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
-        [self.breadcrumbLabel.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:6],
-        [self.breadcrumbLabel.trailingAnchor constraintEqualToAnchor:self.navigationBar.trailingAnchor],
-        [self.breadcrumbLabel.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
+        // Explicit size: the styling pass below drops every control's
+        // compression resistance so the panel can be narrowed, which otherwise
+        // lets a long breadcrumb squeeze the chevron to zero width.
+        [self.backButton.widthAnchor constraintEqualToConstant:18],
+        [self.backButton.heightAnchor constraintEqualToConstant:18],
+        [self.breadcrumbStack.leadingAnchor constraintEqualToAnchor:self.backButton.trailingAnchor constant:6],
+        // Less-than so a short trail does not stretch; the current-level label
+        // has the lowest compression resistance, so it truncates first.
+        [self.breadcrumbStack.trailingAnchor constraintLessThanOrEqualToAnchor:self.navigationBar.trailingAnchor],
+        [self.breadcrumbStack.centerYAnchor constraintEqualToAnchor:self.navigationBar.centerYAnchor],
     ]];
 
     // Table view inside scroll view
@@ -370,7 +511,7 @@ public:
     for (NSView *sv in @[self.panelModeControl, self.searchField, self.searchTypeControl,
                           self.librarySectionControl, self.navigationBar, self.scrollView,
                           self.statusLabel, self.syncPullButton, self.syncPushButton,
-                          self.backButton, self.breadcrumbLabel]) {
+                          self.breadcrumbStack, self.breadcrumbLabel]) {
         [sv setContentCompressionResistancePriority:1
                                        forOrientation:NSLayoutConstraintOrientationHorizontal];
         [sv setContentHuggingPriority:1
@@ -474,8 +615,32 @@ public:
     NSMenu *contextMenu = [[NSMenu alloc] initWithTitle:@"Tidal Browser"];
     [contextMenu addItemWithTitle:@"Play" action:@selector(contextMenuPlay:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Add to Playlist" action:@selector(contextMenuAddToPlaylist:) keyEquivalent:@""];
+
+    // Pin a quality on the entries being added. The plain item above follows
+    // the preference at play time; these bake the tier into the entry's URL.
+    NSMenuItem *qualityParent = [[NSMenuItem alloc] initWithTitle:@"Add to Playlist with Quality"
+                                                           action:nil
+                                                    keyEquivalent:@""];
+    NSMenu *qualityMenu = [[NSMenu alloc] initWithTitle:@"Quality"];
+    struct { NSString *title; JLTidalQuality quality; } tiers[] = {
+        {@"Hi-Res Lossless", JLTidalQualityHiResLossless},
+        {@"Lossless",        JLTidalQualityLossless},
+        {@"High (AAC 320)",  JLTidalQualityHigh},
+        {@"Low (AAC 96)",    JLTidalQualityLow},
+    };
+    for (const auto &tier : tiers) {
+        NSMenuItem *item = [qualityMenu addItemWithTitle:tier.title
+                                                  action:@selector(contextMenuAddToPlaylistWithQuality:)
+                                           keyEquivalent:@""];
+        item.tag = tier.quality;
+    }
+    qualityParent.submenu = qualityMenu;
+    [contextMenu addItem:qualityParent];
+
     [contextMenu addItemWithTitle:@"Queue" action:@selector(contextMenuQueue:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Import as New Playlist" action:@selector(contextMenuImportAsPlaylist:) keyEquivalent:@""];
+    [contextMenu addItem:[NSMenuItem separatorItem]];
+    [contextMenu addItemWithTitle:@"Go to Album" action:@selector(contextMenuGoToAlbum:) keyEquivalent:@""];
     [contextMenu addItem:[NSMenuItem separatorItem]];
     [contextMenu addItemWithTitle:@"Add to Favorites" action:@selector(contextMenuAddFavorite:) keyEquivalent:@""];
     [contextMenu addItemWithTitle:@"Remove from Favorites" action:@selector(contextMenuRemoveFavorite:) keyEquivalent:@""];
@@ -716,12 +881,13 @@ public:
 }
 
 - (void)loadLibrarySection {
-    if (![[JLTidalAuthService shared] isAuthenticated]) {
+    if (![[JLTidalAuthService shared] hasSession]) {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
         return;
     }
 
     self.browseMode = JLTidalBrowseModeLibraryList;
+    [self.backStack removeAllObjects];
     self.currentOffset = 0;
     self.hasMoreResults = NO;
     self.isSearching = YES;
@@ -750,7 +916,10 @@ public:
                         self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed: %@", error.localizedDescription];
                         return;
                     }
-                    if (tracks) [self.trackResults addObjectsFromArray:tracks];
+                    if (tracks) {
+                [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+                [self.trackResults addObjectsFromArray:tracks];
+            }
                     self.currentOffset = (NSInteger)tracks.count;
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
                                                                                      pageSize:kPageSize];
@@ -843,14 +1012,65 @@ public:
 #pragma mark - Navigation
 
 - (void)enterDrillDown:(JLTidalBrowseMode)mode title:(NSString *)title {
+    [self enterDrillDown:mode parent:nil current:title];
+}
+
+// `parent` is the level above, rendered as a clickable segment; nil for a
+// drill-down entered straight from the root.
+- (void)enterDrillDown:(JLTidalBrowseMode)mode
+                parent:(nullable NSString *)parent
+               current:(NSString *)current {
     self.browseMode = mode;
-    self.drillDownTitle = title;
-    self.breadcrumbLabel.stringValue = title;
+
+    BOOL hasParent = parent.length > 0;
+    self.breadcrumbParentButton.hidden = !hasParent;
+    self.breadcrumbSeparator.hidden = !hasParent;
+    if (hasParent) {
+        self.breadcrumbParentButton.title = parent;
+        self.breadcrumbParentButton.toolTip =
+            [NSString stringWithFormat:@"Back to %@", parent];
+    }
+    self.breadcrumbLabel.stringValue = current ?: @"";
+    self.drillDownTitle = hasParent
+        ? [NSString stringWithFormat:@"%@ › %@", parent, current ?: @""]
+        : current;
+
     [self.navigationBar setHidden:NO];
     [self setupColumnsForCurrentMode];
+    [self updateBackButtonTooltip];
+    // A new level starts at its top, not at the offset of the list it was
+    // opened from. A restored level sets its own offset afterwards.
+    NSClipView *clip = self.scrollView.contentView;
+    [clip scrollToPoint:NSMakePoint(0, -clip.contentInsets.top)];
+    [self.scrollView reflectScrolledClipView:clip];
+}
+
+- (void)breadcrumbParentClicked:(id)sender {
+    // The only parent level in the hierarchy is the artist, which is the
+    // level Back returns to when it was opened from there.
+    if (self.backStack.lastObject.browseMode == JLTidalBrowseModeArtistAlbums) {
+        [self backButtonClicked:sender];
+        return;
+    }
+    if (self.currentArtist) [self drillIntoArtist:self.currentArtist];
+}
+
+// Say where back goes — one chevron with no label is otherwise a guess.
+- (void)updateBackButtonTooltip {
+    NSString *destination;
+    if (self.backStack.count > 0) {
+        destination = self.backStack.lastObject.label;
+    } else if ([JLTidalBrowserLogic backReturnsToArtistAlbumsFromMode:self.browseMode
+                                                     hasArtist:(self.currentArtist != nil)]) {
+        destination = self.currentArtist.name.length ? self.currentArtist.name : @"artist";
+    } else {
+        destination = (self.panelMode == JLTidalPanelModeLibrary) ? @"library" : @"search results";
+    }
+    self.backButton.toolTip = [NSString stringWithFormat:@"Back to %@", destination];
 }
 
 - (void)exitDrillDown {
+    [self.backStack removeAllObjects];
     if (![JLTidalBrowserLogic isDrillDownMode:self.browseMode]) return;
 
     self.browseMode = [JLTidalBrowserLogic rootModeForPanelMode:self.panelMode];
@@ -865,14 +1085,146 @@ public:
 }
 
 - (void)backButtonClicked:(id)sender {
-    // ArtistTopTracks goes back to artist albums; everything else
-    // collapses straight to the root (search results / library list)
+    if (self.backStack.count > 0 && [self isDrillDown]) {
+        JLTidalBrowserReturnPoint *rp = self.backStack.lastObject;
+        [self.backStack removeLastObject];
+        [self restoreLevel:rp];
+        return;
+    }
+    // Nothing recorded (should not happen: every drill-down pushes). Artist
+    // albums are refetched; everything else collapses to the root.
     if ([JLTidalBrowserLogic backReturnsToArtistAlbumsFromMode:self.browseMode
                                                      hasArtist:(self.currentArtist != nil)]) {
         [self drillIntoArtist:self.currentArtist];
         return;
     }
     [self exitDrillDown];
+}
+
+#pragma mark - Go to Album
+
+// The track a context-menu command acts on: the right-clicked row when there
+// is one, otherwise the first selected row.
+- (nullable JLTidalTrack *)contextTrack {
+    if (![self isShowingTracks]) return nil;
+    NSInteger row = self.tableView.clickedRow;
+    if (row < 0) row = self.tableView.selectedRow;
+    if (row < 0 || row >= (NSInteger)self.trackResults.count) return nil;
+    return self.trackResults[(NSUInteger)row];
+}
+
+- (BOOL)canGoToAlbumOfTrack:(nullable JLTidalTrack *)track {
+    // Already inside that album: nowhere to go.
+    return track.albumID.length > 0 && self.browseMode != JLTidalBrowseModeAlbumTracks;
+}
+
+- (void)contextMenuGoToAlbum:(id)sender {
+    JLTidalTrack *track = [self contextTrack];
+    if (![self canGoToAlbumOfTrack:track]) return;
+
+    // Built from what the track already carries; the album's track list is
+    // fetched by the drill-down itself.
+    NSString *albumArtist = track.albumArtist.length ? track.albumArtist : (track.artist ?: @"");
+    JLTidalAlbum *album = [[JLTidalAlbum alloc] initWithDictionary:@{
+        @"id": track.albumID,
+        @"title": track.album.length ? track.album : @"Album",
+        @"cover": track.coverID ?: @"",
+        @"artist": @{@"name": albumArtist},
+    }];
+    if (!album) return;
+
+    // Back lands on the track the album was opened from, even when it was
+    // right-clicked without being selected.
+    JLTidalBrowserReturnPoint *rp = [self snapshotCurrentLevel];
+    NSUInteger row = [self.trackResults indexOfObjectIdenticalTo:track];
+    if (row != NSNotFound) rp.selection = [NSIndexSet indexSetWithIndex:row];
+    [self.backStack addObject:rp];
+
+    // No artist level above this album: it was reached from a track list.
+    self.currentArtist = nil;
+    [self drillIntoAlbum:album];
+}
+
+#pragma mark - Back Stack
+
+// What Back calls the root list.
+- (NSString *)rootLevelLabel {
+    if (self.panelMode != JLTidalPanelModeLibrary) return @"search results";
+    switch (self.librarySection) {
+        case JLTidalLibrarySectionFavTracks: return @"favorite tracks";
+        case JLTidalLibrarySectionFavAlbums: return @"favorite albums";
+        case JLTidalLibrarySectionPlaylists: return @"playlists";
+    }
+    return @"library";
+}
+
+// The level on screen, as Back will need it.
+- (JLTidalBrowserReturnPoint *)snapshotCurrentLevel {
+    JLTidalBrowserReturnPoint *rp = [[JLTidalBrowserReturnPoint alloc] init];
+    BOOL drillDown = [JLTidalBrowserLogic isDrillDownMode:self.browseMode];
+    rp.browseMode = self.browseMode;
+    rp.tracks = [self.trackResults copy];
+    rp.albums = [self.albumResults copy];
+    rp.artists = [self.artistResults copy];
+    rp.playlists = [self.playlistResults copy];
+    rp.offset = self.currentOffset;
+    rp.hasMore = self.hasMoreResults;
+    rp.album = self.currentAlbum;
+    rp.artist = self.currentArtist;
+    rp.playlist = self.currentPlaylist;
+    rp.breadcrumbParent = (drillDown && !self.breadcrumbParentButton.hidden)
+        ? self.breadcrumbParentButton.title : nil;
+    rp.breadcrumbCurrent = drillDown ? self.breadcrumbLabel.stringValue : nil;
+    rp.scrollOrigin = self.scrollView.contentView.bounds.origin;
+    rp.status = self.statusLabel.stringValue;
+    rp.selection = self.tableView.selectedRowIndexes;
+    if (drillDown) {
+        rp.label = rp.breadcrumbCurrent.length ? rp.breadcrumbCurrent : @"previous list";
+    } else {
+        rp.label = [self rootLevelLabel];
+    }
+    return rp;
+}
+
+// Called by every user-initiated drill-down, before it changes anything.
+- (void)pushCurrentLevel {
+    [self.backStack addObject:[self snapshotCurrentLevel]];
+}
+
+- (void)restoreLevel:(JLTidalBrowserReturnPoint *)rp {
+    // Drop the load of the level being left if it is still in flight.
+    self.searchGeneration++;
+    [self finishLoading];
+    self.isLoadingMore = NO;
+
+    if ([JLTidalBrowserLogic isDrillDownMode:rp.browseMode]) {
+        [self enterDrillDown:rp.browseMode parent:rp.breadcrumbParent current:rp.breadcrumbCurrent ?: @""];
+    } else {
+        self.browseMode = rp.browseMode;
+        self.drillDownTitle = nil;
+        [self.navigationBar setHidden:YES];
+        [self setupColumnsForCurrentMode];
+    }
+    self.currentAlbum = rp.album;
+    self.currentArtist = rp.artist;
+    self.currentPlaylist = rp.playlist;
+    [self updateBackButtonTooltip];
+
+    [self.trackResults setArray:rp.tracks];
+    [self.albumResults setArray:rp.albums];
+    [self.artistResults setArray:rp.artists];
+    [self.playlistResults setArray:rp.playlists];
+    self.currentOffset = rp.offset;
+    self.hasMoreResults = rp.hasMore;
+    [self.tableView reloadData];
+
+    NSIndexSet *selection = [rp.selection indexesPassingTest:^BOOL(NSUInteger idx, BOOL *stop) {
+        return idx < (NSUInteger)self.tableView.numberOfRows;
+    }];
+    [self.tableView selectRowIndexes:selection byExtendingSelection:NO];
+    [self.scrollView.contentView scrollToPoint:rp.scrollOrigin];
+    [self.scrollView reflectScrolledClipView:self.scrollView.contentView];
+    self.statusLabel.stringValue = rp.status ?: @"";
 }
 
 #pragma mark - Search
@@ -883,12 +1235,13 @@ public:
         return;
     }
 
-    if (![[JLTidalAuthService shared] isAuthenticated]) {
+    if (![[JLTidalAuthService shared] hasSession]) {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
         return;
     }
 
     self.lastSearchQuery = query;
+    [self.backStack removeAllObjects];
     self.currentOffset = 0;
     self.hasMoreResults = NO;
     self.isSearching = YES;
@@ -937,7 +1290,10 @@ public:
                 return;
             }
 
-            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            if (tracks) {
+                [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+                [self.trackResults addObjectsFromArray:tracks];
+            }
             self.currentOffset = [JLTidalBrowserLogic offsetAfterSearchPageAtOffset:offset
                                                                       returnedCount:(NSInteger)tracks.count];
             self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
@@ -1025,11 +1381,16 @@ public:
 
 - (void)loadMoreResults {
     if (!self.hasMoreResults || self.isLoadingMore) return;
+    // Only the root lists page. A drill-down shows a complete list, and the
+    // hasMore it sees belongs to the list it was opened from: announcing a
+    // load here left "Loading more..." in the status line for good.
+    BOOL pagedSearch = self.browseMode == JLTidalBrowseModeSearchResults && self.lastSearchQuery.length > 0;
+    if (!pagedSearch && self.browseMode != JLTidalBrowseModeLibraryList) return;
 
     self.isLoadingMore = YES;
     self.statusLabel.stringValue = @"Loading more...";
 
-    if (self.browseMode == JLTidalBrowseModeSearchResults && self.lastSearchQuery.length > 0) {
+    if (pagedSearch) {
         switch (self.searchType) {
             case JLTidalSearchTypeTracks:
                 [self searchTracksWithQuery:self.lastSearchQuery offset:self.currentOffset];
@@ -1041,10 +1402,8 @@ public:
                 [self searchArtistsWithQuery:self.lastSearchQuery offset:self.currentOffset];
                 break;
         }
-    } else if (self.browseMode == JLTidalBrowseModeLibraryList) {
-        [self loadMoreLibraryResults];
     } else {
-        self.isLoadingMore = NO;
+        [self loadMoreLibraryResults];
     }
 }
 
@@ -1060,6 +1419,7 @@ public:
                     if (generation != self.searchGeneration) return; // Stale result
                     self.isLoadingMore = NO;
                     if (error || !tracks) return;
+                    [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
                     [self.trackResults addObjectsFromArray:tracks];
                     self.currentOffset += (NSInteger)tracks.count;
                     self.hasMoreResults = [JLTidalBrowserLogic hasMorePagesAfterReturnedCount:(NSInteger)tracks.count
@@ -1132,17 +1492,33 @@ public:
 
 - (void)drillIntoAlbum:(JLTidalAlbum *)album {
     self.currentAlbum = album;
-    [self enterDrillDown:JLTidalBrowseModeAlbumTracks
-                   title:[NSString stringWithFormat:@"%@ - %@", album.artist ?: @"", album.title]];
+    // Nested under an artist: the artist becomes a clickable parent segment.
+    // Opened straight from a search there is no level above, so the artist is
+    // folded into the flat "Artist - Album" title instead.
+    if (self.currentArtist) {
+        [self enterDrillDown:JLTidalBrowseModeAlbumTracks
+                      parent:self.currentArtist.name
+                     current:album.title];
+    } else {
+        [self enterDrillDown:JLTidalBrowseModeAlbumTracks
+                       title:[NSString stringWithFormat:@"%@ - %@", album.artist ?: @"", album.title]];
+    }
+    // The previous list's rows stay recorded on the back stack, not on screen.
+    [self.trackResults removeAllObjects];
+    [self.tableView reloadData];
 
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
     self.statusLabel.stringValue = @"Loading album tracks...";
 
+    self.searchGeneration++;
+    NSUInteger generation = self.searchGeneration;
+
     [[JLTidalAPI shared] getAlbumTracksForAlbumID:album.albumID
                                        completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return;  // Stale result
             [self finishLoading];
 
             if (error) {
@@ -1151,7 +1527,11 @@ public:
             }
 
             [self.trackResults removeAllObjects];
-            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            if (tracks) {
+                [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+                [[JLTidalAlbumTrackStore shared] setTracks:tracks forAlbumID:album.albumID];
+                [self.trackResults addObjectsFromArray:tracks];
+            }
             [self.tableView reloadData];
 
             self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
@@ -1165,18 +1545,38 @@ public:
     self.currentArtist = artist;
     [self enterDrillDown:JLTidalBrowseModeArtistAlbums
                    title:artist.name];
+    [self.albumResults removeAllObjects];
+    [self.tableView reloadData];
 
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
     self.statusLabel.stringValue = @"Loading artist...";
 
+    // Entering a drill-down invalidates anything still in flight for the level
+    // we just left, and protects this load from a later Back.
+    self.searchGeneration++;
+    NSUInteger generation = self.searchGeneration;
+
     [[JLTidalAPI shared] getArtistAlbumsForArtistID:artist.artistID
                                               limit:50
                                          completion:^(NSArray<JLTidalAlbum *> *albums, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (error || albums.count == 0) {
-                // Fallback to top tracks if no albums (common for collaboration artists)
+            if (generation != self.searchGeneration) return;  // Stale result
+
+            // A failed fetch is not an empty discography. Collapsing the two
+            // showed "no albums" for a 401, a rate limit or an offline moment,
+            // and then fell through to top tracks -- where Back re-ran the same
+            // failing fetch and landed in the same place, permanently.
+            if (error) {
+                [self finishLoading];
+                self.statusLabel.stringValue =
+                    [NSString stringWithFormat:@"Failed to load albums: %@", error.localizedDescription];
+                return;
+            }
+
+            if (albums.count == 0) {
+                // Genuinely no albums (common for collaboration artists).
                 tidal::logDebug([[NSString stringWithFormat:@"No albums for artist %@, trying top tracks",
                                   artist.artistID] UTF8String]);
                 [self loadArtistTopTracks:artist];
@@ -1196,14 +1596,25 @@ public:
 }
 
 - (void)loadArtistTopTracks:(JLTidalArtist *)artist {
-    // Switch to top tracks mode
-    self.browseMode = JLTidalBrowseModeArtistTopTracks;
-    [self setupColumnsForCurrentMode];
+    // Only reached when the artist has no albums, so there is no artist-albums
+    // level to return to: show the trail as plain text rather than a link that
+    // would come straight back here. Clearing currentArtist is what makes Back
+    // collapse to the root -- otherwise it re-entered the artist, found no
+    // albums again, and landed right back on this view.
+    NSString *artistName = artist.name ?: @"";
+    self.currentArtist = nil;
+    [self enterDrillDown:JLTidalBrowseModeArtistTopTracks
+                   title:[NSString stringWithFormat:@"%@ › Top tracks", artistName]];
+    [self.trackResults removeAllObjects];
+    [self.tableView reloadData];
+
+    NSUInteger generation = self.searchGeneration;
 
     [[JLTidalAPI shared] getArtistTopTracksForArtistID:artist.artistID
                                                   limit:50
                                              completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return;  // Stale result
             [self finishLoading];
 
             if (error) {
@@ -1212,7 +1623,10 @@ public:
             }
 
             [self.trackResults removeAllObjects];
-            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            if (tracks) {
+                [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+                [self.trackResults addObjectsFromArray:tracks];
+            }
             [self.tableView reloadData];
 
             self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
@@ -1226,17 +1640,23 @@ public:
     self.currentPlaylist = playlist;
     [self enterDrillDown:JLTidalBrowseModePlaylistTracks
                    title:playlist.title];
+    [self.trackResults removeAllObjects];
+    [self.tableView reloadData];
 
     self.isSearching = YES;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
     self.statusLabel.stringValue = @"Loading playlist tracks...";
 
-    [[JLTidalAPI shared] getPlaylistTracksForPlaylistID:playlist.playlistUUID
-                                                  limit:100
-                                                 offset:0
-                                             completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+    self.searchGeneration++;
+    NSUInteger generation = self.searchGeneration;
+
+    // Every page: a single 100-track request cut longer playlists off with
+    // no sign that anything was missing.
+    [[JLTidalAPI shared] getAllPlaylistTracksForPlaylistID:playlist.playlistUUID
+                                                completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.searchGeneration) return;  // Stale result
             [self finishLoading];
 
             if (error) {
@@ -1245,12 +1665,15 @@ public:
             }
 
             [self.trackResults removeAllObjects];
-            if (tracks) [self.trackResults addObjectsFromArray:tracks];
+            if (tracks) {
+                [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+                [self.trackResults addObjectsFromArray:tracks];
+            }
             [self.tableView reloadData];
 
-            self.statusLabel.stringValue = [self statusForCount:self.trackResults.count
-                                                           noun:@"track"
-                                                        hasMore:NO];
+            self.statusLabel.stringValue = self.trackResults.count == 0
+                ? [self emptyPlaylistMessage:playlist]
+                : [self statusForCount:self.trackResults.count noun:@"track" hasMore:NO];
         });
     }];
 }
@@ -1266,13 +1689,24 @@ public:
 }
 
 - (void)updateStatusLabel {
-    if ([[JLTidalAuthService shared] isAuthenticated]) {
-        JLTidalSession *session = [[JLTidalAuthService shared] session];
-        NSString *username = session.username;
-        if (!username.length) {
-            username = @"Tidal User";
+    if ([[JLTidalAuthService shared] hasSession]) {
+        int mode = tidal::TidalConfig::getSignInDisplay();
+        if (mode == tidal::SignInDisplayHidden) {
+            self.statusLabel.stringValue = @"";
+            return;
         }
-        self.statusLabel.stringValue = [NSString stringWithFormat:@"Signed in as %@", username];
+
+        JLTidalSession *session = [[JLTidalAuthService shared] session];
+        // Tidal reports the email in `username` for email-created accounts, and
+        // refresh responses carry no user object at all, so each mode falls back
+        // to the other field before the generic placeholder.
+        NSString *identity = (mode == tidal::SignInDisplayEmail)
+            ? (session.email.length ? session.email : session.username)
+            : (session.username.length ? session.username : session.email);
+        if (!identity.length) {
+            identity = @"Tidal User";
+        }
+        self.statusLabel.stringValue = [NSString stringWithFormat:@"Signed in as %@", identity];
     } else {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
     }
@@ -1306,7 +1740,7 @@ public:
 - (void)authStateChanged:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self updateStatusLabel];
-        if (![[JLTidalAuthService shared] isAuthenticated]) {
+        if (![[JLTidalAuthService shared] hasSession]) {
             [self clearResults];
         }
     });
@@ -1433,7 +1867,7 @@ public:
     }
 
     if ([identifier isEqualToString:kColumnTitle]) {
-        return [self textCell:identifier text:track.title ?: @""
+        return [self textCell:identifier text:track.displayTitle
                          font:fb2k_ui::rowFont() color:fb2k_ui::textColor()];
     }
 
@@ -1443,7 +1877,9 @@ public:
     }
 
     if ([identifier isEqualToString:kColumnTrackQuality]) {
-        return [self qualityBadgeCell:identifier quality:track.audioQuality];
+        return [self qualityBadgeCell:identifier
+                              quality:[JLTidalBrowserLogic displayQualityForAudioQuality:track.audioQuality
+                                                                               mediaTags:track.mediaTags]];
     }
 
     if ([identifier isEqualToString:kColumnDuration]) {
@@ -1488,11 +1924,14 @@ public:
     if ([identifier isEqualToString:kColumnAlbumYear]) {
         NSString *yearStr = @"";
         if (album.releaseDate) {
-            // [NSCalendar currentCalendar] allocates; this runs per visible row
+            // [NSCalendar currentCalendar] allocates; this runs per visible row.
+            // Pinned to UTC to match how the date was parsed (TidalModels.mm),
+            // so the browser's year agrees with the exported folder's year.
             static NSCalendar *cal = nil;
             static dispatch_once_t calOnce;
             dispatch_once(&calOnce, ^{
-                cal = [NSCalendar currentCalendar];
+                cal = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+                cal.timeZone = [NSTimeZone timeZoneForSecondsFromGMT:0];
             });
             NSInteger year = [cal component:NSCalendarUnitYear fromDate:album.releaseDate];
             if (year > 0) yearStr = [NSString stringWithFormat:@"%ld", (long)year];
@@ -1556,6 +1995,14 @@ public:
 
 #pragma mark - Cell Factory Methods
 
+// Which picture set the current list draws from, so the cache asks the CDN for
+// a rendition it actually serves.
+- (JLTidalArtKind)currentArtKind {
+    if ([self isShowingArtists]) return JLTidalArtKindArtist;
+    if ([self isShowingPlaylists]) return JLTidalArtKindPlaylist;
+    return JLTidalArtKindAlbum;
+}
+
 - (NSTableCellView *)artCellForCoverID:(NSString *)coverID identifier:(NSString *)identifier {
     NSTableCellView *cell = [self.tableView makeViewWithIdentifier:identifier owner:self];
     if (!cell) {
@@ -1584,8 +2031,11 @@ public:
     // painting the wrong artwork.
     cell.imageView.identifier = coverID.length > 0 ? coverID : @"";
 
+    JLTidalArtKind artKind = [self currentArtKind];
+    NSInteger artSize = [JLTidalAlbumArtCache normalizeSize:80 kind:artKind];
+
     if (coverID.length > 0) {
-        NSImage *cached = [[JLTidalAlbumArtCache shared] cachedImageForCoverID:coverID size:80];
+        NSImage *cached = [[JLTidalAlbumArtCache shared] cachedImageForCoverID:coverID size:artSize];
         if (cached) {
             cell.imageView.image = cached;
             cell.imageView.contentTintColor = nil;
@@ -1598,6 +2048,7 @@ public:
             __weak NSImageView *weakImageView = cell.imageView;
             [[JLTidalAlbumArtCache shared] loadImageForCoverID:coverID
                                                           size:80
+                                                          kind:artKind
                                                     completion:^(NSImage *image) {
                 if (!image || !weakSelf || !weakImageView) return;
                 if (![weakImageView.identifier isEqualToString:coverID]) return; // cell reused
@@ -1679,9 +2130,10 @@ public:
         tidal::logDebug([[NSString stringWithFormat:@"Drag: pasteboardWriterForRow:%ld called (showingTracks=%d, trackCount=%lu)",
                           (long)row, [self isShowingTracks], (unsigned long)self.trackResults.count] UTF8String]);
     }
-    // Only allow dragging tracks
+    if ([self isShowingAlbums]) return [self pasteboardItemForAlbumRow:row];
+    // Otherwise only tracks drag
     if (![self isShowingTracks]) {
-        tidal::logDebug("Drag: rejected - not showing tracks");
+        tidal::logDebug("Drag: rejected - not showing tracks or albums");
         return nil;
     }
     if (row < 0 || row >= (NSInteger)self.trackResults.count) {
@@ -1730,17 +2182,8 @@ public:
 
     // Back-compat: emit the legacy NSKeyedArchiver dict that the tidal-integration
     // worktree's SimPlaylist build (and any consumer expecting it) parses.
-    NSDictionary *dragDict = @{@"type": @"tidal", @"urls": [urls copy]};
-    NSError *archiveError = nil;
-    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:dragDict
-                                         requiringSecureCoding:YES
-                                                         error:&archiveError];
-    if (data) {
-        [item setData:data forType:JLTidalBrowserPasteboardType];
-    } else {
-        tidal::logError([[NSString stringWithFormat:@"Drag archive failed: %@",
-                          archiveError.localizedDescription] UTF8String]);
-    }
+    NSData *data = browserDragArchive(urls);
+    if (data) [item setData:data forType:JLTidalBrowserPasteboardType];
 
     // Plain text — Finder/text editors/anything else that wants a string.
     NSString *urlString = [urls componentsJoinedByString:@"\n"];
@@ -1751,6 +2194,113 @@ public:
                       data ? "ok" : "FAIL",
                       thisRowURL.length ? "yes" : "no"] UTF8String]);
     return item;
+}
+
+// An album row drags as its tracks. Which tracks is only known once the
+// album's list has been fetched, so the item promises its data and fills it
+// in when the drop target asks (see the data provider below); the types are
+// declared now, which is all a target checks while the drag is over it.
+- (nullable id<NSPasteboardWriting>)pasteboardItemForAlbumRow:(NSInteger)row {
+    if (row < 0 || row >= (NSInteger)self.albumResults.count) return nil;
+    JLTidalAlbum *album = self.albumResults[(NSUInteger)row];
+    if (album.albumID.length == 0) return nil;
+    [[JLTidalAlbumTrackStore shared] prefetchAlbumID:album.albumID];
+
+    NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+    [item setString:album.albumID forType:kAlbumIDPasteboardType];
+    [item setDataProvider:self forTypes:@[JLTidalBrowserPasteboardType,
+                                          NSPasteboardTypeURL,
+                                          NSPasteboardTypeString]];
+    return item;
+}
+
+- (void)tableView:(NSTableView *)tableView
+    draggingSession:(NSDraggingSession *)session
+   willBeginAtPoint:(NSPoint)screenPoint
+      forRowIndexes:(NSIndexSet *)rowIndexes {
+    self.draggedAlbumTrackURLs = nil;
+    if (![self isShowingAlbums]) {
+        self.draggedAlbums = nil;
+        return;
+    }
+    // Row order is the order the albums land in.
+    NSMutableArray<JLTidalAlbum *> *albums = [NSMutableArray array];
+    [rowIndexes enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx < self.albumResults.count) [albums addObject:self.albumResults[idx]];
+    }];
+    self.draggedAlbums = albums;
+}
+
+// Every track of the dragged albums, album after album in row order and in
+// album order within each. Waits for lists still being fetched (on the main
+// thread: a drop target reads the pasteboard there), at most kAlbumDropWait.
+- (NSArray<NSString *> *)draggedAlbumTrackURLList {
+    if (self.draggedAlbumTrackURLs) return self.draggedAlbumTrackURLs;
+
+    NSArray<JLTidalAlbum *> *albums = self.draggedAlbums ?: @[];
+    NSMutableArray<NSString *> *albumIDs = [NSMutableArray array];
+    for (JLTidalAlbum *album in albums) [albumIDs addObject:album.albumID];
+    NSDictionary<NSString *, NSArray<JLTidalTrack *> *> *lists =
+        [[JLTidalAlbumTrackStore shared] waitForAlbumIDs:albumIDs timeout:kAlbumDropWait];
+
+    NSMutableArray<NSString *> *urls = [NSMutableArray array];
+    NSUInteger missing = 0;
+    for (JLTidalAlbum *album in albums) {
+        NSArray<JLTidalTrack *> *tracks = lists[album.albumID];
+        if (!tracks) {
+            missing++;
+            continue;
+        }
+        for (JLTidalTrack *track in tracks) [urls addObject:trackURLString(track.trackID)];
+    }
+    if (missing > 0) {
+        NSString *message = [NSString stringWithFormat:@"%lu of %lu dragged album(s) could not be loaded from TIDAL",
+                             (unsigned long)missing, (unsigned long)albums.count];
+        tidal::logError(message.UTF8String);
+        self.statusLabel.stringValue = message;
+    }
+    tidal::logDebug([[NSString stringWithFormat:@"Drag: %lu album(s) -> %lu track(s)",
+                      (unsigned long)albums.count, (unsigned long)urls.count] UTF8String]);
+    self.draggedAlbumTrackURLs = urls;
+    return urls;
+}
+
+#pragma mark - NSPasteboardItemDataProvider
+
+- (void)pasteboard:(nullable NSPasteboard *)pasteboard
+              item:(NSPasteboardItem *)item
+provideDataForType:(NSPasteboardType)type {
+    if ([type isEqualToString:JLTidalBrowserPasteboardType]) {
+        NSData *data = browserDragArchive([self draggedAlbumTrackURLList]);
+        if (data) [item setData:data forType:type];
+    } else if ([type isEqualToString:NSPasteboardTypeURL]) {
+        // One URL per item, as for tracks. Only a target that cannot read
+        // the format above gets this far, and it cannot expand an album.
+        NSString *albumID = [item stringForType:kAlbumIDPasteboardType];
+        if (albumID.length) [item setString:albumURLString(albumID) forType:type];
+    } else if ([type isEqualToString:NSPasteboardTypeString]) {
+        // Album links, not tracks: text targets may read this while the drag
+        // is still moving, and must not wait for a fetch.
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        for (JLTidalAlbum *album in self.draggedAlbums ?: @[]) [lines addObject:albumURLString(album.albumID)];
+        [item setString:[lines componentsJoinedByString:@"\n"] forType:type];
+    }
+}
+
+#pragma mark - Selection
+
+// Fetch the track lists of selected albums ahead, so dragging them does not
+// have to wait at the drop.
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    if (![self isShowingAlbums]) return;
+    __block NSUInteger count = 0;
+    [self.tableView.selectedRowIndexes enumerateIndexesUsingBlock:^(NSUInteger idx, BOOL *stop) {
+        if (idx >= self.albumResults.count || count++ >= kMaxPrefetchedAlbums) {
+            *stop = YES;
+            return;
+        }
+        [[JLTidalAlbumTrackStore shared] prefetchAlbumID:self.albumResults[idx].albumID];
+    }];
 }
 
 #pragma mark - Double Click
@@ -1770,18 +2320,21 @@ public:
         if (row >= (NSInteger)self.albumResults.count) return;
         JLTidalAlbum *album = self.albumResults[(NSUInteger)row];
         tidal::logDebug([[NSString stringWithFormat:@"Double-clicked album: %@", album.albumID] UTF8String]);
+        [self pushCurrentLevel];
         [self drillIntoAlbum:album];
 
     } else if ([self isShowingArtists]) {
         if (row >= (NSInteger)self.artistResults.count) return;
         JLTidalArtist *artist = self.artistResults[(NSUInteger)row];
         tidal::logDebug([[NSString stringWithFormat:@"Double-clicked artist: %@", artist.artistID] UTF8String]);
+        [self pushCurrentLevel];
         [self drillIntoArtist:artist];
 
     } else if ([self isShowingPlaylists]) {
         if (row >= (NSInteger)self.playlistResults.count) return;
         JLTidalPlaylist *playlist = self.playlistResults[(NSUInteger)row];
         tidal::logDebug([[NSString stringWithFormat:@"Double-clicked playlist: %@", playlist.playlistUUID] UTF8String]);
+        [self pushCurrentLevel];
         [self drillIntoPlaylist:playlist];
     }
 }
@@ -1789,8 +2342,25 @@ public:
 - (void)getActivePlaylistOrCreate:(t_size &)outPlaylist insertAt:(t_size &)outInsert {
     auto pm = playlist_manager::get();
     outPlaylist = pm->get_active_playlist();
+
+    // An autoplaylist (or any playlist whose lock blocks adds) silently drops
+    // everything we hand it. Fall back to a dedicated playlist rather than
+    // reporting a successful add that never happened.
+    if (outPlaylist != SIZE_MAX) {
+        unsigned mask = pm->playlist_lock_get_filter_mask(outPlaylist);
+        if (mask & playlist_lock::filter_add) {
+            tidal::logInfo("Active playlist does not accept added items; using a Tidal playlist instead");
+            outPlaylist = SIZE_MAX;
+        }
+    }
+
     if (outPlaylist == SIZE_MAX) {
-        outPlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        pfc::string8 name("Tidal");
+        outPlaylist = pm->find_playlist(name, name.length());
+        if (outPlaylist == SIZE_MAX ||
+            (pm->playlist_lock_get_filter_mask(outPlaylist) & playlist_lock::filter_add)) {
+            outPlaylist = pm->create_playlist("Tidal", SIZE_MAX, SIZE_MAX);
+        }
         pm->set_active_playlist(outPlaylist);
     }
     outInsert = pm->playlist_get_item_count(outPlaylist);
@@ -1839,10 +2409,21 @@ public:
         if (row >= 0 && row < (NSInteger)self.albumResults.count) {
             [self addAlbumToPlaylistAndPlay:self.albumResults[(NSUInteger)row]];
         }
+    } else if ([self isShowingPlaylists]) {
+        JLTidalPlaylist *playlist = [self selectedPlaylist];
+        if (playlist) [self addPlaylist:playlist play:YES queue:NO pinnedQuality:kNoPinnedQuality];
     }
 }
 
 - (void)contextMenuAddToPlaylist:(id)sender {
+    [self addSelectionToPlaylistWithPinnedQuality:kNoPinnedQuality];
+}
+
+- (void)contextMenuAddToPlaylistWithQuality:(NSMenuItem *)sender {
+    [self addSelectionToPlaylistWithPinnedQuality:sender.tag];
+}
+
+- (void)addSelectionToPlaylistWithPinnedQuality:(NSInteger)pinnedQuality {
     if ([self isShowingTracks]) {
         NSArray<JLTidalTrack *> *tracks = [self selectedTracks];
         if (tracks.count == 0) return;
@@ -1852,7 +2433,7 @@ public:
 
         auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, false);
         for (JLTidalTrack *track in tracks) {
-            NSString *url = trackURLString(track.trackID);
+            NSString *url = trackURLStringPinned(track.trackID, pinnedQuality);
             notify->m_paths.add_item([url UTF8String]);
         }
         notify->startImport();
@@ -1864,8 +2445,11 @@ public:
     } else if ([self isShowingAlbums]) {
         NSInteger row = self.tableView.selectedRow;
         if (row >= 0 && row < (NSInteger)self.albumResults.count) {
-            [self addAlbumToPlaylist:self.albumResults[(NSUInteger)row]];
+            [self addAlbum:self.albumResults[(NSUInteger)row] play:NO queue:NO pinnedQuality:pinnedQuality];
         }
+    } else if ([self isShowingPlaylists]) {
+        JLTidalPlaylist *playlist = [self selectedPlaylist];
+        if (playlist) [self addPlaylist:playlist play:NO queue:NO pinnedQuality:pinnedQuality];
     }
 }
 
@@ -1880,6 +2464,9 @@ public:
         if (row >= 0 && row < (NSInteger)self.albumResults.count) {
             [self addAlbumToPlaylistAndQueue:self.albumResults[(NSUInteger)row]];
         }
+    } else if ([self isShowingPlaylists]) {
+        JLTidalPlaylist *playlist = [self selectedPlaylist];
+        if (playlist) [self addPlaylist:playlist play:NO queue:YES pinnedQuality:kNoPinnedQuality];
     }
 }
 
@@ -1899,8 +2486,8 @@ public:
                                     tracks.count == 1 ? @"" : @"s"];
 }
 
-// Shared implementation for the three album-add variants below.
-- (void)addAlbum:(JLTidalAlbum *)album play:(BOOL)play queue:(BOOL)queue {
+// Shared implementation for the album-add variants below.
+- (void)addAlbum:(JLTidalAlbum *)album play:(BOOL)play queue:(BOOL)queue pinnedQuality:(NSInteger)pinnedQuality {
     self.statusLabel.stringValue = queue ? @"Loading album tracks for queue..."
                                          : @"Loading album tracks...";
 
@@ -1923,7 +2510,7 @@ public:
             auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, play);
 
             for (JLTidalTrack *track in tracks) {
-                NSString *url = trackURLString(track.trackID);
+                NSString *url = trackURLStringPinned(track.trackID, pinnedQuality);
                 notify->m_paths.add_item([url UTF8String]);
             }
             notify->startImport();
@@ -1934,16 +2521,73 @@ public:
     }];
 }
 
+- (nullable JLTidalPlaylist *)selectedPlaylist {
+    NSInteger row = self.tableView.clickedRow;
+    if (row < 0) row = self.tableView.selectedRow;
+    if (row < 0 || row >= (NSInteger)self.playlistResults.count) return nil;
+    return self.playlistResults[(NSUInteger)row];
+}
+
+// Same as addAlbum, over every page of the playlist. Previously a playlist row
+// offered Import and nothing else: there was no way to play or queue one.
+- (void)addPlaylist:(JLTidalPlaylist *)playlist play:(BOOL)play queue:(BOOL)queue
+      pinnedQuality:(NSInteger)pinnedQuality {
+    self.statusLabel.stringValue = [NSString stringWithFormat:@"Loading \"%@\"...", playlist.title];
+
+    [[JLTidalAPI shared] getAllPlaylistTracksForPlaylistID:playlist.playlistUUID
+                                                completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) {
+                self.statusLabel.stringValue = [NSString stringWithFormat:@"Failed to load playlist: %@",
+                                                error.localizedDescription];
+                return;
+            }
+            if (tracks.count == 0) {
+                self.statusLabel.stringValue = [self emptyPlaylistMessage:playlist];
+                return;
+            }
+            [[JLTidalStreamResolver shared] seedMetadataForTracks:tracks];
+
+            if (queue) {
+                [self addTracksToPlaylistAndQueue:tracks];
+                return;
+            }
+
+            t_size activePlaylist, insertPosition;
+            [self getActivePlaylistOrCreate:activePlaylist insertAt:insertPosition];
+            auto notify = fb2k::service_new<TidalPlayNotify>(activePlaylist, insertPosition, play);
+            for (JLTidalTrack *track in tracks) {
+                NSString *url = trackURLStringPinned(track.trackID, pinnedQuality);
+                notify->m_paths.add_item([url UTF8String]);
+            }
+            notify->startImport();
+
+            self.statusLabel.stringValue = [NSString stringWithFormat:@"Adding %lu tracks from \"%@\"...",
+                                            (unsigned long)tracks.count, playlist.title];
+        });
+    }];
+}
+
+// An empty answer for a playlist that says it has tracks is not an empty
+// playlist, and saying so is the difference between "nothing there" and a
+// lead on what went wrong.
+- (NSString *)emptyPlaylistMessage:(JLTidalPlaylist *)playlist {
+    if (playlist.numberOfTracks > 0) {
+        tidal::logError([[NSString stringWithFormat:
+                          @"Playlist %@ (\"%@\") lists %ld tracks but TIDAL returned none",
+                          playlist.playlistUUID, playlist.title, (long)playlist.numberOfTracks] UTF8String]);
+        return [NSString stringWithFormat:@"TIDAL returned no tracks (the playlist lists %ld)",
+                (long)playlist.numberOfTracks];
+    }
+    return @"Playlist is empty";
+}
+
 - (void)addAlbumToPlaylistAndQueue:(JLTidalAlbum *)album {
-    [self addAlbum:album play:NO queue:YES];
+    [self addAlbum:album play:NO queue:YES pinnedQuality:kNoPinnedQuality];
 }
 
 - (void)addAlbumToPlaylistAndPlay:(JLTidalAlbum *)album {
-    [self addAlbum:album play:YES queue:NO];
-}
-
-- (void)addAlbumToPlaylist:(JLTidalAlbum *)album {
-    [self addAlbum:album play:NO queue:NO];
+    [self addAlbum:album play:YES queue:NO pinnedQuality:kNoPinnedQuality];
 }
 
 - (void)contextMenuCopyURL:(id)sender {
@@ -2029,15 +2673,13 @@ public:
 - (void)importPlaylistAsNewFb2kPlaylist:(JLTidalPlaylist *)playlist {
     self.statusLabel.stringValue = [NSString stringWithFormat:@"Importing \"%@\"...", playlist.title];
 
-    [[JLTidalAPI shared] getPlaylistTracksForPlaylistID:playlist.playlistUUID
-                                                  limit:500
-                                                 offset:0
-                                             completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
+    [[JLTidalAPI shared] getAllPlaylistTracksForPlaylistID:playlist.playlistUUID
+                                                completion:^(NSArray<JLTidalTrack *> *tracks, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error || tracks.count == 0) {
                 self.statusLabel.stringValue = error ?
                     [NSString stringWithFormat:@"Failed: %@", error.localizedDescription] :
-                    @"Playlist is empty";
+                    [self emptyPlaylistMessage:playlist];
                 return;
             }
 
@@ -2099,10 +2741,14 @@ public:
     if (menuItem.action == @selector(contextMenuImportAsPlaylist:)) {
         return [self isShowingPlaylists] || [self isShowingAlbums];
     }
+    if (menuItem.action == @selector(contextMenuGoToAlbum:)) {
+        return [self canGoToAlbumOfTrack:[self contextTrack]];
+    }
     if (menuItem.action == @selector(contextMenuPlay:) ||
         menuItem.action == @selector(contextMenuAddToPlaylist:) ||
+        menuItem.action == @selector(contextMenuAddToPlaylistWithQuality:) ||
         menuItem.action == @selector(contextMenuQueue:)) {
-        return [self isShowingTracks] || [self isShowingAlbums];
+        return [self isShowingTracks] || [self isShowingAlbums] || [self isShowingPlaylists];
     }
     return YES;
 }
@@ -2154,53 +2800,76 @@ public:
                            preview:(void (^)(JLTidalSyncPreviewCompletion))preview
                              apply:(void (^)(JLTidalSyncReport *report,
                                              void (^completion)(BOOL, NSError *)))apply {
-    if (![[JLTidalAuthService shared] isAuthenticated]) {
+    if (![[JLTidalAuthService shared] hasSession]) {
         self.statusLabel.stringValue = @"Not signed in - configure in Preferences";
         return;
     }
+    if (self.syncInProgress) {
+        self.statusLabel.stringValue = @"A sync is already running";
+        return;
+    }
 
+    // Both buttons stay disabled from here until the apply has really
+    // finished. Re-arming them when the PREVIEW returned meant a second
+    // preview could be taken while the first apply's imports were still in
+    // flight: it saw the not-yet-populated playlists as empty, planned an
+    // Update, and when both imports landed every track was there twice --
+    // which the set-based planner then reported as Unchanged forever.
+    self.syncInProgress = YES;
     self.syncPullButton.enabled = NO;
     self.syncPushButton.enabled = NO;
     self.statusLabel.stringValue = checkingMessage;
     [self.loadingSpinner setHidden:NO];
     [self.loadingSpinner startAnimation:nil];
 
+    __weak typeof(self) weakSelf = self;
+    void (^finish)(NSString *) = ^(NSString *message) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf.loadingSpinner setHidden:YES];
+        [strongSelf.loadingSpinner stopAnimation:nil];
+        strongSelf.syncInProgress = NO;
+        strongSelf.syncPullButton.enabled = YES;
+        strongSelf.syncPushButton.enabled = YES;
+        if (message) strongSelf.statusLabel.stringValue = message;
+    };
+
     preview(^(JLTidalSyncReport *report, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self.loadingSpinner setHidden:YES];
-            [self.loadingSpinner stopAnimation:nil];
-            self.syncPullButton.enabled = YES;
-            self.syncPushButton.enabled = YES;
+            typeof(self) strongSelf = weakSelf;
+            if (!strongSelf) return;
 
             if (error) {
-                self.statusLabel.stringValue = [NSString stringWithFormat:@"Sync failed: %@", error.localizedDescription];
+                finish([NSString stringWithFormat:@"Sync failed: %@", error.localizedDescription]);
                 return;
             }
 
             if (report.totalCreated == 0 && report.totalUpdated == 0 &&
                 (!includesDeletions || report.totalDeleted == 0)) {
-                self.statusLabel.stringValue = emptyMessage;
+                finish(emptyMessage);
                 return;
             }
 
-            [self showSyncConfirmDialog:report direction:direction applyBlock:^{
-                self.statusLabel.stringValue = applyingMessage;
-                [self.loadingSpinner setHidden:NO];
-                [self.loadingSpinner startAnimation:nil];
+            [strongSelf.loadingSpinner setHidden:YES];
+            [strongSelf.loadingSpinner stopAnimation:nil];
+
+            [strongSelf showSyncConfirmDialog:report direction:direction applyBlock:^{
+                typeof(self) innerSelf = weakSelf;
+                if (!innerSelf) return;
+                innerSelf.statusLabel.stringValue = applyingMessage;
+                [innerSelf.loadingSpinner setHidden:NO];
+                [innerSelf.loadingSpinner startAnimation:nil];
 
                 apply(report, ^(BOOL success, NSError *applyError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        [self.loadingSpinner setHidden:YES];
-                        [self.loadingSpinner stopAnimation:nil];
-                        if (success) {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"%@: %@",
-                                                            successPrefix, [report summary]];
-                        } else {
-                            self.statusLabel.stringValue = [NSString stringWithFormat:@"%@: %@",
-                                                            errorPrefix, applyError.localizedDescription];
-                        }
+                        finish(success
+                            ? [NSString stringWithFormat:@"%@: %@", successPrefix, [report summary]]
+                            : [NSString stringWithFormat:@"%@: %@", errorPrefix,
+                               applyError.localizedDescription ?: @"unknown error"]);
                     });
                 });
+            } cancelBlock:^{
+                finish(@"Sync cancelled");
             }];
         });
     });
@@ -2208,7 +2877,8 @@ public:
 
 - (void)showSyncConfirmDialog:(JLTidalSyncReport *)report
                     direction:(NSString *)direction
-                   applyBlock:(void (^)(void))applyBlock {
+                   applyBlock:(void (^)(void))applyBlock
+                  cancelBlock:(void (^)(void))cancelBlock {
     NSMutableString *details = [NSMutableString string];
     for (JLTidalSyncChange *change in report.changes) {
         if (change.changeType == JLTidalSyncChangeTypeUnchanged) continue;
@@ -2236,8 +2906,10 @@ public:
     NSModalResponse response = [alert runModal];
     if (response == NSAlertFirstButtonReturn) {
         applyBlock();
-    } else {
-        self.statusLabel.stringValue = @"Sync cancelled";
+    } else if (cancelBlock) {
+        // Cancel must re-arm the buttons too, or a declined sync leaves the
+        // panel permanently unable to start another.
+        cancelBlock();
     }
 }
 

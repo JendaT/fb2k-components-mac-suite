@@ -116,8 +116,16 @@ static void testBackRouting(void) {
           "top tracks with artist goes back to artist albums");
     CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeArtistTopTracks hasArtist:NO],
           "top tracks without artist collapses to root");
-    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:YES],
-          "album tracks collapses to root even with artist context");
+    // Was asserted the other way round, which is the bug: opening an album from
+    // an artist and pressing back dropped the whole artist context.
+    CHECK([Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:YES],
+          "album tracks opened from an artist goes back to that artist's albums");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeAlbumTracks hasArtist:NO],
+          "album tracks opened from a search collapses to root");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModeArtistAlbums hasArtist:YES],
+          "artist albums is the top of the artist path, so back leaves it");
+    CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModePlaylistTracks hasArtist:YES],
+          "playlist tracks ignores stale artist context");
     CHECK(![Logic backReturnsToArtistAlbumsFromMode:JLTidalBrowseModePlaylistTracks hasArtist:NO],
           "playlist tracks collapses to root");
 }
@@ -150,6 +158,76 @@ static void testModeChangeNoOps(void) {
           "same section inside drill-down still reloads");
 }
 
+// The list must not promise a quality playback cannot deliver: audioQuality
+// carries the release's nominal quality, mediaMetadata.tags what really exists.
+static void testQualityBadge(void) {
+    NSString *q;
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS"
+                                                mediaTags:@[@"LOSSLESS"]];
+    CHECK([q isEqualToString:@"LOSSLESS"], "lossless tag keeps Lossless");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES_LOSSLESS"
+                                                mediaTags:@[@"HIRES_LOSSLESS", @"LOSSLESS"]];
+    CHECK([q isEqualToString:@"HI_RES_LOSSLESS"], "hi-res tag keeps Hi-Res");
+
+    // The reported bug: advertised LOSSLESS, but no lossless master exists.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "empty tags caps the claim at High");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS"
+                                                mediaTags:@[@"DOLBY_ATMOS"]];
+    CHECK([q isEqualToString:@"HIGH"], "tags without a lossless format cap at High");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES_LOSSLESS" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "hi-res claim without tags caps at High");
+
+    // MQA counts as lossless-bearing.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HI_RES" mediaTags:@[@"MQA"]];
+    CHECK([q isEqualToString:@"HI_RES"], "MQA tag keeps the hi-res claim");
+
+    // No mediaMetadata in the response: nothing better to go on, leave as-is.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:nil];
+    CHECK([q isEqualToString:@"LOSSLESS"], "absent tags leave audioQuality alone");
+
+    // Lossy claims are never rewritten, and nil stays nil.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:@[]];
+    CHECK([q isEqualToString:@"HIGH"], "High claim untouched");
+    CHECK([JLTidalBrowserLogic displayQualityForAudioQuality:nil mediaTags:@[]] == nil,
+          "nil quality stays nil");
+}
+
+// mediaTags describes what Tidal actually holds, so it decides in both
+// directions -- not only as a downward cap.
+//
+// Note: array literals are assigned to locals first. A comma inside @[...] is
+// not protected from the preprocessor by the brackets, so passing one straight
+// into CHECK_STREQ splits the macro arguments.
+static void testQualityBadgeFromTags(void) {
+    NSArray<NSString *> *hiResTags = @[@"LOSSLESS", @"HIRES_LOSSLESS"];
+    NSArray<NSString *> *losslessTags = @[@"LOSSLESS"];
+    NSArray<NSString *> *lossyTags = @[@"SONY_360RA"];
+    NSString *q;
+
+    // Tags ahead of audioQuality: believe the tags.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:hiResTags];
+    CHECK_STREQ(q, @"HI_RES_LOSSLESS", "HIRES_LOSSLESS tag raises the badge");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:losslessTags];
+    CHECK_STREQ(q, @"LOSSLESS", "a lossless tag raises a HIGH claim");
+
+    // Tags behind the claim: cap it.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:lossyTags];
+    CHECK_STREQ(q, @"HIGH", "unbacked lossless claim is capped");
+
+    // Nothing to go on: leave it alone.
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"LOSSLESS" mediaTags:nil];
+    CHECK_STREQ(q, @"LOSSLESS", "absent mediaMetadata leaves audioQuality untouched");
+
+    q = [JLTidalBrowserLogic displayQualityForAudioQuality:@"HIGH" mediaTags:@[]];
+    CHECK_STREQ(q, @"HIGH", "an empty tag list does not invent a quality");
+}
+
 int main(void) {
     @autoreleasepool {
         testActiveListMatrix();
@@ -158,6 +236,8 @@ int main(void) {
         testPaginationMath();
         testBackRouting();
         testModeChangeNoOps();
+        testQualityBadge();
+        testQualityBadgeFromTags();
     }
     return testHarnessFinish("BrowserLogic");
 }

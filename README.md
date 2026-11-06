@@ -8,12 +8,14 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 
 | Extension | Description | Version | Docs |
 |-----------|-------------|---------|------|
-| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.5.1 | [📖](docs/simplaylist.md) |
-| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.3.0 | [📖](docs/plorg.md) |
-| [Waveform Seekbar](#waveform-seekbar) | Audio visualization seekbar with effects | 1.2.0 | [📖](docs/waveform.md) |
+| [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.1 | [📖](docs/simplaylist.md) |
+| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
+| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
+| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
+| [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
-| [Queue Manager](#queue-manager) | Visual playback queue management | 1.1.2 | [📖](docs/queuemanager.md) |
-| [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.0 | – |
+| [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
+| [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
 ---
@@ -50,26 +52,68 @@ Tree-based playlist management with folder organization and smart import. Necesi
 **Features:**
 - Hierarchical folder organization
 - Drag-and-drop playlist reordering
-- Smart import from filesystem with path mapping
-- Autoplaylist support
-- Playlist search and filtering
+- Import from a YAML file, Strawberry, DeaDBeeF, Vox, or Windows foo_plorg (theme.fth, with drive-letter path mapping)
 
 ---
 
 ### Waveform Seekbar
 
-Audio visualization seekbar with real-time waveform display and visual effects. This one was my favorite, a neat way to navigate through tracks.
+Waveform seekbar with per-track loudness analysis. This one was my favorite, a neat way to navigate through tracks.
 
 | Overview | Settings |
 |----------|----------|
-| ![Waveform Seekbar](docs/images/waveform-overview.png) | ![Waveform Settings](docs/images/waveform-settings.png) |
+| ![Waveform Seekbar in the Layered style with Split channels, the hover readout and the loudness summary](docs/images/waveform-layered-split.png)<br>![Waveform Seekbar in the Two-tone style (P31 green) with Split channels](docs/images/waveform-twotone-split.png)<br>![Waveform Seekbar in the Glow style with Split channels](docs/images/waveform-glow-split.png)<br>![Waveform Seekbar in the Heat style with Split channels](docs/images/waveform-heat-split.png)<br>![Waveform Seekbar in the Classic Solid style](docs/images/waveform-classic-solid.png) | ![Waveform Settings](docs/images/waveform-settings-v3.png) |
 
 **Features:**
-- Real-time waveform visualization
-- Multiple display modes (bars, lines, filled)
-- Customizable colors and effects
-- Click-to-seek functionality
-- Downmix/channel selection
+- Layered style: peak envelope around a momentary loudness body on a dBFS axis, tinted by the spectral balance
+- Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo, mono or split (L up, R down)
+- Hover readout (LUFS-S, peak, crest, correlation, Lo/Mid/Hi) and click-to-seek
+- Loudness summary: integrated, LRA, true peak, PLR, clip count; clip markers
+- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Trail, Shimmer), optionally synced to the track's BPM
+- Optional time ruler and level scale; themes shared with Spectrum Analyzer
+
+---
+
+### Spectrum Analyzer
+
+Real-time spectrum analyzer panel, running its own FFT on the audio from foobar2000's visualisation stream.
+
+| Curve and bars | Settings |
+|----------------|----------|
+| ![Spectrum Analyzer in curve mode with color bars](docs/images/spectrum-curve.png)<br>![Spectrum Analyzer in bars mode](docs/images/spectrum-bars.png)<br>![Spectrum Analyzer in bars mode with dense bars](docs/images/spectrum-bars-dense.png) | ![Spectrum Settings](docs/images/spectrum-settings.png) |
+
+**Features:**
+- Curve or bars, horizontal or vertical, edge to edge in the panel
+- Curve styles: filled, line, color bars (stripes that brighten where a frequency is louder), or line + color bars; a strong live line with a fainter peak line
+- Curve detail from every FFT bin to 1/24-1/3 octave smoothing; Hann or Blackman-Harris window, FFT size 1024-32768
+- Mid + side mode draws the stereo difference as a second line
+- Logarithmic, compact-bass logarithmic or linear frequency scale with adjustable range (default 20 Hz - 20 kHz)
+- Fixed dB window (Top and Range), optional spectral slope (0-6 dB/octave)
+- RMS-average or attack/decay smoothing; peak line that holds, then falls at a steady dB/s rate; slow-falling shadow fill
+- Hover readout with frequency, nearest note and level
+- Color themes, including P31 green, P3 amber, P4 white and P7 blue phosphors, with separate light/dark colors and optional glass background
+- Factory presets (Classic bars, RTA 1/3 octave, Fine detail, Mid + side) and a settings page that shows only what applies
+- Full-screen view via double-click or the context menu
+
+---
+
+### Vectorscope
+
+Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a phase correlation meter, fed by foobar2000's visualisation stream.
+
+| Overview | Settings |
+|----------|----------|
+| ![Vectorscope with band colors and the three-band correlation meter](docs/images/vectorscope-scope.png) | ![Vectorscope Settings](docs/images/vectorscope-settings.png) |
+
+**Features:**
+- Goniometer display (mono is a vertical line, out-of-phase material spreads horizontally) or Lissajous display (left against right)
+- Afterglow trace drawn as lines or dots, with adjustable persistence, brightness and dot size
+- Optional band colors: low / mid / high drawn in their own colors
+- Auto gain so quiet and loud tracks both fill the scope, or a fixed gain
+- Phase correlation meter, broadband or split into low / mid / high bands with adjustable crossovers
+- Meter below, above, left or right of the scope, with adjustable bar thickness and a band showing its recent range
+- Grid with level guides, L / R / M / S labels and adjustable opacity
+- Color presets (P31 green, P3 amber, P4 white and P7 blue phosphors, Nord, Dracula, Gruvbox, ...) with separate light/dark colors, band colors and optional glass background
 
 ---
 
@@ -82,8 +126,7 @@ Extended album art viewer with support for multiple artwork types and selection-
 - Shows artwork for selected track (falls back to now playing)
 - Right-click context menu to switch artwork type
 - Navigation arrows on hover to cycle through available types
-- Per-instance configuration (each panel remembers its type)
-- Layout parameters for default artwork type
+- Layout parameter for the panel's artwork type (a type picked from the menu lasts until foobar2000 restarts)
 
 **Layout Usage:**
 ```
@@ -92,7 +135,7 @@ albumart_ext type=back          # Back cover
 albumart_ext type=disc          # Disc art
 
 # Dual panel layout (front + back side by side)
-splitter horizontal
+splitter vertical
   albumart_ext type=front
   albumart_ext type=back
 ```
@@ -103,14 +146,15 @@ splitter horizontal
 
 Visual playback queue manager - functionality that exists in Windows foobar2000 but was missing on macOS. See all queued tracks and manage playback order.
 
-<!-- Screenshot: Queue Manager -->
+![Queue Manager](docs/images/queuemanager-overview.png)
 
 **Features:**
-- Visual queue display with configurable columns
-- Drag & drop reordering within queue
+- Visual queue display with item count
+- Drag & drop reordering (multiple rows at once) and drops from SimPlaylist
 - Live updates when queue changes
-- Double-click to play, Delete to remove
-- Context menu (Play, Remove, Clear, Show in Playlist)
+- Double-click or Enter to play, Delete to remove
+- Queue restored after restart
+- Stop After Queue: stop playback when the queue runs out (Playback menu, context menu, preferences)
 
 ---
 
@@ -150,21 +194,25 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 | SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
 | Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
-| Album Art (Extended) | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=albumart) | TBD |
-| Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=queuemanager) | TBD |
+| Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
+| Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
+| Album Art (Extended) | [1.0.1](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1) | TBD |
+| Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=Queue+Manager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
 | Effects DSP | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=effects-dsp) | TBD |
 
 ## Installation
 
 1. Download the `.fb2k-component` file from the links above
-2. Double-click to install, or manually copy to `~/Library/foobar2000-v2/user-components/`
-3. Restart foobar2000
+2. In foobar2000, open **Preferences** (⌘,) **→ Components**, click **+** and choose the downloaded file
+3. Restart foobar2000 when it asks
+
+Double-clicking a `.fb2k-component` file does not install it, and copying it into the components folder doesn't either. Panels then go into your layout by name (see [Layout Editor](#layout-editor)); Effects DSP goes into the DSP chain instead.
 
 ## Requirements
 
-- foobar2000 v2.6+ for macOS
-- macOS 11 "Big Sur" or newer
+- foobar2000 v2 for macOS (tested on 2.25 and 2.26)
+- macOS 12 "Monterey" or newer
 - Intel or Apple Silicon processor
 
 ## Building from Source
@@ -182,7 +230,7 @@ directory layout looks like this:
 
 ```
 fb2k-components-mac-suite/
-└── SDK-2025-03-07/          # exact name must match the downloaded archive
+└── SDK-2026-10-01/          # this exact name, or set FB2K_SDK_PATH
     ├── pfc/
     ├── foobar2000/
     │   ├── SDK/
@@ -192,19 +240,22 @@ fb2k-components-mac-suite/
     └── ...
 ```
 
-Then build the SDK libraries **in this order** (each must succeed before the next):
+Then build the SDK libraries **in this order** (each must succeed before the next).
+The SDK's own projects target macOS 11, which Xcode 27 rejects, so the deployment
+target is overridden on the command line:
 
 ```bash
-SDK=SDK-2025-03-07
+SDK=SDK-2026-10-01
 
-xcodebuild -project $SDK/pfc/pfc.xcodeproj                                                         -configuration Release
-xcodebuild -project $SDK/foobar2000/SDK/foobar2000_SDK.xcodeproj                                   -configuration Release
-xcodebuild -project $SDK/foobar2000/shared/shared.xcodeproj                                        -configuration Release
-xcodebuild -project $SDK/foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj                       -configuration Release
-xcodebuild -project $SDK/foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release
+xcodebuild -project $SDK/pfc/pfc.xcodeproj                                                         -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/SDK/foobar2000_SDK.xcodeproj                                   -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/shared/shared.xcodeproj                                        -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/helpers/foobar2000_SDK_helpers.xcodeproj                       -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
+xcodebuild -project $SDK/foobar2000/foobar2000_component_client/foobar2000_component_client.xcodeproj -configuration Release MACOSX_DEPLOYMENT_TARGET=12.0
 ```
 
-This only needs to be done once (or when the SDK version changes).
+This only needs to be done once (or when the SDK version changes). Components build as C++20,
+which the SDK requires since 2026-09-16.
 
 **If you intend to build components with `--debug`, build the SDK in Debug
 too** — the same five projects, `-configuration Debug`:
@@ -232,16 +283,12 @@ SDK build. Skipping this step gives
 
 ```bash
 cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
-ruby Scripts/generate_xcode_project.rb
-./Scripts/build.sh          # --release is the default; use --debug for a debug build
-./Scripts/install.sh
+./Scripts/build.sh --install   # Release by default; add --debug for a debug build
 ```
 
-Or build all extensions at once:
+`build.sh` generates the Xcode project on the first run (`--regenerate` after adding or removing source files) and keeps its output in the component's `build/` folder, which `--install` copies into foobar2000. Restart foobar2000 afterwards.
 
-```bash
-./Scripts/build_all.sh [--clean] [--install]
-```
+`./Scripts/build_all.sh [--clean] [--install]` builds SimPlaylist, Playlist Organizer, Waveform Seekbar and Last.fm Scrobbler in one go.
 
 ## Documentation
 
@@ -251,6 +298,8 @@ Or build all extensions at once:
 - [Waveform Seekbar](docs/waveform.md) - Features, configuration, and usage
 - [Album Art (Extended)](docs/albumart.md) - Features, configuration, and usage
 - [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
+- [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
+- [Vectorscope](docs/vectorscope.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
@@ -268,36 +317,42 @@ If you like this project, you can support it here.
 
 ## Layout Editor
 
-To add these components to your layout, use **View → Layout → Enable Layout Editing Mode**, then right-click to add UI elements.
+foobar2000 for Mac builds its window from a text layout; there is no drag-and-drop or right-click layout editing. To add a panel, open **View → Layout → Edit Layout...**, type its name into the layout text where you want it, and click **Apply**.
+
+In the layout text, `splitter horizontal` stacks its children top to bottom and `splitter vertical` places them side by side.
 
 ### Component Names for Layout
 
-Use these names in the layout editor or when editing the layout text file directly:
+Use these names in the layout text:
 
 | Component | Recommended | Also Accepted |
 |-----------|-------------|---------------|
-| SimPlaylist | `simplaylist` | `SimPlaylist`, `foo_jl_simplaylist`, `jl_simplaylist` |
-| Playlist Organizer | `plorg` | `playlist-organizer`, `foo_jl_plorg`, `jl_plorg` |
+| SimPlaylist | `simplaylist` | `SimPlaylist`, `sim_playlist`, `foo_jl_simplaylist`, `jl_simplaylist` |
+| Playlist Organizer | `plorg` | `playlist-organizer`, `playlist_organizer`, `foo_jl_plorg`, `jl_plorg` |
 | Waveform Seekbar | `waveform-seekbar` | `waveform_seekbar`, `foo_jl_wave_seekbar`, `jl_wave_seekbar` |
-| Album Art (Extended) | `albumart_ext` | `album_art_ext`, `albumart-ext`, `foo_jl_album_art`, `jl_album_art` |
-| Queue Manager | `Queue Manager` | `queue_manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager` |
+| Spectrum Analyzer | `spectrum` | `Spectrum Analyzer`, `spectrum_analyzer`, `foo_jl_spectrum`, `jl_spectrum` |
+| Vectorscope | `vectorscope` | `Vectorscope`, `vector_scope`, `goniometer`, `foo_jl_vectorscope`, `jl_vectorscope` |
+| Album Art (Extended) | `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
+| Queue Manager | `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
+| Last.fm Scrobbler (stats widget) | `lastfm_scrobbler` | `lastfm-scrobbler`, `scrobbler`, `foo_jl_scrobble`, `jl_scrobble` |
 
 ### Example Layout
 
-Here's a complete layout configuration featuring all three UI components:
+Here's a complete layout configuration featuring the UI components:
 
 ```
 splitter horizontal style=thin
   waveform-seekbar
+  spectrum
   splitter vertical style=thin
     splitter horizontal style=thin
-      plorg tab-name="Playlists"
+      plorg
     splitter horizontal style=thin
       simplaylist
     splitter horizontal style=thin
       tabs
         splitter horizontal style=thin tab-name="Now Playing"
-          albumart
+          albumart_ext type=front
           selection-properties sections=metadata
         audiounit mode=visualization name=AUGraphicEQ vendor=Apple tab-name="EQ"
       playback-controls
@@ -305,10 +360,10 @@ splitter horizontal style=thin
 
 This creates a layout with:
 - Waveform seekbar at the top
-- Playlist Organizer on the left sidebar
-- SimPlaylist as the main playlist view
-- Tabbed panel with Now Playing info and EQ visualization
-- Playback controls at the bottom
+- Spectrum analyzer below it
+- Three columns underneath: Playlist Organizer, SimPlaylist, and a tabbed panel (Now Playing with Album Art and track info, EQ visualization) above playback controls
+
+`selection-properties`, `audiounit` and `playback-controls` are foobar2000's built-in elements.
 
 ---
 

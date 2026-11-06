@@ -2,7 +2,7 @@
 
 > Part of [foobar2000 macOS Components Suite](../../README.md)
 
-**[Features & Documentation](../../docs/effects_dsp.md)** | **[Changelog](CHANGELOG.md)**
+**[Features](../../README.md#effects-dsp)** | **[Changelog](CHANGELOG.md)**
 
 ---
 
@@ -11,7 +11,7 @@ Effects DSP for foobar2000 macOS.
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later
+- macOS 12.0 or later
 
 ## Building
 

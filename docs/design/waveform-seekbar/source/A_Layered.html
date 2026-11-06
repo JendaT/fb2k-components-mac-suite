@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Seekbar A · Layered</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#E8B547}a:hover{color:#F5D58A}
+</style>
+</helmet>
+<div style="width: 1440px; height: 190px; position: relative; overflow: hidden; background: #13110C; color: #CFC6B4; font-family: 'SF Mono', 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 10px">
+
+<div style="position: absolute; left: 0; top: 4px; width: 1392px; height: 160px">
+<div style="position: absolute; left: 0; top: 28px; width: 1392px; height: 1px; background: #211D15"></div>
+<div style="position: absolute; left: 0; top: 54px; width: 1392px; height: 1px; background: #211D15"></div>
+<div style="position: absolute; left: 0; top: 80px; width: 1392px; height: 1px; background: #3A3326"></div>
+<div style="position: absolute; left: 0; top: 106px; width: 1392px; height: 1px; background: #211D15"></div>
+<div style="position: absolute; left: 0; top: 132px; width: 1392px; height: 1px; background: #211D15"></div>
+<img src="assets/A_layered.png" alt="Waveform: faint peak envelope around a solid short-term loudness body, left channel up, right channel down" style="position: absolute; left: 0; top: 0; width: 1392px; height: 160px">
+<div style="position: absolute; left: 262.5px; top: 0; width: 1129.5px; height: 160px; background: {{dimBg}}"></div>
+
+<sc-if value="{{showClips}}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{clips}}" as="c" hint-placeholder-count="17">
+<div style="position: absolute; top: 0; left: {{c.x}}px; width: 2px; height: 5px; background: #F0603F"></div>
+</sc-for>
+</sc-if>
+
+<div style="position: absolute; left: 4px; top: 3px; color: #8A8170; font-size: 9px">L</div>
+<div style="position: absolute; left: 4px; bottom: 3px; color: #8A8170; font-size: 9px">R</div>
+
+<div style="position: absolute; left: 262px; top: 0; width: 1px; height: 160px; background: #F5EFE2"></div>
+<div style="position: absolute; left: 266px; top: 4px; padding: 1px 5px; border-radius: 2px; background: #F5EFE2; color: #13110C; font-weight: 600">4:01</div>
+
+<sc-if value="{{showTip}}" hint-placeholder-val="{{ true }}">
+<div style="position: absolute; left: 667px; top: 0; width: 0; height: 160px; border-left: 1px dashed rgba(245, 239, 226, 0.6)"></div>
+<div style="position: absolute; left: 676px; top: 10px; width: 186px; box-sizing: border-box; padding: 8px 10px; border-radius: 4px; border: 1px solid #3A3326; background: rgba(19, 17, 12, 0.95); display: flex; flex-direction: column; gap: 6px">
+<div style="display: flex; justify-content: space-between; align-items: baseline"><span style="color: #F2E9D6; font-weight: 600; font-size: 11px">10:12.6</span><span style="color: #8A8170">click to seek</span></div>
+<div style="display: grid; grid-template-columns: auto 1fr; gap: 3px 12px">
+<span style="color: #9A907D">LUFS-S</span><span style="color: #F2E9D6; text-align: right">−13.7</span>
+<span style="color: #9A907D">Peak</span><span style="color: #F2E9D6; text-align: right">−0.1 dBFS</span>
+<span style="color: #9A907D">Crest</span><span style="color: #F2E9D6; text-align: right">14.5 dB</span>
+<span style="color: #9A907D">Corr</span><span style="color: #F2E9D6; text-align: right">+0.72</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 3px">
+<div style="display: flex; height: 4px; border-radius: 2px; overflow: hidden"><div style="width: 76%; background: #C7772A"></div><div style="width: 16%; background: #D9C26A"></div><div style="width: 8%; background: #A8D4F2"></div></div>
+<div style="display: flex; justify-content: space-between; color: #9A907D"><span>Lo 76</span><span>Mid 16</span><span>Hi 8 %</span></div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{showStats}}" hint-placeholder-val="{{ true }}">
+<div style="position: absolute; right: 6px; bottom: 6px; padding: 3px 8px; border-radius: 3px; background: rgba(19, 17, 12, 0.88); border: 1px solid #2C271D; display: flex; gap: 12px; color: #9A907D">
+<span>I <span style="color: #F2E9D6">−12.4</span> LUFS</span>
+<span>LRA <span style="color: #F2E9D6">15.9</span> LU</span>
+<span>TP <span style="color: #F0603F">+0.4</span> dBTP</span>
+<span>PLR <span style="color: #F2E9D6">12.8</span></span>
+<span style="color: #F0603F">17 clips</span>
+</div>
+</sc-if>
+</div>
+
+<div style="position: absolute; left: 1392px; top: 4px; width: 48px; height: 160px; color: #8A8170; font-size: 9px">
+<span style="position: absolute; left: 6px; top: -4px">0</span>
+<span style="position: absolute; left: 6px; top: 22px">−12</span>
+<span style="position: absolute; left: 6px; top: 48px">−24</span>
+<span style="position: absolute; left: 6px; top: 74px">−∞</span>
+<span style="position: absolute; left: 6px; top: 100px">−24</span>
+<span style="position: absolute; left: 6px; top: 126px">−12</span>
+<span style="position: absolute; left: 6px; top: 150px">0</span>
+</div>
+
+<div style="position: absolute; left: 0; top: 166px; width: 1392px; height: 22px; border-top: 1px solid #2C271D">
+<sc-for list="{{minors}}" as="m" hint-placeholder-count="32">
+<div style="position: absolute; top: 0; left: {{m.x}}px; width: 1px; height: 4px; background: #3A3326"></div>
+</sc-for>
+<sc-for list="{{majors}}" as="m" hint-placeholder-count="11">
+<div style="position: absolute; top: 0; left: {{m.x}}px; width: 1px; height: 8px; background: #6B6352"></div>
+<span style="position: absolute; top: 6px; left: {{m.lx}}px; color: #8A8170">{{m.label}}</span>
+</sc-for>
+</div>
+<span style="position: absolute; left: 1398px; top: 172px; color: #6B6352; font-size: 9px">dBFS</span>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dimUnplayed":{"editor":"range","default":0.45,"min":0,"max":0.8,"step":0.05,"section":"Playback"},"showTooltip":{"editor":"boolean","default":true,"section":"Overlays"},"showStats":{"editor":"boolean","default":true,"section":"Overlays"},"showClips":{"editor":"boolean","default":true,"section":"Overlays"},"$preview":{"width":1440,"height":190}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const PX = 1392 / 1278;
+    const majors = [], minors = [];
+    for (let s = 0; s <= 1260; s += 30) {
+      const x = +(s * PX).toFixed(1);
+      if (s % 120 === 0) majors.push({ x: x, lx: x + 3, label: Math.floor(s / 60) + ':00' });
+      else minors.push({ x: x });
+    }
+    const clips = [208, 284, 305, 337, 409, 426, 520, 571, 618, 672, 733, 922, 1022, 1064, 1181, 1232, 1284].map(function (x) { return { x: x }; });
+    const dim = this.props.dimUnplayed ?? 0.45;
+    return {
+      majors: majors, minors: minors, clips: clips,
+      dimBg: 'rgba(19,17,12,' + dim + ')',
+      showTip: this.props.showTooltip ?? true,
+      showStats: this.props.showStats ?? true,
+      showClips: this.props.showClips ?? true
+    };
+  }
+}
+</script>
+</body>
+</html>

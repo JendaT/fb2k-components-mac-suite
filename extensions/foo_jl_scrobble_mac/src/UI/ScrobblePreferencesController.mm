@@ -14,6 +14,7 @@
 #import "../Services/ScrobbleCache.h"
 #import "ScrobbleColorUtils.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 @class ScrobbleTrack;
 
@@ -110,6 +111,7 @@
     // ===== Title (non-bold, matches foobar2000 style) =====
     NSTextField *title = JLCreatePreferencesTitle(@"Last.fm Scrobbler");
     addRow(title, 30);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // ===== Account Section =====
     NSTextField *accountLabel = [NSTextField labelWithString:@"Account"];
@@ -768,6 +770,10 @@
 
 - (void)tableViewSelectionDidChange:(NSNotification *)notification {
     [self updateDeleteButton];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

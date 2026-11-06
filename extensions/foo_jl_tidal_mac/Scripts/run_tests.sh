@@ -119,6 +119,22 @@ clang++ "${OBJCXX_FLAGS[@]}" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/stream_cache_tests"
 
+echo "==> Compiling unit tests (FlacFromFmp4)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/FlacFromFmp4Tests.mm" \
+    "$PROJECT_DIR/src/Core/FlacFromFmp4.mm" \
+    -o "$TEST_BUILD_DIR/flac_from_fmp4_tests"
+
+echo "==> Compiling unit tests (TrackMatcher)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/TrackMatcherTests.mm" \
+    "$PROJECT_DIR/src/Core/TrackMatcher.mm" \
+    "$PROJECT_DIR/src/Core/TidalModels.mm" \
+    "$PROJECT_DIR/src/Core/ManifestParser.mm" \
+    "$PROJECT_DIR/src/Core/TidalLog.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/track_matcher_tests"
+
 echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/manifest_parser_tests"
 "$TEST_BUILD_DIR/stream_resolution_policy_tests"
@@ -132,3 +148,5 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/library_layout_tests"
 "$TEST_BUILD_DIR/pagination_policy_tests"
 "$TEST_BUILD_DIR/stream_cache_tests"
+"$TEST_BUILD_DIR/flac_from_fmp4_tests"
+"$TEST_BUILD_DIR/track_matcher_tests"

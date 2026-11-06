@@ -132,7 +132,7 @@ ${DISPLAY_NAME} for foobar2000 macOS.
 ## Requirements
 
 - foobar2000 v2.x for macOS
-- macOS 11.0 or later
+- macOS 12.0 or later
 
 ## Building
 
@@ -199,13 +199,8 @@ if [ ! -d "$WORKTREE_DIR" ]; then
     git worktree add "$WORKTREE_DIR" -b "dev/$COMPONENT_HYPHEN" main
 
     # Symlink SDK
-    if [ -d "$PROJECT_ROOT/SDK-2025-03-07" ]; then
-        ln -s "$PROJECT_ROOT/SDK-2025-03-07" "$WORKTREE_DIR/SDK-2025-03-07"
-    fi
-
-    # Symlink shared
-    if [ -d "$PROJECT_ROOT/shared" ]; then
-        ln -s "$PROJECT_ROOT/shared" "$WORKTREE_DIR/shared"
+    if [ -d "$PROJECT_ROOT/SDK-2026-10-01" ]; then
+        ln -s "$PROJECT_ROOT/SDK-2026-10-01" "$WORKTREE_DIR/SDK-2026-10-01"
     fi
 fi
 

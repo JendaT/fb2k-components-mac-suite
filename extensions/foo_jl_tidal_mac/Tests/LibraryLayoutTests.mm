@@ -91,6 +91,19 @@ static void testAlbumPathSlots(void) {
                 @"[Compilations]/VA [2011] Freeflow", "compilations slot beats artist folder");
 }
 
+static void testAlbumFolderName(void) {
+    // Manual destination: the album folder alone, no slot or artist level.
+    CHECK_STREQ([Layout albumFolderNameForArtist:@"Griffin Kloud" year:@"2024" albumTitle:@"The Ritual"
+                                   isCompilation:NO],
+                @"Griffin Kloud [2024] The Ritual", "release folder without a slot");
+    CHECK_STREQ([Layout albumFolderNameForArtist:@"Various Artists" year:@"2011" albumTitle:@"Freeflow"
+                                   isCompilation:YES],
+                @"VA [2011] Freeflow", "compilation folder without a slot");
+    CHECK_STREQ([Layout albumFolderNameForArtist:@"A/B" year:nil albumTitle:@"C:D" isCompilation:NO],
+                [Layout releaseFolderNameForArtist:@"A/B" year:nil title:@"C:D"],
+                "same sanitizing and unknown-year rules as the library layout");
+}
+
 static void testTrackFileNames(void) {
     CHECK_STREQ([Layout trackFileNameForNumber:1 discNumber:1 title:@"Abiogenesis" extension:@"flac"],
                 @"01 - Abiogenesis.flac", "two-digit track number");
@@ -151,6 +164,7 @@ int main(void) {
         testYearAndVA();
         testReleaseFolderNames();
         testAlbumPathSlots();
+        testAlbumFolderName();
         testTrackFileNames();
         testCollectionScanning();
         testFfmpegArguments();

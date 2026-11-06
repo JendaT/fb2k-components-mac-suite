@@ -12,6 +12,7 @@
 #import "../Core/ThumbnailCache.h"
 #import "../Services/YtDlpWrapper.h"
 #import "../../../../shared/PreferencesCommon.h"
+#include "../Integration/ComponentInfo.h"
 
 using namespace cloud_streamer;
 
@@ -76,6 +77,7 @@ using namespace cloud_streamer;
     // ===== Title =====
     NSTextField *title = JLCreatePreferencesTitle(@"Cloud Streamer");
     addRow(title, 30);
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // ===== yt-dlp Section =====
     NSTextField *ytdlpSectionLabel = JLCreateSectionHeader(@"yt-dlp Configuration");
@@ -313,6 +315,10 @@ using namespace cloud_streamer;
     self.metadataCacheLabel.stringValue = [NSString stringWithFormat:@"Metadata: %zu entries", metadataCount];
     self.thumbnailCacheLabel.stringValue = [NSString stringWithFormat:@"Thumbnails: %zu entries, %.1f MB",
                                             thumbnailCount, (double)thumbnailBytes / (1024.0 * 1024.0)];
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 
 @end

@@ -52,14 +52,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 #pragma mark - User Profile
 
-/// Store user profile info (userId, username, countryCode)
+/// Store user profile info (userId, username, email, countryCode)
 + (void)storeUserId:(nullable NSString *)userId;
 + (void)storeUsername:(nullable NSString *)username;
++ (void)storeEmail:(nullable NSString *)email;
 + (void)storeCountryCode:(nullable NSString *)countryCode;
 
 /// Retrieve user profile info
 + (nullable NSString *)loadUserId;
 + (nullable NSString *)loadUsername;
++ (nullable NSString *)loadEmail;
 + (nullable NSString *)loadCountryCode;
 
 @end

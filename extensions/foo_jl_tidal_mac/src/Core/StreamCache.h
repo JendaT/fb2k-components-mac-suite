@@ -20,18 +20,25 @@ class StreamCache {
 public:
     static StreamCache& shared();
 
-    /// Get cached playback info for a track
+    // Entries are keyed by track AND requested quality: the same track can sit
+    // in a playlist twice with different "?q=" pins, and those resolve to
+    // different CDN URLs. A track-only key would serve one pin's stream for
+    // the other.
+
+    /// Get cached playback info for a track at a requested quality
     /// Returns nullptr if not cached or expired
-    JLTidalPlaybackInfo* get(const std::string& trackID);
+    JLTidalPlaybackInfo* get(const std::string& trackID, JLTidalQuality quality);
 
     /// Store playback info with default TTL
-    void set(const std::string& trackID, JLTidalPlaybackInfo* info);
+    void set(const std::string& trackID, JLTidalQuality quality, JLTidalPlaybackInfo* info);
 
     /// Store with custom TTL (seconds)
-    void setWithTTL(const std::string& trackID, JLTidalPlaybackInfo* info, int ttlSeconds);
+    void setWithTTL(const std::string& trackID, JLTidalQuality quality,
+                    JLTidalPlaybackInfo* info, int ttlSeconds);
 
-    /// Remove specific entry
-    void remove(const std::string& trackID);
+    /// Remove every cached quality for a track (used when a stream URL expires:
+    /// the whole track needs re-resolving, whichever pin asked for it).
+    void removeTrack(const std::string& trackID);
 
     /// Clear all entries
     void clear();

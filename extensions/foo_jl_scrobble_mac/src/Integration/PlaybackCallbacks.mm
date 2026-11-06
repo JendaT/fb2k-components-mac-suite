@@ -21,6 +21,7 @@ public:
     unsigned get_flags() override {
         return flag_on_playback_new_track |
                flag_on_playback_stop |
+               flag_on_playback_pause |
                flag_on_playback_seek |
                flag_on_playback_time |
                flag_on_playback_edited |
@@ -34,6 +35,9 @@ public:
             console::info("[Scrobble] on_playback_new_track called");
 
             try {
+                // The previous track is finalized here, at the boundary, rather
+                // than mid-playback, so its scrobble doesn't appear on the
+                // profile alongside the still-playing Now Playing entry.
                 ScrobbleTrack* previous = m_currentTrack;
                 m_currentTrack = extractTrackInfo(track);
 
@@ -72,6 +76,15 @@ public:
 
                 scrobble::PlaybackDecision decision = m_tracker.onTime(time);
 
+                // Note: the scrobble itself is NOT submitted here. Once the track
+                // crosses the eligibility threshold it just stays eligible; the
+                // submission happens at a natural boundary (next track, pause, stop,
+                // or quit) so it doesn't show on the profile while still playing.
+                // PlaybackTracker::onTime therefore never sets decision.scrobble.
+
+                // Send Now Playing once past the initial threshold. Last.fm holds the
+                // now-playing status for the track's duration (which we submit), so no
+                // periodic refresh is needed.
                 if (decision.sendNowPlaying) {
                     ScrobbleTrack* track = [m_currentTrack copy];
                     FB2K_console_formatter() << "[Scrobble] Sending Now Playing: "
@@ -79,10 +92,6 @@ public:
                     dispatch_async(dispatch_get_main_queue(), ^{
                         [[ScrobbleService shared] sendNowPlaying:track];
                     });
-                }
-
-                if (decision.scrobble) {
-                    queueScrobble(m_currentTrack, decision.timestamp);
                 }
             } catch (...) {
                 FB2K_console_formatter() << "[Scrobble] Exception in on_playback_time";
@@ -95,11 +104,20 @@ public:
             std::lock_guard<std::mutex> lock(m_mutex);
 
             try {
+                // Don't finalize if just switching tracks (the next track's
+                // on_playback_new_track will scrobble it). Covers manual stop,
+                // end of playlist, and shutdown (stop_reason_shutting_down).
                 bool startingAnother = (reason == play_control::stop_reason_starting_another);
                 scrobble::PlaybackDecision decision = m_tracker.onStop(startingAnother);
 
                 if (decision.scrobble && m_currentTrack) {
-                    queueScrobble(m_currentTrack, decision.timestamp);
+                    if (reason == play_control::stop_reason_shutting_down) {
+                        // queueScrobble() hands off to the main queue, which
+                        // does not run again before the process exits.
+                        queueScrobbleForShutdown(m_currentTrack, decision.timestamp);
+                    } else {
+                        queueScrobble(m_currentTrack, decision.timestamp);
+                    }
                 }
 
                 if (!startingAnother) {
@@ -145,9 +163,22 @@ public:
         // We could update track info here if needed
     }
 
+    void on_playback_pause(bool state) override {
+        @autoreleasepool {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            // Pause is a boundary: submit the scrobble if the track already
+            // became eligible, so the listen isn't lost if playback never resumes.
+            scrobble::PlaybackDecision decision = m_tracker.onPause(state);
+
+            if (decision.scrobble && m_currentTrack) {
+                console::info("[Scrobble] Finalizing on pause");
+                queueScrobble(m_currentTrack, decision.timestamp);
+            }
+        }
+    }
+
     // Required overrides that we don't use
     void on_playback_starting(play_control::t_track_command cmd, bool paused) override {}
-    void on_playback_pause(bool state) override {}
     void on_playback_dynamic_info(const file_info& info) override {}
     void on_volume_change(float volume) override {}
 
@@ -165,6 +196,13 @@ private:
         dispatch_async(dispatch_get_main_queue(), ^{
             [[ScrobbleService shared] queueTrack:copy];
         });
+    }
+
+    /// Queue and persist synchronously; submitted on the next launch.
+    void queueScrobbleForShutdown(ScrobbleTrack* track, int64_t timestamp) {
+        track.timestamp = timestamp;
+        console::info("[Scrobble] Saving scrobble at shutdown");
+        [[ScrobbleService shared] queueTrackForShutdown:[track copy]];
     }
 
     /// Extract track info from foobar2000 metadb handle

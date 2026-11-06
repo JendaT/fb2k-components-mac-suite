@@ -26,8 +26,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// User ID (if available)
 @property (nonatomic, copy, readonly, nullable) NSString *userId;
 
-/// Username (if available)
+/// Username (if available). For accounts created with an email address Tidal
+/// commonly reports the email here, so this may equal `email`.
 @property (nonatomic, copy, readonly, nullable) NSString *username;
+
+/// Email address (if the token response provided one)
+@property (nonatomic, copy, readonly, nullable) NSString *email;
 
 /// Country code for content availability
 @property (nonatomic, copy, readonly, nullable) NSString *countryCode;
@@ -37,12 +41,21 @@ NS_ASSUME_NONNULL_BEGIN
                        refreshToken:(NSString *)refreshToken
                           expiresIn:(NSTimeInterval)expiresIn;
 
-/// Initialize with all fields
+/// Initialize with all fields (email defaults to nil)
 - (instancetype)initWithAccessToken:(NSString *)accessToken
                        refreshToken:(NSString *)refreshToken
                           expiresIn:(NSTimeInterval)expiresIn
                              userId:(nullable NSString *)userId
                            username:(nullable NSString *)username
+                        countryCode:(nullable NSString *)countryCode;
+
+/// Designated initializer including the email address
+- (instancetype)initWithAccessToken:(NSString *)accessToken
+                       refreshToken:(NSString *)refreshToken
+                          expiresIn:(NSTimeInterval)expiresIn
+                             userId:(nullable NSString *)userId
+                           username:(nullable NSString *)username
+                              email:(nullable NSString *)email
                         countryCode:(nullable NSString *)countryCode;
 
 /// Check if access token has expired or will expire soon

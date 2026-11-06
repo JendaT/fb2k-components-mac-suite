@@ -7,7 +7,9 @@
 
 #import "SimPlaylistCustomColumnsPreferences.h"
 #import "../Core/ConfigHelper.h"
+#import "../Core/SimPlaylistNotifications.h"
 #import "../Core/ColumnDefinition.h"
+#import "../Core/ColumnDefinitionStore.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
 
@@ -125,7 +127,7 @@
     [ColumnDefinition saveCustomColumns:_columns];
 
     // Post notification so SimPlaylist can update
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SimPlaylistCustomColumnsChanged" object:nil];
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistColumnsChangedNotification object:nil];
 }
 
 - (void)updateButtonStates {

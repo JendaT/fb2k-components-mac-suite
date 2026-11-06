@@ -32,6 +32,15 @@ typedef NS_ENUM(NSInteger, JLTidalHTTPAction) {
 @property (nonatomic, readonly) NSTimeInterval retryAfterSeconds;
 @end
 
+/// Total attempts for one logical request (initial try plus two retries),
+/// matching the TIDAL Player spec's 3 attempts at 500/1000/2000 ms.
+static const NSInteger kTidalMaxRequestAttempts = 3;
+
+/// Longest server-requested Retry-After this client will actually wait.
+/// A decoder thread is blocked on these; beyond this the honest answer is
+/// to fail and let the user retry.
+static const NSTimeInterval kTidalMaxRetryAfterSeconds = 8.0;
+
 @interface JLTidalHTTPResponsePolicy : NSObject
 
 /// Map a response status to an action. retryAfterHeader is the raw
@@ -40,6 +49,37 @@ typedef NS_ENUM(NSInteger, JLTidalHTTPAction) {
 + (JLTidalHTTPDecision *)decisionForStatusCode:(NSInteger)statusCode
                               retryAfterHeader:(nullable NSString *)retryAfterHeader
                                        isRetry:(BOOL)isRetry;
+
+/// As above, plus TIDAL's error body. `subStatus` is the numeric `subStatus`
+/// field (0 when absent) and `userMessage` the server's own explanation.
+///
+/// A 403 is not automatically "subscription required": it is also how TIDAL
+/// answers a geo-block, a quota, and a forbidden playlist mutation. Only the
+/// subscription sub-status should reach the quality cascade -- the rest must
+/// propagate at once, with the server's message, instead of costing five
+/// playbackinfo requests down the tiers.
++ (JLTidalHTTPDecision *)decisionForStatusCode:(NSInteger)statusCode
+                              retryAfterHeader:(nullable NSString *)retryAfterHeader
+                                     subStatus:(NSInteger)subStatus
+                                   userMessage:(nullable NSString *)userMessage
+                                       isRetry:(BOOL)isRetry;
+
+/// Whether a failed attempt is worth repeating.
+///
+/// Only transient causes qualify — a transport error, 429 or 5xx — and only
+/// for idempotent methods: re-sending a POST could add the same favorite or
+/// playlist twice. 4xx is a verdict, not a hiccup, and is never retried.
+/// `attempt` is 0-based; the last permitted attempt returns NO.
++ (BOOL)shouldRetryMethod:(nullable NSString *)method
+                  attempt:(NSInteger)attempt
+          transportFailed:(BOOL)transportFailed
+               statusCode:(NSInteger)statusCode;
+
+/// Backoff before the next attempt: 500/1000/2000 ms, overridden by the
+/// server's Retry-After when it gave one (clamped to
+/// kTidalMaxRetryAfterSeconds). `retryAfterSeconds` < 0 means no header.
++ (NSTimeInterval)retryDelayForAttempt:(NSInteger)attempt
+                     retryAfterSeconds:(NSTimeInterval)retryAfterSeconds;
 
 @end
 

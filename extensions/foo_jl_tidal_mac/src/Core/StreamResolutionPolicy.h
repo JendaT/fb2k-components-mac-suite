@@ -49,11 +49,15 @@ typedef NS_ENUM(NSInteger, JLTidalResolveAction) {
 /// Decision after parsing playback info at the given quality.
 /// A response is playable with either a direct URL or a usable DASH
 /// SegmentTemplate (only when DASH is enabled in prefs).
+/// `previewOnly` short-circuits everything else: a ~30s sample is not a
+/// quality problem, so the cascade must not paper over it by retrying lower.
 + (JLTidalResolveDecision *)decisionForPlaybackWithDirectURL:(BOOL)hasDirectURL
                                             dashSegmentCount:(NSInteger)dashSegmentCount
                                             dashMediaTemplate:(nullable NSString *)dashMediaTemplate
                                                  dashEnabled:(BOOL)dashEnabled
                                                 drmProtected:(BOOL)drmProtected
+                                                 previewOnly:(BOOL)previewOnly
+                                              previewReason:(nullable NSString *)previewReason
                                                      quality:(JLTidalQuality)quality;
 
 @end

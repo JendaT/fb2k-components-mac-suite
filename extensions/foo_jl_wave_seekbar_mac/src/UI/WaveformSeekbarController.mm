@@ -12,6 +12,8 @@
 #import "../Core/WaveformData.h"
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
+#include "../Core/WaveformGeometry.h"
+#include <cmath>
 #include <memory>
 
 @interface WaveformSeekbarController () {
@@ -25,6 +27,8 @@
     BOOL _heightLocked;                             // Track if height is locked
     ListenerId _waveformListenerId;                 // For safe listener removal
     NSVisualEffectView *_glassEffectView;           // Blur background when glass mode is on
+    NSTimer *_analysisWatchdog;                     // Breaks a stuck "Analyzing..." state
+    int _analysisRetries;                           // Re-requests already spent on this track
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
@@ -143,6 +147,21 @@
     [self syncWithCurrentPlayback];
 }
 
+- (void)viewDidAppear {
+    [super viewDidAppear];
+
+    // A layout change tears this element down and builds a fresh one. If the
+    // scan for the current track was already in flight, its result went to the
+    // controller that requested it, so this instance would sit on "Analyzing..."
+    // until the next track. Re-request whenever we appear without a waveform.
+    if (!_storedWaveform && !_currentTrack.is_valid()) {
+        [self syncWithCurrentPlayback];
+    } else if (!_storedWaveform && _currentTrack.is_valid()) {
+        getWaveformService().requestWaveform(_currentTrack, nullptr);
+        [self startAnalysisWatchdog];
+    }
+}
+
 - (void)viewWillDisappear {
     [super viewWillDisappear];
     [self stopPositionTimer];
@@ -150,6 +169,7 @@
 
 - (void)dealloc {
     [self stopPositionTimer];
+    [self stopAnalysisWatchdog];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     PlaybackCallbackManager::instance().unregisterController(self);
     // Remove only our listener from the waveform service
@@ -209,7 +229,9 @@
 
     // Request waveform
     if (track.is_valid()) {
+        _analysisRetries = 0;
         getWaveformService().requestWaveform(track, nullptr);
+        [self startAnalysisWatchdog];
     }
 
     // Start timer for smooth position updates
@@ -222,6 +244,7 @@
     _storedWaveform.reset();  // Release stored waveform
 
     [self stopPositionTimer];
+    [self stopAnalysisWatchdog];
 
     self.waveformView.trackDuration = 0.0;
     self.waveformView.playbackPosition = 0.0;
@@ -260,6 +283,7 @@
 
 - (void)updateWaveformData:(const WaveformData *)waveform {
     self.waveformView.analyzing = NO;  // Analysis complete
+    [self stopAnalysisWatchdog];
 
     if (!waveform || !waveform->isValid()) {
         _storedWaveform.reset();
@@ -272,6 +296,47 @@
     }
 
     [self.waveformView refreshDisplay];
+}
+
+#pragma mark - Analysis Watchdog
+
+// Longest a scan is allowed to run before we assume its result is never coming.
+// Generous enough for a long track on a slow or network volume.
+static const NSTimeInterval kAnalysisTimeout = 30.0;
+static const int kAnalysisMaxRetries = 1;
+
+- (void)startAnalysisWatchdog {
+    [self stopAnalysisWatchdog];
+
+    __weak typeof(self) weakSelf = self;
+    _analysisWatchdog = [NSTimer scheduledTimerWithTimeInterval:kAnalysisTimeout
+                                                        repeats:NO
+                                                          block:^(NSTimer * _Nonnull timer) {
+        [weakSelf handleAnalysisTimeout];
+    }];
+}
+
+- (void)stopAnalysisWatchdog {
+    [_analysisWatchdog invalidate];
+    _analysisWatchdog = nil;
+}
+
+- (void)handleAnalysisTimeout {
+    _analysisWatchdog = nil;
+
+    if (!self.waveformView.analyzing) return;
+
+    if (_currentTrack.is_valid() && _analysisRetries < kAnalysisMaxRetries) {
+        _analysisRetries++;
+        FB2K_console_formatter() << "[WaveSeek] Analysis timed out, re-requesting waveform";
+        getWaveformService().requestWaveform(_currentTrack, nullptr);
+        [self startAnalysisWatchdog];
+        return;
+    }
+
+    // Give up rather than latch on "Analyzing..." indefinitely
+    FB2K_console_formatter() << "[WaveSeek] Analysis timed out, giving up on this track";
+    [self updateWaveformData:nullptr];
 }
 
 #pragma mark - Position Timer
@@ -314,9 +379,13 @@
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
-                    // Redraw once the cursor moves at least a quarter pixel
+                    // Redraw once the cursor moves at least a quarter pixel, or
+                    // the time chip reaches the next second
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
-                    double threshold = (viewWidth > 1.0) ? (0.25 / viewWidth) : 0.001;
+                    double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
+                    const bool nextSecond = self.waveformView.showCursorTime &&
+                                            std::floor(position) != std::floor(oldTime);
 
                     // Animated cursor effects need continuous redraw to stay smooth
                     BOOL animatedEffect = NO;
@@ -333,7 +402,7 @@
                         }
                     }
 
-                    if (animatedEffect || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
+                    if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
                         [self.waveformView refreshDisplay];
                     }

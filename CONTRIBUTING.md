@@ -108,11 +108,18 @@ Use shared utilities from `shared/PreferencesCommon.h`:
 - (void)loadView {
     JLFlippedView *container = [[JLFlippedView alloc] initWithFrame:...];
 
-    // Page title (non-bold, matches foobar2000 style)
+    // Page title (15pt regular, matches foobar2000 style)
     NSTextField *title = JLCreatePreferencesTitle(@"My Extension");
+
+    // "?" button on the title row; shows the names from ComponentInfo.h
+    JLAddPreferencesInfoButton(container, title, self, @selector(showComponentInfo:));
 
     // Section headers
     NSTextField *section = JLCreateSectionHeader(@"Options");
+}
+
+- (void)showComponentInfo:(NSButton *)sender {
+    JLShowComponentInfo(sender, JLComponentInfoRows());
 }
 ```
 
@@ -137,20 +144,45 @@ foo_myext_mac/
 
 ### Component Registration
 
-Use the shared branding macro in Main.mm:
+Define the component's names in `src/Integration/ComponentInfo.h`. The About text, the layout element's `match_name` and the preferences info popover all read them from there:
+
+```cpp
+#pragma once
+#include "../../../../shared/version.h"
+
+#define JL_COMPONENT_FILE "foo_jl_myext"
+#define JL_COMPONENT_VERSION MYEXT_VERSION
+#define JL_LAYOUT_NAME "myext"                     // recommended layout editor name
+#define JL_LAYOUT_ALIASES "My Extension", "jl_myext" // never drop one: saved layouts use them
+#define JL_LAYOUT_PARAMETERS ""                    // e.g. "type=front|back"
+#define JL_PREFERENCES_PATH "Display > My Extension" // or "none"
+
+#include "../../../../shared/component_info.h"
+```
+
+Use the shared branding macro in Main.mm. The description is a one-line summary, the layout element and preferences path, then the features:
 
 ```cpp
 #include "common_about.h"
+#include "ComponentInfo.h"
 
 JL_COMPONENT_ABOUT(
     "My Extension",
-    "1.0.0",
+    MYEXT_VERSION,
     "Description of the extension.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Feature 1\n"
     "- Feature 2"
 );
+
+bool match_name(const char* name) override {
+    return JLMatchesLayoutName(name);
+}
 ```
+
+`JL_COMPONENT_ABOUT_BY(name, version, author, description)` credits a contributor as the author.
 
 ## Versioning
 
@@ -176,10 +208,10 @@ When releasing a new version:
 2. **Update extension's CHANGELOG.md** - This is `extensions/<component>/CHANGELOG.md`, NOT the root CHANGELOG.md
    - The release script extracts "What's New" from this file
    - Without an entry for the version, the release will have no changelog
-3. **Optionally update root CHANGELOG.md** - For monorepo-wide tracking
+3. **Update root CHANGELOG.md** - Same entry, concise, under the component's section (skip Technical subsections)
 4. **Rebuild the component** - The version propagates automatically via `common_about.h`
 5. **Commit and push**
-6. **Run release script**: `./Scripts/release_component.sh <name> --draft`
+6. **Run release script**: `./Scripts/release_component.sh <name>` (`--draft` creates an unpublished release and skips the README version update)
 
 **IMPORTANT:** The release script reads `extensions/<component>/CHANGELOG.md` to generate GitHub release notes. If this file is missing the version entry, the release will only have installation instructions with no "What's New" section.
 
@@ -206,10 +238,12 @@ Releasing one extension does not affect others.
 
 ## Building
 
-1. Generate Xcode project: `ruby Scripts/generate_xcode_project.rb`
-2. Build: `./Scripts/build.sh`
-3. Install: `./Scripts/install.sh`
-4. Test: Restart foobar2000
+From the component's directory:
+
+1. Build and install: `./Scripts/build.sh --install` (generates the Xcode project on the first run; `--regenerate` after adding or removing source files)
+2. Test: Restart foobar2000
+
+Never call `xcodebuild` directly: it builds into DerivedData, and `install.sh` copies the component's local `build/` folder.
 
 ## Testing
 
@@ -245,11 +279,14 @@ This project uses Git worktrees for parallel component development. Each compone
     biography/                   # dev/biography branch
     cloud-streamer/              # dev/cloud-streamer branch
     playback-controls/           # dev/playback-controls branch
+    effects-dsp/                 # dev/effects-dsp branch
+    spectrum/                    # dev/spectrum branch
+    vectorscope/                 # dev/vectorscope branch
 ```
 
 ### Starting Development
 
-Use the `fb2k-dev` launcher from anywhere:
+The author uses an `fb2k-dev` launcher (a local script in `~/.local/bin`, not part of this repository):
 
 ```bash
 fb2k-dev biography    # Opens Claude in ~/Projects/Foobar2000-worktrees/biography
@@ -264,15 +301,15 @@ Tab completion is available for component names.
 
 ```bash
 # 1. Rebase your branch onto latest main
-git fetch origin && git rebase origin/main
+# Follow the Safe Worktree Rebase Procedure in CLAUDE.md
 
 # 2. Use the merge script (from main repo)
 ./Scripts/ff-merge.sh biography
 ```
 
-The `ff-merge.sh` script:
-1. Rebases the component branch onto main
-2. Pushes the rebased branch
+The `ff-merge.sh` script never rebases. It:
+1. Refuses unless run from the main checkout, with the worktree clean, on its branch, with nothing in progress, and on top of `origin/main`
+2. Pushes the branch; the push is rejected if it would overwrite commits pushed from elsewhere
 3. Fast-forward merges to main (no merge commit)
 4. Pushes main
 
@@ -281,7 +318,7 @@ The `ff-merge.sh` script:
 | Item | Pattern | Example |
 |------|---------|---------|
 | Branch | `dev/<name>` | `dev/biography` |
-| Directory | `foo_jl_<name>_mac` | `foo_jl_biography_mac` |
+| Directory | `foo_jl_<name>_mac` | `foo_jl_biography_mac` (exceptions: `waveform-seekbar` → `foo_jl_wave_seekbar_mac`, `albumart` → `foo_jl_album_art_mac`, `queue-manager` → `foo_jl_queue_manager_mac`, `playback-controls` → `foo_jl_playback_controls_ext`) |
 | Component file | `foo_jl_<name>.fb2k-component` | `foo_jl_biography.fb2k-component` |
 
 ### Worktree Files
@@ -289,15 +326,15 @@ The `ff-merge.sh` script:
 Each worktree contains:
 
 - **CLAUDE.md** - Instructions for Claude Code (workflow, build commands)
-- **BACKLOG.md** - Feature backlog with status tracking
+- **BACKLOG.md** - Feature backlog with status tracking. Location: the ignored `extensions/*/BACKLOG.md` if there is one, otherwise `BACKLOG.md` at the worktree root
 
 ### Daily Workflow
 
 | Task | Command |
 |------|---------|
 | Start work | `fb2k-dev <component>` |
-| Sync with main | `git fetch origin && git rebase origin/main` |
-| Merge to main | `./Scripts/ff-merge.sh <component>` |
+| Sync with main | Safe Worktree Rebase Procedure in `CLAUDE.md` |
+| Merge to main | `./Scripts/ff-merge.sh <worktree-dir> [branch]` |
 | Release | `./Scripts/release_component.sh <component>` |
 | List worktrees | `git worktree list` |
 
@@ -321,7 +358,7 @@ This creates:
 2. Mappings in all release/package scripts
 3. Extension directory structure
 4. Worktree with CLAUDE.md and BACKLOG.md
-5. Updates to fb2k-dev and completions
+5. Updates to the author's local `fb2k-dev` launcher and its completions (steps 7-8 of the script fail where those files don't exist)
 
 **Manual steps after:**
 1. Create `generate_xcode_project.rb` in the extension

@@ -7,6 +7,7 @@
 
 #include "../fb2k_sdk.h"
 #include "../../../../shared/common_about.h"
+#include "ComponentInfo.h"
 #include "../../../../shared/version.h"
 #import "../Core/ScrobbleConfig.h"
 #import "../Services/ScrobbleService.h"
@@ -18,14 +19,20 @@
 JL_COMPONENT_ABOUT(
     "Last.fm Scrobbler",
     SCROBBLE_VERSION,
-    "Scrobbles played tracks to Last.fm.\n\n"
+    "Scrobbles to Last.fm and shows your stats in a layout widget.\n\n"
+    "Layout element: " JL_LAYOUT_NAME "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
     "Features:\n"
     "- Automatic scrobbling after 50% or 4 minutes played\n"
     "- Now Playing notifications\n"
     "- Browser-based Last.fm authentication\n"
-    "- Offline queue with automatic retry\n\n"
-    "Based on foo_scrobble for Windows by gix.\n"
-    "macOS port 2025."
+    "- Offline queue with automatic retry\n"
+    "- Scrobble queue viewer in preferences\n"
+    "- Stats widget: top albums, artists and tracks\n"
+    "- Recent tracks view with live Now Playing\n"
+    "- Grid or bubble styles, glass or custom background\n"
+    "- Listening streak and daily scrobble count\n\n"
+    "Based on foo_scrobble for Windows by gix."
 );
 
 // Validate bundle filename
@@ -138,12 +145,7 @@ namespace {
         }
 
         bool match_name(const char* name) override {
-            return strcmp(name, "Last.fm Scrobbler") == 0 ||
-                   strcmp(name, "lastfm_scrobbler") == 0 ||
-                   strcmp(name, "lastfm-scrobbler") == 0 ||
-                   strcmp(name, "foo_jl_scrobble") == 0 ||
-                   strcmp(name, "jl_scrobble") == 0 ||
-                   strcmp(name, "scrobbler") == 0;
+            return JLMatchesLayoutName(name);
         }
 
         fb2k::stringRef get_name() override {

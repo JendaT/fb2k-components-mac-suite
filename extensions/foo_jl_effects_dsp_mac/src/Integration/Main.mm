@@ -14,16 +14,27 @@
 #include "Effects/PitchShift.h"
 #include "Effects/TempoShift.h"
 #include "Effects/RateShift.h"
-#include "../../shared/version.h"
+#include "../../../../shared/version.h"
+#include "../../../../shared/common_about.h"
 
-DECLARE_COMPONENT_VERSION(
+JL_COMPONENT_ABOUT(
     "Effects DSP",
     EFFECTS_DSP_VERSION,
-    "Audio effects collection for foobar2000 macOS.\n"
-    "Echo, Tremolo, IIR Filter, Reverb, Phaser, WahWah,\n"
-    "Chorus, Vibrato, Pitch Shift, Tempo Shift, Rate Shift.\n\n"
+    "Collection of 11 audio effects for the foobar2000 DSP chain.\n\n"
+    "Layout element: none (DSP only)\n"
+    "Preferences: Playback > DSP Manager\n\n"
+    "Features:\n"
+    "- Echo with up to 5 s delay, feedback and wet/dry mix\n"
+    "- Chorus, Vibrato and Tremolo\n"
+    "- Phaser (2-12 stages) and WahWah\n"
+    "- Reverb based on Freeverb\n"
+    "- IIR Filter with 12 biquad filter types\n"
+    "- Pitch Shift up to +/-12 semitones\n"
+    "- Tempo Shift and Rate Shift, -50% to +100%\n"
+    "- Settings window with sliders for each effect\n\n"
     "Based on foo_dsp_effect by mudlord (Unlicense).\n"
-    "Copyright (c) 2025 Jenda Legenda. MIT License."
+    "Uses SoundTouch by Olli Parviainen (LGPL 2.1)\n"
+    "and Freeverb (public domain)."
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_effects_dsp.component");

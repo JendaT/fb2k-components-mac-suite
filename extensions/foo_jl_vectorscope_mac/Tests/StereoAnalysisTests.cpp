@@ -1,0 +1,478 @@
+//
+//  StereoAnalysisTests.cpp
+//  foo_jl_vectorscope_mac
+//
+//  Unit tests for the stereo-field maths (goniometer mapping, correlation,
+//  band splitting, auto-gain). Standalone: no SDK, no Xcode.
+//
+
+#include "TestHarness.h"
+#include "../src/Core/StereoAnalysis.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+using namespace stereo;
+
+namespace {
+
+const double kSR = 48000.0;
+const double kPi = 3.14159265358979323846;
+
+// Interleaved stereo sine: L at phase 0, R scaled by `rGain` and shifted.
+std::vector<float> sinePair(double hz, double seconds, float rGain, double rPhase = 0.0) {
+    const size_t n = (size_t)(seconds * kSR);
+    std::vector<float> lr(n * 2);
+    for (size_t i = 0; i < n; ++i) {
+        const double ph = 2.0 * kPi * hz * (double)i / kSR;
+        lr[2 * i]     = (float)(0.5 * std::sin(ph));
+        lr[2 * i + 1] = (float)(0.5 * rGain * std::sin(ph + rPhase));
+    }
+    return lr;
+}
+
+// Seeded LCG so noise-based tests are reproducible.
+struct Rng {
+    uint32_t s;
+    float next() {
+        s = s * 1664525u + 1013904223u;
+        return (float)(s >> 8) / 8388608.0f - 1.0f;   // -1..1
+    }
+};
+
+double rmsOfChannel(const std::vector<float>& lr, int ch, size_t skipFrames) {
+    double sum = 0.0;
+    size_t n = 0;
+    for (size_t i = skipFrames; i < lr.size() / 2; ++i, ++n) {
+        sum += (double)lr[2 * i + ch] * lr[2 * i + ch];
+    }
+    return n ? std::sqrt(sum / (double)n) : 0.0;
+}
+
+float correlationOf(const std::vector<float>& lr, double integration = 0.3) {
+    CorrelationMeter m;
+    m.configure(kSR, integration);
+    m.process(lr.data(), lr.size() / 2);
+    return m.value();
+}
+
+void testGoniometer() {
+    g_context = "goniometer";
+    const float lr[] = { 1, 1,   1, 0,   0, 1,   1, -1,   0, 0 };
+    float xy[10];
+    goniometerPoints(lr, 5, 1.0f, xy);
+    CHECK_FLOAT_EQ(xy[0], 0.0, "mono x");
+    CHECK_FLOAT_EQ(xy[1], 1.0, "mono y (top)");
+    CHECK_FLOAT_EQ(xy[2], -0.5, "left-only x (leans left)");
+    CHECK_FLOAT_EQ(xy[3], 0.5, "left-only y");
+    CHECK_FLOAT_EQ(xy[4], 0.5, "right-only x (leans right)");
+    CHECK_FLOAT_EQ(xy[5], 0.5, "right-only y");
+    CHECK_FLOAT_EQ(xy[6], -1.0, "out-of-phase x (horizontal)");
+    CHECK_FLOAT_EQ(xy[7], 0.0, "out-of-phase y");
+    CHECK_FLOAT_EQ(xy[8], 0.0, "silence x");
+    CHECK_FLOAT_EQ(xy[9], 0.0, "silence y");
+
+    goniometerPoints(lr, 1, 0.5f, xy);
+    CHECK_FLOAT_EQ(xy[1], 0.5, "gain scales the point");
+
+    // Full-scale input never leaves the diamond at gain 1.
+    Rng rng{12345};
+    bool inside = true;
+    for (int i = 0; i < 2000; ++i) {
+        const float in[2] = { rng.next(), rng.next() };
+        float out[2];
+        goniometerPoints(in, 1, 1.0f, out);
+        if (std::fabs(out[0]) + std::fabs(out[1]) > 1.0001f) inside = false;
+    }
+    CHECK(inside, "full-scale input stays inside the diamond");
+
+    // Lissajous: left along x, right along y.
+    lissajousPoints(lr, 5, 1.0f, xy);
+    CHECK_FLOAT_EQ(xy[0], 1.0, "Lissajous mono x");
+    CHECK_FLOAT_EQ(xy[1], 1.0, "Lissajous mono y (upper right)");
+    CHECK_FLOAT_EQ(xy[2], 1.0, "Lissajous left-only x (horizontal)");
+    CHECK_FLOAT_EQ(xy[3], 0.0, "Lissajous left-only y");
+    CHECK_FLOAT_EQ(xy[4], 0.0, "Lissajous right-only x");
+    CHECK_FLOAT_EQ(xy[5], 1.0, "Lissajous right-only y (vertical)");
+    CHECK_FLOAT_EQ(xy[6], 1.0, "Lissajous out-of-phase x");
+    CHECK_FLOAT_EQ(xy[7], -1.0, "Lissajous out-of-phase y (lower right)");
+    lissajousPoints(lr, 1, 0.5f, xy);
+    CHECK_FLOAT_EQ(xy[0], 0.5, "Lissajous gain scales the point");
+
+    // Both mappings work in place, and one is the other turned 45 degrees.
+    float gon[10], lis[10];
+    goniometerPoints(lr, 5, 1.0f, gon);
+    for (int i = 0; i < 10; ++i) lis[i] = lr[i];
+    lissajousPoints(lis, 5, 1.0f, lis);
+    bool turned = true;
+    for (int i = 0; i < 5; ++i) {
+        // Rotate the Lissajous point by +45 degrees and scale by 1/sqrt(2).
+        const float x = (lis[2 * i] - lis[2 * i + 1]) * -0.5f;
+        const float y = (lis[2 * i] + lis[2 * i + 1]) * 0.5f;
+        if (std::fabs(x - gon[2 * i]) > 1e-6f || std::fabs(y - gon[2 * i + 1]) > 1e-6f) turned = false;
+    }
+    CHECK(turned, "Lissajous is the goniometer picture turned 45 degrees");
+    float inPlace[10];
+    for (int i = 0; i < 10; ++i) inPlace[i] = lr[i];
+    goniometerPoints(inPlace, 5, 1.0f, inPlace);
+    bool same = true;
+    for (int i = 0; i < 10; ++i) if (inPlace[i] != gon[i]) same = false;
+    CHECK(same, "goniometer mapping works in place");
+
+    const float pk[] = { 0.1f, -0.7f, 0.3f, 0.2f };
+    CHECK_FLOAT_EQ(blockPeak(pk, 2), 0.7, "blockPeak takes the absolute maximum");
+}
+
+void testCorrelation() {
+    g_context = "correlation";
+    CHECK_FLOAT_EQ(correlationOf(sinePair(440, 2.0, 1.0f)), 1.0, "identical channels");
+    CHECK_FLOAT_EQ(correlationOf(sinePair(440, 2.0, 0.25f)), 1.0, "same signal at different levels");
+    CHECK_FLOAT_EQ(correlationOf(sinePair(440, 2.0, -1.0f)), -1.0, "inverted channel");
+    CHECK(std::fabs(correlationOf(sinePair(440, 2.0, 1.0f, kPi / 2))) < 0.02, "90 degree shift reads 0");
+    CHECK_FLOAT_EQ(correlationOf(sinePair(440, 2.0, 0.0f)), 0.0, "one-sided signal reads 0");
+
+    // Unrelated noise in each channel.
+    Rng rng{777};
+    std::vector<float> noise((size_t)kSR * 2 * 2);
+    for (float& v : noise) v = 0.5f * rng.next();
+    CHECK(std::fabs(correlationOf(noise, 0.5)) < 0.1, "independent noise reads near 0");
+
+    // Silence.
+    std::vector<float> quiet((size_t)kSR * 2, 0.0f);
+    CorrelationMeter m;
+    m.configure(kSR, 0.3);
+    m.process(quiet.data(), quiet.size() / 2);
+    CHECK(m.silent(), "digital silence is silent");
+    CHECK_FLOAT_EQ(m.value(), 0.0, "silence reads 0");
+
+    // Readings hold, then drop out, once the audio stops.
+    auto tone = sinePair(440, 2.0, 1.0f);
+    m.process(tone.data(), tone.size() / 2);
+    CHECK(!m.silent(), "tone is not silent");
+    m.idle(0.05);
+    CHECK_FLOAT_EQ(m.value(), 1.0, "reading holds through a short gap");
+    m.idle(10.0);
+    CHECK(m.silent(), "long gap decays to silent");
+    CHECK_FLOAT_EQ(m.value(), 0.0, "silent reads 0");
+
+    // Integration time: flipping from in-phase to out-of-phase, the reading
+    // follows -1 + 2 * exp(-t / tau).
+    const double tau = 0.5;
+    CorrelationMeter step;
+    step.configure(kSR, tau);
+    auto inPhase = sinePair(1000, 5.0, 1.0f);
+    auto outPhase = sinePair(1000, tau, -1.0f);
+    step.process(inPhase.data(), inPhase.size() / 2);
+    step.process(outPhase.data(), outPhase.size() / 2);
+    CHECK(std::fabs(step.value() - (-1.0 + 2.0 * std::exp(-1.0))) < 0.03, "one time constant after a flip");
+
+    // A non-finite sample must not stick.
+    CorrelationMeter bad;
+    bad.configure(kSR, 0.3);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float poison[] = { nan, 0.5f };
+    bad.process(poison, 1);
+    bad.process(tone.data(), tone.size() / 2);
+    CHECK_FLOAT_EQ(bad.value(), 1.0, "meter recovers after a NaN sample");
+}
+
+void testSplitter() {
+    g_context = "splitter";
+    const struct { double hz; int band; } cases[] = { {60, 0}, {800, 1}, {8000, 2} };
+    for (const auto& c : cases) {
+        ThreeBandSplitter sp;
+        sp.configure(kSR, 250.0, 2000.0);
+        auto in = sinePair(c.hz, 1.0, 1.0f);
+        const size_t frames = in.size() / 2;
+        std::vector<float> out[3] = { std::vector<float>(in.size()), std::vector<float>(in.size()),
+                                      std::vector<float>(in.size()) };
+        sp.process(in.data(), frames, out[0].data(), out[1].data(), out[2].data());
+        const size_t skip = frames / 2;   // let the filters settle
+        const double ref = rmsOfChannel(in, 0, skip);
+        for (int b = 0; b < 3; ++b) {
+            const double ratio = rmsOfChannel(out[b], 0, skip) / ref;
+            if (b == c.band) CHECK(ratio > 0.9 && ratio < 1.1, "tone passes its own band");
+            else             CHECK(ratio < 0.05, "tone is rejected by the other bands");
+        }
+        // Both channels are filtered identically.
+        CHECK_FLOAT_EQ(rmsOfChannel(out[c.band], 0, skip), rmsOfChannel(out[c.band], 1, skip),
+                       "channels match");
+    }
+
+    // Crossovers above Nyquist are clamped instead of going unstable.
+    ThreeBandSplitter wild;
+    wild.configure(8000.0, 250.0, 20000.0);
+    auto in = sinePair(440, 0.5, 1.0f);
+    std::vector<float> a(in.size()), b(in.size()), c(in.size());
+    wild.process(in.data(), in.size() / 2, a.data(), b.data(), c.data());
+    bool finite = true;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i]) || !std::isfinite(c[i])) finite = false;
+    }
+    CHECK(finite, "out-of-range crossover stays finite");
+}
+
+void testAutoGain() {
+    g_context = "autogain";
+    AutoGain ag;
+    ag.configure(0.9f, 0.5f, 31.6f, 3.0);
+    const double block = 1.0 / 60.0;
+
+    for (int i = 0; i < 600; ++i) ag.process(0.09f, block);
+    CHECK(std::fabs(ag.gain() - 10.0f) < 0.1f, "quiet material is raised to the target");
+
+    // Silence holds the gain instead of running it up to the maximum.
+    for (int i = 0; i < 600; ++i) ag.process(0.0f, block);
+    CHECK(std::fabs(ag.gain() - 10.0f) < 0.1f, "silence holds the gain");
+
+    // A loud passage pulls the gain down at once: its own block already fits.
+    ag.process(1.0f, block);
+    CHECK_FLOAT_EQ(ag.gain(), 0.9, "a loud block is brought to the target immediately");
+    for (int i = 0; i < 60; ++i) ag.process(1.0f, block);
+    CHECK_FLOAT_EQ(ag.gain(), 0.9, "and stays there");
+
+    // Release is slow: one second later the gain has barely recovered.
+    for (int i = 0; i < 60; ++i) ag.process(0.09f, block);
+    CHECK(ag.gain() < 2.0f, "gain recovers slowly after a loud passage");
+
+    // Whatever the level does, no block lands beyond the target.
+    AutoGain rider;
+    rider.configure(0.9f, 0.5f, 31.6f, 3.0);
+    Rng rng{777};
+    bool contained = true;
+    float level = 0.01f;
+    for (int i = 0; i < 20000; ++i) {
+        if (i % 37 == 0) level = 0.001f + 0.999f * std::fabs(rng.next());   // sudden jumps
+        const float peak = level * (0.5f + 0.5f * std::fabs(rng.next()));
+        if (peak * rider.process(peak, block) > 0.9f * 1.0001f) contained = false;
+    }
+    CHECK(contained, "a block's peak never lands beyond the target");
+
+    // Very quiet material is capped at the maximum gain.
+    AutoGain cap;
+    cap.configure(0.9f, 0.5f, 31.6f, 3.0);
+    for (int i = 0; i < 600; ++i) cap.process(0.001f, block);
+    CHECK(std::fabs(cap.gain() - 31.6f) < 0.1f, "gain is capped");
+}
+
+void testHeldRange() {
+    g_context = "held range";
+    const double frame = 1.0 / 60.0;
+    HeldRange r;
+    r.configure(1.0, 0.25);
+    r.reset(0.8f);
+    CHECK_FLOAT_EQ(r.low(), 0.8, "reset collapses the low end");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "reset collapses the high end");
+
+    // A dip is caught at once and held while the reading recovers.
+    r.update(-0.4f, frame);
+    CHECK_FLOAT_EQ(r.low(), -0.4, "low end follows a dip immediately");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "high end stays");
+    for (int i = 0; i < 54; ++i) r.update(0.6f, frame);   // 0.9 s
+    CHECK_FLOAT_EQ(r.low(), -0.4, "low end is held");
+    CHECK_FLOAT_EQ(r.high(), 0.8, "high end is held");
+
+    // After the hold both ends close in on the reading.
+    for (int i = 0; i < 18; ++i) r.update(0.6f, frame);   // 1.2 s since the dip
+    CHECK(r.low() > -0.4f && r.low() < 0.6f, "low end releases after the hold");
+    CHECK(r.high() < 0.8f && r.high() > 0.6f, "high end releases after the hold");
+    for (int i = 0; i < 180; ++i) r.update(0.6f, frame);
+    CHECK_FLOAT_EQ(r.low(), 0.6, "low end lands on the reading");
+    CHECK_FLOAT_EQ(r.high(), 0.6, "high end lands on the reading");
+    CHECK(r.low() == r.high(), "the range closes completely");
+
+    // Reaching an extreme again restarts its hold.
+    r.reset(0.0f);
+    r.update(-0.5f, frame);
+    for (int i = 0; i < 48; ++i) r.update(0.0f, frame);   // 0.8 s
+    r.update(-0.5f, frame);
+    for (int i = 0; i < 48; ++i) r.update(0.0f, frame);   // 0.8 s more
+    CHECK_FLOAT_EQ(r.low(), -0.5, "a repeated dip restarts the hold");
+
+    // The reading always lies inside the range.
+    r.reset(0.0f);
+    bool inside = true;
+    uint32_t seed = 12345;
+    float v = 0.0f;
+    for (int i = 0; i < 5000; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        if (i % 7 == 0) v = (float)(seed >> 8) / 8388608.0f - 1.0f;
+        r.update(v, frame);
+        if (!(r.low() <= v && v <= r.high())) inside = false;
+    }
+    CHECK(inside, "the reading stays inside its range");
+
+    // No hold: the ends start closing in on the next frame.
+    HeldRange quick;
+    quick.configure(0.0, 0.25);
+    quick.reset(0.0f);
+    quick.update(-1.0f, frame);
+    quick.update(0.0f, frame);
+    CHECK(quick.low() > -1.0f, "zero hold releases immediately");
+
+    // Bad input leaves the range alone.
+    r.reset(0.3f);
+    r.update(std::numeric_limits<float>::quiet_NaN(), frame);
+    r.update(0.3f, -1.0);
+    r.update(0.3f, std::numeric_limits<double>::quiet_NaN());
+    CHECK_FLOAT_EQ(r.low(), 0.3, "bad input does not move the low end");
+    CHECK_FLOAT_EQ(r.high(), 0.3, "bad input does not move the high end");
+}
+
+void testAnalyzer() {
+    g_context = "analyzer";
+    // 60 Hz in phase plus 8 kHz out of phase, at equal level.
+    const size_t frames = (size_t)(kSR * 3.0);
+    std::vector<float> lr(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const double lo = 0.3 * std::sin(2.0 * kPi * 60.0 * (double)i / kSR);
+        const double hi = 0.3 * std::sin(2.0 * kPi * 8000.0 * (double)i / kSR);
+        lr[2 * i]     = (float)(lo + hi);
+        lr[2 * i + 1] = (float)(lo - hi);
+    }
+
+    StereoAnalyzer::Settings s;
+    s.multiband = true;
+    s.autoGain = false;
+    s.manualGain = 2.0f;
+    StereoAnalyzer an;
+    an.configure(s);
+
+    // Feed in display-frame sized blocks, as the controller does.
+    std::vector<float> xy(1600);
+    const size_t block = 800;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        an.process(lr.data() + off * 2, block, kSR, xy.data());
+    }
+    CHECK(an.bandCorrelation(StereoAnalyzer::BandLow) > 0.95f, "low band reads in phase");
+    CHECK(an.bandCorrelation(StereoAnalyzer::BandHigh) < -0.95f, "high band reads out of phase");
+    CHECK(std::fabs(an.correlation()) < 0.1f, "broadband reading hides the conflict");
+    CHECK_FLOAT_EQ(an.gain(), 2.0, "manual gain is reported");
+
+    // The points written are the goniometer mapping of the last block.
+    const float* last = lr.data() + (frames - block) * 2;
+    CHECK_FLOAT_EQ(xy[0], (last[1] - last[0]) * 0.5f * 2.0f, "point x uses the gain");
+    CHECK_FLOAT_EQ(xy[1], (last[0] + last[1]) * 0.5f * 2.0f, "point y uses the gain");
+
+    an.idle(20.0);
+    CHECK(an.silent(), "idle decays the broadband meter");
+    CHECK(an.bandSilent(StereoAnalyzer::BandLow), "idle decays the band meters");
+
+    // With multiband off the band meters are not fed.
+    StereoAnalyzer::Settings wideOnly;
+    StereoAnalyzer plain;
+    plain.configure(wideOnly);
+    for (size_t off = 0; off + block <= frames; off += block) {
+        plain.process(lr.data() + off * 2, block, kSR, xy.data());
+    }
+    CHECK(!plain.silent(), "broadband meter runs with multiband off");
+    CHECK(plain.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with multiband off");
+    CHECK(plain.gain() > 1.0f, "auto gain raises a -7 dBFS signal");
+
+    CHECK(an.bandPoints(StereoAnalyzer::BandLow) == nullptr, "no band points unless asked for");
+
+    // Band trace: each band's points, at the broadband gain. The 60 Hz part
+    // is mono (vertical), the 8 kHz part out of phase (horizontal).
+    StereoAnalyzer::Settings traced;
+    traced.bandTrace = true;
+    traced.autoGain = false;
+    traced.manualGain = 2.0f;
+    StereoAnalyzer tr;
+    tr.configure(traced);
+    double lowX = 0.0, lowY = 0.0, midXY = 0.0, highX = 0.0, highY = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        tr.process(lr.data() + off * 2, block, kSR, xy.data());
+        if (off + block * 2 > frames) {   // last block, filters long settled
+            const float* low = tr.bandPoints(StereoAnalyzer::BandLow);
+            const float* mid = tr.bandPoints(StereoAnalyzer::BandMid);
+            const float* high = tr.bandPoints(StereoAnalyzer::BandHigh);
+            for (size_t i = 0; i < block; ++i) {
+                lowX = std::max(lowX, (double)std::fabs(low[2 * i]));
+                lowY = std::max(lowY, (double)std::fabs(low[2 * i + 1]));
+                midXY = std::max(midXY, (double)std::max(std::fabs(mid[2 * i]), std::fabs(mid[2 * i + 1])));
+                highX = std::max(highX, (double)std::fabs(high[2 * i]));
+                highY = std::max(highY, (double)std::fabs(high[2 * i + 1]));
+            }
+        }
+    }
+    CHECK(lowY > 0.55 && lowY < 0.65, "low band carries the 60 Hz part at the broadband gain");
+    CHECK(lowX < 0.02, "low band is mono");
+    CHECK(highX > 0.55 && highX < 0.65, "high band carries the 8 kHz part at the broadband gain");
+    CHECK(highY < 0.02, "high band is out of phase");
+    CHECK(midXY < 0.02, "mid band is empty");
+    CHECK(tr.bandSilent(StereoAnalyzer::BandLow), "band meters stay idle with only the band trace on");
+
+    // Auto gain keeps every band inside the outline, also on a sudden loud
+    // entry and when a band peaks above the full signal. A clipped bass note
+    // does both: its low band swings wider than the clipped waveform.
+    StereoAnalyzer::Settings riding;
+    riding.bandTrace = true;
+    StereoAnalyzer rd;
+    rd.configure(riding);
+    std::vector<float> hit(frames * 2);
+    for (size_t i = 0; i < frames; ++i) {
+        const double t = (double)i / kSR;
+        float v = (float)(0.02 * std::sin(2.0 * kPi * 1000.0 * t));    // quiet lead-in
+        if (t >= 1.0) v = std::sin(2.0 * kPi * 60.0 * t) >= 0.0 ? 0.8f : -0.8f;
+        hit[2 * i] = v;
+        hit[2 * i + 1] = -v;
+    }
+    double widest = 0.0, lowPeakIn = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        rd.process(hit.data() + off * 2, block, kSR, xy.data());
+        for (size_t i = 0; i < block; ++i) {
+            widest = std::max(widest, (double)(std::fabs(xy[2 * i]) + std::fabs(xy[2 * i + 1])));
+            for (int b = 0; b < StereoAnalyzer::BandCount; ++b) {
+                const float* p = rd.bandPoints(b);
+                widest = std::max(widest, (double)(std::fabs(p[2 * i]) + std::fabs(p[2 * i + 1])));
+            }
+            // Low band level before gain: |x| + |y| is the larger channel times the gain.
+            const float* low = rd.bandPoints(StereoAnalyzer::BandLow);
+            lowPeakIn = std::max(lowPeakIn, (double)(std::fabs(low[2 * i]) + std::fabs(low[2 * i + 1])) / rd.gain());
+        }
+    }
+    CHECK(lowPeakIn > 0.85, "the low band of a clipped bass note peaks above the waveform");
+    CHECK(widest <= 0.9 * 1.0001, "auto gain keeps the whole trace inside the outline");
+
+    // Lissajous style: the points, broadband and per band, are L against R.
+    traced.lissajous = true;
+    tr.configure(traced);
+    double lowDiff = 0.0, lowPeak = 0.0, highSum = 0.0;
+    for (size_t off = 0; off + block <= frames; off += block) {
+        tr.process(lr.data() + off * 2, block, kSR, xy.data());
+        if (off + block * 2 > frames) {
+            const float* low = tr.bandPoints(StereoAnalyzer::BandLow);
+            const float* high = tr.bandPoints(StereoAnalyzer::BandHigh);
+            for (size_t i = 0; i < block; ++i) {
+                lowDiff = std::max(lowDiff, (double)std::fabs(low[2 * i] - low[2 * i + 1]));
+                lowPeak = std::max(lowPeak, (double)std::fabs(low[2 * i]));
+                highSum = std::max(highSum, (double)std::fabs(high[2 * i] + high[2 * i + 1]));
+            }
+        }
+    }
+    const float* tail = lr.data() + (frames - block) * 2;
+    CHECK_FLOAT_EQ(xy[0], tail[0] * 2.0f, "Lissajous point x is the left sample");
+    CHECK_FLOAT_EQ(xy[1], tail[1] * 2.0f, "Lissajous point y is the right sample");
+    CHECK(lowPeak > 0.55 && lowPeak < 0.65, "Lissajous low band keeps the broadband gain");
+    CHECK(lowDiff < 0.03, "Lissajous low band lies on the mono diagonal");
+    CHECK(highSum < 0.03, "Lissajous high band lies on the side diagonal");
+
+    // A sample-rate change mid-stream is absorbed.
+    an.process(lr.data(), block, 96000.0, xy.data());
+    CHECK(std::isfinite(an.correlation()), "sample-rate change keeps readings finite");
+}
+
+} // namespace
+
+int main() {
+    testGoniometer();
+    testCorrelation();
+    testSplitter();
+    testAutoGain();
+    testHeldRange();
+    testAnalyzer();
+    TEST_MAIN_END();
+}

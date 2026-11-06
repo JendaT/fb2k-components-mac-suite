@@ -62,7 +62,11 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 /// token refresh (expired-session pre-check, 401 retry). Keeps the API
 /// layer free of any dependency on the Services layer. The completion
 /// must always be called exactly once.
-@property (atomic, copy, nullable) void (^tokenRefreshHandler)(void (^completion)(BOOL success));
+/// Installed by the auth service. `force` asks for a refresh grant to be
+/// posted even when the stored token has not locally expired -- the 401 path
+/// needs that, because a token the server has already rejected still looks
+/// valid to a local clock check.
+@property (atomic, copy, nullable) void (^tokenRefreshHandler)(BOOL force, void (^completion)(BOOL success));
 
 #pragma mark - OAuth Device Authorization
 
@@ -112,6 +116,12 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 #pragma mark - Album API
 
 /// Get tracks for an album (ordered by track number)
+/// One page of an album's tracks.
+- (void)getAlbumTracksForAlbumID:(NSString *)albumID
+                           limit:(NSInteger)limit
+                          offset:(NSInteger)offset
+                      completion:(JLTidalTracksCompletion)completion;
+
 - (void)getAlbumTracksForAlbumID:(NSString *)albumID
                       completion:(JLTidalTracksCompletion)completion;
 
@@ -207,6 +217,16 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 
 #pragma mark - Generic Request
 
+/// Cancel every in-flight request and stop accepting new ones. Called from
+/// on_quit so a response cannot land after fb2k has torn down the services its
+/// completion would touch.
+- (void)cancelAllRequests;
+
+/// Completion that also hands back the response headers (for ETag probes).
+typedef void (^JLTidalDataHeadersCompletion)(NSDictionary * _Nullable json,
+                                             NSDictionary * _Nullable headers,
+                                             NSError * _Nullable error);
+
 /// Make authenticated API request
 - (void)requestWithURL:(NSURL *)url
                 method:(NSString *)method
@@ -219,6 +239,25 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
                   body:(nullable NSDictionary *)body
                headers:(nullable NSDictionary<NSString *, NSString *> *)extraHeaders
             completion:(JLTidalDataCompletion)completion;
+
+/// As above; `formEncoded` posts the body as application/x-www-form-urlencoded
+/// instead of JSON. The v1 mutation endpoints (favorites add, playlist create,
+/// playlist items add) bind request parameters and ignore a JSON body.
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(nullable NSDictionary *)body
+           formEncoded:(BOOL)formEncoded
+               headers:(nullable NSDictionary<NSString *, NSString *> *)extraHeaders
+            completion:(JLTidalDataCompletion)completion;
+
+/// As above, but the completion also receives the response headers. Used by
+/// the ETag probe so it inherits token refresh, rate limiting, countryCode
+/// injection, retry and status mapping like every other request.
+- (void)requestWithURL:(NSURL *)url
+                method:(NSString *)method
+                  body:(nullable NSDictionary *)body
+               headers:(nullable NSDictionary<NSString *, NSString *> *)extraHeaders
+     headersCompletion:(JLTidalDataHeadersCompletion)completion;
 
 @end
 

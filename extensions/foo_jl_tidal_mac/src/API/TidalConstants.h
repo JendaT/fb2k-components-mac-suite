@@ -21,6 +21,9 @@ static NSString * const kTidalTokenEndpoint = @"/v1/oauth2/token";
 // Main API endpoints
 static NSString * const kTidalAPIBaseURL = @"https://api.tidal.com";
 static NSString * const kTidalAPIv2BaseURL = @"https://listen.tidal.com/v2";
+// Official public API. Used for the ISRC filter, which the v1 surface has no
+// equivalent for (free-text search over a relevance ranking is not a lookup).
+static NSString * const kTidalOpenAPIBaseURL = @"https://openapi.tidal.com/v2";
 static NSString * const kTidalPlaybackInfoEndpoint = @"/v1/tracks/%@/playbackinfopostpaywall";
 static NSString * const kTidalTrackMetadataEndpoint = @"/v1/tracks/%@";
 
@@ -65,6 +68,25 @@ static inline NSString * JLTidalQualityToString(JLTidalQuality quality) {
         case JLTidalQualityHiRes: return @"HI_RES";
         case JLTidalQualityHiResLossless: return @"HI_RES_LOSSLESS";
     }
+}
+
+// Reverse of JLTidalQualityToString. Returns NO for anything that is not one
+// of the five exact tokens, so untrusted input (a "q=" parameter carried by a
+// playlist entry) cannot smuggle an arbitrary value into an API request.
+static inline BOOL JLTidalQualityFromString(NSString * _Nullable token,
+                                            JLTidalQuality *outQuality) {
+    if (!token || !outQuality) return NO;
+    static NSString * const names[] = {@"LOW", @"HIGH", @"LOSSLESS", @"HI_RES", @"HI_RES_LOSSLESS"};
+    static const JLTidalQuality values[] = {JLTidalQualityLow, JLTidalQualityHigh,
+                                            JLTidalQualityLossless, JLTidalQualityHiRes,
+                                            JLTidalQualityHiResLossless};
+    for (NSUInteger i = 0; i < 5; i++) {
+        if ([token isEqualToString:names[i]]) {
+            *outQuality = values[i];
+            return YES;
+        }
+    }
+    return NO;
 }
 
 // Quality fallback order (highest to lowest)

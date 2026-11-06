@@ -15,9 +15,15 @@ namespace simplaylist_config {
 // Config key prefix
 static const char* const kPrefix = "foo_simplaylist_mac.";
 
-// Group configuration keys
+// Group configuration keys.
+//
+// kGroupPresets holds the preset list AND the active index, in its "active_index"
+// field. A separate "active_preset_index" key used to shadow the latter: only
+// the preferences page wrote and read it, while the playlist panel took the
+// index from the JSON, so switching preset updated the mirror and changed
+// nothing visible. The key is retired — stale values may still sit in existing
+// config stores, where they are simply ignored.
 static const char* const kGroupPresets = "group_presets";
-static const char* const kActivePresetIndex = "active_preset_index";
 
 // Column configuration keys
 static const char* const kColumns = "columns";
@@ -60,6 +66,10 @@ static const char* const kGlassBackground = "glass_background";
 // (matches kDefaultGroupHeaderSpacing below and the preferences popup)
 static const char* const kGroupHeaderSpacing = "group_header_spacing";
 
+// Inline header style only: empty rows between albums, 0 = close, 1, 2.
+// Replaces Group Header Spacing there (the Inline header row is a plain row).
+static const char* const kInlineAlbumSpacing = "inline_album_spacing";
+
 // Debug rendering: show diagnostic text on rendering anomalies
 static const char* const kDebugRendering = "debug_rendering";
 
@@ -78,6 +88,11 @@ static const char* const kDoubleClickPreservesQueue = "doubleclick_preserves_que
 // the redirect and points continuation back at the playing track's playlist.
 static const char* const kKeepPlayingPlaylist = "keep_playing_playlist";
 
+// Re-sort the library viewer's selection playlist by a pattern each time its
+// contents change. ReFacets refills it in its own order on every click.
+static const char* const kSortLibrarySelection = "sort_library_selection";
+static const char* const kLibrarySelectionSortPattern = "library_selection_sort_pattern";
+
 // Show total album duration appended to group header text
 static const char* const kShowGroupDuration = "show_group_duration";
 
@@ -85,6 +100,8 @@ static const char* const kShowGroupDuration = "show_group_duration";
 // 0 = default (replace active playlist), 1 = append to current playlist, 2 = send to named playlist
 static const char* const kFinderOpenBehavior = "finder_open_behavior";
 static const char* const kFinderOpenTargetPlaylist = "finder_open_target_playlist";
+// Last pattern entered in the context menu's "Sort by..." prompt.
+static const char* const kLastSortPattern = "last_sort_pattern";
 
 // Default values - row heights sized for 13pt font
 static const int64_t kDefaultRowHeight = 22;
@@ -101,11 +118,15 @@ static const int64_t kDefaultColumnHeaderSize = 1;  // 0=compact, 1=normal, 2=la
 static const int64_t kDefaultHeaderAccentColor = 0;  // 0=none, 1=tinted
 static const bool kDefaultGlassBackground = false;   // Opaque background by default
 static const int64_t kDefaultGroupHeaderSpacing = 1; // 0=compact, 1=normal, 2=larger
+static const int64_t kDefaultInlineAlbumSpacing = 1; // empty rows between albums (Inline style)
 static const bool kDefaultDebugRendering = false;     // Hide debug diagnostics by default
 static const bool kDefaultDragToFinderMove = false;   // Copy files by default when dragging to Finder
 static const int64_t kDefaultQueueDisplayStyle = 0;   // 0=brackets [1], 1=accent color
 static const bool kDefaultDoubleClickPreservesQueue = true;   // Default: preserve queue on double-click
 static const bool kDefaultKeepPlayingPlaylist = true;         // Default: guard playing playlist while browsing library
+static const bool kDefaultSortLibrarySelection = true;        // Default: each artist's albums oldest first
+static const char* const kDefaultLibrarySelectionSortPattern =
+    "%album artist% - %date% - %album% - %discnumber% - %tracknumber%";
 static const bool kDefaultShowGroupDuration = false;  // Default: don't show duration in group header
 static const int64_t kDefaultFinderOpenBehavior = 0;  // 0=replace (default fb2k), 1=append, 2=named
 static const char* const kDefaultFinderOpenTargetPlaylist = "Inbox";

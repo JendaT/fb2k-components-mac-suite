@@ -16,9 +16,6 @@ NS_ASSUME_NONNULL_BEGIN
 @class GroupDecoration;
 @protocol SimPlaylistViewDelegate;
 
-// Settings changed notification
-extern NSString *const SimPlaylistSettingsChangedNotification;
-
 // Pasteboard type for internal drag & drop
 extern NSPasteboardType const SimPlaylistPasteboardType;
 
@@ -73,6 +70,7 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 @property (nonatomic, assign) NSInteger displaySize;  // 0 = compact, 1 = normal, 2 = large
 @property (nonatomic, assign) BOOL glassBackground;  // Transparent mode for glass effect
 @property (nonatomic, assign) NSInteger groupHeaderSpacing;  // 0 = compact, 1 = normal, 2 = larger
+@property (nonatomic, assign) NSInteger inlineAlbumSpacing;  // Inline style: empty rows between albums (0-2)
 
 // Row decorator providers (intake doc 04 Part A). Set once by the controller
 // at panel init. When NO (zero providers registered — the common case) the
@@ -159,6 +157,9 @@ extern NSPasteboardType const SimPlaylistPasteboardType;
 
 // Drag & drop - import files from Finder
 - (void)playlistView:(SimPlaylistView *)view didReceiveDroppedURLs:(NSArray<NSURL *> *)urls atRow:(NSInteger)row;
+
+// Drag & drop - foobar2000 native locations (paths and subsongs are parallel arrays)
+- (void)playlistView:(SimPlaylistView *)view didReceiveDroppedLocations:(NSArray<NSString *> *)paths subsongs:(NSArray<NSNumber *> *)subsongs atRow:(NSInteger)row;
 
 // Get file paths for playlist indices (for drag data capture)
 - (nullable NSArray<NSString *> *)playlistView:(SimPlaylistView *)view filePathsForPlaylistIndices:(NSIndexSet *)indices;

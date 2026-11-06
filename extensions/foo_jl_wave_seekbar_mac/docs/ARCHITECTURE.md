@@ -6,6 +6,18 @@ foo_wave_seekbar_mac is a foobar2000 macOS component that displays a complete au
 
 This document covers the technical architecture, data structures, and implementation details.
 
+> **Status (2026-08-11, updated 2026-10-19): parts of this document describe code that does not exist.**
+> It was written partly as a design sketch and has drifted from the source.
+> Confirmed inaccurate: the 2048-bucket `WaveformData` and the scanning loop
+> in §2-3 (the scanner now runs the analysis pass in `src/Core/TrackAnalyzer.h`,
+> in parallel segments for long tracks, into the block-and-hop format in
+> `src/Core/WaveformData.h`; see the component README), the
+> `addObserver(void*, ...)` service API, and
+> `WaveformDataWrapper`. Some
+> configuration keys listed here (`flip_display`, `played_color`) do not
+> exist either. Treat the source as ground truth and verify any claim here
+> before relying on it. See `docs/TESTING.md` for what is covered by tests.
+
 ## Table of Contents
 
 1. [System Architecture](#1-system-architecture)

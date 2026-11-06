@@ -39,13 +39,19 @@ void StreamCache::shutdown() {
     // logDebug calls configStore::get() which would uBugCheck.
 }
 
-JLTidalPlaybackInfo* StreamCache::get(const std::string& trackID) {
+// Track IDs are digits-only (validated in URLUtils::parseURL), so "|" cannot
+// occur in one and the composed key is unambiguous.
+static NSString* cacheKey(const std::string& trackID, JLTidalQuality quality) {
+    return [NSString stringWithFormat:@"%s|%@", trackID.c_str(), JLTidalQualityToString(quality)];
+}
+
+JLTidalPlaybackInfo* StreamCache::get(const std::string& trackID, JLTidalQuality quality) {
     if (m_shutdown || trackID.empty()) {
         return nil;
     }
 
     __block JLTidalPlaybackInfo* result = nil;
-    NSString* key = [NSString stringWithUTF8String:trackID.c_str()];
+    NSString* key = cacheKey(trackID, quality);
 
     dispatch_sync(m_queue, ^{
         JLTidalStreamCacheEntry* entry = m_cache[key];
@@ -58,17 +64,18 @@ JLTidalPlaybackInfo* StreamCache::get(const std::string& trackID) {
     });
 
     if (result) {
-        logDebug(std::string("StreamCache hit: ") + trackID);
+        logDebug(std::string("StreamCache hit: ") + std::string(key.UTF8String));
     }
 
     return result;
 }
 
-void StreamCache::set(const std::string& trackID, JLTidalPlaybackInfo* info) {
-    setWithTTL(trackID, info, static_cast<int>(kTidalStreamCacheTTL));
+void StreamCache::set(const std::string& trackID, JLTidalQuality quality, JLTidalPlaybackInfo* info) {
+    setWithTTL(trackID, quality, info, static_cast<int>(kTidalStreamCacheTTL));
 }
 
-void StreamCache::setWithTTL(const std::string& trackID, JLTidalPlaybackInfo* info, int ttlSeconds) {
+void StreamCache::setWithTTL(const std::string& trackID, JLTidalQuality quality,
+                             JLTidalPlaybackInfo* info, int ttlSeconds) {
     if (m_shutdown || trackID.empty() || !info) {
         return;
     }
@@ -78,7 +85,7 @@ void StreamCache::setWithTTL(const std::string& trackID, JLTidalPlaybackInfo* in
     // same-trackID lookup). Runs async on the same serial queue.
     purgeExpired();
 
-    NSString* key = [NSString stringWithUTF8String:trackID.c_str()];
+    NSString* key = cacheKey(trackID, quality);
 
     dispatch_async(m_queue, ^{
         JLTidalStreamCacheEntry* entry = [[JLTidalStreamCacheEntry alloc]
@@ -87,20 +94,24 @@ void StreamCache::setWithTTL(const std::string& trackID, JLTidalPlaybackInfo* in
         m_cache[key] = entry;
     });
 
-    logDebug(std::string("StreamCache set: ") + trackID +
+    logDebug(std::string("StreamCache set: ") + std::string(key.UTF8String) +
              " (TTL: " + std::to_string(ttlSeconds) + "s)");
 }
 
-void StreamCache::remove(const std::string& trackID) {
+void StreamCache::removeTrack(const std::string& trackID) {
     if (m_shutdown || trackID.empty()) return;
 
-    NSString* key = [NSString stringWithUTF8String:trackID.c_str()];
+    NSString* prefix = [NSString stringWithFormat:@"%s|", trackID.c_str()];
 
     dispatch_async(m_queue, ^{
-        [m_cache removeObjectForKey:key];
+        NSMutableArray<NSString*>* keysToRemove = [[NSMutableArray alloc] init];
+        for (NSString* key in m_cache) {
+            if ([key hasPrefix:prefix]) [keysToRemove addObject:key];
+        }
+        [m_cache removeObjectsForKeys:keysToRemove];
     });
 
-    logDebug(std::string("StreamCache remove: ") + trackID);
+    logDebug(std::string("StreamCache remove: ") + trackID + " (all qualities)");
 }
 
 void StreamCache::clear() {
