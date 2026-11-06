@@ -73,6 +73,13 @@ void releaseClock();
 // (the decoder then runs ahead about as fast as it plays)
 void setLowLatency(bool on);
 
+// While no change is expected (low latency off) the DSP keeps this many
+// seconds of decoded audio ahead, so a forward jump within it plays without
+// a seek; it reports them to foobar2000 as its latency. 0 (the default):
+// it passes the audio through whenever it can. See
+// LoopEngine::setReserveSeconds.
+void setReserve(double seconds);
+
 // foobar2000's output buffer is what delays every change. While the mixer
 // is on it is set to `mixerMs` (0: left alone); the user's own is kept and
 // put back when the mixer goes off (also at the next launch, if foobar2000

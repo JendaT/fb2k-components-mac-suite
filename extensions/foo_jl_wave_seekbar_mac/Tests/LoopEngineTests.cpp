@@ -8,7 +8,11 @@
 //  running on into a longer one), moves back into the history and forward
 //  into the audio decoded ahead, jumps, leaving a loop, catching up with
 //  the decoder, the crossfade, a new track behind a loop, the end of the
-//  stream, and the timeline that maps the output to track time.
+//  stream, and the timeline that maps the output to track time. Then the
+//  reserve (decoded audio kept ahead while no change is expected): built
+//  and held, around a hover, across a track change, a second after each
+//  sync; requests turned down across a track change; where a jump or a
+//  loop plays from (relative, in phase, and a seek's own at its target).
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
 //  number (track time x 1000), so the output shows exactly which frames
@@ -503,6 +507,269 @@ void testTimelineMath() {
     CHECK(std::isnan(trackTimeAt({}, 1.0)), "no timeline");
 }
 
+// The reserve tests use 100-frame (0.1 s) blocks and a 5 s reserve
+constexpr size_t kBlock = 100;
+constexpr double kReserve = 5.0;
+
+// Steps until the engine plays from the buffer (the step that does so
+// counts); the first step with `newTrack` set. `untouched`: pristine before
+// every step.
+int blocksLive(Engine &e, Decoder &d, Output &out, bool *untouched = nullptr, bool newTrack = false) {
+    int n = 0;
+    bool pristine = true;
+    while (n < 100) {
+        pristine &= e.pristine();
+        step(e, d, out, newTrack && n == 0);
+        ++n;
+        if (!e.live()) break;
+    }
+    if (untouched) *untouched = pristine;
+    return n;
+}
+
+void testReserveHeld() {
+    TEST_CASE("the reserve");
+    Playing p;   // synced, live for 3 s
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(kReserve);
+    const size_t at = p.out.frames.size();
+    step(p.e, p.d, p.out);
+    CHECK(!p.e.live() && !p.e.pristine() && p.out.frames.size() - at == kBlock / 2,
+          "from the buffer at once (live long enough): half a block out per block in");
+    int blocks = 1;
+    for (; blocks < 1000 && p.e.aheadSeconds() < kReserve; ++blocks) step(p.e, p.d, p.out);
+    CHECK(p.e.aheadSeconds() >= kReserve && blocks <= 101, "the decoder runs ahead at twice its pace up to 5 s");
+    bool held = true, wasLive = false;
+    for (int i = 0; i < 300; ++i) {   // 30 s
+        step(p.e, p.d, p.out);
+        held &= p.e.aheadSeconds() >= kReserve && p.e.aheadSeconds() < kReserve + 0.06;
+        wasLive |= p.e.live();
+    }
+    CHECK(held && !wasLive, "then holds it: a block out per block in");
+    CHECK(straight(p.out, 0, p.out.frames.size(), 2000.0), "the same audio throughout, nothing skipped or doubled");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+
+    const double from = std::round(p.e.playingFrom() * kRate);
+    LoopAction forward = action(LoopAction::Jump, 1);
+    forward.by = 4.0;
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(forward), "a jump 4 s forward is in the buffer: no seek");
+    runUntil(p.e, p.d, p.out, j + 500);
+    CHECK(straight(p.out, j, j + 500, from + 4000.0), "and lands exactly there");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testReserveAroundHover() {
+    TEST_CASE("the reserve around a hover");
+    Playing p;
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(kReserve);
+    p.e.setResponsive(true);
+    double most = 0.0;
+    for (int i = 0; i < 4000 && most < Engine::kResponsiveAheadSeconds - 0.2; ++i) {
+        step(p.e, p.d, p.out);
+        most = std::max(most, p.e.aheadSeconds());
+    }
+    CHECK(most >= Engine::kResponsiveAheadSeconds - 0.2, "hovering: the decoder runs up to 120 s ahead, as without one");
+    p.e.setResponsive(false);
+    const double ceiling = kReserve + Engine::kReserveSlackSeconds;
+    double last = p.e.aheadSeconds();
+    bool falling = true;
+    int blocks = 0;
+    for (; blocks < 3000 && p.e.aheadSeconds() > ceiling; ++blocks) {
+        step(p.e, p.d, p.out);
+        falling &= p.e.aheadSeconds() < last;
+        last = p.e.aheadSeconds();
+    }
+    CHECK(falling && p.e.aheadSeconds() <= ceiling && blocks <= 1200,
+          "released: it drains back towards the reserve, a block per block");
+    bool held = true, wasLive = false;
+    for (int i = 0; i < 300; ++i) {
+        step(p.e, p.d, p.out);
+        held &= p.e.aheadSeconds() >= kReserve && p.e.aheadSeconds() <= ceiling;
+        wasLive |= p.e.live();
+    }
+    CHECK(held && !wasLive, "then holds within 5 s over it, never passing through");
+    CHECK(straight(p.out, 0, p.out.frames.size(), 2000.0), "the same audio throughout, nothing skipped or doubled");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testReserveTrackChange() {
+    TEST_CASE("a gapless track change with the reserve");
+    Playing p;
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(kReserve);
+    for (int i = 0; i < 1000 && p.e.aheadSeconds() < kReserve; ++i) step(p.e, p.d, p.out);
+    // The old track's audio still to play, then the new one's from frame 0
+    const size_t oldLeft = static_cast<size_t>(p.d.next - std::llround(p.e.playingFrom() * kRate));
+    const size_t change = p.out.frames.size() + oldLeft;
+    Decoder next{ 0, kBlock };
+    step(p.e, next, p.out, true);
+
+    CHECK(!p.e.act(action(LoopAction::Jump, 1, 0.0, 0.0, 4.0)) && p.e.rejectedId() == 1,
+          "across the change: a jump into the old track's history is turned down (the view seeks)");
+    LoopAction back = action(LoopAction::Jump, 2);
+    back.by = -1.0;
+    CHECK(!p.e.act(back) && p.e.rejectedId() == 2, "a relative jump too");
+    CHECK(!p.e.act(loop(3, 4.0, 4.5, 4.0)) && p.e.rejectedId() == 3, "and a loop");
+    CHECK(p.e.act(action(LoopAction::Exit, 4)) && p.e.rejectedId() == 3, "leaving a loop still works");
+
+    int blocks = 1;
+    for (; blocks < 1000 && !p.e.live(); ++blocks) step(p.e, next, p.out);
+    CHECK(p.e.live() && p.e.synced() && blocks <= static_cast<int>(oldLeft / kBlock) + 5,
+          "it catches up at twice the decoder's pace, whatever the reserve: live on the new track, synced");
+    CHECK(straight(p.out, 0, change, 2000.0), "the old track to its last decoded frame");
+    CHECK(straight(p.out, change, p.out.frames.size(), 0.0), "then the new track from its first frame");
+    bool ownSegment = false;
+    for (const LoopSegment &s : p.e.timeline()) {
+        ownSegment |= s.from == 0.0 && std::fabs(s.first * kRate - static_cast<double>(change)) < 1e-6;
+    }
+    CHECK(ownSegment && p.e.timeline().front().from == 2.0, "each track its own timeline segment");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+
+    CHECK(blocksLive(p.e, next, p.out) == 11, "a second live on the new track (10 blocks), then from the buffer");
+    for (int i = 0; i < 1000 && p.e.aheadSeconds() < kReserve; ++i) step(p.e, next, p.out);
+    CHECK(p.e.aheadSeconds() >= kReserve && p.e.synced(), "and the reserve is built again");
+    // Its history begins where the change was left (the audio sent across
+    // it is not kept)
+    const double target = std::ceil(p.e.bufferedFrom() * kRate) / kRate + 0.5;
+    const size_t j = p.out.frames.size();
+    CHECK(p.e.act(action(LoopAction::Jump, 5, 0.0, 0.0, target)), "the new track's history works");
+    runUntil(p.e, next, p.out, j + 200);
+    CHECK(straight(p.out, change, j, 0.0) && straight(p.out, j, j + 200, std::round(target * kRate)),
+          "from the new track's own time");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testReserveWaitsForTheClock() {
+    TEST_CASE("the reserve waits a second after each sync");
+    Engine e;
+    e.setFadeSeconds(0.0);
+    e.setReserveSeconds(kReserve);
+    e.flush(nullptr);
+    Decoder d{ 2000, kBlock };
+    Output out;
+    for (int i = 0; i < 15; ++i) step(e, d, out);
+    CHECK(e.live() && e.pristine() && !e.synced(), "unsynced: passes through");
+    e.sync(e.epoch(), 2.0);
+    bool untouched = false;
+    CHECK(blocksLive(e, d, out, &untouched) == 11 && untouched,
+          "the view's measurement: live and untouched for a second (10 blocks), then from the buffer");
+    CHECK(!e.pristine(), "touched from then on (the view keeps its clock as measured)");
+    CHECK(straight(out, 0, out.frames.size(), 2000.0), "without a break");
+
+    LoopArm arm;
+    arm.id = 7;
+    arm.target = 30.0;
+    e.flush(&arm);
+    Decoder d2{ 30000, kBlock };
+    Output o2;
+    CHECK(blocksLive(e, d2, o2, &untouched) == 11 && untouched, "the view's own seek: likewise");
+
+    // A gapless change while still live, half a second in: a second on the new track
+    e.flush(&arm);
+    Decoder d3{ 30000, kBlock };
+    Output o3;
+    for (int i = 0; i < 5; ++i) step(e, d3, o3);
+    CHECK(e.live(), "(live half a second after the seek)");
+    Decoder next{ 0, kBlock };
+    CHECK(blocksLive(e, next, o3, nullptr, true) == 11 && e.synced(), "a new track: likewise");
+    CHECK(straight(o3, 0, 500, 30000.0) && straight(o3, 500, o3.frames.size(), 0.0), "without a break");
+}
+
+void testNoReserve() {
+    TEST_CASE("no reserve");
+    Playing p(30.0);
+    CHECK(p.e.live() && p.e.pristine() && p.e.aheadSeconds() == 0.0, "30 s after the sync: passing through, as before");
+    p.d.size = kBlock;
+    p.e.setReserveSeconds(kReserve);
+    for (int i = 0; i < 50; ++i) step(p.e, p.d, p.out);
+    CHECK(!p.e.live() && p.e.aheadSeconds() > 2.0, "(a reserve set: part built)");
+    p.e.setReserveSeconds(0.0);
+    for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.live(), "cleared: catches up and passes through again");
+    for (int i = 0; i < 50; ++i) step(p.e, p.d, p.out);
+    CHECK(p.e.live() && p.e.aheadSeconds() == 0.0, "and stays so");
+    CHECK(straight(p.out, 0, p.out.frames.size(), 2000.0), "without a break");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+void testSeekRequestAtTarget() {
+    TEST_CASE("a request with a seek plays from its target");
+    // Made against the audio before the seek: its `by` and beat are ignored
+    for (int variant = 0; variant < 2; ++variant) {
+        Engine e;
+        e.setFadeSeconds(0.0);
+        LoopArm arm;
+        arm.id = 9;
+        arm.target = 2.0;
+        LoopAction then = loop(3, 2.0, 2.5, 2.3);
+        if (variant == 0) {
+            then.by = 1.0;
+        } else {
+            then.beat = 0.5;   // in phase from 2.0 this would be 2.5, past the loop
+            then.beatAnchor = 0.1;
+        }
+        arm.then = then;
+        e.flush(&arm);
+        Decoder d{ 2000 };
+        Output out;
+        runUntil(e, d, out, 1000);
+        CHECK(looping(out, 0, 1000, 2000.0, 500, 300),
+              variant == 0 ? "a loop with `by`: from 2300 once decoded, then the loop"
+                           : "a loop in phase: from 2300 once decoded, then the loop");
+        CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+    }
+    Engine e;
+    e.setFadeSeconds(0.0);
+    LoopArm arm;
+    arm.id = 9;
+    arm.target = 2.0;
+    LoopAction jump = action(LoopAction::Jump, 3, 0.0, 0.0, 2.03);
+    jump.by = 1.0;
+    arm.then = jump;
+    e.flush(&arm);
+    Decoder d{ 2000 };
+    Output out;
+    runUntil(e, d, out, 300);
+    CHECK(straight(out, 0, 300, 2030.0) && e.rejectedId() == 0, "a jump with `by`: from 2030, in the first block");
+}
+
+void testLoopTarget() {
+    TEST_CASE("where a loop plays from");
+    for (const bool withTo : { false, true }) {
+        Playing p;   // live up to ~5000
+        const double from = std::round(p.e.playingFrom() * kRate);
+        LoopAction a = loop(1, 4.0, 5.5, withTo ? 4.2 : NAN);
+        a.by = -0.5;
+        const size_t at = p.out.frames.size();
+        CHECK(p.e.act(a), "a loop half a second back from what plays");
+        runUntil(p.e, p.d, p.out, at + 3000);
+        const size_t toEnd = static_cast<size_t>(5500.0 - (from - 500.0));
+        CHECK(straight(p.out, at, at + toEnd, from - 500.0),
+              withTo ? "`by` first: from half a second back, not `to`" : "from half a second back, however late taken");
+        CHECK(looping(p.out, at + toEnd, at + 3000, 4000.0, 1500), "then the loop");
+        CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+    }
+    // In phase: 0.5 s beats from 0.1; at 5.2 it plays 0.2 into a beat
+    Playing q(3.2);
+    const double from = std::round(q.e.playingFrom() * kRate);
+    LoopAction b = loop(2, 4.6, 5.6, 4.8);
+    b.beat = 0.5;
+    b.beatAnchor = 0.1;
+    const size_t at = q.out.frames.size();
+    CHECK(q.e.act(b), "a loop in phase");
+    runUntil(q.e, q.d, q.out, at + 2000);
+    const double landed = q.out.frames[at];
+    const double d = std::fabs(std::fmod(from - 100.0, 500.0) - std::fmod(landed - 100.0, 500.0));
+    CHECK(std::min(d, 500.0 - d) <= 1.0 && landed != 4800.0, "at the same place within the beat as what plays");
+    CHECK(std::fabs(landed - 4800.0) <= 251.0, "at most half a beat from `to`");
+    const size_t toEnd = static_cast<size_t>(5600.0 - landed);
+    CHECK(straight(q.out, at, at + toEnd, landed) && looping(q.out, at + toEnd, at + 2000, 4600.0, 1000),
+          "on from there, then the loop");
+    CHECK(matchesTimeline(q.e, q.out), "the timeline maps every frame");
+}
+
 } // namespace
 
 int main() {
@@ -528,5 +795,12 @@ int main() {
     testAheadCap();
     testEndOfStream();
     testTimelineMath();
+    testReserveHeld();
+    testReserveAroundHover();
+    testReserveTrackChange();
+    testReserveWaitsForTheClock();
+    testNoReserve();
+    testSeekRequestAtTarget();
+    testLoopTarget();
     return testsupport::summarize("LoopEngineTests");
 }

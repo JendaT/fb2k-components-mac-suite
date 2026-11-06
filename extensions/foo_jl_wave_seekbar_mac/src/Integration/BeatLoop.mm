@@ -52,6 +52,7 @@ struct Bridge {
 
 std::atomic<int> g_instances{ 0 };
 std::atomic<bool> g_responsive{ false };
+std::atomic<double> g_reserve{ 0.0 };
 
 class dsp_beat_loop : public dsp_impl_base {
 public:
@@ -64,6 +65,7 @@ public:
     bool on_chunk(audio_chunk *chunk, abort_callback &) override {
         takeRequests();
         m_engine.setResponsive(g_responsive.load(std::memory_order_relaxed));
+        m_engine.setReserveSeconds(g_reserve.load(std::memory_order_relaxed));
         // A gapless change to another track: its frame 0 is here
         dsp_track_t file;
         get_cur_file(file);
@@ -302,6 +304,10 @@ void setLowLatency(bool on) {
     } catch (...) {
         g_liveEditMissing = true;
     }
+}
+
+void setReserve(double seconds) {
+    g_reserve.store(seconds, std::memory_order_relaxed);   // the engine bounds it
 }
 
 void applyMixerBuffer(bool mixerOn, int mixerMs) {

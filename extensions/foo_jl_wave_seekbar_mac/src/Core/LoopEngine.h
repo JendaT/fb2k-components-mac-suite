@@ -17,10 +17,19 @@
 //  ahead (the loop can move forward into that audio) but not without end;
 //  after a loop it catches up at twice the decoder's pace and goes live.
 //
+//  With a reserve set it keeps that much decoded audio ahead while no
+//  change is expected, so a forward jump within it is a splice too: a
+//  second after a sync it plays from the buffer and lets the decoder run
+//  ahead at twice its pace until the reserve is there, then holds it. After
+//  a track change behind the buffer it catches up first, whatever the
+//  reserve, and builds it again on the new track.
+//
 //  Track times come from a sync: a seek of the view's own (its target is
 //  frame 0), the view's measurement of foobar2000's position while the
 //  audio is untouched, or a gapless track change (time 0). Without one the
 //  engine passes audio through and turns requests down; the view then seeks.
+//  It turns them down too while the audio waiting crosses a track change
+//  (the old track's buffer would judge them).
 //
 //  The engine logs what the output plays (a timeline in output seconds
 //  since the seek), so the view maps the audible time to a track position.
@@ -72,22 +81,24 @@ struct LoopAction {
     double start = 0.0;     // Loop, Move: the loop's start
     double end = 0.0;       // Loop, Move, Resize: its end
     double to = NAN;        // Loop: where to play from (NAN: on from where it is); Jump: the target
-    // Loop with `to` NAN: past the loop's end already, go into it as far as
-    // its length goes (the beat holds), instead of letting it wait
+    // Loop with `to` and `by` NAN: past the loop's end already, go into it
+    // as far as its length goes (the beat holds), instead of letting it wait
     bool keepPhase = false;
-    // Jump: by this much from what plays when it is taken (NAN: to `to`);
-    // relative, so the beat holds however late it is taken
+    // Jump, Loop: play from this much from what plays when it is taken
+    // (NAN: from `to`); relative, so the beat holds however late it is taken
     double by = NAN;
-    // Jump to `to` in phase: to the place nearest `to` at the same place
-    // within its beat as what plays when it is taken (a grid of `beat`
-    // seconds through `beatAnchor`), so it keeps the beat without waiting
-    // for one, however late it is taken (at most half a beat from `to`)
+    // Jump, Loop: play from `to` in phase: from the place nearest `to` at
+    // the same place within its beat as what plays when it is taken (a grid
+    // of `beat` seconds through `beatAnchor`), so it keeps the beat without
+    // waiting for one, however late it is taken (at most half a beat from `to`)
     double beat = 0.0;
     double beatAnchor = 0.0;
 };
 
 // A seek of the view's own: the first frame after it is `target`; `then`
-// applies once the first audio after it arrives
+// applies once the first audio after it arrives, from its `to` (its `by`
+// and beat are ignored: what plays then is the seek's target, not the
+// audio it was made against)
 struct LoopArm {
     uint64_t id = 0;
     double target = 0.0;
@@ -119,8 +130,20 @@ public:
     static constexpr double kResponsiveAheadSeconds = 120.0;
     static constexpr double kIdleQuantumSeconds = 1.0;
     static constexpr double kMaxAheadSeconds = 300.0;
+    // The reserve: it builds only after this much output passed live since a
+    // sync (the view measures its clock while the output is the input), and
+    // past this much over it the audio waiting drains back towards it
+    static constexpr double kReserveSettleSeconds = 1.0;
+    static constexpr double kReserveSlackSeconds = 5.0;
 
     void setResponsive(bool on) { responsive_ = on; }
+
+    // Decoded audio to keep ahead while no change is expected (not
+    // responsive), at most kResponsiveAheadSeconds; 0 (the default) passes
+    // the audio through whenever it can
+    void setReserveSeconds(double seconds) {
+        reserve_ = std::isfinite(seconds) ? std::clamp(seconds, 0.0, kResponsiveAheadSeconds) : 0.0;
+    }
 
     // Crossfade length at a splice; 0 splices hard (the tests)
     void setFadeSeconds(double seconds) { fadeSeconds_ = std::max(0.0, seconds); }
@@ -136,6 +159,7 @@ public:
         bufStart_ = pos_ = 0;
         inFrames_ = 0;
         outSeconds_ = 0.0;
+        liveFrames_ = 0;
         live_ = pristine_ = true;
         looping_ = engaged_ = afterBoundary_ = tailStarted_ = false;
         fadeLeft_ = 0;
@@ -158,6 +182,7 @@ public:
         synced_ = true;
         t0_ = t0;
         timeline_.assign(1, { 0.0, t0, 0.0, 0.0 });
+        liveFrames_ = 0;
         ++version_;
     }
 
@@ -220,8 +245,12 @@ public:
         // While a change may come, play from the buffer in short steps even
         // with nothing changed, so a request is taken within a step rather
         // than a whole block (the decoder runs ahead meanwhile; the output is
-        // still the input, so nothing is heard)
-        if (live_ && responsive_ && synced_ && !afterBoundary_ && aheadSeconds() < kResponsiveAheadSeconds) {
+        // still the input, so nothing is heard). With a reserve, likewise
+        // once the output has passed live for a while since the sync.
+        const bool reserveDue =
+            reserve_ > 0.0 && liveFrames_ >= static_cast<int64_t>(framesFor(kReserveSettleSeconds));
+        if (live_ && (responsive_ || reserveDue) && synced_ && !afterBoundary_ &&
+            aheadSeconds() < kResponsiveAheadSeconds) {
             live_ = false;
             pristine_ = false;
             pos_ = bufEnd() - static_cast<int64_t>(frames);   // this block is next out
@@ -229,16 +258,27 @@ public:
         if (live_) {
             pos_ = bufEnd();
             outSeconds_ += static_cast<double>(frames) / rate;
+            liveFrames_ += static_cast<int64_t>(frames);
             trim();
             return true;
         }
         const double ahead = aheadSeconds();
         if (looping_ && ahead > kMaxAheadSeconds) exitLoop();
-        size_t want = 2 * frames;   // behind the decoder: catch up
+        // Behind the decoder: catch up (after a track change behind the
+        // buffer always, so the new track gets its own buffer and time)
+        size_t want = 2 * frames;
         if (responsive_ && ahead < kResponsiveAheadSeconds) {
             want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
         } else if (looping_ && engaged_) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));
+        } else if (reserve_ > 0.0 && !afterBoundary_) {
+            // By what waited before this block: short of the reserve, half a
+            // block out, so the decoder runs ahead at twice its pace; in it,
+            // a block per block; well over it (after a change was expected),
+            // catching up drains it back
+            const double waiting = ahead - static_cast<double>(frames) / rate;
+            if (waiting < reserve_) want = std::max<size_t>(1, frames / 2);
+            else if (waiting <= reserve_ + kReserveSlackSeconds) want = frames;
         }
         emit(want, out);
         trim();
@@ -301,6 +341,7 @@ private:
         config_ = config;
         buf_.clear();
         bufStart_ = pos_ = inFrames_;
+        liveFrames_ = 0;
         synced_ = newTrack;
         if (newTrack) {
             t0_ = -static_cast<double>(inFrames_) / rate_;
@@ -309,20 +350,44 @@ private:
         ++version_;
     }
 
+    // Where a Jump or a Loop plays from: `by` from what plays, else `to` in
+    // phase with what plays, else `to`; none without a finite one. One that
+    // comes with a seek (afterBind) plays from `to`: what plays then is the
+    // seek's target, not the audio the request was made against.
+    std::optional<int64_t> targetOf(const LoopAction &a, bool afterBind) const {
+        if (!afterBind && std::isfinite(a.by)) return pos_ + static_cast<int64_t>(std::llround(a.by * rate_));
+        if (!std::isfinite(a.to)) return std::nullopt;
+        if (!afterBind && std::isfinite(a.beat) && a.beat > 0.0 && std::isfinite(a.beatAnchor)) {
+            const double now = (timeOf(pos_) - a.beatAnchor) / a.beat;
+            const double phase = now - std::floor(now);
+            const double at = (a.to - a.beatAnchor) / a.beat;
+            return frameOf(a.beatAnchor + (std::round(at - phase) + phase) * a.beat);
+        }
+        return frameOf(a.to);
+    }
+
     bool apply(const LoopAction &a, bool afterBind) {
         if (a.kind == LoopAction::Exit) {   // always possible
             if (looping_) exitLoop();
             return true;
         }
-        if (!synced_ || channels_ == 0) return false;
+        // Across a track change the audio waiting is partly the next track's,
+        // and the buffer the old one's: the view seeks instead
+        if (!synced_ || channels_ == 0 || afterBoundary_) return false;
         switch (a.kind) {
             case LoopAction::Loop: {
                 const int64_t s = frameOf(a.start), e = frameOf(a.end);
                 if (e <= s || s < bufStart_) return false;
-                // NAN: on from where it is (before the loop it runs into it,
-                // past it the loop waits, or with keepPhase goes into it)
-                int64_t to = std::isnan(a.to) ? pos_ : frameOf(a.to);
-                if (std::isnan(a.to) && a.keepPhase && pos_ >= e) to = s + (pos_ - s) % (e - s);
+                int64_t to = pos_;
+                if (std::isnan(a.to) && (afterBind || !std::isfinite(a.by))) {
+                    // On from where it is (before the loop it runs into it,
+                    // past it the loop waits, or with keepPhase goes into it)
+                    if (a.keepPhase && pos_ >= e) to = s + (pos_ - s) % (e - s);
+                } else {
+                    const std::optional<int64_t> target = targetOf(a, afterBind);
+                    if (!target) return false;
+                    to = *target;
+                }
                 // Right after a seek, playback may start further in once decoded
                 if (to < bufStart_ || (!afterBind && to > bufEnd())) return false;
                 looping_ = true;
@@ -357,19 +422,11 @@ private:
             case LoopAction::Jump: {
                 // Anywhere held; a loop stays set: inside it plays it, before
                 // it runs into it, past it the loop waits
-                int64_t to = frameOf(a.to);
-                if (!std::isnan(a.by)) {
-                    to = pos_ + static_cast<int64_t>(std::llround(a.by * rate_));
-                } else if (a.beat > 0.0) {
-                    const double now = (timeOf(pos_) - a.beatAnchor) / a.beat;
-                    const double phase = now - std::floor(now);
-                    const double at = (a.to - a.beatAnchor) / a.beat;
-                    to = frameOf(a.beatAnchor + (std::round(at - phase) + phase) * a.beat);
-                }
-                if (to < bufStart_ || to >= bufEnd()) return false;
+                const std::optional<int64_t> to = targetOf(a, afterBind);
+                if (!to || *to < bufStart_ || *to >= bufEnd()) return false;
                 live_ = false;
                 pristine_ = false;
-                moveTo(to);
+                moveTo(*to);
                 return true;
             }
             case LoopAction::Exit:
@@ -530,6 +587,7 @@ private:
         buf_.clear();
         bufStart_ = pos_ = inFrames_;
         live_ = true;
+        liveFrames_ = 0;
         synced_ = boundaryIsTrack_;
         if (synced_) t0_ = -static_cast<double>(boundaryFrame_) / rate_;
         ++version_;
@@ -562,6 +620,10 @@ private:
     bool live_ = true;
     bool pristine_ = true;
     bool responsive_ = false;
+    double reserve_ = 0.0;          // decoded seconds to keep ahead while not responsive
+    // Output passed live since the last sync (the view's seek or measurement,
+    // a track change); the reserve waits for kReserveSettleSeconds of it
+    int64_t liveFrames_ = 0;
     bool looping_ = false;
     bool engaged_ = false;          // a loop is set and playback is in it (before it: it engages at the start)
     bool inLoopSegment_ = false;    // the timeline's last segment is the loop's
