@@ -4,6 +4,7 @@
 //
 
 #import "LevelMeterController.h"
+#include "../../../../shared/PixelSnap.h"
 #include "../Core/LevelMeterConfig.h"
 #include "../Core/MeterEngine.h"
 #include "../Integration/MeterSource.h"
@@ -113,6 +114,12 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
     self.view = container;
 
     [self updateGlassBackground];
+}
+
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.meterView);
 }
 
 - (void)viewDidLoad {
@@ -227,6 +234,7 @@ FB2K_SERVICE_FACTORY(levelmeter_play_callback);
         // Measure whenever the view is in a window, even one that is
         // covered or minimised, so the integrated loudness misses nothing.
         if (!self.view.window) return;
+        JLPixelSnapContent(self.view, self.meterView);
 
         const CFTimeInterval now = CACurrentMediaTime();
         const double dt = std::min(std::max(now - _lastTick, 0.0), 0.25);
