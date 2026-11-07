@@ -8,11 +8,71 @@
 
 namespace {
 
+// Tells the tree which playlist is playing so it can mark that row.
+// No name means nothing is playing.
+void postPlayingPlaylistChanged(bool playing) {
+    NSString *foobarName = nil;
+    if (playing) {
+        auto pm = playlist_manager::get();
+        t_size index = pm->get_playing_playlist();
+        pfc::string8 name;
+        if (index != pfc::infinite_size && pm->playlist_get_name(index, name)) {
+            foobarName = [NSString stringWithUTF8String:name.c_str()];
+        }
+    }
+
+    NSUInteger generation = [TreeModel shared].migrationGeneration;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([TreeModel shared].migrationGeneration != generation) return;
+        [[NSNotificationCenter defaultCenter]
+            postNotificationName:@"PlorgPlayingPlaylistChanged"
+                          object:nil
+                        userInfo:foobarName ? @{@"foobarName": foobarName} : nil];
+    });
+}
+
+class plorg_play_callback : public play_callback_static {
+public:
+    unsigned get_flags() override {
+        return flag_on_playback_new_track | flag_on_playback_stop;
+    }
+
+    void on_playback_new_track(metadb_handle_ptr) override {
+        @try {
+            postPlayingPlaylistChanged(true);
+        } @catch (...) {
+            FB2K_console_formatter() << "[Plorg] Exception in on_playback_new_track";
+        }
+    }
+
+    void on_playback_stop(play_control::t_stop_reason reason) override {
+        // Track changes and app shutdown also send a stop; keep the marker for those.
+        if (reason == play_control::stop_reason_starting_another ||
+            reason == play_control::stop_reason_shutting_down) return;
+        @try {
+            postPlayingPlaylistChanged(false);
+        } @catch (...) {
+            FB2K_console_formatter() << "[Plorg] Exception in on_playback_stop";
+        }
+    }
+
+    // Unused callbacks - required by interface
+    void on_playback_starting(play_control::t_track_command, bool) override {}
+    void on_playback_seek(double) override {}
+    void on_playback_pause(bool) override {}
+    void on_playback_edited(metadb_handle_ptr) override {}
+    void on_playback_dynamic_info(const file_info&) override {}
+    void on_playback_dynamic_info_track(const file_info&) override {}
+    void on_playback_time(double) override {}
+    void on_volume_change(float) override {}
+};
+
+FB2K_SERVICE_FACTORY(plorg_play_callback);
+
 class plorg_playlist_callback : public playlist_callback_static {
 public:
     unsigned get_flags() override {
-        return flag_on_playlist_activate |
-               flag_on_playlist_created |
+        return flag_on_playlist_created |
                flag_on_playlist_renamed |
                flag_on_playlists_removed;
     }
@@ -41,6 +101,11 @@ public:
                                                        encoding:NSUTF8StringEncoding];
             if (!newName) return;
 
+            // Renaming the playing playlist changes the name the tree matches on
+            if (p_index == playlist_manager::get()->get_playing_playlist()) {
+                postPlayingPlaylistChanged(playback_control::get()->is_playing());
+            }
+
             NSUInteger generation = [TreeModel shared].migrationGeneration;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if ([TreeModel shared].migrationGeneration != generation) return;
@@ -62,31 +127,8 @@ public:
         }
     }
 
-    void on_playlist_activate(t_size p_old, t_size p_new) override {
-        @try {
-            if (p_new == pfc::infinite_size) return;
-
-            auto pm = playlist_manager::get();
-            pfc::string8 name;
-            if (pm->playlist_get_name(p_new, name)) {
-                NSString *foobarName = [NSString stringWithUTF8String:name.c_str()];
-                if (!foobarName) return;
-
-                NSUInteger generation = [TreeModel shared].migrationGeneration;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if ([TreeModel shared].migrationGeneration != generation) return;
-                    [[NSNotificationCenter defaultCenter]
-                        postNotificationName:@"PlorgActivePlaylistChanged"
-                                      object:nil
-                                    userInfo:@{@"foobarName": foobarName}];
-                });
-            }
-        } @catch (...) {
-            FB2K_console_formatter() << "[Plorg] Exception in on_playlist_activate";
-        }
-    }
-
     // Unused callbacks - required by interface
+    void on_playlist_activate(t_size, t_size) override {}
     void on_items_added(t_size, t_size, const pfc::list_base_const_t<metadb_handle_ptr>&, const pfc::bit_array&) override {}
     void on_items_reordered(t_size, const t_size*, t_size) override {}
     void on_items_removing(t_size, const pfc::bit_array&, t_size, t_size) override {}
