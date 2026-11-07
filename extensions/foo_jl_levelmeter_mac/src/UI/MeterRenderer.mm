@@ -279,15 +279,20 @@ void drawStatCell(CGRect cell, NSString *label, NSString *value, NSString *unit,
 
 #pragma mark - Entry points
 
-void MeterRenderer::draw(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap) {
+void MeterRenderer::draw(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap,
+                         Pass pass) {
     _bounds = bounds;
     _analog = s.style == MeterStyle::Analog;
-    if ((s.palette.background >> 24) != 0) {
+    if (pass != Pass::Live && (s.palette.background >> 24) != 0) {
         CGContextSetFillColorWithColor(ctx, cg(s.palette.background));
         CGContextFillRect(ctx, bounds);
     }
-    if (_analog) drawAnalog(ctx, bounds, s, snap);
-    else drawDigital(ctx, bounds, s, snap);
+    // The analog faces are drawn whole in the live pass.
+    if (_analog) {
+        if (pass != Pass::Static) drawAnalog(ctx, bounds, s, snap);
+    } else {
+        drawDigital(ctx, bounds, s, snap, pass);
+    }
 }
 
 HitArea MeterRenderer::hitTest(CGPoint p) const {
@@ -302,7 +307,9 @@ HitArea MeterRenderer::hitTest(CGPoint p) const {
 
 #pragma mark - Digital
 
-void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap) {
+void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap,
+                                Pass pass) {
+    const bool drawStatic = pass != Pass::Live, drawLive = pass != Pass::Static;
     const Palette &p = s.palette;
     Input in;
     in.width = bounds.size.width;
@@ -328,7 +335,7 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     Zones loudZones { targetPos, 2.0, p.loudness, p.warn, p.over };
 
     // Level bars
-    for (int c = 0; c < 2; ++c) {
+    for (int c = 0; c < 2 && drawLive; ++c) {
         if (L.bar[c].empty()) continue;
         const ChannelReading &r = snap.ch[c];
         BarValues v;
@@ -340,7 +347,7 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
         drawBar(ctx, toCG(L.bar[c]), vertical, levelScale, v, levelZones, s);
     }
     // Loudness bars
-    for (int i = BarM; i <= BarS; ++i) {
+    for (int i = BarM; i <= BarS && drawLive; ++i) {
         if (L.bar[i].empty()) continue;
         const double v = i == BarM ? snap.momentary : snap.shortTerm;
         drawBar(ctx, toCG(L.bar[i]), vertical, loudScale, { std::isfinite(v) ? v : kFloorDb, kFloorDb, kFloorDb },
@@ -353,25 +360,31 @@ void MeterRenderer::drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySe
     }
 
     // Scales
-    if (!L.scale.empty()) drawScaleTicks(ctx, toCG(L.scale), vertical, levelScale, s, true);
-    if (!L.loudnessScale.empty()) drawScaleTicks(ctx, toCG(L.loudnessScale), vertical, loudScale, s, false);
-
-    // Labels under (or beside) the bars, and the scale unit
     const CGFloat t = s.textScale;
-    NSFont *labelFont = [NSFont systemFontOfSize:9 * t weight:NSFontWeightSemibold];
-    NSColor *labelColor = color(p.text, 0.6);
-    static NSString *const kNames[BarCount] = { @"L", @"R", @"M", @"S" };
-    for (int i = 0; i < BarCount; ++i) {
-        if (!L.label[i].empty() && !L.bar[i].empty()) drawText(kNames[i], toCG(L.label[i]), labelFont, labelColor);
-    }
-    if (vertical && !L.scale.empty()) {
-        NSString *unit = s.scale == ScaleType::Dbfs ? @"dB" :
-                         [NSString stringWithFormat:@"K-%d", (int)-s.kReference()];
-        drawText(unit, CGRectMake(L.scale.x, L.label[BarL].y, L.scale.w, L.m.labelSize), monoFont(8 * t), color(p.text, 0.45));
-        if (!L.loudnessScale.empty()) {
-            drawText(@"LUFS", CGRectMake(L.loudnessScale.x, L.label[BarS].y, L.loudnessScale.w, L.m.labelSize),
-                     monoFont(8 * t), color(p.text, 0.45));
+    if (drawStatic) {
+        if (!L.scale.empty()) drawScaleTicks(ctx, toCG(L.scale), vertical, levelScale, s, true);
+        if (!L.loudnessScale.empty()) drawScaleTicks(ctx, toCG(L.loudnessScale), vertical, loudScale, s, false);
+
+        // Labels under (or beside) the bars, and the scale unit
+        NSFont *labelFont = [NSFont systemFontOfSize:9 * t weight:NSFontWeightSemibold];
+        NSColor *labelColor = color(p.text, 0.6);
+        static NSString *const kNames[BarCount] = { @"L", @"R", @"M", @"S" };
+        for (int i = 0; i < BarCount; ++i) {
+            if (!L.label[i].empty() && !L.bar[i].empty()) drawText(kNames[i], toCG(L.label[i]), labelFont, labelColor);
         }
+        if (vertical && !L.scale.empty()) {
+            NSString *unit = s.scale == ScaleType::Dbfs ? @"dB" :
+                             [NSString stringWithFormat:@"K-%d", (int)-s.kReference()];
+            drawText(unit, CGRectMake(L.scale.x, L.label[BarL].y, L.scale.w, L.m.labelSize), monoFont(8 * t), color(p.text, 0.45));
+            if (!L.loudnessScale.empty()) {
+                drawText(@"LUFS", CGRectMake(L.loudnessScale.x, L.label[BarS].y, L.loudnessScale.w, L.m.labelSize),
+                         monoFont(8 * t), color(p.text, 0.45));
+            }
+        }
+    }
+    if (!drawLive) {
+        CGContextRestoreGState(ctx);
+        return;
     }
 
     // Clip lights

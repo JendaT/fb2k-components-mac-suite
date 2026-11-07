@@ -23,16 +23,25 @@ enum class HitArea {
     Loudness,   // loudness bars and figures: reset the measurement
 };
 
+// What a draw call covers. Static is what only changes with the settings or
+// the size (background, scales, names); Live is the rest, drawn over it.
+enum class Pass {
+    All,
+    Static,
+    Live,
+};
+
 class MeterRenderer {
 public:
-    // Draw everything inside `bounds`.
-    void draw(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap);
+    // Draw `pass` inside `bounds`.
+    void draw(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap,
+              Pass pass = Pass::All);
 
     // What a click at `p` would reset (uses the last layout drawn).
     HitArea hitTest(CGPoint p) const;
 
 private:
-    void drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap);
+    void drawDigital(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap, Pass pass);
     void drawAnalog(CGContextRef ctx, CGRect bounds, const DisplaySettings &s, const Snapshot &snap);
 
     meter_layout::Result _layout;
