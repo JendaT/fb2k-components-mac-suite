@@ -18,7 +18,8 @@
 namespace {
     // The image is a strip of tiles this many columns wide. Only the newest
     // tile changes, so each frame uploads one small bitmap and moves the rest.
-    const int kTileColumns = 256;
+    // Narrow, because the whole newest tile is uploaded again on every frame.
+    const int kTileColumns = 32;
 
     // Right of the plot: a gap, the frequency labels, then the dB color scale
     // (bar, then its labels). Label widths follow the font size.
@@ -132,6 +133,8 @@ namespace {
     uint32_t _lut[spectrogram_colormap::kLutSize];
     CGColorSpaceRef _colorSpace;    // the LUT's: Display P3 or sRGB (isDisplayP3Map)
     bool     _lutIsP3;
+    uint32_t _tileLut[spectrogram_colormap::kLutSize];  // _lut matched to _tileColorSpace
+    CGColorSpaceRef _tileColorSpace; // the window's, or _colorSpace without a window
 
     NSInteger _rows;                // rows columns are rendered at
     NSInteger _wantedRows;          // rows the current plot height asks for
@@ -192,6 +195,7 @@ namespace {
 
 - (void)dealloc {
     if (_colorSpace) CGColorSpaceRelease(_colorSpace);
+    if (_tileColorSpace) CGColorSpaceRelease(_tileColorSpace);
 }
 
 - (BOOL)isFlipped { return NO; }  // origin bottom-left: frequency grows upward / rightward
@@ -255,6 +259,7 @@ namespace {
     if (_colorSpace) CGColorSpaceRelease(_colorSpace);
     _lutIsP3 = spectrogram_colormap::isDisplayP3Map(_colormap);
     _colorSpace = _lutIsP3 ? JLCreateThemeColorSpace() : CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    [self rebuildTileLut];
 
     // The not-yet-filled part of the plot reads as silence.
     _plotView.layer.backgroundColor = [self colorForLevel:0.0].CGColor;
@@ -316,6 +321,39 @@ namespace {
     return _lutIsP3 ? [NSColorSpace displayP3ColorSpace] : [NSColorSpace sRGBColorSpace];
 }
 
+// Tiles are filled from the LUT matched once to the window's colour space and
+// tagged with it. A tile in any other space is colour-converted by Core
+// Animation, on the main thread, every time it is uploaded.
+- (void)rebuildTileLut {
+    using spectrogram_colormap::kLutSize;
+    std::copy(_lut, _lut + kLutSize, _tileLut);
+    if (_tileColorSpace) CGColorSpaceRelease(_tileColorSpace);
+    _tileColorSpace = CGColorSpaceRetain(_colorSpace);
+
+    CGColorSpaceRef target = self.window.colorSpace.CGColorSpace;
+    if (!target || !_colorSpace || CFEqual(target, _colorSpace)) return;
+
+    // Draw the LUT as a one-row image into a bitmap in the window's space:
+    // the same conversion Core Animation would apply to every tile.
+    const CGBitmapInfo info = (CGBitmapInfo)kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little;
+    uint32_t matched[kLutSize];
+    CGContextRef ctx = CGBitmapContextCreate(matched, kLutSize, 1, 8, kLutSize * sizeof(uint32_t), target, info);
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, _lut, sizeof(_lut), NULL);
+    CGImageRef image = provider ? CGImageCreate(kLutSize, 1, 8, 32, kLutSize * sizeof(uint32_t), _colorSpace, info,
+                                                provider, NULL, false, kCGRenderingIntentDefault) : NULL;
+    if (ctx && image) {
+        CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+        CGContextDrawImage(ctx, CGRectMake(0, 0, kLutSize, 1), image);
+        for (int i = 0; i < kLutSize; ++i) _tileLut[i] = matched[i] | 0xFF000000u;
+        CGColorSpaceRelease(_tileColorSpace);
+        _tileColorSpace = CGColorSpaceRetain(target);
+    }
+    if (image) CGImageRelease(image);
+    if (provider) CGDataProviderRelease(provider);
+    if (ctx) CGContextRelease(ctx);
+}
+
 #pragma mark - Layout
 
 - (void)layoutPlot {
@@ -370,6 +408,7 @@ namespace {
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+    [self rebuildTileLut];
     [self layoutPlot];
     if ([self.delegate respondsToSelector:@selector(spectrogramViewDidMoveToWindow:)]) {
         [self.delegate spectrogramViewDidMoveToWindow:self];
@@ -379,7 +418,9 @@ namespace {
 - (void)viewDidChangeBackingProperties {
     [super viewDidChangeBackingProperties];
     // Tiles hold device pixels; another scale factor means another density.
+    // Another screen may also have another colour space.
     [self clear];
+    [self rebuildTileLut];
     [self layoutPlot];
 }
 
@@ -425,7 +466,7 @@ namespace {
     uint32_t *px = tile.px.data() + (size_t)tile.count * (size_t)rows;
     for (NSInteger r = 0; r < rows; ++r) {
         const int idx = (int)(levels[r] * last + 0.5f);
-        px[r] = _lut[idx < 0 ? 0 : (idx > last ? last : idx)];
+        px[r] = _tileLut[idx < 0 ? 0 : (idx > last ? last : idx)];
     }
     tile.count++;
     tile.dirty = true;
@@ -461,7 +502,7 @@ namespace {
     }
 
     CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, image, bytes, releasePixels);
-    CGImageRef cgImage = CGImageCreate(w, h, 8, 32, w * sizeof(uint32_t), _colorSpace,
+    CGImageRef cgImage = CGImageCreate(w, h, 8, 32, w * sizeof(uint32_t), _tileColorSpace,
                                        (CGBitmapInfo)kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little,
                                        provider, NULL, false, kCGRenderingIntentDefault);
     CGDataProviderRelease(provider);
