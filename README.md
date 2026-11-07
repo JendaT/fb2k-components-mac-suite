@@ -14,7 +14,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
-| [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
+| [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.1 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
