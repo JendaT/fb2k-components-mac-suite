@@ -6,6 +6,7 @@
 //
 
 #import "WaveformSeekbarController.h"
+#include "../../../../shared/PixelSnap.h"
 #import "WaveformSeekbarView.h"
 #import "../Integration/PlaybackCallback.h"
 #import "../Core/WaveformService.h"
@@ -84,6 +85,12 @@
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
+}
+
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.waveformView);
 }
 
 - (void)viewDidLoad {
@@ -371,6 +378,7 @@ static const int kAnalysisMaxRetries = 1;
     @autoreleasepool {
         if (_isPaused) return;
         if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
+        JLPixelSnapContent(self.view, self.waveformView);
 
         try {
             auto pc = playback_control::get();
