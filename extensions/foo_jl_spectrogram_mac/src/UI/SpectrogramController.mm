@@ -4,6 +4,7 @@
 //
 
 #import "SpectrogramController.h"
+#include "../../../../shared/PixelSnap.h"
 #include "../Core/SpectrogramConfig.h"
 #include "../Core/SpectrogramClock.h"
 #include "../Core/SpectrogramEngine.h"
@@ -155,6 +156,12 @@ namespace {
     self.view = container;
 }
 
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.spectrogramView);
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
 
@@ -299,6 +306,7 @@ static bool playbackRunning() {
 
         NSWindow *window = self.view.window;
         if (!window || self.view.isHiddenOrHasHiddenAncestor) return;
+        JLPixelSnapContent(self.view, self.spectrogramView);
         // Skip fully covered windows, e.g. the panel while full screen is up.
         if (!(window.occlusionState & NSWindowOcclusionStateVisible)) {
             _clock.reset();
