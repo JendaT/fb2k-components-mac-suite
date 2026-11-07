@@ -744,6 +744,25 @@ void testResponsive() {
     CHECK(o3.frames.size() <= 31, "a 500-frame block, 30 frames out");
 }
 
+void testResponsiveSmallBlocks() {
+    TEST_CASE("responsive with blocks shorter than the step");
+    // An MP3 decoder's 1152-frame blocks are 26 ms, shorter than the 30 ms
+    // step: the decoder must still run ahead, or nothing ahead is ever held
+    Engine e;
+    e.setFadeSeconds(0.0);
+    e.flush(nullptr);
+    e.sync(e.epoch(), 2.0);
+    Decoder d{ 2000, 20 };
+    Output out;
+    runUntil(e, d, out, 3000);
+    e.setResponsive(true);
+    const size_t at = out.frames.size();
+    runUntil(e, d, out, at + 2000);
+    CHECK(e.aheadSeconds() >= 1.5, "two seconds played with 20 ms blocks, at least 1.5 s decoded ahead");
+    CHECK(straight(out, at, out.frames.size(), out.frames[at]), "the same audio, nothing skipped or doubled");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+}
+
 void testStandby() {
     TEST_CASE("responsive without a change");
     Playing p;   // live
@@ -1238,6 +1257,7 @@ int main() {
     testFormatChangeHeld();
     testCapInLoop();
     testResponsive();
+    testResponsiveSmallBlocks();
     testStandby();
     testAheadCap();
     testEndOfStream();

@@ -320,7 +320,10 @@ public:
         const bool catchUp = afterBoundary_ && !inLoop;
         size_t want = 2 * frames;
         if (!catchUp && responsive_ && ahead < (inLoop ? kResponsiveAheadSeconds : responsiveAhead)) {
-            want = std::max<size_t>(1, framesFor(kResponsiveQuantumSeconds));
+            // At most half the block, so the decoder runs ahead at twice its
+            // pace even when its blocks are shorter than the step (an MP3
+            // decoder's 1152 frames are 26 ms)
+            want = std::max<size_t>(1, std::min(framesFor(kResponsiveQuantumSeconds), frames / 2));
         } else if (inLoop) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));
         } else if (reserve > 0.0 && !afterBoundary_) {

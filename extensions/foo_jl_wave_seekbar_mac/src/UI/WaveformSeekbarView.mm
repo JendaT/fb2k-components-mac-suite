@@ -474,6 +474,15 @@ struct BarSegment {
     bool _dragSeeking;
     double _dragBeat;
     double _measuredLag;
+    // A seek of our own, from asking for it to hearing its target (0: not
+    // measured yet), and the seek being measured (0: none)
+    double _seekGap;
+    uint64_t _gapEpoch;
+    CFAbsoluteTime _gapFrom;
+    // The DSP without the track time: since when, for this seek (once in the console)
+    uint64_t _unsyncedEpoch;
+    CFAbsoluteTime _unsyncedSince;
+    bool _unsyncedNoted;
     // Option-dragging the loop: the beat under the mouse when it began, the
     // loop then, and where it would go
     bool _loopDragging;
@@ -2760,13 +2769,34 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     [self deckSeekTo:target by:NAN onBeat:NO];
 }
 
+// Where a seek in place of a jump lands. It is heard a seek's gap after it
+// is asked for (measured on our own seeks; none until then): relative, `by`
+// from what plays then; in phase, the place nearest `to` at the place
+// within the beat of what plays then; else `to`. The gap is a silence, but
+// the beats after it fall where they would have.
+- (double)seekLandingFor:(double)to
+                      by:(double)by
+                 playing:(const waveseek::GridAt &)playing
+                 landing:(const waveseek::GridAt &)landing {
+    const double resume = [self currentSeconds] + _seekGap;
+    double t = to;
+    if (std::isfinite(by)) {
+        t = resume + by;
+    } else if (playing.bpm > 0.0 && landing.bpm > 0.0) {
+        t = waveseek::inPhaseLanding(resume, 60.0 / playing.bpm, playing.anchorSeconds, to, 60.0 / landing.bpm,
+                                     landing.anchorSeconds);
+    }
+    if (!std::isfinite(t)) return to;
+    return std::clamp(t, 0.0, std::max(0.0, self.trackDuration - waveseek::kBeatEndMargin));
+}
+
 // `by` (relative to what plays when the DSP takes it, so the beat holds
 // however late) or to `target`; onBeat: in phase, the DSP lands at the
 // place nearest `target` at the same place within its beat as what it
 // plays, so the beat holds at once (a wait for the next beat delayed the
 // jump up to a beat): the place within the beat on the grid of what plays,
 // the landing on the grid that holds at `target` (another one across a
-// tempo change). `target` also places the fallback seek and decides what
+// tempo change). `target` also places the fallback seek (seekLanding) and decides what
 // the loop does. The fallback seek's own `then` plays from its `to`: after
 // a seek there is nothing to be relative to or in phase with.
 - (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
@@ -2800,23 +2830,26 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     };
     const waveseek::LoopAction jump = direct(makeAction(Kind::Jump, 0, 0, to));
     if (!_loop.active()) {
+        const double landed = [self seekLandingFor:to by:by playing:playing landing:landing];
         if ([self deckHolds:target to:target]) {
-            [self request:jump orSeekTo:target then:nullptr];
+            [self request:jump orSeekTo:landed then:nullptr];
         } else {
             [self noteSeekFor:target];
-            [self armedSeekTo:target then:nullptr];
+            [self armedSeekTo:landed then:nullptr];
         }
         return;
     }
     // The seek when the DSP does not hold the audio: inside the loop from
     // its start (playing on from the target once decoded), before it from
-    // the target with the loop set ahead, past it just the target
+    // where it lands (seekLanding) with the loop set ahead, past it just there
     const bool inside = _loop.contains(target), before = target < _loop.start;
-    const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, target);   // after a seek
-    const double seekTarget = inside ? _loop.start : target;
+    const double landed = inside ? target : [self seekLandingFor:to by:by playing:playing landing:landing];
+    const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, landed);   // after a seek
+    const double seekTarget = inside ? _loop.start : landed;
     const waveseek::LoopAction *then = inside || before ? &setLoop : nullptr;
     if ([self deckHolds:target to:heldTo]) {
-        [self request:(_deck.looping || !then) ? jump : direct(setLoop) orSeekTo:seekTarget then:then];
+        const waveseek::LoopAction loopHere = direct(makeAction(Kind::Loop, _loop.start, _loop.end, target));
+        [self request:(_deck.looping || !then) ? jump : loopHere orSeekTo:seekTarget then:then];
     } else {
         [self noteSeekFor:target];
         [self armedSeekTo:seekTarget then:then];
@@ -2857,6 +2890,8 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         if (_deck.boundArmId == _armId) {
             _armId = 0;
             _deckEpoch = _deck.epoch;
+            _gapEpoch = _deck.epoch;
+            _gapFrom = _armAt;
         } else if (now - _armAt > beatloop::kArmTimeout) {
             _armId = 0;
             FB2K_console_formatter() << "[WaveSeek] Beat loop: the loop DSP missed a seek";
@@ -2867,6 +2902,8 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         _requestId = 0;   // the loop stays set; it is given to the DSP again below
     }
     if (_armId == 0 && _deck.synced) _deckEpoch = _deck.epoch;
+    if (_gapEpoch != 0) [self measureSeekGapAt:now];
+    if (_armId == 0 && !_deck.synced && self.playing) [self noteUnsyncedAt:now seconds:seconds];
     if (_armId == 0 && !_deck.synced && _deck.pristine && self.playing) [self measureTrackTime:seconds];
     if (_armId == 0 && _deck.synced && _deck.pristine && _deck.live && self.playing) [self measureClock:seconds];
     if (_requestId != 0 && _deck.rejectedId == _requestId) {
@@ -2938,6 +2975,47 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     std::vector<double> sorted(_clockSamples);
     std::sort(sorted.begin(), sorted.end());
     _clockOffset = sorted[sorted.size() / 2];
+}
+
+// A seek of our own: from asking for it to hearing its target, the wall
+// clock less the audio heard since (once it plays; the clock may still be
+// the one before the seek for a moment). Given up 2 s after the seek.
+- (void)measureSeekGapAt:(CFAbsoluteTime)now {
+    if (_deck.epoch != _gapEpoch || now - _gapFrom > 2.0) {   // another seek came first, or paused
+        _gapEpoch = 0;
+        return;
+    }
+    const double heard = beatloop::playedSinceSeek() - _clockOffset;
+    if (!std::isfinite(heard) || heard < 0.05) return;
+    const double gap = (now - _gapFrom) - heard;
+    if (!(gap >= 0.0 && gap < 1.0)) return;
+    _gapEpoch = 0;
+    _seekGap = _seekGap > 0.0 ? 0.7 * _seekGap + 0.3 * gap : gap;
+}
+
+// The DSP without the track time 3 s into playback since its seek: once in
+// the console, with what the measurement sees (it needs the audio untouched
+// and foobar2000's position steady against the audio played)
+- (void)noteUnsyncedAt:(CFAbsoluteTime)now seconds:(double)seconds {
+    if (_unsyncedEpoch != _deck.epoch) {
+        _unsyncedEpoch = _deck.epoch;
+        _unsyncedSince = now;
+        _unsyncedNoted = false;
+        return;
+    }
+    if (_unsyncedNoted || now - _unsyncedSince < 3.0) return;
+    _unsyncedNoted = true;
+    double spread = NAN;
+    if (_syncSamples.size() >= 2) {
+        const auto range = std::minmax_element(_syncSamples.begin(), _syncSamples.end());
+        spread = *range.second - *range.first;
+    }
+    FB2K_console_formatter() << "[WaveSeek] Mixer: the DSP has no track time 3 s into playback (untouched "
+                             << (_deck.pristine ? "yes" : "no") << ", position " << pfc::format_float(seconds, 0, 3)
+                             << " s, played since the seek " << pfc::format_float(beatloop::playedSinceSeek(), 0, 3)
+                             << " s, " << pfc::format_int(static_cast<t_int64>(_syncSamples.size()))
+                             << " samples spread " << pfc::format_float(spread * 1000.0, 0, 1)
+                             << " ms); jumps seek until it has";
 }
 
 // The track time playing: through the DSP's timeline while it changes what
@@ -3210,7 +3288,8 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     if (![self deckReady] || !self.playing) return;
     if (_deck.live && _deck.pristine && std::isfinite(seconds)) {
         const double lag = _deck.bufferedTo - seconds;
-        _measuredLag = _measuredLag > 0.0 ? 0.8 * _measuredLag + 0.2 * lag : lag;
+        // Right after a seek the DSP's status can still be the old one's
+        if (lag >= 0.0 && lag < 5.0) _measuredLag = _measuredLag > 0.0 ? 0.8 * _measuredLag + 0.2 * lag : lag;
     }
     if (now < _timingNoteAt) return;
     _timingNoteAt = now + 10.0;
@@ -3219,7 +3298,8 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
                              << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP, output buffer "
                              << pfc::format_int(beatloop::outputBufferMs()) << " ms, "
                              << pfc::format_float(_deck.ahead, 0, 2) << " s decoded ahead"
-                             << (_lowLatency ? ", short steps" : "");
+                             << (_lowLatency ? ", short steps" : "") << ", a seek is heard after "
+                             << pfc::format_int(std::lround(_seekGap * 1000.0)) << " ms";
 }
 
 #pragma mark - Mouse Events

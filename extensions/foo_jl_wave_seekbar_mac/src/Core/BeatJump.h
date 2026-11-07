@@ -112,6 +112,21 @@ inline double jumpTarget(const std::vector<double> &beats, double seconds, int c
     return std::max(0.0, t);
 }
 
+// The place nearest `to` at the same place within its beat as `now`: the
+// place within the beat on the grid of `now` (beat length and a beat's
+// time), the landing on the grid that holds at `to`. Within half a beat of
+// `to`. The loop DSP lands the same way (LoopEngine::targetOf); a seek in
+// its place uses this. NAN without a grid.
+inline double inPhaseLanding(double now, double beat, double anchor, double to, double toBeat, double toAnchor) {
+    if (!(beat > 0.0) || !(toBeat > 0.0) || !std::isfinite(now) || !std::isfinite(to) || !std::isfinite(anchor) ||
+        !std::isfinite(toAnchor)) {
+        return NAN;
+    }
+    const double x = (now - anchor) / beat;
+    const double phase = x - std::floor(x);
+    return toAnchor + (std::round((to - toAnchor) / toBeat - phase) + phase) * toBeat;
+}
+
 // A loop over whole beats
 struct BeatLoop {
     double start = 0.0;

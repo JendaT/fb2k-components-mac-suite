@@ -19,13 +19,13 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (formed around what plays, drawn in green), and with Snap clicks jump at once to the nearest beat, keeping the beat.
 
-- **Snap**: Mixer bar toggle (on by default): clicks and drags go to the nearest beat in time with what plays and hovering shows that beat with its time; off, clicks go exactly where clicked.
+- **Snap**: Mixer bar toggle (on by default): clicks and drags go to the nearest beat at the same place in the beat as what plays, so the beat goes on without a delay, and hovering shows that beat with its time; off, clicks go exactly where clicked.
 
 - **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
 
 - **Decode-ahead reserve**: With a beat grid, the mixer's DSP keeps 32 beats (at least 20 s) decoded ahead so forward jumps play without a seek; it drains in the track's last minute.
 
-- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held.
+- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held; such a seek lands where the beat would be once heard (the seek's gap is measured).
 
 - **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
 

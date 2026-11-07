@@ -352,12 +352,28 @@ void testGridAtSwitch() {
 
 } // namespace
 
+void testInPhaseLanding() {
+    TEST_CASE("in-phase landing");
+    // 120 BPM from 0.2 s: beats at 0.2, 0.7, 1.2, ...
+    CHECK_NEAR(inPhaseLanding(1.3, 0.5, 0.2, 5.2, 0.5, 0.2), 5.3, 1e-9, "a fifth into its beat: a fifth past the target beat");
+    CHECK_NEAR(inPhaseLanding(1.6, 0.5, 0.2, 5.2, 0.5, 0.2), 5.1, 1e-9, "four fifths in: before the target beat, within half a beat");
+    CHECK_NEAR(inPhaseLanding(1.2, 0.5, 0.2, 5.2, 0.5, 0.2), 5.2, 1e-9, "on a beat: on the target beat");
+    CHECK_NEAR(inPhaseLanding(1.3, 0.5, 0.2, 5.25, 0.5, 0.2), 5.3, 1e-9, "a target off the beat: the place nearest it");
+    // Another grid at the target (100 BPM from 30.0 s)
+    CHECK_NEAR(inPhaseLanding(1.3, 0.5, 0.2, 36.0, 0.6, 30.0), 36.12, 1e-9, "on the target's grid, at the same place in its beat");
+    CHECK(std::isnan(inPhaseLanding(1.3, 0.0, 0.2, 5.2, 0.5, 0.2)), "no grid");
+    // A seek resumes a gap later: what plays then decides the place in the beat
+    const double gap = 0.12;
+    CHECK_NEAR(inPhaseLanding(1.3 + gap, 0.5, 0.2, 5.2, 0.5, 0.2) - 5.2, 0.1 + gap, 1e-9, "the place in the beat a gap on");
+}
+
 int main() {
     testBeatList();
     testSectionBeats();
     testBeatNumbers();
     testJumps();
     testNearest();
+    testInPhaseLanding();
     testLoops();
     testPhraseCatch();
     testLoopSteps();

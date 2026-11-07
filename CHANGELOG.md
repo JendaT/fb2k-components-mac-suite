@@ -372,7 +372,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
 - **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
 - **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the beat; with Snap, clicks jump at once to the nearest beat, in time.
-- **Snap**: Mixer bar toggle (on by default): clicks go to the nearest beat and hovering shows it; off, clicks go exactly where clicked.
+- **Snap**: Mixer bar toggle (on by default): clicks go to the nearest beat, keeping the place in the beat, and hovering shows it; off, clicks go exactly where clicked.
 - **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
 - **Decode-ahead reserve**: With a beat grid, the mixer keeps 32 beats decoded ahead so forward jumps play without a seek.
 - **Seek notes in the console**: A jump, click or loop that still has to seek says so.
