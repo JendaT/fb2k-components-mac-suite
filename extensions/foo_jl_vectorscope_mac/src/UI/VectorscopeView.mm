@@ -12,6 +12,7 @@
 #include "../../../../shared/ThemeColor.h"
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace {
     // Trace image resolution: device pixels, in steps so a live resize does
@@ -36,11 +37,13 @@ namespace {
 @implementation VectorscopeView {
     // One afterglow layer, or one per band when the trace is coloured by band.
     PhosphorBuffer _phosphor[kPhosphorBands];
-    uint32_t _lut[256];
+    uint32_t _lut[256];      // in _imageColorSpace
+    uint32_t _bandMatched[kPhosphorBands];  // band colours in _imageColorSpace
     bool     _lutDirty;
     bool     _traceEmpty;
     CALayer *_traceLayer;
-    CGColorSpaceRef _colorSpace;
+    CGColorSpaceRef _colorSpace;       // theme colours': Display P3
+    CGColorSpaceRef _imageColorSpace;  // the window's, or _colorSpace without a window
 
     // Cached settings (refreshed via reloadSettings)
     bool     _lissajous;     // square L/R picture instead of the M/S diamond
@@ -83,6 +86,7 @@ namespace {
         self.wantsLayer = YES;
         // The afterglow image is built from theme colours: Display P3.
         _colorSpace = JLCreateThemeColorSpace();
+        _imageColorSpace = CGColorSpaceRetain(_colorSpace);
         _traceEmpty = true;
         for (int i = 0; i < kMaxRows; ++i) {
             _target[i] = _shown[i] = 0.0f;
@@ -105,6 +109,7 @@ namespace {
 
 - (void)dealloc {
     if (_colorSpace) CGColorSpaceRelease(_colorSpace);
+    if (_imageColorSpace) CGColorSpaceRelease(_imageColorSpace);
 }
 
 - (BOOL)isFlipped { return NO; }  // origin bottom-left: y grows upward like the scope
@@ -204,15 +209,67 @@ namespace {
     [self setNeedsDisplay:YES];
 }
 
-// The trace resolution follows the screen's pixel density.
+// The trace resolution follows the screen's pixel density, its colours the
+// screen's colour space.
 - (void)viewDidChangeBackingProperties {
     [super viewDidChangeBackingProperties];
+    [self updateImageColorSpace];
     [self updateLayout];
 }
 
 - (void)viewDidMoveToWindow {
     [super viewDidMoveToWindow];
+    [self updateImageColorSpace];
     [self updateLayout];
+}
+
+// The trace image is built in the window's colour space. An image in any
+// other space is colour-converted by Core Animation, on the main thread,
+// every frame.
+- (void)updateImageColorSpace {
+    CGColorSpaceRef target = self.window.colorSpace.CGColorSpace ?: _colorSpace;
+    if (_imageColorSpace && CFEqual(target, _imageColorSpace)) return;
+    if (_imageColorSpace) CGColorSpaceRelease(_imageColorSpace);
+    _imageColorSpace = CGColorSpaceRetain(target);
+    _lutDirty = true;
+}
+
+// Convert `n` premultiplied RGBA pixels from the theme colour space to the
+// image's, in place, the way Core Animation would have converted the image.
+- (void)matchPixels:(uint32_t *)px count:(size_t)n {
+    if (!_imageColorSpace || CFEqual(_imageColorSpace, _colorSpace)) return;
+    const CGBitmapInfo info = (CGBitmapInfo)kCGImageAlphaPremultipliedLast;
+    std::vector<uint32_t> out(n, 0);
+    CGContextRef ctx = CGBitmapContextCreate(out.data(), n, 1, 8, n * 4, _imageColorSpace, info);
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, px, n * 4, NULL);
+    CGImageRef image = provider ? CGImageCreate(n, 1, 8, 32, n * 4, _colorSpace, info,
+                                                provider, NULL, false, kCGRenderingIntentDefault) : NULL;
+    if (ctx && image) {
+        CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+        CGContextSetInterpolationQuality(ctx, kCGInterpolationNone);
+        CGContextDrawImage(ctx, CGRectMake(0, 0, n, 1), image);
+        std::copy(out.begin(), out.end(), px);
+    }
+    if (image) CGImageRelease(image);
+    if (provider) CGDataProviderRelease(provider);
+    if (ctx) CGContextRelease(ctx);
+}
+
+// Band colours (ARGB, not premultiplied) in the image's colour space. Bands
+// mix per pixel, so their colours are matched rather than the result.
+- (void)matchBandColours:(const uint32_t *)argb {
+    uint8_t rgba[kPhosphorBands][4];
+    for (int b = 0; b < kPhosphorBands; ++b) {
+        rgba[b][0] = (argb[b] >> 16) & 0xFF;
+        rgba[b][1] = (argb[b] >> 8) & 0xFF;
+        rgba[b][2] = argb[b] & 0xFF;
+        rgba[b][3] = 0xFF;
+    }
+    [self matchPixels:(uint32_t *)rgba count:kPhosphorBands];
+    for (int b = 0; b < kPhosphorBands; ++b) {
+        _bandMatched[b] = (argb[b] & 0xFF000000u) | ((uint32_t)rgba[b][0] << 16) |
+                          ((uint32_t)rgba[b][1] << 8) | rgba[b][2];
+    }
 }
 
 #pragma mark - Color helpers
@@ -305,6 +362,8 @@ static NSColor *colorFromARGB(uint32_t argb) {
     const bool hotCore = fb2k_ui::isDarkMode();
     if (_lutDirty) {
         buildPhosphorLUT([self traceARGB], hotCore, _lut);
+        [self matchPixels:_lut count:256];
+        [self matchBandColours:[self bandARGB]];
         _lutDirty = false;
     }
 
@@ -312,13 +371,13 @@ static NSColor *colorFromARGB(uint32_t argb) {
     NSMutableData *pixels = [NSMutableData dataWithLength:side * side * 4];
     if (!pixels) return;
     if (_bandTrace) {
-        renderPhosphorBands(_phosphor, [self bandARGB], hotCore, (uint8_t *)pixels.mutableBytes);
+        renderPhosphorBands(_phosphor, _bandMatched, hotCore, (uint8_t *)pixels.mutableBytes);
     } else {
         _phosphor[0].render((uint8_t *)pixels.mutableBytes, _lut);
     }
 
     CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
-    CGImageRef image = CGImageCreate(side, side, 8, 32, side * 4, _colorSpace,
+    CGImageRef image = CGImageCreate(side, side, 8, 32, side * 4, _imageColorSpace,
                                      (CGBitmapInfo)kCGImageAlphaPremultipliedLast,
                                      provider, NULL, false, kCGRenderingIntentDefault);
     CGDataProviderRelease(provider);
