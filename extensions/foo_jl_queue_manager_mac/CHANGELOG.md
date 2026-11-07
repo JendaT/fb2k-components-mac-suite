@@ -1,10 +1,25 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.1] - 2026-11-07
+
+Double-click no longer empties the queue, and tracks dragged from SimPlaylist land where you drop them.
+
+### Added
+
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
 
 ### Fixed
 
-- **SimPlaylist drop position**: Tracks dragged from SimPlaylist are inserted at the drop point instead of always at the end of the queue.
+- **Double-click and Enter**: Play the item and keep the rest of the queue instead of clearing it (thanks @Scannou, #57).
+- **Tracks not in a playlist**: Double-click plays the clicked track instead of the first queued one (thanks @Scannou, #57).
+- **Stop After Queue**: Double-clicking the last queued item now stops playback after it (thanks @Scannou, #57).
+- **SimPlaylist drop position**: Tracks dragged from SimPlaylist go in at the drop point instead of at the end of the queue.
+
+### Changed
+
+- **About**: New feature list; shows the layout element name (`queue_manager`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+- **foobar2000 SDK 2026-10-01**: Built against the current SDK.
 
 ## [1.2.0] - 2026-10-02
 

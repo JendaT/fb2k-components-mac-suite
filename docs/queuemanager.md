@@ -12,7 +12,7 @@ See all queued tracks in a familiar table view interface. The queue shows tracks
 
 ### Drag & Drop Reordering
 
-Rearrange queue order by dragging items. Move tracks up or down to change when they'll play.
+Rearrange queue order by dragging items. Move tracks up or down to change when they'll play. Tracks dragged in from SimPlaylist go in at the drop point.
 
 ### Live Updates
 
@@ -44,7 +44,7 @@ The bar at the bottom shows how many items are queued.
 | Key | Action |
 |-----|--------|
 | Delete/Backspace | Remove selected from queue |
-| Enter | Play selected item |
+| Enter | Play selected item and keep the rest of the queue (same as double-click) |
 | Cmd+A | Select all |
 
 ### Context Menu
