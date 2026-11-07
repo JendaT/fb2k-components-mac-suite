@@ -388,7 +388,7 @@ public:
 
     // Handle drop from SimPlaylist
     if ([pasteboard.types containsObject:SimPlaylistPasteboardType]) {
-        return [self handleSimPlaylistDropFromPasteboard:pasteboard];
+        return [self handleSimPlaylistDropAtRow:row fromPasteboard:pasteboard];
     }
 
     // Handle file URL drop from Finder
@@ -452,8 +452,8 @@ public:
     [self reloadQueueContents];
 }
 
-// Handle drop from SimPlaylist component
-- (BOOL)handleSimPlaylistDropFromPasteboard:(NSPasteboard*)pasteboard {
+// Handle drop from SimPlaylist component, inserting before targetRow
+- (BOOL)handleSimPlaylistDropAtRow:(NSInteger)targetRow fromPasteboard:(NSPasteboard*)pasteboard {
     NSData* data = [pasteboard dataForType:SimPlaylistPasteboardType];
 
     QueueDropRequest* request = [QueueDropRequest requestFromDragData:data];
@@ -483,10 +483,27 @@ public:
 
     size_t playlistItemCount = queue_ops::playlistItemCount(sourcePlaylist);
 
-    // Add each item to the queue, skipping stale rows past the playlist end
+    // Skip stale rows past the playlist end
+    std::vector<size_t> playlistItems;
     for (NSNumber* rowNum in [request indicesBelowItemCount:playlistItemCount]) {
-        queue_ops::addItemFromPlaylist(sourcePlaylist, [rowNum unsignedLongValue]);
+        playlistItems.push_back([rowNum unsignedLongValue]);
     }
+    if (playlistItems.empty()) return NO;
+
+    if (targetRow < 0) targetRow = 0;
+
+    // A mid-queue insert is a flush-and-readd; suppress the per-mutation
+    // callbacks exactly as rebuildQueue:inOrder: does
+    _isReorderingInProgress = YES;
+    try {
+        queue_ops::insertFromPlaylist(queue_ops::getContentsVector(), (size_t)targetRow,
+                                      sourcePlaylist, playlistItems);
+    } catch (...) {
+        console::error("[Queue Manager] Queue rebuild failed mid-insert");
+    }
+    _isReorderingInProgress = NO;
+
+    [self reloadQueueContents];
 
     return YES;
 }

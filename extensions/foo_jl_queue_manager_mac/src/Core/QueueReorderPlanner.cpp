@@ -58,4 +58,15 @@ std::vector<size_t> planMove(size_t itemCount,
     return order;
 }
 
+std::vector<InsertSlot> planInsert(size_t itemCount, size_t insertCount, size_t destRow) {
+    if (destRow > itemCount) destRow = itemCount;
+
+    std::vector<InsertSlot> plan;
+    plan.reserve(itemCount + insertCount);
+    for (size_t i = 0; i < destRow; i++) plan.push_back({false, i});
+    for (size_t i = 0; i < insertCount; i++) plan.push_back({true, i});
+    for (size_t i = destRow; i < itemCount; i++) plan.push_back({false, i});
+    return plan;
+}
+
 }  // namespace queue_reorder

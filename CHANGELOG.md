@@ -557,6 +557,11 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 ## Queue Manager
 
+### [Unreleased]
+
+#### Fixed
+- **SimPlaylist drop position**: Tracks dragged from SimPlaylist are inserted at the drop point instead of always at the end of the queue.
+
 ### [1.2.0] - 2026-10-02
 
 #### Added

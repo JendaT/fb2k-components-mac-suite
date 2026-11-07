@@ -51,6 +51,17 @@ void addOrphanItem(metadb_handle_ptr handle);
 void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
                     const std::vector<size_t>& order);
 
+// Insert playlist items (in the given order) into the queue before row
+// `destRow` of `contents`, the queue as currently captured. The SDK can
+// only append, so a mid-queue insert flushes and re-adds everything
+// (stale playlist references are re-added by handle); destRow at or past
+// the end appends without a rebuild. Fires one SDK callback per mutation;
+// callers suppress reloads around this (see QueueManagerController).
+void insertFromPlaylist(const std::vector<t_playback_queue_item>& contents,
+                        size_t destRow,
+                        size_t playlist,
+                        const std::vector<size_t>& playlistItems);
+
 // Snapshot the current queue as location + playlist position entries
 std::vector<queue_persist::SavedEntry> captureForPersistence();
 

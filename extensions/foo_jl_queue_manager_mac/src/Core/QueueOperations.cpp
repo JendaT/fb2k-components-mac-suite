@@ -8,6 +8,7 @@
 #include "QueueOperations.h"
 #include "QueueConfig.h"
 #include "QueueFormatting.h"
+#include "QueueReorderPlanner.h"
 #include <unordered_map>
 
 namespace queue_ops {
@@ -89,18 +90,43 @@ void addOrphanItem(metadb_handle_ptr handle) {
     pm->queue_add_item(handle);
 }
 
+// Re-add a previously captured queue entry after a flush
+static void readdItem(const t_playback_queue_item& item) {
+    if (!isOrphanItem(item) && isItemValid(item)) {
+        addItemFromPlaylist(item.m_playlist, item.m_item);
+    } else {
+        // Playlist reference stale (or item was always an orphan):
+        // keep the track in the queue via its handle
+        addOrphanItem(item.m_handle);
+    }
+}
+
 void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
                     const std::vector<size_t>& order) {
     clear();
     for (size_t oldIndex : order) {
         if (oldIndex >= contents.size()) continue;
-        const auto& item = contents[oldIndex];
-        if (!isOrphanItem(item) && isItemValid(item)) {
-            addItemFromPlaylist(item.m_playlist, item.m_item);
+        readdItem(contents[oldIndex]);
+    }
+}
+
+void insertFromPlaylist(const std::vector<t_playback_queue_item>& contents,
+                        size_t destRow,
+                        size_t playlist,
+                        const std::vector<size_t>& playlistItems) {
+    if (playlistItems.empty()) return;
+
+    if (destRow >= contents.size()) {
+        for (size_t item : playlistItems) addItemFromPlaylist(playlist, item);
+        return;
+    }
+
+    clear();
+    for (const auto& slot : queue_reorder::planInsert(contents.size(), playlistItems.size(), destRow)) {
+        if (slot.inserted) {
+            addItemFromPlaylist(playlist, playlistItems[slot.index]);
         } else {
-            // Playlist reference stale (or item was always an orphan):
-            // keep the track in the queue via its handle
-            addOrphanItem(item.m_handle);
+            readdItem(contents[slot.index]);
         }
     }
 }

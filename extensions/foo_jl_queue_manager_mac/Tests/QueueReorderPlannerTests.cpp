@@ -159,6 +159,33 @@ int main() {
         }
     }
 
+    // planInsert sweep against a naive simulation: existing items are
+    // labeled by old position, new items as 1000 + n; inserting the new
+    // block at min(dest, count) must reproduce the planned sequence.
+    for (size_t n = 0; n <= 6; n++) {
+        for (size_t k = 0; k <= 3; k++) {
+            for (size_t d = 0; d <= n + 2; d++) {
+                std::vector<size_t> expected;
+                for (size_t i = 0; i < n; i++) expected.push_back(i);
+                std::vector<size_t> added;
+                for (size_t i = 0; i < k; i++) added.push_back(1000 + i);
+                expected.insert(expected.begin() + std::min(d, n), added.begin(), added.end());
+
+                std::vector<size_t> got;
+                for (const auto& slot : queue_reorder::planInsert(n, k, d)) {
+                    got.push_back(slot.inserted ? 1000 + slot.index : slot.index);
+                }
+
+                g_checks++;
+                if (got != expected) {
+                    g_failures++;
+                    printf("FAIL [planInsert] n=%zu k=%zu dest=%zu: got %s want %s\n",
+                           n, k, d, describe(got).c_str(), describe(expected).c_str());
+                }
+            }
+        }
+    }
+
     if (g_failures) {
         printf("QueueReorderPlannerTests: %d/%d checks FAILED\n", g_failures, g_checks);
         return 1;
