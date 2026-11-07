@@ -188,21 +188,10 @@ bool isOrphanItem(const t_playback_queue_item& item) {
     return item.m_playlist == queue_config::kOrphanPlaylistIndex;
 }
 
-bool playItem(const t_playback_queue_item& item) {
-    auto pm = playlist_manager::get();
-    auto pc = playback_control::get();
-
-    if (!isOrphanItem(item) && isItemValid(item)) {
-        // Play from source playlist position
-        pm->set_active_playlist(item.m_playlist);
-        pm->playlist_set_focus_item(item.m_playlist, item.m_item);
-        pc->play_start(playback_control::track_command_settrack);
-        return true;
-    } else {
-        // Just start playback - queue will be consumed
-        pc->play_start();
-        return true;
-    }
+void playQueueFront() {
+    // "next" takes the queue head first (the queue overrides playback
+    // order), whether playback is running or stopped
+    playback_control::get()->start(playback_control::track_command_next);
 }
 
 pfc::string8 formatItem(const t_playback_queue_item& item, const char* formatString) {

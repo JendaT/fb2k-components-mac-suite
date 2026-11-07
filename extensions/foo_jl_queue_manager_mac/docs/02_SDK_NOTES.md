@@ -250,24 +250,24 @@ bool canRemoveFromPlaylist =
 
 ## 10. Double-Click to Play Implementation
 
-To play a queued item on double-click:
+Do **not** start the item from its playlist position
+(`playlist_set_focus_item` + `track_command_settrack`, or
+`playlist_execute_default_action`): fb2k flushes the whole queue when a
+track is started directly. `track_command_settrack` is also marked
+"internal use only" in the SDK.
+
+Instead, move the item to the front of the queue and play "next", which
+takes the queue head first:
 
 ```cpp
-- (void)playQueueItem:(const t_playback_queue_item&)item {
-    auto pm = playlist_manager::get();
-    auto pc = playback_control::get();
-
-    // Option 1: Play from source playlist position
-    pm->set_active_playlist(item.m_playlist);
-    pm->playlist_set_focus_item(item.m_playlist, item.m_item);
-    pc->play_start(playback_control::track_command_settrack);
-
-    // Option 2: Just start playback (queue will be consumed)
-    pc->play_start();
-}
+// 1. Reorder so the clicked item is first (flush-and-readd, see §0 debouncing)
+queue_ops::rebuildInOrder(contents, queue_reorder::planMove(count, {row}, 0));
+// 2. Play it; the queue consumes it (changed_playback_advance)
+playback_control::get()->start(playback_control::track_command_next);
 ```
 
-**Note:** After playing a queued item, it's removed from queue (consumed by `changed_playback_advance`).
+This also works for orphan items, and Stop After Queue sees a normal queue
+advance.
 
 ## 11. Efficient Queue Refresh
 

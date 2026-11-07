@@ -71,10 +71,11 @@ bool isItemValid(const t_playback_queue_item& item);
 // Check if item is an orphan (not from a playlist)
 bool isOrphanItem(const t_playback_queue_item& item);
 
-// Play a queue item: from its source playlist position when the item is
-// still valid, otherwise by starting playback so the queue is consumed.
-// Always returns true (kept for interface stability).
-bool playItem(const t_playback_queue_item& item);
+// Play the first queue item and remove it from the queue, keeping the rest.
+// Starting a track directly (e.g. from its playlist position) would make
+// fb2k flush the whole queue, so callers move the wanted item to the front
+// first and let "next" consume it.
+void playQueueFront();
 
 // Format a queue item for display using title format script
 pfc::string8 formatItem(const t_playback_queue_item& item, const char* formatString);
