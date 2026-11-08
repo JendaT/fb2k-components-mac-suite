@@ -374,8 +374,8 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the beat; with Snap, clicks jump at once to the nearest beat, in time.
 - **Snap**: Mixer bar toggle (on by default): clicks go to the nearest beat, keeping the place in the beat, and hovering shows it; off, clicks go exactly where clicked.
 - **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
-- **Decode-ahead reserve**: With a beat grid, the mixer keeps 32 beats decoded ahead so forward jumps play without a seek.
-- **Seek notes in the console**: A jump, click or loop that still has to seek says so.
+- **Decode-ahead reserve**: With a beat grid, the mixer keeps 32 beats decoded ahead (built at 8x) and starts its own seeks 32 beats early, so jumps forward and back play without a seek.
+- **Seek notes in the console**: A jump, click or loop that still has to seek says so; jumps no longer seek at a track started by hand.
 - **Gapless loops**: A "Beat loop" DSP plays loops, new sizes, loop moves and jumps without a gap or a click.
 - **Option-drag, Option-jump**: Move the whole loop by whole beats. The loop stays set until switched off.
 - **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.

@@ -23,9 +23,9 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
 
-- **Decode-ahead reserve**: With a beat grid, the mixer's DSP keeps 32 beats (at least 20 s) decoded ahead so forward jumps play without a seek; it drains in the track's last minute.
+- **Decode-ahead reserve**: With a beat grid, the mixer's DSP keeps 32 beats (at least 20 s) decoded ahead, built at 8x the decoder's pace (as on hover), and the mixer's own seeks start 32 beats early, so jumps forward and back after a seek play without another; it drains in the track's last minute.
 
-- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held; such a seek lands where the beat would be once heard (the seek's gap is measured).
+- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held; such a seek lands where the beat would be once heard (the seek's gap and the pre-roll's time are measured); jumps no longer seek at a track started by hand.
 
 - **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
 

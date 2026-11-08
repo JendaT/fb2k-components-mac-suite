@@ -256,6 +256,12 @@ const double kReserveBeats = 32.0;
 const double kReserveExtraSeconds = 2.0;
 const double kReserveMinSeconds = 20.0;
 const double kAheadEndSeconds = 20.0;
+// A seek of our own with the mixer's beats starts this much before its
+// target (32 beats and 1 s, at most 30 s): the DSP keeps that audio as
+// history without playing it, so a jump back right after the seek is a splice
+const double kPrerollBeats = 32.0;
+const double kPrerollExtraSeconds = 1.0;
+const double kPrerollMaxSeconds = 30.0;
 
 // Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
 // pans. A wheel notch is one line; trackpad scroll comes in points.
@@ -449,6 +455,9 @@ struct BarSegment {
     uint64_t _deckEpoch;
     uint64_t _armId;
     CFAbsoluteTime _armAt;
+    double _armTarget;              // where our seek plays from (the cursor shows it)
+    double _armSent;                // the time sent to foobar2000 (earlier with a pre-roll)
+    double _prerollSeconds;         // the last pre-roll asked for, for the console
     CFAbsoluteTime _loopCheckAfter;
     uint64_t _requestId;
     double _requestTarget;          // where it plays from, for the console when it is turned down
@@ -479,10 +488,8 @@ struct BarSegment {
     double _seekGap;
     uint64_t _gapEpoch;
     CFAbsoluteTime _gapFrom;
-    // The DSP without the track time: since when, for this seek (once in the console)
+    // The DSP's seek last noted in the console without the track time (once per seek)
     uint64_t _unsyncedEpoch;
-    CFAbsoluteTime _unsyncedSince;
-    bool _unsyncedNoted;
     // Option-dragging the loop: the beat under the mouse when it began, the
     // loop then, and where it would go
     bool _loopDragging;
@@ -2689,10 +2696,16 @@ struct BarSegment {
 }
 
 - (void)seekTo:(double)seconds {
-    _pendingSeek = seconds;
+    [self seekTo:seconds showing:seconds];
+}
+
+// A seek to `seconds`, the cursor at `shown` (a seek of ours that starts
+// early plays from its target)
+- (void)seekTo:(double)seconds showing:(double)shown {
+    _pendingSeek = shown;
     _pendingSince = CFAbsoluteTimeGetCurrent();
     [self performSeekToTime:seconds];
-    if (self.trackDuration > 0.0) self.playbackPosition = seconds / self.trackDuration;
+    if (self.trackDuration > 0.0) self.playbackPosition = shown / self.trackDuration;
     [self setNeedsDisplay:YES];
 }
 
@@ -2733,12 +2746,47 @@ struct BarSegment {
            (std::isnan(to) || to <= _deck.bufferedTo - kDeckMargin);
 }
 
-// A seek of our own: it gives the DSP the track time, then `then` applies
+// A seek of our own: it gives the DSP the track time, then `then` applies.
+// With a pre-roll (prerollSeekFor:), except during a drag: scrubbing with
+// one would go silent.
 - (void)armedSeekTo:(double)target then:(const waveseek::LoopAction *)then {
-    _armId = beatloop::armSeek(target, then);
+    [self armedSeekTo:target then:then preroll:!_dragSeeking];
+}
+
+// With `preroll`, it seeks earlier (prerollSeekFor:) and the DSP starts
+// playing at `target`; the cursor shows `target` either way
+- (void)armedSeekTo:(double)target then:(const waveseek::LoopAction *)then preroll:(BOOL)preroll {
+    const double sent = preroll ? [self prerollSeekFor:target] : target;
+    const bool early = sent < target;
+    _armId = beatloop::armSeek(sent, then, early ? target : NAN);
     _armAt = CFAbsoluteTimeGetCurrent();
+    _armTarget = target;
+    _armSent = sent;
+    if (early) _prerollSeconds = target - sent;
     _loopCheckAfter = _armAt + 0.5;
-    [self seekTo:target];
+    [self seekTo:sent showing:target];
+}
+
+// Where a seek of ours to `target` starts: kPrerollBeats and
+// kPrerollExtraSeconds before it on the mixer's grid there (at most
+// kPrerollMaxSeconds, never before 0), so the DSP holds the audio before
+// the target as history and a jump back right after the seek is a splice.
+// The cost: that audio is decoded before the first sound (the console's
+// timing line shows how long). Without the DSP or the beats, `target`.
+- (double)prerollSeekFor:(double)target {
+    if (![self deckMode] || ![self mixerReady] || !_trustedGrid || !std::isfinite(target)) return target;
+    const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, target, _phraseFollowGrid);
+    if (!(grid.bpm > 0.0)) return target;
+    const double preroll = std::min(kPrerollMaxSeconds, kPrerollBeats * 60.0 / grid.bpm + kPrerollExtraSeconds);
+    return std::max(0.0, target - preroll);
+}
+
+// foobar2000's seek to `time` is one of ours: on its way, or just taken by
+// the DSP (foobar2000's note of it can come after)
+- (BOOL)ownSeekPendingFor:(double)time {
+    if (![self deckMode]) return NO;
+    if (_armId != 0) return YES;
+    return CFAbsoluteTimeGetCurrent() - _armAt <= beatloop::kArmTimeout && std::fabs(time - _armSent) < 0.01;
 }
 
 // A request to the DSP; when it is turned down, the seek instead
@@ -2903,14 +2951,15 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     }
     if (_armId == 0 && _deck.synced) _deckEpoch = _deck.epoch;
     if (_gapEpoch != 0) [self measureSeekGapAt:now];
-    if (_armId == 0 && !_deck.synced && self.playing) [self noteUnsyncedAt:now seconds:seconds];
+    if (_armId == 0 && ![self deckReady] && self.playing) [self noteUnsyncedAt:seconds];
     if (_armId == 0 && !_deck.synced && _deck.pristine && self.playing) [self measureTrackTime:seconds];
     if (_armId == 0 && _deck.synced && _deck.pristine && _deck.live && self.playing) [self measureClock:seconds];
     if (_requestId != 0 && _deck.rejectedId == _requestId) {
         _requestId = 0;
         if (!std::isnan(_fallbackTarget)) {
             if (_requestNoted) [self noteSeekFor:_requestTarget];
-            [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr];
+            // A drag's (not noted) without a pre-roll, as during the drag
+            [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr preroll:_requestNoted];
         }
     } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
         if (_deck.lastTakenId == _requestId) {
@@ -2993,37 +3042,34 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     _seekGap = _seekGap > 0.0 ? 0.7 * _seekGap + 0.3 * gap : gap;
 }
 
-// The DSP without the track time 3 s into playback since its seek: once in
-// the console, with what the measurement sees (it needs the audio untouched
-// and foobar2000's position steady against the audio played)
-- (void)noteUnsyncedAt:(CFAbsoluteTime)now seconds:(double)seconds {
-    if (_unsyncedEpoch != _deck.epoch) {
-        _unsyncedEpoch = _deck.epoch;
-        _unsyncedSince = now;
-        _unsyncedNoted = false;
-        return;
-    }
-    if (_unsyncedNoted || now - _unsyncedSince < 3.0) return;
-    _unsyncedNoted = true;
-    double spread = NAN;
-    if (_syncSamples.size() >= 2) {
-        const auto range = std::minmax_element(_syncSamples.begin(), _syncSamples.end());
-        spread = *range.second - *range.first;
-    }
-    FB2K_console_formatter() << "[WaveSeek] Mixer: the DSP has no track time 3 s into playback (untouched "
-                             << (_deck.pristine ? "yes" : "no") << ", position " << pfc::format_float(seconds, 0, 3)
-                             << " s, played since the seek " << pfc::format_float(beatloop::playedSinceSeek(), 0, 3)
-                             << " s, " << pfc::format_int(static_cast<t_int64>(_syncSamples.size()))
-                             << " samples spread " << pfc::format_float(spread * 1000.0, 0, 1)
-                             << " ms); jumps seek until it has";
+// The view without the DSP's track time once the DSP has sent 3 s since
+// its seek: once per seek in the console, with the DSP's seek and the
+// view's, whether the DSP is synced and untouched, and the last samples of
+// the measurement (position less the audio played; it needs the audio
+// untouched and them steady)
+- (void)noteUnsyncedAt:(double)seconds {
+    if (_unsyncedEpoch == _deck.epoch || _deck.outSeconds < 3.0) return;
+    _unsyncedEpoch = _deck.epoch;
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer: no track time from the DSP 3 s into playback (its seek "
+        << pfc::format_uint(_deck.epoch) << ", the view's " << pfc::format_uint(_deckEpoch) << ", synced "
+        << (_deck.synced ? "yes" : "no") << ", untouched " << (_deck.pristine ? "yes" : "no") << ", position "
+        << pfc::format_float(seconds, 0, 3) << " s, played since the seek "
+        << pfc::format_float(beatloop::playedSinceSeek(), 0, 3) << " s, position - played:";
+    const size_t first = _syncSamples.size() > 5 ? _syncSamples.size() - 5 : 0;
+    for (size_t i = first; i < _syncSamples.size(); ++i) out << " " << pfc::format_float(_syncSamples[i], 0, 3);
+    if (_syncSamples.empty()) out << " none";
+    out << " s); jumps seek until it has";
 }
 
 // The track time playing: through the DSP's timeline while it changes what
 // plays, else foobar2000's position
 - (double)displayedTimeFor:(double)seconds {
-    if (![self deckMode] || _deckEpoch == 0 || _deck.epoch != _deckEpoch || !_deck.synced || _deck.pristine) {
-        return seconds;
-    }
+    if (![self deckMode]) return seconds;
+    // A seek of ours on its way: where it plays from, not foobar2000's
+    // position (the time before it, or an earlier start for a pre-roll)
+    if (_armId != 0) return _armTarget;
+    if (_deckEpoch == 0 || _deck.epoch != _deckEpoch || !_deck.synced || _deck.pristine) return seconds;
     const double played = beatloop::playedSinceSeek();
     if (!std::isfinite(played)) return seconds;
     const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, played - _clockOffset));
@@ -3293,13 +3339,18 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     }
     if (now < _timingNoteAt) return;
     _timingNoteAt = now + 10.0;
-    FB2K_console_formatter() << "[WaveSeek] Mixer timing: blocks of "
-                             << pfc::format_int(std::lround(_deck.blockSeconds * 1000.0)) << " ms, playback "
-                             << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP, output buffer "
-                             << pfc::format_int(beatloop::outputBufferMs()) << " ms, "
-                             << pfc::format_float(_deck.ahead, 0, 2) << " s decoded ahead"
-                             << (_lowLatency ? ", short steps" : "") << ", a seek is heard after "
-                             << pfc::format_int(std::lround(_seekGap * 1000.0)) << " ms";
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer timing: blocks of " << pfc::format_int(std::lround(_deck.blockSeconds * 1000.0))
+        << " ms, playback " << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP, output buffer "
+        << pfc::format_int(beatloop::outputBufferMs()) << " ms, " << pfc::format_float(_deck.ahead, 0, 2)
+        << " s decoded ahead" << (_lowLatency ? ", short steps" : "") << ", a seek is heard after "
+        << pfc::format_int(std::lround(_seekGap * 1000.0)) << " ms";
+    // Of that, the last pre-roll's own time: the decoder's seek and the
+    // audio before the target decoded before the first sound
+    if (_deck.prerollMs > 0.0) {
+        out << " (the last pre-roll, " << pfc::format_float(_prerollSeconds, 0, 1) << " s, took "
+            << pfc::format_int(std::lround(_deck.prerollMs)) << " ms)";
+    }
 }
 
 #pragma mark - Mouse Events

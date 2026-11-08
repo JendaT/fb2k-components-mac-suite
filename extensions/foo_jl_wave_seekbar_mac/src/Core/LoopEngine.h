@@ -16,14 +16,17 @@
 //  sends out a quantum per block of decoded audio, so the decoder runs
 //  ahead (the loop can move forward into that audio) but not without end;
 //  after a loop it catches up at twice the decoder's pace and goes live.
+//  While a change may come it runs ahead at kRunAheadDivisor times the
+//  decoder's pace.
 //
 //  With a reserve set it keeps that much decoded audio ahead while no
 //  change is expected, so a forward jump within it is a splice too: a
 //  second after a sync it plays from the buffer and lets the decoder run
-//  ahead at twice its pace until the reserve is there, then holds it. After
-//  a track change behind the buffer it catches up first, outside a loop,
-//  whatever the reserve and hovering or not, and builds it again on the
-//  new track. A cap bounds the audio waiting, the reserve's and hovering's
+//  ahead at kRunAheadDivisor times its pace until the reserve is there,
+//  then holds it. After a track change behind the buffer it catches up
+//  first, outside a loop, whatever the reserve and hovering or not, and
+//  builds it again on the new track. A cap bounds the audio waiting, the
+//  reserve's and hovering's
 //  alike: towards a track's end the view lowers it, the audio waiting
 //  drains, and the change to the next track happens live (short steps in
 //  a loop go on whatever the cap). A change while the audio passes
@@ -41,6 +44,10 @@
 //  change behind the buffer, until it is live on the new track (the old
 //  track's buffer would judge them).
 //
+//  A seek of the view's own may start before where playback is to start (a
+//  pre-roll): the audio in between is decoded into the history without
+//  being played, so a jump back right after the seek has audio to land on.
+//
 //  The engine logs what the output plays (a timeline in output seconds
 //  since the seek), so the view maps the audible time to a track position.
 //
@@ -51,6 +58,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -59,6 +67,15 @@
 #include <vector>
 
 namespace waveseek {
+
+// The engines' seek counts (epochs): unique in the process and never 0,
+// which the view takes for "no DSP", so a fresh engine (foobar2000 makes a
+// new DSP for a track started by hand) is neither taken for none nor for
+// another one
+inline uint64_t nextLoopEpoch() {
+    static std::atomic<uint64_t> counter{ 0 };
+    return ++counter;
+}
 
 // From `first` seconds of output since the seek on, the output plays track
 // time `from` onward, or a loop starting at `from`, `loop` seconds long,
@@ -114,10 +131,13 @@ struct LoopAction {
 // A seek of the view's own: the first frame after it is `target`; `then`
 // applies once the first audio after it arrives, from its `to` (its `by`
 // and beat are ignored: what plays then is the seek's target, not the
-// audio it was made against)
+// audio it was made against). With `playFrom` later than `target` (a
+// pre-roll) nothing goes out until it is decoded: the audio from `target`
+// on is history, and playback starts at `playFrom`.
 struct LoopArm {
     uint64_t id = 0;
     double target = 0.0;
+    double playFrom = NAN;  // NAN: from `target`
     std::optional<LoopAction> then;
 };
 
@@ -139,11 +159,17 @@ public:
     // adds to the delay before a request is heard (the next block comes when
     // the output has taken this much), and sets how fast the decoder runs
     // ahead (a block per quantum). While a change may come (responsive) a
-    // short fixed step, whatever the block size, until kResponsiveAheadSeconds
-    // are waiting; otherwise a long step in a loop and catching up outside
+    // short step, at most this whatever the block size (less with short
+    // blocks, see kRunAheadDivisor), until kResponsiveAheadSeconds are
+    // waiting; otherwise a long step in a loop and catching up outside
     // one. Past kMaxAheadSeconds of decoded audio waiting the loop ends.
     static constexpr double kResponsiveQuantumSeconds = 0.03;
     static constexpr double kResponsiveAheadSeconds = 120.0;
+    // Running ahead (while responsive, and building the reserve) a block in
+    // sends at most 1/kRunAheadDivisor of it out, so the decoder runs ahead
+    // at that many times its pace, whatever its block size: 16 beats in
+    // about a second after a seek
+    static constexpr size_t kRunAheadDivisor = 8;
     static constexpr double kIdleQuantumSeconds = 1.0;
     static constexpr double kMaxAheadSeconds = 300.0;
     // The reserve: it builds only after this much output passed live since a
@@ -177,7 +203,7 @@ public:
 
     // A seek: everything goes; `arm`, when it is the view's own, syncs it
     void flush(const LoopArm *arm) {
-        ++epoch_;
+        epoch_ = nextLoopEpoch();
         buf_.clear();
         tail_.clear();
         tailSeconds_ = 0.0;
@@ -191,12 +217,21 @@ public:
         looping_ = engaged_ = afterBoundary_ = tailStarted_ = false;
         fadeLeft_ = 0;
         synced_ = false;
+        startAt_ = NAN;
         pending_.reset();
         if (arm) {
             synced_ = true;
             t0_ = arm->target;
             boundArmId_ = arm->id;
-            timeline_.push_back({ 0.0, t0_, 0.0, 0.0 });
+            // A pre-roll: frame 0 is still the target, the output starts at
+            // playFrom once decoded (process places pos_ there once the rate
+            // is known); playing from the buffer, nothing passes through
+            const bool later = std::isfinite(arm->playFrom) && arm->playFrom > arm->target;
+            timeline_.push_back({ 0.0, later ? arm->playFrom : t0_, 0.0, 0.0 });
+            if (later) {
+                startAt_ = arm->playFrom;
+                live_ = pristine_ = false;
+            }
             pending_ = arm->then;
         }
         ++version_;
@@ -233,6 +268,10 @@ public:
             rate_ = rate;
             config_ = config;
             bufStart_ = pos_ = inFrames_;
+            if (std::isfinite(startAt_)) {   // a pre-roll: the output waits for playFrom (see emit)
+                pos_ = frameOf(startAt_);
+                startAt_ = NAN;
+            }
         }
         const bool newFormat = channels != channels_ || rate != rate_;
         typename Held::Starts starts = Held::Nothing;
@@ -247,8 +286,12 @@ public:
             } else {
                 // A loop playing that ends past the track's last frame (its
                 // reported length can be an estimate) can never wrap: the
-                // rest of the track and then the new one play on
+                // rest of the track and then the new one play on. One
+                // waiting ahead that starts at or past it can never be
+                // reached: it ends too, or playback would wait for it
+                // forever (see emit)
                 if (looping_ && engaged_ && loopEnd_ > bufEnd()) exitLoop();
+                else if (looping_ && !engaged_ && pos_ < loopStart_ && loopStart_ >= bufEnd()) exitLoop();
                 afterBoundary_ = true;
                 boundaryIsTrack_ = newTrack;
                 boundaryFrame_ = inFrames_;
@@ -320,19 +363,20 @@ public:
         const bool catchUp = afterBoundary_ && !inLoop;
         size_t want = 2 * frames;
         if (!catchUp && responsive_ && ahead < (inLoop ? kResponsiveAheadSeconds : responsiveAhead)) {
-            // At most half the block, so the decoder runs ahead at twice its
-            // pace even when its blocks are shorter than the step (an MP3
-            // decoder's 1152 frames are 26 ms)
-            want = std::max<size_t>(1, std::min(framesFor(kResponsiveQuantumSeconds), frames / 2));
+            // At most 1/kRunAheadDivisor of the block, so the decoder runs
+            // ahead at that many times its pace even when its blocks are
+            // shorter than the step (an MP3 decoder's 1152 frames are 26 ms)
+            want = std::max<size_t>(1, std::min(framesFor(kResponsiveQuantumSeconds), frames / kRunAheadDivisor));
         } else if (inLoop) {
             want = std::max(frames, framesFor(kIdleQuantumSeconds));
         } else if (reserve > 0.0 && !afterBoundary_) {
-            // By what waited before this block: short of the reserve, half a
-            // block out, so the decoder runs ahead at twice its pace; in it,
-            // a block per block; well over it (after a change was expected)
-            // or over the cap, catching up drains it back
+            // By what waited before this block: short of the reserve,
+            // 1/kRunAheadDivisor of a block out, so the decoder runs ahead at
+            // that many times its pace; in it, a block per block; well over
+            // it (after a change was expected) or over the cap, catching up
+            // drains it back
             const double waiting = ahead - static_cast<double>(frames) / rate;
-            if (waiting < reserve) want = std::max<size_t>(1, frames / 2);
+            if (waiting < reserve) want = std::max<size_t>(1, frames / kRunAheadDivisor);
             else if (waiting <= reserve + kReserveSlackSeconds && waiting <= aheadCap_) want = frames;
         }
         emit(want, out);
@@ -591,8 +635,12 @@ private:
             if (avail <= 0) {
                 // Waiting for audio: in the loop, or with the loop ahead (it
                 // must catch playback as it comes in, which passing the audio
-                // through would not)
-                if ((looping_ && engaged_) || loopAhead || pos_ < bufEnd()) break;
+                // through would not), or to start further in than decoded (a
+                // pre-roll, a loop's `to` after a seek; passing through would
+                // play the audio from the buffer's end). Not that last past a
+                // track change: the old track will never reach it, the new
+                // one's audio plays
+                if ((looping_ && engaged_) || loopAhead || pos_ < bufEnd() || (pos_ > bufEnd() && !afterBoundary_)) break;
                 finish();
                 fadeLeft_ = 0;
                 if (afterBoundary_) {                     // caught up: the new track's audio
@@ -678,6 +726,7 @@ private:
         int64_t keep = looping_ && engaged_ ? std::min(loopStart_, pos_) : pos_;
         if (fadeLeft_ > 0) keep = std::min(keep, fadeFrom_);
         keep -= static_cast<int64_t>(framesFor(kHistorySeconds));
+        keep = std::min(keep, bufEnd());   // waiting for a start far past what is decoded
         const int64_t drop = keep - bufStart_;
         if (drop < static_cast<int64_t>(framesFor(5.0))) return;
         buf_.erase(buf_.begin(), buf_.begin() + static_cast<std::ptrdiff_t>(static_cast<size_t>(drop) * channels_));
@@ -695,6 +744,7 @@ private:
 
     bool synced_ = false;
     double t0_ = 0.0;               // track time of frame 0
+    double startAt_ = NAN;          // a pre-roll's playFrom until the first block places pos_ there
     bool live_ = true;
     bool pristine_ = true;
     bool responsive_ = false;
@@ -729,7 +779,7 @@ private:
     unsigned tailChannels_ = 0, tailRate_ = 0, tailConfig_ = 0;
 
     std::optional<LoopAction> pending_;
-    uint64_t epoch_ = 0;
+    uint64_t epoch_ = nextLoopEpoch();
     uint64_t version_ = 0;
     uint64_t boundArmId_ = 0;
     uint64_t lastActionId_ = 0;

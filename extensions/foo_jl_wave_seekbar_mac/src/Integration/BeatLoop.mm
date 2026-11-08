@@ -96,6 +96,10 @@ public:
         const bool through = m_engine.process(chunk->get_data(), chunk->get_sample_count(), chunk->get_channel_count(),
                                               chunk->get_sample_rate(), chunk->get_channel_config(), newTrack, out);
         if (!through) insert(out);
+        if (m_prerollWaiting && m_engine.outSeconds() > 0.0) {   // a pre-roll's first frame out
+            m_prerollWaiting = false;
+            m_prerollMs = std::chrono::duration<double, std::milli>(Clock::now() - m_prerollFrom).count();
+        }
         publish();
         return through;
     }
@@ -128,6 +132,8 @@ public:
             b.queuedAt.clear();
         }
         m_engine.flush(own ? &arm : nullptr);
+        m_prerollWaiting = own && std::isfinite(arm.playFrom) && arm.playFrom > arm.target;
+        if (m_prerollWaiting) m_prerollFrom = Clock::now();
         m_sawFile = false;
         m_file.release();
         publish();
@@ -184,7 +190,9 @@ private:
     }
 
     void publish() {
-        m_latency.store(m_engine.aheadSeconds(), std::memory_order_relaxed);
+        // Waiting for a pre-roll's start the audio waiting counts negative: none
+        const double ahead = std::max(0.0, m_engine.aheadSeconds());
+        m_latency.store(ahead, std::memory_order_relaxed);
         Bridge &b = Bridge::get();
         std::lock_guard<std::mutex> guard(b.lock);
         beatloop::Status &s = b.status;
@@ -200,13 +208,14 @@ private:
         s.bufferedFrom = m_engine.bufferedFrom();
         s.bufferedTo = m_engine.bufferedTo();
         s.outSeconds = m_engine.outSeconds();
-        s.ahead = m_engine.aheadSeconds();
+        s.ahead = ahead;
         s.blockSeconds = m_blockSeconds;
         s.lastTakenMs = m_lastTakenMs;
         s.lastTakenId = m_lastTakenId;
         s.boundArmId = m_engine.boundArmId();
         s.lastActionId = m_engine.lastActionId();
         s.rejectedId = m_engine.rejectedId();
+        s.prerollMs = m_prerollMs;
         if (m_engine.version() != m_publishedVersion) {
             m_publishedVersion = m_engine.version();
             s.timeline = m_engine.timeline();
@@ -220,6 +229,10 @@ private:
     std::atomic<double> m_latency{ 0.0 };
     uint64_t m_syncSerial = 0;
     uint64_t m_publishedVersion = UINT64_MAX;
+    // A pre-roll from its seek (flush) to its first frame out
+    bool m_prerollWaiting = false;
+    Clock::time_point m_prerollFrom;
+    double m_prerollMs = 0.0;
     dsp_track_t m_file;
     bool m_sawFile = false;
 };
@@ -304,13 +317,14 @@ bool running() {
     return g_instances.load() > 0;
 }
 
-uint64_t armSeek(double target, const waveseek::LoopAction *then) {
+uint64_t armSeek(double target, const waveseek::LoopAction *then, double playFrom) {
     Bridge &b = Bridge::get();
     std::lock_guard<std::mutex> guard(b.lock);
     b.armId = ++b.nextId;
     b.arm = waveseek::LoopArm();
     b.arm.id = b.armId;
     b.arm.target = target;
+    b.arm.playFrom = playFrom;
     if (then) {
         b.arm.then = *then;
         b.arm.then->id = ++b.nextId;

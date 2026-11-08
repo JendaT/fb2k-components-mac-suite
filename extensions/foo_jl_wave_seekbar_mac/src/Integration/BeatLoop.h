@@ -19,6 +19,7 @@
 
 #include "../Core/LoopEngine.h"
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -28,7 +29,7 @@ namespace beatloop {
 constexpr double kArmTimeout = 2.0;
 
 struct Status {
-    uint64_t epoch = 0;         // counts the DSP's seeks
+    uint64_t epoch = 0;         // the DSP's seek: unique to it and to each seek, never 0 (0: no DSP yet)
     bool synced = false;        // it knows the track time of what it plays
     double startTime = 0.0;     // when synced: the track time of the first frame after the seek
     bool pristine = true;       // nothing changed since the seek
@@ -38,13 +39,17 @@ struct Status {
     double loopStart = 0.0, loopEnd = 0.0;
     double bufferedFrom = 0.0, bufferedTo = 0.0;   // the track audio it holds
     double outSeconds = 0.0;    // output since the seek
-    double ahead = 0.0;         // decoded audio waiting, seconds
+    double ahead = 0.0;         // decoded audio waiting, seconds (0 while waiting for a pre-roll's start)
     double blockSeconds = 0.0;  // how much audio foobar2000 hands the DSP at a time (recent average)
     double lastTakenMs = 0.0;   // how long the last request waited for the DSP to take it
     uint64_t lastTakenId = 0;
     uint64_t boundArmId = 0;    // the arm the last seek took
     uint64_t lastActionId = 0;
     uint64_t rejectedId = 0;
+    // The last pre-roll (a seek of ours starting early): from the seek to its
+    // first frame out, the decoder's seek and the audio before the target
+    // decoded (0: none yet)
+    double prerollMs = 0.0;
     std::vector<waveseek::LoopSegment> timeline;
 };
 
@@ -55,8 +60,10 @@ void setInChain(bool on);
 bool running();
 
 // A seek of the view's own to `target` is coming: it gives the DSP the
-// track time, then `then` (optional) applies. Returns the arm's id.
-uint64_t armSeek(double target, const waveseek::LoopAction *then);
+// track time, then `then` (optional) applies. With `playFrom` later than
+// `target` (a pre-roll) the DSP holds the audio from `target` as history
+// and starts playing at `playFrom` (see LoopArm). Returns the arm's id.
+uint64_t armSeek(double target, const waveseek::LoopAction *then, double playFrom = NAN);
 // A request; returns its id. The status says when it was turned down.
 uint64_t act(waveseek::LoopAction action);
 // The view's measurement for the DSP's seek `epoch` (see LoopEngine::sync)

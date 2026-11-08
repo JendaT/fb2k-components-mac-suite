@@ -20,7 +20,12 @@
 //  it while hovering; the cap on the audio waiting (towards a track's end,
 //  while hovering, not on the short steps in a loop); where a jump or a
 //  loop plays from (relative, in phase,
-//  in phase onto another grid, and a seek's own at its target).
+//  in phase onto another grid, and a seek's own at its target). Then seek
+//  counts unique across engines, running ahead at eight times the
+//  decoder's pace with short blocks, a seek with a pre-roll (nothing out
+//  until its start, the audio before it kept as history; past the track's
+//  end the next track plays), a loop waiting ahead past the track's end at
+//  a track change, and a seek's loop starting further in than decoded.
 //
 //  The "track" is mono at 1000 Hz and each sample holds its own frame
 //  number (track time x 1000), so the output shows exactly which frames
@@ -444,7 +449,8 @@ void testForeignSeek() {
     runUntil(p.e, p.d, p.out, p.out.frames.size() + 800);
     const uint64_t epoch = p.e.epoch();
     p.e.flush(nullptr);
-    CHECK(p.e.epoch() == epoch + 1 && !p.e.synced() && !p.e.looping() && p.e.live(), "drops everything, unsynced");
+    CHECK(p.e.epoch() != epoch && p.e.epoch() != 0 && !p.e.synced() && !p.e.looping() && p.e.live(),
+          "a new seek count, drops everything, unsynced");
     p.e.sync(epoch, 1.0);
     CHECK(!p.e.synced(), "a measurement for the old seek is ignored");
 }
@@ -711,12 +717,14 @@ void testCapInLoop() {
     p.e.setAheadCapSeconds(0.0);
     CHECK(p.e.act(loop(1, 4.0, 4.5, 4.0)), "(a loop, playing in it)");
     bool shortSteps = true;
+    const size_t stepFrames = std::min(static_cast<size_t>(Engine::kResponsiveQuantumSeconds * kRate),
+                                       p.d.size / Engine::kRunAheadDivisor);
     for (int i = 0; i < 50; ++i) {
         const size_t at = p.out.frames.size();
         step(p.e, p.d, p.out);
-        shortSteps &= p.out.frames.size() - at == static_cast<size_t>(Engine::kResponsiveQuantumSeconds * kRate);
+        shortSteps &= p.out.frames.size() - at == stepFrames;
     }
-    CHECK(shortSteps && p.e.looping(), "30 frames out per block, as without a cap");
+    CHECK(shortSteps && p.e.looping(), "8 frames out per 64-frame block, as without a cap");
     CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
     p.e.act(action(LoopAction::Exit, 2));
     for (int i = 0; i < 1000 && !p.e.live(); ++i) step(p.e, p.d, p.out);
@@ -840,11 +848,11 @@ void testReserveHeld() {
     p.e.setReserveSeconds(kReserve);
     const size_t at = p.out.frames.size();
     step(p.e, p.d, p.out);
-    CHECK(!p.e.live() && !p.e.pristine() && p.out.frames.size() - at == kBlock / 2,
-          "from the buffer at once (live long enough): half a block out per block in");
+    CHECK(!p.e.live() && !p.e.pristine() && p.out.frames.size() - at == kBlock / Engine::kRunAheadDivisor,
+          "from the buffer at once (live long enough): an eighth of a block out per block in");
     int blocks = 1;
     for (; blocks < 1000 && p.e.aheadSeconds() < kReserve; ++blocks) step(p.e, p.d, p.out);
-    CHECK(p.e.aheadSeconds() >= kReserve && blocks <= 101, "the decoder runs ahead at twice its pace up to 5 s");
+    CHECK(p.e.aheadSeconds() >= kReserve && blocks <= 58, "the decoder runs ahead at eight times its pace up to 5 s");
     bool held = true, wasLive = false;
     for (int i = 0; i < 300; ++i) {   // 30 s
         step(p.e, p.d, p.out);
@@ -1044,7 +1052,7 @@ void testCapTowardsTheEnd() {
         const double cap = capAt(p.e.playingFrom());
         p.e.setAheadCapSeconds(cap);
         step(p.e, p.d, p.out);
-        underCap &= p.e.aheadSeconds() <= cap + 0.06;   // a block's half over it at most
+        underCap &= p.e.aheadSeconds() <= cap + 0.09;   // seven eighths of a block over it at most
         most = std::max(most, p.e.aheadSeconds());
         relapsed |= !std::isnan(liveFrom) && !p.e.live();
         if (p.e.live() && std::isnan(liveFrom) && most >= 1.0) liveFrom = p.e.playingFrom();
@@ -1228,6 +1236,159 @@ void testLoopTarget() {
     CHECK(matchesTimeline(q.e, q.out), "the timeline maps every frame");
 }
 
+// A fresh engine (foobar2000 makes a new DSP for a track started by hand)
+// and every seek get a count no other engine has, never 0: the view takes
+// 0 for "no DSP" and a count it knows for the seek it follows
+void testUniqueEpochs() {
+    TEST_CASE("seek counts unique across engines");
+    Engine a, b;
+    CHECK(a.epoch() != 0 && b.epoch() != 0, "a fresh engine's count is not 0");
+    CHECK(a.epoch() != b.epoch(), "two engines never share one");
+    const uint64_t before = a.epoch();
+    a.flush(nullptr);
+    b.flush(nullptr);
+    CHECK(a.epoch() != before && a.epoch() != 0 && a.epoch() != b.epoch(), "nor after their seeks");
+    // Never flushed, synced by the view's measurement: its count is its own
+    Engine fresh;
+    fresh.setFadeSeconds(0.0);
+    Decoder d{ 0 };
+    Output out;
+    step(fresh, d, out);
+    fresh.sync(fresh.epoch(), 0.0);
+    CHECK(fresh.synced() && fresh.epoch() != 0 && fresh.epoch() != a.epoch() && fresh.epoch() != b.epoch(),
+          "a fresh engine takes the measurement for its count");
+}
+
+// Hovering, and building the reserve: with 20 ms blocks (160 frames at
+// 8000 Hz) an eighth of each block goes out, so the decoder is 7 s ahead
+// for each second played
+void testRunAheadPace() {
+    TEST_CASE("running ahead at eight times the decoder's pace");
+    constexpr unsigned rate = 8000;
+    for (const bool reserve : { false, true }) {
+        Engine e;
+        e.setFadeSeconds(0.0);
+        e.flush(nullptr);
+        e.sync(e.epoch(), 2.0);
+        Decoder d{ 16000, 160, rate };
+        Output out;
+        for (int i = 0; i < 100; ++i) step(e, d, out);   // 2 s live: the reserve may build
+        CHECK(e.live() && e.aheadSeconds() == 0.0, "(passing through)");
+        if (reserve) e.setReserveSeconds(20.0);
+        else e.setResponsive(true);
+        const size_t at = out.frames.size();
+        for (int i = 0; i < 100000 && out.frames.size() < at + rate; ++i) step(e, d, out);
+        const double played = static_cast<double>(out.frames.size() - at) / rate;
+        CHECK(played >= 1.0 && e.aheadSeconds() >= 6.9 * played && e.aheadSeconds() <= 7.1 * played,
+              reserve ? "building the reserve: 7 s ahead per second played" : "hovering: 7 s ahead per second played");
+        CHECK(straight(out, 0, out.frames.size(), 16000.0), "the same audio, nothing skipped or doubled");
+    }
+}
+
+// The view's seek starting earlier than where playback is to start: nothing
+// goes out until that is decoded, then playback starts exactly there; the
+// audio from the seek's target on is history, so a jump back is a splice
+void testPrerollSeek() {
+    TEST_CASE("a seek with a pre-roll");
+    Engine e;
+    e.setFadeSeconds(0.0);
+    LoopArm arm;
+    arm.id = 5;
+    arm.target = 2.0;
+    arm.playFrom = 4.0;
+    e.flush(&arm);
+    CHECK(e.synced() && e.boundArmId() == 5 && !e.live() && !e.pristine(), "synced by the seek, nothing passes through");
+    CHECK_NEAR(trackTimeAt(e.timeline(), 0.0), 4.0, 1e-9, "the timeline starts at playFrom (the cursor shows it)");
+    Decoder d{ 2000 };
+    Output out;
+    bool silent = true;   // while nothing goes out: nothing out, no audio counted as waiting
+    for (int i = 0; i < 1000 && out.frames.empty(); ++i) {
+        step(e, d, out);
+        if (out.frames.empty()) silent &= e.aheadSeconds() <= 0.0 && e.outSeconds() == 0.0;
+    }
+    CHECK(silent && d.next > 4000 && d.next - static_cast<int64_t>(d.size) <= 4000, "nothing out until playFrom is decoded");
+    CHECK(!out.frames.empty() && out.frames.front() == 4000.0, "the first frame out is playFrom's");
+    runUntil(e, d, out, 1000);
+    CHECK(straight(out, 0, out.frames.size(), 4000.0) && e.live(), "on from there, then passing through");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+    CHECK_NEAR(e.bufferedFrom(), 2.0, 1e-9, "the history reaches back to the seek's target");
+    const size_t j = out.frames.size();
+    CHECK(e.act(action(LoopAction::Jump, 6, 0.0, 0.0, 2.5)) && e.rejectedId() == 0,
+          "a jump back to half a second after the seek's target: taken, no seek");
+    runUntil(e, d, out, j + 300);
+    CHECK(straight(out, j, j + 300, 2500.0), "and lands exactly there");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+}
+
+// A pre-roll whose start is past the track's last frame (the view's length
+// can be an estimate): at the track change the new track plays, instead of
+// the output waiting forever for audio the old track never brings
+void testPrerollPastTrackEnd() {
+    TEST_CASE("a pre-roll past the track's end");
+    Engine e;
+    e.setFadeSeconds(0.0);
+    LoopArm arm;
+    arm.id = 5;
+    arm.target = 2.0;
+    arm.playFrom = 4.0;
+    e.flush(&arm);
+    Decoder d{ 2000 };
+    Output out;
+    for (int i = 0; i < 20; ++i) step(e, d, out);   // the track ends at 3279
+    CHECK(out.frames.empty(), "(the track ends before playFrom: nothing out)");
+    Decoder next{ 0 };
+    int blocks = 0;
+    for (; blocks < 400 && !e.live(); ++blocks) step(e, next, out, blocks == 0);
+    CHECK(e.live() && e.synced() && blocks <= 3, "the new track's audio plays at once: live on it, synced");
+    runUntil(e, next, out, 500);
+    CHECK(straight(out, 0, out.frames.size(), 0.0), "the new track from its first frame");
+    CHECK(e.timeline().back().first == 0.0 && e.timeline().back().from == 0.0, "its timeline segment at time 0");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+}
+
+// Playing from the buffer with a loop waiting ahead that starts past the
+// track's last frame: at the track change it ends, the rest of the track
+// and the new one play (it would wait for the loop's start forever)
+void testLoopAheadPastTrackEnd() {
+    TEST_CASE("a loop waiting ahead past the track's end");
+    Playing p;   // decoded up to ~5000
+    p.e.setResponsive(true);
+    const double decoded = p.e.bufferedTo();
+    CHECK(p.e.act(loop(1, decoded + 1.0, decoded + 1.5)) && p.e.looping(), "(a loop ahead, not decoded yet)");
+    for (int i = 0; i < 10; ++i) step(p.e, p.d, p.out);
+    CHECK(!p.e.live() && p.e.looping(), "(short steps from the buffer, the loop waiting ahead)");
+    const double last = static_cast<double>(p.d.next - 1);   // the track's last frame
+    Decoder next{ 0 };
+    for (int i = 0; i < 2000 && !p.e.live(); ++i) step(p.e, next, p.out, i == 0);
+    CHECK(!p.e.looping(), "the loop that can't be reached ends");
+    CHECK(p.e.live() && p.e.synced(), "the track's rest and the new track's held audio play out: live on it");
+    bool joined = false;
+    for (size_t i = 0; i + 1 < p.out.frames.size(); ++i) joined |= p.out.frames[i] == last && p.out.frames[i + 1] == 0.0;
+    CHECK(joined && straight(p.out, 0, p.out.frames.size() - static_cast<size_t>(p.out.frames.back()) - 1, 2000.0),
+          "no stall: the old track to its last frame, then the new one from its first");
+    CHECK(matchesTimeline(p.e, p.out), "the timeline maps every frame");
+}
+
+// A seek's loop playing from further in than decoded, outside the loop:
+// the output waits for that audio (passing through would play from the
+// buffer's end under a timeline that says otherwise)
+void testSeekLoopPastDecoded() {
+    TEST_CASE("a seek's loop starting further in than decoded");
+    Engine e;
+    e.setFadeSeconds(0.0);
+    LoopArm arm;
+    arm.id = 9;
+    arm.target = 2.0;
+    arm.then = loop(3, 2.0, 2.5, 3.0);   // past the loop's end
+    e.flush(&arm);
+    Decoder d{ 2000 };
+    Output out;
+    runUntil(e, d, out, 1000);
+    CHECK(!out.frames.empty() && straight(out, 0, out.frames.size(), 3000.0), "from 3000 once decoded, not before");
+    CHECK(e.looping(), "the loop stays set behind it");
+    CHECK(matchesTimeline(e, out), "the timeline maps every frame");
+}
+
 } // namespace
 
 int main() {
@@ -1273,5 +1434,11 @@ int main() {
     testNoReserve();
     testSeekRequestAtTarget();
     testLoopTarget();
+    testUniqueEpochs();
+    testRunAheadPace();
+    testPrerollSeek();
+    testPrerollPastTrackEnd();
+    testLoopAheadPastTrackEnd();
+    testSeekLoopPastDecoded();
     return testsupport::summarize("LoopEngineTests");
 }

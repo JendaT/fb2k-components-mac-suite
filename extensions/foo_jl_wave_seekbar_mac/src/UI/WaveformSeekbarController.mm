@@ -403,6 +403,9 @@ public:
 }
 
 - (void)handleSeekToTime:(double)time {
+    // The seekbar's own seek: the cursor shows where it plays from, not an
+    // earlier start (a pre-roll)
+    if ([self.waveformView ownSeekPendingFor:time]) return;
     if (self.waveformView.trackDuration > 0) {
         self.waveformView.playbackPosition = time / self.waveformView.trackDuration;
         [self.waveformView refreshDisplay];
