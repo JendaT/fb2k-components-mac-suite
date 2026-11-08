@@ -193,7 +193,7 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 |-----------|----------|-------|
 | SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
-| Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
+| Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,130123.0.html) |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
 | Album Art (Extended) | [1.0.1](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1) | TBD |
