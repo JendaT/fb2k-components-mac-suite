@@ -3072,7 +3072,11 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     if (_deckEpoch == 0 || _deck.epoch != _deckEpoch || !_deck.synced || _deck.pristine) return seconds;
     const double played = beatloop::playedSinceSeek();
     if (!std::isfinite(played)) return seconds;
-    const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, played - _clockOffset));
+    // Never more than the DSP sent since its seek: right after one the clock
+    // may still count the audio before it (with a pre-roll the cursor would
+    // flick ahead while the first sound is decoded)
+    const double heard = std::min(played - _clockOffset, _deck.outSeconds);
+    const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, heard));
     return std::isfinite(t) ? t : seconds;
 }
 
