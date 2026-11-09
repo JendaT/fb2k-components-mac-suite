@@ -380,7 +380,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 - **Option-drag, Option-jump**: Move the whole loop by whole beats. The loop stays set until switched off.
 - **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.
 - **Phrase-aware loops**: Loops started near a 16-beat phrase start begin on it.
-- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
+- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred, also through the mixer's jumps.
 - **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
 - **Experimental cursor effects**: Particles, Firewall and Earthcrusher.
 

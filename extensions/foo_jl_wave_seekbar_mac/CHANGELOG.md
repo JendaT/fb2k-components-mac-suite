@@ -35,7 +35,7 @@ All notable changes to Waveform Seekbar will be documented in this file.
 
 - **Phrase-aware loops**: A loop asked for just after (or a beat before) a 16-beat phrase start starts on the phrase.
 
-- **Following the cursor**: Zoomed in, the view can follow the cursor at a spot you set by panning, or keep it centred (the only mode showing space beyond the track's ends); in the cog's menu and Preferences > Zoom.
+- **Following the cursor**: Zoomed in, the view can follow the cursor at a spot you set by panning, or keep it centred (the only mode showing space beyond the track's ends); in the cog's menu and Preferences > Zoom. With the mixer, clicks and beat jumps keep the spot once the jump is heard.
 
 - **Locked size follows the screen**: Lock Width and Lock Height keep their share of the screen on another display or resolution (on by default).
 

@@ -408,6 +408,16 @@ struct BarSegment {
     // changed (masks for following wait for a pause)
     double _followSpot;
     bool _followSpotSet;
+    // A jump or click of ours while following at a spot (holdSpot:): the
+    // spot to keep the cursor at once the jump shows (NAN: none), the DSP
+    // output time it shows from (NAN: not taken yet), when it was asked for;
+    // the output time the cursor was last placed from (displayedTimeFor:);
+    // the spot just taken, kept even with the cursor out of view
+    double _jumpSpot;
+    double _jumpSpotFrom;
+    CFAbsoluteTime _jumpSpotAt;
+    double _shownOut;
+    bool _spotJustSet;
     CFAbsoluteTime _lastZoomChange;
     bool _zoomEnabled;
 
@@ -534,6 +544,9 @@ struct BarSegment {
     _requestTarget = NAN;
     _dragBeat = NAN;
     _followSpot = 0.5;
+    _jumpSpot = NAN;
+    _jumpSpotFrom = NAN;
+    _shownOut = NAN;
     jl_beatgrid::ptr grids;
     _haveBeatGrids = fb2k::std_api_try_get(grids);
 
@@ -1325,12 +1338,22 @@ struct BarSegment {
         _zoom.centreOn(position, grid);
         return;
     }
+    // A jump or click of ours: its spot once the jump shows (a splice when
+    // it is heard; a seek takes it in seekTo:), wherever the cursor lands
+    if (!std::isnan(_jumpSpot)) {
+        if (CFAbsoluteTimeGetCurrent() - _jumpSpotAt > 2.0) {
+            _jumpSpot = NAN;   // never shown (turned down and dropped, or a seek from elsewhere)
+        } else if (std::isfinite(_jumpSpotFrom) && std::isfinite(_shownOut) && _shownOut >= _jumpSpotFrom) {
+            [self takeJumpSpot];
+        }
+    }
     // Held where it is while in view; where it comes into view next time
     const double across = _zoom.acrossOf(position);
-    if (across < 0.0 || across > 1.0) {
+    if ((across < 0.0 || across > 1.0) && !_spotJustSet) {
         _followSpotSet = false;
         return;
     }
+    _spotJustSet = false;
     if (!_followSpotSet) {
         _followSpot = across;
         _followSpotSet = true;
@@ -1338,9 +1361,31 @@ struct BarSegment {
     _zoom.followAt(position, _followSpot, grid);
 }
 
+// Following at a spot through a jump or click of ours: the cursor is kept
+// at `spot` once the jump shows, wherever it lands. Until then the view
+// follows what is heard as before: with the DSP the jump is heard 0.1-0.2 s
+// after the click, and moving the spot at once slid the old position under
+// the mouse and back (and could push the landing out of view, which stops
+// following).
+- (void)holdSpot:(double)spot {
+    if (![self following] || _followMode == waveform_config::FollowCentre || !std::isfinite(spot)) return;
+    _jumpSpot = std::clamp(spot, 0.0, 1.0);
+    _jumpSpotFrom = NAN;
+    _jumpSpotAt = CFAbsoluteTimeGetCurrent();
+}
+
+- (void)takeJumpSpot {
+    _followSpot = _jumpSpot;
+    _followSpotSet = true;
+    _spotJustSet = true;
+    _jumpSpot = NAN;
+    _jumpSpotFrom = NAN;
+}
+
 // After the user moves or zooms the view: where the cursor is becomes the
 // spot it is kept at, when it is in view
 - (void)takeFollowSpot {
+    _jumpSpot = NAN;   // the user's move wins over a jump's spot on its way
     const double across = _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0));
     _followSpotSet = across >= 0.0 && across <= 1.0;
     if (_followSpotSet) _followSpot = across;
@@ -2702,6 +2747,7 @@ struct BarSegment {
 // A seek to `seconds`, the cursor at `shown` (a seek of ours that starts
 // early plays from its target)
 - (void)seekTo:(double)seconds showing:(double)shown {
+    if (!std::isnan(_jumpSpot)) [self takeJumpSpot];   // a seek shows at once
     _pendingSeek = shown;
     _pendingSince = CFAbsoluteTimeGetCurrent();
     [self performSeekToTime:seconds];
@@ -2963,6 +3009,8 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         }
     } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
         if (_deck.lastTakenId == _requestId) {
+            // A spot held for it: taken once the splice is heard
+            if (!std::isnan(_jumpSpot) && !_deck.timeline.empty()) _jumpSpotFrom = _deck.timeline.back().first;
             FB2K_console_formatter() << "[WaveSeek] Mixer: request taken by the DSP after "
                                      << pfc::format_int(std::lround(_deck.lastTakenMs)) << " ms; playback runs "
                                      << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP";
@@ -3076,6 +3124,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     // may still count the audio before it (with a pre-roll the cursor would
     // flick ahead while the first sound is decoded)
     const double heard = std::min(played - _clockOffset, _deck.outSeconds);
+    _shownOut = heard;
     const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, heard));
     return std::isfinite(t) ? t : seconds;
 }
@@ -3157,6 +3206,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const double shifted = waveseek::timeAtBeat(beats, waveseek::beatPosition(beats, now) + count);
     const double target = moved.contains(shifted) ? shifted : waveseek::wrappedIntoLoop(moved, shifted);
     if ([self deckMode]) {
+        if (_followSpotSet) [self holdSpot:_followSpot];   // the cursor stays at its spot
         const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, moved.start, moved.end, target);
         const double delta = moved.start - _loop.start;
         const bool held = [self deckHolds:moved.start to:NAN] &&
@@ -3187,6 +3237,7 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
     const double target = waveseek::jumpTarget([self beats], now, count, self.trackDuration);
     if (std::isnan(target)) return;
     if ([self deckMode]) {
+        if (_followSpotSet) [self holdSpot:_followSpot];   // the cursor stays at its spot
         [self deckSeekTo:target by:target - now onBeat:NO];   // relative: the beat holds
         return;
     }
@@ -3496,8 +3547,10 @@ static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double s
         }
     }
     // Following at a spot: the cursor stays where it was clicked (not at the
-    // beat Snap took the click to)
-    if ([self following]) {
+    // beat Snap took the click to); with the DSP once the jump shows
+    if ([self deckMode]) {
+        [self holdSpot:across];
+    } else if ([self following]) {
         _followSpot = across;
         _followSpotSet = true;
     }

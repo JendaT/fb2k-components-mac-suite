@@ -22,7 +22,7 @@ Pinch on the trackpad, or scroll vertically with the mouse wheel or trackpad, to
 Zoomed in, the view can follow the playback cursor (Preferences > Zoom, or the cog at the bottom right):
 
 - **Don't follow the cursor** (default): the view stays where you put it.
-- **Follow the cursor**: while the cursor is in view, the waveform moves under it and the cursor stays where it is (where it came into view). Panning, zooming or a click with the cursor in view sets that spot. While the cursor is out of view the view stays.
+- **Follow the cursor**: while the cursor is in view, the waveform moves under it and the cursor stays where it is (where it came into view). Panning, zooming or a click with the cursor in view sets that spot. While the cursor is out of view the view stays. With the mixer, a click or a beat jump keeps that spot once the jump is heard, wherever it lands (the view doesn't move before the audio does, and the cursor never leaves the view through a jump).
 - **Reset zoom** also switches following off.
 - **Keep the cursor centred**: the cursor stays in the middle; at the track's start and end the view shows empty space beyond it, the only mode that does. Panning does nothing, zooming zooms about the cursor.
 
