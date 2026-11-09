@@ -1,6 +1,6 @@
 # Spectrogram
 
-A scrolling spectrogram UI element for foobar2000 macOS: frequency on the vertical axis, time on the horizontal axis, level as color. Contributed by [Scannou](https://github.com/Scannou).
+A scrolling spectrogram UI element for foobar2000 macOS: frequency on the vertical axis and time on the horizontal axis (swapped in the Horizontal orientation), level as color. Contributed by [Scannou](https://github.com/Scannou).
 
 ## Features
 
@@ -8,7 +8,7 @@ A scrolling spectrogram UI element for foobar2000 macOS: frequency on the vertic
 
 ### Scrolling Display
 
-New audio enters at the right edge and moves left at a fixed speed. Columns sit on a fixed time grid derived from the playback position (one per device pixel of travel), so the picture is the same whatever the frame timing. Pausing or stopping playback holds the picture; seeking carries on from the new position.
+New audio enters at the right edge and moves left at a fixed speed (in the default orientation; see Orientation below). Columns sit on a fixed time grid derived from the playback position (one per device pixel of travel), so the picture is the same whatever the frame timing. Pausing or stopping playback holds the picture; seeking carries on from the new position.
 
 ### Orientation
 
@@ -57,7 +57,7 @@ Below a separator, one ramp per Spectrum Analyzer color theme (Default (Blue), C
 
 **Custom**: every preset fills in four color wells (Floor, Low, Mid, Peak); editing one switches the colormap to Custom, a ramp through those four colors.
 
-The plot starts out in the colormap's floor color; the margins around it use the panel background (see Panel below), so a colormap with a strong floor color such as Viridis does not tint the whole panel.
+The plot starts out in the colormap's floor color; the margins around it use the panel background (see Panel under Colours below), so a colormap with a strong floor color such as Viridis does not tint the whole panel.
 
 ### Axis and Scale
 
@@ -95,44 +95,54 @@ Access settings via **Preferences > Display > Spectrogram**, or right-click the 
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| FFT size | Base window length at 44.1/48 kHz | 1024, 2048, 4096, 8192, 16384 | 4096 |
 | Resolution | Reassigned, Multi-resolution or Standard (see above) | | Reassigned |
+| FFT size | Base window length at 44.1/48 kHz | 1024, 2048, 4096, 8192, 16384 | 4096 |
 | Window | Hann, or Blackman-Harris (cleaner at wide dB ranges, slightly broader lines) | | Hann |
 | Channel | Signal analysed | Mid (L + R), Left, Right, Side (L - R) | Mid |
 | Frequency scale | Axis mapping | Logarithmic, Mel, Linear | Logarithmic |
-| Range (Hz) | Lowest and highest displayed frequency | 10-2000 to 1000-96000 | 20 to 20000 |
+| Frequency range | Lowest and highest displayed frequency | 10-2000 to 1000-96000 Hz | 20 to 20000 Hz |
 
 Changing the frequency scale or range clears the picture, since older columns would no longer line up with the axis.
+
+### Colours
+
+| Setting | Description | Range | Default |
+|---------|-------------|-------|---------|
+| Colormap | Color ramp | Custom, 9 colormaps, 14 theme ramps | Inferno |
+| Floor, Low, Mid, Peak | The four colors of the ramp; filled in by the chosen preset, editing one switches to Custom | | From Inferno |
+| Panel: Background | Margins around the plot, one color for Light mode and one for Dark mode; labels are derived from it so they stay readable | | Light gray / near-black |
+| Panel: Grid | Color of the frequency lines across the plot, for Light mode and Dark mode | | Neutral gray |
+| Grid opacity | Opacity of those lines (0% hides them) | 0-100% | 15% |
+
+Choosing a theme ramp also sets the panel colors to that Spectrum Analyzer theme's.
 
 ### Display
 
 | Setting | Description | Range | Default |
 |---------|-------------|-------|---------|
-| Colormap | Color ramp | Custom, 9 colormaps, 14 theme ramps | Inferno |
-| Colors | Floor, Low, Mid, Peak of the ramp; filled in by the chosen preset, editing switches to Custom | | From Inferno |
 | Top level | Level shown in the brightest color | -40 to 0 dB | 0 dB |
 | Range | dB span below the top level | 40 to 140 dB | 60 dB |
 | Slope | Tilt around 1 kHz that brightens treble | Off, 1.5, 3, 4.5, 6 dB/octave | Off |
 | Scroll speed | Travel along the time axis | 30, 60, 120, 240 pt/s | 120 pt/s |
-| Orientation | Frequency along Y (vertical) or X (horizontal), as in the Spectrum Analyzer | Horizontal, Vertical | Vertical |
-| Reverse scroll direction | New audio at the left / bottom instead of the right / top | On/Off | Off |
-| Full screen | Orientation of the full-screen view, independent of the panel's | Same as panel, Horizontal, Vertical | Same as panel |
-| Show frequency axis | Frequency labels right of the plot (vertical) or below it (horizontal) | On/Off | On |
-| Show dB color scale | Color bar on the right | On/Off | On |
-| Frequency labels | Font size | 8-16 pt | 11 pt |
-| dB scale labels | Font size | 8-16 pt | 11 pt |
 
 With a slope set, the dB color scale is exact only at 1 kHz.
 
-### Panel
+### Layout
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Background (light / dark) | Margins around the plot; labels are derived from it so they stay readable | Light gray / near-black |
-| Grid lines (light / dark) | Color of the frequency lines across the plot | Neutral gray |
-| Grid opacity | Opacity of those lines (0% hides them) | 15% |
+| Setting | Description | Range | Default |
+|---------|-------------|-------|---------|
+| Orientation | Frequency along Y (vertical) or X (horizontal), as in the Spectrum Analyzer | Horizontal, Vertical | Vertical |
+| Reverse scroll direction | New audio at the left / bottom instead of the right / top | On/Off | Off |
+| Full screen | Orientation of the full-screen view, independent of the panel's | Same as panel, Horizontal, Vertical | Same as panel |
 
-Choosing a theme ramp also sets the panel colors to that Spectrum Analyzer theme's.
+### Labels
+
+| Setting | Description | Range | Default |
+|---------|-------------|-------|---------|
+| Frequency axis | Frequency labels right of the plot (vertical) or below it (horizontal) | On/Off | On |
+| dB colour scale | Color bar with its dB levels on the right | On/Off | On |
+| Frequency text | Font size of the frequency labels and the readout | 8-16 pt | 11 pt |
+| dB text | Font size of the dB scale labels | 8-16 pt | 11 pt |
 
 ### Color Spaces
 
@@ -165,14 +175,15 @@ splitter horizontal style=thin
 
 ### Rendering
 
-- The picture is a strip of 256-column tile layers. Only the newest tile is re-uploaded each frame; the others are just moved, and dropped once they leave the plot
+- The picture is a strip of 32-column tile layers. Only the newest tile is re-uploaded each frame; the others are just moved, and dropped once they leave the plot
 - `CADisplayLink` on macOS 14+ (in step with the screen's refresh, capped near 90 fps), a 60 fps `NSTimer` before that
 - Columns follow a display clock: host time plus an offset that slowly follows the stream time. The stream time advances in uneven steps and briefly reports none at all; the clock coasts through that
 - The picture is also shifted by the fraction of a column the clock has moved past the newest column, so each frame moves it by the same distance even when the refresh rate is not a multiple of the column rate
 - Tile layers are added and removed with implicit animations off; the default fade on sublayer changes would otherwise blur the picture every time a tile starts
 - Nothing moves while playback is paused or stopped
-- After a resize the existing tiles stretch to the new height; new columns switch to the new pixel height once the size has held for 0.25 s
-- Stream released when the view goes off-screen; recreated lazily on the next tick
+- After a resize the existing tiles stretch to the new length of the frequency axis (the height in the vertical orientation, the width in the horizontal one); new columns switch to the new pixel count once the size has held for 0.25 s
+- While the view is hidden or its window fully covered, the timer is not stopped and each tick returns early; the stream is kept
+- Stream released in `viewDidDisappear` (which also stops the timer) and at quit; recreated lazily on the next tick that draws
 
 ### Lifecycle
 

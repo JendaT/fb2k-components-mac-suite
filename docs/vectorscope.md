@@ -78,7 +78,7 @@ Full-scale outline (diamond, or square in the Lissajous style), dashed level gui
 
 ### Color Themes
 
-Fourteen presets stamp trace, background, grid, and band colors for both light and dark appearance at once. They share names and trace/background/grid colors with the Spectrum Analyzer and Waveform Seekbar themes: the CRT phosphors P31 green, P3 amber, P4 white, and P7 blue (listed first), then Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. The phosphor themes take their band colors from the other phosphors (amber low, green mid, blue high). The selector shows whichever preset matches the current colors, so editing any color well switches it to Custom.
+Fourteen presets stamp trace, background, grid, and band colors for both light and dark appearance at once. They share names and trace/background/grid colors with the Spectrum Analyzer and Waveform Seekbar themes: the CRT phosphors P31 green, P3 amber, P4 white, and P7 blue (listed first), then Default (Blue), Classic (Green), Nord, Dracula, Gruvbox, Solarized, Tokyo Night, Catppuccin, Monokai, Sunset. The phosphor themes take their band colors from the other phosphors (amber low, green mid, blue high), except P3 amber in dark appearance, whose mid and high bands are olive and cyan. The selector shows whichever preset matches the current colors, so editing any color well switches it to Custom.
 
 ### Glass Background
 

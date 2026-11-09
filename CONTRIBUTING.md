@@ -282,6 +282,7 @@ This project uses Git worktrees for parallel component development. Each compone
     effects-dsp/                 # dev/effects-dsp branch
     spectrum/                    # dev/spectrum branch
     vectorscope/                 # dev/vectorscope branch
+    spectrogram/                 # dev/spectrogram branch
 ```
 
 ### Starting Development

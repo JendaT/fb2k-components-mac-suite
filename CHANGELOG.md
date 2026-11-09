@@ -267,12 +267,16 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Playlist Organizer
 
-### [1.5.1] - 2026-09-25
+### [1.5.1] - 2026-11-09
 
 #### Changed
 - **Requires macOS 12**: built with Xcode 27, which cannot target macOS 11
+- **About**: shows the layout element name and the preferences path; MIT license line instead of the copyright notice
+- **Preferences title**: same size as foobar2000's own page titles
+- **foobar2000 SDK 2026-10-01**: built against the current SDK
 
 #### Fixed
+- **Playing playlist marker**: the play icon and bold name stay on the playing playlist instead of the selected one (thanks @Scannou, #54)
 - **Crash on restart after a repair**: the migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database
 - **Database growth**: rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and needs no VACUUM
 - **Migration speed**: 29.1s down to 4.6s on a 2.35 GB database, byte-identical result
@@ -281,6 +285,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 #### Added
 - **`Scripts/volume_registry_prune.sh`**: removes unused volume bookmarks for the music share; dry run by default, refuses to write while foobar2000 runs
+- **Component details**: a "?" button next to the preferences title shows the component file, version and layout element names
 
 ### [1.5.0] - 2026-08-26
 
@@ -769,6 +774,17 @@ Display P3 colors contributed by @Scannou (#55).
 
 ## Vectorscope
 
+### [1.1.1] - 2026-11-09
+
+Contributed by @Scannou (#58, #59).
+
+#### Changed
+- **P3 amber**: Dark mid and high bands are now olive and cyan; pick the theme again to get them.
+
+#### Fixed
+- **Main-thread color conversion**: The trace image is built in the window's color space instead of being converted every frame.
+- **Pixel alignment**: The drawing view sits on whole device pixels.
+
 ### [1.1.0] - 2026-10-30
 
 Display P3 colors contributed by @Scannou (#55).
@@ -888,3 +904,17 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 
 #### Added
 - Initial public release: browser, search, library, playlists, sync, ISRC matching, album art
+
+## Spectrogram
+
+### [0.1.0] - 2026-11-09
+
+First release, contributed by @Scannou (#45).
+
+#### Added
+- **Scrolling spectrogram**: Frequency over time, level as colour; holds on pause and stop.
+- **Analysis**: Reassigned (default), Multi-resolution or Standard mode; levels in dBFS; FFT 1024 to 16384.
+- **Orientation**: Vertical or horizontal, reversible scroll direction, matching the Spectrum Analyzer's setting.
+- **Full screen**: Double-click, with its own orientation setting.
+- **Colours**: Nine colormaps, one ramp per Spectrum Analyzer theme, custom ramp.
+- **Readout**: Click and hold for frequency and nearest note.

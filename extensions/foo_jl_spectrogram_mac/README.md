@@ -73,13 +73,15 @@ foo_jl_spectrogram_mac/
 │   │   ├── SpectrogramEngine.h/cpp     # PCM window -> one column of levels (pure C++ + Accelerate)
 │   │   ├── SpectrogramColormaps.h      # Color ramps and lookup tables (pure C++)
 │   │   ├── SpectrogramClock.h          # Columns due per frame from the stream time (pure C++)
-│   │   └── SpectrogramConfig.h         # Config keys, enums, defaults, configStore accessors
+│   │   ├── SpectrogramConfig.h         # Config keys, enums, defaults, configStore accessors
+│   │   └── SpectrogramThemes.h         # Applies a colormap preset to the stored colors
 │   ├── UI/
 │   │   ├── SpectrogramView.h/mm        # Tile layers, frequency axis, dB scale, probe
 │   │   ├── SpectrogramController.h/mm  # View controller, display link, column rendering, quit handling
 │   │   └── SpectrogramPreferences.h/mm # Preferences page
 │   ├── Integration/
 │   │   ├── SpectrogramSource.h/cpp     # Visualisation stream reads (the SDK boundary)
+│   │   ├── ComponentInfo.h             # Component file, layout and preferences names
 │   │   └── Main.mm                     # UI element and component registration
 │   ├── fb2k_sdk.h                      # SDK configuration
 │   └── Prefix.pch                      # Precompiled header
@@ -94,8 +96,8 @@ foo_jl_spectrogram_mac/
 
 - Samples come from `visualisation_stream_v2::get_chunk_absolute`; each column reads a window centred on its own time, so column spacing does not depend on frame timing.
 - `SpectrogramEngine`, `SpectrogramColormaps`, and `SpectrogramClock` have no SDK or Cocoa dependency and are unit-tested standalone; the tests gate the build.
-- The picture is a strip of 256-column tile layers; only the newest is re-uploaded each frame.
-- A `CADisplayLink` (macOS 14+, else a 60 fps `NSTimer`) drives the view; it pauses when the view is hidden and the stream is released so the core can stop the visualisation backend.
+- The picture is a strip of 32-column tile layers; only the newest is re-uploaded each frame.
+- A `CADisplayLink` (macOS 14+, else a 60 fps `NSTimer`) drives the view. It is not stopped while the view is hidden or its window fully covered; each tick then returns early. The stream is released only in `viewDidDisappear` (which also stops the timer) and at quit, and is recreated on the next tick that draws.
 - An `initquit` service releases all live streams before service teardown; holding a stream through shutdown aborts the app.
 - Settings persist through `fb2k::configStore` under the `foo_jl_spectrogram.` prefix.
 
