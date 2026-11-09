@@ -362,25 +362,26 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Waveform Seekbar
 
-### [Unreleased]
+### [2.1.0] - 2026-11-09
+
+Phrase markers and the mixer need BPM Analyzer 0.1.0 or later.
 
 #### Added
 - **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms about the pointer; horizontal scroll pans; Reset zoom button while zoomed.
 - **Zoom settings**: Zoom can be switched off; optional fine detail keeps 7-8x finer detail per track for deeper zoom.
+- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
 - **Phrase markers**: With BPM Analyzer, a line every 16 or 32 beats coloured by how well the music stays on the beat grid.
 - **Follow tempo changes**: Phrase markers and beat-synced effects move to a new grid where the tempo changes or the track is edited.
 - **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
 - **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
-- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the beat; with Snap, clicks jump at once to the nearest beat, in time.
-- **Snap**: Mixer bar toggle (on by default): clicks go to the nearest beat, keeping the place in the beat, and hovering shows it; off, clicks go exactly where clicked.
-- **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
-- **Decode-ahead reserve**: With a beat grid, the mixer keeps 32 beats decoded ahead (built at 8x) and starts its own seeks 32 beats early, so jumps forward and back play without a seek.
-- **Seek notes in the console**: A jump, click or loop that still has to seek says so; jumps no longer seek at a track started by hand.
-- **Gapless loops**: A "Beat loop" DSP plays loops, new sizes, loop moves and jumps without a gap or a click.
-- **Option-drag, Option-jump**: Move the whole loop by whole beats. The loop stays set until switched off.
-- **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.
+- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the place in the beat.
+- **Snap**: Mixer toggle (on by default): clicks go to the nearest beat, keeping the place in the beat; off, clicks go exactly where clicked.
+- **Gapless loops and jumps**: A "Beat loop" DSP plays loops, loop changes and jumps as splices, without a gap or a click.
+- **Decode-ahead**: With a beat grid the mixer keeps 32 beats decoded ahead, so jumps forward and back mostly need no seek.
+- **Loop moves and sizes**: Option-drag or Option-jump moves the loop by whole beats; the loop stays set until switched off.
 - **Phrase-aware loops**: Loops started near a 16-beat phrase start begin on it.
-- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred, also through the mixer's jumps.
+- **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.
+- **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
 - **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
 - **Experimental cursor effects**: Particles, Firewall and Earthcrusher.
 

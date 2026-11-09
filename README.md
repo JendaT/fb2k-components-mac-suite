@@ -70,7 +70,9 @@ Waveform seekbar with per-track loudness analysis. This one was my favorite, a n
 - Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo, mono or split (L up, R down)
 - Hover readout (LUFS-S, peak, crest, correlation, Lo/Mid/Hi) and click-to-seek
 - Loudness summary: integrated, LRA, true peak, PLR, clip count; clip markers
-- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Trail, Shimmer), optionally synced to the track's BPM
+- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Shimmer, plus experimental ones), synced to the beat grid or the track's BPM
+- Zoom with pinch or scroll; the view can follow the cursor
+- With BPM Analyzer: phrase markers every 16 or 32 beats, and a mixer with beat jumps and gapless beat loops that keep the beat
 - Optional time ruler and level scale; themes shared with Spectrum Analyzer
 
 ---

@@ -2,72 +2,49 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
-## [Unreleased]
+## [2.1.0] - 2026-11-09
+
+Phrase markers and the mixer's beat jumps and loops need BPM Analyzer 0.1.0 or later; the phrase marker settings can install it.
 
 ### Added
-- **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms the waveform about the pointer; horizontal scroll (or Shift + wheel) pans. A Reset zoom button appears bottom right while zoomed; a new track starts unzoomed.
-
-- **Zoom settings**: Zoom can be switched off; "Fine detail for deep zoom" (off by default) keeps 7-8x finer detail per track, more for long mixes, and zooms that much deeper (about 1 MB of cache per track).
-
-- **Phrase markers**: With BPM Analyzer installed, a line every 16 or 32 beats coloured by how well the music stays on one beat grid (drifting, broken, no pulse, new grid); readout line near a marker, grid BPM and locked share in the summary. Off by default.
-
+- **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms about the pointer; horizontal scroll (or Shift + wheel) pans; a Reset zoom button shows while zoomed, and a new track starts unzoomed.
+- **Zoom settings**: Zoom can be switched off; "Fine detail for deep zoom" (off by default) keeps 7-8x finer detail per track and zooms that much deeper (about 1 MB of cache per track).
+- **Following the cursor**: Zoomed in, the view follows the cursor at a spot you set by panning, or keeps it centred; in the cog's menu and Preferences > Zoom.
+- **Phrase markers**: With BPM Analyzer, a line every 16 or 32 beats coloured by how well the music stays on one beat grid (drifting, broken, no pulse, new grid), with a readout near a marker; off by default.
 - **Follow tempo changes**: Where a new grid begins (a tempo change, an edit), phrase markers and beat-synced effects move to it and count phrases from there; can be switched off.
-
-- **Install BPM Analyzer**: Without BPM Analyzer (or with one too old), the phrase marker settings offer to install it: the newest release is downloaded from GitHub, checked against its SHA-256 checksum and installed; after the restart the markers are switched on and the preferences reopen.
-
-- **Bottom bar controls**: A cog at the bottom right on hover picks no controls (default), the mixer, or analytics (the readout and loudness summary, now shown only there); also in Preferences > Overlays.
-
-- **Beat jumps and loops**: With the mixer and BPM Analyzer, jump 16, 32 or the chosen 1-32 beats back or on (keeping the place in the beat), loop the chosen beats from the beat behind the cursor (formed around what plays, drawn in green), and with Snap clicks jump at once to the nearest beat, keeping the beat.
-
-- **Snap**: Mixer bar toggle (on by default): clicks and drags go to the nearest beat at the same place in the beat as what plays, so the beat goes on without a delay, and hovering shows that beat with its time; off, clicks go exactly where clicked.
-
-- **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
-
-- **Decode-ahead reserve**: With a beat grid, the mixer's DSP keeps 32 beats (at least 20 s) decoded ahead, built at 8x the decoder's pace (as on hover), and the mixer's own seeks start 32 beats early, so jumps forward and back after a seek play without another; it drains in the track's last minute.
-
-- **Seek notes in the console**: A jump, click or loop that still has to seek says so, with the audio the DSP held; such a seek lands where the beat would be once heard (the seek's gap and the pre-roll's time are measured); jumps no longer seek at a track started by hand.
-
-- **Gapless loops**: The mixer adds a "Beat loop" DSP first in the playback chain; loops, new sizes, loop moves and jumps are crossfaded splices in its buffered audio instead of seeks, so they play without a gap or a click. A narrower loop applies at once (playback wraps into it); a wider one plays on.
-
-- **Option-drag, Option-jump**: Move the whole loop by whole beats; a plain jump while looping moves playback. The loop stays set until switched off: playback outside it plays on, playback before it is caught when it comes in.
-
-- **Mixer output buffer**: While the mixer is on, foobar2000's output buffer is set to 100 ms (or 50-200 ms, or left alone), so loop and jump changes are heard at once; the user's own value comes back when the mixer goes off.
-
+- **Install BPM Analyzer**: When BPM Analyzer is missing or too old, the phrase marker settings download its newest release from GitHub, check its SHA-256 checksum and install it.
+- **Bottom bar controls**: A cog at the bottom right on hover picks no controls (default), the mixer, or analytics (the readout and loudness summary); also in Preferences > Overlays.
+- **Beat jumps and loops**: The mixer jumps 16, 32 or the chosen 1-32 beats back or on, keeping the place in the beat, and loops the chosen beats from the beat behind the cursor (drawn in green).
+- **Snap**: Mixer toggle (on by default): clicks and drags go to the nearest beat at the same place in the beat as what plays, so the beat carries on; hovering shows that beat and its time.
+- **Gapless loops and jumps**: A "Beat loop" DSP, first in the playback chain while the mixer is on, plays loops, loop changes and jumps as crossfaded splices instead of seeks, without a gap or a click.
+- **Decode-ahead**: With a beat grid the DSP keeps 32 beats (at least 20 s) decoded ahead, and the mixer's own seeks start 32 beats early, so jumps forward and back mostly need no seek.
+- **Seeks in place of jumps**: When the DSP doesn't hold the audio, a jump seeks and lands where the beat will be once it is heard; the console says so.
+- **Loop moves and sizes**: Option-drag the loop, or hold Option with a jump, to move it by whole beats; a smaller size applies at once, a larger one plays on; the loop stays set until switched off.
 - **Phrase-aware loops**: A loop asked for just after (or a beat before) a 16-beat phrase start starts on the phrase.
-
-- **Following the cursor**: Zoomed in, the view can follow the cursor at a spot you set by panning, or keep it centred (the only mode showing space beyond the track's ends); in the cog's menu and Preferences > Zoom. With the mixer, clicks and beat jumps keep the spot once the jump is heard.
-
+- **Mixer output buffer**: While the mixer is on, foobar2000's output buffer is 100 ms (or 50-200 ms, or left alone), so changes are heard at once; your own value returns when the mixer goes off.
+- **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
 - **Locked size follows the screen**: Lock Width and Lock Height keep their share of the screen on another display or resolution (on by default).
-
-- **Particles cursor effect (experimental)**: Sparks burst off the waveform at the cursor, more where the track is louder, so they follow its beat.
-
-- **Firewall cursor effect (experimental)**: A wall of flames stands on the cursor, taller where the track is loud; the played part keeps burning behind it as a row of fires, each as tall as the track is loud there.
-
-- **Earthcrusher cursor effect (experimental)**: A jagged, glowing cursor leaves the waveform just behind it scorched and cracked, in burnt shades of the wave colour.
+- **Experimental cursor effects**: Particles (sparks off the waveform, more where it is loud), Firewall (flames on the cursor, the played part burning behind it) and Earthcrusher (a jagged cursor that scorches the waveform behind it).
 
 ### Changed
 - **Glow cursor effect**: Now a bloom centred on the cursor line, fading with distance and pulsing on the beat.
-
 - **Trail cursor effect**: Removed; a saved Trail setting now shows as Gradient.
-
 - **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster (Layered at 3000 px: 23-53 ms to 7-17 ms per frame); edges are antialiased more exactly.
-
 - **BPM sync**: With a beat grid from BPM Analyzer, the Glow, Scanline, Pulse and Shimmer effects follow the playback position and peak on every beat; the BPM tag's tempo is the fallback.
-
 - **Preferences**: Three columns of settings when the preferences window is wide enough.
 
 ### Fixed
-- **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog waited 30 s, restarted the analysis from the beginning, then gave up at 60 s. A running analysis is now waited for.
+- **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog restarted the analysis after 30 s and gave up at 60 s. A running analysis is now waited for.
 
 ### Technical
-- `trustedGrid` / `sectionFit` (`PhraseMarkers.h`): a section fits with at least 8 bars within 15 ms and 3 in 4 heard beats matched (half of those judged) and a tempo 0.45-2.25x the master's; unit-tested on two real grids.
-- `LoopEngine`: opt-in decode-ahead reserve (`setReserveSeconds`), requests turned down across a track change, and one target resolution for Jump and Loop (by, in phase, absolute; a seek's own then from its `to`); unit-tested.
-- `LoopEngine.h`: the gapless loop's audio side (record, repeat, hold the decoded audio, leave without a break) and the timeline that maps output frames to track time, unit-tested with frame-numbered audio. `ZoomRange` gains following and centring on whole pixels; while following, masks cover a view's width more on each side and draw at whole-pixel offsets.
-- `BeatJump.h`: the grid's beats (master or section by section), beat numbers, jumps, loops and the loop's step at each position check, unit-tested.
-- `ZoomRange` (zoom about a point, pan, x to track position) and `aggregateColumns` over a part of the track, unit-tested; a range's columns equal the matching slice of the whole track's.
+- `LoopEngine.h`: the loop DSP's audio side (record, repeat, hold the decoded audio, leave without a break), the timeline from output frames to track time, the decode-ahead reserve and pre-roll, and one target resolution for Jump and Loop (by, in phase, absolute); unit-tested with frame-numbered audio.
+- `BeatJump.h`: the grid's beats (master or section by section), beat numbers, jumps, in-phase landings, loops and the loop's step at each position check, unit-tested.
+- `trustedGrid` / `sectionFit` (`PhraseMarkers.h`): a section fits with at least 8 bars within 15 ms, 3 in 4 heard beats matched (half of those judged) and a tempo 0.45-2.25x the master's; unit-tested on two real grids.
+- `ZoomRange` (zoom about a point, pan, x to track position, following and centring on whole pixels) and `aggregateColumns` over a part of the track, unit-tested; while following, masks cover a view's width more on each side.
 - Mask shapes (`MaskPaths.h`) filled in runs of 32 columns, edges and Classic strokes stroked in runs; unit-tested against the exact pixel coverage.
+- Fine detail: blocks of about 128 frames gathered in the same pass, stored in their own cache table (the waveform format stays version 3) and evicted first over the size limit; unit-tested.
 - A request for the track already being scanned no longer restarts the scan (second seekbar, layout change, watchdog).
-- Fine detail: blocks of about 128 frames (a divisor of the normal block, at most 2^19 per track) gathered in the same pass, segments included; stored in their own cache table (the waveform format stays version 3), evicted first over the size limit; columns narrower than a normal block take their envelope from them. Unit-tested: block values, nesting, segment joins, round trip, a single-sample transient's column.
+- Shared: `jl_beatgrid` (the beat grid service BPM Analyzer provides) and `jl_dependency` (installing a suite component from a dependent's preferences).
 
 ## [2.0.0] - 2026-10-30
 

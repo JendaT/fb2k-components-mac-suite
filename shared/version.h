@@ -14,8 +14,8 @@
 #define PLORG_VERSION_INT 151
 
 // Waveform Seekbar
-#define WAVEFORM_VERSION "2.0.0"
-#define WAVEFORM_VERSION_INT 200
+#define WAVEFORM_VERSION "2.1.0"
+#define WAVEFORM_VERSION_INT 210
 
 // Last.fm Scrobbler
 #define SCROBBLE_VERSION "1.4.1"
