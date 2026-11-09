@@ -699,6 +699,11 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 ## Spectrum Analyzer
 
+### [1.1.1] - 2026-11-09
+
+#### Fixed
+- **Pixel alignment**: The drawing view sits on whole device pixels (thanks @Scannou, #59).
+
 ### [1.1.0] - 2026-10-30
 
 Display P3 colors contributed by @Scannou (#55).

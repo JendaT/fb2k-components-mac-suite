@@ -50,8 +50,8 @@
 #define TIDAL_VERSION_INT 040
 
 // Spectrum Analyzer
-#define SPECTRUM_VERSION "1.1.0"
-#define SPECTRUM_VERSION_INT 110
+#define SPECTRUM_VERSION "1.1.1"
+#define SPECTRUM_VERSION_INT 111
 
 // Vectorscope
 #define VECTORSCOPE_VERSION "1.1.1"
