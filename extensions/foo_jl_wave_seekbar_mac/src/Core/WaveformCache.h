@@ -43,6 +43,15 @@ public:
     // Clear entire cache
     bool clearCache();
 
+    // Remove the entries of local files that no longer exist (see
+    // waveseek::MissingFileCheck). Slow on a network share: call it off the
+    // main thread. The file checks run without the lock.
+    struct MissingFilesResult {
+        size_t entriesRemoved = 0;
+        size_t bytesRemoved = 0;            // waveforms and their detail
+    };
+    MissingFilesResult removeMissingFiles();
+
     // Prune old entries (by access time)
     size_t pruneOldEntries(int maxAgeDays);
 
@@ -78,6 +87,10 @@ private:
 
     // Finalize all cached statements
     void finalizeStatements();
+
+    // Reset all cached statements: VACUUM fails while one is left on a row;
+    // caller holds m_mutex
+    void resetStatements();
 
     sqlite3* m_db = nullptr;
     mutable std::mutex m_mutex;

@@ -98,9 +98,25 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSTextField *_retentionField;
     NSTextField *_cacheStatusLabel;
     NSButton *_clearCacheButton;
+    NSButton *_clearMissingButton;
 }
 
 @end
+
+// Clear Missing Files runs in the background and may outlive the page that
+// started it (the page is rebuilt when the panel widens, and made anew when
+// it is shown again): its result goes to the page showing then.
+// Main thread only.
+static bool s_clearingMissing = false;
+static __weak WaveformPreferences *s_currentPage = nil;
+
+// Bytes as the cache status shows them
+static NSString *formatCacheBytes(size_t bytes) {
+    if (bytes < 1024 * 1024) {
+        return [NSString stringWithFormat:@"%.0f KB", bytes / 1024.0];
+    }
+    return [NSString stringWithFormat:@"%.1f MB", bytes / (1024.0 * 1024.0)];
+}
 
 @implementation WaveformPreferences
 
@@ -131,6 +147,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
 
+    s_currentPage = self;
     [self buildUIColumns:2];
     [self loadSettings];
 }
@@ -595,14 +612,24 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _retentionField = numberField(x + 214, 54, 3650);
     [self addSmallLabel:@"days" frame:NSMakeRect(x + 272, y + 4, 34, 15)];
 
+    // Right-aligned beside the fields: they end at x + 306, the two buttons
+    // take about 245 of the narrowest (two-column) card's 592
     _clearCacheButton = [NSButton buttonWithTitle:@"Clear Cache" target:self action:@selector(clearCacheClicked:)];
     [_clearCacheButton sizeToFit];
     _clearCacheButton.frameOrigin = NSMakePoint(x + w - _clearCacheButton.frame.size.width, y - 3);
     [_page addSubview:_clearCacheButton];
+    _clearMissingButton = [NSButton buttonWithTitle:@"Clear Missing Files" target:self
+                                             action:@selector(clearMissingClicked:)];
+    [_clearMissingButton sizeToFit];
+    _clearMissingButton.frameOrigin = NSMakePoint(NSMinX(_clearCacheButton.frame) - 8
+                                                  - _clearMissingButton.frame.size.width, y - 3);
+    _clearMissingButton.enabled = !s_clearingMissing;
+    [_page addSubview:_clearMissingButton];
     y += 28;
 
     _cacheStatusLabel = [self addHint:@"Cache: Loading..." x:x y:&y width:w lines:1];
-    [self addHint:@"Analysis results per track; cleared tracks are analysed again when played."
+    [self addHint:@"Analysis results per track; cleared tracks are analysed again when played. Clear Missing "
+                   "Files removes only tracks whose files were deleted or moved."
                 x:x y:&y width:w lines:1];
     return [self closeCardAtX:cardX top:top bottom:y width:width];
 }
@@ -718,12 +745,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 - (void)updateCacheStatus {
     auto stats = getWaveformService().getCacheStats();
 
-    NSString *sizeStr;
-    if (stats.totalSizeBytes < 1024 * 1024) {
-        sizeStr = [NSString stringWithFormat:@"%.0f KB", stats.totalSizeBytes / 1024.0];
-    } else {
-        sizeStr = [NSString stringWithFormat:@"%.1f MB", stats.totalSizeBytes / (1024.0 * 1024.0)];
-    }
+    NSString *sizeStr = formatCacheBytes(stats.totalSizeBytes);
 
     NSString *detail = stats.detailCount > 0
         ? [NSString stringWithFormat:@" (%lu with fine detail)", (unsigned long)stats.detailCount] : @"";
@@ -950,6 +972,35 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         getWaveformService().clearCache();
         [self updateCacheStatus];
     }
+}
+
+// No confirmation: only the entries of files that are gone go
+- (void)clearMissingClicked:(id)sender {
+    if (s_clearingMissing) return;
+    s_clearingMissing = true;
+    _clearMissingButton.enabled = NO;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const auto result = getWaveformService().removeMissingFiles();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s_clearingMissing = false;
+            [s_currentPage clearMissingFinishedRemoving:result.entriesRemoved bytes:result.bytesRemoved];
+        });
+    });
+}
+
+- (void)clearMissingFinishedRemoving:(size_t)entries bytes:(size_t)bytes {
+    _clearMissingButton.enabled = YES;
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Clear Missing Files";
+    alert.informativeText = entries == 0
+        ? @"No missing files found."
+        : [NSString stringWithFormat:@"Removed %lu %@ whose files are gone, freeing %@.", (unsigned long)entries,
+                                     entries == 1 ? @"track" : @"tracks", formatCacheBytes(bytes)];
+    [alert addButtonWithTitle:@"OK"];
+    [alert runModal];
+    [self updateCacheStatus];
 }
 
 - (void)showComponentInfo:(NSButton *)sender {

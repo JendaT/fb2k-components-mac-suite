@@ -317,6 +317,10 @@ void WaveformService::clearCache() {
     m_cache.clearCache();
 }
 
+WaveformCache::MissingFilesResult WaveformService::removeMissingFiles() {
+    return m_cache.removeMissingFiles();
+}
+
 WaveformService::CacheStats WaveformService::getCacheStats() const {
     auto raw = m_cache.getStats();
     return {raw.entryCount, raw.totalSizeBytes, raw.detailCount, raw.oldestAccessDays};

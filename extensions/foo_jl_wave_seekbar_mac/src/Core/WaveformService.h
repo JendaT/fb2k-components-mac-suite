@@ -75,6 +75,8 @@ public:
     // Cache management
     void pruneCache();
     void clearCache();
+    // Entries of local files that no longer exist; off the main thread
+    WaveformCache::MissingFilesResult removeMissingFiles();
 
     // Cache statistics (forwarded from WaveformCache)
     struct CacheStats {

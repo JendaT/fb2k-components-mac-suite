@@ -25,6 +25,7 @@ Phrase markers and the mixer's beat jumps and loops need BPM Analyzer 0.1.0 or l
 - **Trusted grid sections**: Beats, jumps, loops and beat-synced effects use the track's main grid where a section doesn't fit its own bars or runs at a multiple of the tempo; phrase markers still show every section.
 - **Locked size follows the screen**: Lock Width and Lock Height keep their share of the screen on another display or resolution (on by default).
 - **Experimental cursor effects**: Particles (sparks off the waveform, more where it is loud), Firewall (flames on the cursor, the played part burning behind it) and Earthcrusher (a jagged cursor that scorches the waveform behind it).
+- **Clear Missing Files**: A Cache button removes only the cached tracks whose files were deleted or moved; streams and files on an unmounted volume are kept.
 
 ### Changed
 - **Glow cursor effect**: Now a bloom centred on the cursor line, fading with distance and pulsing on the beat.

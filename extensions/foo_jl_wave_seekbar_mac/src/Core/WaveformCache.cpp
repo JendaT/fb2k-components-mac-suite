@@ -9,7 +9,10 @@
 #include "CachePolicy.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/stat.h>
+#include <algorithm>
+#include <cerrno>
 #include <ctime>
+#include <vector>
 
 // Construct-on-first-use singleton to avoid static initialization order issues
 WaveformCache& getWaveformCache() {
@@ -165,6 +168,13 @@ void WaveformCache::finalizeStatements() {
     finalize(m_stmtGetDetail);
     finalize(m_stmtStoreDetail);
     finalize(m_stmtTouchDetail);
+}
+
+void WaveformCache::resetStatements() {
+    for (sqlite3_stmt* stmt : { m_stmtHas, m_stmtGet, m_stmtStore, m_stmtRemove, m_stmtTouch, m_stmtPrune,
+                                m_stmtGetDetail, m_stmtStoreDetail, m_stmtTouchDetail }) {
+        if (stmt) sqlite3_reset(stmt);
+    }
 }
 
 void WaveformCache::close() {
@@ -422,6 +432,104 @@ bool WaveformCache::clearCache() {
     sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr);
 
     return true;
+}
+
+WaveformCache::MissingFilesResult WaveformCache::removeMissingFiles() {
+    MissingFilesResult result;
+
+    // The entries' paths, read under the lock
+    std::vector<std::pair<std::string, std::string>> entries;   // path, cache_key
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_db) return result;
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(m_db, "SELECT path, cache_key FROM waveforms", -1, &stmt, nullptr) != SQLITE_OK) {
+            return result;
+        }
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const auto* path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            const auto* key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            if (path && key) entries.emplace_back(path, key);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // The file checks without it, once per path (subsongs share one)
+    std::sort(entries.begin(), entries.end());
+    waveseek::MissingFileCheck check({
+        [](const std::string& path) {
+            struct stat st;
+            return ::stat(path.c_str(), &st) == 0 ? 0 : errno;
+        },
+        [](const std::string& path) -> std::optional<uint64_t> {
+            struct stat st;
+            if (::stat(path.c_str(), &st) != 0) return std::nullopt;
+            return static_cast<uint64_t>(st.st_dev);
+        },
+    });
+    std::vector<std::string> missingKeys;
+    for (size_t i = 0; i < entries.size();) {
+        const std::string& path = entries[i].first;
+        size_t end = i + 1;
+        while (end < entries.size() && entries[end].first == path) ++end;
+        pfc::string8 native;
+        if (waveseek::isLocalFilePath(path) && foobar2000_io::extract_native_path(path.c_str(), native)
+            && check.isMissing(native.c_str())) {
+            for (size_t k = i; k < end; ++k) missingKeys.push_back(entries[k].second);
+        }
+        i = end;
+    }
+    if (missingKeys.empty()) return result;
+
+    // Their removal, in one transaction under the lock again
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_db || !m_stmtRemove) return result;
+    sqlite3_stmt* sizeStmt = nullptr;
+    if (sqlite3_prepare_v2(m_db, R"(
+        SELECT w.size_bytes + COALESCE(d.size_bytes, 0) FROM waveforms w
+        LEFT JOIN waveform_detail d ON d.cache_key = w.cache_key WHERE w.cache_key = ?
+    )", -1, &sizeStmt, nullptr) != SQLITE_OK) {
+        return result;
+    }
+    if (sqlite3_exec(m_db, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_finalize(sizeStmt);
+        return result;
+    }
+
+    bool ok = true;
+    for (const std::string& key : missingKeys) {
+        // A row the size limit evicted meanwhile is skipped
+        sqlite3_reset(sizeStmt);
+        sqlite3_bind_text(sizeStmt, 1, key.c_str(), -1, SQLITE_STATIC);
+        const int rc = sqlite3_step(sizeStmt);
+        if (rc == SQLITE_DONE) continue;
+        if (rc != SQLITE_ROW) { ok = false; break; }
+        const sqlite3_int64 bytes = sqlite3_column_int64(sizeStmt, 0);
+
+        sqlite3_reset(m_stmtRemove);
+        sqlite3_bind_text(m_stmtRemove, 1, key.c_str(), -1, SQLITE_STATIC);
+        const bool removed = sqlite3_step(m_stmtRemove) == SQLITE_DONE;
+        const int changes = sqlite3_changes(m_db);
+        sqlite3_clear_bindings(m_stmtRemove);
+        if (!removed) { ok = false; break; }
+        if (changes > 0) {
+            result.entriesRemoved += static_cast<size_t>(changes);
+            result.bytesRemoved += static_cast<size_t>(std::max<sqlite3_int64>(0, bytes));
+        }
+    }
+    sqlite3_finalize(sizeStmt);
+    if (ok) deleteOrphanedDetail();
+
+    if (!ok || sqlite3_exec(m_db, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(m_db, "ROLLBACK", nullptr, nullptr, nullptr);
+        return {};
+    }
+
+    if (result.entriesRemoved > 0) {
+        resetStatements();
+        sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr);
+    }
+    return result;
 }
 
 size_t WaveformCache::pruneOldEntries(int maxAgeDays) {

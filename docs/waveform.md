@@ -124,6 +124,7 @@ SQLite-based cache stores analyzed waveforms for instant loading:
 - Configurable cache size (default: 2GB)
 - Automatic LRU eviction when limit reached
 - WAL mode for concurrent access
+- **Clear Missing Files** (Preferences > Cache) removes only the entries of local files that no longer exist; streams, archive members and files on a volume that is not mounted are kept
 
 ### Colours
 

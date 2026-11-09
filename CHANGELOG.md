@@ -384,6 +384,7 @@ Phrase markers and the mixer need BPM Analyzer 0.1.0 or later.
 - **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
 - **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
 - **Experimental cursor effects**: Particles, Firewall and Earthcrusher.
+- **Clear Missing Files**: A Cache button removes only cached tracks whose files were deleted or moved.
 
 #### Changed
 - **Glow cursor effect**: A bloom centred on the cursor line.
