@@ -172,6 +172,7 @@ One decode pass per track (`TrackAnalyzer`, in parallel segments for long tracks
 - SHA-256 hash keys for file identification
 - Default max size: 2048 MB
 - Automatic LRU eviction when limit reached
+- Clear Missing Files removes the entries of local files that no longer exist; streams and files on a volume that is not mounted are kept
 
 ### Rendering
 

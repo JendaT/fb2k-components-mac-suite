@@ -36,6 +36,8 @@ Phrase markers and the mixer's beat jumps and loops need BPM Analyzer 0.1.0 or l
 
 ### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform"; the watchdog restarted the analysis after 30 s and gave up at 60 s. A running analysis is now waited for.
+- **Pixel alignment**: The drawing view sits on whole device pixels, so a panel placed between pixels by a splitter is no longer resampled every frame (thanks @Scannou, #59).
+- **Clear Cache**: The cache file now shrinks on disk; compacting it failed while a cache lookup was left open.
 
 ### Technical
 - `LoopEngine.h`: the loop DSP's audio side (record, repeat, hold the decoded audio, leave without a break), the timeline from output frames to track time, the decode-ahead reserve and pre-roll, and one target resolution for Jump and Loop (by, in phase, absolute); unit-tested with frame-numbered audio.

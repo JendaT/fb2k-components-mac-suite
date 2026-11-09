@@ -428,7 +428,8 @@ bool WaveformCache::clearCache() {
         return false;
     }
 
-    // Vacuum to reclaim space
+    // Vacuum to reclaim space (it fails while a lookup is left on a row)
+    resetStatements();
     sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr);
 
     return true;
@@ -524,11 +525,9 @@ WaveformCache::MissingFilesResult WaveformCache::removeMissingFiles() {
         sqlite3_exec(m_db, "ROLLBACK", nullptr, nullptr, nullptr);
         return {};
     }
-
-    if (result.entriesRemoved > 0) {
-        resetStatements();
-        sqlite3_exec(m_db, "VACUUM", nullptr, nullptr, nullptr);
-    }
+    // No VACUUM: it rewrites the whole database under the lock, and the main
+    // thread reads the cache at every track change. New entries reuse the
+    // freed pages.
     return result;
 }
 

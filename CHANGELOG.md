@@ -395,6 +395,8 @@ Phrase markers and the mixer need BPM Analyzer 0.1.0 or later.
 
 #### Fixed
 - **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform" after 60 s.
+- **Pixel alignment**: The drawing view sits on whole device pixels, so a panel placed between pixels by a splitter is no longer resampled every frame (thanks @Scannou, #59).
+- **Clear Cache**: The cache file now shrinks on disk.
 
 ### [2.0.0] - 2026-10-30
 
