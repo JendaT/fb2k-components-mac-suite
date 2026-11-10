@@ -2,7 +2,7 @@
 
 All notable changes to Waveform Seekbar will be documented in this file.
 
-## [2.1.0] - 2026-11-09
+## [2.1.0] - 2026-11-10
 
 Phrase markers and the mixer's beat jumps and loops need BPM Analyzer 0.1.0 or later; the phrase marker settings can install it.
 

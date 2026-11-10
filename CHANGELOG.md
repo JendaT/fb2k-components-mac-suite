@@ -362,7 +362,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Waveform Seekbar
 
-### [2.1.0] - 2026-11-09
+### [2.1.0] - 2026-11-10
 
 Phrase markers and the mixer need BPM Analyzer 0.1.0 or later.
 
