@@ -10,7 +10,7 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 |-----------|-------------|---------|------|
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.1 | [📖](docs/simplaylist.md) |
 | [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.1 | [📖](docs/plorg.md) |
-| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
+| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.1.0 | [📖](docs/waveform.md) |
 | [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.1 | [📖](docs/spectrum.md) |
 | [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.1 | [📖](docs/vectorscope.md) |
 | [Spectrogram](#spectrogram) | Scrolling spectrogram with sharp bass lines and transients | 0.1.0 | [📖](docs/spectrogram.md) |
