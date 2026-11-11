@@ -363,5 +363,6 @@ This creates:
 
 **Manual steps after:**
 1. Create `generate_xcode_project.rb` in the extension
-2. Implement the extension code
-3. Add to README.md Extensions table
+2. Copy `Resources/Info.plist` from another component and change `CFBundleIdentifier` and `CFBundleName`. Keep the `FB2KUpdateSource` key: [foo_component_updater_mac](https://github.com/alies-dev/foo_component_updater_mac) uses it to find the component (#52)
+3. Implement the extension code
+4. Add to README.md Extensions table
