@@ -84,6 +84,8 @@ Keeps the albums you browse in your own order, for example by release date. On b
 
 Clicking an artist (or anything else) in ReFacets refills the hidden **Library Viewer Selection** playlist in ReFacets' own order, albums A–Z by title, and ReFacets has no setting to change that. A sort from the right-click Sort menu lasts only until the next click. With this option on, SimPlaylist re-sorts that playlist by your pattern every time its contents change. The default pattern, `%album artist% - %date% - %album% - %discnumber% - %tracknumber%`, lists each artist's albums oldest first. Other playlists are never touched.
 
+To see the selection in SimPlaylist on a single click, turn on **Enabled** and **Activate** under **Preferences > Advanced > Library Selection Playlist** (thanks @Scannou, #53).
+
 ## Configuration
 
 Access settings via **Preferences > Display > SimPlaylist**
