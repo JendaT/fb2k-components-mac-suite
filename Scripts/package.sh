@@ -47,6 +47,8 @@ typeset -A DIR_MAP=(
     ["vectorscope"]="jl_vectorscope"
     ["jl_vectorscope"]="jl_vectorscope"
     ["jl_spectrogram"]="jl_spectrogram"
+    ["remote"]="jl_remote"
+    ["jl_remote"]="jl_remote"
 )
 
 if [ -z "$1" ]; then
@@ -64,6 +66,7 @@ if [ -z "$1" ]; then
     echo "  spectrum       - Spectrum Analyzer"
     echo "  vectorscope    - Vectorscope"
     echo "  spectrogram    - Spectrogram"
+    echo "  remote         - LAN Remote"
     exit 1
 fi
 
@@ -72,7 +75,7 @@ DIR_NAME="${DIR_MAP[$INPUT_NAME]}"
 
 if [ -z "$DIR_NAME" ]; then
     echo "Error: Unknown extension '$INPUT_NAME'"
-    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, tidal, spectrum, vectorscope, spectrogram"
+    echo "Valid names: simplaylist, plorg, waveform-seekbar, scrobble, albumart, queue_manager, biography, tidal, spectrum, vectorscope, spectrogram, remote"
     exit 1
 fi
 

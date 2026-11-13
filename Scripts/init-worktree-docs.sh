@@ -25,6 +25,7 @@ DISPLAY_NAMES=(
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
     [spectrogram]="Spectrogram"
+    [remote]="LAN Remote"
 )
 
 # Generate BACKLOG.md for a component

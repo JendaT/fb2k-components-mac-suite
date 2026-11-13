@@ -50,6 +50,8 @@ typeset -A COMPONENT_MAP=(
     ["vectorscope"]="foo_jl_vectorscope_mac"
     ["jl_vectorscope"]="foo_jl_vectorscope_mac"
     ["jl_spectrogram"]="foo_jl_spectrogram_mac"
+    ["remote"]="foo_jl_remote_mac"
+    ["jl_remote"]="foo_jl_remote_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -81,6 +83,8 @@ typeset -A VERSION_MAP=(
     ["vectorscope"]="VECTORSCOPE_VERSION"
     ["jl_vectorscope"]="VECTORSCOPE_VERSION"
     ["jl_spectrogram"]="SPECTROGRAM_VERSION"
+    ["remote"]="REMOTE_VERSION"
+    ["jl_remote"]="REMOTE_VERSION"
 )
 
 # Display names for release titles
@@ -112,6 +116,8 @@ typeset -A DISPLAY_NAME_MAP=(
     ["vectorscope"]="Vectorscope"
     ["jl_vectorscope"]="Vectorscope"
     ["jl_spectrogram"]="Spectrogram"
+    ["remote"]="LAN Remote"
+    ["jl_remote"]="LAN Remote"
 )
 
 show_help() {
@@ -129,6 +135,7 @@ show_help() {
     echo "  spectrum      - Spectrum Analyzer"
     echo "  vectorscope   - Vectorscope (goniometer + correlation meter)"
     echo "  spectrogram   - Spectrogram"
+    echo "  remote        - LAN Remote (phone web remote)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"
@@ -274,6 +281,11 @@ fi
 if [ "$COMPONENT" = "spectrogram" ] || [ "$COMPONENT" = "jl_spectrogram" ]; then
     COMPONENT_FILE="foo_jl_spectrogram.fb2k-component"
     TAG_NAME="spectrogram-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "remote" ] || [ "$COMPONENT" = "jl_remote" ]; then
+    COMPONENT_FILE="foo_jl_remote.fb2k-component"
+    TAG_NAME="remote-v${VERSION}"
 fi
 
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="

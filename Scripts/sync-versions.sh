@@ -24,6 +24,7 @@ VERSION_MAP=(
     [spectrum]="SPECTRUM_VERSION"
     [vectorscope]="VECTORSCOPE_VERSION"
     [spectrogram]="SPECTROGRAM_VERSION"
+    [remote]="REMOTE_VERSION"
 )
 
 typeset -A DISPLAY_MAP
@@ -37,6 +38,7 @@ DISPLAY_MAP=(
     [spectrum]="Spectrum Analyzer"
     [vectorscope]="Vectorscope"
     [spectrogram]="Spectrogram"
+    [remote]="LAN Remote"
 )
 
 echo "=== Syncing versions from version.h to README.md ==="
