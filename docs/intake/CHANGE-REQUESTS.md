@@ -543,7 +543,7 @@ CLI change (this documents what already happens), no schema change.
 **Spec basis:** main@c712783. CLI facts checked at `feature/intake-cli`@9cc4393.
 **Status:** open
 
-Thirteen items. **None blocks Part B.** Each has a component-side fallback,
+Fourteen items. **None blocks Part B.** Each has a component-side fallback,
 stated per item, and the Part B plan builds the fallback. They are filed now,
 before building, so amendment 003 can take them together with CR-003.
 
@@ -729,3 +729,24 @@ sidecar survives `gc`, so it is unclear whether `gc_done` ever appears in
 **Requested change.** Pin that.
 
 **Impact.** Doc only.
+
+### CR-004.14 — no-argument `gc` collects every placed root (severity B)
+
+**Problem.** The surface `intake gc [<root...>]` makes roots optional, and
+with none the CLI collects every placed root in every income folder
+(`commands-p3.ts:491-493`). An empty id list from any consumer bug deletes the
+local originals of every placed release. `execute` already requires an explicit
+`--approved` for its all-roots form. The tools worker confirmed the behaviour
+but leaves it unchanged: it is contractual today.
+
+**Requested change.**
+- `gc` without roots requires an explicit `--all`, and returns `E_BAD_ARGS`
+  otherwise.
+- `gc` on a ref that is not `placed` returns `E_BAD_STATUS` for that ref,
+  instead of an ok with empty data.
+
+**Impact.** A surface change (CLI minor) for the tools worker. The component
+never runs `gc` without ids either way.
+
+**Component fallback.** A mutating command is never spawned with zero ids
+(unit-tested).
