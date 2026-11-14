@@ -33,7 +33,8 @@ Merge sibling candidates into their parent when:
   Jockey", "Side Projects", "Discography"), AND
 - children share one (albumartist, album) cluster (album name may differ only
   by a disc suffix), OR children are untagged but parent name parses as a
-  release per the naming convention.
+  release per the naming convention, OR the children's files (with the
+  parent's own, if any) form one Various Artists release (below).
 
 The disc number comes from the numeric or spelled index, else the files' disc
 tags, else sibling order. Bootstrap (doc 2) uses the same disc-dir detector.
@@ -42,7 +43,36 @@ tags, else sibling order. Bootstrap (doc 2) uses the same disc-dir detector.
 Within one candidate, cluster files by normalized (albumartist|artist, album).
 If >1 cluster with ≥2 files each → split into virtual roots (sidecar per
 cluster, files enumerated explicitly; no file moves). Files not fitting any
-cluster (singletons) → `singles` queue entries.
+cluster (singletons) → `singles` queue entries. A candidate whose files form
+one Various Artists release is not split: it is one root.
+
+### Various Artists releases
+Some compilations set each track's album artist to the track's own artist,
+so the (albumartist, album) clusters split one release into per-artist roots
+or singles. A file set is one VA release when all of these hold:
+- every file has the same normalized album tag;
+- the album-artist tags disagree (≥2 distinct values; a set whose album
+  artist is absent or uniform already forms one cluster);
+- ≥3 distinct lead credits (album artist, else artist, with a `feat.`/`ft.`/
+  `featuring` guest suffix dropped), none on half the files or more, so an
+  artist album with a few guest-credited tracks stays that artist's album;
+- every file has a track position and no (disc, track) position is claimed
+  twice, except by copies of the same track (same artist and title: quality
+  shadows). This keeps two artists' same-titled albums apart (both have a
+  track 1).
+
+A VA root gets `cluster.albumartist` "Various Artists" and its purity signal
+clusters by album alone. Doc 2 routes an artist of Various Artists (also
+Various, VA, V.A., V/A) to `structure_slot: "compilations"`.
+
+### Disc in the track number
+When no file of a candidate has a disc tag, every file has a track number,
+each is ≥101 and not a multiple of 100, and the hundreds present are 1..k
+with no gap (101.., 201.., …), the resolver reads disc = ⌊n/100⌋, track =
+n mod 100. Files merged from disc dirs must decode to their dir's disc
+number, else the numbers stay plain. The decoded positions feed the track
+sequence signal, the quality-shadow pairing and the VA position check only;
+`files[].tags` keep the track numbers as read.
 
 ### Pass 4 — signals & confidence
 Per root, compute confidence 0–1 from weighted signals:
@@ -70,8 +100,10 @@ parent dir name parse → fingerprint via identify stage (doc 2), not here.
 name parse (doc 2 grammars) is the fallback. One narrow correction: a trailing
 scene source token in the tag album (WEB, CD, VINYL, TAPE, FLAC, MP3, as in
 "Album WEB") is dropped only when the dir name parse gives the same album
-without it (normalized comparison). Any other tag album is kept as is.
-`files[].tags` always record the tags as read.
+without it (normalized comparison). Any other tag album is kept as is. A
+Various Artists release (above) is credited "Various Artists".
+`files[].tags` record the tags as read, with one exception: a file merged
+from a disc dir that has no disc tag gets the dir's disc number as `disc`.
 
 ## Edge cases (must-handle list)
 

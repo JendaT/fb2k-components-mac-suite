@@ -7,7 +7,7 @@
 import type { AssignConfig, Proposal, RankedFolder, StructureSlot, Tier } from "./types.ts";
 import type { FolderCounts, GenreMap, LabelMap, StyleMap } from "./rules.ts";
 import { findKey } from "./rules.ts";
-import { normKey, round2 } from "./util.ts";
+import { isVariousArtists, normKey, round2 } from "./util.ts";
 
 export const ENGINE_VERSION = "0.1.0";
 
@@ -197,6 +197,9 @@ export function buildTargetPath(
   cfg: AssignConfig,
 ): { target_path: string | null; structure_slot: StructureSlot } {
   if (input.singles) return { target_path: null, structure_slot: "singles" }; // slot layout is a pending TBD
+  // A Various Artists release is not filed under an artist; the compilations
+  // slot layout is pending like the singles slot.
+  if (isVariousArtists(input.artist)) return { target_path: null, structure_slot: "compilations" };
   if (input.tier_eligible === "reject") return { target_path: null, structure_slot: "artist" };
   const tier = cfg.tiers[`music.${input.tier_eligible}`];
   if (!tier || !input.artist || !input.album) return { target_path: null, structure_slot: "artist" };

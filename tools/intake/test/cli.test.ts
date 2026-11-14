@@ -66,7 +66,7 @@ test("scan + status --json round trip with doc 03 summary shape", () => {
   const env = JSON.parse(status.stdout);
   expect(env.ok).toBe(true);
   expect(Array.isArray(env.data)).toBe(true);
-  expect(env.data.length).toBe(21);
+  expect(env.data.length).toBe(22);
   for (const s of env.data) {
     expect(Object.keys(s).sort()).toEqual(["cluster", "id", "needs_review", "placed", "proposal", "root_path", "status"]);
     expect(s.id).toMatch(/^itk_[0-9a-f]{8}$/);
@@ -99,7 +99,7 @@ test("human output renders scan blocks, status rows and the dry-run note", () =>
   const status = run(["status"]);
   expect(status.code).toBe(0);
   expect(status.stdout).toMatch(/itk_[0-9a-f]{8}  resolved/);
-  expect(status.stdout.trim().endsWith("21 sidecar(s)")).toBe(true);
+  expect(status.stdout.trim().endsWith("22 sidecar(s)")).toBe(true);
 
   const resolveDry = run(["resolve", join(corpus.income, "todo"), "--force", "--dry-run"]);
   expect(resolveDry.code).toBe(0);

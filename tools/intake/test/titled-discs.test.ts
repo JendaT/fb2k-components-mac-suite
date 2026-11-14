@@ -19,7 +19,8 @@ beforeAll(async () => {
   // Audio from the corpus's multi-disc fixture (the todo dir with CD1 + CD2):
   // one tag cluster, disc tags 1 and 2.
   const todo = join(corpus.income, "todo");
-  const src = readdirSync(todo).find((n) => existsSync(join(todo, n, "CD1")) && existsSync(join(todo, n, "CD2")));
+  // Sorted: on a case-insensitive volume the VA fixture's cd1/cd2 match too.
+  const src = readdirSync(todo).sort().find((n) => existsSync(join(todo, n, "CD1")) && existsSync(join(todo, n, "CD2")));
   expect(src).toBeDefined();
   release = join(corpus.dir, "titled", "Artist Name [2011] Album Name");
   DISC_DIRS.forEach((discDir, i) => {

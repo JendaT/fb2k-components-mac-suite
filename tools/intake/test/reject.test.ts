@@ -229,7 +229,7 @@ test("mixed refs: exit 1 partial with the rejected subset (CLI envelope)", () =>
 
 test("status keeps rejected roots in the default inventory", async () => {
   const all = (await cmdStatus([], OPTS)).data!;
-  expect(all.length).toBe(21); // nothing dropped from the full fixture inventory
+  expect(all.length).toBe(22); // nothing dropped from the full fixture inventory
   const rejected = all.filter((r) => r.status === "rejected").map((r) => r.root_path);
   expect(rejected).toEqual(expect.arrayContaining([REFLECTIVE(), POLLEN(), KOAN(), BLUETECH(), OTT()]));
   const filtered = (await cmdStatus([], { ...OPTS, filters: { status: "rejected" } })).data!;

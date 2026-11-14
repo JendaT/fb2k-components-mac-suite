@@ -95,6 +95,28 @@ test("scene rip with \"Album WEB\" tags: cluster.album drops the source token th
   for (const f of doc!.files as { tags: { album: string } }[]) expect(f.tags.album).toBe("Album WEB");
 });
 
+test("2-disc VA web compilation (per-track album artists, disc in track number) is one root", () => {
+  const va = "todo/VA_-_Example_Compilation_(Web_Version_2CD)";
+  const produced = collectSidecars(corpus.income);
+  // One sidecar for the whole release: no per-artist virtual roots or singles.
+  expect(produced.map(([rel]) => rel).filter((rel) => rel.startsWith(`${va}/`))).toEqual([`${va}/.intake.json`]);
+  const doc = new Map(produced).get(`${va}/.intake.json`)!;
+  expect(doc.virtual).toBe(false);
+  expect(doc.singles).toBeUndefined();
+  expect(doc.discs).toEqual([{ dir: "cd1", disc: 1 }, { dir: "cd2", disc: 2 }]);
+  const cluster = doc.cluster as { albumartist: string; signals: { purity: number; seq: number } };
+  expect(cluster.albumartist).toBe("Various Artists");
+  expect(cluster.signals.purity).toBe(1);
+  expect(cluster.signals.seq).toBe(1); // 101..104, 201..205 decoded as discs 1-2, tracks 1..n
+  // Per-file tags keep the files' own values: track numbers as read, each
+  // track's own album artist (disc filled from the disc dir, as for any disc dir).
+  const files = doc.files as { path: string; tags: { albumartist: string; tracknumber: number; disc: number } }[];
+  expect(files.length).toBe(9);
+  expect(files.map((f) => f.tags.tracknumber)).toEqual([101, 102, 103, 104, 201, 202, 203, 204, 205]);
+  expect(files.map((f) => f.tags.disc)).toEqual([1, 1, 1, 1, 2, 2, 2, 2, 2]);
+  expect(new Set(files.map((f) => f.tags.albumartist)).size).toBe(8);
+});
+
 test("junk files are never referenced by any sidecar", () => {
   for (const [, doc] of collectSidecars(corpus.income)) {
     for (const f of (doc.files as { path: string }[]) ?? []) {

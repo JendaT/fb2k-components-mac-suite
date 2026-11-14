@@ -1963,5 +1963,229 @@
         "by": "intake@<cli>"
       }
     ]
+  },
+  "todo/VA_-_Example_Compilation_(Web_Version_2CD)/.intake.json": {
+    "schema": 1,
+    "id": "itk_642b001b",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "cd1/01 Artist One - First Song.mp3",
+        "audio_hash": "mp3sha1:f42c08e7dd92403fb4da4b796e543c7b7fb68294",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist One",
+          "artist": "Artist One",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "First Song",
+          "tracknumber": 101,
+          "disc": 1,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd1/02 Artist Two - Second Song.mp3",
+        "audio_hash": "mp3sha1:4b3b4e1ccbea3defd1a048affe8a31dd97616ea7",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Two",
+          "artist": "Artist Two",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Second Song",
+          "tracknumber": 102,
+          "disc": 1,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd1/03 Artist Three - Third Song.mp3",
+        "audio_hash": "mp3sha1:85409bb343b92fbffc79ff62fe393a71262ad92f",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Three",
+          "artist": "Artist Three",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Third Song",
+          "tracknumber": 103,
+          "disc": 1,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd1/04 Artist Four - Fourth Song.mp3",
+        "audio_hash": "mp3sha1:522ccca9b412baf2b9916cf0ff739c0afdd8ba81",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Four",
+          "artist": "Artist Four",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Fourth Song",
+          "tracknumber": 104,
+          "disc": 1,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd2/01 Artist Five - Fifth Song.mp3",
+        "audio_hash": "mp3sha1:ec88c83547d1333cab568047e5d7f65333cf3bd5",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Five",
+          "artist": "Artist Five",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Fifth Song",
+          "tracknumber": 201,
+          "disc": 2,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd2/02 Artist Two - Sixth Song.mp3",
+        "audio_hash": "mp3sha1:2a9ebda9f12ecccb21fcc128ed9b7bd634a86ac4",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Two",
+          "artist": "Artist Two",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Sixth Song",
+          "tracknumber": 202,
+          "disc": 2,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd2/03 Artist Six - Seventh Song.mp3",
+        "audio_hash": "mp3sha1:ace3ddd49ea31211c04bdc7a1b22fd5c47a8e48d",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Six",
+          "artist": "Artist Six",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Seventh Song",
+          "tracknumber": 203,
+          "disc": 2,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd2/04 Artist Seven - Eighth Song.mp3",
+        "audio_hash": "mp3sha1:c28cf2c6a186dd09844936de1cf9f2f4c62c6531",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Seven",
+          "artist": "Artist Seven",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Eighth Song",
+          "tracknumber": 204,
+          "disc": 2,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "cd2/05 Artist Eight - Ninth Song.mp3",
+        "audio_hash": "mp3sha1:3975a98704d421c9f9e540d4bfd0e3d58a33552f",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": "Artist Eight",
+          "artist": "Artist Eight",
+          "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+          "title": "Ninth Song",
+          "tracknumber": 205,
+          "disc": 2,
+          "date": "2011"
+        }
+      }
+    ],
+    "discs": [
+      {
+        "dir": "cd1",
+        "disc": 1
+      },
+      {
+        "dir": "cd2",
+        "disc": 2
+      }
+    ],
+    "cluster": {
+      "albumartist": "Various Artists",
+      "album": "Example Compilation - An Example Site compilation (2CD Web Edition)",
+      "confidence": 0.77,
+      "needs_review": true,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0,
+        "name_parse": 0.5,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@<cli>"
+      }
+    ]
   }
 }

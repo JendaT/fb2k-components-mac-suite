@@ -293,6 +293,36 @@ async function main(): Promise<void> {
     writeFileSync(at("sfv"), sceneFiles.map((n) => `${n} ${crc(n)}`).join("\n") + "\n");
   }
 
+  // Two-disc Various Artists web compilation: lowercase disc dirs, each
+  // track's album artist is its own artist (one artist on both discs), one
+  // album tag, no disc tag, the disc encoded in the track number (101..,
+  // 201..), plus a non-audio Artwork/ dir and a web page beside the discs.
+  // Must resolve to one root at the VA dir. Placeholder names only.
+  const va = "todo/VA_-_Example_Compilation_(Web_Version_2CD)";
+  const vaAlbum = "Example Compilation - An Example Site compilation (2CD Web Edition)";
+  const vaDiscs = [
+    [["Artist One", "First Song"], ["Artist Two", "Second Song"], ["Artist Three", "Third Song"], ["Artist Four", "Fourth Song"]],
+    [["Artist Five", "Fifth Song"], ["Artist Two", "Sixth Song"], ["Artist Six", "Seventh Song"], ["Artist Seven", "Eighth Song"], ["Artist Eight", "Ninth Song"]],
+  ];
+  let vaFreq = 2600;
+  for (const [d, tracks] of vaDiscs.entries()) {
+    for (const [i, [artist, title]] of tracks.entries()) {
+      await genAudio(
+        join(INCOME, va, `cd${d + 1}`, `${String(i + 1).padStart(2, "0")} ${artist} - ${title}.mp3`), "mp3-320",
+        { album_artist: artist!, artist: artist!, album: vaAlbum, title: title!, track: (d + 1) * 100 + i + 1, date: "2011" },
+        { freq: vaFreq },
+      );
+      vaFreq += 37;
+    }
+  }
+  const vaPdf = join(INCOME, va, "Artwork", "cover.pdf");
+  if (wanted(vaPdf)) {
+    mkdirSync(dirname(vaPdf), { recursive: true });
+    writeFileSync(vaPdf, "%PDF-1.4\n%%EOF\n");
+  }
+  const vaHtm = join(INCOME, va, "contest01.htm");
+  if (wanted(vaHtm)) writeFileSync(vaHtm, "<html><body>Example page</body></html>\n");
+
   // NAS thumbnail dir junk (committable; .DS_Store/._*/Thumbs.db junk is
   // injected by the test helper instead, since the repo .gitignore excludes
   // those names).

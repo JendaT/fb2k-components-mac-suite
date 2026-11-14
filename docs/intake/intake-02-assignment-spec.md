@@ -183,6 +183,10 @@ Decisions made during implementation; normative for schema v1 consumers.
 - **Singles**: `structure_slot: "singles"`, `target_path: null` — the singles
   slot layout is one of the five pending structure TBDs; propose (P3) fills it
   once decided. Tier `reject` likewise gets `target_path: null`.
+- **Compilations**: an artist of Various Artists (also Various, VA, V.A.,
+  V/A; doc 1 credits a VA release "Various Artists") gets `structure_slot:
+  "compilations"`, `target_path: null` — the compilations slot layout is
+  pending like the singles slot; propose reports it as pending.
 - **Config** (`structure.yaml`): `assign.weights{artist,label,similar,style}`,
   `assign.short_circuit{min_releases,confidence}`,
   `assign.needs_review{confidence,margin}`, `assign.shim_accept_distance`,

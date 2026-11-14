@@ -147,7 +147,10 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     }
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
-      const why = root.sidecar.singles ? "singles slot pending" : !root.sidecar.proposal ? "no assignment evidence" : "no target path (tier reject?)";
+      const why = root.sidecar.singles ? "singles slot pending"
+        : !root.sidecar.proposal ? "no assignment evidence"
+        : root.sidecar.proposal.structure_slot === "compilations" ? "compilations slot pending"
+        : "no target path (tier reject?)";
       errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${why}`, path: root.dir });
       continue;
     }

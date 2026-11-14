@@ -138,6 +138,13 @@ test("target path: tier routing + naming template (doc 02 example shape)", () =>
 
   const noYear = buildTargetPath(input({ artist: "X", album: "Y", year: null }), AMB, cfg);
   expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/X/X Y`);
+
+  // Various Artists (the resolver's VA credit, or Discogs' "Various"): compilations
+  // slot, no target until its layout is decided.
+  for (const artist of ["Various Artists", "Various", "VA"]) {
+    const comp = buildTargetPath(input({ artist, album: "Y", label: "Some Label", catno: "CAT1" }), AMB, cfg);
+    expect(comp).toEqual({ target_path: null, structure_slot: "compilations" });
+  }
 });
 
 test("resolver config unaffected by assign sections in structure.yaml", () => {

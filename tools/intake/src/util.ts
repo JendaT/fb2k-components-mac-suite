@@ -166,6 +166,37 @@ export function discNumberFromDirName(name: string): number | null {
   return null; // letter index (Side A): no number
 }
 
+/**
+ * Disc encoded in the track number (101..1nn, 201..2nn, …), as some web
+ * stores number multi-disc sets: disc = floor(n/100), track = n mod 100.
+ * Applies only when the whole set agrees: every file has a track number, each
+ * is >= 101 and not a multiple of 100, and the hundreds present are 1..k with
+ * no gap. Returns one position per input, or null when the rule does not
+ * apply (track numbers are then plain). The caller checks that no file has a
+ * disc tag.
+ */
+export function decodeDiscInTrack(tracks: (number | null)[]): { disc: number; track: number }[] | null {
+  if (tracks.length === 0) return null;
+  const out: { disc: number; track: number }[] = [];
+  const discs = new Set<number>();
+  for (const n of tracks) {
+    if (n == null || !Number.isInteger(n) || n < 101 || n % 100 === 0) return null;
+    const disc = Math.floor(n / 100);
+    discs.add(disc);
+    out.push({ disc, track: n % 100 });
+  }
+  return discs.size === Math.max(...discs) ? out : null; // min is >= 1, so this means 1..k
+}
+
+/** The `cluster.albumartist` the resolver gives a Various Artists release (doc 01). */
+export const VARIOUS_ARTISTS = "Various Artists";
+
+/** Artist values that stand for a Various Artists compilation: Various Artists, Various, VA, V.A., V/A. */
+export function isVariousArtists(name: string | null): boolean {
+  const k = normKey(name).replace(/[\s./]/g, "");
+  return k === "variousartists" || k === "various" || k === "va";
+}
+
 export function sha1Hex(data: Uint8Array | string): string {
   const h = new Bun.CryptoHasher("sha1");
   h.update(data);

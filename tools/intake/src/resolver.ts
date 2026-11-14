@@ -11,7 +11,10 @@ import type {
   Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Tier,
 } from "./types.ts";
 import { CLI_VERSION, RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
-import { DISC_DIR_RE, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, makeId, mapLimit, normAlbum, normKey, round2, walkDirs, type DirEntry } from "./util.ts";
+import {
+  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, makeId, mapLimit,
+  normAlbum, normKey, round2, VARIOUS_ARTISTS, walkDirs, type DirEntry,
+} from "./util.ts";
 
 export interface ResolveContext {
   config: ResolverConfig;
@@ -25,6 +28,12 @@ export interface ResolveResult {
   kept: string[]; // dirs with pre-existing sidecars, trusted (no --force)
 }
 
+/** Release position for the internal signals (completeness, shadows, VA check). */
+interface Pos {
+  disc: number;
+  track: number | null;
+}
+
 interface CandFile {
   rel: string; // relative to the candidate dir
   abs: string;
@@ -32,6 +41,9 @@ interface CandFile {
   hash: string;
   hashIssues: string[];
   shadow: boolean;
+  tagDisc: number | null; // disc tag as read (pass 2 fills snap.tags.disc from the disc dir)
+  dirDisc: number | null; // disc number of the disc dir the file was merged from
+  pos: Pos; // set by setPositions once the candidate's file set is final
 }
 
 interface Candidate {
@@ -66,13 +78,66 @@ function trackOf(f: CandFile): number | null {
   return f.snap.tags.tracknumber ?? parseFilename(basename(f.rel)).tracknumber;
 }
 
+/**
+ * Positions over one candidate's file set. The disc encoded in the track
+ * number (101.., 201..) is decoded when no file has a disc tag and every file
+ * merged from a disc dir decodes to that dir's disc number. Otherwise the disc
+ * is the disc tag, else the disc dir, else 1, and the track number is as read.
+ * Internal only: the sidecar's files[].tags are not rewritten.
+ */
+function setPositions(files: CandFile[]): void {
+  const decoded = files.some((f) => f.tagDisc != null) ? null : decodeDiscInTrack(files.map(trackOf));
+  const agrees = decoded !== null && files.every((f, i) => f.dirDisc == null || f.dirDisc === decoded[i]!.disc);
+  files.forEach((f, i) => {
+    f.pos = agrees ? decoded[i]! : { disc: f.tagDisc ?? f.dirDisc ?? 1, track: trackOf(f) };
+  });
+}
+
+/** Lead credit: the album artist, else the artist, without a "feat." guest suffix. */
+function creditOf(f: CandFile): string {
+  const name = normKey(f.snap.tags.albumartist) || normKey(f.snap.tags.artist);
+  return name.replace(/^(.+?)\s*[([]?\s*\b(?:feat\.?|ft\.?|featuring)\s.*$/, "$1").trim();
+}
+
+/**
+ * One Various Artists release (doc 01): every file carries the same album
+ * tag while the album-artist tags disagree; at least three lead credits, none
+ * on half the files or more (an artist album with guests stays that artist's);
+ * and no (disc, track) position claimed twice, except by copies of the same
+ * track (quality shadows). The position check is what keeps two artists'
+ * same-titled albums apart. Positions must be set.
+ */
+function isVaRelease(files: CandFile[]): boolean {
+  if (files.length < 3) return false;
+  const album = normAlbum(files[0]!.snap.tags.album);
+  if (!album || files.some((f) => normAlbum(f.snap.tags.album) !== album)) return false;
+  if (new Set(files.map((f) => normKey(f.snap.tags.albumartist)).filter(Boolean)).size < 2) return false;
+  const credits = new Map<string, number>();
+  for (const f of files) {
+    const c = creditOf(f);
+    if (!c) return false;
+    credits.set(c, (credits.get(c) ?? 0) + 1);
+  }
+  if (credits.size < 3 || Math.max(...credits.values()) * 2 >= files.length) return false;
+  const claimed = new Map<string, string>();
+  for (const f of files) {
+    if (f.pos.track == null) return false;
+    const at = `${f.pos.disc}:${f.pos.track}`;
+    const track = `${normKey(f.snap.tags.artist)}|${normKey(f.snap.tags.title)}`;
+    const prev = claimed.get(at);
+    if (prev !== undefined && prev !== track) return false;
+    claimed.set(at, track);
+  }
+  return true;
+}
+
 /** Mark lossy duplicates of lossless tracks as quality shadows (same disc+track). */
 function markShadows(files: CandFile[]): void {
   const groups = new Map<string, CandFile[]>();
   for (const f of files) {
-    const t = trackOf(f);
+    const t = f.pos.track;
     if (t == null) continue;
-    const key = `${f.snap.tags.disc ?? 1}:${t}:${normKey(f.snap.tags.title ?? "")}`;
+    const key = `${f.pos.disc}:${t}:${normKey(f.snap.tags.title ?? "")}`;
     const g = groups.get(key) ?? [];
     g.push(f);
     groups.set(key, g);
@@ -106,9 +171,9 @@ function seqScore(files: CandFile[]): number {
   const byDisc = new Map<number, Set<number>>();
   const countByDisc = new Map<number, number>();
   for (const f of files) {
-    const d = f.snap.tags.disc ?? 1;
+    const d = f.pos.disc;
     countByDisc.set(d, (countByDisc.get(d) ?? 0) + 1);
-    const t = trackOf(f);
+    const t = f.pos.track;
     if (t == null || t < 1) continue;
     const s = byDisc.get(d) ?? new Set<number>();
     s.add(t);
@@ -198,6 +263,7 @@ export class Resolver {
     discs: { dir: string; disc: number }[] | null;
     virtual: boolean;
     singles: boolean;
+    va?: boolean; // one Various Artists release (isVaRelease)
     artifactNames: string[];
     nameParseSource: string; // dir name used for the name_parse signal
     extraIssues?: string[];
@@ -205,6 +271,8 @@ export class Resolver {
     const { config } = this.ctx;
     const primary = opts.files.filter((f) => !f.shadow);
     const tagged = primary.filter((f) => clusterKey(f) !== UNTAGGED);
+    // A VA release clusters by album alone: its album-artist tags are per track.
+    const keyOf = opts.va ? (f: CandFile) => normAlbum(f.snap.tags.album) : clusterKey;
 
     // Signals
     let signals: Signals;
@@ -218,7 +286,7 @@ export class Resolver {
         quality_homog: 1,
       };
     } else {
-      const keys = tagged.map(clusterKey);
+      const keys = tagged.map(keyOf);
       const top = majority(keys);
       signals = {
         purity: primary.length === 0 ? 0 : keys.filter((k) => k === top).length / primary.length,
@@ -244,8 +312,10 @@ export class Resolver {
         signals.quality_homog * w.quality_homog,
     );
 
-    // Cluster display values: tags first, dir-name parse as fallback.
+    // Cluster display values: tags first, dir-name parse as fallback. A VA
+    // release is credited to Various Artists, not to one of its track artists.
     const albumartist =
+      (opts.va ? VARIOUS_ARTISTS : null) ??
       majority(primary.map((f) => f.snap.tags.albumartist)) ??
       (new Set(primary.map((f) => normKey(f.snap.tags.artist)).filter(Boolean)).size === 1
         ? majority(primary.map((f) => f.snap.tags.artist))
@@ -333,7 +403,11 @@ export class Resolver {
       if (e.audioFiles.length === 0) continue;
       const files: CandFile[] = await mapLimit(e.audioFiles, IO_CONCURRENCY, async (name) => {
         const abs = join(e.path, name);
-        return { rel: name, abs, snap: await readSnapshot(abs), hash: "", hashIssues: [], shadow: false };
+        const snap = await readSnapshot(abs);
+        return {
+          rel: name, abs, snap, hash: "", hashIssues: [], shadow: false,
+          tagDisc: snap.tags.disc, dirDisc: null, pos: { disc: 1, track: null },
+        };
       });
       candidates.push({ dir: e.path, files, artifactNames: [...e.otherFiles], discs: null });
     }
@@ -352,6 +426,24 @@ export class Resolver {
       parents.set(parent, list);
     }
     for (const [parent, children] of parents) {
+      children.sort((a, b) => a.dir.localeCompare(b.dir));
+      const discs = children.map((c, i) => ({
+        dir: basename(c.dir),
+        disc: discNumberFromDirName(basename(c.dir)) ?? majority(c.files.map((f) => f.snap.tags.disc)) ?? i + 1,
+      }));
+      // The children's files as the merged root holds them: path under the
+      // disc dir, disc tag filled from the dir when the file has none.
+      const childFiles = children.map((c, i) => {
+        const { dir, disc } = discs[i]!;
+        return c.files.map((f): CandFile => ({
+          ...f,
+          rel: `${dir}/${f.rel}`,
+          dirDisc: disc,
+          snap: { ...f.snap, tags: { ...f.snap.tags, disc: f.snap.tags.disc ?? disc } },
+        }));
+      });
+      const parentCand = byDir.get(parent);
+
       const clusters = children.map((c) => {
         const tagged = c.files.filter((f) => clusterKey(f) !== UNTAGGED);
         return tagged.length > 0 ? majority(tagged.map(clusterKey)) : null;
@@ -359,32 +451,29 @@ export class Resolver {
       const allUntagged = clusters.every((k) => k === null);
       const oneCluster = !allUntagged && new Set(clusters.filter(Boolean)).size === 1 && !clusters.includes(null);
       const parentParses = parseDirName(basename(parent)) !== null;
-      if (!(oneCluster || (allUntagged && parentParses))) continue;
+      if (!(oneCluster || (allUntagged && parentParses))) {
+        // Per-track album artists split the clusters; one VA release still merges.
+        const all = [...(parentCand?.files ?? []), ...childFiles.flat()];
+        setPositions(all);
+        if (!isVaRelease(all)) continue;
+      }
 
-      const parentCand = byDir.get(parent);
       const merged: Candidate = parentCand ?? {
         dir: parent,
         files: [],
         artifactNames: [...(byPath.get(parent)?.otherFiles ?? [])],
         discs: null,
       };
-      merged.discs = [];
-      children
-        .sort((a, b) => a.dir.localeCompare(b.dir))
-        .forEach((c, i) => {
-          const dirName = basename(c.dir);
-          const disc =
-            discNumberFromDirName(dirName) ?? majority(c.files.map((f) => f.snap.tags.disc)) ?? i + 1;
-          merged.discs!.push({ dir: dirName, disc });
-          for (const f of c.files) {
-            merged.files.push({ ...f, rel: `${dirName}/${f.rel}`, snap: { ...f.snap, tags: { ...f.snap.tags, disc: f.snap.tags.disc ?? disc } } });
-          }
-          merged.artifactNames.push(...c.artifactNames);
-          mergedAway.add(c.dir);
-        });
+      merged.discs = discs;
+      children.forEach((c, i) => {
+        merged.files.push(...childFiles[i]!);
+        merged.artifactNames.push(...c.artifactNames);
+        mergedAway.add(c.dir);
+      });
       if (!parentCand) candidates.push(merged);
     }
     candidates = candidates.filter((c) => !mergedAway.has(c.dir));
+    for (const c of candidates) setPositions(c.files);
 
     // Passes 3 + 4 per candidate.
     for (const c of candidates) {
@@ -404,9 +493,11 @@ export class Resolver {
       markShadows(c.files);
       const emit = (opts: Parameters<Resolver["buildSidecar"]>[0]) => roots.push(this.buildSidecar(opts));
 
-      if (c.discs) {
-        // Deliberately merged; never split a multi-disc set.
-        emit({ dir: c.dir, files: c.files, discs: c.discs, virtual: false, singles: false, artifactNames: c.artifactNames, nameParseSource: basename(c.dir) });
+      const va = isVaRelease(c.files);
+      if (c.discs || va) {
+        // A merged multi-disc set is never split; neither is one VA release,
+        // whose per-track album artists would otherwise split it into singles.
+        emit({ dir: c.dir, files: c.files, discs: c.discs, virtual: false, singles: false, va, artifactNames: c.artifactNames, nameParseSource: basename(c.dir) });
         continue;
       }
 

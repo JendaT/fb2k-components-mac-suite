@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, incomeFor, loadConfig, loadIncome } from "../src/config.ts";
 import { albumFromTags, parseDirName } from "../src/naming.ts";
 import { parseFilename } from "../src/tags.ts";
-import { DISC_DIR_RE, discNumberFromDirName, isJunkFile, mapLimit, normAlbum, normKey } from "../src/util.ts";
+import {
+  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, isJunkFile, isVariousArtists, mapLimit, normAlbum, normKey,
+} from "../src/util.ts";
 
 test("naming: full grammars score 1.0", () => {
   const a = parseDirName("Aes Dana [2012] Pollen (Ultimae Records; inre042)");
@@ -182,6 +184,33 @@ test("disc dirs: titled forms after a numeric index match, other words do not", 
   ]) {
     expect(DISC_DIR_RE.test(name)).toBe(false);
     expect(discNumberFromDirName(name)).toBeNull();
+  }
+});
+
+test("disc in track number: 1xx/2xx decode to disc + track", () => {
+  expect(decodeDiscInTrack([101, 102, 103, 201, 202])).toEqual([
+    { disc: 1, track: 1 }, { disc: 1, track: 2 }, { disc: 1, track: 3 }, { disc: 2, track: 1 }, { disc: 2, track: 2 },
+  ]);
+  expect(decodeDiscInTrack([201, 101, 112])).toEqual([{ disc: 2, track: 1 }, { disc: 1, track: 1 }, { disc: 1, track: 12 }]);
+  expect(decodeDiscInTrack([101, 102])).toEqual([{ disc: 1, track: 1 }, { disc: 1, track: 2 }]); // one disc
+});
+
+test("disc in track number: plain, mixed and odd numberings stay untouched", () => {
+  expect(decodeDiscInTrack([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])).toBeNull();
+  expect(decodeDiscInTrack([101, 102, 3, 4])).toBeNull(); // mixed 1xx and plain
+  expect(decodeDiscInTrack([101, 102, null])).toBeNull(); // a file without a track number
+  expect(decodeDiscInTrack([201, 202])).toBeNull(); // no disc 1
+  expect(decodeDiscInTrack([101, 301])).toBeNull(); // gap: disc 2 missing
+  expect(decodeDiscInTrack([100, 101])).toBeNull(); // x00 is not a position
+  expect(decodeDiscInTrack([])).toBeNull();
+});
+
+test("various artists names", () => {
+  for (const n of ["Various Artists", "various artists", "Various", "VA", "V.A.", "V/A", "v. a."]) {
+    expect(isVariousArtists(n)).toBe(true);
+  }
+  for (const n of [null, "", "Artist One", "Vanessa", "Various Artists Tribute Band"]) {
+    expect(isVariousArtists(n)).toBe(false);
   }
 });
 
