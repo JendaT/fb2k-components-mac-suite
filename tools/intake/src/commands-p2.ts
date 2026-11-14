@@ -14,7 +14,7 @@ import {
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
 import type { HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
-import { RESOLVER_VERSION } from "./types.ts";
+import { CLI_VERSION } from "./types.ts";
 import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
@@ -83,7 +83,7 @@ export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
 }
 
 export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean, reason?: string): void {
-  const entry: HistoryEvent = { ts: isoLocal(), event, by: `intake@${RESOLVER_VERSION}` };
+  const entry: HistoryEvent = { ts: isoLocal(), event, by: `intake@${CLI_VERSION}` };
   if (reason) entry.reason = reason;
   root.sidecar.history.push(entry);
   if (!dryRun) writeFileSync(root.sidecarPath, serializeSidecar(root.sidecar));

@@ -1,6 +1,7 @@
 import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CLI_VERSION } from "../src/types.ts";
 import { isSidecarName, sha1Hex } from "../src/util.ts";
 
 export const FIXTURES = join(import.meta.dir, "..", "fixtures");
@@ -75,10 +76,16 @@ export function collectSidecars(root: string): [string, Record<string, unknown>]
   return out;
 }
 
-/** Strip volatile fields (timestamps) so sidecars compare deterministically. */
+/**
+ * Strip volatile fields so sidecars compare deterministically: timestamps, and
+ * the current CLI version in history `by` (any other version still mismatches).
+ */
 export function normalizeSidecar(doc: Record<string, unknown>): Record<string, unknown> {
   const copy = structuredClone(doc);
   copy.resolved_at = "<ts>";
-  for (const h of (copy.history as Record<string, unknown>[]) ?? []) h.ts = "<ts>";
+  for (const h of (copy.history as Record<string, unknown>[]) ?? []) {
+    h.ts = "<ts>";
+    if (h.by === `intake@${CLI_VERSION}`) h.by = "intake@<cli>";
+  }
   return copy;
 }

@@ -144,9 +144,11 @@ integer kbps (lossy only, null for lossless); `discs` is
 lifecycle and `audio_hash` algorithm are normative in doc 3.
 
 `history[]` is append-only, one entry per transition or stage:
-`{ "ts", "event", "by" }`. A `rejected` entry (`intake reject`, doc 3) also
+`{ "ts", "event", "by" }`. `by` is `intake@<CLI semver>`, the CLI that made
+the transition (the resolver's own version is `resolver_version`, the
+engine's is `proposal.engine_version`). A `rejected` entry (`intake reject`, doc 3) also
 carries `"reason"` (free-form text) when `--reason` was given:
-`{ "ts": "…", "event": "rejected", "by": "intake@0.1.0", "reason": "…" }`.
+`{ "ts": "…", "event": "rejected", "by": "intake@0.2.0", "reason": "…" }`.
 
 ## CLI surface (this doc's commands)
 

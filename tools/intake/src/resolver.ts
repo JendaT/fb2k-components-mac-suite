@@ -10,7 +10,7 @@ import { readSnapshot, parseFilename, type AudioSnapshot } from "./tags.ts";
 import type {
   Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Tier,
 } from "./types.ts";
-import { RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
+import { CLI_VERSION, RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
 import { DISC_DIR_RE, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, makeId, mapLimit, normAlbum, normKey, round2, walkDirs, type DirEntry } from "./util.ts";
 
 export interface ResolveContext {
@@ -297,7 +297,7 @@ export class Resolver {
       identification: null,
       proposal: null,
       status,
-      history: [{ ts, event: status === "resolved" ? "resolved" : "discovered", by: `intake@${RESOLVER_VERSION}` }],
+      history: [{ ts, event: status === "resolved" ? "resolved" : "discovered", by: `intake@${CLI_VERSION}` }],
     };
     if (opts.singles) sidecar.singles = true;
     return {
@@ -483,7 +483,7 @@ export class Resolver {
       identification: null,
       proposal: null,
       status: "new",
-      history: [{ ts, event: "discovered", by: `intake@${RESOLVER_VERSION}` }],
+      history: [{ ts, event: "discovered", by: `intake@${CLI_VERSION}` }],
     };
     return { dir: e.path, sidecarName: `.intake.${id}.json`, sidecar };
   }
