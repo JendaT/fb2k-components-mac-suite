@@ -6,11 +6,13 @@
 //   - ok is true iff the exit code is 0
 //   - exit 2 carries data: null; exit 1 carries the successful subset
 //   - reserved host-synthesized codes are never emitted by the CLI
+//   - an uncaught throw still yields one envelope (E_INTERNAL, exit 2)
 //
 // If doc 03 is amended differently, this file is the thing to change.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupCorpus, type Corpus } from "./helpers.ts";
 
@@ -105,5 +107,35 @@ test("host-synthesized codes are reserved: the CLI never emits them", () => {
     for (const code of reserved) {
       expect({ file: name, emits: text.includes(`"${code}"`) }).toEqual({ file: name, emits: false });
     }
+  }
+});
+
+test("an uncaught throw still emits one envelope: E_INTERNAL, data null, exit 2", () => {
+  // A malformed rules file makes the YAML loader throw before any command
+  // logic runs; stdout must still carry exactly one envelope.
+  const rules = mkdtempSync(join(tmpdir(), "intake-badrules-"));
+  try {
+    cpSync(corpus.rules, rules, { recursive: true });
+    writeFileSync(join(rules, "income.yaml"), "income: [unclosed\n");
+    for (const json of [true, false]) {
+      const proc = Bun.spawnSync([process.execPath, "run", CLI, "status", ...(json ? ["--json"] : [])], {
+        env: { ...process.env, INTAKE_RULES_DIR: rules },
+      });
+      expect(proc.exitCode).toBe(2);
+      const stdout = proc.stdout.toString();
+      if (json) {
+        expect(stdout.trim().split("\n").length).toBe(1);
+        const envelope = JSON.parse(stdout) as Envelope;
+        expect(envelope.ok).toBe(false);
+        expect(envelope.data).toBeNull();
+        expect(envelope.errors.map((e) => [e.code, e.path])).toEqual([["E_INTERNAL", null]]);
+        expect(envelope.errors[0]!.msg.length).toBeGreaterThan(0);
+      } else {
+        expect(stdout).toBe("");
+        expect(proc.stderr.toString()).toContain("error E_INTERNAL:");
+      }
+    }
+  } finally {
+    rmSync(rules, { recursive: true, force: true });
   }
 });

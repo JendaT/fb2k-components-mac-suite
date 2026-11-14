@@ -216,4 +216,25 @@ async function main(): Promise<number> {
   return result.exitCode;
 }
 
-process.exit(await main());
+/**
+ * Doc 03: every `--json` invocation emits exactly one envelope. An uncaught
+ * throw (a malformed rules file, an I/O error) must not leave stdout empty,
+ * so it becomes `E_INTERNAL` with exit 2. Nothing is printed before main()
+ * returns, so there is no partial output to collide with.
+ */
+async function run(): Promise<number> {
+  try {
+    return await main();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (process.argv.slice(2).includes("--json")) {
+      const envelope: Envelope = { ok: false, data: null, errors: [{ code: "E_INTERNAL", msg, path: null }] };
+      console.log(JSON.stringify(envelope));
+    } else {
+      console.error(`error E_INTERNAL: ${msg}`);
+    }
+    return 2;
+  }
+}
+
+process.exit(await run());
