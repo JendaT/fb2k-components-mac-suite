@@ -23,6 +23,7 @@ bun run src/cli.ts assign <root>       # rank genre-collection folders
 bun run src/cli.ts assign <root> --collection "[X]" --by user   # override + feedback
 bun run src/cli.ts propose <root>      # identify+assign+naming -> proposed
 bun run src/cli.ts approve <root>      # or --batch <file> of ids/paths
+bun run src/cli.ts reject <root> --reason "<text>"   # or --batch <file>; -> rejected
 bun run src/cli.ts execute --approved  # copy, tag, verify, journal, place
 bun run src/cli.ts execute --resume    # crash recovery for `placing` roots
 bun run src/cli.ts gc [--age 30] [--relocate-dj]   # verified local cleanup
@@ -49,6 +50,13 @@ journal record and the placed files' audio hashes first, then leaves the
 sidecar behind as a `gc_done` tombstone. `propose --all-resolved` never picks
 up `needs_review` roots — offline (no Discogs confirmation) that is every
 root, so unattended auto-proposing effectively requires network identify.
+
+`reject` is a state change only (legal from `new`, `resolved`, `proposed`,
+`approved`; `E_BAD_STATUS` otherwise): it flips the sidecar to `rejected` and
+appends a history entry carrying the optional `--reason`. No tags, audio,
+journal or deletion; rejected roots stay in `status`, are never picked up by
+propose/approve/execute/gc, and their local files are disposed of by hand.
+`rejected` is terminal; `resolve --force` rebuilds the sidecar from scratch.
 
 ## Development
 

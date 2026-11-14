@@ -4,7 +4,7 @@ import { unpackArchive, type UnpackResult } from "./archive.ts";
 import { incomeFor, loadConfig, loadIncome, rulesDir } from "./config.ts";
 import { Resolver, type ResolveContext } from "./resolver.ts";
 import { readSidecar, summarize, writeRoot, type SidecarSummary } from "./sidecar.ts";
-import type { IncomeFolder, JsonError, Sidecar } from "./types.ts";
+import { CLI_VERSION, type IncomeFolder, type JsonError, type Sidecar } from "./types.ts";
 import { ARCHIVE_EXTS, ext, isSidecarName, walkDirs } from "./util.ts";
 
 /**
@@ -227,5 +227,5 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
 }
 
 export function cmdVersion(): CommandResult<{ cli: string; schema: number; engine: string }> {
-  return { data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
+  return { data: { cli: CLI_VERSION, schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
 }

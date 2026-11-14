@@ -147,7 +147,7 @@ test("execute: copy, tag, verify, atomic place, journal, genre-map count", async
   const journal = readJournal(journalPath);
   expect(journal.length).toBe(1);
   expect(journal[0]).toMatchObject({
-    seq: 1, event: "placed", sidecar_id: doc.id, target_path: target, cli_version: "0.1.0",
+    seq: 1, event: "placed", sidecar_id: doc.id, target_path: target, cli_version: "0.2.0",
   });
   expect(journal[0]!.audio_hashes).toEqual(doc.files.map((f) => f.audio_hash));
   expect(loadGenreMap(corpus.rules).artists["Aes Dana"]![PCP]).toBe(before + 1);

@@ -8,7 +8,7 @@ import {
 } from "./commands.ts";
 import type { SidecarSummary } from "./sidecar.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
-import { cmdApprove, cmdExecute, cmdGc, cmdPropose } from "./commands-p3.ts";
+import { cmdApprove, cmdExecute, cmdGc, cmdPropose, cmdReject } from "./commands-p3.ts";
 import type { TreeSpec } from "./bootstrap.ts";
 import type { Envelope } from "./types.ts";
 
@@ -22,6 +22,9 @@ commands:
                                                  rank genre-collection folders
   propose    <root...>|--all-resolved            identify+assign+naming, flip to proposed
   approve    <root...>|--batch <file>            proposed -> approved
+  reject     <root...>|--batch <file> [--reason "<text>"]
+                                                 new/resolved/proposed/approved -> rejected
+                                                 (state change only; local files kept)
   execute    <root...>|--approved [--resume]     copy to target, verify, journal, place
   gc         [<root...>] [--age <days>] [--relocate-dj]
                                                  re-verify + delete local originals
@@ -45,6 +48,7 @@ interface AllOpts extends CommonOpts {
   out: string | null;
   allResolved: boolean;
   batch: string | null;
+  reason: string | null;
   approved: boolean;
   resume: boolean;
   age: number | null;
@@ -64,6 +68,7 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     out: null,
     allResolved: false,
     batch: null,
+    reason: null,
     approved: false,
     resume: false,
     age: null,
@@ -93,6 +98,7 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     } else if (a === "--out") opts.out = argv[++i] ?? null;
     else if (a === "--all-resolved") opts.allResolved = true;
     else if (a === "--batch") opts.batch = argv[++i] ?? null;
+    else if (a === "--reason") opts.reason = argv[++i] ?? null;
     else if (a === "--approved") opts.approved = true;
     else if (a === "--resume") opts.resume = true;
     else if (a === "--age") {
@@ -172,6 +178,9 @@ async function main(): Promise<number> {
       break;
     case "approve":
       result = cmdApprove(args, opts);
+      break;
+    case "reject":
+      result = cmdReject(args, opts);
       break;
     case "execute":
       result = await cmdExecute(args, opts);

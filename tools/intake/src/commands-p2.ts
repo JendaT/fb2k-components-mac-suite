@@ -13,7 +13,7 @@ import {
   saveGenreMap, saveLabelMap,
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
-import type { JsonError, Proposal, Sidecar } from "./types.ts";
+import type { HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
 import { RESOLVER_VERSION } from "./types.ts";
 import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
 
@@ -82,8 +82,10 @@ export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
   return out;
 }
 
-export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean): void {
-  root.sidecar.history.push({ ts: isoLocal(), event, by: `intake@${RESOLVER_VERSION}` });
+export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean, reason?: string): void {
+  const entry: HistoryEvent = { ts: isoLocal(), event, by: `intake@${RESOLVER_VERSION}` };
+  if (reason) entry.reason = reason;
+  root.sidecar.history.push(entry);
   if (!dryRun) writeFileSync(root.sidecarPath, serializeSidecar(root.sidecar));
 }
 

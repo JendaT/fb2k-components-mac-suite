@@ -142,6 +142,11 @@ integer kbps (lossy only, null for lossless); `discs` is
 `identification` and `proposal` objects are defined in doc 2; `status`
 lifecycle and `audio_hash` algorithm are normative in doc 3.
 
+`history[]` is append-only, one entry per transition or stage:
+`{ "ts", "event", "by" }`. A `rejected` entry (`intake reject`, doc 3) also
+carries `"reason"` (free-form text) when `--reason` was given:
+`{ "ts": "…", "event": "rejected", "by": "intake@0.1.0", "reason": "…" }`.
+
 ## CLI surface (this doc's commands)
 
 ```

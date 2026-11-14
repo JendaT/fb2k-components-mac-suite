@@ -1,5 +1,5 @@
-// P3 commands: propose, approve, execute, gc (doc 03 execute protocol +
-// status lifecycle). Execute copies and verifies; it never moves or deletes
+// P3 commands: propose, approve, reject, execute, gc (doc 03 execute protocol
+// + status lifecycle). Execute copies and verifies; it never moves or deletes
 // income files — deletion is gc's job, after journal re-verification.
 
 import {
@@ -11,15 +11,12 @@ import { audioHash } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
-import type { TierDef } from "./types.ts";
+import { CLI_VERSION, type JsonError, type Status, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
-import type { JsonError } from "./types.ts";
 import { IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, mapLimit, sha1Hex, walkDirs } from "./util.ts";
-
-const CLI_VERSION = "0.1.0";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -79,6 +76,13 @@ export interface ApproveRow {
   id: string;
   root_path: string;
   status: "approved";
+}
+
+export interface RejectRow {
+  id: string;
+  root_path: string;
+  status: "rejected";
+  dry_run?: true;
 }
 
 export interface ExecuteRow {
@@ -168,12 +172,22 @@ export interface ApproveOpts extends CommonOpts {
   batch: string | null;
 }
 
-export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<ApproveRow[] | null> {
+/**
+ * Positional refs plus `--batch <file>` (one id or path per line; blank lines
+ * and `#` comments skipped), or `{missing}` naming a batch file that is absent.
+ */
+function refsWithBatch(args: string[], batch: string | null): string[] | { missing: string } {
   const refs = [...args];
-  if (opts.batch) {
-    if (!existsSync(opts.batch)) return fail("E_NOT_FOUND", "batch file not found", opts.batch);
-    refs.push(...readFileSync(opts.batch, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")));
+  if (batch) {
+    if (!existsSync(batch)) return { missing: batch };
+    refs.push(...readFileSync(batch, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")));
   }
+  return refs;
+}
+
+export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<ApproveRow[] | null> {
+  const refs = refsWithBatch(args, opts.batch);
+  if (!Array.isArray(refs)) return fail("E_NOT_FOUND", "batch file not found", refs.missing);
   if (refs.length === 0) return fail("E_BAD_ARGS", "usage: intake approve <root...>|--batch <file>");
 
   const errors: JsonError[] = [];
@@ -187,6 +201,51 @@ export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<App
     root.sidecar.status = "approved";
     writeSidecarWithEvent(root, "approved", opts.dryRun);
     data.push({ id: root.sidecar.id, root_path: root.dir, status: "approved" });
+  }
+  return finish(data, errors);
+}
+
+// ---- reject -------------------------------------------------------------------
+
+export interface RejectOpts extends CommonOpts {
+  batch: string | null;
+  reason: string | null;
+}
+
+/**
+ * Doc 03 "reject semantics": legal before anything reaches the library. A
+ * placing/placed/gc_done release is (or may be) in the library, and withdrawing
+ * it is un-specced; `rejected` itself is terminal.
+ */
+const REJECTABLE: ReadonlySet<Status> = new Set<Status>(["new", "resolved", "proposed", "approved"]);
+
+/**
+ * State change only: flips the sidecar to `rejected` and appends a history
+ * entry carrying the reason. No tags, no audio, no journal, no deletion — the
+ * local bytes stay put and are not gc-eligible (gc touches only `placed`).
+ */
+export function cmdReject(args: string[], opts: RejectOpts): CommandResult<RejectRow[] | null> {
+  const refs = refsWithBatch(args, opts.batch);
+  if (!Array.isArray(refs)) return fail("E_NOT_FOUND", "batch file not found", refs.missing);
+  if (refs.length === 0) return fail("E_BAD_ARGS", 'usage: intake reject <root...>|--batch <file> [--reason "<text>"]');
+
+  const errors: JsonError[] = [];
+  const data: RejectRow[] = [];
+  // The same root may be named twice (id and path, or a repeated batch line):
+  // reject it once rather than append a second history entry or refuse it.
+  const seen = new Set<string>();
+  for (const root of rootsFromRefs(refs, errors)) {
+    if (seen.has(root.sidecarPath)) continue;
+    seen.add(root.sidecarPath);
+    if (!REJECTABLE.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot reject from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
+    root.sidecar.status = "rejected";
+    writeSidecarWithEvent(root, "rejected", opts.dryRun, opts.reason ?? undefined);
+    const row: RejectRow = { id: root.sidecar.id, root_path: root.dir, status: "rejected" };
+    if (opts.dryRun) row.dry_run = true;
+    data.push(row);
   }
   return finish(data, errors);
 }

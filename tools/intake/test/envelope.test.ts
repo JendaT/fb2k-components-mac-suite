@@ -55,6 +55,7 @@ const CASES: { args: string[]; exit: number }[] = [
   { args: ["assign", "itk_deadbeef"], exit: 2 },
   { args: ["propose", "itk_deadbeef"], exit: 2 },
   { args: ["approve", "itk_deadbeef"], exit: 2 },
+  { args: ["reject", "itk_deadbeef"], exit: 2 },
 ];
 
 test("every --json invocation emits exactly one envelope object", () => {
