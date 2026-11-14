@@ -404,3 +404,109 @@ identical, and it keeps the reserved set at two.
 they want the two host codes named and fenced off, we want the CLI-emitted
 vocabulary declared open rather than frozen as a table. The two are
 compatible and would be cleanest resolved in one amendment.
+
+---
+
+## CR-003 — unset-MD5 FLAC can never be placed: tag write breaks the `fsha1:` verify
+
+**Filed:** 2026-11-14
+**From:** tools worker (`feature/intake-cli`, HEAD `9fbcd2c`)
+**Against:** `docs/intake/intake-03-contract-spec.md` v1.1 (2026-08-26)
+**Spec basis:** main@c712783 + amendment 002
+**Status:** open. The user chose option (d) on 2026-11-14 (relayed by the
+overseer). It lands as amendment 003; the code follows the merge of that
+amendment into this branch.
+**Severity:** A (the contract as written cannot be satisfied)
+
+**Contract says.** Doc 03 "audio_hash": a FLAC whose STREAMINFO MD5 is unset
+is keyed `"fsha1:" + SHA1(whole file)` for life, with `flac_md5_unset` as the
+permanent marker and no repair at any stage (CR-001.4 option B). Execute
+protocol step 2 writes the final tags (provenance `INTAKE_*`, VorbisComment)
+into the copies; step 3 requires audio_hash of every copy == sidecar hash.
+Doc 03 also says tag edits MUST NOT change audio_hash for flac.
+
+**Implementation is.** Execute does exactly that: copy, `metaflac` tag write
+(`src/provenance.ts`), then `verifyTree` re-hashes every copy
+(`src/commands-p3.ts`). A tag write rewrites bytes inside the file, so the
+whole-file SHA1 of an unset-MD5 FLAC changes by construction. Verify fails
+and the release reverts to `approved`. Any release containing one such file
+can never be placed.
+
+**Repro (2026-11-14, synthetic fixture, metaflac 1.5.0).** Copies of the
+three FLACs in the repo's unset-MD5 fixture root
+(`fixtures/income/todo/Bluetech [2011] Cosmic Dubwise`), `writeProvenance`,
+then `audioHash` again: both unset-MD5 files change hash, the normal FLAC
+stays stable. `bun test` does not catch it.
+
+**Correction to CR-001.4 / amendment 002.** CR-001.4 stated "today the file
+lands in the library with its MD5 still unset", and amendment 002 accepted
+option B partly on that premise. That holds only where `metaflac` is absent
+(the tag write is then skipped with `metaflac_missing` and the hash stays
+put). With `metaflac` installed, which is the normal setup, it does not land.
+
+**Options considered.**
+
+- **(a) Skip provenance tags on `fsha1:`-keyed files** and record an issue
+  such as `provenance_tags_skipped:flac_md5_unset`. Keeps the for-life key.
+  Conflicts with step 2 for those files, which then reach the library
+  without `INTAKE_*` tags. Smallest code change.
+- **(b) Hash the copy before tagging.** Rejected: the placed file no longer
+  matches the sidecar/journal hash, so `gc` re-verify (which re-hashes the
+  target) refuses to delete, and the journal key is wrong.
+- **(c) A tag-immune fallback over the FLAC frame bytes** (e.g. SHA1 of the
+  bytes after the last metadata block). A new hash kind that nothing else
+  produces, and it changes if the file is ever re-encoded.
+- **(d) Key unset-MD5 FLACs by the MD5 a correct STREAMINFO would hold:**
+  `"flacmd5:" + MD5(decoded audio)`, computed as
+  `flac -d --force-raw-format --endian=little --sign=signed` → MD5
+  (interleaved samples, little-endian signed, whole bytes per sample).
+  `flac_md5_unset` stays in `quality.issues` as the marker that the value
+  was computed, not read. **Chosen.**
+
+**Premise check for (d)** (user's condition: computed MD5 == embedded MD5
+for normal FLACs, including at least one 24-bit file). Run 2026-11-14 on
+copies of the repo fixtures, flac 1.5.0:
+1. **Holds.** 28 of 28 normal FLACs: computed MD5 == embedded STREAMINFO MD5.
+   25 are 16-bit and 3 are 24-bit.
+2. **Tag-immune.** Both unset-MD5 copies decode to the same MD5 after the
+   provenance tag write as before it.
+3. **Repair-stable.** Re-encoding an unset-MD5 file with `flac -f` writes
+   exactly the computed value into STREAMINFO, so the key survives a later
+   repair.
+4. **Not verified: bit depths that are not a multiple of 8** (12/20-bit).
+   I tried to generate one with sox and ffmpeg; both stored 24-bit, so no
+   true fixture exists. Such files are rare. The implementation treats them
+   like any other depth (whole bytes per sample), and the first real sample
+   should be checked against a re-encode.
+
+**Decided in amendment 003, my proposals:**
+- **Decoder missing or decode fails** (no `flac` on PATH, corrupt frames):
+  fall back to `fsha1:` plus an issue (`flac_decoder_missing` /
+  `flac_decode_failed`), and skip provenance tags on that file as in (a), so
+  the release stays placeable. `flac` becomes a resolve-time dependency;
+  today `audioHash` parses STREAMINFO itself and needs no binary.
+- **Schema stays 1, CLI minor** (agreeing with the overseer's planned
+  position). The shape and type of `audio_hash` are unchanged; only which
+  algorithm produces the value for one rare file class changes. No consumer
+  compares hashes: `feature/intake-extension` has no reference to
+  `audio_hash`, `flacmd5` or `fsha1` (checked 2026-11-14), and doc 04 has
+  none. Doc 05 step 1 mentions a "hash-metadata lookup" for the producer's
+  in-collection marker. P5 is not built, and a tag-immune key only helps
+  it.
+- **Migration.** There are no production sidecars or journal. The Amunet
+  test environment (`music.intake-test`) holds test sidecars and a test
+  journal from the October runs. `resolve --force` re-keys those sidecars.
+  The test journal should hold no record of an unset-MD5 file, because
+  execute cannot place one while `metaflac` is installed. Check that, or
+  reset the test journal, before reusing it.
+
+**Regression gate.** A test that runs `execute` on a release containing an
+unset-MD5 FLAC with `metaflac` on PATH. It asserts the release reaches
+`placed` with `verified: true`, the copy carries the `INTAKE_*` tags, the
+sidecar key is `flacmd5:` with `flac_md5_unset` present, and `gc`
+re-verify passes. A second test runs with `flac` absent and asserts the
+`fsha1:` fallback, the issue, and still `placed`. Both land with the
+implementation commit; the first fails on the current code.
+
+**Impact.** Doc 03 "audio_hash" (FLAC bullet), plus the fallback wording.
+Doc 01 hash notes (worker-owned, with the implementation). CLI minor.
