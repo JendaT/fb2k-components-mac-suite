@@ -49,6 +49,7 @@ beforeAll(() => {
   release(`${COLL_B}/Box Set Title`, ["CD1 - Disc Title", "CD2 Disc Title", "Scans"]);
   // No artist level but the name parses: one release with the parsed artist.
   release(`${COLL_B}/Composer - Work`, ["CD1", "CD2"]);
+  release(`${COLL_C}/Composer \u2013 Second Work`, ["CD1", "CD2"]); // en dash
   result = bootstrapTrees([{ path: tree, weight: 1 }]);
 });
 
@@ -77,9 +78,9 @@ test("bootstrap: normal artist layout counts each release under its artist", () 
 test("bootstrap: a release with disc dirs and no artist level is one release, no artist from its dir name", () => {
   const artistKeys = Object.keys(result.genre.artists).sort();
   expect(artistKeys).toEqual(["Artist Name", "Composer", "Other Artist"]);
-  expect(result.genre.artists["Composer"]).toEqual({ [COLL_B]: 1 });
-  // Collection A: 7 releases. B: compilation + box set + composer work. C: compilation.
-  expect(result.stats.releases).toBe(11);
+  expect(result.genre.artists["Composer"]).toEqual({ [COLL_B]: 1, [COLL_C]: 1 });
+  // A: 7 releases. B: compilation, box set, composer work. C: compilation, composer work.
+  expect(result.stats.releases).toBe(12);
   expect(result.stats.collections).toBe(3);
 });
 

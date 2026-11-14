@@ -22,7 +22,9 @@ cache feature in the tidal integration plugin, and by future downloaders.
 1. Parse folder name against known conventions (ordered grammar):
    `Artist [YYYY] Title (Label; Cat#)`, `Artist [YYYY] Title [Label, Cat#]`,
    Discogs-block variant, scene pattern `Artist-Title-(CAT)-WEB-YYYY-GRP`,
-   underscore variants. Emit parsed fields + which grammar matched.
+   dash variants (`Artist - Title`, `(YYYY) Artist - Title`), underscore
+   variants. Emit parsed fields + which grammar matched (order and rules under
+   Implementation notes, "Folder-name grammars").
 2. Merge with embedded tags (tags win for artist/title, folder wins for
    label/cat# when tags lack them).
 3. Confirm against Discogs API (search by artist+title+cat#). One confirmed
@@ -201,6 +203,26 @@ Decisions made during implementation; normative for schema v1 consumers.
   parse, never from its dir name; unparsed, it counts as a release with no
   artist and is listed in the report. `releases` in the stats counts every
   release dir, with or without an artist.
+- **Folder-name grammars**, tried in order, first match wins (score = the
+  resolver's `name_parse` signal):
+  `bracket_year_paren_label` `Artist [YYYY] Title (Label; Cat#)` 1.0;
+  `bracket_year_bracket_label` `Artist [YYYY] Title [Label, Cat#]` 1.0;
+  `bracket_year` `Artist [YYYY] Title` 0.75;
+  `scene` `Artist_Name-Album_Title[-(CAT)]-WEB-YYYY-GRP` 1.0 ("-" separates
+  fields, "_" separates words inside a field, the catno field is optional,
+  source token WEB/CD/VINYL/TAPE/FLAC/MP3, extra fields may follow it, the
+  group may be mixed case);
+  `paren_year_dash` `(YYYY) Artist - Title` 0.75;
+  `dash_year` `Artist - Title (YYYY)` / `[YYYY]` 0.75;
+  `dash` `Artist - Title` 0.5;
+  `paren_year` `(YYYY) Title` 0.5 (no artist; the artist sits in a parent
+  dir, as in discography dumps).
+  The dash grammars accept a spaced hyphen, en dash (U+2013) or em dash
+  (U+2014) between artist and title. A name with no spaces that contains
+  `_-_` is read with underscores as spaces by the dash grammars (after the
+  scene grammar was tried on the original), so `VA_-_Compilation_Title` gives
+  artist "VA". Whitespace runs inside every parsed field collapse to one
+  space.
 - **Label blocks** (`(…; …)` after `[YYYY] Title`, `[…, …]` likewise): the
   block is split into fields; fields that are a 4-digit year, a format token
   (WEB, CD, 2CD, 2xLP, Vinyl, Cass, Cassette, DVD, SACD, File, FLAC, MP3, 12"

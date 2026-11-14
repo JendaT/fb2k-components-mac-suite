@@ -270,6 +270,29 @@ async function main(): Promise<void> {
     if (i < 2 && wanted(file)) zeroFlacMd5(file);
   }
 
+  // Scene rip whose tags carry the source token in the album ("Album WEB")
+  // and no album artist; the dir name gives the album without it, so
+  // cluster.album must come out "Album". Placeholder names only.
+  const scene = "todo/Artist_Name-Album-(CAT123)-WEB-2011-ExampleGroup";
+  const sceneStem = "00-artist_name-album-(cat123)-web-2011";
+  const sceneFiles: string[] = [];
+  for (const [i, title] of ["First Track", "Second Track", "Third Track"].entries()) {
+    const name = `${String(i + 1).padStart(2, "0")}-artist_name-${title.toLowerCase().replace(/ /g, "_")}.mp3`;
+    sceneFiles.push(name);
+    await genAudio(
+      join(INCOME, scene, name), "mp3-320",
+      { artist: "Artist Name", album: "Album WEB", title, track: i + 1, date: "2011", genre: "Electronic" },
+      { freq: 1300 + i * 37 },
+    );
+  }
+  if (wanted(join(INCOME, scene, `${sceneStem}.m3u`))) {
+    const at = (ext: string) => join(INCOME, scene, `${sceneStem}.${ext}`);
+    const crc = (n: string) => Bun.hash.crc32(readFileSync(join(INCOME, scene, n))).toString(16).padStart(8, "0");
+    writeFileSync(at("m3u"), sceneFiles.join("\n") + "\n");
+    writeFileSync(at("nfo"), "Artist Name - Album\nWEB 2011\nExample Group\n");
+    writeFileSync(at("sfv"), sceneFiles.map((n) => `${n} ${crc(n)}`).join("\n") + "\n");
+  }
+
   // NAS thumbnail dir junk (committable; .DS_Store/._*/Thumbs.db junk is
   // injected by the test helper instead, since the repo .gitignore excludes
   // those names).

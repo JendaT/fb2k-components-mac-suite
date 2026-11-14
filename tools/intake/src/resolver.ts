@@ -5,7 +5,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { audioHash } from "./audioHash.ts";
-import { parseDirName } from "./naming.ts";
+import { albumFromTags, parseDirName } from "./naming.ts";
 import { readSnapshot, parseFilename, type AudioSnapshot } from "./tags.ts";
 import type {
   Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Tier,
@@ -252,7 +252,10 @@ export class Resolver {
         : null) ??
       parsed?.artist ??
       null;
-    const album = majority(primary.map((f) => f.snap.tags.album)) ?? parsed?.album ?? null;
+    // A scene source token in the tag album ("Album WEB") is dropped only when
+    // the dir-name parse confirms the album without it.
+    const tagAlbum = majority(primary.map((f) => f.snap.tags.album));
+    const album = (tagAlbum != null ? albumFromTags(tagAlbum, parsed) : null) ?? parsed?.album ?? null;
 
     const resolved = confidence >= config.thresholds.resolved;
     const review = !resolved && confidence >= config.thresholds.review;

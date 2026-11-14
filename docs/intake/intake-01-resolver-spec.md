@@ -65,6 +65,14 @@ never auto-proposed).
 filename pattern parse (`NN - Title`, `NN. Title`, `Artist - Title`) →
 parent dir name parse → fingerprint via identify stage (doc 2), not here.
 
+### Cluster display values
+`cluster.albumartist` and `cluster.album` come from tags (majority), the dir
+name parse (doc 2 grammars) is the fallback. One narrow correction: a trailing
+scene source token in the tag album (WEB, CD, VINYL, TAPE, FLAC, MP3, as in
+"Album WEB") is dropped only when the dir name parse gives the same album
+without it (normalized comparison). Any other tag album is kept as is.
+`files[].tags` always record the tags as read.
+
 ## Edge cases (must-handle list)
 
 - Archives (`zip,rar,7z`): `scan` unpacks to `<name>.unpacked/`; resolver

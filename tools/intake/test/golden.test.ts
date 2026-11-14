@@ -84,6 +84,17 @@ test("FLAC with unset STREAMINFO MD5: fsha1 fallback + flac_md5_unset issue", ()
   expect(doc!.status).toBe("resolved");
 });
 
+test("scene rip with \"Album WEB\" tags: cluster.album drops the source token the dir name lacks", () => {
+  const key = "todo/Artist_Name-Album-(CAT123)-WEB-2011-ExampleGroup/.intake.json";
+  const doc = new Map(collectSidecars(corpus.income)).get(key);
+  expect(doc).toBeDefined();
+  const cluster = doc!.cluster as { albumartist: string; album: string };
+  expect(cluster.albumartist).toBe("Artist Name"); // no album_artist tag: the one track artist
+  expect(cluster.album).toBe("Album");
+  // Per-file tags are recorded as read.
+  for (const f of doc!.files as { tags: { album: string } }[]) expect(f.tags.album).toBe("Album WEB");
+});
+
 test("junk files are never referenced by any sidecar", () => {
   for (const [, doc] of collectSidecars(corpus.income)) {
     for (const f of (doc.files as { path: string }[]) ?? []) {

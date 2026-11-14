@@ -1154,6 +1154,107 @@
       }
     ]
   },
+  "todo/Artist_Name-Album-(CAT123)-WEB-2011-ExampleGroup/.intake.json": {
+    "schema": 1,
+    "id": "itk_1c6b4b5a",
+    "resolver_version": "0.1.0",
+    "resolved_at": "<ts>",
+    "source": {
+      "income_folder": "todo",
+      "source_type": "manual",
+      "archive": null
+    },
+    "virtual": false,
+    "files": [
+      {
+        "path": "01-artist_name-first_track.mp3",
+        "audio_hash": "mp3sha1:18ef42559a0036f3e6f7e85a7d467d7170110b97",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Artist Name",
+          "album": "Album WEB",
+          "title": "First Track",
+          "tracknumber": 1,
+          "disc": null,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "02-artist_name-second_track.mp3",
+        "audio_hash": "mp3sha1:9bfbd9c8ffde11be02e720ffff271333717c6330",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Artist Name",
+          "album": "Album WEB",
+          "title": "Second Track",
+          "tracknumber": 2,
+          "disc": null,
+          "date": "2011"
+        }
+      },
+      {
+        "path": "03-artist_name-third_track.mp3",
+        "audio_hash": "mp3sha1:1c37721794b6135c3c6b8544187c1628ba9481a0",
+        "codec": "mp3",
+        "lossless": false,
+        "sample_rate": 44100,
+        "bit_depth": null,
+        "bitrate": 320,
+        "duration": 0.3,
+        "tags": {
+          "albumartist": null,
+          "artist": "Artist Name",
+          "album": "Album WEB",
+          "title": "Third Track",
+          "tracknumber": 3,
+          "disc": null,
+          "date": "2011"
+        }
+      }
+    ],
+    "discs": null,
+    "cluster": {
+      "albumartist": "Artist Name",
+      "album": "Album",
+      "confidence": 0.93,
+      "needs_review": false,
+      "signals": {
+        "purity": 1,
+        "seq": 1,
+        "artifacts": 0.5,
+        "name_parse": 1,
+        "quality_homog": 1
+      }
+    },
+    "quality": {
+      "tier_eligible": "hq",
+      "issues": [
+        "lossy"
+      ]
+    },
+    "identification": null,
+    "proposal": null,
+    "status": "resolved",
+    "history": [
+      {
+        "ts": "<ts>",
+        "event": "resolved",
+        "by": "intake@<cli>"
+      }
+    ]
+  },
   "todo/Asura [2003] Lost Eden (Ultimae Records; inre010)/.intake.json": {
     "schema": 1,
     "id": "itk_aed8f834",

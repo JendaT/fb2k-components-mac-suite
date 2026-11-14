@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, incomeFor, loadConfig, loadIncome } from "../src/config.ts";
-import { parseDirName } from "../src/naming.ts";
+import { albumFromTags, parseDirName } from "../src/naming.ts";
 import { parseFilename } from "../src/tags.ts";
 import { DISC_DIR_RE, discNumberFromDirName, isJunkFile, mapLimit, normAlbum, normKey } from "../src/util.ts";
 
@@ -60,6 +60,84 @@ test("naming: label blocks skip years and format/descriptor/country tokens", () 
   expect(parseDirName("Artist Name [2011] Album Name [LABEL CD 97]")).toMatchObject({
     grammar: "bracket_year", album: "Album Name [LABEL CD 97]", label: null, catno: null,
   });
+});
+
+test("naming: en/em dash separators, paren-year prefix, whitespace collapse", () => {
+  expect(parseDirName("Artist Name \u2013 Album Name")).toMatchObject({
+    grammar: "dash", artist: "Artist Name", album: "Album Name", year: null,
+  });
+  expect(parseDirName("Artist Name \u2013 Album Name (2011)")).toMatchObject({
+    grammar: "dash_year", artist: "Artist Name", album: "Album Name", year: "2011",
+  });
+  expect(parseDirName("Artist Name \u2014 Album Name")).toMatchObject({ grammar: "dash", artist: "Artist Name", album: "Album Name" });
+  // Discography-dump shapes: (YYYY) Artist <dash> Album.
+  expect(parseDirName("(2010) Artist \u2013 Album")).toMatchObject({
+    grammar: "paren_year_dash", score: 0.75, artist: "Artist", album: "Album", year: "2010",
+  });
+  expect(parseDirName("(2009) Artist A & Artist B \u2013 Album")).toMatchObject({
+    grammar: "paren_year_dash", artist: "Artist A & Artist B", album: "Album", year: "2009",
+  });
+  expect(parseDirName("(2010) Artist \u2013 Title A  Title B")).toMatchObject({ artist: "Artist", album: "Title A Title B" });
+  expect(parseDirName("(2010) Artist - Album")).toMatchObject({ grammar: "paren_year_dash", artist: "Artist" });
+  // No artist in the name: loose album + year.
+  expect(parseDirName("(2000) Album Title")).toMatchObject({
+    grammar: "paren_year", score: 0.5, artist: null, album: "Album Title", year: "2000",
+  });
+  // Whitespace runs collapse in every grammar.
+  expect(parseDirName("Artist  Name [2011] Album   Name")).toMatchObject({ artist: "Artist Name", album: "Album Name" });
+});
+
+test("naming: underscore-spaced VA dir and scene names", () => {
+  expect(parseDirName("VA_-_Compilation_Title_(Web_Version_2CD)")).toMatchObject({
+    grammar: "dash", artist: "VA", album: "Compilation Title (Web Version 2CD)",
+  });
+  expect(parseDirName("VA_-_Compilation_Title_(2011)")).toMatchObject({
+    grammar: "dash_year", artist: "VA", album: "Compilation Title", year: "2011",
+  });
+  // Scene: "-" separates fields, "_" separates words; catno optional.
+  expect(parseDirName("Artist_Name-Album-WEB-2011-GROUP")).toMatchObject({
+    grammar: "scene", artist: "Artist Name", album: "Album", year: "2011", catno: null,
+  });
+  expect(parseDirName("Artist_Name-Album_Title-WEB-2011-eXaMpLeGrOuP")).toMatchObject({
+    grammar: "scene", artist: "Artist Name", album: "Album Title", year: "2011", catno: null,
+  });
+  expect(parseDirName("Artist_Name-Album-(CAT123)-WEB-2011-GROUP")).toMatchObject({
+    grammar: "scene", artist: "Artist Name", album: "Album", year: "2011", catno: "CAT123",
+  });
+  expect(parseDirName("Artist_Name-Album-(CAT123)-WEB-FLAC-2011-GROUP")).toMatchObject({
+    grammar: "scene", album: "Album", catno: "CAT123", year: "2011",
+  });
+  // A scene name containing "_-_" stays a scene parse.
+  expect(parseDirName("Artist_Name_-_Album_Title-WEB-2011-GROUP")).toMatchObject({
+    grammar: "scene", artist: "Artist Name", album: "Album Title", year: "2011",
+  });
+});
+
+test("naming: shapes that keep their current parse", () => {
+  for (const name of [
+    "Artist Name-Album Name", // unspaced hyphen
+    "Artist_Name-Album_Title", // underscores without "_-_", no scene tail
+    "Collection Title (1997)", // year suffix without artist
+    "(2000)",
+    "random_mix",
+  ]) {
+    expect(parseDirName(name)).toBeNull();
+  }
+  expect(parseDirName("First-Second Name - Album")).toMatchObject({ grammar: "dash", artist: "First-Second Name", album: "Album" });
+  expect(parseDirName("Artist Name - Album Name (2011) [FLAC]")).toMatchObject({ grammar: "dash_year", album: "Album Name", year: "2011" });
+  expect(parseDirName("Artist Name [2011] Album - Part Two")).toMatchObject({ grammar: "bracket_year", album: "Album - Part Two" });
+});
+
+test("album from tags: a trailing source token goes only when the dir parse agrees", () => {
+  const scene = parseDirName("Artist_Name-Album-(CAT123)-WEB-2011-GROUP");
+  expect(albumFromTags("Album WEB", scene)).toBe("Album");
+  expect(albumFromTags("Album", scene)).toBe("Album");
+  expect(albumFromTags("Album FLAC", parseDirName("Artist Name - Album"))).toBe("Album");
+  // Disagreeing parse, no parse, or the token is part of the dir's title too.
+  expect(albumFromTags("Album WEB", parseDirName("Artist_Name-Other_Album-WEB-2011-GROUP"))).toBe("Album WEB");
+  expect(albumFromTags("Album WEB", null)).toBe("Album WEB");
+  expect(albumFromTags("Spider Web", parseDirName("Artist Name - Spider Web"))).toBe("Spider Web");
+  expect(albumFromTags("Album WEB Edition", scene)).toBe("Album WEB Edition");
 });
 
 test("filename fallback parse", () => {
