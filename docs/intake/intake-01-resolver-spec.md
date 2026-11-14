@@ -24,10 +24,19 @@ tracknumber, disc, date, plus codec/bitrate/samplerate/bitdepth.
 
 ### Pass 2 — merge upward (multi-disc)
 Merge sibling candidates into their parent when:
-- child dir names match disc patterns: `/^(cd|disc|disk|vinyl|side|lp)\s*[-_ ]?\w+$/i`, AND
+- child dir names match the disc pattern: a prefix `cd|disc|disk|vinyl|side|lp`
+  (any case) followed by a numeric index (`CD1`, `cd 2`, `disk-2`, `Disc 07`),
+  optionally followed by a disc title after whitespace, a dash or a bracket
+  (`CD1 - Disc Title`, `CD1 Disc Title`, `Disc 2 - X`); or by a single letter
+  after a separator (`Side A`); or by a spelled-out number one–ten
+  (`Disc One`). Any other word after the prefix is not a disc dir ("Disk
+  Jockey", "Side Projects", "Discography"), AND
 - children share one (albumartist, album) cluster (album name may differ only
   by a disc suffix), OR children are untagged but parent name parses as a
   release per the naming convention.
+
+The disc number comes from the numeric or spelled index, else the files' disc
+tags, else sibling order. Bootstrap (doc 2) uses the same disc-dir detector.
 
 ### Pass 3 — split downward (dump folders)
 Within one candidate, cluster files by normalized (albumartist|artist, album).

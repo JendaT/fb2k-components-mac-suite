@@ -126,7 +126,8 @@ priors sharpen with use.
 `intake bootstrap --tree /volume1/music/music.hq [--tree …uhq]` — read-only
 scan producing: `genre-map.yaml` (artist → per-collection release counts, from
 artist dirs and parsed release-folder names in `[Releases]`/flat dirs),
-`label-map.yaml` (from `(Label; Cat#)`/`[Label, Cat#]` parses), and
+`label-map.yaml` (from `(Label; Cat#)`/`[Label, Cat#]` parses, label-block
+rules under Implementation notes), and
 `naming-variants-report.md` (evidence for the TBD decisions).
 Optional `--tree /volume1/music/music --prior-weight 0.3`: the legacy mp3
 tree can contribute artist priors at reduced weight (hoarding-era assignments
@@ -192,7 +193,26 @@ Decisions made during implementation; normative for schema v1 consumers.
   the most recent `--tree`, `--out <dir>` (default: rules dir), refuses to
   overwrite existing maps without `--force`. Collection dirs are the tree
   root's children; inside them, release-grammar dirs are flat releases,
-  `[Slot]`-style dirs hold flat releases, anything else is an artist dir.
+  `[Slot]`-style dirs hold flat releases, a dir whose subdirs are mostly disc
+  dirs (doc 1 pass 2 pattern, e.g. `Title/CD1`…`CD8`, extras such as `Scans`
+  tolerated) is one release with no artist level, and anything else is an
+  artist dir (its subdirs are releases; disc dirs inside those are not
+  looked at). A release with no artist level gets its artist only from a name
+  parse, never from its dir name; unparsed, it counts as a release with no
+  artist and is listed in the report. `releases` in the stats counts every
+  release dir, with or without an artist.
+- **Label blocks** (`(…; …)` after `[YYYY] Title`, `[…, …]` likewise): the
+  block is split into fields; fields that are a 4-digit year, a format token
+  (WEB, CD, 2CD, 2xLP, Vinyl, Cass, Cassette, DVD, SACD, File, FLAC, MP3, 12"
+  …), a release descriptor (Comp, RM, RE, Ltd, Promo, EP, Single, Album, Mixed
+  …) or a country (US, UK, Europe, Germany, Japan …) are skipped. The first
+  remaining field is the label; a `#CAT` suffix on it is the catno, otherwise
+  the fields after it are. So `(1984; Label; CAT01)` and `[1984, Label]` give label
+  "Label", and Discogs-style `[2CD, Comp, RM, US, Label #CAT290]` gives label
+  "Label", catno "CAT290". Nothing left: label and catno are null. A
+  single-field block (`[LABEL CD 97]`) is not split (label and catno cannot be
+  told apart safely); the name parses as `bracket_year` with the block kept
+  in the title.
 - `intake bootstrap` is not (yet) in the doc 03 command surface — filed as
   CR-001.2 in `CHANGE-REQUESTS.md` for the next contract bump; the component
   never calls it.

@@ -137,11 +137,33 @@ export function normAlbum(s: string | null): string {
   return normKey(s.replace(DISC_SUFFIX, ""));
 }
 
-export const DISC_DIR_RE = /^(cd|disc|disk|vinyl|side|lp)\s*[-_ ]?\w+$/i;
+const DISC_WORDS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+/**
+ * Disc dir names, the one shared detector (resolver pass 2, bootstrap).
+ * A disc prefix followed by an index:
+ * - numeric (`CD1`, `cd 2`, `disk-2`, `Disc 07`), optionally followed by a disc
+ *   title after whitespace, a dash or a bracket (`CD1 - Disc Title`,
+ *   `CD1 Disc Title`, `Disc 2 - X`, `CD1 (Live)`);
+ * - a single letter after a separator (`Side A`, `LP_B`), no title;
+ * - a spelled-out number one..ten (`Disc One`), no title.
+ * Any other word after the prefix does not match ("Disk Jockey", "Side
+ * Projects", "Discography", "CDs").
+ */
+export const DISC_DIR_RE = new RegExp(
+  "^(?:cd|disc|disk|vinyl|side|lp)" +
+    "(?:[\\s_-]*0*(\\d{1,3})(?:[\\s_]*[-–—:.(\\[][\\s_]*\\S.*|[\\s_]+\\S.*)?" +
+    "|[\\s_-]+[a-z]" +
+    `|[\\s_-]+(${DISC_WORDS.join("|")}))$`,
+  "i",
+);
 
 export function discNumberFromDirName(name: string): number | null {
-  const m = name.match(/^(?:cd|disc|disk|vinyl|side|lp)\s*[-_ ]?0*(\d+)$/i);
-  return m ? parseInt(m[1]!, 10) : null;
+  const m = name.match(DISC_DIR_RE);
+  if (!m) return null;
+  if (m[1] !== undefined) return parseInt(m[1], 10);
+  if (m[2] !== undefined) return DISC_WORDS.indexOf(m[2].toLowerCase()) + 1;
+  return null; // letter index (Side A): no number
 }
 
 export function sha1Hex(data: Uint8Array | string): string {

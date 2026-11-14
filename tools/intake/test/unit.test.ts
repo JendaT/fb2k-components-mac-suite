@@ -23,6 +23,45 @@ test("naming: partial grammars score lower", () => {
   expect(parseDirName("random_mix")).toBeNull();
 });
 
+test("naming: label blocks skip years and format/descriptor/country tokens", () => {
+  // Year-first blocks: the year is never the label.
+  expect(parseDirName("Artist Name [2011] Album Name (1984; Some Label; CAT01)")).toMatchObject({
+    grammar: "bracket_year_paren_label", album: "Album Name", year: "2011", label: "Some Label", catno: "CAT01",
+  });
+  expect(parseDirName("Artist Name [2011] Album Name [1984, Some Label]")).toMatchObject({
+    grammar: "bracket_year_bracket_label", album: "Album Name", label: "Some Label", catno: null,
+  });
+  // Plain blocks are unchanged.
+  expect(parseDirName("Artist Name [2011] Album Name (Some Label; CAT01)")).toMatchObject({
+    label: "Some Label", catno: "CAT01",
+  });
+  expect(parseDirName("Artist Name [2011] Album Name [Some Label, CAT01]")).toMatchObject({
+    label: "Some Label", catno: "CAT01",
+  });
+  // Discogs-style blocks: format, descriptors, country, then "Label #CAT".
+  expect(parseDirName("Artist Name [2011] Album Name [WEB, Comp, US, Label #CAT13]")).toMatchObject({
+    grammar: "bracket_year_bracket_label", album: "Album Name", label: "Label", catno: "CAT13",
+  });
+  expect(parseDirName("Artist Name [2011] Album Name [2CD, Comp, RM, US, Label #CAT290]")).toMatchObject({
+    label: "Label", catno: "CAT290",
+  });
+  expect(parseDirName("Artist Name [2011] Album Name [7CD, Ltd, Europe, Some Label]")).toMatchObject({
+    label: "Some Label", catno: null,
+  });
+  expect(parseDirName("Artist Name [2011] Album Name (Cass; Some Label; CAT01)")).toMatchObject({
+    label: "Some Label", catno: "CAT01",
+  });
+  // Nothing but tokens: no label at all.
+  expect(parseDirName("Artist Name [2011] Album Name [WEB, FLAC]")).toMatchObject({
+    grammar: "bracket_year_bracket_label", album: "Album Name", label: null, catno: null,
+  });
+  expect(parseDirName("Artist Name [2011] Album Name (1984; CD)")).toMatchObject({ label: null, catno: null });
+  // Single-field block: cannot be split safely, stays in the title.
+  expect(parseDirName("Artist Name [2011] Album Name [LABEL CD 97]")).toMatchObject({
+    grammar: "bracket_year", album: "Album Name [LABEL CD 97]", label: null, catno: null,
+  });
+});
+
 test("filename fallback parse", () => {
   expect(parseFilename("01 - Iliona.flac")).toEqual({ tracknumber: 1, artist: null, title: "Iliona" });
   expect(parseFilename("07. Some Track.mp3")).toEqual({ tracknumber: 7, artist: null, title: "Some Track" });
@@ -42,6 +81,30 @@ test("normalization and disc patterns", () => {
   expect(discNumberFromDirName("CD2")).toBe(2);
   expect(discNumberFromDirName("Disc 07")).toBe(7);
   expect(discNumberFromDirName("Side A")).toBeNull();
+});
+
+test("disc dirs: titled forms after a numeric index match, other words do not", () => {
+  const titled: [string, number][] = [
+    ["CD1 - Disc Title", 1],
+    ["CD1 Disc Title", 1],
+    ["Disc 2 - X", 2],
+    ["CD2 \u2013 Disc Title", 2],
+    ["CD3_Disc_Title", 3],
+    ["CD1 (Disc Title)", 1],
+    ["cd10", 10],
+    ["Disc One", 1],
+  ];
+  for (const [name, n] of titled) {
+    expect(DISC_DIR_RE.test(name)).toBe(true);
+    expect(discNumberFromDirName(name)).toBe(n);
+  }
+  for (const name of [
+    "Disk Jockey", "Side Projects", "Discography", "CDs", "LPs", "Sideline", "Vinyl Days",
+    "Disc A Title", "Disc 1984", "CD", "Artist Name - Album Name", "Compilation Title Vol.XXI-XXVIII",
+  ]) {
+    expect(DISC_DIR_RE.test(name)).toBe(false);
+    expect(discNumberFromDirName(name)).toBeNull();
+  }
 });
 
 test("junk detection", () => {
