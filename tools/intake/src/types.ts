@@ -2,7 +2,7 @@
 // (status lifecycle and audio_hash per docs/intake/intake-03-contract-spec.md).
 
 export const SCHEMA_VERSION = 1;
-export const RESOLVER_VERSION = "0.1.0";
+export const RESOLVER_VERSION = "0.2.0";
 /** CLI semver (doc 03 Versioning): `intake version` and journal records. */
 export const CLI_VERSION = "0.2.1";
 
