@@ -46,6 +46,17 @@ Invoked as subprocess by the CLI only when fast path fails or its Discogs
 confirmation is ambiguous. Distance ≤0.15 → accept top candidate; else attach
 top 3 as `identification.candidates` and set `needs_review`.
 
+*beets versions:* the shim supports beets 1.6 and 2.x and detects the API
+shape. beets ≥ 2.14 takes a `Source` and returns `Proposal(candidates,
+recommendation)`; older versions take the items and return
+`(artist, album, Proposal)`. From 2.4 every metadata source, MusicBrainz
+included, is a plugin: the shim loads the beets config's `plugins` list
+(beets' default `[musicbrainz]`) and never adds to it. Only MusicBrainz and
+Discogs candidates are emitted. In practice chroma/fpcalc adds nothing
+(beets fingerprints only in its import flow), and the discogs plugin adds
+candidates only on beets ≥ 2.4 with a configured token. The shim must run on
+beets' own interpreter (`INTAKE_BEETS_SHIM`, see `tools/intake/README.md`).
+
 ## Tier routing (precedes collection choice)
 
 Tiers are first-class in `structure.yaml`:

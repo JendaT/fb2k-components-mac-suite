@@ -38,10 +38,48 @@ sidecar id.
 
 Identify/assign run fully offline by default; network evidence is opt-in via
 `DISCOGS_TOKEN` and `LASTFM_API_KEY` (similar-artist cache under
-`INTAKE_CACHE_DIR`, default `~/.cache/intake`). The beets hard path uses
-`shim/beets_identify.py` (needs a python3 with beets installed; override the
-command with `INTAKE_BEETS_SHIM`); without it, identification degrades to
-`unconfirmed` and flags review.
+`INTAKE_CACHE_DIR`, default `~/.cache/intake`). The exception is the beets
+hard path below: once the shim finds beets, it queries MusicBrainz. Without
+beets, identification degrades to `unconfirmed` and flags review.
+
+### beets hard path
+
+`identify` runs `shim/beets_identify.py` when the fast path has no single
+Discogs confirmation. The shim must run on the Python interpreter beets is
+installed in. The default command is `python3 shim/beets_identify.py`, so if
+that `python3` has no beets, the shim reports `beets_unavailable` even though
+beets is installed. In that case set the full command
+(`head -1 "$(which beet)"` shows beets' interpreter):
+
+```bash
+# Homebrew python@3.10 with beets 1.6:
+export INTAKE_BEETS_SHIM="/opt/homebrew/opt/python@3.10/bin/python3.10 /path/to/tools/intake/shim/beets_identify.py"
+```
+
+The value is split on spaces, so neither path may contain one.
+
+Supported beets: 1.6 and 2.x. Checked against real 1.6.0, 2.13.1 and 2.14.1.
+The shim detects the API shape itself:
+
+- **beets 2.4+**: every metadata source, MusicBrainz included, is a plugin.
+  The shim loads the plugins in the beets config's `plugins:` list before
+  tagging. With no `plugins:` entry, beets' default (`[musicbrainz]`) applies.
+  A list without `musicbrainz` gets no MusicBrainz candidates, as with
+  `beet import`; the shim does not add it.
+- **beets < 2.4**: MusicBrainz is built in. The shim loads no plugins and, as
+  before, does not apply the config's `musicbrainz:` section (host,
+  ratelimit).
+- Only MusicBrainz (`mb`) and Discogs (`discogs`) candidates are reported;
+  other metadata plugins' candidates are dropped. Discogs candidates via the
+  beets `discogs` plugin need beets 2.4+ and a `user_token` (or saved token)
+  in the beets config. The shim gives plugins no stdin, so the interactive
+  Discogs login cannot run. chroma/AcoustID adds nothing: beets fingerprints
+  during `beet import`, which the shim does not run.
+- A MusicBrainz network failure is logged to stderr and yields zero
+  candidates (exit 0), not an error.
+
+The shim reads the beets config from `$BEETSDIR` (default `~/.config/beets`),
+never opens the library database and never writes to the release dir.
 
 Execute/gc need `journal.path` in structure.yaml (the Amunet location is
 pending confirmation; nothing runs without it). Execute copies and verifies —
