@@ -1,6 +1,6 @@
 {
   "name": "@jl/intake",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Intake CLI: release-root resolver, sidecars, scan/resolve/status",
   "type": "module",
   "private": true,
