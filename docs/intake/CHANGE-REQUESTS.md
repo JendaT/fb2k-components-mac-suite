@@ -532,3 +532,200 @@ CLI change (this documents what already happens), no schema change.
 - **P4 Part A is merged** (main@a28cae3 contains it). The decorator API in
   `shared/jl_decorator_api.h` is generic and has no dependency on this
   contract; nothing in CR-002 affects it. All four items are about Part B.
+
+---
+
+## CR-004 — doc 03 gaps found while planning P4 Part B
+
+**Filed:** 2026-11-14
+**From:** extension worker (`feature/intake-extension`, HEAD `811579e`)
+**Against:** `docs/intake/intake-03-contract-spec.md` (v1.1, amendment 002)
+**Spec basis:** main@c712783. CLI facts checked at `feature/intake-cli`@9cc4393.
+**Status:** open
+
+Thirteen items. **None blocks Part B.** Each has a component-side fallback,
+stated per item, and the Part B plan builds the fallback. They are filed now,
+before building, so amendment 003 can take them together with CR-003.
+
+Overlaps the overseer has already noted:
+- CR-004.1: the "schema major" wording, already planned for 003.
+- CR-004.12: the `E_BAD_STATUS` rules planned for 003.
+
+Severity uses the CR-001 scale: **A** = unsatisfiable or unreachable as
+written; **B** = silent, so the consumer has to pick a behaviour;
+**C** = editorial. Citations `03:N` are doc 03 lines, and `*.ts:N` are
+`tools/intake/src` lines on `feature/intake-cli`@9cc4393.
+
+---
+
+### CR-004.1 — version gate still says "schema major" (severity C)
+
+**Problem.** 03:160-161 refuses decoration "if `schema` major ≠ supported".
+That contradicts the integer `schema` at 03:93 and 03:101-104.
+
+**Requested change.** "...if `schema` is not the supported integer."
+
+**Impact.** Doc only.
+
+### CR-004.2 — "the three codes named in this document" (severity C)
+
+**Problem.** 03:170-171 refers to "the three codes named in this document".
+Since `E_NO_CLI` moved to the host-synthesized group, it is unclear which
+three codes are meant.
+
+**Requested change.** Name them.
+
+**Impact.** Doc only.
+
+### CR-004.3 — scope of the inert state (severity B)
+
+**Problem.** 03:182-183, "On any of these a consumer renders an inert state",
+read literally makes a per-command error such as `E_BAD_STATUS` on one root
+turn the whole provider inert.
+
+**Requested change.** Inert applies only on a version-gate failure, or when no
+`status` load has ever succeeded (`E_NO_CLI`, `E_NO_RULES` or `E_CLI_TIMEOUT`
+on `version`/`status`). Every other error is reported per command. A failed
+refresh after a good load keeps the last data.
+
+**Component fallback.** Exactly the rule above.
+
+### CR-004.4 — `collections --json` data shape (severity B)
+
+**Problem.** 03:48 lists the command but gives no `data` shape. The CLI
+returns `[{collection, artists, releases}]`, sorted by collection
+(`commands-p2.ts:318-337`).
+
+**Requested change.** Pin that shape. Additive, so schema stays 1.
+
+**Component fallback.** Tolerant parsing; only `collection` is required.
+
+### CR-004.5 — `--filter` keys (severity B)
+
+**Problem.** 03:47 does not list the keys. The CLI accepts:
+- `status`, `needs_review`, `income_folder`, `source_type`,
+  `tier`/`tier_eligible`, `virtual`, `singles`, `albumartist`, `album`,
+  `root_path` (`commands.ts:180-194`);
+- unknown keys silently match nothing;
+- one value per key (`cli.ts:85-88`);
+- every filtered call still walks and parses every sidecar
+  (`commands.ts:203-220`).
+
+Doc 04's "targeted `status --json --filter`" refresh therefore costs as much
+as a full load.
+
+**Requested change.** Pin the key list, add `id`, and make an unknown key
+`E_BAD_ARGS`.
+
+**Component fallback.** A coalesced full reload, with no `--filter`.
+
+### CR-004.6 — per-file layout at execute (severity B)
+
+**Problem.** "Swap to library paths" needs a destination per file, but the
+contract gives only the release-level `placed.target_path` (03:76-79). The
+CLI keeps each file's path relative to the root (`commands-p3.ts:261,391`)
+and does not place `quality_shadow` files (`skipped_shadows`, `:367`).
+
+**Requested change.** Pin: "files are placed at
+`target_path/<path relative to the root>`; `quality_shadow` files are not
+placed".
+
+**Component fallback.** Rely on today's behaviour, and `stat` every library
+file before swapping a row.
+
+### CR-004.7 — income folder paths are not exposed (severity B)
+
+**Problem.** 03:158 has the component watch "income roots", but the summary
+carries only `root_path` (03:76-77). A `scan` that creates roots in a folder
+the component has never seen lands outside the watch set.
+
+**Requested change.** An additive, read-only income list, e.g.
+`intake income --json` → `[{name, path, exists}]`.
+
+**Component fallback.** Watch the folders listed in preferences plus the
+parents of known roots.
+
+### CR-004.8 — `needs_review` on `new` (severity C)
+
+**Problem.** Doc 01:49-52 keeps `<0.50` roots `new` with
+`needs_review: true`, and singles always carry the flag (01:102-103). 03:20
+allows the flag only on resolved and proposed.
+
+**Requested change.** Allow it on `new`.
+
+**Component fallback.** Render `new` with the flag as `new`, plus a "needs
+review" tooltip.
+
+### CR-004.9 — one 10 s budget for every command except execute (severity B)
+
+**Problem.** The budget at 03:178-180 is too short for two commands:
+- `propose` runs network lookups and the beets shim, which has no timeout
+  (`providers.ts:176`);
+- `gc` re-verifies against the journal and may relocate (03:134-135).
+
+Killing a mutating command at 10 s risks a half-written, non-atomic sidecar.
+
+**Requested change.** A long-running budget class (propose, gc, scan), or a
+statement that consumers must not kill mutating commands at 10 s.
+
+**Component fallback.** Report `E_CLI_TIMEOUT` at 10 s, keep the command
+running and refresh when it exits; hard cap at 15 min.
+
+### CR-004.10 — capability detection (severity B)
+
+**Problem.** `version` has no command list (03:91-93), and an unknown command
+returns `E_BAD_ARGS`, the same code as a usage error. Telling them apart by
+`msg` text is not contractual.
+
+**Requested change.** An additive `commands: [...]` in `version` data.
+Schema stays 1 under the additive rule.
+
+**Component fallback.** Reject is shown when `cli` semver is 0.2.0 or later.
+
+### CR-004.11 — confidence and `needs_review` after `assign --by user` (severity B)
+
+**Problem.** Their meaning after a user assignment is unspecified (03:83-87).
+Today:
+- the CLI writes `confidence: 1` (`commands-p2.ts:236`);
+- it never clears `needs_review` (`:156,282`);
+- the sidecar records `proposal.assigned_by: "user"` (`:240`), but the
+  summary omits it (`sidecar.ts:92`).
+
+**Requested change.**
+- Pin what both fields mean after a user assignment.
+- Add `proposal.assigned_by` to the summary. Additive.
+
+**Component fallback.**
+- It reads `assigned_by` from the sidecar and treats a user-assigned root as
+  reviewed: no amber.
+- The badge shows "yours" instead of `1.00`.
+
+### CR-004.12 — legal source statuses and the `execute --dry-run` shape (severity B)
+
+**Problem.**
+- Legal source statuses are pinned only for `reject` (03:55-58).
+- The `execute --dry-run` data shape is unspecified, though doc 04:175 needs
+  it for describe-then-confirm.
+- `proposal.target_path` exists in the sidecar (02:107) but not in the
+  summary (03:78).
+
+**Requested change.**
+- Per-command legal source statuses, with `E_BAD_STATUS` otherwise. This
+  overlaps the 003 plan.
+- Pin the dry-run data `{id, root_path, target_path, dry_run, files,
+  artifacts, skipped_shadows}` (`commands-p3.ts:364-367`).
+- Optionally, `proposal.target_path` in the summary.
+
+**Component fallback.** An explicit enable matrix, and tolerant dry-run
+parsing in which every field is optional.
+
+### CR-004.13 — does the sidecar survive `gc`? (severity C)
+
+**Problem.** 03:17 lists `gc_done`, but 03:134-135 does not say whether the
+sidecar survives `gc`, so it is unclear whether `gc_done` ever appears in
+`status`. The CLI keeps the sidecar as a `gc_done` tombstone
+(`commands-p3.ts:557`).
+
+**Requested change.** Pin that.
+
+**Impact.** Doc only.
