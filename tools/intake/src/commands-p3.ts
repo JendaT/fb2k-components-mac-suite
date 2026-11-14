@@ -319,11 +319,16 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
   const errors: JsonError[] = [];
   const wantStatus = opts.resume ? "placing" : "approved";
   let roots: RootRef[];
-  if (opts.approved || opts.resume) {
+  if (args.length > 0) {
+    // Named roots are the whole work set, with or without --resume/--approved:
+    // `execute <ids> --resume` must not touch other placing roots (resume
+    // reverts an interrupted root, which would clobber an execute still
+    // running elsewhere).
+    roots = rootsFromRefs(args, errors);
+  } else if (opts.approved || opts.resume) {
     roots = allRoots(errors).filter((r) => r.sidecar.status === wantStatus);
   } else {
-    if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake execute <root...>|--approved [--resume]");
-    roots = rootsFromRefs(args, errors);
+    return fail("E_BAD_ARGS", "usage: intake execute <root...>|--approved [--resume]");
   }
   if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
@@ -339,9 +344,14 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     const sc = root.sidecar;
     const target = sc.proposal?.target_path;
 
-    if (opts.resume && sc.status === "placing") {
-      const outcome = await resumeRoot(root, cfg.journal_path, opts);
-      data.push(outcome);
+    if (opts.resume) {
+      // Crash recovery only (doc 03): a named root that is not `placing` is
+      // refused, never executed fresh under --resume.
+      if (sc.status !== "placing") {
+        errors.push({ code: "E_BAD_STATUS", msg: `cannot resume from status ${sc.status}`, path: root.dir });
+        continue;
+      }
+      data.push(await resumeRoot(root, cfg.journal_path, opts));
       continue;
     }
     if (sc.status !== "approved") {
