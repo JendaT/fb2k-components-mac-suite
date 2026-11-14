@@ -493,12 +493,9 @@ copies of the repo fixtures, flac 1.5.0:
   none. Doc 05 step 1 mentions a "hash-metadata lookup" for the producer's
   in-collection marker. P5 is not built, and a tag-immune key only helps
   it.
-- **Migration.** There are no production sidecars or journal. The Amunet
-  test environment (`music.intake-test`) holds test sidecars and a test
-  journal from the October runs. `resolve --force` re-keys those sidecars.
-  The test journal should hold no record of an unset-MD5 file, because
-  execute cannot place one while `metaflac` is installed. Check that, or
-  reset the test journal, before reusing it.
+- **Migration: none.** No sidecars or journal exist anywhere, production or
+  test. The Amunet test environment (`music.intake-test`) has only ever seen
+  a `scan --dry-run` (verified by the overseer, 2026-11-14).
 
 **Regression gate.** A test that runs `execute` on a release containing an
 unset-MD5 FLAC with `metaflac` on PATH. It asserts the release reaches
