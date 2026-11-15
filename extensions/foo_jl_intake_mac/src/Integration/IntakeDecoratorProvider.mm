@@ -15,7 +15,9 @@
 //  snapshot lookup) -> a copy into jl_row_decoration. No I/O, no CLI, no
 //  invalidate fired from here, so it returns promptly (v2's shutdown waits
 //  for in-flight batches); g_get_native_path on a stale or unmounted UUID
-//  is the one unmeasured call (IntakeNativePath.h). Before the first load
+//  is the one unmeasured call, so IntakeNativePath times it and stops
+//  calling it for a volume once one call took over 20 ms (B4
+//  IntakeSlowVolumeGuard, until the next mount change). Before the first load
 //  there is no view and every row is answered empty, never pending: v2
 //  commits a pending answer like an empty one, and the loader fires
 //  invalidate-all after its first load.

@@ -23,8 +23,9 @@ A key with no row uses its default.
 writes it back when it quits, so an edit made while it runs is overwritten.
 The component reads these keys once, at startup.
 
-The preferences page (PLAN.md B5) will take over the first four keys. Until
-then they can only be set here. `decor_stats` stays hidden after that.
+The preferences page (PLAN.md B5) will take over the first four keys and
+`watch_folders`. Until then they can only be set here. `decor_stats` stays
+hidden after that.
 
 ## foo_jl_intake.cli_path
 
@@ -61,6 +62,32 @@ source in use (`[intake] load: rules from ...`).
 Debug lines show each CLI call's arguments, how it ended (outcome, exit code,
 duration, error codes) and the member-list I/O. They never show the CLI's
 output. The `decor_stats` lines ignore this setting.
+
+## foo_jl_intake.watch_folders
+
+`configStrings`. Extra folders to watch for sidecar changes, one absolute path
+per line (newline-separated; blank lines skipped, surrounding spaces trimmed,
+a line that does not start with `/` is ignored with one console line).
+Default: empty.
+
+The component always watches the income folders that `intake income --json`
+lists (CLI 0.3.0 and later) and the parent folder of every known root; this
+key adds to them. Watching is FSEvents, recursive, with no polling. A change
+to a sidecar (`.intake.json`, `.intake.<id>.json`) made through this Mac,
+Terminal runs included, reloads the colours about 2 s later. Changes made on
+the NAS itself are not reported by macOS and need Refresh (B6) or a mount
+event.
+
+```bash
+# quit foobar2000 first; the value may hold several lines
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.watch_folders','/abs/folder/one' || char(10) || '/abs/folder/two')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+At `log_level` 1 the console shows `[intake] watching N folder(s) for sidecar
+changes` whenever the watch set changes; at 2 also the folders (`watch: ...`)
+and one line per change batch (`watch: sidecar changes in N folder(s) ...`).
 
 ## foo_jl_intake.decor_stats
 

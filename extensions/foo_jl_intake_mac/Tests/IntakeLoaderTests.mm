@@ -10,7 +10,13 @@
 //  failed refresh keeping the last data, coalesced reloads, mount aliases (a
 //  row on another mount point of the share, then losing that mount point,
 //  and a share holding no root coming and going without invalidation), and
-//  shutdown killing the read lane.
+//  shutdown killing the read lane. B4: the `income` call (CLI 0.3.0 only,
+//  a failure is per-command), the watch set handed over only on change
+//  (realpath only for local paths), reloadForChanges coalescing into one
+//  more `status` (the reload-again flag), and incremental member lists
+//  (unchanged folders not listed again; a full listing on reload(true),
+//  remount, rescan or an unmapped folder; changes of a failed load carried
+//  over).
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -20,15 +26,18 @@
 // TEST_DEPS: src/Core/IntakeStatusModel.mm src/Core/IntakeSidecarMembers.mm src/Core/IntakeSnapshot.mm
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
+// TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm
 //
 
 #import <Foundation/Foundation.h>
 
 #include "../src/Core/IntakeLoader.h"
 #include "../src/Core/IntakeLog.h"
+#include "../src/Core/IntakeWatchSet.h"
 #include "MockCliSupport.h"
 #include "TestHarness.h"
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -144,6 +153,7 @@ std::vector<std::string> calls(const std::string &state) {
 }
 
 const std::string kVersion = "version\t--json";
+const std::string kIncome = "income\t--json";
 const std::string kStatus = "status\t--json";
 
 bool callsAre(const std::string &state, const std::vector<std::string> &expected) {
@@ -169,6 +179,80 @@ bool replaceInFile(const std::string &path, const std::string &from, const std::
     if (at == std::string::npos) return false;
     text.replace(at, from.size(), to);
     return mock::writeFile(path, text);
+}
+
+// --- B4: watch set and member I/O ---
+
+// Counts listDirectory per directory; answers through the POSIX access.
+class CountingAccess : public SidecarFileAccess {
+public:
+    bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) override {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            lists[directory]++;
+        }
+        return posixSidecarFileAccess().listDirectory(directory, names, error);
+    }
+    bool readFile(const std::string &path, std::string &contents, int &error) override {
+        return posixSidecarFileAccess().readFile(path, contents, error);
+    }
+    int listsOf(const std::string &directory) {
+        std::lock_guard<std::mutex> lock(m);
+        return lists[directory];
+    }
+
+private:
+    std::mutex m;
+    std::map<std::string, int> lists;
+};
+
+struct WatchHarness {
+    std::mutex m;
+    std::vector<std::vector<std::string>> sets;  // every onWatchSet call
+    std::vector<std::string> resolved;           // every path the resolver saw
+
+    size_t count() {
+        std::lock_guard<std::mutex> lock(m);
+        return sets.size();
+    }
+    std::vector<std::string> last() {
+        std::lock_guard<std::mutex> lock(m);
+        return sets.empty() ? std::vector<std::string>() : sets.back();
+    }
+    bool resolvedUnder(const std::string &prefix) {
+        std::lock_guard<std::mutex> lock(m);
+        for (const std::string &p : resolved) {
+            if (p.rfind(prefix, 0) == 0) return true;
+        }
+        return false;
+    }
+};
+
+const MountEntry kLocalRoot{"/", "/dev/disk-fixture", "apfs", true};
+
+// settingsFor plus the B4 hooks: a recording resolver (realpath underneath)
+// and the watch-set handler.
+LoaderSettings watchSettingsFor(const std::string &state, const std::shared_ptr<Harness> &h,
+                                const std::shared_ptr<WatchHarness> &w, CountingAccess *files = nullptr) {
+    LoaderSettings s = settingsFor(state, h);
+    s.files = files;
+    s.resolvePath = [w](const std::string &path, std::string &out) {
+        {
+            std::lock_guard<std::mutex> lock(w->m);
+            w->resolved.push_back(path);
+        }
+        return realPathResolver(path, out);
+    };
+    s.onWatchSet = [w](const std::vector<std::string> &paths) {
+        std::lock_guard<std::mutex> lock(w->m);
+        w->sets.push_back(paths);
+    };
+    return s;
+}
+
+std::string realOf(const std::string &path) {
+    std::string out;
+    return realPathResolver(path, out) ? out : path;
 }
 
 } // anonymous namespace
@@ -206,7 +290,7 @@ static void testDefaultLoad() {
     CHECK(st.state == LoaderState::Ready && st.roots == 16 && st.cliVersion == "0.3.0",
           "ready, 16 roots, CLI 0.3.0");
     CHECK(loader.statusLine() == "Ready \xC2\xB7 CLI 0.3.0 \xC2\xB7 16 roots", "status line");
-    CHECK(callsAre(state, {kVersion, kStatus}), "calls.log: exactly version, then status");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "calls.log: exactly version, income, then status");
     CHECK_EQ(h->publishCount(), 1, "one publish");
     Published first = h->lastPublished();
     CHECK(first.invalidate && first.reason == PublishReason::Load, "the first load invalidates all");
@@ -229,13 +313,14 @@ static void testDefaultLoad() {
 
     loader.reload(false);
     CHECK(waitFinished(*h, 2), "a reload finishes");
-    CHECK(callsAre(state, {kVersion, kStatus, kStatus}), "a reload runs status only");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus}), "a reload runs status only");
     CHECK_EQ(h->publishCount(), 2, "the unchanged snapshot is still swapped in");
     CHECK(!h->lastPublished().invalidate, "but without invalidation");
 
     loader.reload(true);
     CHECK(waitFinished(*h, 3), "a recheck finishes");
-    CHECK(callsAre(state, {kVersion, kStatus, kStatus, kVersion, kStatus}), "a recheck runs version again");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kVersion, kIncome, kStatus}),
+          "a recheck runs version and income again");
     CHECK(!h->lastPublished().invalidate, "unchanged after the recheck: no invalidation");
 
     // A visual change: the new root becomes resolved with needs_review.
@@ -280,7 +365,7 @@ static void testFirstLoadFailures() {
         loader.reload(false);
         CHECK(waitFinished(*h, 2), "the retry finishes");
         CHECK(h->lastFinished().state == LoaderState::Ready, "the retry loads");
-        CHECK(callsAre(state, {kVersion, kVersion, kStatus}), "the retry runs version again (it never passed)");
+        CHECK(callsAre(state, {kVersion, kVersion, kIncome, kStatus}), "the retry runs version again (it never passed)");
         CHECK(h->lastPublished().invalidate && !h->lastPublished().view->isInert(),
               "the first successful load invalidates all");
     }
@@ -296,7 +381,7 @@ static void testFirstLoadFailures() {
         LoaderStatus st = h->lastFinished();
         CHECK(st.state == LoaderState::Inert && st.error.find("Intake rules not configured") != std::string::npos,
               "E_NO_RULES on the first status: inert");
-        CHECK(callsAre(state, {kVersion, kStatus}), "version passed, status failed");
+        CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "version passed, status failed");
     }
 
     g_context = "internal";
@@ -444,7 +529,7 @@ static void testCoalescing() {
     CHECK(waitFinished(*h, 2), "two loads finish");
     std::this_thread::sleep_for(std::chrono::milliseconds(600));
     CHECK_EQ(h->finishedCount(), 2, "requests during a load coalesce into one more load");
-    CHECK(callsAre(state, {kVersion, kStatus, kStatus}), "calls.log: version, status, status");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus}), "calls.log: version, income, status, status");
     clearMode(state, "status");
 }
 
@@ -484,7 +569,7 @@ static void testMountAliases() {
           "rows under the lost mount point stop matching");
     const IntakeRowVisual *kept = lost.view ? lost.view->visualFor(newAlbum(root), scratch) : nullptr;
     CHECK(kept && kept->icon == IntakeIcon::CircleOpen, "rows under the remaining mount point keep matching");
-    CHECK(callsAre(state, {kVersion, kStatus}), "a remount alone runs no CLI");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "a remount alone runs no CLI");
 
     g_context = "mount-same";
     loader.remount();  // same table
@@ -516,7 +601,7 @@ static void testMountAliases() {
     CHECK(h->lastPublished().reason == PublishReason::Remount && !h->lastPublished().invalidate,
           "and does not invalidate either");
     CHECK(logCount("mount aliases changed under no intake root") == 2, "one Debug line each");
-    CHECK(callsAre(state, {kVersion, kStatus, kStatus}), "no CLI call for either");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus}), "no CLI call for either");
 }
 
 static void testShutdown() {
@@ -538,9 +623,204 @@ static void testShutdown() {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CHECK_EQ(h->publishCount(), 0, "nothing is published after shutdown");
     CHECK_EQ(h->finishedCount(), 0, "no load is reported after shutdown");
-    CHECK(callsAre(state, {kVersion, kStatus}), "no call after shutdown");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "no call after shutdown");
     loader->shutdown();  // idempotent
     loader.reset();
+    mock::killLeftovers();
+}
+
+static void testIncomeAndWatchSet() {
+    g_context = "income-watch-set";
+    clearLog();
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    const std::string real = realOf(root);
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "CLI 0.3.0: version, income, status");
+    CHECK_EQ(w->count(), 1, "one watch set handed over");
+    std::vector<std::string> set = w->last();
+    CHECK(set.size() == 3 && set[0] == real + "/income/dump" && set[1] == real + "/income/offline" &&
+              set[2] == real + "/income/shop",
+          "the income folders (offline missing, still watched), realpath'd, roots' parents folded in");
+    CHECK(logCount("income: 3 folder(s)") == 1, "a Debug line for the income call");
+
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "a reload finishes");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus}), "a plain reload runs no income call");
+    CHECK_EQ(w->count(), 1, "an unchanged watch set is not handed over again");
+
+    g_context = "income-failure";
+    mock::setMode(state, "income", "exit2");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 3), "a recheck with a failing income finishes");
+    CHECK(h->lastFinished().state == LoaderState::Ready, "a failed income call is not inert: the load is Ready");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kVersion, kIncome, kStatus}),
+          "status still runs after the failed income call");
+    CHECK(logCount("income failed; watching the last known income folders") == 1, "one log line");
+    CHECK_EQ(w->count(), 1, "the last good income folders stay watched");
+    clearMode(state, "income");
+
+    g_context = "income-folder-removed";
+    // A configured income folder disappears from income.yaml: the watch set
+    // follows on the next income call (reload(true)).
+    CHECK(replaceInFile(state + "/responses/income", "offline\tincome/offline\n", ""), "offline removed");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 4), "a recheck finishes");
+    CHECK(w->count() == 2 && w->last().size() == 2, "the changed set is handed over: dump and shop");
+}
+
+static void testIncomeNotOffered() {
+    g_context = "income-not-offered";
+    std::string state = mock::setupState("cli-0.2.1");
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "loads");
+    CHECK(callsAre(state, {kVersion, kStatus}), "CLI 0.2.1 lists no income command: version, status");
+    std::vector<std::string> set = w->last();
+    CHECK(set.size() == 2 && set[0] == realOf(state + "/root") + "/income/dump",
+          "the watch set is the roots' parent folders");
+}
+
+static void testNetworkWatchSet() {
+    g_context = "network-watch-set";
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    // The mock's root stands in for a share mounted over SMB.
+    h->setMounts({kLocalRoot, MountEntry{root, "//user@host-lan/fixture-share", "smbfs", false}});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "loads");
+    CHECK(!w->resolvedUnder(root), "realpath never runs on a folder under the network mount");
+    std::vector<std::string> set = w->last();
+    CHECK(set.size() == 3 && set[0] == root + "/income/dump", "the stream gets the folders as the CLI spelled them");
+
+    g_context = "network-watch-set-remount";
+    const size_t before = w->count();
+    h->setMounts({kLocalRoot});  // the share is gone: the same folders are now local paths
+    loader.remount();
+    CHECK(mock::waitUntil([&] { return w->count() > before; }, 10), "a remount recomputes the watch set");
+    CHECK(w->resolvedUnder(root) && w->last().size() == 3 && w->last()[0] == realOf(root) + "/income/dump",
+          "now local: resolved");
+}
+
+static void testChangeCoalescing() {
+    g_context = "change-coalescing";
+    std::string state = mock::setupState("default");
+    const std::string real = realOf(state + "/root");
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1), "first load");
+    mock::setMode(state, "status", "slow 1");
+    loader.reload(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // status is now running
+    loader.reloadForChanges({real + "/income/dump/Fixture Artist - New Album"}, false);
+    loader.reloadForChanges({real + "/income/shop/Loose Tracks"}, false);
+    loader.reloadForChanges({}, true);
+    CHECK(waitFinished(*h, 3), "the running load and one more finish");
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    CHECK_EQ(h->finishedCount(), 3, "three batches during a load set the reload-again flag once");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus}), "one more status, no version");
+    clearMode(state, "status");
+
+    loader.reloadForChanges({real + "/income/dump/Fixture Artist - New Album"}, false);
+    CHECK(waitFinished(*h, 4), "an idle batch starts a load at once");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus, kStatus}), "one status per batch");
+    CHECK(!h->lastPublished().invalidate, "nothing changed: no invalidation");
+}
+
+static void testIncrementalMembers() {
+    g_context = "incremental-members";
+    clearLog();
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    const std::string real = realOf(root);
+    const std::string loose = root + "/income/shop/Loose Tracks";  // three virtual roots: the one shared folder
+    const std::string newAlbumDir = real + "/income/dump/Fixture Artist - New Album";
+    CountingAccess files;
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w, &files));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1), "first load");
+    CHECK_EQ(files.listsOf(loose), 1, "the first load lists the shared folder");
+
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 2), "a change elsewhere reloads");
+    CHECK_EQ(files.listsOf(loose), 1, "an unchanged folder is not listed again");
+    CHECK(logCount("member lists (incremental)") == 1 && logCount("1 reused") >= 1, "logged as incremental");
+
+    loader.reloadForChanges({real + "/income/shop/Loose Tracks"}, false);
+    CHECK(waitFinished(*h, 3), "a change in the shared folder reloads");
+    CHECK_EQ(files.listsOf(loose), 2, "the changed folder is listed (event spelled /private/..., root /var/...)");
+
+    loader.reloadForChanges({"/fixture-elsewhere/Album"}, false);
+    CHECK(waitFinished(*h, 4), "an unmapped folder reloads");
+    CHECK_EQ(files.listsOf(loose), 3, "a folder outside the watch set means a full listing");
+
+    loader.reloadForChanges({}, true);
+    CHECK(waitFinished(*h, 5), "a rescan reloads");
+    CHECK_EQ(files.listsOf(loose), 4, "a rescan means a full listing");
+
+    loader.reload(false);
+    CHECK(waitFinished(*h, 6), "a plain reload");
+    CHECK_EQ(files.listsOf(loose), 5, "reload() lists in full");
+
+    loader.reload(true);
+    CHECK(waitFinished(*h, 7), "a recheck");
+    CHECK_EQ(files.listsOf(loose), 6, "reload(true) lists in full");
+
+    loader.remount();
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 8), "a batch after a remount");
+    CHECK_EQ(files.listsOf(loose), 7, "the first load after a remount lists in full");
+
+    g_context = "incremental-carry-over";
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 9), "back to incremental");
+    CHECK_EQ(files.listsOf(loose), 7, "incremental again");
+    mock::setMode(state, "status", "garbage");
+    loader.reloadForChanges({real + "/income/shop/Loose Tracks"}, false);
+    CHECK(waitFinished(*h, 10) && h->lastFinished().state == LoaderState::Stale, "the load fails before its members");
+    CHECK_EQ(files.listsOf(loose), 7, "nothing listed by the failed load");
+    clearMode(state, "status");
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 11) && h->lastFinished().state == LoaderState::Ready, "recovers");
+    CHECK_EQ(files.listsOf(loose), 8, "the failed load's changed folder is listed by the next load");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus, kStatus, kStatus, kStatus, kVersion, kIncome,
+                           kStatus, kStatus, kStatus, kStatus, kStatus}),
+          "every trigger is one full status (never --filter); version and income only on reload(true)");
+}
+
+static void testWatchSetAfterShutdown() {
+    g_context = "watch-set-shutdown";
+    std::string state = mock::setupState("default");
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    mock::setMode(state, "status", "slow 1");
+    loader.reload(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    loader.shutdown();
+    loader.reloadForChanges({"/fixture/x"}, true);
+    loader.remount();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    CHECK_EQ(w->count(), 0, "no watch set is handed over after shutdown");
+    CHECK_EQ(h->publishCount(), 0, "and nothing is published");
     mock::killLeftovers();
 }
 
@@ -561,6 +841,12 @@ int main(void) {
         testCoalescing();
         testMountAliases();
         testShutdown();
+        testIncomeAndWatchSet();
+        testIncomeNotOffered();
+        testNetworkWatchSet();
+        testChangeCoalescing();
+        testIncrementalMembers();
+        testWatchSetAfterShutdown();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

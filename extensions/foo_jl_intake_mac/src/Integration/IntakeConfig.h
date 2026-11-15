@@ -15,6 +15,9 @@
 //   - log_level (int 0-2): Error, Info, Debug. Default 1 (2 in DEBUG builds).
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
+//   - watch_folders (string, B4): extra folders to watch for sidecar
+//     changes, one absolute path per line (IntakeWatchSet
+//     parseWatchFolders); default empty. The B5 preference edits it.
 //
 //  load() reads every key once (on_init, later the preferences page); the
 //  values are kept in memory by the caller and never read on the decorate
@@ -29,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace intake {
 
@@ -39,6 +43,8 @@ struct IntakeSettings {
     int logLevel = 1;
     bool decorStats = false;
     bool logFile = false;  // hidden: mirror log lines to ~/Library/Logs/foobar2000/jl_intake.log
+    std::vector<std::string> watchFolders;        // absolute paths, in order
+    std::vector<std::string> ignoredWatchFolders; // lines that were not absolute paths
 };
 
 namespace config {
@@ -50,6 +56,7 @@ inline constexpr const char *kRulesDir = "rules_dir";
 inline constexpr const char *kLogLevel = "log_level";
 inline constexpr const char *kDecorStats = "decor_stats";
 inline constexpr const char *kLogFile = "log_file";
+inline constexpr const char *kWatchFolders = "watch_folders";
 
 // `key` without the prefix.
 int64_t getInt(const char *key, int64_t defaultValue);
@@ -60,8 +67,8 @@ void setString(const char *key, const std::string &value);
 // 1 (Info), or 2 (Debug) in DEBUG builds (PLAN.md 3.9).
 int defaultLogLevel();
 
-// Every key, with surrounding whitespace trimmed from the strings and
-// log_level clamped to 0-2.
+// Every key, with surrounding whitespace trimmed from the strings,
+// log_level clamped to 0-2 and watch_folders split into lines.
 IntakeSettings load();
 
 } // namespace config

@@ -131,6 +131,14 @@ const char *stopName(MemberLoadStop stop) {
     return "none";
 }
 
+std::string asciiFolded(const std::string &text) {
+    std::string out = text;
+    for (char &c : out) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+}
+
 struct DirectoryGroup {
     const std::string *ioPath = nullptr;  // the first record's rootPath
     std::vector<const IntakeRecord *> roots;
@@ -222,7 +230,8 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                         const MemberTable *previous,
                         const std::function<bool(const IntakeRecord &)> &needsMembers,
                         MemberLoadStats *statsOut,
-                        const MemberLoadLimits &limits) {
+                        const MemberLoadLimits &limits,
+                        const MemberReuse &reuse) {
     MemberLoadStats stats;
     MemberTable table;
     table.reserve(records.size());
@@ -264,6 +273,28 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
         }
     };
 
+    // Incremental: the changed directories, ASCII-folded.
+    const bool incremental = reuse.enabled && previous != nullptr && reuse.previousKeys != nullptr;
+    std::unordered_set<std::string> changed;
+    if (incremental) {
+        for (const std::string &key : reuse.changedKeys) changed.insert(asciiFolded(key));
+    }
+    // Every root of `g` keeps a listed classification from the previous
+    // load, under the same key, and none of them needs a list it skipped.
+    auto reusable = [&](const DirectoryGroup &g, const std::string &groupKey) {
+        if (!incremental || changed.count(asciiFolded(groupKey)) != 0) return false;
+        for (const IntakeRecord *r : g.roots) {
+            const RootMembers *prev = previousFor(previous, r->id);
+            if (!prev || (prev->source != MemberSource::Listed && prev->source != MemberSource::Reused)) {
+                return false;
+            }
+            if (prev->kind == MemberKind::None && wants(*r)) return false;
+            auto key = reuse.previousKeys->find(r->id);
+            if (key == reuse.previousKeys->end() || key->second != r->rootKey) return false;
+        }
+        return true;
+    };
+
     // Group by match key, so virtual roots sharing a directory (and NFC/NFD
     // spellings of one directory) cost one listing.
     std::unordered_map<std::string_view, size_t> groupOf;
@@ -303,6 +334,16 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                 table[g.roots.front()->id] = assumedMembers(false);
                 continue;
             }
+        }
+
+        if (reusable(g, g.roots.front()->rootKey)) {
+            stats.directoriesReused++;
+            for (const IntakeRecord *r : g.roots) {
+                RootMembers kept = *previousFor(previous, r->id);
+                kept.source = MemberSource::Reused;
+                table[r->id] = std::move(kept);
+            }
+            continue;
         }
 
         if (stopped(*g.ioPath)) {

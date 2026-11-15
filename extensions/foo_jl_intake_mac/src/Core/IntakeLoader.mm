@@ -5,17 +5,21 @@
 
 #include "IntakeLoader.h"
 
+#include "IntakeCapabilities.h"
 #include "IntakeCliRunner.h"
+#include "IntakeIncome.h"
 #include "IntakeLog.h"
 #include "IntakeStatusModel.h"
 #include "IntakeVersionGate.h"
 
 #include <dispatch/dispatch.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
+#include <unordered_map>
 
 namespace intake {
 
@@ -64,6 +68,23 @@ void logCall(const CliResult &r) {
     logDebug(line);
 }
 
+bool sameMountEntries(const std::vector<MountEntry> &a, const std::vector<MountEntry> &b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (a[i].mountPoint != b[i].mountPoint || a[i].source != b[i].source || a[i].fsType != b[i].fsType ||
+            a[i].local != b[i].local) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void appendUnique(std::vector<std::string> &into, const std::vector<std::string> &from) {
+    for (const std::string &s : from) {
+        if (std::find(into.begin(), into.end(), s) == into.end()) into.push_back(s);
+    }
+}
+
 const char *stopName(MemberLoadStop stop) {
     switch (stop) {
         case MemberLoadStop::None: return "none";
@@ -108,6 +129,21 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::shared_ptr<const IntakeView> published;
     Clock::time_point loadStart;
 
+    // B4, loader queue only.
+    std::vector<MountEntry> mountEntries;     // the table `aliases` was built from
+    std::vector<std::string> incomePaths;     // the last good `income` call
+    WatchSet watchSet;                        // the last one built
+    std::vector<std::string> watchInputs;     // the candidates it was built from
+    bool watchBuilt = false;
+    bool watchDirty = true;                   // the mount table changed since
+    std::vector<std::string> watchHandedOver; // the last onWatchSet paths
+    bool watchHandedOverOnce = false;
+    bool pendingFull = true;                  // the next load lists everything
+    std::vector<std::string> pendingKeys;     // changed directories for the next load
+    bool inFlightFull = true;                 // the running load's
+    std::vector<std::string> inFlightKeys;
+    bool memberPassRan = false;               // the running load reached its member pass
+
     mutable std::mutex statusMutex;
     LoaderStatus status;
 
@@ -134,12 +170,42 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     void requestLoad(bool recheck) {
         if (stopped) return;
+        pendingFull = true;
         if (loading) {
             again = true;
             againRecheck = againRecheck || recheck;
             return;
         }
         if (recheck) needVersion = true;
+        startLoad();
+    }
+
+    // An FSEvents batch: the directories become match keys through the
+    // watch set and the aliases the stream was built with.
+    void requestChangeLoad(const std::vector<std::string> &directories, bool rescan) {
+        if (stopped) return;
+        size_t unmapped = 0;
+        if (rescan) {
+            pendingFull = true;
+        } else {
+            std::vector<std::string> keys;
+            for (const std::string &dir : directories) {
+                if (!watchSet.mapEventDirectory(dir, *aliases, keys)) unmapped++;
+            }
+            if (unmapped) pendingFull = true;
+            appendUnique(pendingKeys, keys);
+        }
+        if (isLogEnabled(LogLevel::Debug)) {
+            std::string line = "watch: sidecar changes in " + std::to_string(directories.size()) + " folder(s)";
+            if (rescan) line += ", rescan requested";
+            if (unmapped) line += ", " + std::to_string(unmapped) + " outside the watched folders";
+            line += loading ? "; one more load after the running one" : "; reloading";
+            logDebug(line);
+        }
+        if (loading) {
+            again = true;
+            return;
+        }
         startLoad();
     }
 
@@ -157,6 +223,11 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         notConfiguredLogged = false;
         loading = true;
         loadStart = Clock::now();
+        inFlightFull = pendingFull;
+        inFlightKeys = std::move(pendingKeys);
+        pendingKeys.clear();
+        pendingFull = false;
+        memberPassRan = false;
         if (!everLoaded) setStatus(LoaderState::Loading);
         if (isLogEnabled(LogLevel::Debug)) logDebug("load: rules from " + rulesSourceDescription(settings.cli));
         startCall(needVersion ? LoadStep::Version : LoadStep::Status);
@@ -204,6 +275,58 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         gateFailed = false;
         logDebug("version: cli " + (gate.info.cli.empty() ? std::string("(none)") : gate.info.cli) +
                  ", schema 1" + (gate.info.hasCommands ? ", commands listed" : ", no commands list"));
+        if (cliSupportsCommand(gate.info, CliCommand::Income)) {
+            startIncomeCall();
+        } else {
+            if (!incomePaths.empty()) logDebug("income: not offered by this CLI; no income folders watched");
+            incomePaths.clear();
+            startCall(LoadStep::Status);
+        }
+    }
+
+    // `income --json` (read-only, so killable like status). Any failure is
+    // this command's alone: the load goes on with `status`.
+    void startIncomeCall() {
+        CliRequest request;
+        request.command = CliCommand::Income;
+        CliRunOptions options;
+        options.limits = settings.limits;
+        std::shared_ptr<Impl> self = shared_from_this();
+        std::string refusal;
+        const bool started = startCliCommand(
+            runner, settings.cli, request, options, queue, nullptr,
+            [self](CliResult &&result) { self->onIncome(std::move(result)); }, &refusal);
+        if (!started) {
+            logError("income failed; watching the last known income folders: refused: " + refusal);
+            startCall(LoadStep::Status);
+        }
+    }
+
+    void onIncome(CliResult &&r) {
+        logCall(r);
+        if (stopped || r.envelope.outcome == CliOutcome::Cancelled) {
+            finishLoad(false);
+            return;
+        }
+        const EnvelopeResult &env = r.envelope;
+        if (env.outcome == CliOutcome::Ok || env.outcome == CliOutcome::Partial) {
+            IncomeParseResult parsed = parseIncomeFolders(env.data);
+            if (parsed.ok) {
+                std::vector<std::string> paths;
+                for (const IncomeFolder &f : parsed.folders) paths.push_back(f.path);
+                incomePaths = std::move(paths);
+                if (isLogEnabled(LogLevel::Debug)) {
+                    logDebug("income: " + std::to_string(parsed.folders.size()) + " folder(s)" +
+                             (parsed.skipped ? ", " + std::to_string(parsed.skipped) + " unusable entries skipped"
+                                             : std::string()));
+                }
+                if (env.outcome == CliOutcome::Partial) logInfo("income: partial result: " + loadErrorText(env));
+            } else {
+                logError("income failed; watching the last known income folders: " + parsed.error);
+            }
+        } else {
+            logError("income failed; watching the last known income folders: " + loadErrorText(env));
+        }
         startCall(LoadStep::Status);
     }
 
@@ -240,21 +363,35 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         limits.cancel = &stopped;
         limits.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
                                              std::chrono::duration<double>(settings.memberLoadSeconds));
+        MemberReuse reuse;
+        std::unordered_map<std::string, std::string> previousKeys;
+        if (!inFlightFull && lastGood) {
+            reuse.enabled = true;
+            reuse.changedKeys = inFlightKeys;
+            previousKeys.reserve(lastGood->size());
+            for (const IntakeRecord &rec : lastGood->records()) previousKeys.emplace(rec.id, rec.rootKey);
+            reuse.previousKeys = &previousKeys;
+        }
         MemberLoadStats stats;
         MemberTable members = loadMembers(parsed.records, *files, lastGood ? &lastGood->members() : nullptr,
-                                          statusHasVisual, &stats, limits);
+                                          statusHasVisual, &stats, limits, reuse);
         if (stopped) {
             finishLoad(false);
             return;
         }
+        memberPassRan = true;
+        // A stop leaves directories unverified: the next load lists all.
+        if (stats.stop != MemberLoadStop::None) pendingFull = true;
         if (stats.stop != MemberLoadStop::None && stats.stop != MemberLoadStop::Cancelled) {
             logInfo(std::string("member lists: stopped early (") + stopName(stats.stop) +
                     (stats.stopError ? ", errno " + std::to_string(stats.stopError) : std::string()) +
                     "); unanswered roots keep their previous membership");
         }
         if (isLogEnabled(LogLevel::Debug)) {
-            logDebug("member lists: " + std::to_string(stats.directories) + " directories, " +
-                     std::to_string(stats.directoriesListed) + " listed, " + std::to_string(stats.sidecarReads) +
+            logDebug(std::string("member lists (") + (reuse.enabled ? "incremental" : "full") +
+                     "): " + std::to_string(stats.directories) + " directories, " +
+                     std::to_string(stats.directoriesListed) + " listed, " +
+                     std::to_string(stats.directoriesReused) + " reused, " + std::to_string(stats.sidecarReads) +
                      " sidecar reads, " + std::to_string(stats.keptPrevious) + " kept from the last load");
         }
 
@@ -336,6 +473,16 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     void finishLoad(bool notify) {
         loading = false;
         if (stopped) return;
+        if (!memberPassRan) {
+            // Nothing was re-listed: what this load was asked to look at
+            // carries over to the next one.
+            pendingFull = pendingFull || inFlightFull;
+            appendUnique(pendingKeys, inFlightKeys);
+        }
+        inFlightKeys.clear();
+        inFlightFull = false;
+        memberPassRan = false;
+        updateWatchSet();
         if (notify && settings.onLoadFinished) settings.onLoadFinished(currentStatus());
         if (again) {
             again = false;
@@ -345,11 +492,46 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
     }
 
+    // --- watch set ---
+
+    void updateWatchSet() {
+        if (stopped || !settings.onWatchSet) return;
+        std::vector<std::string> rootPaths;
+        if (lastGood) {
+            rootPaths.reserve(lastGood->size());
+            for (const IntakeRecord &rec : lastGood->records()) rootPaths.push_back(rec.rootPath);
+        }
+        std::vector<std::string> inputs = watchCandidates(settings.watchFolders, incomePaths, rootPaths);
+        if (watchBuilt && !watchDirty && inputs == watchInputs) return;
+        const PathResolver &resolve = settings.resolvePath ? settings.resolvePath : realPathResolverFunction();
+        watchSet = WatchSet::build(inputs, mountEntries, resolve);
+        watchInputs = std::move(inputs);
+        watchBuilt = true;
+        watchDirty = false;
+        if (watchHandedOverOnce && watchSet.streamPaths() == watchHandedOver) return;
+        watchHandedOver = watchSet.streamPaths();
+        watchHandedOverOnce = true;
+        if (isLogEnabled(LogLevel::Debug)) {
+            logDebug("watch set: " + std::to_string(watchHandedOver.size()) + " folder(s) from " +
+                     std::to_string(watchInputs.size()) + " candidate(s)");
+        }
+        settings.onWatchSet(watchHandedOver);
+    }
+
+    static const PathResolver &realPathResolverFunction() {
+        static const PathResolver resolver = &realPathResolver;
+        return resolver;
+    }
+
     // --- mounts ---
 
     void readMounts(bool publishChange) {
         std::vector<MountEntry> entries;
         if (settings.readMounts) entries = settings.readMounts();
+        if (!sameMountEntries(entries, mountEntries)) {
+            mountEntries = entries;
+            watchDirty = true;
+        }
         std::shared_ptr<const MountAliases> next = MountAliases::build(entries);
         const bool firstRead = !mountsRead;
         mountsRead = true;
@@ -399,10 +581,22 @@ void IntakeLoader::reload(bool recheckVersion) {
     });
 }
 
+void IntakeLoader::reloadForChanges(std::vector<std::string> directories, bool rescan) {
+    std::shared_ptr<Impl> impl = impl_;
+    auto dirs = std::make_shared<std::vector<std::string>>(std::move(directories));
+    dispatch_async(impl->queue, ^{
+        impl->requestChangeLoad(*dirs, rescan);
+    });
+}
+
 void IntakeLoader::remount() {
     std::shared_ptr<Impl> impl = impl_;
     dispatch_async(impl->queue, ^{
-        if (!impl->stopped) impl->readMounts(true);
+        if (impl->stopped) return;
+        impl->readMounts(true);
+        // A mount change may move keys and folders: the next load lists all.
+        impl->pendingFull = true;
+        if (!impl->loading) impl->updateWatchSet();
     });
 }
 

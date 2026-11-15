@@ -6,6 +6,7 @@
 #include "IntakeConfig.h"
 
 #include "../Core/IntakeLog.h"
+#include "../Core/IntakeWatchSet.h"
 
 namespace intake {
 namespace config {
@@ -86,6 +87,9 @@ IntakeSettings load() {
     s.logLevel = static_cast<int>(level);
     s.decorStats = getInt(kDecorStats, 0) != 0;
     s.logFile = getInt(kLogFile, 0) != 0;
+    WatchFolderList folders = parseWatchFolders(getString(kWatchFolders, ""));
+    s.watchFolders = std::move(folders.folders);
+    s.ignoredWatchFolders = std::move(folders.ignored);
     return s;
 }
 

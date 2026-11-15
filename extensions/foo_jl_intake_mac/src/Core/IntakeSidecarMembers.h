@@ -59,6 +59,21 @@
 //  list, else matches nothing). At most the call in flight blocks; it
 //  cannot be interrupted.
 //
+//  Incremental loads (B4, MemberReuse): a load triggered by FSEvents knows
+//  which directories had a sidecar written, created or removed since the
+//  last load. Every other directory that this load would list keeps the
+//  previous classification without I/O (MemberSource::Reused), when every
+//  root in it had one that came from a listing (Listed or Reused, so a
+//  directory that failed to list or was only assumed is listed again), the
+//  root's match key is the one it had in the previous load, and a root that
+//  now renders something did not have its member list skipped (kind None).
+//  Changed directories, new roots and everything else are listed as above.
+//  The changed keys are compared ignoring ASCII case: a doubt costs one
+//  listing, never a stale member list. The loader turns reuse off (a full
+//  listing) for every load not started only by FSEvents batches (reload(),
+//  reload(true), the post-command refresh), after a mount change, after a
+//  rescan batch, and after a member pass that stopped early (IntakeLoader.h).
+//
 //  Thread-safety: loadMembers runs on one thread at a time per
 //  SidecarFileAccess (the loader queue); it calls `fs` synchronously and in
 //  order. The POSIX access is stateless and may be shared. `limits.cancel`
@@ -110,6 +125,7 @@ enum class MemberSource {
     Listed,   // this load listed the directory (and read the sidecar for Members)
     Previous, // kept from `previous` after a failed listing, read or parse, or a stop
     Assumed,  // not verified: a lone root, or a skipped, unlistable or untried directory
+    Reused,   // an incremental load kept a listed classification of an unchanged directory
 };
 
 struct RootMembers {
@@ -142,6 +158,7 @@ struct MemberLoadStats {
     size_t directoriesSkipped = 0; // no root in it needed members: no I/O
     size_t directoriesAssumed = 0; // a lone root, no previous member list: whole-directory, no I/O
     size_t directoriesNotTried = 0; // left unlisted after a stop
+    size_t directoriesReused = 0;  // incremental: unchanged, previous classification kept, no I/O
     MemberLoadStop stop = MemberLoadStop::None;
     int stopError = 0;             // the errno, for ShareUnreachable
     size_t listFailures = 0;
@@ -149,6 +166,16 @@ struct MemberLoadStats {
     size_t sidecarRetries = 0;     // second reads after a failed read or parse
     size_t sidecarFailures = 0;    // still unusable after the retry
     size_t keptPrevious = 0;       // roots answered from `previous`
+};
+
+// An incremental load (see "Incremental loads" above). Default: off.
+struct MemberReuse {
+    bool enabled = false;
+    // Match keys (IntakeRecord::rootKey form: normalized, aliased) of the
+    // directories with sidecar events since the previous load.
+    std::vector<std::string> changedKeys;
+    // The previous load's rootKey by root id. Null: no root is reused.
+    const std::unordered_map<std::string, std::string> *previousKeys = nullptr;
 };
 
 // ".intake.<id>.json".
@@ -170,12 +197,14 @@ bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &pa
 // Classifies every record (one entry per record id). `needsMembers` decides
 // which roots are worth I/O; an empty function means every root. `previous`
 // is the last snapshot's table, or null. `limits` bounds the I/O (see
-// "Stopping early").
+// "Stopping early"). `reuse` makes it incremental (see above; it needs
+// `previous`).
 MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                         SidecarFileAccess &fs,
                         const MemberTable *previous,
                         const std::function<bool(const IntakeRecord &)> &needsMembers,
                         MemberLoadStats *stats = nullptr,
-                        const MemberLoadLimits &limits = MemberLoadLimits());
+                        const MemberLoadLimits &limits = MemberLoadLimits(),
+                        const MemberReuse &reuse = MemberReuse());
 
 } // namespace intake

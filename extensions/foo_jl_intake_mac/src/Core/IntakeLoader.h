@@ -27,12 +27,38 @@
 //  A gate failure's inert view lasts while the gate fails: once `version`
 //  passes again, a failed `status` shows the last load (Stale).
 //
-//  Triggers: reload() (init, a mount event, later Refresh and preferences)
+//  Income (B4): when the CLI lists `income` (cliSupportsCommand), a load
+//  that ran `version` (the first load, reload(true), a retry after a
+//  failed version) runs `income --json` between `version` and `status`. Its
+//  folders feed the watch set. A failed income call is a per-command error:
+//  one log line, the last good folder list is kept, and the load goes on
+//  with `status` (never inert).
+//
+//  Triggers: reload() (init, a mount event, later Refresh, preferences and
+//  the post-command refresh), reloadForChanges() (an FSEvents batch, B4)
 //  and remount(), which re-reads the mount table and, when the aliases
 //  changed, rebuilds the keys of the last load and publishes them, with
 //  invalidate-all only when a row can decorate differently
 //  (remountChangesRows). A reload requested while a load runs is coalesced
-//  into one more load after it.
+//  into one more load after it (the "reload again" flag), whatever its
+//  trigger. Every load is one full `status --json`, never `--filter` (doc 03
+//  gives filtered calls no cost guarantee).
+//
+//  Watch set (B4, IntakeWatchSet): after every load attempt and every
+//  remount, the candidates (LoaderSettings::watchFolders, the income
+//  folders, the parent of every root_path of the last good load) are
+//  resolved and reduced on the loader queue (realpath only for local paths,
+//  decided from the mount table already read), and onWatchSet gets the
+//  stream paths only when they differ from the last ones handed over.
+//
+//  Incremental member lists (B4, IntakeSidecarMembers MemberReuse): a load
+//  started only by reloadForChanges() lists again just the directories its
+//  batches named (mapped to match keys through the watch set and the mount
+//  aliases); other directories keep the previous classification. Any other
+//  trigger, a remount, a rescan batch, a batch directory that maps to no
+//  watched folder, or a member pass that stopped early makes the next load
+//  list everything as before. Directories named by a load that failed
+//  before its member pass carry over to the next load.
 //
 //  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
 //  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
@@ -63,6 +89,7 @@
 #include "IntakeProcess.h"
 #include "IntakeSidecarMembers.h"
 #include "IntakeView.h"
+#include "IntakeWatchSet.h"
 
 namespace intake {
 
@@ -78,6 +105,9 @@ using PublishHandler =
     std::function<void(std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason)>;
 using LoadFinishedHandler = std::function<void(const LoaderStatus &status)>;
 using MountReader = std::function<std::vector<MountEntry>()>;
+// The stream paths (IntakeWatchSet::streamPaths()), sorted; empty: nothing
+// to watch. Runs on the loader queue, never after shutdown().
+using WatchSetHandler = std::function<void(const std::vector<std::string> &paths)>;
 
 struct LoaderSettings {
     // cliPath, bunPath, rulesDir and baseEnvironment (a main-thread
@@ -91,6 +121,10 @@ struct LoaderSettings {
     SidecarFileAccess *files = nullptr; // null: posixSidecarFileAccess(); must outlive the loader
     PublishHandler publish;
     LoadFinishedHandler onLoadFinished; // optional: after every load attempt
+    // B4 watch set. watchFolders: the watch_folders setting (absolute paths).
+    std::vector<std::string> watchFolders;
+    WatchSetHandler onWatchSet;         // optional
+    PathResolver resolvePath;           // empty: realpath (local paths only)
 };
 
 class IntakeLoader {
@@ -101,8 +135,14 @@ public:
     IntakeLoader &operator=(const IntakeLoader &) = delete;
 
     // Starts a load, or queues one more after the running one.
-    // `recheckVersion` runs `version` again even when it passed before.
+    // `recheckVersion` runs `version` (and `income`) again even when it
+    // passed before. The member pass lists every directory (no reuse).
     void reload(bool recheckVersion);
+    // An FSEvents batch (IntakeWatcher): `directories` hold changed
+    // sidecars, as the events spelled them; `rescan`: treat everything as
+    // changed. Starts or queues one load like reload(false), but its member
+    // pass reuses what did not change (see the top of this file).
+    void reloadForChanges(std::vector<std::string> directories, bool rescan);
     // Re-reads the mount table (see the top of this file).
     void remount();
     // See the top of this file. Idempotent.

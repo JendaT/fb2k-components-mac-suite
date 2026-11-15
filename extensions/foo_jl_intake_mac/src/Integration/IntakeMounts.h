@@ -10,6 +10,9 @@
 //  that another caller may overwrite). Never statfs/MNT_WAIT or realpath on
 //  a share path.
 //
+//  MountEntry::local is MNT_LOCAL from f_flags (IntakeWatchSet uses it to
+//  keep realpath off network paths).
+//
 //  Called on the loader queue at the first load and after
 //  NSWorkspaceDidMount/DidUnmount notifications. Unit tests feed synthetic
 //  lists to IntakeMountAliases instead; nothing here runs in them.

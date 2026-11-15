@@ -30,6 +30,7 @@
 #include <map>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 using namespace intake;
@@ -509,6 +510,114 @@ static void testPosix() {
     CHECK(!fs.readFile(dir + "/missing.json", contents, error) && error == ENOENT, "posix: a failed read's errno");
 }
 
+static std::unordered_map<std::string, std::string> keysOf(const std::vector<IntakeRecord> &records) {
+    std::unordered_map<std::string, std::string> out;
+    for (const IntakeRecord &r : records) out[r.id] = r.rootKey;
+    return out;
+}
+
+static void testIncremental() {
+    g_context = "incremental";
+    const std::string loose = "/income/shop/Loose Tracks";
+    const std::string singles = "/income/dump/Singles";
+    const std::string one = "/income/one";
+    FakeAccess fs;
+    fs.dirs[loose] = {".intake.itk_00000016.json", ".intake.itk_00000017.json", "a.wav", "b.wav"};
+    fs.dirs[singles] = {".intake.itk_00000021.json", ".intake.itk_00000022.json", "c.wav", "d.wav"};
+    fs.dirs[one] = {".intake.itk_00000007.json", "e.wav"};
+    fs.reads[loose + "/.intake.itk_00000016.json"] = {sidecarJson({"a.wav"})};
+    fs.reads[loose + "/.intake.itk_00000017.json"] = {sidecarJson({"b.wav"})};
+    fs.reads[singles + "/.intake.itk_00000021.json"] = {sidecarJson({"c.wav"})};
+    fs.reads[singles + "/.intake.itk_00000022.json"] = {sidecarJson({"d.wav"})};
+    fs.reads[one + "/.intake.itk_00000007.json"] = {sidecarJson({"e.wav"})};
+    std::vector<IntakeRecord> records = {
+        record("itk_00000016", loose, IntakeStatus::New),
+        record("itk_00000017", loose, IntakeStatus::Proposed),
+        record("itk_00000021", singles, IntakeStatus::Resolved),
+        record("itk_00000022", singles, IntakeStatus::Approved),
+        record("itk_00000007", one, IntakeStatus::New),
+    };
+    MemberTable lonePrevious;  // the lone root's folder had siblings last time
+    lonePrevious["itk_00000007"].kind = MemberKind::Members;
+    lonePrevious["itk_00000007"].source = MemberSource::Listed;
+    lonePrevious["itk_00000007"].relativePaths = {"e.wav"};
+    MemberLoadStats stats;
+    MemberTable full = loadMembers(records, fs, &lonePrevious, statusHasVisual, &stats);
+    CHECK(fs.listCalls[loose] == 1 && fs.listCalls[singles] == 1 && fs.listCalls[one] == 1 && fs.totalReads() == 5,
+          "the first (full) load lists every shared folder and the lone root with a member list");
+    const auto previousKeys = keysOf(records);
+
+    // One sidecar changed in Loose Tracks.
+    MemberReuse reuse;
+    reuse.enabled = true;
+    reuse.changedKeys = {records[0].rootKey};
+    reuse.previousKeys = &previousKeys;
+    MemberTable inc = loadMembers(records, fs, &full, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[loose] == 2, "the changed folder is listed again");
+    CHECK(fs.listCalls[singles] == 1 && fs.listCalls[one] == 1, "unchanged folders are not listed");
+    CHECK_EQ(fs.totalReads(), 7, "only the changed folder's two sidecars are read again");
+    CHECK(stats.directoriesReused == 2 && stats.directoriesListed == 1, "stats: 2 reused, 1 listed");
+    CHECK(inc["itk_00000021"].source == MemberSource::Reused && inc["itk_00000022"].source == MemberSource::Reused &&
+              inc["itk_00000007"].source == MemberSource::Reused,
+          "reused roots are marked Reused");
+    CHECK(inc["itk_00000021"].kind == MemberKind::Members &&
+              inc["itk_00000021"].relativePaths == std::vector<std::string>{"c.wav"} &&
+              inc["itk_00000007"].relativePaths == std::vector<std::string>{"e.wav"},
+          "with the previous member lists");
+    CHECK(inc["itk_00000016"].source == MemberSource::Listed, "the changed folder's roots are freshly listed");
+
+    g_context = "incremental-again";
+    reuse.changedKeys.clear();
+    MemberTable twice = loadMembers(records, fs, &inc, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.totalLists() == 4 && stats.directoriesReused == 3, "a Reused classification is reused again");
+    CHECK(twice["itk_00000016"].relativePaths == std::vector<std::string>{"a.wav"}, "unchanged content");
+
+    g_context = "incremental-case";
+    reuse.changedKeys = {"/INCOME/DUMP/SINGLES"};
+    loadMembers(records, fs, &inc, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 2, "a changed key differing in ASCII case still re-lists (a doubt costs a listing)");
+
+    g_context = "incremental-new-root";
+    std::vector<IntakeRecord> grown = records;
+    grown.push_back(record("itk_00000023", singles, IntakeStatus::New));
+    fs.dirs[singles].push_back(".intake.itk_00000023.json");
+    fs.reads[singles + "/.intake.itk_00000023.json"] = {sidecarJson({"f.wav"})};
+    reuse.changedKeys.clear();
+    MemberTable withNew = loadMembers(grown, fs, &inc, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 3 && withNew["itk_00000023"].relativePaths == std::vector<std::string>{"f.wav"},
+          "a folder with a root the previous load did not have is listed");
+
+    g_context = "incremental-moved";
+    auto moved = previousKeys;
+    moved["itk_00000021"] = "/income/dump/Elsewhere";
+    reuse.previousKeys = &moved;
+    loadMembers(records, fs, &inc, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 4, "a root whose key changed since the previous load is listed");
+    reuse.previousKeys = &previousKeys;
+
+    g_context = "incremental-unverified";
+    MemberTable failed = inc;
+    failed["itk_00000021"].source = MemberSource::Previous;  // its last listing failed
+    loadMembers(records, fs, &failed, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 5, "a folder kept from a failed listing is listed again");
+    MemberTable assumed = inc;
+    assumed["itk_00000022"].source = MemberSource::Assumed;
+    loadMembers(records, fs, &assumed, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 6, "a folder that was only assumed is listed");
+    MemberTable skipped = inc;
+    skipped["itk_00000022"].kind = MemberKind::None;  // not read last time (it rendered nothing)
+    loadMembers(records, fs, &skipped, statusHasVisual, &stats, MemberLoadLimits(), reuse);
+    CHECK(fs.listCalls[singles] == 7, "a root whose member list was skipped but now renders is read");
+
+    g_context = "incremental-off";
+    MemberReuse noPrevious = reuse;
+    loadMembers(records, fs, nullptr, statusHasVisual, &stats, MemberLoadLimits(), noPrevious);
+    CHECK(stats.directoriesReused == 0 && fs.listCalls[singles] == 8, "no previous table: nothing reused");
+    MemberReuse off;
+    loadMembers(records, fs, &inc, statusHasVisual, &stats, MemberLoadLimits(), off);
+    CHECK(stats.directoriesReused == 0 && stats.directoriesListed == 3, "reuse off: a full listing");
+}
+
 int main(void) {
     atexit(mock::removeTempRoot);
     @autoreleasepool {
@@ -519,6 +628,7 @@ int main(void) {
         testStop();
         testSpellings();
         testPosix();
+        testIncremental();
     }
     mock::removeTempRoot();
     TEST_MAIN_END();

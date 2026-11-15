@@ -50,6 +50,8 @@ uuid_quartz_framework = generate_uuid
 uuid_quartz_framework_ref = generate_uuid
 uuid_security_framework = generate_uuid
 uuid_security_framework_ref = generate_uuid
+uuid_coreservices_framework = generate_uuid
+uuid_coreservices_framework_ref = generate_uuid
 uuid_sqlite_lib = generate_uuid
 uuid_sqlite_lib_ref = generate_uuid
 uuid_compression_lib = generate_uuid
@@ -135,6 +137,7 @@ end
 pbxproj_content += "\t\t#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_cocoa_framework_ref} /* Cocoa.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_quartz_framework_ref} /* QuartzCore.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework} /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_security_framework_ref} /* Security.framework */; };\n"
+pbxproj_content += "\t\t#{uuid_coreservices_framework} /* CoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_coreservices_framework_ref} /* CoreServices.framework */; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_sqlite_lib_ref} /* libsqlite3.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib} /* libcompression.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_compression_lib_ref} /* libcompression.tbd */; };\n"
 pbxproj_content += "\t\t#{uuid_zlib} /* libz.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = #{uuid_zlib_ref} /* libz.tbd */; };\n"
@@ -184,6 +187,8 @@ pbxproj_content += "\t\t#{uuid_infoplist} /* Info.plist */ = {isa = PBXFileRefer
 pbxproj_content += "\t\t#{uuid_cocoa_framework_ref} /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = System/Library/Frameworks/Cocoa.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_quartz_framework_ref} /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_security_framework_ref} /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };\n"
+# CoreServices: FSEvents for the sidecar watcher (IntakeWatcher, PLAN.md B4)
+pbxproj_content += "\t\t#{uuid_coreservices_framework_ref} /* CoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreServices.framework; path = System/Library/Frameworks/CoreServices.framework; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_compression_lib_ref} /* libcompression.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libcompression.tbd; path = usr/lib/libcompression.tbd; sourceTree = SDKROOT; };\n"
 pbxproj_content += "\t\t#{uuid_zlib_ref} /* libz.tbd */ = {isa = PBXFileReference; lastKnownFileType = \"sourcecode.text-based-dylib-definition\"; name = libz.tbd; path = usr/lib/libz.tbd; sourceTree = SDKROOT; };\n"
@@ -206,6 +211,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework} /* Cocoa.framework in Frameworks */,
 				#{uuid_quartz_framework} /* QuartzCore.framework in Frameworks */,
 				#{uuid_security_framework} /* Security.framework in Frameworks */,
+				#{uuid_coreservices_framework} /* CoreServices.framework in Frameworks */,
 				#{uuid_sqlite_lib} /* libsqlite3.tbd in Frameworks */,
 				#{uuid_compression_lib} /* libcompression.tbd in Frameworks */,
 				#{uuid_zlib} /* libz.tbd in Frameworks */,
@@ -303,6 +309,7 @@ pbxproj_content += <<~PBXPROJ
 				#{uuid_cocoa_framework_ref} /* Cocoa.framework */,
 				#{uuid_quartz_framework_ref} /* QuartzCore.framework */,
 				#{uuid_security_framework_ref} /* Security.framework */,
+				#{uuid_coreservices_framework_ref} /* CoreServices.framework */,
 				#{uuid_sqlite_lib_ref} /* libsqlite3.tbd */,
 				#{uuid_compression_lib_ref} /* libcompression.tbd */,
 				#{uuid_zlib_ref} /* libz.tbd */,

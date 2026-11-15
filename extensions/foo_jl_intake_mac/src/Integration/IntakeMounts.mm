@@ -37,6 +37,7 @@ std::vector<MountEntry> readMountTable() {
         entry.mountPoint = fixedString(fs.f_mntonname, sizeof fs.f_mntonname);
         entry.source = fixedString(fs.f_mntfromname, sizeof fs.f_mntfromname);
         entry.fsType = fixedString(fs.f_fstypename, sizeof fs.f_fstypename);
+        entry.local = (fs.f_flags & MNT_LOCAL) != 0;
         mounts.push_back(std::move(entry));
     }
     free(table);

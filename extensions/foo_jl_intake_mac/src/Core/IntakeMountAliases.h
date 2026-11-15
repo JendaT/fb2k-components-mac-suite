@@ -63,6 +63,9 @@ struct MountEntry {
     std::string mountPoint; // f_mntonname, e.g. "/Volumes/<share>-1"
     std::string source;     // f_mntfromname, e.g. "//user@host/<share>"
     std::string fsType;     // f_fstypename, e.g. "smbfs"
+    // f_flags has MNT_LOCAL. Not used for aliases; IntakeWatchSet reads it
+    // (with the type) to decide whether realpath may touch a path.
+    bool local = true;
 };
 
 // The prefix of every alias key.
