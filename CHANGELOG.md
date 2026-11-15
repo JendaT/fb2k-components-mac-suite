@@ -267,6 +267,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Playlist Organizer
 
+### [Unreleased]
+
+#### Fixed
+- **Outside renames**: playlists renamed elsewhere move into the right folder instead of leaving a dead entry
+
 ### [1.5.1] - 2026-11-09
 
 #### Changed

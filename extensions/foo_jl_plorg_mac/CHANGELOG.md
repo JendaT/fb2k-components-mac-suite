@@ -2,6 +2,11 @@
 
 All notable changes to Playlist Organizer will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Outside renames**: A playlist renamed outside the organizer (by another component or in foobar2000) moves to the folder its new name encodes instead of leaving a dead entry.
+
 ## [1.5.1] - 2026-11-09
 
 ### Changed
