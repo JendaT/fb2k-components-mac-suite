@@ -38,6 +38,7 @@ struct IntakeSettings {
     std::string rulesDir;
     int logLevel = 1;
     bool decorStats = false;
+    bool logFile = false;  // hidden: mirror log lines to ~/Library/Logs/foobar2000/jl_intake.log
 };
 
 namespace config {
@@ -48,6 +49,7 @@ inline constexpr const char *kBunPath = "bun_path";
 inline constexpr const char *kRulesDir = "rules_dir";
 inline constexpr const char *kLogLevel = "log_level";
 inline constexpr const char *kDecorStats = "decor_stats";
+inline constexpr const char *kLogFile = "log_file";
 
 // `key` without the prefix.
 int64_t getInt(const char *key, int64_t defaultValue);

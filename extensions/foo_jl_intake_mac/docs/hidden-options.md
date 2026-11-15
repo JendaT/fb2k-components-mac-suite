@@ -107,6 +107,14 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "UPDATE configInts SET value=0 WHERE name='foo_jl_intake.decor_stats';"
 ```
 
+## foo_jl_intake.log_file
+
+`configInts`, default `0`. When `1`, every `[intake]` line that reaches the
+console (after the `log_level` filter, plus the `decor_stats` lines) is also
+appended, timestamped, to `~/Library/Logs/foobar2000/jl_intake.log`. For
+in-app checks that cannot open the console window. The file is never
+truncated or rotated; delete it by hand.
+
 ## foo_jl_intake.test_playlist and test_playlist_dir
 
 Temporary acceptance aid, removed before the merge (PLAN.md B10). It lets an

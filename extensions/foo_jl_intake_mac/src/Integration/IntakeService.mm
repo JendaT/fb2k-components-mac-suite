@@ -17,11 +17,50 @@
 #include "../Core/IntakeLoader.h"
 #include "../Core/IntakeLog.h"
 
+#include <atomic>
+#include <ctime>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <sys/time.h>
 
 namespace intake {
 
 namespace {
+
+// Hidden option log_file (docs/hidden-options.md): mirror every line that
+// reaches the console to a file, so in-app checks can be read without the
+// console window. Set once in on_init before the backend is installed.
+std::atomic<bool> g_logToFile{false};
+std::mutex g_logFileMutex;
+
+const std::string &logFilePath() {
+    static const std::string path = [] {
+        NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs/foobar2000"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:nil];
+        return std::string([dir stringByAppendingPathComponent:@"jl_intake.log"].fileSystemRepresentation);
+    }();
+    return path;
+}
+
+void appendToLogFile(LogLevel level, const char *message) {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    struct tm local;
+    time_t secs = tv.tv_sec;
+    localtime_r(&secs, &local);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &local);
+    std::lock_guard<std::mutex> lock(g_logFileMutex);
+    if (FILE *f = fopen(logFilePath().c_str(), "a")) {
+        fprintf(f, "%s.%03d %s%s\n", stamp, static_cast<int>(tv.tv_usec / 1000),
+                level == LogLevel::Error ? "ERROR " : "", message);
+        fclose(f);
+    }
+}
 
 // IntakeLog messages arrive "[intake] "-prefixed, from any thread.
 void consoleBackend(LogLevel level, const char *message) {
@@ -30,6 +69,7 @@ void consoleBackend(LogLevel level, const char *message) {
     } else {
         console::info(message);
     }
+    if (g_logToFile.load(std::memory_order_relaxed)) appendToLogFile(level, message);
 }
 
 class Service {
@@ -106,8 +146,9 @@ void Service::volumesChanged() {
 class intake_initquit : public initquit {
 public:
     void on_init() override {
-        setLogBackend(consoleBackend);
         const IntakeSettings settings = config::load();
+        g_logToFile = settings.logFile;
+        setLogBackend(consoleBackend);
         setLogLevel(settings.logLevel);
         providerSetStatsEnabled(settings.decorStats);
         if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");

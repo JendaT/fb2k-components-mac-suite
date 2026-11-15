@@ -85,6 +85,7 @@ IntakeSettings load() {
     if (level > 2) level = 2;
     s.logLevel = static_cast<int>(level);
     s.decorStats = getInt(kDecorStats, 0) != 0;
+    s.logFile = getInt(kLogFile, 0) != 0;
     return s;
 }
 
