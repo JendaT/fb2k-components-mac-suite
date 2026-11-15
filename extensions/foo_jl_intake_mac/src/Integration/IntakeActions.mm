@@ -18,12 +18,15 @@
 #include "IntakeService.h"
 
 #include "../Core/IntakeCliRunner.h"
+#include "../Core/IntakeErrorMap.h"
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeMutationLane.h"
 #include "../Core/IntakeMutationResult.h"
+#include "../Core/IntakeSlowVolumeGuard.h"
 #include "../Core/IntakeView.h"
 
 #include <memory>
+#include <unordered_map>
 
 namespace intake {
 
@@ -65,6 +68,9 @@ struct ActionsState {
     bool stopped = false;
     uint32_t menuSerial = 0;
     ActionTable menuTable;
+    // The call whose 10 s report put E_CLI_TIMEOUT on its roots (0: none);
+    // its finish replaces those errors.
+    uint64_t timeoutReported = 0;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -88,20 +94,46 @@ ActionContext liveContext(const IntakeView *view) {
     c.cli = info.cli;
     c.laneBusy = st.lane.busy();
     c.executeRunning = st.lane.executeRunning();
+    c.confirmReject = info.confirmReject;
     return c;
+}
+
+// Why a mutating call cannot start now, or "" (main thread; the lane and
+// the configuration, as runMutation checks them).
+std::string whyNotStartable() {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "intake is not running";
+    const ServiceActionInfo info = serviceActionInfo();
+    if (!info.running || !info.cliConfigured) return "intake is not running or has no CLI path";
+    if (st.lane.busy()) {
+        return st.lane.executeRunning() ? "another intake command is still running (execute)"
+                                        : "another intake command is still running";
+    }
+    return std::string();
 }
 
 // --- results (main) ---
 
-void onBudget(uint64_t token, CliCommand command, CliBudgetEvent event) {
+void onBudget(uint64_t token, CliCommand command, const std::vector<MutationRoot> &roots, CliBudgetEvent event) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
+    const std::string name = cliCommandName(command);
     if (st.lane.reportBudget(token)) {
-        logInfo(std::string(cliCommandName(command)) +
-                " dry run: no answer within 10 s; the lane is free again and its late result will be ignored");
+        logInfo(name + " dry run: no answer within 10 s; the lane is free again and its late result will be ignored");
     } else if (event == CliBudgetEvent::Timeout) {
-        logInfo(std::string(cliCommandName(command)) +
-                ": still running after 10 s; it is not stopped, and intake refreshes when it exits");
+        // doc 03 v1.2 "Timeouts": report E_CLI_TIMEOUT, keep it running.
+        // Per command (doc 04 "Failure behavior"): a console line and a
+        // tooltip on each of its roots until it exits; the refresh shows
+        // the tooltips (status as of now, the call's writes so far).
+        CliError timeout;
+        timeout.code = "E_CLI_TIMEOUT";
+        timeout.msg = "still running after 10 s; it is not stopped, and intake refreshes when it exits";
+        const std::string text = name + ": " + renderError(timeout);
+        RootErrorStore &errors = actionsErrorStore();
+        for (const MutationRoot &r : roots) errors.set(r.id, text, r.status);
+        st.timeoutReported = token;
+        logError(text + " (" + rootCountText(roots.size()) + ")");
+        serviceRefreshAfterCommand();
     }
 }
 
@@ -109,15 +141,28 @@ void onFinished(uint64_t token, CliCommand command, const std::vector<MutationRo
     ActionsState &st = actionsState();
     if (st.stopped) return;
     const std::string name = cliCommandName(command);
+    logCliResult(result);
     if (!st.lane.finish(token)) {
         logInfo(name + ": a late dry-run result was ignored");
         return;
     }
     const MutationOutcome outcome = summarizeMutation(command, roots, result.envelope);
     RootErrorStore &errors = actionsErrorStore();
+    if (st.timeoutReported == token) {
+        // The 10 s report's E_CLI_TIMEOUT (which replaced any older error
+        // of these roots) gives way to the result.
+        st.timeoutReported = 0;
+        for (const MutationRoot &r : roots) errors.clear(r.id);
+    }
+    std::unordered_map<std::string, IntakeStatus> menuStatus;
+    for (const MutationRoot &r : roots) menuStatus.emplace(r.id, r.status);
     for (const std::string &id : outcome.succeeded) errors.clear(id);
     for (const auto &entry : outcome.rootErrors) {
-        errors.set(entry.first, entry.second);
+        // Baseline: the status the menu showed, so a root the CLI changed
+        // anyway, or one already past it (a stale menu), drops it at the
+        // next load (IntakeRootErrors.h).
+        auto status = menuStatus.find(entry.first);
+        errors.set(entry.first, entry.second, status == menuStatus.end() ? IntakeStatus::Unknown : status->second);
         logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
     }
     if (outcome.isError) {
@@ -132,8 +177,8 @@ void onRefused(uint64_t token, CliCommand command, const std::string &refusal) {
     ActionsState &st = actionsState();
     st.lane.finish(token);
     if (st.stopped) return;
-    // IntakeCliRunner logged the refusal itself; this is a caller bug, not
-    // a root's error, so no tooltip.
+    // The only console line for it (IntakeCliRunner logs it at Debug);
+    // a caller bug, not a root's error, so no tooltip.
     logError(std::string(cliCommandName(command)) + ": not started (" + refusal + ")");
 }
 
@@ -148,9 +193,9 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
     std::string refusal;
     const bool started = startCliCommand(
         st.runner, *config, *request, options, st.queue,
-        [token, command](CliBudgetEvent event) {
+        [token, command, roots](CliBudgetEvent event) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                onBudget(token, command, event);
+                onBudget(token, command, *roots, event);
             });
         },
         [token, command, roots](CliResult &&result) {
@@ -169,23 +214,29 @@ void startOnQueue(uint64_t token, std::shared_ptr<const CliConfig> config, std::
 
 // --- dispatch (main) ---
 
+// A click (or a confirmed Reject) that runs nothing gets one Error line:
+// at the default log levels the user would otherwise see nothing happen.
+std::string notRun(IntakeAction action, const std::string &why) {
+    logError(std::string(actionName(action)) + ": not run: " + why);
+    return "not run: " + why;
+}
+
 std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
     CliRequest request;
     std::string why;
-    if (!requestForEntry(entry, reason, request, &why)) return "not run: " + why;
+    if (!requestForEntry(entry, reason, request, &why)) return notRun(entry.action, why);
     CliConfig config;
-    if (!serviceMutationConfig(config)) return "not run: intake is not running or has no CLI path";
+    if (!serviceMutationConfig(config)) return notRun(entry.action, "intake is not running or has no CLI path");
     const std::string name = cliCommandName(request.command);
     const uint64_t token = st.lane.acquire(laneHolderFor(request));
     if (token == 0) {
-        logInfo(name + ": not started; another intake command is still running" +
-                (st.lane.executeRunning() ? std::string(" (execute)") : std::string()));
-        return "not run: the mutation lane is busy";
+        return notRun(entry.action, st.lane.executeRunning() ? "another intake command is still running (execute)"
+                                                             : "another intake command is still running");
     }
     auto roots = std::make_shared<std::vector<MutationRoot>>();
-    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath});
+    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status});
     logInfo(name + ": starting for " + rootCountText(request.ids.size()) + ": " + idList(request.ids) +
             (request.reason.empty() ? std::string() : " (with a reason)"));
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
@@ -195,6 +246,23 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
         startOnQueue(token, sharedConfig, sharedRequest, sharedRoots);
     });
     return "started for " + rootCountText(request.ids.size());
+}
+
+// The window for the confirmation sheet: the one under the pointer (the
+// menu was opened there, and right-clicking a window that is not key does
+// not make it key), else the main window, else the key window; nil when
+// none can take a sheet now (the alert then runs app-modal).
+NSWindow *sheetHostWindow() {
+    auto usable = [](NSWindow *w) {
+        return w != nil && w.visible && !w.miniaturized && !w.sheet && w.attachedSheet == nil &&
+               w.canBecomeKeyWindow;
+    };
+    const NSInteger number = [NSWindow windowNumberAtPoint:NSEvent.mouseLocation belowWindowWithWindowNumber:0];
+    NSWindow *under = number > 0 ? [NSApp windowWithWindowNumber:number] : nil;  // nil: another app's
+    if (usable(under)) return under;
+    if (usable(NSApp.mainWindow)) return NSApp.mainWindow;
+    if (usable(NSApp.keyWindow)) return NSApp.keyWindow;
+    return nil;
 }
 
 // Reject…: the confirmation (doc 04 v1.2, confirm_reject).
@@ -224,11 +292,12 @@ void confirmReject(const ActionEntry &entry) {
         }
         NSString *text = [reasonField.stringValue
             stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // runMutation logs an Error line when it cannot start (the lane or
+        // the CLI path changed while the alert was open).
         const std::string what = runMutation(captured, StdStr(text));
         logDebug("reject: " + what);
     };
-    NSWindow *host = NSApp.keyWindow ?: NSApp.mainWindow;
-    if (host != nil && host.attachedSheet == nil) {
+    if (NSWindow *host = sheetHostWindow()) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
     } else {
         finish([alert runModal]);
@@ -258,6 +327,9 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
 
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     std::vector<const IntakeRecord *> rows;
+    // Main thread: at most one slow mac-volume conversion per menu
+    // (IntakeSlowVolumeGuard.h, NativePathMenuBudget).
+    NativePathMenuBudget budget;
     if (view && !view->rendersNothing()) {
         const t_size count = sel.get_count();
         rows.reserve(count);
@@ -266,10 +338,16 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
         for (t_size i = 0; i < count; i++) {
             @autoreleasepool {
                 const metadb_handle_ptr handle = sel[i];
-                const char *path = handle.is_valid() ? intakeNativePath(handle->get_path(), native) : nullptr;
+                const char *path =
+                    handle.is_valid() ? intakeNativePath(handle->get_path(), native, &budget) : nullptr;
                 rows.push_back(path != nullptr ? view->recordFor(path, scratch) : nullptr);
             }
         }
+    }
+    if (budget.spent()) {
+        logInfo("menu: a mac-volume path conversion took over " + std::to_string(kSlowNativePathMicros / 1000) +
+                " ms; " + std::to_string(budget.skipped()) +
+                " row(s) on volumes not yet converted in this menu were left out");
     }
     const std::vector<const IntakeRecord *> roots = selectionRoots(rows);
     st.menuTable = actionsTableFor(roots, view.get());
@@ -315,6 +393,9 @@ std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std
     if (entry.roots.empty()) return "not run: no qualifying root";
     if (entry.action == IntakeAction::Reject) {
         if (!skipDialog && serviceActionInfo().confirmReject) {
+            // No confirmation for a call that could not start anyway.
+            const std::string why = whyNotStartable();
+            if (!why.empty()) return notRun(entry.action, why);
             confirmReject(entry);
             return "asking for confirmation";
         }

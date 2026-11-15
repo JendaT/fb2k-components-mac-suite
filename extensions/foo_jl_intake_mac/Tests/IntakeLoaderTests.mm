@@ -1381,16 +1381,16 @@ static void testAnnotateAndBadges() {
     ViewScratch scratch;
     std::shared_ptr<const IntakeView> view = h->lastPublished().view;
     const IntakeRecord *proposed = view ? view->recordFor(proposedRow, scratch) : nullptr;
-    CHECK(proposed && proposed->badge.text == "\xE2\x86\x92 [Test Collection A] \xC2\xB7 0.91" && !proposed->badge.amber,
+    CHECK(proposed && proposed->badge.text == "\xE2\x86\x92 Test Collection A \xC2\xB7 0.91" && !proposed->badge.amber,
           "badge of the engine proposal");
     const IntakeRecord *close = view ? view->recordFor(closeRow, scratch) : nullptr;
     CHECK(close && close->badge.amber &&
               close->badge.text ==
-                  "\xE2\x86\x92 [Test Collection B] \xC2\xB7 0.61 (alt: [Test Collection A])",
+                  "\xE2\x86\x92 Test Collection B \xC2\xB7 0.61 (alt: Test Collection A)",
           "the close call: amber with the alt hint");
     const IntakeRecord *user = view ? view->recordFor(userRow, scratch) : nullptr;
     CHECK(user && user->badge.text ==
-                      "\xE2\x86\x92 [Test & Ambient] \xC2\xB7 yours (alt: [Test Collection C])",
+                      "\xE2\x86\x92 Test & Ambient \xC2\xB7 yours (alt: Test Collection C)",
           "the user override: yours, amber (needs_review kept)");
 
     store->set("itk_0000000b", "propose: No target collection");

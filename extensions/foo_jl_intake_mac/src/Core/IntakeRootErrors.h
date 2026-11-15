@@ -11,14 +11,20 @@
 //  (IntakeDecorationMap) and its arrival or removal invalidates like any
 //  visual change (rendersAlike).
 //
-//  Lifecycle: "until that root's status changes". The first load that
-//  shows an error records the root's status then as the error's baseline;
-//  a later load that finds another status drops the error. So an
-//  E_BAD_STATUS that came from a stale menu (the root had already moved on)
-//  is still shown once, on the status the CLI refused. A newer error for
-//  the root replaces the old one and starts over; a command that succeeds
-//  for the root clears it. A root missing from a successful load is
-//  dropped too (the store stays bounded by the roots that exist).
+//  Lifecycle: "until that root's status changes", measured from the
+//  status the menu showed when the action was chosen (the baseline,
+//  MutationRoot::status): any load that finds another status drops the
+//  error, the first load after the call included. So a root the CLI had
+//  already changed when the call failed as a whole (an uncaught throw
+//  after earlier roots were written, a crash, the 15-minute cap), or one
+//  that had moved on before a stale menu ran (E_BAD_STATUS from a second
+//  click before the refresh landed), shows no tooltip about a state it is
+//  no longer in; the call's console line still reports it. An error set
+//  without a baseline (Unknown) takes the status of the first load that
+//  shows it. A newer error for the root replaces the old one and starts
+//  over; a command that succeeds for the root clears it. A root missing
+//  from a successful load is dropped too (the store stays bounded by the
+//  roots that exist).
 //
 //  Thread-safety: every method may be called from any thread (set/clear on
 //  the main thread, apply on the loader queue); one mutex, held only while
@@ -39,8 +45,9 @@ namespace intake {
 
 class RootErrorStore {
 public:
-    // A new error for `id` (an empty text clears instead).
-    void set(const std::string &id, std::string text);
+    // A new error for `id` (an empty text clears instead), kept while the
+    // root stays in `baseline` (see above; Unknown: the first load's).
+    void set(const std::string &id, std::string text, IntakeStatus baseline = IntakeStatus::Unknown);
     void clear(const std::string &id);
     void clearAll();
 

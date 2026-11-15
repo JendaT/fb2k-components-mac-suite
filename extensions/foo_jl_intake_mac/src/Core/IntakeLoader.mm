@@ -34,41 +34,6 @@ std::string secondsText(double seconds) {
     return buf;
 }
 
-// Debug (PLAN.md 3.10): the call, how it ended, its duration and error
-// codes. Never stdout.
-void logCall(const CliResult &r) {
-    if (!isLogEnabled(LogLevel::Debug)) return;
-    std::string line = std::string(cliCommandName(r.command)) + ": " + cliOutcomeName(r.envelope.outcome);
-    switch (r.process.end) {
-        case ProcessEnd::Exited:
-            line += ", exit " + std::to_string(r.process.exitCode);
-            break;
-        case ProcessEnd::Signaled:
-            line += ", signal " + std::to_string(r.process.termSignal);
-            break;
-        case ProcessEnd::SpawnFailed:
-            if (r.process.spawnStage.empty()) {
-                line += ", not run";
-            } else {
-                line += ", spawn failed (" + r.process.spawnStage + ", errno " +
-                        std::to_string(r.process.spawnErrno) + ")";
-            }
-            break;
-        case ProcessEnd::Abandoned:
-            line += ", abandoned after kill";
-            break;
-        case ProcessEnd::WaitFailed:
-            line += ", wait failed";
-            break;
-    }
-    line += ", " + secondsText(r.process.elapsedSeconds);
-    if (!r.envelope.errors.empty()) {
-        line += ", errors:";
-        for (const CliError &e : r.envelope.errors) line += " " + e.code;
-    }
-    logDebug(line);
-}
-
 bool sameMountEntries(const std::vector<MountEntry> &a, const std::vector<MountEntry> &b) {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); i++) {
@@ -325,7 +290,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     }
 
     void onVersion(CliResult &&r) {
-        logCall(r);
+        logCliResult(r);
         if (stopped || r.envelope.outcome == CliOutcome::Cancelled) {
             finishLoad(false);
             return;
@@ -362,7 +327,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     // gone. The load ends here; the "reload again" flag reconfigure() set
     // starts the next one.
     void discardStale(const CliResult &r) {
-        logCall(r);
+        logCliResult(r);
         logDebug(std::string(cliCommandName(r.command)) + ": discarded, the CLI settings changed");
         finishLoad(false, false);
     }
@@ -395,7 +360,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     }
 
     void onIncome(CliResult &&r) {
-        logCall(r);
+        logCliResult(r);
         if (stopped || r.envelope.outcome == CliOutcome::Cancelled) {
             finishLoad(false);
             return;
@@ -427,7 +392,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     }
 
     void onStatus(CliResult &&r) {
-        logCall(r);
+        logCliResult(r);
         if (stopped || r.envelope.outcome == CliOutcome::Cancelled) {
             finishLoad(false);
             return;

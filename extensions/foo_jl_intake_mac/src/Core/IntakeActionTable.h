@@ -39,11 +39,13 @@
 //   - An inert view, or a selection that maps to no root: Refresh only.
 //   - Every exposed action is listed (Assign to X only for one selected
 //     root with alternates); it is enabled when at least one selected root
-//     qualifies, runs on those roots only, and its title ends in "(n of m)"
+//     qualifies, runs on those roots only, and its title carries "(n of m)"
 //     when 0 < n < m. Roots go by id: no entry ever runs with zero ids, and
 //     no all-roots form exists here (IntakeCommandArgs refuses both too).
 //   - Mutating items are disabled while the mutation lane is busy, with
 //     " (execute running)" while an execute holds it.
+//   - Title: base, " (n of m)", " (execute running)", then "…" when the
+//     action asks first (actionAsksFirst): "Reject (4 of 5)…".
 //  B6 exposes Propose, Approve, Reject… and Refresh (kB6Actions); the
 //  others arrive with B7 to B9 and are already decided here.
 //
@@ -87,7 +89,8 @@ bool actionIsMutating(IntakeAction action);
 // The CLI command a mutating action runs; false for Swap and Refresh.
 bool actionCommand(IntakeAction action, CliCommand &out);
 
-// "Propose", "Assign to <collection>", "Reject…" (U+2026), ...
+// "Propose", "Assign to <collection>", "Reject", ...: the title without
+// "(n of m)" or an ellipsis.
 std::string actionBaseTitle(IntakeAction action, const std::string &collection = std::string());
 
 // The actions B6 shows.
@@ -100,7 +103,14 @@ struct ActionContext {
     bool laneBusy = false;
     bool executeRunning = false;           // the lane holder is an execute or resume
     std::vector<std::string> liveRunIds;   // roots with a live execute run (B8)
+    bool confirmReject = true;             // confirm_reject: Reject asks first
 };
+
+// Choosing the action opens a dialog first, so its title ends in an
+// ellipsis (U+2026, the last character, after any "(n of m)"): Assign to
+// other collection (the picker), Execute placement (always asks), Delete
+// local copy, and Reject while confirm_reject is on.
+bool actionAsksFirst(IntakeAction action, const ActionContext &context);
 
 // The per-root half of the enable rule (selection size and lane aside).
 bool rootQualifies(IntakeAction action, const IntakeRecord &record, const ActionContext &context);

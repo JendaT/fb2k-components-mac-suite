@@ -13,15 +13,21 @@
 //  Which root an error belongs to. CLI errors carry {code, msg, path}, and
 //  the per-root ones name the root's folder in `path` (commands-p2/p3.ts
 //  `path: root.dir`), never its id; virtual roots and singles share a
-//  folder. So, over the failed roots in the order they were named:
-//   1. an error whose `path` is a named id goes to that root;
+//  folder. So, over the failed roots in the order they were named, first
+//  the errors that name a root by id (rule 1), then the rest:
+//   1. an error whose `path` is a named id goes to that root; one without
+//      a path whose msg names ids of the call as whole words (the CLI's
+//      E_NOT_FOUND "no sidecar with id itk_...", path null) goes to each
+//      failed root it names. Neither is ever broadcast, and both are
+//      placed before rule 2 so they never take another root's folder slot;
 //   2. an error whose `path` is a root's folder (compared as IntakePath
 //      keys, else byte for byte) goes to the first failed root in that
 //      folder that has no error yet: the CLI walks the roots in argument
 //      order, so the k-th error for a folder belongs to the k-th failed
 //      root there. Surplus errors for a folder join the last root's text;
-//   3. an error matching no failed root (no path, a path outside them) is
-//      the command's own: it goes to every failed root left without one.
+//   3. an error matching no root (no path and no id in its msg, a path
+//      outside them) is the command's own: it goes to every failed root
+//      left without one.
 //  E_BAD_STATUS on one root therefore never touches the others.
 //  Host-synthesized results (E_NO_CLI, E_CLI_TIMEOUT at the hard cap) fail
 //  every named root with that text. Cancelled has no errors.
@@ -45,6 +51,7 @@
 
 #include "IntakeCommandArgs.h"
 #include "IntakeEnvelope.h"
+#include "IntakeStatusModel.h"
 
 namespace intake {
 
@@ -52,6 +59,9 @@ namespace intake {
 struct MutationRoot {
     std::string id;
     std::string rootPath;  // as the CLI spelled it in `status`
+    // The status the menu showed when the action was chosen: the baseline
+    // of the root's error (RootErrorStore::set). Unknown: none.
+    IntakeStatus status = IntakeStatus::Unknown;
 };
 
 struct MutationOutcome {

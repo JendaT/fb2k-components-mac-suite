@@ -9,7 +9,7 @@
 
 namespace intake {
 
-void RootErrorStore::set(const std::string &id, std::string text) {
+void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus baseline) {
     if (text.empty()) {
         clear(id);
         return;
@@ -17,8 +17,8 @@ void RootErrorStore::set(const std::string &id, std::string text) {
     std::lock_guard<std::mutex> lock(mutex_);
     Entry &e = entries_[id];
     e.text = std::move(text);
-    e.hasBaseline = false;
-    e.baseline = IntakeStatus::Unknown;
+    e.hasBaseline = baseline != IntakeStatus::Unknown;
+    e.baseline = baseline;
 }
 
 void RootErrorStore::clear(const std::string &id) {

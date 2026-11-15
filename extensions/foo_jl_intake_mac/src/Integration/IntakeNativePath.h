@@ -30,9 +30,15 @@
 
 namespace intake {
 
+class NativePathMenuBudget;
+
 // The path to match, or nullptr for no match. The result points into `path`
-// or `scratch` and is valid until either changes.
-const char *intakeNativePath(const char *path, pfc::string_base &scratch);
+// or `scratch` and is valid until either changes. `menuBudget` (the context
+// menu, main thread): also skips the SDK call for a mac-volume row the
+// budget refuses, and tells it how long each call took
+// (IntakeSlowVolumeGuard.h: at most one slow call per menu).
+const char *intakeNativePath(const char *path, pfc::string_base &scratch,
+                             NativePathMenuBudget *menuBudget = nullptr);
 
 // Any thread (IntakeService calls it on the main thread for every
 // NSWorkspace mount or unmount notification and on Refresh): forgets every

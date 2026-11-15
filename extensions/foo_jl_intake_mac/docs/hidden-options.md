@@ -251,7 +251,10 @@ by `;`, words by spaces:
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
-otherwise the step logs why and does nothing. Each step logs one Info line
+otherwise the step logs why and does nothing. The same happens when the rows
+map to roots other than the ones named (a root without a member list in a
+folder another root covers, or a file two virtual roots list): the step logs
+the roots they map to and does nothing. Each step logs one Info line
 starting `test_actions:` (combine with `log_file` 1 to read them from
 `~/Library/Logs/foobar2000/jl_intake.log`); the end logs `test_actions: done`.
 A mutating step returns as soon as the call has started; add a `wait` before a

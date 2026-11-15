@@ -33,6 +33,22 @@ struct FailedRoot {
     std::string text;
 };
 
+bool idChar(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+// `msg` names `id` as a whole word ("no sidecar with id itk_0000000a").
+bool namesId(const std::string &msg, const std::string &id) {
+    if (id.empty()) return false;
+    for (size_t at = msg.find(id); at != std::string::npos; at = msg.find(id, at + 1)) {
+        const bool startOk = at == 0 || !idChar(msg[at - 1]);
+        const size_t end = at + id.size();
+        const bool endOk = end == msg.size() || !idChar(msg[end]);
+        if (startOk && endOk) return true;
+    }
+    return false;
+}
+
 } // anonymous namespace
 
 MutationOutcome summarizeMutation(CliCommand command, const std::vector<MutationRoot> &roots,
@@ -78,35 +94,65 @@ MutationOutcome summarizeMutation(CliCommand command, const std::vector<Mutation
                                          : renderError(envelope.errors.front());
         for (FailedRoot &f : failed) addText(f.text, rendered);
     } else {
+        // Pass 1: errors that name a root by id, so they never take another
+        // root's place in pass 2's folder order.
+        std::vector<bool> placed(envelope.errors.size(), false);
+        for (size_t i = 0; i < envelope.errors.size(); i++) {
+            const CliError &e = envelope.errors[i];
+            if (e.hasPath && !e.path.empty()) {
+                // 1. a path that is a named id: that root's (none when it
+                // succeeded), never broadcast.
+                for (const MutationRoot &r : roots) {
+                    if (r.id == e.path) placed[i] = true;
+                }
+                if (!placed[i]) continue;
+                for (FailedRoot &f : failed) {
+                    if (roots[f.index].id != e.path) continue;
+                    CliError shown = e;
+                    shown.hasPath = false;
+                    addText(f.text, renderError(shown));
+                    break;
+                }
+                continue;
+            }
+            // 1b. no path, but the msg names roots of the call ("no sidecar
+            // with id itk_..."): it is theirs, never broadcast.
+            bool namesAny = false;
+            for (const MutationRoot &r : roots) {
+                if (namesId(e.msg, r.id)) {
+                    namesAny = true;
+                    break;
+                }
+            }
+            if (!namesAny) continue;
+            placed[i] = true;
+            for (FailedRoot &f : failed) {
+                if (namesId(e.msg, roots[f.index].id)) addText(f.text, renderError(e));
+            }
+        }
+
+        // Pass 2: folders, then the command's own errors.
         std::vector<const CliError *> general;
-        for (const CliError &e : envelope.errors) {
+        for (size_t i = 0; i < envelope.errors.size(); i++) {
+            if (placed[i]) continue;
+            const CliError &e = envelope.errors[i];
             FailedRoot *target = nullptr;
             bool ownPath = false;
             if (e.hasPath && !e.path.empty()) {
-                // 1. an id
+                // 2. a folder: the first failed root there without an error,
+                // else the last one there.
+                const std::string key = pathKey(e.path);
+                FailedRoot *last = nullptr;
                 for (FailedRoot &f : failed) {
-                    if (roots[f.index].id == e.path) {
+                    if (f.key != key && roots[f.index].rootPath != e.path) continue;
+                    last = &f;
+                    if (f.text.empty()) {
                         target = &f;
-                        ownPath = true;
                         break;
                     }
                 }
-                // 2. a folder: the first failed root there without an error,
-                // else the last one there.
-                if (target == nullptr) {
-                    const std::string key = pathKey(e.path);
-                    FailedRoot *last = nullptr;
-                    for (FailedRoot &f : failed) {
-                        if (f.key != key && roots[f.index].rootPath != e.path) continue;
-                        last = &f;
-                        if (f.text.empty()) {
-                            target = &f;
-                            break;
-                        }
-                    }
-                    if (target == nullptr) target = last;
-                    ownPath = target != nullptr;
-                }
+                if (target == nullptr) target = last;
+                ownPath = target != nullptr;
             }
             if (target == nullptr) {
                 general.push_back(&e);

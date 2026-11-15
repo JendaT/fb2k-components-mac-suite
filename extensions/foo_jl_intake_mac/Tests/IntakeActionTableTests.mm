@@ -5,7 +5,8 @@
 //  Unit tests for IntakeActionTable: the doc 04 v1.2 enable rule for every
 //  action and status, the table rules (no CLI path, Refresh, inert, empty
 //  selections, mixed selections and "(n of m)", Reject feature detection,
-//  the busy lane and "(execute running)"), quick-assign alternates, the
+//  the busy lane and "(execute running)", the ellipsis last and only when
+//  a dialog follows), quick-assign alternates, the
 //  argv each action builds (through IntakeCommandArgs, never with zero ids),
 //  album labels for the Reject confirmation, and action_id encoding.
 //  Synthetic records only.
@@ -234,6 +235,17 @@ static void testTableRules() {
     CHECK(t.entries[2].enabled, "Reject enabled on resolved");
     CHECK(t.selectedRoots == 1, "m = 1");
 
+    ActionContext noConfirm = ctx();
+    noConfirm.confirmReject = false;
+    CHECK(buildActionTable(one, noConfirm).entries[2].title == "Reject",
+          "confirm_reject off: Reject runs at once, no ellipsis");
+    IntakeRecord placedMix = rec("itk_00000012", IntakeStatus::Placed);
+    CHECK(buildActionTable({&resolved, &placedMix}, noConfirm).entries[2].title == "Reject (1 of 2)",
+          "confirm_reject off, mixed: no ellipsis either");
+    CHECK(actionAsksFirst(IntakeAction::Execute, noConfirm) && actionAsksFirst(IntakeAction::AssignOther, noConfirm) &&
+              !actionAsksFirst(IntakeAction::Propose, ctx()) && !actionAsksFirst(IntakeAction::Refresh, ctx()),
+          "execute and the picker always ask; propose and refresh never");
+
     ActionTable old = buildActionTable(one, ctx(cliOld("0.1.0")));
     CHECK(titles(old) == v({"Propose", "Approve", "Refresh intake status"}), "CLI 0.1.0: Reject is not listed");
 
@@ -254,8 +266,8 @@ static void testMixed() {
 
     ActionTable t = buildActionTable({&n, &r, &p, &slot, &placed}, ctx());
     CHECK(t.selectedRoots == 5, "m counts every selected root");
-    CHECK(titles(t) == v({"Propose (1 of 5)", "Approve (1 of 5)", kReject + " (4 of 5)", "Refresh intake status"}),
-          "(n of m) on a mixed selection");
+    CHECK(titles(t) == v({"Propose (1 of 5)", "Approve (1 of 5)", "Reject (4 of 5)" + kEllipsis, "Refresh intake status"}),
+          "(n of m) on a mixed selection, the ellipsis last");
     CHECK(ids(t.entries[0]) == v({"itk_0000000b"}), "Propose runs on the resolved root only");
     CHECK(ids(t.entries[1]) == v({"itk_0000000d"}), "Approve skips the slot-pending root");
     CHECK(ids(t.entries[2]) == v({"itk_0000000a", "itk_0000000b", "itk_0000000d", "itk_00000019"}),
@@ -288,7 +300,7 @@ static void testLane() {
     busy.executeRunning = true;
     ActionTable e = buildActionTable({&r}, busy);
     CHECK(e.entries[0].title == "Propose (execute running)", "execute holds the lane: said so");
-    CHECK(e.entries[2].title == kReject + " (execute running)", "on every mutating item");
+    CHECK(e.entries[2].title == "Reject (execute running)" + kEllipsis, "on every mutating item, the ellipsis last");
     CHECK(e.entries.back().title == "Refresh intake status", "not on Refresh");
 }
 

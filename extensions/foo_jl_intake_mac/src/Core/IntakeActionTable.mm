@@ -99,16 +99,26 @@ std::string actionBaseTitle(IntakeAction action, const std::string &collection) 
     switch (action) {
         case IntakeAction::Propose: return "Propose";
         case IntakeAction::AssignTo: return "Assign to " + collection;
-        case IntakeAction::AssignOther: return std::string("Assign to other collection") + kEllipsis;
+        case IntakeAction::AssignOther: return "Assign to other collection";
         case IntakeAction::Approve: return "Approve";
-        case IntakeAction::Reject: return std::string("Reject") + kEllipsis;
-        case IntakeAction::Execute: return std::string("Execute placement") + kEllipsis;
+        case IntakeAction::Reject: return "Reject";
+        case IntakeAction::Execute: return "Execute placement";
         case IntakeAction::Resume: return "Resume placement";
         case IntakeAction::Swap: return "Swap to library paths";
-        case IntakeAction::DeleteLocal: return std::string("Delete local copy") + kEllipsis;
+        case IntakeAction::DeleteLocal: return "Delete local copy";
         case IntakeAction::Refresh: return "Refresh intake status";
     }
     return std::string();
+}
+
+bool actionAsksFirst(IntakeAction action, const ActionContext &context) {
+    switch (action) {
+        case IntakeAction::AssignOther:
+        case IntakeAction::Execute:
+        case IntakeAction::DeleteLocal: return true;
+        case IntakeAction::Reject: return context.confirmReject;
+        default: return false;
+    }
 }
 
 const std::vector<IntakeAction> &b6Actions() {
@@ -218,6 +228,7 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
                 e.enabled = false;
                 if (c.executeRunning) e.title += " (execute running)";
             }
+            if (actionAsksFirst(action, c)) e.title += kEllipsis;
             table.entries.push_back(std::move(e));
         }
     }

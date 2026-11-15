@@ -23,8 +23,9 @@
 //    refresh                        the Refresh item
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
-//  hides them; log_file mirrors them). Ids that are not in the snapshot
-//  make the step log and do nothing. Nothing runs after quit starts.
+//  hides them; log_file mirrors them). Ids that are not in the snapshot,
+//  or whose rows map to other roots than the ones named, make the step log
+//  and do nothing. Nothing runs after quit starts.
 //
 //  Temporary: removed with the other acceptance aids (and
 //  Core/IntakeTestActionScript plus its tests) before the merge to main.
@@ -41,6 +42,7 @@
 #include "../Core/IntakeTestActionScript.h"
 #include "../Core/IntakeView.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -86,6 +88,22 @@ bool rootsForIds(const IntakeView &view, const std::vector<std::string> &ids,
         for (const std::string &path : paths) rows.push_back(view.recordFor(path, scratch));
     }
     roots = selectionRoots(rows);
+    // The lookup can land on another root (a root with no member list in a
+    // folder another root covers, a file two virtual roots list): never
+    // act on, or report the menu of, roots the step did not name.
+    std::vector<std::string> named;
+    for (const std::string &id : ids) {
+        if (std::find(named.begin(), named.end(), id) == named.end()) named.push_back(id);
+    }
+    std::vector<std::string> resolved;
+    for (const IntakeRecord *r : roots) resolved.push_back(r->id);
+    std::vector<std::string> a = named, b = resolved;
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    if (a != b) {
+        error = "the rows map to " + joinIds(resolved) + ", not " + joinIds(named);
+        return false;
+    }
     return true;
 }
 

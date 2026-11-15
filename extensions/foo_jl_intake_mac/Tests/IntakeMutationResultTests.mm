@@ -2,9 +2,10 @@
 //  IntakeMutationResultTests.mm
 //  foo_jl_intake_mac
 //
-//  Unit tests for IntakeMutationResult (which root an error belongs to, the
-//  tooltip text, the console line) and IntakeRootErrors (the lastError
-//  lifecycle: shown until the root's status changes). Synthetic envelopes,
+//  Unit tests for IntakeMutationResult (which root an error belongs to,
+//  path-less errors that name an id included, the tooltip text, the console
+//  line) and IntakeRootErrors (the lastError lifecycle: shown until the
+//  root's status changes from the one the menu showed). Synthetic envelopes,
 //  plus real replies of Tests/mock-cli/intake-mock (a fresh state directory
 //  under the test's temp root): a partial approve with E_BAD_STATUS, and a
 //  propose on two virtual roots sharing one folder.
@@ -34,8 +35,8 @@ namespace {
 const std::string kDump = "/income/dump/";
 const std::string kLoose = "/income/shop/Loose Tracks";
 
-MutationRoot root(const char *id, const std::string &path) {
-    return MutationRoot{id, path};
+MutationRoot root(const char *id, const std::string &path, IntakeStatus status = IntakeStatus::Unknown) {
+    return MutationRoot{id, path, status};
 }
 
 CliError err(const char *code, const char *msg, const std::string &path = std::string()) {
@@ -222,8 +223,7 @@ static void testErrorStore() {
     store.apply(back);
     CHECK(back[0].lastError.empty(), "and it does not come back");
 
-    // A stale menu: the error is shown on the status the CLI refused, once
-    // it is first loaded.
+    // Without a baseline (Unknown) the first load's status is taken.
     store.set("itk_0000000d", "approve: Not allowed in the current state: cannot approve from status approved");
     std::vector<IntakeRecord> stale = {record("itk_0000000d", IntakeStatus::Approved)};
     store.apply(stale);
@@ -251,6 +251,100 @@ static void testErrorStore() {
     store.set("itk_0000000f", "b");
     store.clearAll();
     CHECK(store.size() == 0, "clearAll");
+}
+
+static void testPathlessIds() {
+    g_context = "pathless-ids";
+    const std::vector<MutationRoot> roots = {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B"),
+                                             root("itk_0000000d", kDump + "D")};
+    MutationOutcome o = summarizeMutation(
+        CliCommand::Approve, roots,
+        env(CliOutcome::Partial, rows({"itk_0000000b"}),
+            {err("E_NOT_FOUND", "no sidecar with id itk_0000000a"), err("E_NOT_FOUND", "no sidecar with id itk_0000000d")}));
+    CHECK(errorFor(o, "itk_0000000a") == "approve: Release not found: no sidecar with id itk_0000000a",
+          "a path-less error naming an id goes to that root only");
+    CHECK(errorFor(o, "itk_0000000d") == "approve: Release not found: no sidecar with id itk_0000000d",
+          "and the other one to its own root");
+
+    // Two virtual roots in one folder, named V2 then V1: V2's sidecar is
+    // gone (E_NOT_FOUND, path null), V1 is refused by status (its folder).
+    const std::vector<MutationRoot> virt = {root("itk_00000019", kLoose), root("itk_00000017", kLoose)};
+    MutationOutcome v = summarizeMutation(
+        CliCommand::Approve, virt,
+        env(CliOutcome::Failed, nil,
+            {err("E_NOT_FOUND", "no sidecar with id itk_00000019"),
+             err("E_BAD_STATUS", "cannot approve from status resolved", kLoose)}));
+    CHECK(errorFor(v, "itk_00000019") == "approve: Release not found: no sidecar with id itk_00000019",
+          "the named root keeps its not-found error");
+    CHECK(errorFor(v, "itk_00000017") == "approve: Not allowed in the current state: cannot approve from status resolved",
+          "the folder's E_BAD_STATUS goes to the other root, not the named one");
+    MutationOutcome reordered = summarizeMutation(
+        CliCommand::Approve, virt,
+        env(CliOutcome::Failed, nil,
+            {err("E_BAD_STATUS", "cannot approve from status resolved", kLoose),
+             err("E_NOT_FOUND", "no sidecar with id itk_00000019")}));
+    CHECK(errorFor(reordered, "itk_00000017") == errorFor(v, "itk_00000017") &&
+              errorFor(reordered, "itk_00000019") == errorFor(v, "itk_00000019"),
+          "the same whatever the order of the errors");
+
+    MutationOutcome word = summarizeMutation(CliCommand::Approve, {root("itk_0000000a", kDump + "A")},
+                                             env(CliOutcome::Failed, nil, {err("E_MOCK_X", "about itk_0000000ab")}));
+    CHECK(errorFor(word, "itk_0000000a") == "approve: about itk_0000000ab",
+          "an id matches as a whole word only (this one names no root: the command's own)");
+    MutationOutcome succeededNamed = summarizeMutation(
+        CliCommand::Approve, {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B")},
+        env(CliOutcome::Partial, rows({"itk_0000000a"}), {err("E_MOCK_WARN", "itk_0000000a was odd")}));
+    CHECK(errorFor(succeededNamed, "itk_0000000b") == "<none>" &&
+              succeededNamed.failedWithoutError == std::vector<std::string>({"itk_0000000b"}),
+          "an error naming a root that succeeded is not broadcast to the others");
+    MutationOutcome general = summarizeMutation(CliCommand::Approve, roots,
+                                                env(CliOutcome::Failed, nil, {err("E_INTERNAL", "boom")}));
+    CHECK(general.rootErrors.size() == 3, "an error naming no root still goes to every failed root");
+}
+
+static void testBaseline() {
+    g_context = "baseline";
+    // Propose on five resolved roots; the CLI threw after writing the first
+    // two (exit 2, E_INTERNAL without a path): every root failed.
+    std::vector<MutationRoot> five;
+    for (const char *id : {"itk_0000000a", "itk_0000000b", "itk_0000000c", "itk_0000000d", "itk_0000000e"}) {
+        five.push_back(root(id, kDump + id, IntakeStatus::Resolved));
+    }
+    MutationOutcome o =
+        summarizeMutation(CliCommand::Propose, five, env(CliOutcome::Failed, nil, {err("E_INTERNAL", "boom")}));
+    CHECK(o.rootErrors.size() == 5, "a whole-call failure names every root");
+    RootErrorStore store;
+    for (const auto &e : o.rootErrors) store.set(e.first, e.second, IntakeStatus::Resolved);
+    std::vector<IntakeRecord> load = {
+        record("itk_0000000a", IntakeStatus::Proposed), record("itk_0000000b", IntakeStatus::Proposed),
+        record("itk_0000000c", IntakeStatus::Resolved), record("itk_0000000d", IntakeStatus::Resolved),
+        record("itk_0000000e", IntakeStatus::Resolved)};
+    store.apply(load);
+    CHECK(load[0].lastError.empty() && load[1].lastError.empty(),
+          "roots the CLI changed before failing show no tooltip at the first load");
+    CHECK(load[2].lastError == "propose: Intake CLI internal error: boom" && !load[4].lastError.empty(),
+          "roots still in the menu's status show it");
+    CHECK(store.size() == 3, "the changed roots' errors are dropped");
+
+    // A second click from a stale menu: X was resolved in the menu, the
+    // first Propose had already made it proposed, the CLI said E_BAD_STATUS.
+    RootErrorStore stale;
+    stale.set("itk_0000000f", "propose: Not allowed in the current state: cannot propose from status proposed",
+              IntakeStatus::Resolved);
+    std::vector<IntakeRecord> after = {record("itk_0000000f", IntakeStatus::Proposed)};
+    stale.apply(after);
+    CHECK(after[0].lastError.empty() && stale.size() == 0,
+          "a stale-menu error does not stay on the root's new status");
+
+    RootErrorStore kept;
+    kept.set("itk_0000000f", "approve: Not allowed in the current state: target unknown", IntakeStatus::Proposed);
+    std::vector<IntakeRecord> same = {record("itk_0000000f", IntakeStatus::Proposed)};
+    kept.apply(same);
+    kept.apply(same);
+    CHECK(!same[0].lastError.empty(), "a refusal on the status the menu showed stays while it lasts");
+    std::vector<IntakeRecord> moved = {record("itk_0000000f", IntakeStatus::Approved)};
+    kept.apply(moved);
+    CHECK(moved[0].lastError.empty() && kept.size() == 0, "and goes when the status changes");
 }
 
 static std::string runMock(const std::string &state, CliRequest request, CliOutcome &outcome, EnvelopeResult &out) {
@@ -340,6 +434,8 @@ int main() {
         testSharedFolder();
         testHostAndNfd();
         testErrorStore();
+        testPathlessIds();
+        testBaseline();
         testAgainstMock();
         mock::killLeftovers();
         mock::removeTempRoot();

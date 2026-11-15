@@ -17,10 +17,6 @@ namespace {
 const char *const kArrow = "\xE2\x86\x92";    // U+2192
 const char *const kSep = " \xC2\xB7 ";        // " U+00B7 "
 
-std::string bracketed(const std::string &collection) {
-    return "[" + collection + "]";
-}
-
 // The first ranked entry that is not the target, or nullptr.
 const RankedCandidate *firstAlternate(const IntakeProposal &p) {
     if (p.rankedState != RankedState::Present) return nullptr;
@@ -32,11 +28,17 @@ const RankedCandidate *firstAlternate(const IntakeProposal &p) {
 
 } // anonymous namespace
 
-std::string formatConfidence(double confidence) {
-    if (!std::isfinite(confidence)) return "?";
+long confidenceHundredths(double confidence) {
+    if (!std::isfinite(confidence)) return -1;
     if (confidence < 0) confidence = 0;
     if (confidence > 1) confidence = 1;
-    const long hundredths = std::lround(confidence * 100.0);
+    // 1e-9 absorbs binary representation error (0.29 * 100 is 28.999...).
+    return static_cast<long>(std::floor(confidence * 100.0 + 1e-9));
+}
+
+std::string formatConfidence(double confidence) {
+    const long hundredths = confidenceHundredths(confidence);
+    if (hundredths < 0) return "?";
     const long whole = hundredths / 100;
     const long frac = hundredths % 100;
     std::string out = std::to_string(whole) + ".";
@@ -52,7 +54,7 @@ IntakeBadge recordBadge(const IntakeRecord &record, const IntakePalette &palette
     const IntakeProposal &p = record.proposal;
     if (p.targetCollection.empty()) return badge;
 
-    std::string text = std::string(kArrow) + " " + bracketed(p.targetCollection);
+    std::string text = std::string(kArrow) + " " + p.targetCollection;
     if (p.targetPathState == TargetPathState::Null) {
         text += kSep;
         text += "slot pending";
@@ -65,10 +67,13 @@ IntakeBadge recordBadge(const IntakeRecord &record, const IntakePalette &palette
             text += kSep;
             text += formatConfidence(p.confidence);
         }
-        const bool lowConfidence = p.hasConfidence && p.confidence < kBadgeAmberConfidence;
+        // Decided on the hundredths shown: a badge reading "0.60" or more is
+        // never amber for its confidence.
+        const long shown = p.hasConfidence ? confidenceHundredths(p.confidence) : -1;
+        const bool lowConfidence = shown >= 0 && shown < kBadgeAmberHundredths;
         badge.amber = recordNeedsReview(record) || lowConfidence;
         if (badge.amber) {
-            if (const RankedCandidate *alt = firstAlternate(p)) text += " (alt: " + bracketed(alt->collection) + ")";
+            if (const RankedCandidate *alt = firstAlternate(p)) text += " (alt: " + alt->collection + ")";
         }
     }
     badge.text = std::move(text);

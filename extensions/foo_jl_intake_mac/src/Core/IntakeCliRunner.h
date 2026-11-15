@@ -87,10 +87,17 @@ using CliCompletion = std::function<void(CliResult &&result)>;
 // Foundation reports no Caches directory.
 std::string defaultCliOutputDirectory();
 
-// False, with `refusal` (optional) set, when the request is refused.
+// False, with `refusal` (optional) set, when the request is refused. The
+// refusal and the budget report are logged at Debug only: every caller
+// logs its own outcome line, with its context.
 bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRequest &request,
                      const CliRunOptions &options, dispatch_queue_t _Nullable queue,
                      CliBudgetHandler onBudget, CliCompletion completion,
                      std::string *_Nullable refusal);
+
+// One Debug line for a finished call (PLAN.md 3.10): the command, its
+// outcome, exit code or signal (or why it did not run), duration and error
+// codes; never its output. Every caller logs it for every call.
+void logCliResult(const CliResult &result);
 
 } // namespace intake

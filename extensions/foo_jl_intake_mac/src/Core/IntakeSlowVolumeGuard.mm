@@ -24,6 +24,23 @@ std::string_view macVolumeUuid(std::string_view path) {
     return slash == std::string_view::npos ? rest : rest.substr(0, slash);
 }
 
+bool NativePathMenuBudget::allows(std::string_view uuid) const {
+    if (!spent_) return true;
+    if (std::find(fast_.begin(), fast_.end(), uuid) != fast_.end()) return true;
+    skipped_++;
+    return false;
+}
+
+void NativePathMenuBudget::note(std::string_view uuid, uint64_t micros) {
+    if (isSlowNativePathCall(micros)) {
+        spent_ = true;
+        return;
+    }
+    if (fast_.empty() || fast_.back() != uuid) {
+        if (std::find(fast_.begin(), fast_.end(), uuid) == fast_.end()) fast_.emplace_back(uuid);
+    }
+}
+
 bool SlowVolumeGuard::isSlow(std::string_view uuid) const {
     if (uuid.empty() || !any_.load(std::memory_order_acquire)) return false;
     std::lock_guard<std::mutex> lock(mutex_);

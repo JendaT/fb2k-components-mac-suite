@@ -58,7 +58,7 @@ static void setRanked(IntakeRecord &r, std::initializer_list<const char *> colle
 }
 
 static std::string badgeText(const std::string &target, const std::string &suffix) {
-    return kArrow + " [" + target + "]" + suffix;
+    return kArrow + " " + target + suffix;
 }
 
 static void testFormat() {
@@ -67,8 +67,13 @@ static void testFormat() {
     CHECK(formatConfidence(0.6) == "0.60", "0.6 has two decimals");
     CHECK(formatConfidence(1.0) == "1.00", "1.00");
     CHECK(formatConfidence(0.0) == "0.00", "0.00");
-    CHECK(formatConfidence(0.125) == "0.13", "half rounds away from zero");
-    CHECK(formatConfidence(0.999) == "1.00", "0.999 rounds up");
+    CHECK(formatConfidence(0.125) == "0.12", "truncated, not rounded");
+    CHECK(formatConfidence(0.999) == "0.99", "0.999 does not show as 1.00");
+    CHECK(formatConfidence(0.597) == "0.59", "below 0.6 never shows as 0.60");
+    CHECK(formatConfidence(0.29) == "0.29" && formatConfidence(0.57) == "0.57" && formatConfidence(0.58) == "0.58",
+          "binary representation error does not drop a hundredth");
+    CHECK(confidenceHundredths(0.6) == 60 && confidenceHundredths(0.5999) == 59, "hundredths at the amber edge");
+    CHECK(confidenceHundredths(NAN) == -1, "hundredths: not finite");
     CHECK(formatConfidence(0.05) == "0.05", "a leading zero in the hundredths");
     CHECK(formatConfidence(-0.2) == "0.00", "clamped below");
     CHECK(formatConfidence(1.7) == "1.00", "clamped above");
@@ -88,7 +93,12 @@ static void testPlain() {
     CHECK(recordBadge(a).text == badgeText("Test Collection B", kDot + "0.88"), "approved too");
 
     IntakeRecord brackets = rec(IntakeStatus::Proposed, "[A & B]", 0.7);
-    CHECK(recordBadge(brackets).text == badgeText("[A & B]", kDot + "0.70"), "the name is shown as given, in brackets");
+    CHECK(recordBadge(brackets).text == kArrow + " [A & B]" + kDot + "0.70",
+          "a bracketed name (as real collections are) is shown as given, no second brackets");
+    IntakeRecord bracketedAlt = rec(IntakeStatus::Proposed, "[Fixture Ambient]", 0.91, AssignedBy::Engine, true);
+    setRanked(bracketedAlt, {"[Fixture Ambient]", "[Fixture Downtempo]"});
+    CHECK(recordBadge(bracketedAlt).text == kArrow + " [Fixture Ambient]" + kDot + "0.91 (alt: [Fixture Downtempo])",
+          "the alt hint shows its name as given too");
 
     IntakeRecord noConf = rec(IntakeStatus::Proposed, "Test Collection A", 0.0);
     noConf.proposal.hasConfidence = false;
@@ -125,7 +135,7 @@ static void testYours() {
     ur.needsReview = true;
     IntakeBadge br = recordBadge(ur);
     CHECK(br.amber && br.color == kAmberText, "needs_review stays amber when user-assigned");
-    CHECK(br.text == badgeText("Test & Ambient", kDot + "yours (alt: [Test Collection C])"),
+    CHECK(br.text == badgeText("Test & Ambient", kDot + "yours (alt: Test Collection C)"),
           "amber yours: the engine's best as the hint");
 
     IntakeRecord userEmpty = rec(IntakeStatus::Approved, "Test Collection C", 1.0, AssignedBy::User);
@@ -145,19 +155,25 @@ static void testAmber() {
     setRanked(review, {"Test Collection B", "Test Collection A", "Test & Ambient"});
     IntakeBadge rb = recordBadge(review);
     CHECK(rb.amber && rb.color == kAmberText, "review rule: amber");
-    CHECK(rb.text == badgeText("Test Collection B", kDot + "0.61 (alt: [Test Collection A])"),
+    CHECK(rb.text == badgeText("Test Collection B", kDot + "0.61 (alt: Test Collection A)"),
           "doc 04 example: first ranked entry that is not the target");
 
     IntakeRecord low = rec(IntakeStatus::Proposed, "Test Collection A", 0.59);
     setRanked(low, {"Test Collection A", "Test Collection C"});
     IntakeBadge lb = recordBadge(low);
     CHECK(lb.amber, "below 0.6: amber");
-    CHECK(lb.text == badgeText("Test Collection A", kDot + "0.59 (alt: [Test Collection C])"), "low confidence hint");
+    CHECK(lb.text == badgeText("Test Collection A", kDot + "0.59 (alt: Test Collection C)"), "low confidence hint");
 
     IntakeRecord edge = rec(IntakeStatus::Proposed, "Test Collection A", 0.6);
     setRanked(edge, {"Test Collection A", "Test Collection C"});
     IntakeBadge eb = recordBadge(edge);
     CHECK(!eb.amber && eb.text == badgeText("Test Collection A", kDot + "0.60"), "exactly 0.6: not amber, no hint");
+
+    IntakeRecord nearEdge = rec(IntakeStatus::Approved, "Test Collection A", 0.597);
+    setRanked(nearEdge, {"Test Collection A", "Test Collection C"});
+    IntakeBadge ne = recordBadge(nearEdge);
+    CHECK(ne.amber && ne.text == badgeText("Test Collection A", kDot + "0.59 (alt: Test Collection C)"),
+          "0.597: amber, and shown as 0.59, not an amber 0.60");
 
     IntakeRecord approvedLow = rec(IntakeStatus::Approved, "Test Collection A", 0.5);
     setRanked(approvedLow, {"Test Collection B"});
@@ -168,7 +184,7 @@ static void testAmber() {
 
     IntakeRecord notFirst = rec(IntakeStatus::Proposed, "Test Collection B", 0.4);
     setRanked(notFirst, {"Test Collection A", "Test Collection B"});
-    CHECK(recordBadge(notFirst).text == badgeText("Test Collection B", kDot + "0.40 (alt: [Test Collection A])"),
+    CHECK(recordBadge(notFirst).text == badgeText("Test Collection B", kDot + "0.40 (alt: Test Collection A)"),
           "the target need not be ranked first");
 
     IntakeRecord absent = rec(IntakeStatus::Proposed, "Test Collection A", 0.3);

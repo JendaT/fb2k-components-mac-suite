@@ -60,6 +60,32 @@ inline bool isSlowNativePathCall(uint64_t micros) {
     return micros > kSlowNativePathMicros;
 }
 
+// The main thread's allowance while one context menu is built (PLAN.md 3.2
+// and risk 6: no I/O-like stall in menu building). The menu maps every
+// selected row, rows decorate() never saw included, and the guard above
+// stops a stale UUID only after kSlowCallsToMark slow calls. So a menu
+// makes at most one slow conversion of its own: after it, the rest of that
+// menu converts only UUIDs that already converted fast in it, and the rows
+// of any other UUID get no match (as a marked UUID's do). Every call is
+// still reported to the guard, so a stale UUID gets marked over a few
+// menus. One per menu; not thread-safe (the main thread only).
+class NativePathMenuBudget {
+public:
+    // The menu may call the SDK for a row of `uuid` (exact bytes).
+    bool allows(std::string_view uuid) const;
+    // A conversion for `uuid` took `micros`.
+    void note(std::string_view uuid, uint64_t micros);
+    // A slow call happened in this menu.
+    bool spent() const { return spent_; }
+    // Rows refused by allows() since the budget was spent (for a log line).
+    size_t skipped() const { return skipped_; }
+
+private:
+    bool spent_ = false;
+    mutable size_t skipped_ = 0;
+    std::vector<std::string> fast_;  // UUIDs converted fast in this menu
+};
+
 class SlowVolumeGuard {
 public:
     // `uuid` was marked slow since the last reset (exact bytes).

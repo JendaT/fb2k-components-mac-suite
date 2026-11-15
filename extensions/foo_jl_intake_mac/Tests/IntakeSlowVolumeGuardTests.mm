@@ -6,7 +6,8 @@
 //  paths, the 20 ms policy, marking only after three slow calls in a row
 //  (a fast call ends the streak, so one stall never marks), marking once per
 //  UUID, the reset on a mount change or Refresh, a stale generation ignored,
-//  and concurrent use. Synthetic UUIDs.
+//  concurrent use, and the per-menu budget (at most one slow conversion
+//  while a context menu is built). Synthetic UUIDs.
 //
 
 #import <Foundation/Foundation.h>
@@ -112,12 +113,38 @@ static void testConcurrent() {
           "each UUID is marked exactly once across threads");
 }
 
+static void testMenuBudget() {
+    g_context = "menu-budget";
+    static const char *const kUuidC = "00000000-CCCC-4000-8000-000000000003";
+    NativePathMenuBudget b;
+    CHECK(b.allows(kUuidA) && b.allows(kUuidB) && !b.spent(), "a fresh menu allows every UUID");
+    b.note(kUuidA, 4);
+    b.note(kUuidA, 6);
+    CHECK(b.allows(kUuidA) && b.allows(kUuidB) && !b.spent(), "fast calls do not spend it");
+    b.note(kUuidB, 45000);
+    CHECK(b.spent(), "one slow call spends it");
+    CHECK(!b.allows(kUuidB), "the slow UUID gets no second call in this menu");
+    CHECK(!b.allows(kUuidC), "nor a UUID this menu has not converted yet");
+    CHECK(b.allows(kUuidA), "a UUID that converted fast in this menu still converts");
+    CHECK(b.skipped() == 2, "refused rows are counted");
+    b.note(kUuidA, 20000);
+    CHECK(b.allows(kUuidA), "exactly 20 ms is not slow");
+
+    NativePathMenuBudget first;
+    first.note(kUuidC, 30000);
+    CHECK(first.spent() && !first.allows(kUuidC) && !first.allows(kUuidA),
+          "slow on the first call: every later mac-volume row of the menu is skipped");
+    NativePathMenuBudget next;
+    CHECK(next.allows(kUuidC), "the next menu starts over (the guard decides what stays skipped)");
+}
+
 int main(void) {
     @autoreleasepool {
         testUuid();
         testPolicy();
         testMarking();
         testConcurrent();
+        testMenuBudget();
     }
     TEST_MAIN_END();
 }

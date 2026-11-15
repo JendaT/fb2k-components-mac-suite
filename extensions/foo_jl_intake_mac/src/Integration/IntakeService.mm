@@ -287,6 +287,7 @@ public:
                 *runner, *config, request, options, queue, nullptr,
                 [report](CliResult &&result) {
                     // testQueue_: parse here, report on main.
+                    logCliResult(result);
                     VersionGateResult gate;
                     if (result.envelope.outcome == CliOutcome::Ok ||
                         result.envelope.outcome == CliOutcome::Partial) {

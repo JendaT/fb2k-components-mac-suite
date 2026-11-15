@@ -11,17 +11,19 @@
 //  with a target collection. Members that map to no root are ignored; two
 //  roots in one group hide the badge.
 //
-//  Text (UTF-8; "->" is U+2192, "." between parts is U+00B7):
-//    "→ [X] · 0.91"              target X and the confidence, two decimals
-//    "→ [X] · yours"             proposal.assigned_by is "user" (instead of
+//  Text (UTF-8; "->" is U+2192, "." between parts is U+00B7), X being
+//  target_collection as the CLI wrote it (real collection names carry
+//  their own brackets, "[Collection A]", doc 02; none are added here):
+//    "→ X · 0.91"                the target and the confidence, two decimals
+//    "→ X · yours"               proposal.assigned_by is "user" (instead of
 //                                the 1.00 the CLI writes)
-//    "→ [X] · slot pending"      proposal.target_path is present and null;
+//    "→ X · slot pending"        proposal.target_path is present and null;
 //                                always amber, no alt hint
-//    "→ [X]"                     no confidence (not a JSON number)
+//    "→ X"                       no confidence (not a JSON number)
 //  Amber when the review rule fires (IntakeReviewRule) or the confidence is
-//  below 0.6; an amber badge then gets " (alt: [Y])", Y being the first
-//  `ranked` entry that is not the target. No hint when `ranked` is absent,
-//  empty, or holds only the target.
+//  below 0.6; an amber badge then gets " (alt: Y)", Y being the first
+//  `ranked` entry that is not the target, also as written. No hint when
+//  `ranked` is absent, empty, or holds only the target.
 //  An unknown assigned_by or target_path (CLI before 0.3.0) gives neither
 //  "yours" nor "slot pending": the confidence is shown.
 //
@@ -56,11 +58,18 @@ struct IntakeBadge {
     bool operator!=(const IntakeBadge &o) const { return !(*this == o); }
 };
 
-// Below this confidence a badge is amber (doc 02 / doc 04 v1.2).
-inline constexpr double kBadgeAmberConfidence = 0.6;
+// Below this confidence a badge is amber (doc 02 / doc 04 v1.2: 0.6), in
+// the hundredths the badge shows.
+inline constexpr long kBadgeAmberHundredths = 60;
 
-// "0.91": two decimals, rounded half away from zero, clamped to [0, 1];
-// independent of the C locale. "?" for a value that is not finite.
+// The confidence in hundredths as the badge shows it: clamped to [0, 1]
+// and truncated (0.597 is 59, 0.999 is 99), so a confidence below 0.6
+// never shows as "0.60" and the amber rule and the text agree. -1 for a
+// value that is not finite.
+long confidenceHundredths(double confidence);
+
+// "0.91": confidenceHundredths with two decimals; independent of the C
+// locale. "?" for a value that is not finite.
 std::string formatConfidence(double confidence);
 
 // The badge of a group made of `record`'s rows only (see the top of this

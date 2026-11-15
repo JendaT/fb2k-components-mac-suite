@@ -7,9 +7,45 @@
 
 #include "IntakeLog.h"
 
+#include <cstdio>
 #include <memory>
 
 namespace intake {
+
+void logCliResult(const CliResult &r) {
+    if (!isLogEnabled(LogLevel::Debug)) return;
+    std::string line = std::string(cliCommandName(r.command)) + ": " + cliOutcomeName(r.envelope.outcome);
+    switch (r.process.end) {
+        case ProcessEnd::Exited:
+            line += ", exit " + std::to_string(r.process.exitCode);
+            break;
+        case ProcessEnd::Signaled:
+            line += ", signal " + std::to_string(r.process.termSignal);
+            break;
+        case ProcessEnd::SpawnFailed:
+            if (r.process.spawnStage.empty()) {
+                line += ", not run";
+            } else {
+                line += ", spawn failed (" + r.process.spawnStage + ", errno " +
+                        std::to_string(r.process.spawnErrno) + ")";
+            }
+            break;
+        case ProcessEnd::Abandoned:
+            line += ", abandoned after kill";
+            break;
+        case ProcessEnd::WaitFailed:
+            line += ", wait failed";
+            break;
+    }
+    char seconds[32];
+    snprintf(seconds, sizeof seconds, "%.2f s", r.process.elapsedSeconds);
+    line += std::string(", ") + seconds;
+    if (!r.envelope.errors.empty()) {
+        line += ", errors:";
+        for (const CliError &e : r.envelope.errors) line += " " + e.code;
+    }
+    logDebug(line);
+}
 
 std::string defaultCliOutputDirectory() {
     @autoreleasepool {
@@ -37,7 +73,7 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
         inv.message = std::string(cliCommandName(command)) + " needs an output directory";
     }
     if (inv.status == BuildStatus::Refused) {
-        logError(std::string("refused: ") + inv.message);
+        logDebug(std::string(cliCommandName(command)) + ": refused: " + inv.message);
         if (refusal) *refusal = inv.message;
         return false;
     }
@@ -95,10 +131,10 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
     const CliBudgetEvent event = budgetEventFor(cls);
     ProcessBudgetHandler budget = [onBudget, command, event](pid_t) {
         if (event == CliBudgetEvent::LaneRelease) {
-            logInfo(std::string(cliCommandName(command)) +
-                    " dry run: still running at the lane budget; no timeout reported (execute is excepted)");
+            logDebug(std::string(cliCommandName(command)) +
+                     " dry run: still running at the lane budget; no timeout reported (execute is excepted)");
         } else {
-            logInfo(std::string(cliCommandName(command)) + ": no exit within the time budget");
+            logDebug(std::string(cliCommandName(command)) + ": no exit within the time budget");
         }
         if (onBudget) onBudget(event);
     };
