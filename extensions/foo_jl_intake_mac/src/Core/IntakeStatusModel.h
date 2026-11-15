@@ -51,6 +51,7 @@
 #include <vector>
 
 #include "IntakeDecorationMap.h"
+#include "IntakeGroupBadge.h"
 
 namespace intake {
 
@@ -127,7 +128,11 @@ struct IntakeRecord {
     std::string placedTargetPath;
     // Derived and runtime state, not parsed from the row:
     IntakeRowVisual visual; // set by IntakeSnapshot::build (IntakeDecorationMap)
-    std::string lastError;  // set by Integration: a per-command error until the status changes
+    IntakeBadge badge;      // set by IntakeSnapshot::build (IntakeGroupBadge)
+    // A per-command error, set before the snapshot is built
+    // (LoaderSettings::annotateRecords, IntakeRootErrors) and kept until
+    // the root's status changes.
+    std::string lastError;
 };
 
 struct StatusParseResult {

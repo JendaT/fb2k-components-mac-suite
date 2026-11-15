@@ -20,6 +20,8 @@
 //   - Library mapping: one prefix pair, NAS path prefix -> Mac path prefix,
 //     stored lexically clean (normalizedPrefix) and validated only (Swap,
 //     B9, uses it).
+//   - Confirmations (B6): "Confirm before Reject" (confirm_reject, default
+//     on). Execute always asks; Delete's toggle arrives with B9.
 //   - Logging: the log level.
 //   - Status: state, CLI version, roots ("Releases") and last error from
 //     the loader (statusDisplay), refreshed on
@@ -33,7 +35,7 @@
 //
 //  Applying changes: a text field is written to configStore when editing
 //  ends (Return, Tab, focus loss, and when the page goes away), the popup
-//  at once; then IntakeSettingsDidChangeNotification is posted and
+//  and the checkbox at once; then IntakeSettingsDidChangeNotification is posted and
 //  IntakeService applies it without a restart.
 //
 //  Keyboard: the key view order runs top to bottom through every control
@@ -189,6 +191,8 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 @property (nonatomic, strong) NSTextField *prefixFromField;
 @property (nonatomic, strong) NSTextField *prefixToField;
 @property (nonatomic, strong) NSTextField *prefixHint;
+
+@property (nonatomic, strong) NSButton *confirmRejectCheckbox;
 
 @property (nonatomic, strong) NSPopUpButton *logLevelPopup;
 
@@ -418,6 +422,23 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     addFullWidth(prefixGrid);
     [stack setCustomSpacing:JLPrefsSectionGap afterView:prefixGrid];
 
+    // ===== Confirmations =====
+    [stack addArrangedSubview:JLCreateSectionHeader(@"Confirmations")];
+    self.confirmRejectCheckbox = [NSButton checkboxWithTitle:@"Confirm before Reject"
+                                                      target:self
+                                                      action:@selector(confirmRejectChanged:)];
+    self.confirmRejectCheckbox.font = [NSFont systemFontOfSize:11];
+    self.confirmRejectCheckbox.accessibilityLabel = @"Confirm before Reject";
+    NSTextField *confirmHint = JLCreateHelperText(
+        @"Lists the albums and asks for an optional reason. Off: Reject runs at once, without a reason.");
+    NSGridView *confirmGrid = [self gridWithRows:@[
+        @[ [self empty], self.confirmRejectCheckbox, [self empty] ],
+        @[ [self empty], confirmHint, [self empty] ],
+    ]];
+    [confirmGrid cellForView:self.confirmRejectCheckbox].xPlacement = NSGridCellPlacementLeading;
+    addFullWidth(confirmGrid);
+    [stack setCustomSpacing:JLPrefsSectionGap afterView:confirmGrid];
+
     // ===== Logging =====
     [stack addArrangedSubview:JLCreateSectionHeader(@"Logging")];
     self.logLevelPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -576,8 +597,8 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     NSArray<NSView *> *order = @[
         self.infoButton,      self.cliField,      self.cliBrowseButton, self.bunField,
         self.bunBrowseButton, self.rulesField,    self.rulesBrowseButton, self.foldersTextView,
-        self.prefixFromField, self.prefixToField, self.logLevelPopup,   self.testButton,
-        self.reloadButton,    self.incomeTable,
+        self.prefixFromField, self.prefixToField, self.confirmRejectCheckbox, self.logLevelPopup,
+        self.testButton,      self.reloadButton,  self.incomeTable,
     ];
     for (NSUInteger i = 0; i < order.count; i++) {
         order[i].nextKeyView = order[(i + 1) % order.count];
@@ -657,6 +678,9 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     if (level < 0) level = 0;
     if (level > 2) level = 2;
     [self.logLevelPopup selectItemAtIndex:static_cast<NSInteger>(level)];
+
+    self.confirmRejectCheckbox.state =
+        config::getInt(config::kConfirmReject, 1) != 0 ? NSControlStateValueOn : NSControlStateValueOff;
 }
 
 - (void)notifySettingsChanged {
@@ -1016,6 +1040,11 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     const NSInteger index = self.logLevelPopup.indexOfSelectedItem;
     if (index < 0 || index > 2) return;
     config::setInt(config::kLogLevel, index);
+    [self notifySettingsChanged];
+}
+
+- (void)confirmRejectChanged:(id)sender {
+    config::setInt(config::kConfirmReject, self.confirmRejectCheckbox.state == NSControlStateValueOn ? 1 : 0);
     [self notifySettingsChanged];
 }
 

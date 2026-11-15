@@ -37,13 +37,22 @@
 //  what that call missed instead of reloading once more. A mount or
 //  unmount runs remount(), reload(false) and restartWatch().
 //
+//  Context actions (B6, IntakeActions): the loader's annotator copies the
+//  per-root command errors (IntakeRootErrors) into each load's records
+//  before the snapshot is built; a CLI settings change forgets them. The
+//  menu reads serviceActionInfo() and a mutating call takes its
+//  configuration from serviceMutationConfig(), both on the main thread.
+//  After every successful load the temporary test_actions aid gets a look
+//  (it runs once).
+//
 //  on_quit, in PLAN.md 3.2 order: removes the observers, stops the watch
 //  stream and releases the watcher (no batch reaches the loader after
 //  that), sets the cancel flag and kills the read lane
 //  (IntakeLoader::shutdown), leaves mutating and execute processes alone
-//  (none run before B6), releases the loader and every service reference it
-//  holds, then removes the log backend. The provider keeps working on its
-//  own state and still accepts unregister_invalidate_callback.
+//  (IntakeActions stops handling their results: no refresh, no UI),
+//  releases the loader and every service reference it holds, then removes
+//  the log backend. The provider keeps working on its own state and still
+//  accepts unregister_invalidate_callback.
 //
 //  Nothing here runs at static-init time.
 //
@@ -90,6 +99,21 @@ std::string serviceStatusLine();
 // CLI version, roots, error and the income folders; state Stopped before
 // on_init and after on_quit.
 LoaderStatus serviceStatus();
+
+// Main thread. What the context menu needs from the service (B6).
+struct ServiceActionInfo {
+    bool running = false;        // between on_init and on_quit
+    bool cliConfigured = false;  // cli_path is set
+    CliVersionInfo cli;          // the last passing `version` (LoaderStatus::cliInfo)
+    bool confirmReject = true;   // confirm_reject
+};
+ServiceActionInfo serviceActionInfo();
+
+// Main thread. The configuration for a mutating call (B6): the CLI, bun and
+// rules settings with a fresh environment snapshot (main thread only), and
+// the `cli` version and `commands` flag of the last passing `version`.
+// False before on_init, after on_quit and without a CLI path.
+bool serviceMutationConfig(CliConfig &out);
 
 // Main thread. "Test CLI" (B5): one `version --json` with the current
 // settings, built and run through the CLI runner on a background queue, so

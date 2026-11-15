@@ -13,7 +13,8 @@
 //     last loaded data (nothing, before the first load) and is logged.
 //   - rendersAlike: the invalidation diff. Two snapshots render alike when
 //     they hold the same roots (by id) with the same match key, the same
-//     membership and the same visual. Anything else is one invalidate-all.
+//     membership, the same visual and the same group badge (B6). Anything
+//     else is one invalidate-all.
 //   - applyMountAliases: re-derives every record's rootKey from its rootPath
 //     through the alias table, at load and when the mount table changes.
 //   - remountChangesRows: the invalidation diff of a mount table change.
@@ -127,6 +128,10 @@ struct LoaderStatus {
     std::vector<IncomeFolder> incomeFolders; // the last good `income` call (CLI order)
     std::string incomeError;                // why the last `income` call failed; "" after a good one
     std::vector<std::string> rootFolders;   // parents of the roots in use, lexically clean, sorted, each once
+    // B6: `cli` and `commands` of the last `version` call that passed the
+    // gate (feature detection for the context menu: cliSupportsCommand);
+    // empty until one has, and after reconfigure().
+    CliVersionInfo cliInfo;
 };
 
 // "Ready · CLI 0.3.0 · 16 roots", "Inactive: ...", ... (UTF-8, a middle dot

@@ -1,0 +1,432 @@
+//
+//  IntakeActionTableTests.mm
+//  foo_jl_intake_mac
+//
+//  Unit tests for IntakeActionTable: the doc 04 v1.2 enable rule for every
+//  action and status, the table rules (no CLI path, Refresh, inert, empty
+//  selections, mixed selections and "(n of m)", Reject feature detection,
+//  the busy lane and "(execute running)"), quick-assign alternates, the
+//  argv each action builds (through IntakeCommandArgs, never with zero ids),
+//  album labels for the Reject confirmation, and action_id encoding.
+//  Synthetic records only.
+//
+// TEST_DEPS: src/Core/IntakeCapabilities.mm src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm
+//
+
+#import <Foundation/Foundation.h>
+
+#include "../src/Core/IntakeActionTable.h"
+#include "TestHarness.h"
+
+#include <string>
+#include <unistd.h>
+#include <vector>
+
+using namespace intake;
+
+namespace {
+
+const std::string kEllipsis = "\xE2\x80\xA6";
+const std::string kReject = "Reject" + kEllipsis;
+
+CliVersionInfo cli030() {
+    CliVersionInfo info;
+    info.cli = "0.3.0";
+    info.hasCommands = true;
+    info.commands = {"version", "status", "collections", "income", "propose", "assign",
+                     "approve", "reject",  "execute",     "gc"};
+    return info;
+}
+
+CliVersionInfo cliOld(const char *version) {
+    CliVersionInfo info;
+    info.cli = version;
+    return info;
+}
+
+ActionContext ctx(CliVersionInfo info = cli030()) {
+    ActionContext c;
+    c.cliConfigured = true;
+    c.cli = std::move(info);
+    return c;
+}
+
+IntakeRecord rec(const char *id, IntakeStatus status) {
+    IntakeRecord r;
+    r.id = id;
+    r.rootPath = r.rootKey = std::string("/income/dump/Fixture Artist - Album ") + id;
+    r.status = status;
+    r.albumartist = "Fixture Artist";
+    r.album = std::string("Album ") + id;
+    return r;
+}
+
+IntakeRecord withProposal(IntakeRecord r, TargetPathState target = TargetPathState::Set) {
+    r.hasProposal = true;
+    r.proposal.targetCollection = "Test Collection A";
+    r.proposal.confidence = 0.8;
+    r.proposal.hasConfidence = true;
+    r.proposal.assignedBy = AssignedBy::Engine;
+    r.proposal.targetPathState = target;
+    if (target == TargetPathState::Set) r.proposal.targetPath = "/library/Test Collection A/x";
+    for (const char *name : {"Test Collection A", "Test Collection B", "Test Collection C", "Test & Ambient",
+                             "Fixture Downtempo", "Test Collection B"}) {
+        RankedCandidate c;
+        c.collection = name;
+        r.proposal.ranked.push_back(c);
+    }
+    r.proposal.rankedState = RankedState::Present;
+    return r;
+}
+
+std::vector<std::string> ids(const ActionEntry &e) {
+    std::vector<std::string> out;
+    for (const ActionRoot &r : e.roots) out.push_back(r.id);
+    return out;
+}
+
+std::vector<std::string> titles(const ActionTable &t) {
+    std::vector<std::string> out;
+    for (const ActionEntry &e : t.entries) out.push_back(e.title);
+    return out;
+}
+
+std::vector<std::string> v(std::initializer_list<std::string> items) {
+    return std::vector<std::string>(items);
+}
+
+const std::string kCli = "/opt/intake/bin/intake";
+std::string g_emptyDir;
+
+CliConfig cliConfig() {
+    CliConfig c;
+    c.cliPath = kCli;
+    c.bunSearchDirs = {g_emptyDir};
+    c.baseEnvironment = std::vector<std::string>{"HOME=/Users/test", "PATH=/usr/bin:/bin"};
+    c.cliVersion = "0.3.0";
+    c.cliListsCommands = true;
+    return c;
+}
+
+std::vector<std::string> argvFor(const ActionEntry &e, const std::string &reason = std::string()) {
+    CliRequest request;
+    if (!requestForEntry(e, reason, request)) return {"<no request>"};
+    CliInvocation inv = buildInvocation(cliConfig(), request);
+    if (inv.status != BuildStatus::Ok) return {"<" + inv.message + ">"};
+    return inv.arguments;
+}
+
+} // namespace
+
+static void testEnableMatrix() {
+    g_context = "enable-matrix";
+    const IntakeStatus statuses[] = {IntakeStatus::New,    IntakeStatus::Resolved, IntakeStatus::Proposed,
+                                     IntakeStatus::Approved, IntakeStatus::Placing,  IntakeStatus::Placed,
+                                     IntakeStatus::GcDone, IntakeStatus::Rejected, IntakeStatus::Unknown};
+    const char *names[] = {"new", "resolved", "proposed", "approved", "placing",
+                           "placed", "gc_done", "rejected", "unknown"};
+    struct Row {
+        IntakeAction action;
+        bool expected[9];  // in `statuses` order
+    };
+    // A record with a target, ranked alternates and placed.verified; CLI 0.3.0.
+    const Row rows[] = {
+        {IntakeAction::Propose, {false, true, false, false, false, false, false, false, false}},
+        {IntakeAction::AssignTo, {true, true, true, true, false, false, false, false, false}},
+        {IntakeAction::AssignOther, {true, true, true, true, false, false, false, false, false}},
+        {IntakeAction::Approve, {false, false, true, false, false, false, false, false, false}},
+        {IntakeAction::Reject, {true, true, true, true, false, false, false, false, false}},
+        {IntakeAction::Execute, {false, false, false, true, false, false, false, false, false}},
+        {IntakeAction::Resume, {false, false, false, false, true, false, false, false, false}},
+        {IntakeAction::Swap, {false, false, false, false, false, true, false, false, false}},
+        {IntakeAction::DeleteLocal, {false, false, false, false, false, true, false, false, false}},
+        {IntakeAction::Refresh, {true, true, true, true, true, true, true, true, true}},
+    };
+    const ActionContext c = ctx();
+    for (const Row &row : rows) {
+        for (size_t i = 0; i < 9; i++) {
+            IntakeRecord r = withProposal(rec("itk_00000001", statuses[i]));
+            r.hasPlaced = true;
+            r.placedVerified = true;
+            const std::string what = std::string(actionName(row.action)) + " on " + names[i];
+            CHECK(rootQualifies(row.action, r, c) == row.expected[i], what.c_str());
+        }
+    }
+}
+
+static void testEnableConditions() {
+    g_context = "enable-conditions";
+    const ActionContext c = ctx();
+    IntakeRecord slot = withProposal(rec("itk_00000001", IntakeStatus::Proposed), TargetPathState::Null);
+    CHECK(!rootQualifies(IntakeAction::Approve, slot, c), "Approve: null target_path refused");
+    IntakeRecord unknown = withProposal(rec("itk_00000001", IntakeStatus::Proposed), TargetPathState::Unknown);
+    CHECK(rootQualifies(IntakeAction::Approve, unknown, c), "Approve: unknown target_path (CLI 0.2.1) allowed");
+    IntakeRecord noProposal = rec("itk_00000001", IntakeStatus::Proposed);
+    CHECK(rootQualifies(IntakeAction::Approve, noProposal, c), "Approve: no proposal is not a null target");
+    IntakeRecord approvedSlot = withProposal(rec("itk_00000001", IntakeStatus::Approved), TargetPathState::Null);
+    CHECK(!rootQualifies(IntakeAction::Execute, approvedSlot, c), "Execute: null target_path refused");
+
+    IntakeRecord resolved = rec("itk_00000001", IntakeStatus::Resolved);
+    CHECK(!rootQualifies(IntakeAction::Reject, resolved, ctx(cliOld("0.1.0"))), "Reject: not on CLI 0.1.0");
+    CHECK(rootQualifies(IntakeAction::Reject, resolved, ctx(cliOld("0.2.0"))), "Reject: from CLI 0.2.0 by semver");
+    CliVersionInfo listedNoReject = cli030();
+    listedNoReject.commands = {"version", "status", "propose"};
+    CHECK(!rootQualifies(IntakeAction::Reject, resolved, ctx(listedNoReject)), "Reject: commands[] decides");
+
+    IntakeRecord placing = rec("itk_00000011", IntakeStatus::Placing);
+    CHECK(!rootQualifies(IntakeAction::Resume, placing, ctx(cliOld("0.2.0"))), "Resume: not before 0.2.1");
+    CHECK(rootQualifies(IntakeAction::Resume, placing, ctx(cliOld("0.2.1"))), "Resume: 0.2.1");
+    ActionContext live = ctx();
+    live.liveRunIds = {"itk_00000011"};
+    CHECK(!rootQualifies(IntakeAction::Resume, placing, live), "Resume: not while a live run holds the root");
+
+    IntakeRecord unverified = rec("itk_00000012", IntakeStatus::Placed);
+    unverified.hasPlaced = true;
+    unverified.placedVerified = false;
+    CHECK(!rootQualifies(IntakeAction::Swap, unverified, c), "Swap: placed.verified required");
+    CHECK(!rootQualifies(IntakeAction::DeleteLocal, unverified, c), "Delete: placed.verified required");
+
+    IntakeRecord noRanked = rec("itk_00000001", IntakeStatus::Proposed);
+    noRanked.hasProposal = true;
+    noRanked.proposal.targetCollection = "Test Collection A";
+    noRanked.proposal.rankedState = RankedState::Absent;
+    CHECK(!rootQualifies(IntakeAction::AssignTo, noRanked, c), "Assign to X: needs ranked");
+    CHECK(rootQualifies(IntakeAction::AssignOther, noRanked, c), "Assign other: no ranked needed");
+}
+
+static void testAlternates() {
+    g_context = "alternates";
+    IntakeRecord r = withProposal(rec("itk_00000001", IntakeStatus::Proposed));
+    CHECK(assignAlternates(r) == v({"Test Collection B", "Test Collection C", "Test & Ambient", "Fixture Downtempo"}),
+          "ranked minus the target, at most 4, in order");
+    CHECK(assignAlternates(r, 2) == v({"Test Collection B", "Test Collection C"}), "limit");
+    IntakeRecord dup = r;
+    dup.proposal.ranked.erase(dup.proposal.ranked.begin() + 2, dup.proposal.ranked.begin() + 5);
+    CHECK(assignAlternates(dup) == v({"Test Collection B"}), "a repeated name is listed once");
+    IntakeRecord empty = r;
+    empty.proposal.ranked.clear();
+    empty.proposal.rankedState = RankedState::Empty;
+    CHECK(assignAlternates(empty).empty(), "ranked [] gives none");
+}
+
+static void testTableRules() {
+    g_context = "table";
+    IntakeRecord resolved = rec("itk_0000000b", IntakeStatus::Resolved);
+    std::vector<const IntakeRecord *> one = {&resolved};
+
+    ActionContext off = ctx();
+    off.cliConfigured = false;
+    CHECK(buildActionTable(one, off).entries.empty(), "no CLI path: no items");
+
+    ActionTable none = buildActionTable({}, ctx());
+    CHECK(titles(none) == v({"Refresh intake status"}), "no intake root selected: Refresh only");
+    CHECK(none.entries[0].enabled && none.entries[0].action == IntakeAction::Refresh, "Refresh is enabled");
+
+    ActionContext inert = ctx();
+    inert.inert = true;
+    CHECK(titles(buildActionTable(one, inert)) == v({"Refresh intake status"}), "inert: Refresh only");
+
+    ActionTable t = buildActionTable(one, ctx());
+    CHECK(titles(t) == v({"Propose", "Approve", kReject, "Refresh intake status"}), "B6 items, fixed order");
+    CHECK(t.entries[0].enabled && ids(t.entries[0]) == v({"itk_0000000b"}), "Propose enabled on resolved");
+    CHECK(!t.entries[1].enabled && t.entries[1].roots.empty(), "Approve disabled, no roots");
+    CHECK(t.entries[2].enabled, "Reject enabled on resolved");
+    CHECK(t.selectedRoots == 1, "m = 1");
+
+    ActionTable old = buildActionTable(one, ctx(cliOld("0.1.0")));
+    CHECK(titles(old) == v({"Propose", "Approve", "Refresh intake status"}), "CLI 0.1.0: Reject is not listed");
+
+    IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
+    placed.hasPlaced = placed.placedVerified = true;
+    ActionTable p = buildActionTable({&placed}, ctx());
+    CHECK(titles(p) == v({"Propose", "Approve", kReject, "Refresh intake status"}), "a placed root lists the same items");
+    CHECK(!p.entries[0].enabled && !p.entries[1].enabled && !p.entries[2].enabled, "all disabled on placed");
+}
+
+static void testMixed() {
+    g_context = "mixed";
+    IntakeRecord n = rec("itk_0000000a", IntakeStatus::New);
+    IntakeRecord r = rec("itk_0000000b", IntakeStatus::Resolved);
+    IntakeRecord p = withProposal(rec("itk_0000000d", IntakeStatus::Proposed));
+    IntakeRecord slot = withProposal(rec("itk_00000019", IntakeStatus::Proposed), TargetPathState::Null);
+    IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
+
+    ActionTable t = buildActionTable({&n, &r, &p, &slot, &placed}, ctx());
+    CHECK(t.selectedRoots == 5, "m counts every selected root");
+    CHECK(titles(t) == v({"Propose (1 of 5)", "Approve (1 of 5)", kReject + " (4 of 5)", "Refresh intake status"}),
+          "(n of m) on a mixed selection");
+    CHECK(ids(t.entries[0]) == v({"itk_0000000b"}), "Propose runs on the resolved root only");
+    CHECK(ids(t.entries[1]) == v({"itk_0000000d"}), "Approve skips the slot-pending root");
+    CHECK(ids(t.entries[2]) == v({"itk_0000000a", "itk_0000000b", "itk_0000000d", "itk_00000019"}),
+          "Reject runs on its four roots, selection order");
+
+    IntakeRecord p2 = withProposal(rec("itk_0000000e", IntakeStatus::Proposed));
+    ActionTable all = buildActionTable({&p, &p2}, ctx());
+    CHECK(all.entries[1].title == "Approve", "every root qualifies: no (n of m)");
+    CHECK(ids(all.entries[1]) == v({"itk_0000000d", "itk_0000000e"}), "Approve over a multi-selection is the batch");
+    CHECK(!all.entries[0].enabled && all.entries[0].title == "Propose", "none qualifies: disabled, no (0 of m)");
+
+    std::vector<const IntakeRecord *> rows = {nullptr, &p, &r, &p, nullptr, &r};
+    std::vector<const IntakeRecord *> roots = selectionRoots(rows);
+    CHECK(roots.size() == 2 && roots[0] == &p && roots[1] == &r, "selection roots: deduplicated, ordered, unmapped skipped");
+    IntakeRecord pCopy = p;
+    CHECK(selectionRoots({&p, &pCopy}).size() == 1, "deduplicated by id");
+}
+
+static void testLane() {
+    g_context = "lane";
+    IntakeRecord r = rec("itk_0000000b", IntakeStatus::Resolved);
+    ActionContext busy = ctx();
+    busy.laneBusy = true;
+    ActionTable t = buildActionTable({&r}, busy);
+    CHECK(!t.entries[0].enabled && !t.entries[2].enabled, "busy lane: mutating items disabled");
+    CHECK(t.entries[0].title == "Propose" && ids(t.entries[0]) == v({"itk_0000000b"}),
+          "busy: same title, roots still captured");
+    CHECK(t.entries.back().enabled, "busy lane: Refresh stays enabled");
+
+    busy.executeRunning = true;
+    ActionTable e = buildActionTable({&r}, busy);
+    CHECK(e.entries[0].title == "Propose (execute running)", "execute holds the lane: said so");
+    CHECK(e.entries[2].title == kReject + " (execute running)", "on every mutating item");
+    CHECK(e.entries.back().title == "Refresh intake status", "not on Refresh");
+}
+
+static void testAllActionsExposed() {
+    g_context = "all-actions";
+    std::vector<IntakeAction> everything = {IntakeAction::Refresh,     IntakeAction::DeleteLocal, IntakeAction::Swap,
+                                            IntakeAction::Resume,      IntakeAction::Execute,     IntakeAction::Reject,
+                                            IntakeAction::Approve,     IntakeAction::AssignOther, IntakeAction::AssignTo,
+                                            IntakeAction::Propose};
+    IntakeRecord p = withProposal(rec("itk_0000000d", IntakeStatus::Proposed));
+    ActionTable t = buildActionTable({&p}, ctx(), everything);
+    CHECK(titles(t) == v({"Propose", "Assign to Test Collection B", "Assign to Test Collection C",
+                          "Assign to Test & Ambient", "Assign to Fixture Downtempo",
+                          "Assign to other collection" + kEllipsis, "Approve", kReject,
+                          "Execute placement" + kEllipsis, "Resume placement", "Swap to library paths",
+                          "Delete local copy" + kEllipsis, "Refresh intake status"}),
+          "the full table order, quick assign for one root");
+    CHECK(t.entries[1].collection == "Test Collection B" && t.entries[1].enabled, "quick assign carries its collection");
+
+    IntakeRecord p2 = withProposal(rec("itk_0000000e", IntakeStatus::Proposed));
+    ActionTable two = buildActionTable({&p, &p2}, ctx(), everything);
+    CHECK(findEntry(two, IntakeAction::AssignTo) == nullptr, "quick assign only for one selected root");
+    CHECK(findEntry(two, IntakeAction::AssignOther) != nullptr, "assign other for several");
+}
+
+static void testArgv() {
+    g_context = "argv";
+    IntakeRecord r = rec("itk_0000000b", IntakeStatus::Resolved);
+    IntakeRecord p = withProposal(rec("itk_0000000d", IntakeStatus::Proposed));
+    IntakeRecord p2 = withProposal(rec("itk_0000000e", IntakeStatus::Proposed));
+    ActionTable t = buildActionTable({&r, &p, &p2}, ctx());
+
+    CHECK(argvFor(*findEntry(t, IntakeAction::Propose)) == v({kCli, "propose", "itk_0000000b", "--json"}),
+          "propose <qualifying ids> --json");
+    CHECK(argvFor(*findEntry(t, IntakeAction::Approve)) ==
+              v({kCli, "approve", "itk_0000000d", "itk_0000000e", "--json"}),
+          "approve over the qualifying roots, no --batch");
+    CHECK(argvFor(*findEntry(t, IntakeAction::Reject), "wrong genre & re-tag") ==
+              v({kCli, "reject", "itk_0000000b", "itk_0000000d", "itk_0000000e", "--reason", "wrong genre & re-tag",
+                 "--json"}),
+          "reject with a reason, passed literally");
+    CHECK(argvFor(*findEntry(t, IntakeAction::Reject)) ==
+              v({kCli, "reject", "itk_0000000b", "itk_0000000d", "itk_0000000e", "--json"}),
+          "reject without a reason: no --reason");
+
+    CliRequest req;
+    std::string why;
+    CHECK(!requestForEntry(*findEntry(t, IntakeAction::Refresh), "", req, &why) && why == "not a CLI command",
+          "Refresh is not a CLI call");
+    ActionEntry disabled = *findEntry(t, IntakeAction::Propose);
+    disabled.enabled = false;
+    CHECK(!requestForEntry(disabled, "", req, &why) && why == "disabled", "a disabled entry runs nothing");
+    ActionEntry emptyRoots = *findEntry(t, IntakeAction::Approve);
+    emptyRoots.roots.clear();
+    CHECK(!requestForEntry(emptyRoots, "", req, &why) && why == "no qualifying root",
+          "zero ids: nothing runs (risk 3a)");
+    ActionEntry repeated = *findEntry(t, IntakeAction::Approve);
+    repeated.roots.push_back(repeated.roots.front());
+    CHECK(requestForEntry(repeated, "", req) && req.ids == v({"itk_0000000d", "itk_0000000e"}), "ids passed once");
+    CHECK(requestForEntry(*findEntry(t, IntakeAction::Propose), "ignored", req) && req.reason.empty(),
+          "only reject takes the reason");
+
+    std::vector<IntakeAction> withAssign = {IntakeAction::AssignTo};
+    ActionTable qa = buildActionTable({&p}, ctx(), withAssign);
+    CHECK(argvFor(qa.entries[0]) ==
+              v({kCli, "assign", "itk_0000000d", "--collection", "Test Collection B", "--by", "user", "--json"}),
+          "assign <id> --collection X --by user");
+}
+
+static void testLabels() {
+    g_context = "labels";
+    ActionRoot full;
+    full.id = "itk_0000000b";
+    full.albumartist = "Fixture Artist";
+    full.album = "Resolved Album";
+    full.rootPath = "/income/dump/Fixture Artist - Resolved Album";
+    CHECK(albumLabel(full) == "Fixture Artist \xE2\x80\x93 Resolved Album", "artist – album");
+    ActionRoot noAlbum = full;
+    noAlbum.album.clear();
+    CHECK(albumLabel(noAlbum) == "Fixture Artist", "only the artist");
+    ActionRoot onlyAlbum = full;
+    onlyAlbum.albumartist.clear();
+    CHECK(albumLabel(onlyAlbum) == "Resolved Album", "only the album");
+    ActionRoot folder = full;
+    folder.albumartist.clear();
+    folder.album.clear();
+    folder.rootPath = "/income/shop/Loose Tracks/";
+    CHECK(albumLabel(folder) == "Loose Tracks", "neither: the folder name");
+
+    std::vector<ActionRoot> twelve;
+    for (int i = 0; i < 12; i++) {
+        ActionRoot r = full;
+        r.album = "Album " + std::to_string(i);
+        twelve.push_back(r);
+    }
+    const std::string text = affectedAlbumsText(twelve);
+    size_t lines = 1;
+    for (char c : text) lines += c == '\n';
+    CHECK(lines == 11, "10 albums, then one more line");
+    CHECK(text.substr(text.rfind('\n') + 1) == "and 2 more", "and N more");
+    std::vector<ActionRoot> three(twelve.begin(), twelve.begin() + 3);
+    CHECK(affectedAlbumsText(three).find("more") == std::string::npos, "three albums: all listed");
+}
+
+static void testActionIds() {
+    g_context = "action-ids";
+    uint32_t serial = 0;
+    size_t index = 0;
+    const uint32_t id = encodeActionId(0x123456, 7);
+    CHECK(decodeActionId(id, serial, index) && serial == 0x123456 && index == 7, "round trip");
+    CHECK(!decodeActionId(encodeActionId(0, 3), serial, index), "serial 0 is never valid");
+    CHECK(nextMenuSerial(0) == 1 && nextMenuSerial(5) == 6, "serials count up");
+    CHECK(nextMenuSerial(0xFFFFFF) == 1, "the serial wraps past 0");
+    CHECK(decodeActionId(encodeActionId(nextMenuSerial(0xFFFFFF), 254), serial, index) && index == 254,
+          "the last index fits");
+}
+
+int main() {
+    @autoreleasepool {
+        // An empty folder as the only bun search directory: no bun found.
+        std::string base = NSTemporaryDirectory().UTF8String;
+        if (base.empty() || base.back() != '/') base += '/';
+        std::vector<char> dirTemplate;
+        for (char ch : base + "intake-actiontable-XXXXXX") dirTemplate.push_back(ch);
+        dirTemplate.push_back('\0');
+        const char *dir = mkdtemp(dirTemplate.data());
+        g_emptyDir = dir ? dir : "/nonexistent-intake-test-dir";
+        testEnableMatrix();
+        testEnableConditions();
+        testAlternates();
+        testTableRules();
+        testMixed();
+        testLane();
+        testAllActionsExposed();
+        testArgv();
+        testLabels();
+        testActionIds();
+        if (dir) rmdir(dir);
+    }
+    TEST_MAIN_END();
+}

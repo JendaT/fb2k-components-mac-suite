@@ -84,6 +84,7 @@ IntakeSettings load() {
     s.ignoredWatchFolders = std::move(folders.ignored);
     s.swapPrefixFrom = normalizedPrefix(getString(kSwapPrefixFrom, ""));
     s.swapPrefixTo = normalizedPrefix(getString(kSwapPrefixTo, ""));
+    s.confirmReject = getInt(kConfirmReject, 1) != 0;
     return s;
 }
 

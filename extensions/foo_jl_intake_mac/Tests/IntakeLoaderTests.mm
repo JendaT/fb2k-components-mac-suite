@@ -38,12 +38,14 @@
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
 // TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeGroupBadge.mm src/Core/IntakeRootErrors.mm
 //
 
 #import <Foundation/Foundation.h>
 
 #include "../src/Core/IntakeLoader.h"
 #include "../src/Core/IntakeLog.h"
+#include "../src/Core/IntakeRootErrors.h"
 #include "../src/Core/IntakeWatchSet.h"
 #include "MockCliSupport.h"
 #include "TestHarness.h"
@@ -1353,6 +1355,67 @@ static void testWatchEventIds() {
     CHECK(callsAre(early, {}), "and no CLI call");
 }
 
+// B6: the annotator puts per-root command errors into the records before
+// the snapshot is built (tooltip and invalidation), errors leave when the
+// status changes, badges are in the published view, and the status carries
+// the CLI's features.
+static void testAnnotateAndBadges() {
+    g_context = "annotate";
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    const std::string resolvedRow = root + "/income/dump/Fixture Artist - Resolved Album/01 - Track.wav";
+    const std::string proposedRow = root + "/income/dump/Fixture Artist - Proposed Album/01 - Track.wav";
+    const std::string closeRow = root + "/income/dump/Fixture Artist - Close Call/01 - Track.wav";
+    const std::string userRow = root + "/income/dump/Fixture Artist - Overridden Album/01 - Track.wav";
+    auto h = std::make_shared<Harness>();
+    auto store = std::make_shared<RootErrorStore>();
+    LoaderSettings settings = settingsFor(state, h);
+    settings.annotateRecords = [store](std::vector<IntakeRecord> &records) { store->apply(records); };
+    IntakeLoader loader(std::move(settings));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1), "first load");
+    LoaderStatus st = h->lastFinished();
+    CHECK(st.cliInfo.cli == "0.3.0" && st.cliInfo.hasCommands, "the status carries cli and commands");
+    CHECK(cliSupportsCommand(st.cliInfo, CliCommand::Reject), "reject detected from commands[]");
+
+    ViewScratch scratch;
+    std::shared_ptr<const IntakeView> view = h->lastPublished().view;
+    const IntakeRecord *proposed = view ? view->recordFor(proposedRow, scratch) : nullptr;
+    CHECK(proposed && proposed->badge.text == "\xE2\x86\x92 [Test Collection A] \xC2\xB7 0.91" && !proposed->badge.amber,
+          "badge of the engine proposal");
+    const IntakeRecord *close = view ? view->recordFor(closeRow, scratch) : nullptr;
+    CHECK(close && close->badge.amber &&
+              close->badge.text ==
+                  "\xE2\x86\x92 [Test Collection B] \xC2\xB7 0.61 (alt: [Test Collection A])",
+          "the close call: amber with the alt hint");
+    const IntakeRecord *user = view ? view->recordFor(userRow, scratch) : nullptr;
+    CHECK(user && user->badge.text ==
+                      "\xE2\x86\x92 [Test & Ambient] \xC2\xB7 yours (alt: [Test Collection C])",
+          "the user override: yours, amber (needs_review kept)");
+
+    store->set("itk_0000000b", "propose: No target collection");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "reload after an error");
+    Published withError = h->lastPublished();
+    CHECK(withError.invalidate, "a new per-root error invalidates");
+    const IntakeRowVisual *errorVisual = withError.view ? withError.view->visualFor(resolvedRow, scratch) : nullptr;
+    CHECK(errorVisual && errorVisual->tooltip == "propose: No target collection", "the error is in the tooltip");
+
+    loader.reload(false);
+    CHECK(waitFinished(*h, 3), "reload, same status");
+    CHECK(!h->lastPublished().invalidate, "the error stays, nothing changed");
+
+    CHECK(replaceInFile(state + "/responses/status.d/itk_0000000b.json", "\"status\":\"resolved\"",
+                        "\"status\":\"proposed\""),
+          "fixture edited");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 4), "reload after the status change");
+    Published moved = h->lastPublished();
+    const IntakeRowVisual *movedVisual = moved.view ? moved.view->visualFor(resolvedRow, scratch) : nullptr;
+    CHECK(moved.invalidate && movedVisual && movedVisual->tooltip.empty() && store->size() == 0,
+          "the status changed: the error is gone");
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -1383,6 +1446,7 @@ int main(void) {
         testSetWatchFolders();
         testReloadServed();
         testWatchEventIds();
+        testAnnotateAndBadges();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

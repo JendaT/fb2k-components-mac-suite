@@ -13,6 +13,7 @@
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
 // TEST_DEPS: src/Core/IntakeVersionGate.mm src/Core/IntakeCapabilities.mm
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>

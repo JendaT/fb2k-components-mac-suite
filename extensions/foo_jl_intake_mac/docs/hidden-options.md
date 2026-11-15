@@ -24,15 +24,16 @@ writes it back when it quits, so an edit made while it runs is overwritten.
 The component reads every key at startup.
 
 **On the preferences page (Tools > Intake, B5):** `cli_path`, `bun_path`,
-`rules_dir`, `watch_folders`, `swap_prefix_from`, `swap_prefix_to` and
-`log_level`. These are no longer hidden: the page writes them and they apply
-at once, with no restart (a CLI, bun or rules change reloads with `version`;
-a watched-folders change rebuilds the watch set; the log level applies
-immediately). They are described below because in-app checks set them with
+`rules_dir`, `watch_folders`, `swap_prefix_from`, `swap_prefix_to`,
+`confirm_reject` (B6) and `log_level`. These are no longer hidden: the page
+writes them and they apply at once, with no restart (a CLI, bun or rules
+change reloads with `version`; a watched-folders change rebuilds the watch
+set; the log level and `confirm_reject` apply immediately). They are described below because in-app checks set them with
 `sqlite3` while foobar2000 is quit.
 
 **Hidden (config store only):** `decor_stats`, `log_file` and the temporary
-acceptance aids `test_playlist`, `test_playlist_dir` and `test_open_prefs`.
+acceptance aids `test_playlist`, `test_playlist_dir`, `test_open_prefs` and
+`test_actions`.
 
 # Keys on the preferences page
 
@@ -110,6 +111,15 @@ NAS (`swap_prefix_from`) and the same folder as this Mac mounts it
 (`swap_prefix_to`), e.g. `/share/library` and `/Volumes/library`. Both must be
 absolute paths, or both empty (the default: no mapping). The page flags a
 half-filled or relative pair. Stored and validated only until Swap exists.
+
+## foo_jl_intake.confirm_reject
+
+`configInts`, `1` (default) or `0`. The page's "Confirm before Reject"
+checkbox (Confirmations). With `1`, the context menu's **Reject…** first
+shows a confirmation (a sheet on the key window) that lists the albums it
+affects (up to 10, then "and N more") and has an optional reason field; the
+reason is passed as `--reason`. With `0`, Reject runs at once, without a
+reason. Approve and Propose never ask. Execute will always ask (B8).
 
 # Hidden keys
 
@@ -219,6 +229,40 @@ writes that back when it quits. One console line reports it
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_open_prefs',1)
      ON CONFLICT(name) DO UPDATE SET value=1;"
+```
+
+## foo_jl_intake.test_actions
+
+Temporary acceptance aid (B6), removed before the merge to main with the
+other aids (`src/Integration/IntakeTestActions.mm`,
+`src/Core/IntakeTestActionScript.*` and its tests). It lets an in-app check
+drive the intake context menu without clicking.
+
+`configStrings`, default empty. Read once per foobar2000 session, right after
+the first successful `status` load; the key is reset to `""` before the first
+step runs (foobar2000 writes that back when it quits). Steps are separated
+by `;`, words by spaces:
+
+| Step | What it does |
+|---|---|
+| `menu <id...>` | Logs the items (title, enabled) the context menu would show for a selection of those roots' rows. The rows are the roots' members from the snapshot (a whole-folder root: its folder), mapped through the same lookup as a real selection, then the same table. |
+| `propose <id...>`, `approve <id...>`, `reject <id...> [reason=<text>]` | Builds that menu and dispatches its item for the action through the same path and mutation lane as a click. Dialogs are skipped: reject runs with the `reason=` text (everything after `reason=` to the end of the step, trimmed), or with none. A disabled item, or a busy lane, runs nothing and says so. |
+| `refresh` | The **Refresh intake status** item (a full reload with `version`). |
+| `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
+
+Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
+otherwise the step logs why and does nothing. Each step logs one Info line
+starting `test_actions:` (combine with `log_file` 1 to read them from
+`~/Library/Logs/foobar2000/jl_intake.log`); the end logs `test_actions: done`.
+A mutating step returns as soon as the call has started; add a `wait` before a
+step that should see its result (the call, then the refresh it triggers).
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'menu itk_0000000b; propose itk_0000000b; wait 4; menu itk_0000000b')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 
 # Reverting everything

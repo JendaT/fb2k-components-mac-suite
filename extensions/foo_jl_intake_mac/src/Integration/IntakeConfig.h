@@ -19,6 +19,9 @@
 //     prefix pair (NAS path prefix, Mac path prefix; PLAN.md decision 2).
 //     Stored and validated only (validatePrefixPair); Swap (B9) uses it.
 //   - log_level (int 0-2): Error, Info, Debug. Default 1 (2 in DEBUG builds).
+//   - confirm_reject (int, 0 or 1, B6): Reject… asks first (the albums it
+//     affects, an optional reason); 0 rejects at once, with no reason.
+//     Default 1.
 //  Hidden (docs/hidden-options.md):
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
@@ -53,6 +56,7 @@ struct IntakeSettings {
     std::vector<std::string> ignoredWatchFolders; // lines that were not absolute paths
     std::string swapPrefixFrom;  // normalizedPrefix; validatePrefixPair decides if it is usable
     std::string swapPrefixTo;
+    bool confirmReject = true;   // B6: Reject… shows its confirmation
 };
 
 namespace config {
@@ -67,6 +71,7 @@ inline constexpr const char *kLogFile = "log_file";
 inline constexpr const char *kWatchFolders = "watch_folders";
 inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
 inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
+inline constexpr const char *kConfirmReject = "confirm_reject";
 
 // The preferences page (Tools > Intake), for ui_control::show_preferences.
 // {B5B6AB95-DB13-45D9-A9F1-A85E014C08C8}

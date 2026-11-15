@@ -12,6 +12,7 @@
 // TEST_DEPS: src/Core/IntakeSnapshot.mm src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm
 // TEST_DEPS: src/Core/IntakeReviewRule.mm src/Core/IntakeMountAliases.mm src/Core/IntakeDecorStats.mm
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm
+// TEST_DEPS: src/Core/IntakeGroupBadge.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -139,6 +140,28 @@ static void testRendersAlike() {
     sameVisual[0].proposal.targetCollection = "Test Collection A";
     sameVisual[0].proposal.rankedState = RankedState::Present;
     CHECK(rendersAlike(*a, *IntakeSnapshot::build(sameVisual, table)), "fields that do not render do not count");
+
+    // B6: the group badge renders too, so a change that leaves the row
+    // visual alone (a new confidence or target) still invalidates.
+    std::vector<IntakeRecord> badged = base;
+    badged[2].hasProposal = true;
+    badged[2].proposal.targetCollection = "Test Collection A";
+    badged[2].proposal.confidence = 0.91;
+    badged[2].proposal.hasConfidence = true;
+    auto withBadge = IntakeSnapshot::build(badged, table);
+    CHECK(withBadge->recordForId("itk_00000003")->badge.shown(), "build computes the badge");
+    std::vector<IntakeRecord> newConfidence = badged;
+    newConfidence[2].proposal.confidence = 0.85;
+    auto other = IntakeSnapshot::build(newConfidence, table);
+    CHECK(other->recordForId("itk_00000003")->visual == withBadge->recordForId("itk_00000003")->visual,
+          "same row visual");
+    CHECK(!rendersAlike(*withBadge, *other), "a badge-only change differs");
+    std::vector<IntakeRecord> newTarget = badged;
+    newTarget[2].proposal.targetCollection = "Test Collection B";
+    CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(newTarget, table)), "a new target differs");
+    std::vector<IntakeRecord> withError = badged;
+    withError[2].lastError = "approve: Not allowed in the current state";
+    CHECK(!rendersAlike(*withBadge, *IntakeSnapshot::build(withError, table)), "a per-root error differs (tooltip)");
 
     std::vector<IntakeRecord> moved = base;
     moved[0].rootKey = "/income/b";

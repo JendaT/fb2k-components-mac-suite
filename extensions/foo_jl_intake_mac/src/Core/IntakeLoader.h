@@ -10,7 +10,8 @@
 //  One load, on the loader's serial queue (also the read lane):
 //   1. `version --json` (when not yet passed, after a failure, or on a
 //      recheck): the integer schema gate (IntakeVersionGate), then `cli` and
-//      `commands` into CliConfig (cliVersion, cliListsCommands);
+//      `commands` into CliConfig (cliVersion, cliListsCommands) and into
+//      the status (LoaderStatus::cliInfo, B6 feature detection);
 //   2. `status --json` (Ok, or Partial: the subset that loaded, errors
 //      logged): IntakeStatusModel. A Partial whose E_PARSE errors name
 //      sidecars (a write in progress) keeps the last record of each root
@@ -21,7 +22,8 @@
 //   3. every root key through the mount aliases (IntakeMountAliases);
 //   4. member lists (IntakeSidecarMembers), bounded by a deadline and a
 //      cancel flag that shutdown() sets;
-//   5. IntakeSnapshot, published with invalidate-all on the first successful
+//   5. LoaderSettings::annotateRecords (B6: the per-root command errors);
+//   6. IntakeSnapshot, published with invalidate-all on the first successful
 //      load, after an inert state, and whenever it does not render like the
 //      last one (rendersAlike, IntakeLoadPolicy). An unchanged load is still
 //      published, without invalidation.
@@ -161,6 +163,11 @@ using WatchSetHandler = std::function<void(const WatchHandover &handover)>;
 // The current FSEvents event id (FSEventsGetCurrentEventId); runs on the
 // loader queue.
 using EventIdReader = std::function<WatchEventId()>;
+// B6: runs on the loader queue with the records of every successful
+// `status` load, after the mount aliases and before the snapshot is built,
+// so per-root state the loader does not own (IntakeRecord::lastError, from
+// IntakeRootErrors) reaches the visuals and the load diff.
+using RecordAnnotator = std::function<void(std::vector<IntakeRecord> &records)>;
 
 struct LoaderSettings {
     // cliPath, bunPath, rulesDir and baseEnvironment (a main-thread
@@ -180,6 +187,7 @@ struct LoaderSettings {
     WatchSetHandler onWatchSet;         // optional
     LinkReader readLink;                // empty: posixLinkReader (local paths only)
     EventIdReader currentEventId;       // empty: every stream starts from now (kWatchSinceNow)
+    RecordAnnotator annotateRecords;    // optional (B6)
 };
 
 class IntakeLoader {

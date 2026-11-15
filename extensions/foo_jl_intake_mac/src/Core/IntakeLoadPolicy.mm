@@ -82,7 +82,7 @@ bool rendersAlike(const IntakeSnapshot &a, const IntakeSnapshot &b) {
     for (const IntakeRecord &rb : b.records()) {
         const IntakeRecord *ra = a.recordForId(rb.id);
         if (!ra) return false;
-        if (ra->rootKey != rb.rootKey || ra->visual != rb.visual) return false;
+        if (ra->rootKey != rb.rootKey || ra->visual != rb.visual || ra->badge != rb.badge) return false;
         if (!sameMembers(a.members(), b.members(), rb.id)) return false;
     }
     return true;

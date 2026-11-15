@@ -1,0 +1,79 @@
+//
+//  IntakeGroupBadge.h
+//  foo_jl_intake
+//
+//  The group header badge (doc 04 v1.2 "Group header badge"; PLAN.md B6).
+//  SDK-free: the provider's decorate_group copies an IntakeBadge into a
+//  jl_group_decoration.
+//
+//  Shown only when every mapped member of the group (SimPlaylist passes at
+//  most 64) belongs to one root, and that root is `proposed` or `approved`
+//  with a target collection. Members that map to no root are ignored; two
+//  roots in one group hide the badge.
+//
+//  Text (UTF-8; "->" is U+2192, "." between parts is U+00B7):
+//    "→ [X] · 0.91"              target X and the confidence, two decimals
+//    "→ [X] · yours"             proposal.assigned_by is "user" (instead of
+//                                the 1.00 the CLI writes)
+//    "→ [X] · slot pending"      proposal.target_path is present and null;
+//                                always amber, no alt hint
+//    "→ [X]"                     no confidence (not a JSON number)
+//  Amber when the review rule fires (IntakeReviewRule) or the confidence is
+//  below 0.6; an amber badge then gets " (alt: [Y])", Y being the first
+//  `ranked` entry that is not the target. No hint when `ranked` is absent,
+//  empty, or holds only the target.
+//  An unknown assigned_by or target_path (CLI before 0.3.0) gives neither
+//  "yours" nor "slot pending": the confidence is shown.
+//
+//  Colour: amber is the review tint at full alpha (opaqueColor), as the
+//  amber row icons; otherwise 0, the host's secondary colour.
+//
+//  IntakeSnapshot::build stores each record's badge (IntakeRecord::badge),
+//  so decorate_group only looks it up, and the load diff (rendersAlike)
+//  sees badge changes that leave the row visual alone (a new confidence).
+//
+//  Thread-safety: pure functions.
+//
+
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "IntakeDecorationMap.h"
+
+namespace intake {
+
+struct IntakeRecord;
+
+struct IntakeBadge {
+    std::string text;      // UTF-8; empty: no badge
+    IntakeRgba color = 0;  // 0: the host's default secondary colour
+    bool amber = false;
+
+    bool shown() const { return !text.empty(); }
+    bool operator==(const IntakeBadge &o) const { return text == o.text && color == o.color && amber == o.amber; }
+    bool operator!=(const IntakeBadge &o) const { return !(*this == o); }
+};
+
+// Below this confidence a badge is amber (doc 02 / doc 04 v1.2).
+inline constexpr double kBadgeAmberConfidence = 0.6;
+
+// "0.91": two decimals, rounded half away from zero, clamped to [0, 1];
+// independent of the C locale. "?" for a value that is not finite.
+std::string formatConfidence(double confidence);
+
+// The badge of a group made of `record`'s rows only (see the top of this
+// file); not shown for other statuses or without a target collection.
+IntakeBadge recordBadge(const IntakeRecord &record, const IntakePalette &palette = IntakePalette());
+
+// The group rule over the records of a group's members, in any order:
+// nullptr entries (members that map to no root) are ignored. The single
+// root, or nullptr when no member maps or two roots (by id) are present.
+const IntakeRecord *groupRoot(const std::vector<const IntakeRecord *> &memberRecords);
+
+// The badge to show for the group, or nullptr: groupRoot's badge when it is
+// shown. Points into the record (valid while the caller holds its snapshot).
+const IntakeBadge *groupBadge(const std::vector<const IntakeRecord *> &memberRecords);
+
+} // namespace intake

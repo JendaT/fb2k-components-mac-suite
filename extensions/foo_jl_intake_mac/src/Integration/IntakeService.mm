@@ -10,6 +10,7 @@
 
 #include "IntakeService.h"
 
+#include "IntakeActions.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
 #include "IntakeMounts.h"
@@ -125,6 +126,15 @@ public:
         };
         ls.watchFolders = settings_.watchFolders;
         ls.onStatusChanged = [](const LoaderStatus &) { postStatusChanged(); };
+        // B6: per-root command errors reach the records before the snapshot.
+        ls.annotateRecords = [](std::vector<IntakeRecord> &records) { actionsErrorStore().apply(records); };
+        // The temporary test_actions aid runs after the first successful load.
+        ls.onLoadFinished = [](const LoaderStatus &st) {
+            if (st.state != LoaderState::Ready) return;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                testActionsAfterLoad();
+            });
+        };
         // Runs on the loader queue; a weak reference, so a watch set handed
         // over while on_quit runs finds the watcher gone (or stopped).
         std::weak_ptr<IntakeWatcher> weakWatcher = watcher_;
@@ -239,6 +249,8 @@ public:
         next.decorStats = settings_.decorStats;
         next.logFile = settings_.logFile;
         settings_ = std::move(next);
+        // Another CLI or rules folder: the errors of the old one say nothing.
+        if (cliChanged) actionsErrorStore().clearAll();
         if (watchChanged) {
             logIgnoredWatchFolders(settings_.ignoredWatchFolders);
             loader_->setWatchFolders(settings_.watchFolders);
@@ -287,6 +299,26 @@ public:
                 &refusal);
             if (!started) report(false, "refused: " + refusal);
         });
+    }
+
+    // Main thread (serviceActionInfo).
+    ServiceActionInfo actionInfo() const {
+        ServiceActionInfo info;
+        info.running = loader_ != nullptr;
+        info.cliConfigured = !settings_.cliPath.empty();
+        info.confirmReject = settings_.confirmReject;
+        if (loader_) info.cli = loader_->status().cliInfo;
+        return info;
+    }
+
+    // Main thread (serviceMutationConfig).
+    bool mutationConfig(CliConfig &out) const {
+        if (!loader_ || settings_.cliPath.empty()) return false;
+        out = cliConfig();
+        const LoaderStatus st = loader_->status();
+        out.cliVersion = st.cliInfo.cli;
+        out.cliListsCommands = st.cliInfo.hasCommands;
+        return true;
     }
 
     // A volume came or went: the share may have mounted after startup
@@ -350,6 +382,7 @@ public:
     }
 
     void on_quit() override {
+        actionsShutdown();  // results of running mutating calls are dropped from here on
         if (g_service != nullptr) {
             g_service->stop();
             delete g_service;
@@ -385,6 +418,15 @@ LoaderStatus serviceStatus() {
     LoaderStatus stopped;
     stopped.state = LoaderState::Stopped;
     return stopped;
+}
+
+ServiceActionInfo serviceActionInfo() {
+    if (g_service != nullptr) return g_service->actionInfo();
+    return ServiceActionInfo();
+}
+
+bool serviceMutationConfig(CliConfig &out) {
+    return g_service != nullptr && g_service->mutationConfig(out);
 }
 
 void serviceTestCli(std::function<void(bool ok, const std::string &text)> completion) {

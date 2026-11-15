@@ -32,4 +32,8 @@ void providerInvalidateAll();
 // decor_stats per-batch counters and log line on or off.
 void providerSetStatsEnabled(bool enabled);
 
+// Any thread: the view decorate() reads now (null before the first
+// publish). B6: the context menu maps its selection through it.
+std::shared_ptr<const IntakeView> providerCurrentView();
+
 } // namespace intake

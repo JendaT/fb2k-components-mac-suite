@@ -3,9 +3,9 @@
 //  foo_jl_intake
 //
 //  One immutable view of intake state: the records of a `status --json`
-//  load (IntakeStatusModel), their membership (IntakeSidecarMembers) and
-//  their visuals (IntakeDecorationMap), indexed for the decorate path
-//  (PLAN.md 3.2, 3.3).
+//  load (IntakeStatusModel), their membership (IntakeSidecarMembers), their
+//  visuals (IntakeDecorationMap) and group badges (IntakeGroupBadge),
+//  indexed for the decorate path (PLAN.md 3.2, 3.3).
 //
 //  Lookup of a row path:
 //   1. The member map: an exact match on root_path + "/" + files[].path of
@@ -69,7 +69,7 @@ namespace intake {
 class IntakeSnapshot {
 public:
     // Takes the records and the member table, computes every record's visual
-    // with `palette` and builds both maps. Logs ties at Debug level.
+    // and badge with `palette` and builds both maps. Logs ties at Debug level.
     static std::shared_ptr<const IntakeSnapshot> build(std::vector<IntakeRecord> records,
                                                        MemberTable members,
                                                        const IntakePalette &palette = IntakePalette());

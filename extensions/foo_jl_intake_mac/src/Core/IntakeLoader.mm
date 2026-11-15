@@ -168,6 +168,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::vector<std::string> parseRetryKeys;  // folders of the unreadable sidecars, as match keys
     bool pendingParseRetry = false;           // the next load is that retry
     bool inFlightParseRetry = false;          // the running load is
+    CliVersionInfo cliInfo;                   // the last passing `version` (B6), for the status
     WatchEventId statusEventId = kWatchSinceNow; // taken before the latest `status` call
     bool statusSinceRequest = false;          // a `status` call started after the latest reload()
 
@@ -191,6 +192,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         s.incomeFolders = incomeFolders;
         s.incomeError = incomeError;
         s.rootFolders = rootFoldersOf(lastGood);
+        s.cliInfo = cliInfo;
         {
             std::lock_guard<std::mutex> lock(statusMutex);
             if (status.state == LoaderState::Stopped) return;
@@ -339,6 +341,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
         settings.cli.cliVersion = gate.info.cli;
         settings.cli.cliListsCommands = gate.info.hasCommands;
+        cliInfo = gate.info;
         needVersion = false;
         gateFailed = false;
         logDebug("version: cli " + (gate.info.cli.empty() ? std::string("(none)") : gate.info.cli) +
@@ -455,6 +458,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
         applyMountAliases(parsed.records, *aliases);
         if (!unreadable.directories.empty()) noteUnreadable(unreadable);
+        if (settings.annotateRecords) settings.annotateRecords(parsed.records);
 
         MemberLoadLimits limits;
         limits.cancel = &stopped;
@@ -649,6 +653,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         cli.cliVersion.clear();
         cli.cliListsCommands = false;
         settings.cli = std::move(cli);
+        cliInfo = CliVersionInfo();
         needVersion = true;
         gateFailed = false;
         everLoaded = false;

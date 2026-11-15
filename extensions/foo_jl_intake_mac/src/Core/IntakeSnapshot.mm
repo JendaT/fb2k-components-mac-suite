@@ -40,6 +40,7 @@ std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRe
     for (uint32_t i = 0; i < recs.size(); i++) {
         IntakeRecord &r = recs[i];
         r.visual = rowVisualFor(r, palette);
+        r.badge = recordBadge(r, palette);
         s.byId_.try_emplace(r.id, i);  // parseStatusRows already dropped repeats
         if (r.rootKey.empty()) continue;
 
