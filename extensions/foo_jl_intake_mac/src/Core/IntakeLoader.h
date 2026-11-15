@@ -47,8 +47,8 @@
 //  with invalidate-all when the shown view decorated anything), and a load
 //  with `version` (and `income`) follows. An empty CLI path ends in
 //  NotConfigured, with an empty watch set. setWatchFolders() replaces the watch_folders setting and
-//  recomputes the watch set; nothing is reloaded (a new stream catches up
-//  by itself, IntakeWatcher).
+//  recomputes the watch set; nothing is reloaded (a new stream replays from
+//  the last `status` call's event id, IntakeWatcher).
 //
 //  Triggers: reload() (init, a mount event, later Refresh, preferences and
 //  the post-command refresh), reloadForChanges() (an FSEvents batch, B4)
@@ -71,6 +71,19 @@
 //  only; the aliases still change through remount(). With no CLI path
 //  (NotConfigured) the set is empty: nothing could reload.
 //
+//  Event ids (IntakeWatcher): just before each `status` call the loader
+//  takes LoaderSettings::currentEventId (FSEventsGetCurrentEventId in
+//  production) and hands the latest such id over with every watch set, so a
+//  new stream replays what changed since that call instead of costing a
+//  load of its own. Every change before it is in that `status`, and every
+//  relevant event after it either started a later load (with a later id)
+//  or is still pending (replayed as well: at worst one more coalesced
+//  load). restartWatch() (after a mount or unmount, following
+//  remount() and reload(false)) replaces the stream with the same paths,
+//  from the id of the reload's `status` when that call has already started
+//  (none requested since it), else from now (that `status` still comes, and
+//  sees what changed before it). It runs no `status` of its own.
+//
 //  Incremental member lists (B4, IntakeSidecarMembers MemberReuse): a load
 //  started only by reloadForChanges() lists again just the directories its
 //  batches named (mapped to match keys through the watch set and the mount
@@ -78,9 +91,7 @@
 //  trigger, a remount, a rescan batch, a batch directory that maps to no
 //  watched folder, or a member pass that stopped early makes the next load
 //  list everything as before. Directories named by a load that failed
-//  before its member pass carry over to the next load. A batch with no
-//  directory and no rescan (the watcher's catch-up after a stream started)
-//  runs `status` and lists only what is new.
+//  before its member pass carry over to the next load.
 //
 //  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
 //  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
@@ -112,6 +123,7 @@
 #include "IntakeProcess.h"
 #include "IntakeSidecarMembers.h"
 #include "IntakeView.h"
+#include "IntakeWatchFilter.h"
 #include "IntakeWatchSet.h"
 
 namespace intake {
@@ -132,9 +144,23 @@ using LoadFinishedHandler = std::function<void(const LoaderStatus &status)>;
 // end, NotConfigured. Not called for Stopped (shutdown).
 using StatusChangedHandler = std::function<void(const LoaderStatus &status)>;
 using MountReader = std::function<std::vector<MountEntry>()>;
-// The stream paths (IntakeWatchSet::streamPaths()), sorted; empty: nothing
-// to watch. Runs on the loader queue, never after shutdown().
-using WatchSetHandler = std::function<void(const std::vector<std::string> &paths)>;
+// What onWatchSet gets (see the top of this file).
+struct WatchHandover {
+    // The stream paths (IntakeWatchSet::streamPaths()), sorted; empty:
+    // nothing to watch.
+    std::vector<std::string> paths;
+    // Where a new stream starts: the id taken before the latest `status`
+    // call, or kWatchSinceNow (none yet, or no currentEventId).
+    WatchEventId sinceEventId = kWatchSinceNow;
+    // restartWatch(): replace the stream although `paths` did not change
+    // (IntakeWatcher::restart); otherwise IntakeWatcher::setPaths.
+    bool restart = false;
+};
+// Runs on the loader queue, never after shutdown().
+using WatchSetHandler = std::function<void(const WatchHandover &handover)>;
+// The current FSEvents event id (FSEventsGetCurrentEventId); runs on the
+// loader queue.
+using EventIdReader = std::function<WatchEventId()>;
 
 struct LoaderSettings {
     // cliPath, bunPath, rulesDir and baseEnvironment (a main-thread
@@ -153,6 +179,7 @@ struct LoaderSettings {
     std::vector<std::string> watchFolders;
     WatchSetHandler onWatchSet;         // optional
     LinkReader readLink;                // empty: posixLinkReader (local paths only)
+    EventIdReader currentEventId;       // empty: every stream starts from now (kWatchSinceNow)
 };
 
 class IntakeLoader {
@@ -179,6 +206,10 @@ public:
     void reloadForChanges(std::vector<std::string> directories, bool rescan);
     // Re-reads the mount table (see the top of this file).
     void remount();
+    // Replaces the watch stream with the same paths, after a mount or
+    // unmount; call it after reload(false) (see the top of this file).
+    // Nothing happens before the first watch set was handed over.
+    void restartWatch();
     // B5 (see the top of this file). From `cli`: cliPath, bunPath,
     // bunSearchDirs, rulesDir and baseEnvironment (take it with
     // processEnvironmentSnapshot() on the main thread); cliVersion and

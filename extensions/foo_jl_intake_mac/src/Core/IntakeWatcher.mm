@@ -24,6 +24,8 @@ std::atomic<size_t> g_liveStreams{0};
 // Set on the watcher's queue so stop() can tell it is running there.
 const void *const kWatcherQueueKey = &kWatcherQueueKey;
 
+static_assert(kWatchSinceNow == kFSEventStreamEventIdSinceNow, "kWatchSinceNow is FSEvents' \"since now\"");
+
 // RootChanged is not listed: it arrives only with
 // kFSEventStreamCreateFlagWatchRoot, which this stream does not use (see
 // the header). A watched folder that moves is a directory event instead.
@@ -36,27 +38,6 @@ constexpr FSEventStreamEventFlags kRescanFlags =
 // worst one more coalesced load.
 constexpr FSEventStreamEventFlags kDirectoryMoveFlags =
     kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemRemoved;
-
-// `path` equals `base` or lies under it ('/' boundary), byte-exact.
-bool coveredBy(const std::string &path, const std::string &base) {
-    if (path.size() < base.size() || path.compare(0, base.size(), base) != 0) return false;
-    return path.size() == base.size() || path[base.size()] == '/' || base == "/";
-}
-
-// Some path of `next` lies under no path of `previous`.
-bool addsUncoveredPath(const std::vector<std::string> &next, const std::vector<std::string> &previous) {
-    for (const std::string &p : next) {
-        bool covered = false;
-        for (const std::string &q : previous) {
-            if (coveredBy(p, q)) {
-                covered = true;
-                break;
-            }
-        }
-        if (!covered) return true;
-    }
-    return false;
-}
 
 void streamCallback(ConstFSEventStreamRef stream, void *info, size_t count, void *paths,
                     const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]);
@@ -90,6 +71,7 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
     FSEventStreamRef stream = nullptr;
     std::vector<FSEventStreamRef> retiring;  // replaced, flushed, released after a delay
     std::vector<std::string> paths;
+    WatchEventId since = kWatchSinceNow;     // where the next stream starts
     DebounceWindow window;
     WatchBatchBuilder builder;
     uint64_t timerGeneration = 0;
@@ -122,7 +104,7 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         FSEventStreamRef created = nullptr;
         if (CFArrayGetCount(cfPaths) > 0) {
             created = FSEventStreamCreate(kCFAllocatorDefault, &streamCallback, &context, cfPaths,
-                                          kFSEventStreamEventIdSinceNow, options.latencySeconds,
+                                          static_cast<FSEventStreamEventId>(since), options.latencySeconds,
                                           kFSEventStreamCreateFlagFileEvents);
         }
         CFRelease(cfPaths);
@@ -145,11 +127,14 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
             std::lock_guard<std::mutex> lock(statsMutex);
             stats.streamStarts++;
             stats.streamRunning = true;
+            stats.sinceEventId = since;
         }
         logInfo("watching " + std::to_string(paths.size()) + " folder(s) for sidecar changes");
         if (isLogEnabled(LogLevel::Debug)) {
             std::string line = "watch:";
             for (const std::string &p : paths) line += " " + p;
+            line += since == kWatchSinceNow ? std::string(" (from now)")
+                                            : " (replaying since event " + std::to_string(since) + ")";
             logDebug(line);
         }
     }
@@ -200,17 +185,19 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         });
     }
 
-    void applyPaths(std::vector<std::string> next, bool force) {
+    // `sinceEventId` applies only when a stream is created here: an
+    // unchanged set keeps its running stream (see the header). No batch of
+    // its own: what changed before the start comes as replayed events.
+    void applyPaths(std::vector<std::string> next, WatchEventId sinceEventId, bool force) {
         if (stopped) return;
         std::sort(next.begin(), next.end());
         next.erase(std::unique(next.begin(), next.end()), next.end());
         const bool same = next == paths && (stream != nullptr || paths.empty());
         if (same && !force) return;
-        // A folder the old stream did not watch may have changed unseen.
-        const bool catchUp = force || stream == nullptr || addsUncoveredPath(next, paths);
         FSEventStreamRef previous = stream;
         stream = nullptr;
         paths = std::move(next);
+        since = sinceEventId;
         {
             std::lock_guard<std::mutex> lock(statsMutex);
             stats.paths = paths;
@@ -223,10 +210,6 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         }
         // After the new stream started: no gap between the two.
         if (previous) retireStream(previous);
-        if (stream && catchUp) {
-            builder.addStreamStart();
-            if (window.add(Clock::now())) arm();
-        }
     }
 
     // --- events ---
@@ -235,6 +218,16 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         if (stopped) return;
         bool relevant = false;
         for (size_t i = 0; i < count; i++) {
+            // The end of a replay (the stream was created with an event id):
+            // a marker on the watched path, not a change.
+            if (flags[i] & kFSEventStreamEventFlagHistoryDone) {
+                {
+                    std::lock_guard<std::mutex> lock(statsMutex);
+                    stats.historyDone++;
+                }
+                logDebug("watch: replay done");
+                continue;
+            }
             if (flags[i] & kRescanFlags) {
                 builder.addRescan();
                 relevant = true;
@@ -307,20 +300,20 @@ IntakeWatcher::~IntakeWatcher() {
     stop();
 }
 
-void IntakeWatcher::setPaths(std::vector<std::string> paths) {
+void IntakeWatcher::setPaths(std::vector<std::string> paths, WatchEventId sinceEventId) {
     std::shared_ptr<Impl> impl = impl_;
     if (impl->stopped) return;
     auto next = std::make_shared<std::vector<std::string>>(std::move(paths));
     dispatch_async(impl->queue, ^{
-        impl->applyPaths(std::move(*next), false);
+        impl->applyPaths(std::move(*next), sinceEventId, false);
     });
 }
 
-void IntakeWatcher::restart() {
+void IntakeWatcher::restart(WatchEventId sinceEventId) {
     std::shared_ptr<Impl> impl = impl_;
     if (impl->stopped) return;
     dispatch_async(impl->queue, ^{
-        impl->applyPaths(impl->paths, true);
+        impl->applyPaths(impl->paths, sinceEventId, true);
     });
 }
 

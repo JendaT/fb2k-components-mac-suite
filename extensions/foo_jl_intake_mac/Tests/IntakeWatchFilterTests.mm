@@ -4,8 +4,8 @@
 //
 //  Unit tests for IntakeWatchFilter: the CLI's isSidecarName rule
 //  (feature/intake-cli util.ts), the directory of a sidecar event, and the
-//  batch builder (each directory once, moved directories, rescan, a stream
-//  start, other names ignored). Synthetic paths only.
+//  batch builder (each directory once, moved directories, rescan, other
+//  names ignored). Synthetic paths only.
 //
 
 #import <Foundation/Foundation.h>
@@ -113,14 +113,6 @@ static void testBatchBuilder() {
               moved.directories[1] == "/w/dump/Sorted/Album",
           "each folder once, shared with sidecar events, in arrival order");
     CHECK(moved.directoryEvents == 3 && moved.sidecarEvents == 1 && !moved.rescan, "counted apart");
-
-    g_context = "batch-builder-stream-start";
-    b.addStreamStart();
-    CHECK(!b.empty(), "a stream start alone makes a batch");
-    WatchBatch started = b.take();
-    CHECK(started.streamStarted && started.directories.empty() && !started.rescan && !started.empty(),
-          "the catch-up batch");
-    CHECK(b.empty() && !b.take().streamStarted, "cleared by take()");
 }
 
 int main(void) {

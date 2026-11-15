@@ -29,10 +29,13 @@
 //  IntakeStatusDidChangeNotification on the main thread, so the page
 //  refreshes its status block while visible (no polling).
 //
-//  Live updates (B4): a watcher batch (sidecar changes, moved folders, a
-//  stream start; debounced 1 s) becomes IntakeLoader::reloadForChanges: one
+//  Live updates (B4): a watcher batch (sidecar changes, moved folders,
+//  rescans; debounced 1 s) becomes IntakeLoader::reloadForChanges: one
 //  coalesced full `status --json`, the fingerprint diff, invalidate-all
-//  only on change.
+//  only on change. The loader hands each watch set over with the FSEvents
+//  event id taken before its latest `status` call, so a new stream replays
+//  what that call missed instead of reloading once more. A mount or
+//  unmount runs remount(), reload(false) and restartWatch().
 //
 //  on_quit, in PLAN.md 3.2 order: removes the observers, stops the watch
 //  stream and releases the watcher (no batch reaches the loader after

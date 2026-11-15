@@ -23,7 +23,10 @@
 //  reload()'s `served` handler runs after the load serving the request (not
 //  the one already running; handed on past a load discarded by reconfigure;
 //  never after shutdown), a failed `income` call is named in the status,
-//  and no CLI path means an empty watch set.
+//  and no CLI path means an empty watch set. Watch event ids: the id is
+//  taken just before each `status` call and handed over with the watch
+//  set; restartWatch() uses the reload's id once its `status` started, and
+//  "from now" while it has not, and never runs a `status` itself.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -244,6 +247,7 @@ private:
 struct WatchHarness {
     std::mutex m;
     std::vector<std::vector<std::string>> sets;  // every onWatchSet call
+    std::vector<WatchHandover> handovers;        // the same calls in full
     std::vector<std::string> resolved;           // every path the link reader examined
 
     size_t count() {
@@ -253,6 +257,10 @@ struct WatchHarness {
     std::vector<std::string> last() {
         std::lock_guard<std::mutex> lock(m);
         return sets.empty() ? std::vector<std::string>() : sets.back();
+    }
+    WatchHandover lastHandover() {
+        std::lock_guard<std::mutex> lock(m);
+        return handovers.empty() ? WatchHandover() : handovers.back();
     }
     bool resolvedUnder(const std::string &prefix) {
         std::lock_guard<std::mutex> lock(m);
@@ -278,9 +286,10 @@ LoaderSettings watchSettingsFor(const std::string &state, const std::shared_ptr<
         }
         return posixLinkReader(path, target);
     };
-    s.onWatchSet = [w](const std::vector<std::string> &paths) {
+    s.onWatchSet = [w](const WatchHandover &handover) {
         std::lock_guard<std::mutex> lock(w->m);
-        w->sets.push_back(paths);
+        w->sets.push_back(handover.paths);
+        w->handovers.push_back(handover);
     };
     return s;
 }
@@ -1240,6 +1249,110 @@ static void testReloadServed() {
     }
 }
 
+// The watch event ids (IntakeWatcher replays from them): taken just before
+// each `status` call, handed over with the watch set; restartWatch() after a
+// mount event uses the reload's id once its `status` started, else "now".
+struct EventIds {
+    std::mutex m;
+    WatchEventId next = 1000;
+    std::vector<size_t> callsAt;  // calls.log entries when each id was taken
+};
+
+static void testWatchEventIds() {
+    g_context = "watch-event-ids";
+    std::string state = mock::setupState("default");
+    const std::string extra = mock::newDir("extra-ids");
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    auto ids = std::make_shared<EventIds>();
+    h->setMounts({kLocalRoot});
+    LoaderSettings s = watchSettingsFor(state, h, w);
+    s.currentEventId = [ids, state] {
+        std::lock_guard<std::mutex> lock(ids->m);
+        ids->callsAt.push_back(calls(state).size());
+        return ids->next++;
+    };
+    IntakeLoader loader(std::move(s));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "version, income, status");
+    {
+        std::lock_guard<std::mutex> lock(ids->m);
+        CHECK(ids->callsAt.size() == 1 && ids->callsAt[0] == 2,
+              "one id, taken after version and income and before status ran");
+    }
+    WatchHandover first = w->lastHandover();
+    CHECK(w->count() == 1 && first.paths.size() == 3 && first.sinceEventId == 1000 && !first.restart,
+          "the watch set goes over with that id");
+
+    g_context = "watch-event-ids-reload";
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "a reload");
+    CHECK_EQ(w->count(), 1, "an unchanged set is not handed over (its new id 1001 is kept)");
+    loader.setWatchFolders({extra});
+    CHECK(mock::waitUntil([&] { return w->count() == 2; }, 10), "a new set");
+    CHECK(w->lastHandover().sinceEventId == 1001 && w->lastHandover().paths.size() == 4,
+          "a set changed between loads goes over with the latest status call's id");
+
+    g_context = "watch-event-ids-restart-idle";
+    // IntakeService on a mount event: remount, reload(false), restartWatch.
+    loader.remount();
+    loader.reload(false);
+    loader.restartWatch();
+    CHECK(waitFinished(*h, 3), "the reload finishes");
+    CHECK(mock::waitUntil([&] { return w->count() == 3; }, 10), "the restart is handed over");
+    WatchHandover restart = w->lastHandover();
+    CHECK(restart.restart && restart.paths == w->last() && restart.paths.size() == 4 && restart.sinceEventId == 1002,
+          "idle loader: the reload's status already started, so its id (1002)");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus}), "the restart ran no status of its own");
+    CHECK(w->count() == 3 && h->finishedCount() == 3, "and nothing else");
+
+    g_context = "watch-event-ids-restart-busy";
+    mock::setMode(state, "status", "slow 1");
+    loader.reload(false);
+    CHECK(mock::waitUntil([&] { return calls(state).size() >= 6; }, 10), "a slow status runs (id 1003)");
+    loader.remount();
+    loader.reload(false);  // queued behind the running load
+    loader.restartWatch();
+    CHECK(mock::waitUntil([&] { return w->count() == 4; }, 10), "the restart is handed over at once");
+    restart = w->lastHandover();
+    CHECK(restart.restart && restart.sinceEventId == kWatchSinceNow,
+          "the reload's status has not started yet: from now (that status follows)");
+    clearMode(state, "status");
+    CHECK(waitFinished(*h, 5), "the running load and the reload finish");
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus, kStatus, kStatus}),
+          "one status each; none for the restart");
+    CHECK_EQ(w->count(), 4, "nothing more handed over");
+
+    g_context = "watch-event-ids-none";
+    // No reader (the default): every stream starts from now.
+    std::string plain = mock::setupState("default");
+    auto h2 = std::make_shared<Harness>();
+    auto w2 = std::make_shared<WatchHarness>();
+    h2->setMounts({kLocalRoot});
+    IntakeLoader loader2(watchSettingsFor(plain, h2, w2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1) && w2->count() == 1 && w2->lastHandover().sinceEventId == kWatchSinceNow,
+          "without currentEventId the set goes over \"from now\"");
+    loader2.restartWatch();
+    CHECK(mock::waitUntil([&] { return w2->count() == 2; }, 10) && w2->lastHandover().restart &&
+              w2->lastHandover().sinceEventId == kWatchSinceNow,
+          "and so does a restart");
+
+    g_context = "watch-event-ids-restart-before-set";
+    std::string early = mock::setupState("default");
+    auto h3 = std::make_shared<Harness>();
+    auto w3 = std::make_shared<WatchHarness>();
+    h3->setMounts({kLocalRoot});
+    IntakeLoader loader3(watchSettingsFor(early, h3, w3));
+    loader3.restartWatch();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK_EQ(w3->count(), 0, "no restart before a watch set was handed over");
+    CHECK(callsAre(early, {}), "and no CLI call");
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -1269,6 +1382,7 @@ int main(void) {
         testReconfigure();
         testSetWatchFolders();
         testReloadServed();
+        testWatchEventIds();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

@@ -18,12 +18,14 @@
 //  each sidecar event path, spelled as the event reported it, each once),
 //  the directories that were renamed, moved or removed (the event path
 //  itself: a folder holding sidecars that moves reports no event for its
-//  children, so its roots change without a sidecar event), whether
+//  children, so its roots change without a sidecar event), and whether
 //  everything has to be treated as changed (FSEvents dropped events or asks
-//  for a subtree rescan), and whether a stream just started (changes made
-//  before it were seen by nothing, so the loader reloads once to catch up).
-//  IntakeWatcher decides from the event flags which method to call. Events
-//  for other names are ignored.
+//  for a subtree rescan). IntakeWatcher decides from the event flags which
+//  method to call. Events for other names are ignored.
+//
+//  WatchEventId: an FSEvents event id, where a stream starts (IntakeWatcher
+//  replays the events after it). IntakeLoader takes one just before each
+//  `status` call and hands it over with the watch set built from that load.
 //
 //  Thread-safety: pure functions; a WatchBatchBuilder belongs to one thread
 //  (the watcher's queue).
@@ -32,12 +34,19 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_set>
 #include <vector>
 
 namespace intake {
+
+// An FSEventStreamEventId. kWatchSinceNow (kFSEventStreamEventIdSinceNow,
+// checked in IntakeWatcher.mm) starts a stream from its creation, with no
+// history.
+using WatchEventId = uint64_t;
+constexpr WatchEventId kWatchSinceNow = ~WatchEventId(0);
 
 // The CLI's isSidecarName, on a file name (no '/').
 bool isSidecarFileName(std::string_view name);
@@ -58,14 +67,11 @@ struct WatchBatch {
     // Events were dropped or a subtree needs a rescan: treat every
     // directory as changed.
     bool rescan = false;
-    // A stream started (the first one, a replacement watching a folder the
-    // last one did not, or a restart): reload once even with no directory.
-    bool streamStarted = false;
     // Sidecar and directory events counted (duplicates included), for the log.
     size_t sidecarEvents = 0;
     size_t directoryEvents = 0;
 
-    bool empty() const { return directories.empty() && !rescan && !streamStarted; }
+    bool empty() const { return directories.empty() && !rescan; }
 };
 
 class WatchBatchBuilder {
@@ -77,8 +83,6 @@ public:
     bool addDirectory(std::string_view path);
     // Events were dropped, or a subtree must be rescanned.
     void addRescan() { batch_.rescan = true; }
-    // A stream started.
-    void addStreamStart() { batch_.streamStarted = true; }
     bool empty() const { return batch_.empty(); }
     // The batch so far; the builder starts over empty.
     WatchBatch take();

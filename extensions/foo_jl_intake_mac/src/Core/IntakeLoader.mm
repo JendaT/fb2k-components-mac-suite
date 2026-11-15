@@ -168,6 +168,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::vector<std::string> parseRetryKeys;  // folders of the unreadable sidecars, as match keys
     bool pendingParseRetry = false;           // the next load is that retry
     bool inFlightParseRetry = false;          // the running load is
+    WatchEventId statusEventId = kWatchSinceNow; // taken before the latest `status` call
+    bool statusSinceRequest = false;          // a `status` call started after the latest reload()
 
     // B5, loader queue only: reload() requests waiting for their load.
     std::vector<LoadFinishedHandler> waitersNext;     // served by the next load to start
@@ -216,6 +218,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         if (stopped) return;
         if (served) waitersNext.push_back(std::move(served));
         pendingFull = true;
+        statusSinceRequest = false;
         if (loading) {
             again = true;
             againRecheck = againRecheck || recheck;
@@ -241,9 +244,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             appendUnique(pendingKeys, keys);
         }
         if (isLogEnabled(LogLevel::Debug)) {
-            std::string line = directories.empty() && !rescan
-                                   ? std::string("watch: a stream started, catching up")
-                                   : "watch: changes in " + std::to_string(directories.size()) + " folder(s)";
+            std::string line = "watch: changes in " + std::to_string(directories.size()) + " folder(s)";
             if (rescan) line += ", rescan requested";
             if (unmapped) line += ", " + std::to_string(unmapped) + " outside the watched folders";
             line += loading ? "; one more load after the running one" : "; reloading";
@@ -292,6 +293,12 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     void startCall(LoadStep step) {
         CliRequest request;
         request.command = step == LoadStep::Version ? CliCommand::Version : CliCommand::Status;
+        if (step == LoadStep::Status) {
+            // Before the call: a stream started from this id replays every
+            // change `status` may not have seen (see the header).
+            statusEventId = settings.currentEventId ? settings.currentEventId() : kWatchSinceNow;
+            statusSinceRequest = true;
+        }
         CliRunOptions options;
         options.limits = settings.limits;
         std::shared_ptr<Impl> self = shared_from_this();
@@ -716,7 +723,25 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             logDebug("watch set: " + std::to_string(watchHandedOver.size()) + " folder(s) from " +
                      std::to_string(watchInputs.size()) + " candidate(s)");
         }
-        settings.onWatchSet(watchHandedOver);
+        WatchHandover handover;
+        handover.paths = watchHandedOver;
+        handover.sinceEventId = statusEventId;
+        settings.onWatchSet(handover);
+    }
+
+    // After a mount or unmount (see the header): the reload(false) queued
+    // just before this has started its `status` when the loader was idle,
+    // and not when a load was running or `version` comes first.
+    void applyRestartWatch() {
+        if (stopped || !settings.onWatchSet || !watchHandedOverOnce) return;
+        WatchHandover handover;
+        handover.paths = watchHandedOver;
+        handover.sinceEventId = statusSinceRequest ? statusEventId : kWatchSinceNow;
+        handover.restart = true;
+        logDebug(handover.sinceEventId == kWatchSinceNow
+                     ? std::string("watch: restarting the stream from now; the reload's status follows")
+                     : std::string("watch: restarting the stream from the reload's status call"));
+        settings.onWatchSet(handover);
     }
 
     static const LinkReader &posixLinkReaderFunction() {
@@ -799,6 +824,13 @@ void IntakeLoader::remount() {
         // A mount change may move keys and folders: the next load lists all.
         impl->pendingFull = true;
         if (!impl->loading) impl->updateWatchSet();
+    });
+}
+
+void IntakeLoader::restartWatch() {
+    std::shared_ptr<Impl> impl = impl_;
+    dispatch_async(impl->queue, ^{
+        impl->applyRestartWatch();
     });
 }
 

@@ -6,6 +6,7 @@
 #import "../fb2k_sdk.h"
 
 #import <AppKit/AppKit.h>
+#include <CoreServices/CoreServices.h>
 
 #include "IntakeService.h"
 
@@ -127,9 +128,18 @@ public:
         // Runs on the loader queue; a weak reference, so a watch set handed
         // over while on_quit runs finds the watcher gone (or stopped).
         std::weak_ptr<IntakeWatcher> weakWatcher = watcher_;
-        ls.onWatchSet = [weakWatcher](const std::vector<std::string> &paths) {
-            if (std::shared_ptr<IntakeWatcher> watcher = weakWatcher.lock()) watcher->setPaths(paths);
+        ls.onWatchSet = [weakWatcher](const WatchHandover &handover) {
+            std::shared_ptr<IntakeWatcher> watcher = weakWatcher.lock();
+            if (!watcher) return;
+            if (handover.restart) {
+                watcher->restart(handover.sinceEventId);
+            } else {
+                watcher->setPaths(handover.paths, handover.sinceEventId);
+            }
         };
+        // Taken before each `status` call: a stream started from it replays
+        // what that call may have missed (IntakeWatcher).
+        ls.currentEventId = [] { return static_cast<WatchEventId>(FSEventsGetCurrentEventId()); };
         loader_ = std::make_unique<IntakeLoader>(std::move(ls));
         loaderForWatcher_ = loader_.get();
 
@@ -320,8 +330,10 @@ void Service::volumesChanged() {
     g_service->loader_->remount();
     g_service->loader_->reload(false);
     // A stream created while a watched share was absent (or present) is
-    // replaced; the remount may also hand over a new set.
-    if (g_service->watcher_) g_service->watcher_->restart();
+    // replaced (the remount may also hand over a new set), from the event id
+    // of that reload's `status` call when it already started, else from now;
+    // the reload is the only `status` this costs.
+    g_service->loader_->restartWatch();
 }
 
 class intake_initquit : public initquit {

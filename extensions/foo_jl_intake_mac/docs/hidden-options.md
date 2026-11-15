@@ -84,11 +84,12 @@ lists (CLI 0.3.0 and later) and the parent folder of every known root; this
 key adds to them. Watching is FSEvents, recursive, with no polling. A change
 to a sidecar (`.intake.json`, `.intake.<id>.json`), or a folder renamed,
 moved or trashed under a watched folder, made through this Mac, Terminal
-runs included, reloads the colours about 2 s later. Each time a watch stream
-starts on a folder no stream watched before (startup, a new folder, a mount
-event), one more reload catches up on changes made before it. Changes made
-on the NAS itself are not reported by macOS and need Refresh (B6) or a mount
-event.
+runs included, reloads the colours about 2 s later. A watch stream starts
+from the moment of the last `status` call: macOS replays what changed in
+between, so a change made just before the stream started still reloads,
+and a start with nothing to replay costs no reload (on a network share
+macOS may keep nothing to replay). Changes made on the NAS itself are not
+reported by macOS and need Refresh (B6) or a mount event.
 
 ```bash
 # quit foobar2000 first; the value may hold several lines
@@ -99,8 +100,7 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 At `log_level` 1 the console shows `[intake] watching N folder(s) for sidecar
 changes` whenever the watch set changes; at 2 also the folders (`watch: ...`)
-and one line per change batch (`watch: changes in N folder(s) ...`, or
-`watch: a stream started, catching up`).
+and one line per change batch (`watch: changes in N folder(s) ...`).
 
 ## foo_jl_intake.swap_prefix_from and swap_prefix_to
 

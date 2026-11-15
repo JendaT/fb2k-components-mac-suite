@@ -4,8 +4,11 @@
 //
 //  IntakeWatcher against real FSEvents, in temp directories only (under
 //  NSTemporaryDirectory, never a share, a music or an income folder):
-//   - a stream's start is reported once (the catch-up batch), not when a
-//     replacement only drops folders;
+//   - a stream's start is never a batch by itself: not the first stream, a
+//     restart, a replacement that adds a folder or one that drops folders;
+//   - a stream started from an event id replays a sidecar written after
+//     that id and before the stream started (without the id it is lost);
+//     the HistoryDone marker that ends the replay is not a batch;
 //   - a sidecar written in a watched folder reaches the handler within 5 s
 //     (production latency and debounce), after the 1 s quiet time, and
 //     non-sidecar files (.intake-tmp-*, .intake-hint.json, audio) do not;
@@ -30,6 +33,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#include <CoreServices/CoreServices.h>
 
 #include "../src/Core/IntakeLog.h"
 #include "../src/Core/IntakePath.h"
@@ -111,11 +115,13 @@ bool reportedSince(Collector &c, size_t from, const std::string &dir) {
     return false;
 }
 
-bool startReportedSince(Collector &c, size_t from) {
-    for (size_t i = from; i < c.count(); i++) {
-        if (c.at(i).streamStarted) return true;
-    }
-    return false;
+WatchEventId currentEventId() {
+    return static_cast<WatchEventId>(FSEventsGetCurrentEventId());
+}
+
+// No batch arrives within `seconds` (from `from` on).
+bool quietFor(Collector &c, size_t from, double seconds) {
+    return !mock::waitUntil([&] { return c.count() > from; }, seconds);
 }
 
 } // anonymous namespace
@@ -136,10 +142,8 @@ static void testSidecarWrite() {
     w.setPaths(ws.streamPaths());
     CHECK(waitRunning(w, 1), "the stream starts");
 
-    g_context = "catch-up";
-    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5), "the first stream's start is reported once");
-    WatchBatch start = c.at(0);
-    CHECK(start.streamStarted && start.directories.empty() && !start.rescan, "a catch-up batch without folders");
+    g_context = "first-start";
+    CHECK(quietFor(c, 0, 1.6), "the first stream's start is no batch (1 s quiet time waited out)");
 
     g_context = "sidecar-write";
     mock::writeFile(root + "/A/notes.txt", "x");
@@ -148,11 +152,11 @@ static void testSidecarWrite() {
     mock::writeFile(root + "/A/01 - Test Track One.wav", "RIFF");
     const auto written = mock::Clock::now();
     mock::writeFile(root + "/B/.intake.json", "{\"schema\":1}");
-    CHECK(mock::waitUntil([&] { return c.count() >= 2; }, 5), "the sidecar write is reported within 5 s");
-    const double after = std::chrono::duration<double>(c.timeAt(1) - written).count();
+    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5), "the sidecar write is reported within 5 s");
+    const double after = std::chrono::duration<double>(c.timeAt(0) - written).count();
     CHECK(after >= 0.9, "not before the 1 s quiet time");
-    WatchBatch b = c.at(1);
-    CHECK(b.directories.size() == 1 && b.directories[0] == real + "/B" && !b.rescan && !b.streamStarted,
+    WatchBatch b = c.at(0);
+    CHECK(b.directories.size() == 1 && b.directories[0] == real + "/B" && !b.rescan,
           "only the sidecar's folder; the temp, hint, audio and other files are ignored");
     if (b.directories.size() != 1) {
         for (const std::string &d : b.directories) printf("  reported: %s\n", d.c_str());
@@ -173,10 +177,10 @@ static void testSidecarWrite() {
         mock::writeFile(dir + "/.intake.itk_0000000" + std::to_string(i) + ".json", "{}");
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
     }
-    CHECK(mock::waitUntil([&] { return c.count() >= 3; }, 5), "the burst is reported");
+    CHECK(mock::waitUntil([&] { return c.count() >= 2; }, 5), "the burst is reported");
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-    CHECK_EQ(c.count(), 3, "a burst of five writes is one batch");
-    WatchBatch burst = c.at(2);
+    CHECK_EQ(c.count(), 2, "a burst of five writes is one batch");
+    WatchBatch burst = c.at(1);
     CHECK(burst.directories.size() == 5 && contains(burst.directories, real + "/burst0") &&
               contains(burst.directories, real + "/burst4"),
           "with all five folders");
@@ -189,13 +193,15 @@ static void testSidecarWrite() {
     CHECK_EQ(w.stats().streamStarts, starts, "an unchanged set does not restart the stream");
     w.restart();
     CHECK(waitRunning(w, starts + 1), "restart() replaces the stream");
+    CHECK(w.stats().sinceEventId == kWatchSinceNow, "from now by default");
     CHECK(mock::waitUntil([] { return IntakeWatcher::liveStreams() == 1; }, 3),
           "one live stream shortly after the restart (the old one released after its flush)");
-    CHECK(mock::waitUntil([&] { return c.count() >= 4; }, 5) && c.at(3).streamStarted,
-          "a restart is reported once (catch-up)");
+    CHECK(quietFor(c, 2, 1.6), "a restart is no batch by itself");
 
-    w.restart();
+    const WatchEventId id = currentEventId();
+    w.restart(id);
     CHECK(waitRunning(w, starts + 2), "restarted again");
+    CHECK(w.stats().sinceEventId == id, "from the event id it was given");
     w.stop();
     CHECK_EQ(IntakeWatcher::liveStreams(), 0, "stop() released the stream and the one still retiring");
 }
@@ -216,12 +222,11 @@ static void testDirectoryMoves() {
     IntakeWatcher w(c.handler(), fastOptions());
     w.setPaths({real + "/income"});
     CHECK(waitRunning(w, 1), "running");
-    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5) && c.at(0).streamStarted, "the start is reported");
 
     rename((income + "/Artist/Album/01 - Test Track One.wav").c_str(),
            (income + "/Artist/Album/02 - Test Track One.wav").c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
-    CHECK_EQ(c.count(), 1, "a renamed file is not a folder event");
+    CHECK_EQ(c.count(), 0, "neither the start nor a renamed file is a batch");
 
     size_t before = c.count();
     rename((income + "/Artist/Album").c_str(), (income + "/Artist/Album Two").c_str());
@@ -252,32 +257,102 @@ static void testReplacement() {
     const std::string real = realPath(root);
     mkdir((root + "/A").c_str(), 0755);
     mkdir((root + "/B").c_str(), 0755);
+    mkdir((root + "/C").c_str(), 0755);
     WatcherOptions o = fastOptions();
     o.latencySeconds = 0.5;  // production latency: the event waits in the old stream's buffer
     Collector c;
     IntakeWatcher w(c.handler(), o);
     w.setPaths({real + "/A"});
     CHECK(waitRunning(w, 1), "running");
-    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5), "the start is reported");
 
     size_t before = c.count();
     mock::writeFile(root + "/A/.intake.json", "{}");
     w.setPaths({real + "/A", real + "/B"});  // at once: well inside the 0.5 s latency
     CHECK(mock::waitUntil([&] { return reportedSince(c, before, real + "/A"); }, 5),
           "a sidecar written just before the stream is replaced is still reported");
-    CHECK(mock::waitUntil([&] { return startReportedSince(c, before); }, 5),
-          "the new stream watches a folder the old one did not: one catch-up");
     CHECK(mock::waitUntil([] { return IntakeWatcher::liveStreams() == 1; }, 3), "the old stream is released");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    bool onlyA = c.count() > before;
+    for (size_t i = before; i < c.count(); i++) {
+        const WatchBatch batch = c.at(i);
+        if (batch.rescan || batch.directories.size() != 1 || batch.directories[0] != real + "/A") onlyA = false;
+    }
+    CHECK(onlyA, "only that folder is reported: the replacement adds no batch of its own");
+
+    g_context = "replacement-adds-folder";
+    // As the loader hands it over: a new folder, the id of a `status` call
+    // made after the last change.
+    before = c.count();
+    size_t starts = w.stats().streamStarts;
+    const size_t replays = w.stats().historyDone;
+    w.setPaths({real + "/A", real + "/B", real + "/C"}, currentEventId());
+    CHECK(waitRunning(w, starts + 1), "replaced");
+    CHECK(mock::waitUntil([&] { return w.stats().historyDone > replays; }, 5), "its replay ran (and found nothing)");
+    CHECK(quietFor(c, before, 1.2), "a replacement that adds a folder triggers no reload by itself");
 
     g_context = "replacement-subset";
     before = c.count();
-    const size_t starts = w.stats().streamStarts;
-    w.setPaths({real + "/A"});  // B dropped only
+    starts = w.stats().streamStarts;
+    w.setPaths({real + "/A"});  // B and C dropped only
     CHECK(waitRunning(w, starts + 1), "replaced");
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-    CHECK(!startReportedSince(c, before), "a replacement that only drops folders needs no catch-up");
+    CHECK(quietFor(c, before, 1.2), "a replacement that only drops folders triggers no reload");
     w.stop();
     CHECK_EQ(IntakeWatcher::liveStreams(), 0, "released");
+}
+
+// The startup gap: a sidecar written after the loader's `status` call (the
+// id taken before it) and before the stream started.
+static void testHistoryReplay() {
+    g_context = "history-replay";
+    const std::string root = mock::newDir("watch-replay");
+    const std::string real = realPath(root);
+    mkdir((root + "/A").c_str(), 0755);
+    mkdir((root + "/B").c_str(), 0755);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the mkdirs are history before the id
+
+    Collector c;
+    IntakeWatcher w(c.handler(), fastOptions());
+    const WatchEventId statusId = currentEventId();
+    mock::writeFile(root + "/A/.intake.json", "{}");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));  // the stream starts late
+    w.setPaths({real}, statusId);
+    CHECK(waitRunning(w, 1), "running");
+    CHECK(mock::waitUntil([&] { return reportedSince(c, 0, real + "/A"); }, 5),
+          "the sidecar written before the stream started is replayed and reported");
+    CHECK(mock::waitUntil([&] { return w.stats().historyDone == 1; }, 5), "the replay ends with HistoryDone");
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    CHECK(c.count() == 1 && c.at(0).directories.size() == 1 && !c.at(0).rescan,
+          "one batch with that folder only (the mkdirs before the id are not replayed)");
+    w.stop();
+
+    g_context = "history-replay-control";
+    // Without the id (from now): the same write is lost, which is why the
+    // loader passes one.
+    Collector c2;
+    IntakeWatcher w2(c2.handler(), fastOptions());
+    mock::writeFile(root + "/B/.intake.json", "{}");
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    w2.setPaths({real + "/B"});
+    CHECK(waitRunning(w2, 1), "running");
+    CHECK(quietFor(c2, 0, 1.5), "from now: the earlier write is not reported");
+    CHECK_EQ(w2.stats().historyDone, 0, "and no replay ran");
+    w2.stop();
+    CHECK_EQ(IntakeWatcher::liveStreams(), 0, "released");
+}
+
+static void testHistoryDoneIgnored() {
+    g_context = "history-done";
+    const std::string root = mock::newDir("watch-history-done");
+    const std::string real = realPath(root);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    Collector c;
+    IntakeWatcher w(c.handler(), fastOptions());
+    w.setPaths({real}, currentEventId());
+    CHECK(waitRunning(w, 1), "running");
+    CHECK(mock::waitUntil([&] { return w.stats().historyDone == 1; }, 5),
+          "FSEvents sends the HistoryDone marker (on the watched folder itself)");
+    CHECK(quietFor(c, 0, 1.0), "the marker is not a change: no batch");
+    w.stop();
 }
 
 static void testMissingAndRecreated() {
@@ -289,11 +364,10 @@ static void testMissingAndRecreated() {
     // An income folder that does not exist yet ("exists": false).
     w.setPaths({real + "/later"});
     CHECK(waitRunning(w, 1), "a stream on a missing folder starts");
-    CHECK(mock::waitUntil([&] { return c.count() >= 1; }, 5) && c.at(0).streamStarted, "the start is reported");
     mkdir((root + "/later").c_str(), 0755);
     mkdir((root + "/later/Album").c_str(), 0755);
     mock::writeFile(root + "/later/Album/.intake.json", "{}");
-    CHECK(mock::waitUntil([&] { return reportedSince(c, 1, real + "/later/Album"); }, 5),
+    CHECK(mock::waitUntil([&] { return reportedSince(c, 0, real + "/later/Album"); }, 5),
           "a sidecar in the folder created later is reported");
 
     g_context = "recreated-folder";
@@ -335,7 +409,7 @@ static void testStop() {
         CHECK_EQ(w.stats().streamStarts, 1, "a stopped watcher starts no stream");
         mock::writeFile(root + "/.intake.json", "{}");
         std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-        CHECK_EQ(c.count(), atStop, "no batch after stop() (not even the pending catch-up)");
+        CHECK_EQ(c.count(), atStop, "no batch after stop()");
     }
 
     g_context = "destructor";
@@ -363,6 +437,8 @@ int main(void) {
         testSidecarWrite();
         testDirectoryMoves();
         testReplacement();
+        testHistoryReplay();
+        testHistoryDoneIgnored();
         testMissingAndRecreated();
         testStop();
         CHECK_EQ(IntakeWatcher::liveStreams(), 0, "no stream left");
