@@ -541,7 +541,12 @@ CLI change (this documents what already happens), no schema change.
 **From:** extension worker (`feature/intake-extension`, HEAD `811579e`)
 **Against:** `docs/intake/intake-03-contract-spec.md` (v1.1, amendment 002)
 **Spec basis:** main@c712783. CLI facts checked at `feature/intake-cli`@9cc4393.
-**Status:** open
+**Status:** adjudicated — amendment 003 (main@ee7aee15, merged into
+`feature/intake-extension` as 1dcd3859) decided all 14 items: accepted with
+modification CR-004.9 (no separate budget class; mutating commands not killed
+before a 15-minute cap, `execute` never) and CR-004.11 (`needs_review` stays
+set until `approve`; the "user-assigned = reviewed" fallback is not adopted);
+the other 12 accepted. See `AMENDMENTS.md` entry 003.
 
 Fourteen items. **None blocks Part B.** Each has a component-side fallback,
 stated per item, and the Part B plan builds the fallback. They are filed now,
