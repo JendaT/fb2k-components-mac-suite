@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "id": "itk_00000017",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "shop",
+    "source_type": "fixture-shop",
+    "archive": null
+  },
+  "virtual": true,
+  "files": [
+    {
+      "path": "Fixture Artist C - Other One.wav",
+      "audio_hash": "pcmsha1:ebaea8db13ae54d0c55f17fe395e75fb3c9f9994",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist C",
+        "artist": "Fixture Artist C",
+        "album": "Other Loose Album",
+        "title": "Other One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "Fixture Artist C - Other Two.wav",
+      "audio_hash": "pcmsha1:a88cffc170d99327f6bbf6b130537552dc606a31",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist C",
+        "artist": "Fixture Artist C",
+        "album": "Other Loose Album",
+        "title": "Other Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist C",
+    "album": "Other Loose Album",
+    "confidence": 0.81,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": null,
+  "proposal": null,
+  "status": "resolved",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:52+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    }
+  ]
+}

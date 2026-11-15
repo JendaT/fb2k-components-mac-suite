@@ -1,0 +1,4 @@
+# CLI 0.1.0 had no reject command, so no root can be rejected.
+responses/reject.d
+responses/status.d/itk_00000014.json
+root/income/dump/Fixture Artist - Rejected Album

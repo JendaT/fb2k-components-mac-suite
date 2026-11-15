@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "id": "itk_00000013",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "dump",
+    "source_type": "fixture-dump",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:19d8d73bc84e74c96cefd34c1eaa75e31574e43f",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Collected Album",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:8e51fc24c1d6bec35038be11c156945677bce805",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Collected Album",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist",
+    "album": "Collected Album",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "Fixture Artist",
+    "album": "Collected Album",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection C",
+        "score": 0.9,
+        "evidence": {
+          "artist_prior": 0.9,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection A",
+        "score": 0.45,
+        "evidence": {
+          "artist_prior": 0.45,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection C",
+    "confidence": 0.9,
+    "margin": 0.45,
+    "target_path": "@ROOT@/library/music.hq/Test Collection C/Fixture Artist/Fixture Artist - 2026 - Collected Album",
+    "structure_slot": "artist",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "placed": {
+    "target_path": "@ROOT@/library/music.hq/Test Collection C/Fixture Artist/Fixture Artist - 2026 - Collected Album",
+    "verified": true,
+    "journal_seq": 37
+  },
+  "status": "gc_done",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:35+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:36+01:00",
+      "event": "identified",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:37+01:00",
+      "event": "assigned",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:38+01:00",
+      "event": "proposed",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:39+01:00",
+      "event": "approved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:40+01:00",
+      "event": "placing",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:41+01:00",
+      "event": "placed",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:42+01:00",
+      "event": "gc_done",
+      "by": "intake@0.2.1"
+    }
+  ]
+}

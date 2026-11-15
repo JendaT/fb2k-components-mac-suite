@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "id": "itk_0000000a",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "dump",
+    "source_type": "fixture-dump",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:591c74b18d6fc25fbb44b69d7390a16e166275ee",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "New Album",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:02be43cc3997cf3c25bafcfdcb8f62424c488032",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "New Album",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist",
+    "album": "New Album",
+    "confidence": 0.42,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": null,
+  "proposal": null,
+  "status": "new",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:01+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    }
+  ]
+}

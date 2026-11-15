@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "id": "itk_00000016",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "shop",
+    "source_type": "fixture-shop",
+    "archive": null
+  },
+  "virtual": true,
+  "files": [
+    {
+      "path": "Fixture Artist B - Loose One.wav",
+      "audio_hash": "pcmsha1:28ed55cf31b26be9e75acadb591d3d5928881e38",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist B",
+        "artist": "Fixture Artist B",
+        "album": "Loose Album",
+        "title": "Loose One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "Fixture Artist B - Loose Two.wav",
+      "audio_hash": "pcmsha1:f6d9b4a0374ebf5897bb4c0abbc2544449313d06",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist B",
+        "artist": "Fixture Artist B",
+        "album": "Loose Album",
+        "title": "Loose Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist B",
+    "album": "Loose Album",
+    "confidence": 0.55,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": null,
+  "proposal": null,
+  "status": "new",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:51+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    }
+  ]
+}

@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "id": "itk_00000014",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "dump",
+    "source_type": "fixture-dump",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:a4a0ced01722d096cf68c20b78aa84d76c003d35",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Rejected Album",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:4d2f09d905dd8ed0afe110d15673deac9a234156",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Rejected Album",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist",
+    "album": "Rejected Album",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "Fixture Artist",
+    "album": "Rejected Album",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection B",
+        "score": 0.66,
+        "evidence": {
+          "artist_prior": 0.66,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection A",
+        "score": 0.56,
+        "evidence": {
+          "artist_prior": 0.56,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection B",
+    "confidence": 0.66,
+    "margin": 0.1,
+    "target_path": "@ROOT@/library/music.hq/Test Collection B/Fixture Artist/Fixture Artist - 2026 - Rejected Album",
+    "structure_slot": "artist",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "status": "rejected",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:43+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:44+01:00",
+      "event": "identified",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:45+01:00",
+      "event": "assigned",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:46+01:00",
+      "event": "proposed",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:47+01:00",
+      "event": "rejected",
+      "by": "intake@0.2.1",
+      "reason": "Fixture reason: duplicate of an owned release"
+    }
+  ]
+}

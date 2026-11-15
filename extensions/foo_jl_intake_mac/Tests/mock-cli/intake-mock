@@ -1,0 +1,828 @@
+#!/bin/bash
+#
+# intake-mock - a fake `intake` CLI for foo_jl_intake_mac tests.
+#
+# Emits the doc 03 (contract v1.1) JSON envelope with the data shapes of the
+# real CLI 0.2.1 (branch feature/intake-cli) for version, status, collections,
+# propose, assign, approve, reject, execute (incl. --dry-run and --resume) and
+# gc, from synthetic fixtures. Everything it reads or writes at run time lives
+# in the state directory named by INTAKE_MOCK_STATE, so tests are hermetic.
+# It never touches real music, income folders or the real CLI.
+#
+# Usage:
+#   INTAKE_MOCK_STATE=/abs/dir intake-mock --mock-setup <scenario>
+#   INTAKE_MOCK_STATE=/abs/dir intake-mock <command> [args...] --json
+#
+# Scenarios, modes, .next files and the fixture layout: see README.md here.
+# Bash 3.2 compatible (/bin/bash on macOS): no associative arrays, no ${x,,}.
+#
+# Exit codes: the CLI's own 0 / 1 / 2, or 64 when the mock itself refuses to
+# run (bad state dir, setup missing, unknown mode). 64 never comes with a JSON
+# envelope, so a consumer treats it like any other unusable CLI.
+
+LC_ALL=C
+export LC_ALL
+
+MOCK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCENARIOS="$MOCK_DIR/scenarios"
+
+die() {
+    printf 'intake-mock: %s\n' "$*" >&2
+    exit 64
+}
+
+# ---------------------------------------------------------------------------
+# State directory: required, absolute, an existing directory, and free of the
+# characters that would need escaping inside JSON strings. Every write below
+# is under it.
+# ---------------------------------------------------------------------------
+
+STATE="${INTAKE_MOCK_STATE:-}"
+[ -n "$STATE" ] || die "INTAKE_MOCK_STATE is not set"
+case "$STATE" in
+    /*) ;;
+    *) die "INTAKE_MOCK_STATE must be an absolute path: $STATE" ;;
+esac
+case "$STATE" in
+    *'"'* | *'\'* | *$'\n'* | *$'\t'* | *$'\r'*)
+        die "INTAKE_MOCK_STATE must not contain quotes, backslashes or control characters" ;;
+esac
+while [ "${STATE%/}" != "$STATE" ]; do STATE="${STATE%/}"; done
+[ -n "$STATE" ] || die "INTAKE_MOCK_STATE must not be /"
+[ -d "$STATE" ] || die "INTAKE_MOCK_STATE is not a directory: $STATE"
+
+ROOT="$STATE/root"
+RESP="$STATE/responses"
+
+# ---------------------------------------------------------------------------
+# Small helpers. They return through REPLY so nothing forks a subshell.
+# ---------------------------------------------------------------------------
+
+# JSON string escape of $1 (without the surrounding quotes).
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    REPLY="$s"
+}
+
+# Literal replacement of every $2 in $1 by $3. Pattern removal only, so no
+# character in $3 is special, whatever the bash version.
+replace_all() {
+    local s="$1" out=""
+    while :; do
+        case "$s" in
+            *"$2"*) out="$out${s%%"$2"*}$3"; s="${s#*"$2"}" ;;
+            *) break ;;
+        esac
+    done
+    REPLY="$out$s"
+}
+
+# First line of file $1 (files under responses/ hold one JSON value per line).
+read_line() {
+    REPLY=""
+    IFS= read -r REPLY < "$1" || [ -n "$REPLY" ]
+}
+
+# All lines of file $1 joined (newlines between JSON tokens are whitespace).
+read_joined() {
+    local line out=""
+    while IFS= read -r line || [ -n "$line" ]; do out="$out$line"; done < "$1"
+    REPLY="$out"
+}
+
+# Value of "key":"..." or "key":true|false in JSON text $2, or "" (also for
+# null). Fixture strings never contain escaped quotes, so [^"]* is enough.
+json_field() {
+    local re1="\"$1\":\"([^\"]*)\"" re2="\"$1\":(true|false)"
+    if [[ $2 =~ $re1 ]]; then REPLY="${BASH_REMATCH[1]}"
+    elif [[ $2 =~ $re2 ]]; then REPLY="${BASH_REMATCH[1]}"
+    else REPLY=""
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# calls.log: one line per invocation, argv joined by tabs. Backslash, tab and
+# newline inside an argument are written as \\, \t and \n.
+# ---------------------------------------------------------------------------
+
+log_call() {
+    local line="" a first=1
+    for a in "$@"; do
+        a="${a//\\/\\\\}"
+        a="${a//$'\t'/\\t}"
+        a="${a//$'\n'/\\n}"
+        if [ $first -eq 1 ]; then line="$a"; first=0; else line="$line"$'\t'"$a"; fi
+    done
+    printf '%s\n' "$line" >> "$STATE/calls.log"
+}
+
+log_call "$@"
+
+# ---------------------------------------------------------------------------
+# Fixture copying (setup and .next states).
+#
+# A scenario or state directory may hold:
+#   responses/  copied over $STATE/responses
+#   tree/       copied over $STATE/root
+#   delete      paths relative to $STATE (responses/... or root/...) to remove
+#   generate    "roots <n>": synthesize n roots (perf scenarios)
+# Text fixtures get @ROOT@ (and, for states, @COLLECTION@) replaced. Every
+# *.wav is written as a 0.1 s silent WAV so foobar2000 can list the rows.
+# ---------------------------------------------------------------------------
+
+ROOT_JSON=""         # $ROOT as it appears inside JSON strings
+COLLECTION_JSON=""   # --collection of the current call, JSON-escaped
+SUBST_COLLECTION=0   # 1 while applying a .next state
+SILENCE=""
+
+write_wav() {
+    if [ -z "$SILENCE" ]; then
+        SILENCE=$'\x80'
+        while [ ${#SILENCE} -lt 800 ]; do SILENCE="$SILENCE$SILENCE"; done
+        SILENCE="${SILENCE:0:800}"
+    fi
+    # RIFF/WAVE, PCM, mono, 8 kHz, 8 bit, 800 data bytes.
+    printf 'RIFF\x44\x03\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x20\x03\x00\x00' > "$1"
+    printf '%s' "$SILENCE" >> "$1"
+}
+
+substitute_file() { # src dst collection(0|1)
+    local src="$1" dst="$2" coll="$3" line
+    while IFS= read -r line || [ -n "$line" ]; do
+        replace_all "$line" "@ROOT@" "$ROOT_JSON"
+        [ "$coll" = "1" ] && replace_all "$REPLY" "@COLLECTION@" "$COLLECTION_JSON"
+        printf '%s\n' "$REPLY"
+    done < "$src" > "$dst"
+}
+
+copy_tree() {
+    local src="$1" dst="$2" f rel coll
+    [ -d "$src" ] || return 0
+    mkdir -p "$dst"
+    while IFS= read -r -d '' f; do
+        rel="${f#"$src"/}"
+        if [ -d "$f" ]; then
+            mkdir -p "$dst/$rel"
+            continue
+        fi
+        case "$rel" in
+            *.wav) write_wav "$dst/$rel" ;;
+            *.json | *.error | *.envelope | *.exit | */commands | commands)
+                # assign.user.d rows keep @COLLECTION@ for reply time.
+                coll=$SUBST_COLLECTION
+                case "$rel" in assign.user.d/*) coll=0 ;; esac
+                substitute_file "$f" "$dst/$rel" "$coll" ;;
+            *) cp "$f" "$dst/$rel" ;;
+        esac
+    done < <(find "$src" -mindepth 1 -print0)
+}
+
+apply_deletes() {
+    local list="$1" p
+    [ -f "$list" ] || return 0
+    while IFS= read -r p || [ -n "$p" ]; do
+        [ -n "$p" ] || continue
+        case "$p" in
+            '#'*) continue ;;
+            /* | .. | ../* | */.. | */../*) die "unsafe delete entry in $list: $p" ;;
+            responses/* | root/*) rm -rf "${STATE:?}/$p" ;;
+            *) die "delete entry must start with responses/ or root/: $p" ;;
+        esac
+    done < "$list"
+}
+
+overlay() {
+    local dir="$1"
+    # Writing through a symlink could leave the state dir; refuse instead.
+    if [ -n "$(find "$ROOT" "$RESP" -type l 2>/dev/null | head -n 1)" ]; then
+        die "symlink found under $STATE; refusing to write through it"
+    fi
+    copy_tree "$dir/responses" "$RESP"
+    copy_tree "$dir/tree" "$ROOT"
+    apply_deletes "$dir/delete"
+    if [ -f "$dir/generate" ]; then
+        local what count
+        read -r what count < "$dir/generate"
+        [ "$what" = "roots" ] || die "unknown generate directive in $dir: $what"
+        case "$count" in '' | *[!0-9]*) die "bad root count in $dir/generate" ;; esac
+        generate_roots "$count"
+    fi
+}
+
+# Synthetic roots for perf scenarios: statuses cycle through the lifecycle.
+generate_roots() {
+    local n="$1" i=1 id dir st nr prop placed tgt conf sc_prop sc_placed ev
+    local statuses=(new resolved proposed approved placing placed gc_done rejected)
+    ev='"evidence":{"artist_prior":0.5,"label_prior":0,"similar_vote":0,"style_hint":0}'
+    mkdir -p "$RESP/status.d"
+    while [ $i -le "$n" ]; do
+        printf -v id 'itk_c%07x' "$i"
+        dir="$ROOT/income/perf/Fixture Artist $i - Test Album $i"
+        st="${statuses[$(( (i - 1) % ${#statuses[@]} ))]}"
+        nr=false
+        [ $((i % 10)) -eq 3 ] && { [ "$st" = "resolved" ] || [ "$st" = "proposed" ]; } && nr=true
+        prop=null
+        placed=null
+        sc_prop=null
+        sc_placed=""
+        conf="0.$(( 50 + i % 50 ))"
+        tgt="$ROOT/library/music.hq/Test Collection A/Fixture Artist $i/Fixture Artist $i - 2026 - Test Album $i"
+        case "$st" in
+            new | resolved) ;;
+            *)
+                prop="{\"target_collection\":\"Test Collection A\",\"confidence\":$conf,\"ranked\":[{\"collection\":\"Test Collection A\",\"confidence\":$conf},{\"collection\":\"Test Collection B\",\"confidence\":0.2}]}"
+                sc_prop="{\"engine_version\":\"0.2.0\",\"ranked\":[{\"collection\":\"Test Collection A\",\"score\":$conf,$ev},{\"collection\":\"Test Collection B\",\"score\":0.2,$ev}],\"target_collection\":\"Test Collection A\",\"confidence\":$conf,\"margin\":0.3,\"target_path\":\"$tgt\",\"structure_slot\":\"artist\",\"assigned_by\":\"engine\",\"alternates_shown\":false}" ;;
+        esac
+        case "$st" in
+            placed | gc_done)
+                placed="{\"verified\":true,\"target_path\":\"$tgt\"}"
+                sc_placed=",\"placed\":{\"target_path\":\"$tgt\",\"verified\":true,\"journal_seq\":$i}" ;;
+        esac
+        printf '{"id":"%s","root_path":"%s","status":"%s","needs_review":%s,"cluster":{"albumartist":"Fixture Artist %d","album":"Test Album %d"},"proposal":%s,"placed":%s}\n' \
+            "$id" "$dir" "$st" "$nr" "$i" "$i" "$prop" "$placed" > "$RESP/status.d/$id.json"
+        mkdir -p "$dir"
+        printf '{"schema":1,"id":"%s","resolver_version":"0.2.0","resolved_at":"2026-11-01T12:00:00+01:00","source":{"income_folder":"perf","source_type":"fixture","archive":null},"virtual":false,"files":[{"path":"01 - Test Track.wav","audio_hash":"pcmsha1:%040x","codec":"pcm","lossless":true,"sample_rate":8000,"bit_depth":8,"bitrate":null,"duration":0.1,"tags":{"albumartist":"Fixture Artist %d","artist":"Fixture Artist %d","album":"Test Album %d","title":"Test Track","tracknumber":1,"disc":null,"date":"2026"}}],"discs":null,"cluster":{"albumartist":"Fixture Artist %d","album":"Test Album %d","confidence":0.9,"needs_review":%s,"signals":{"purity":1,"seq":1,"artifacts":1,"name_parse":1,"quality_homog":1}},"quality":{"tier_eligible":"hq","issues":[]},"identification":null,"proposal":%s%s,"status":"%s","history":[{"ts":"2026-11-01T12:00:00+01:00","event":"resolved","by":"intake@0.2.1"}]}\n' \
+            "$id" "$i" "$i" "$i" "$i" "$i" "$i" "$nr" "$sc_prop" "$sc_placed" "$st" > "$dir/.intake.json"
+        [ "$st" = "gc_done" ] || write_wav "$dir/01 - Test Track.wav"
+        i=$((i + 1))
+    done
+}
+
+# Scenario chain, base first, from the "base" files (at most 4 levels).
+scenario_chain() {
+    local s="$1" depth=0
+    CHAIN=()
+    while :; do
+        case "$s" in '' | *[!A-Za-z0-9._-]* | .*) die "bad scenario name: $s" ;; esac
+        [ -d "$SCENARIOS/$s" ] || die "unknown scenario: $s"
+        CHAIN=("$s" ${CHAIN[@]+"${CHAIN[@]}"})
+        [ -f "$SCENARIOS/$s/base" ] || break
+        read -r s < "$SCENARIOS/$s/base"
+        depth=$((depth + 1))
+        [ $depth -lt 4 ] || die "scenario base chain too deep"
+    done
+}
+
+mock_setup() {
+    local name="$1" s
+    scenario_chain "$name"
+    rm -rf "${STATE:?}/root" "${STATE:?}/responses"
+    rm -f "$STATE"/*.mode "$STATE"/*.next "$STATE/hang.pid"
+    mkdir -p "$ROOT" "$RESP"
+    ROOT_JSON="$ROOT"
+    COLLECTION_JSON=""
+    for s in "${CHAIN[@]}"; do overlay "$SCENARIOS/$s"; done
+    printf '%s\n' "${CHAIN[@]}" > "$STATE/scenario"
+    local count=0 f
+    for f in "$RESP"/status.d/*.json; do [ -e "$f" ] && count=$((count + 1)); done
+    printf 'intake-mock: scenario %s ready in %s (%d roots)\n' "$name" "$STATE" "$count"
+}
+
+if [ "${1-}" = "--mock-setup" ]; then
+    [ $# -eq 2 ] || die "usage: intake-mock --mock-setup <scenario>"
+    mock_setup "$2"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Argument parsing: the same rules as tools/intake/src/cli.ts parseArgs.
+# ---------------------------------------------------------------------------
+
+CMD=""
+REFS=()
+JSON=0
+DRY=0
+ALL_RESOLVED=0
+APPROVED=0
+RESUME=0
+HAS_COLLECTION=0
+COLLECTION=""
+BY=""
+BATCH=""
+HAS_BATCH=0
+FILTERS=()
+
+ARGV=("$@")
+i=0
+while [ $i -lt ${#ARGV[@]} ]; do
+    a="${ARGV[$i]}"
+    case "$a" in
+        --json) JSON=1 ;;
+        --dry-run) DRY=1 ;;
+        --force | --all | --relocate-dj) ;;
+        --filter)
+            i=$((i + 1))
+            [ $i -lt ${#ARGV[@]} ] && FILTERS+=("${ARGV[$i]}") ;;
+        --collection)
+            i=$((i + 1))
+            if [ $i -lt ${#ARGV[@]} ]; then COLLECTION="${ARGV[$i]}"; HAS_COLLECTION=1; fi ;;
+        --by)
+            i=$((i + 1))
+            [ $i -lt ${#ARGV[@]} ] && BY="${ARGV[$i]}" ;;
+        --batch)
+            i=$((i + 1))
+            if [ $i -lt ${#ARGV[@]} ]; then BATCH="${ARGV[$i]}"; HAS_BATCH=1; fi ;;
+        --reason | --tree | --prior-weight | --out | --age) i=$((i + 1)) ;;
+        --all-resolved) ALL_RESOLVED=1 ;;
+        --approved) APPROVED=1 ;;
+        --resume) RESUME=1 ;;
+        *)
+            if [ -z "$CMD" ]; then CMD="$a"; else REFS+=("$a"); fi ;;
+    esac
+    i=$((i + 1))
+done
+
+[ $JSON -eq 1 ] || die "only --json output is supported"
+[ -d "$RESP" ] || die "no scenario set up in $STATE; run: intake-mock --mock-setup <scenario>"
+
+ROOT_JSON="$ROOT"
+json_escape "$COLLECTION"
+COLLECTION_JSON="$REPLY"
+
+# ---------------------------------------------------------------------------
+# Output. Commands fill DATA (JSON text of the data member), ERRS (comma-
+# joined error objects) and EXIT; emit() prints the one-line envelope, like
+# the real CLI's console.log(JSON.stringify(envelope)).
+# ---------------------------------------------------------------------------
+
+DATA="null"
+ERRS=""
+EXIT=0
+SIDE_EFFECTS=1
+
+error_json() { # code msg(raw) path(raw, empty for null) -> REPLY
+    local code="$1" msg path
+    json_escape "$2"; msg="$REPLY"
+    if [ -n "${3-}" ]; then json_escape "$3"; path="\"$REPLY\""; else path="null"; fi
+    REPLY="{\"code\":\"$code\",\"msg\":\"$msg\",\"path\":$path}"
+}
+
+add_error() { # code msg path
+    error_json "$@"
+    ERRS="$ERRS${ERRS:+,}$REPLY"
+}
+
+fail() { # code msg path
+    DATA="null"
+    ERRS=""
+    add_error "$1" "$2" "${3-}"
+    EXIT=2
+}
+
+emit() {
+    local ok=false
+    [ -z "$ERRS" ] && ok=true
+    printf '{"ok":%s,"data":%s,"errors":[%s]}\n' "$ok" "$DATA" "$ERRS"
+}
+
+# A canned full stdout replaces the computed one: <key>.envelope, printed as
+# is, exit code from <key>.exit (default 0).
+emit_verbatim() {
+    local key="$1" code=0
+    read_joined "$RESP/$key.envelope"
+    printf '%s\n' "$REPLY"
+    if [ -f "$RESP/$key.exit" ]; then read_line "$RESP/$key.exit"; code="$REPLY"; fi
+    case "$code" in '' | *[!0-9]*) die "bad exit code in $RESP/$key.exit: $code" ;; esac
+    exit "$code"
+}
+
+# ---------------------------------------------------------------------------
+# Roots known to the current state: responses/status.d/<id>.json.
+# ---------------------------------------------------------------------------
+
+ID_RE='^itk_[0-9a-f]{8}$'
+
+status_row() { # id -> REPLY (row) or return 1
+    [ -f "$RESP/status.d/$1.json" ] || return 1
+    read_line "$RESP/status.d/$1.json"
+}
+
+# Ids whose status row has root_path == $1 (virtual roots share a directory).
+ids_for_dir() {
+    local dir="$1" f row
+    IDS=()
+    for f in "$RESP"/status.d/*.json; do
+        [ -e "$f" ] || continue
+        read_line "$f"; row="$REPLY"
+        json_field root_path "$row"
+        if [ "$REPLY" = "$dir" ]; then
+            f="${f##*/}"
+            IDS+=("${f%.json}")
+        fi
+    done
+}
+
+# Ids whose status matches $1 (and, with $2 = clean, needs_review false).
+ids_with_status() {
+    local want="$1" clean="${2-}" f row
+    IDS=()
+    for f in "$RESP"/status.d/*.json; do
+        [ -e "$f" ] || continue
+        read_line "$f"; row="$REPLY"
+        json_field status "$row"
+        [ "$REPLY" = "$want" ] || continue
+        if [ "$clean" = "clean" ]; then
+            json_field needs_review "$row"
+            [ "$REPLY" = "true" ] && continue
+        fi
+        f="${f##*/}"
+        IDS+=("${f%.json}")
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_known() {
+    local c
+    [ -f "$RESP/commands" ] || return 1
+    while IFS= read -r c || [ -n "$c" ]; do
+        [ "$c" = "$1" ] && return 0
+    done < "$RESP/commands"
+    return 1
+}
+
+cmd_data_file() { # version, collections: responses/<cmd>.json is the data member
+    if [ -f "$RESP/$CMD.envelope" ]; then emit_verbatim "$CMD"; fi
+    [ -f "$RESP/$CMD.json" ] || die "scenario has no responses/$CMD.json"
+    read_joined "$RESP/$CMD.json"
+    DATA="$REPLY"
+    EXIT=0
+}
+
+cmd_status() {
+    if [ -f "$RESP/status.envelope" ]; then emit_verbatim status; fi
+    local f row rows="" key val fl
+    for f in "$RESP"/status.d/*.json; do
+        [ -e "$f" ] || continue
+        read_line "$f"; row="$REPLY"
+        for fl in ${FILTERS[@]+"${FILTERS[@]}"}; do
+            case "$fl" in *=*) ;; *) continue ;; esac   # the CLI ignores k without =
+            key="${fl%%=*}"
+            val="${fl#*=}"
+            [ -n "$key" ] || continue
+            case "$key" in
+                status | needs_review | root_path | albumartist | album) ;;
+                *) die "status --filter $key is not supported by the mock" ;;
+            esac
+            json_field "$key" "$row"
+            [ "$REPLY" = "$val" ] || continue 2
+        done
+        rows="$rows${rows:+,}$row"
+    done
+    DATA="[$rows]"
+    EXIT=0
+}
+
+# Refs from argv plus --batch (one per line, blank lines and # comments
+# skipped), as cli.ts refsWithBatch. Returns 1 after fail() when the batch
+# file is missing.
+collect_refs() {
+    ALLREFS=(${REFS[@]+"${REFS[@]}"})
+    [ $HAS_BATCH -eq 1 ] || return 0
+    if [ ! -f "$BATCH" ]; then
+        fail E_NOT_FOUND "batch file not found" "$BATCH"
+        return 1
+    fi
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [ -n "$line" ] || continue
+        case "$line" in '#'*) continue ;; esac
+        ALLREFS+=("$line")
+    done < "$BATCH"
+}
+
+# Reply directory for this call: the first of the candidate keys that exists.
+pick_key() {
+    local k
+    KEY=""
+    for k in "$@"; do
+        if [ -f "$RESP/$k.envelope" ] || [ -d "$RESP/$k.d" ]; then KEY="$k"; return 0; fi
+    done
+    KEY="$1"   # no replies at all: every known root falls through to E_BAD_STATUS
+}
+
+# One root id through the reply directory: forced error, row, or the CLI's
+# status refusal ("cannot <verb> from status <s>"; gc silently skips).
+ROWS=""
+ROOT_ERRS=""
+handle_id() {
+    local id="$1" verb="$2" row st path
+    if [ -f "$RESP/$KEY.d/$id.error" ]; then
+        read_line "$RESP/$KEY.d/$id.error"
+        ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
+        return
+    fi
+    if [ -f "$RESP/$KEY.d/$id.json" ]; then
+        read_line "$RESP/$KEY.d/$id.json"; row="$REPLY"
+        # The CLI marks reject rows under --dry-run (commands-p3.ts cmdReject).
+        if [ "$KEY" = "reject" ] && [ $DRY -eq 1 ]; then row="${row%\}},\"dry_run\":true}"; fi
+        ROWS="$ROWS${ROWS:+,}$row"
+        return
+    fi
+    [ "$CMD" = "gc" ] && return   # gc filters to placed roots without a word (CR-004.14)
+    status_row "$id" || return
+    row="$REPLY"
+    json_field status "$row"; st="$REPLY"
+    json_field root_path "$row"; path="$REPLY"
+    error_json E_BAD_STATUS "cannot $verb from status $st" "$path"
+    ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
+}
+
+# The CLI's finish(): ok with rows; partial (exit 1) with rows and errors;
+# error (exit 2, data null) with errors only.
+finish_rows() {
+    local errs="$REF_ERRS${REF_ERRS:+${ROOT_ERRS:+,}}$ROOT_ERRS"
+    ERRS="$errs"
+    if [ -z "$errs" ]; then DATA="[$ROWS]"; EXIT=0
+    elif [ -n "$ROWS" ]; then DATA="[$ROWS]"; EXIT=1
+    else DATA="null"; EXIT=2
+    fi
+}
+
+# Named refs (ids or directories) -> ids, collecting rootsFromRefs errors.
+REF_ERRS=""
+add_ref_error() { # code msg path
+    error_json "$@"
+    REF_ERRS="$REF_ERRS${REF_ERRS:+,}$REPLY"
+}
+
+resolve_refs() {
+    local ref dir
+    RESOLVED=()
+    REF_ERRS=""
+    for ref in ${ALLREFS[@]+"${ALLREFS[@]}"}; do
+        if [ -d "$ref" ]; then
+            case "$ref" in /*) dir="$ref" ;; *) dir="$PWD/$ref" ;; esac
+            while [ "${dir%/}" != "$dir" ] && [ "$dir" != "/" ]; do dir="${dir%/}"; done
+            ids_for_dir "$dir"
+            if [ ${#IDS[@]} -eq 0 ]; then
+                add_ref_error E_NOT_FOUND "no sidecar in directory (run resolve first)" "$dir"
+            else
+                RESOLVED+=("${IDS[@]}")
+            fi
+        elif [[ $ref =~ $ID_RE ]]; then
+            if status_row "$ref"; then RESOLVED+=("$ref")
+            else add_ref_error E_NOT_FOUND "no sidecar with id $ref" ""
+            fi
+        else
+            add_ref_error E_NOT_FOUND "not a directory or sidecar id: $ref" ""
+        fi
+    done
+}
+
+run_ids() { # verb, ids...
+    local verb="$1" id seen=" "
+    shift
+    for id in "$@"; do
+        if [ "$CMD" = "reject" ]; then
+            # reject handles a root named twice once (commands-p3.ts cmdReject).
+            case "$seen" in *" $id "*) continue ;; esac
+            seen="$seen$id "
+        fi
+        handle_id "$id" "$verb"
+    done
+}
+
+cmd_rows() {
+    local verb="$CMD"
+    ROWS=""
+    ROOT_ERRS=""
+    REF_ERRS=""
+    collect_refs || return
+
+    case "$CMD" in
+        propose)
+            if [ $DRY -eq 1 ]; then pick_key propose.dry-run propose; else pick_key propose; fi
+            if [ $ALL_RESOLVED -eq 1 ]; then
+                # Auto mode: clean resolved roots only (commands-p3.ts cmdPropose).
+                [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
+                ids_with_status resolved clean
+                run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
+                finish_rows
+                return
+            fi
+            if [ ${#ALLREFS[@]} -eq 0 ]; then
+                fail E_BAD_ARGS "usage: intake propose <root...>|--all-resolved"
+                return
+            fi ;;
+        approve | reject)
+            if [ ${#ALLREFS[@]} -eq 0 ]; then
+                if [ "$CMD" = "approve" ]; then
+                    fail E_BAD_ARGS "usage: intake approve <root...>|--batch <file>"
+                else
+                    fail E_BAD_ARGS 'usage: intake reject <root...>|--batch <file> [--reason "<text>"]'
+                fi
+                return
+            fi
+            if [ $DRY -eq 1 ]; then pick_key "$CMD.dry-run" "$CMD"; else pick_key "$CMD"; fi ;;
+        assign)
+            if [ ${#ALLREFS[@]} -eq 0 ]; then
+                fail E_BAD_ARGS "usage: intake assign <root...> [--collection <name>] [--by user|engine]"
+                return
+            fi
+            if [ $HAS_COLLECTION -eq 1 ] && [ -n "$COLLECTION" ] && [ "$BY" = "engine" ]; then
+                fail E_BAD_ARGS "--collection implies --by user"
+                return
+            fi
+            if [ $HAS_COLLECTION -eq 1 ] && [ -n "$COLLECTION" ]; then pick_key assign.user
+            else pick_key assign
+            fi ;;
+        execute)
+            if [ $RESUME -eq 1 ]; then
+                verb="resume"
+                if [ $DRY -eq 1 ]; then pick_key execute.resume.dry-run execute.resume; else pick_key execute.resume; fi
+            else
+                if [ $DRY -eq 1 ]; then pick_key execute.dry-run execute; else pick_key execute; fi
+            fi
+            if [ ${#ALLREFS[@]} -eq 0 ]; then
+                if [ $RESUME -eq 0 ] && [ $APPROVED -eq 0 ]; then
+                    fail E_BAD_ARGS "usage: intake execute <root...>|--approved [--resume]"
+                    return
+                fi
+                [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
+                if [ $RESUME -eq 1 ]; then ids_with_status placing; else ids_with_status approved; fi
+                run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
+                finish_rows
+                return
+            fi ;;
+        gc)
+            if [ $DRY -eq 1 ]; then pick_key gc.dry-run gc; else pick_key gc; fi
+            if [ ${#ALLREFS[@]} -eq 0 ]; then
+                # No ids: every placed root in every income folder (CR-004.14).
+                [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
+                ids_with_status placed
+                run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
+                finish_rows
+                return
+            fi ;;
+    esac
+
+    [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
+    resolve_refs
+    run_ids "$verb" ${RESOLVED[@]+"${RESOLVED[@]}"}
+    if [ "$CMD" = "assign" ] && [ -n "$ROWS" ]; then
+        replace_all "$ROWS" "@COLLECTION@" "$COLLECTION_JSON"
+        ROWS="$REPLY"
+    fi
+    finish_rows
+}
+
+# After a successful mutating call (exit 0 or 1, not --dry-run): consume the
+# first line of $STATE/<cmd>.next and apply that state of the scenario.
+apply_next() {
+    local f="$STATE/$CMD.next" first="" rest="" line n=0 s dir=""
+    [ $SIDE_EFFECTS -eq 1 ] && [ $DRY -eq 0 ] || return 0
+    [ "$EXIT" -eq 0 ] || [ "$EXIT" -eq 1 ] || return 0
+    case "$CMD" in propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
+    [ -f "$f" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ $n -eq 0 ]; then first="$line"; else rest="$rest$line"$'\n'; fi
+        n=$((n + 1))
+    done < "$f"
+    if [ -n "$rest" ]; then printf '%s' "$rest" > "$f"; else rm -f "$f"; fi
+    [ -n "$first" ] || return 0
+    case "$first" in *[!A-Za-z0-9._-]* | .*)
+        printf 'intake-mock: bad state name in %s: %s\n' "$f" "$first" >&2
+        return 0 ;;
+    esac
+    [ -f "$STATE/scenario" ] || return 0
+    while IFS= read -r s || [ -n "$s" ]; do
+        [ -d "$SCENARIOS/$s/states/$first" ] && dir="$SCENARIOS/$s/states/$first"
+    done < "$STATE/scenario"
+    if [ -z "$dir" ]; then
+        printf 'intake-mock: unknown state %s (from %s)\n' "$first" "$f" >&2
+        return 0
+    fi
+    SUBST_COLLECTION=1
+    overlay "$dir"
+    SUBST_COLLECTION=0
+}
+
+run_command() {
+    if [ -z "$CMD" ] || ! cmd_known "$CMD"; then
+        fail E_BAD_ARGS "unknown command: ${CMD:-(none)}"
+        return
+    fi
+    case "$CMD" in
+        version | collections) cmd_data_file ;;
+        status) cmd_status ;;
+        propose | assign | approve | reject | execute | gc) cmd_rows ;;
+        *)
+            if [ -f "$RESP/$CMD.envelope" ]; then emit_verbatim "$CMD"; fi
+            if [ -f "$RESP/$CMD.json" ]; then cmd_data_file
+            else fail E_BAD_ARGS "unknown command: $CMD"
+            fi ;;
+    esac
+    apply_next
+}
+
+# ---------------------------------------------------------------------------
+# Modes: $STATE/<cmd>.mode holds one word (plus an optional argument) and
+# stays in force until removed. Modes never apply .next states.
+# ---------------------------------------------------------------------------
+
+mode_hang() {
+    # A sleeping CHILD (not exec): killing only this shell leaves the child
+    # holding stdout open, which is what process-group kill must handle.
+    sleep "${INTAKE_MOCK_HANG_SECONDS:-300}" &
+    local child=$!
+    printf '%s %s\n' "$$" "$child" > "$STATE/hang.pid"
+    wait "$child"
+    exit 0
+}
+
+mode_fds() {
+    # exec, so the listing runs in this very process: bash keeps its own
+    # script descriptor (255) close-on-exec, so what remains is exactly what
+    # the spawner let the child inherit.
+    exec /bin/bash -c '
+        max="$1"; n=0; list=""
+        while [ $n -lt "$max" ]; do
+            if [ -e /dev/fd/$n ]; then list="$list${list:+,}$n"; fi
+            n=$((n + 1))
+        done
+        printf "{\"ok\":true,\"data\":{\"fds\":[%s]},\"errors\":[]}\n" "$list"
+    ' intake-mock-fds "${INTAKE_MOCK_FD_MAX:-1024}"
+}
+
+mode_big() {
+    # About 1 MB of valid status-shaped rows, written row by row so the
+    # reader sees many small chunks against a full pipe.
+    local target="${INTAKE_MOCK_BIG_BYTES:-1048576}" total=0 i=0 row sep=""
+    printf '{"ok":true,"data":['
+    while [ $total -lt "$target" ]; do
+        i=$((i + 1))
+        printf -v row '%s{"id":"itk_b%07x","root_path":"%s/income/big/Fixture Artist %d - Test Album %d","status":"new","needs_review":false,"cluster":{"albumartist":"Fixture Artist %d","album":"Test Album %d"},"proposal":null,"placed":null}' "$sep" "$i" "$ROOT_JSON" "$i" "$i" "$i" "$i"
+        printf '%s' "$row"
+        total=$((total + ${#row}))
+        sep=","
+    done
+    printf '],"errors":[]}\n'
+    exit 0
+}
+
+MODE=""
+MODE_ARG=""
+case "$CMD" in
+    '' | *[!a-z-]*) ;;
+    *)
+        if [ -f "$STATE/$CMD.mode" ]; then
+            read -r MODE MODE_ARG < "$STATE/$CMD.mode"
+        fi ;;
+esac
+
+case "$MODE" in
+    "") run_command; emit; exit "$EXIT" ;;
+    hang) mode_hang ;;
+    fds) mode_fds ;;
+    big) mode_big ;;
+    garbage)
+        printf 'intake-mock: this is not JSON {"ok":\n'
+        exit 0 ;;
+    empty)
+        exit 0 ;;
+    exit2)
+        case "${MODE_ARG:-E_INTERNAL}" in *[!A-Z0-9_]*) die "exit2 takes an error code like E_NO_RULES: $MODE_ARG" ;; esac
+        fail "${MODE_ARG:-E_INTERNAL}" "mock: forced exit 2"
+        emit
+        exit 2 ;;
+    unknown-code)
+        fail E_MOCK_UNKNOWN_CODE "mock: an error code no consumer knows" "$ROOT"
+        emit
+        exit 2 ;;
+    partial)
+        SIDE_EFFECTS=0
+        run_command
+        [ "$DATA" = "null" ] && DATA="[]"
+        add_error E_PARSE "unreadable sidecar" "$ROOT/income/dump/.intake.json"
+        emit
+        exit 1 ;;
+    bare-array)
+        SIDE_EFFECTS=0
+        run_command
+        case "$DATA" in '['*) printf '%s\n' "$DATA" ;; *) printf '[]\n' ;; esac
+        exit 0 ;;
+    noise)
+        SIDE_EFFECTS=0
+        run_command
+        n=0
+        while [ $n -lt 2000 ]; do
+            printf 'intake-mock: warning %04d: noise on stderr that the reader must drain\n' "$n" >&2
+            n=$((n + 1))
+        done
+        printf '\n\n  '
+        emit
+        printf '  \n\n'
+        exit "$EXIT" ;;
+    *)
+        die "unknown mode in $STATE/$CMD.mode: $MODE" ;;
+esac

@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "id": "itk_00000015",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "dump",
+    "source_type": "fixture-dump",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:28af15361550497d17d299d7f15bbc6d7bb7c044",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Various Artists",
+        "artist": "Various Artists",
+        "album": "Test Compilation",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:93751a3722d6dbdf6db5ddf2c07b194448f908b3",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Various Artists",
+        "artist": "Various Artists",
+        "album": "Test Compilation",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Various Artists",
+    "album": "Test Compilation",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "Various Artists",
+    "album": "Test Compilation",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Fixture Downtempo",
+        "score": 0.72,
+        "evidence": {
+          "artist_prior": 0.72,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test & Ambient",
+        "score": 0.51,
+        "evidence": {
+          "artist_prior": 0.51,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Fixture Downtempo",
+    "confidence": 0.72,
+    "margin": 0.21,
+    "target_path": null,
+    "structure_slot": "compilations",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "status": "resolved",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:48+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:49+01:00",
+      "event": "identified",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:50+01:00",
+      "event": "assigned",
+      "by": "intake@0.2.1"
+    }
+  ]
+}
