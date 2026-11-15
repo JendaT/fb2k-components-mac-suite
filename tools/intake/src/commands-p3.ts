@@ -16,7 +16,9 @@ import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
-import { IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, mapLimit, sha1Hex, walkDirs } from "./util.ts";
+import {
+  IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, isVariousArtists, mapLimit, sha1Hex, walkDirs,
+} from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -433,7 +435,10 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         audio_hashes: plan.audio.map((a) => a.hash), target_path: target, cli_version: CLI_VERSION,
       });
       const artist = sc.identification?.artist ?? sc.cluster.albumartist;
-      if (rdir && artist && sc.proposal) {
+      // No count for a Various Artists credit (doc 02, amendment 003): it would
+      // build the artist prior that assign ignores for VA, as assign's
+      // feedback does not record one either.
+      if (rdir && artist && !isVariousArtists(artist) && sc.proposal) {
         genre ??= loadGenreMap(rdir);
         recordPlacement(genre, artist, sc.proposal.target_collection);
         saveGenreMap(rdir, genre);
