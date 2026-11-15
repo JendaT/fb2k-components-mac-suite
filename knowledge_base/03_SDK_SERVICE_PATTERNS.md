@@ -52,6 +52,8 @@ void on_quit() { delete g_callback; g_callback = nullptr; }
 
 See `07_DEBUGGING.md` Section 4.0 for diagnosis and fix details.
 
+The reverse holds at quit: a global `service_ptr_t` (a `visualisation_stream`, a live-edit scope, any service) still set when the process exits is released by `exit()` after the core has torn its services down, throws `exception_service_not_found` and aborts foobar2000 (crash report: `service_release_safe` under `__cxa_finalize`). Release such globals in `initquit::on_quit()`.
+
 ### 1.3 Component Version Declaration
 
 Required in every component's Main.mm:

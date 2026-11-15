@@ -8,6 +8,8 @@
 #import "PlaybackCallback.h"
 #import "../UI/WaveformSeekbarController.h"
 #import "../Core/WaveformService.h"
+#import "BpmDependency.h"
+#import "BeatLoop.h"
 #include <vector>
 #include <mutex>
 
@@ -164,10 +166,13 @@ class waveform_init : public initquit {
 public:
     void on_init() override {
         getWaveformService().initialize();
+        // After BPM Analyzer was installed from the preferences: say how it went
+        [waveseekBpmDependency() resumeAfterLaunch];
         console::info("[WaveSeek] Waveform Seekbar initialized");
     }
 
     void on_quit() override {
+        beatloop::shutdown();
         getWaveformService().shutdown();
     }
 };

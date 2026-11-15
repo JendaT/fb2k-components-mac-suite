@@ -1,0 +1,23 @@
+[
+ {
+  "ref": "refs/tags/bpm-v0.1.0",
+  "object": {
+   "type": "tag",
+   "sha": "e915112511a89a91ee571cf0220636d826664a3f"
+  }
+ },
+ {
+  "ref": "refs/tags/bpm-v0.1.0-rc1",
+  "object": {
+   "type": "tag",
+   "sha": "0000000000000000000000000000000000000000"
+  }
+ },
+ {
+  "ref": "refs/tags/bpm-vnext",
+  "object": {
+   "type": "tag",
+   "sha": "0000000000000000000000000000000000000000"
+  }
+ }
+]

@@ -147,6 +147,100 @@ music-rules/
 CLI locates it via `INTAKE_RULES_DIR` env or `~/.config/intake/config.toml`.
 The public repo contains schema docs + fixtures only, never the real maps.
 
+## Library layout and credit rules (amendment 003)
+
+Normative. Where earlier text in this document disagrees (e.g. the "values
+pending the five TBDs" note under Output, the Feedback loop for VA roots,
+any note that gives the compilations slot `target_path: null` or calls its
+layout pending), this section wins. The singles slot stays pending
+(below).
+
+### Various Artists credits
+
+A Various Artists (VA) credit is an artist value that, ignoring case and
+diacritics and with whitespace, `.` and `/` removed, reads
+`variousartists`, `various` or `va` (Various Artists, Various, VA, V.A.,
+V/A).
+
+- **Assign:** for a VA credit the artist tier and the similar tier are
+  unavailable: no artist prior, no short-circuit, no similar-artist vote,
+  and `wa`/`ws` stay out of the score denominator. Label and style decide.
+- **Feedback:** a user override on a VA root is still appended to
+  `overrides.log.yaml`, but does not increment feedback in
+  `genre-map.yaml`.
+- **Placement:** the genre-map count update at execute (doc 03 Execute
+  protocol step 5) skips a VA credit.
+- **Bootstrap** never records a VA-like name as an artist. VA-like means a
+  VA credit, or a name that starts with a VA token followed by whitespace:
+  `VA` (uppercase only), or `V.A.`, `V.A`, `V/A`, `Various Artists` in any
+  case. A VA release still counts as a release, and for its label.
+
+### No-label credits
+
+A no-label credit is a label value that names no label: a self-released
+spelling (Self-Released, Self Released, Self Release, Self-Releases,
+SelfReleased) or `No Label`, each as the whole value in any case and with
+any separators, or any value starting with `Not On Label` (Discogs:
+`Not On Label (X Self-released)`).
+
+- It is never a key in `label-map.yaml`.
+- In assign, an input label of that kind is absent, not evidence: no label
+  prior, and `wl` stays out of the score denominator, as for a null label.
+
+### Library layout for new placements
+
+Decides the artist-folder threshold and the compilations slot. A placement
+targets a collection dir `<tier root>/<Collection>` in the target tier.
+Within it:
+
+| Release | `target_path` under the tier root | `structure_slot` |
+|---|---|---|
+| Artist already has ≥1 release in this collection | `<Collection>/<Artist>/<release folder>` | `artist` |
+| Artist has no release in this collection | `<Collection>/[Releases]/<release folder>` | `releases` |
+| Various Artists release | `<Collection>/[Compilations]/<release folder>` | `compilations` |
+
+- "Already has" is read from the collection dir on disk at propose time:
+  an existing artist dir, or a release of that artist in `[Releases]` or
+  loose in the collection dir. Counting is per collection within one tier:
+  releases in another collection, or in the same collection in another
+  tier, do not count.
+- Artist names are compared after the normalization the assign engine
+  applies to map keys (Unicode NFD with diacritics removed, case folded,
+  whitespace collapsed); a release's artist is parsed from its folder name
+  with the naming grammars. This is interim: fuller name normalization
+  (collabs, aliases, a leading "The") stays pending.
+- Compilations get a real `target_path`; it is no longer `null`.
+- The rule applies to every collection, including collections that still
+  use the old flat layout (release dirs loose in the collection). Those
+  collections are to be converted to the new layout (see Existing library
+  folders).
+- Existing `[Releases]` and `[Compilations]` dirs are reused whatever their
+  case (one collection has `[releases]`/`[compilations]`).
+- Intake never places into any other bracketed dir inside a collection:
+  those are curated selections, and releases in them do not count toward
+  "already has".
+- `<release folder>` is unchanged: the `naming.release` /
+  `naming.release_no_label` template.
+
+### Existing library folders
+
+`propose` and `execute` never move existing library folders.
+
+- When a placement makes an artist's existing release(s) in `[Releases]` or
+  loose in the collection belong in an artist folder, the user is notified,
+  and the move is a separate, approvable action.
+- The same applies to converting an old flat collection to the new layout.
+- That restructure operation (proposal, approval, journaled move, impact on
+  foobar2000 playlist paths) is specified in a later amendment (004).
+
+### Still pending
+
+- Singles slot (`structure_slot: "singles"`, `target_path: null` until
+  decided), collab handling, name normalization, bracket style.
+- Folder name for a no-label credit: a Discogs label `Not On Label (X
+  Self-released)` with catno `none` currently yields a folder name ending
+  in `(Not On Label (X Self-released); none)`.
+
 ## Testing
 
 - Priors unit-tested on a frozen genre-map fixture; collab/alias matrix.

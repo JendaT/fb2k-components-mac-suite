@@ -116,4 +116,11 @@ inline double oscillator(double timeSeconds, double frequencyHz, double phase = 
     return 0.5 + 0.5 * std::sin(timeSeconds * frequencyHz * 2.0 * M_PI + phase);
 }
 
+// The effects' clock locked to a beat grid: the playback position counted
+// from the grid's first beat, a quarter beat ahead, so the oscillator at the
+// beat rate (bpm / 60) peaks exactly on every beat of the grid
+inline double beatSyncedTime(double positionSeconds, double anchorSeconds, double bpm) {
+    return positionSeconds - anchorSeconds + 0.25 * 60.0 / bpm;
+}
+
 } // namespace waveseek

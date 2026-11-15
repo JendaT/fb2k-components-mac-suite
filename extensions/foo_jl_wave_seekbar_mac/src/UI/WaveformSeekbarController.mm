@@ -6,6 +6,7 @@
 //
 
 #import "WaveformSeekbarController.h"
+#include "../../../../shared/PixelSnap.h"
 #import "WaveformSeekbarView.h"
 #import "../Integration/PlaybackCallback.h"
 #import "../Core/WaveformService.h"
@@ -13,25 +14,44 @@
 #import "../Core/ConfigHelper.h"
 #import "../Core/WaveformConfig.h"
 #include "../Core/WaveformGeometry.h"
+#include "../Core/PhraseMarkers.h"
+#include "../../../../shared/jl_beatgrid_api.h"
+#include "../Integration/BeatLoop.h"
 #include <cmath>
 #include <memory>
+
+@class WaveformSeekbarController;
+
+// BPM Analyzer stored a grid: forwarded to the controller on the main thread
+class SeekbarGridNotify : public jl_beatgrid_notify {
+public:
+    __weak WaveformSeekbarController *owner = nil;
+    void on_ready(const metadb_handle_ptr &item) override;
+};
 
 @interface WaveformSeekbarController () {
     metadb_handle_ptr _currentTrack;
     NSTimer *_positionTimer;
     BOOL _isPaused;
     std::unique_ptr<WaveformData> _storedWaveform;  // We own this copy
+    std::shared_ptr<const WaveformDetail> _detail;  // Its fine detail for deep zoom, when there is one
+    ListenerId _detailListenerId;
+    jl_beatgrid::ptr _grids;                        // BPM Analyzer's beat grids; null when not installed
+    service_ptr_t<SeekbarGridNotify> _gridNotify;
+    std::shared_ptr<waveseek::PhraseGrid> _phraseGrid;   // the current track's, for phrase markers
     NSLayoutConstraint *_widthConstraint;           // Current width constraint
     NSLayoutConstraint *_heightConstraint;          // Current height constraint
     BOOL _widthLocked;                              // Track if width is locked
     BOOL _heightLocked;                             // Track if height is locked
     ListenerId _waveformListenerId;                 // For safe listener removal
     NSVisualEffectView *_glassEffectView;           // Blur background when glass mode is on
+    __weak NSWindow *_observedWindow;               // whose screen changes resize a locked width or height
     NSTimer *_analysisWatchdog;                     // Breaks a stuck "Analyzing..." state
     int _analysisRetries;                           // Re-requests already spent on this track
 }
 
 @property (nonatomic, readwrite) WaveformSeekbarView *waveformView;
+- (void)beatgridReady:(const metadb_handle_ptr &)item;
 
 @end
 
@@ -84,6 +104,98 @@
 
 - (void)handleSettingsChanged:(NSNotification *)notification {
     [self updateGlassBackground];
+    [self applyLockedSize];   // following the screen switched on or off
+    // The mixer's gapless loop needs its DSP in the playback chain, and a
+    // short output buffer for changes to be heard at once
+    [self applyMixerAudio];
+    // Phrase markers or beat-synced animation switched on or off
+    if (![self wantsBeatGrid]) [self dropPhraseGrid];
+    else if (!_phraseGrid) [self fetchPhraseGrid];
+    // The fine detail switched on or off
+    if (!WaveformService::detailEnabled()) {
+        [self dropDetail];
+    } else if (!_detail && _storedWaveform && _currentTrack.is_valid()) {
+        getWaveformService().requestDetail(_currentTrack);
+    }
+}
+
+#pragma mark - Beat Grid
+
+// The grid is wanted for phrase markers, beat jumps and loops, and for
+// animated cursor effects synced to the beat
+- (BOOL)wantsBeatGrid {
+    using namespace waveform_config;
+    if (getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers)) return YES;
+    if (getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer) return YES;
+    if (!getConfigBool(kKeyBpmSync, kDefaultBpmSync) || !getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion)) {
+        return NO;
+    }
+    return cursorEffectSyncsToBeat(cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect)));
+}
+
+// The current track's grid from BPM Analyzer when it is wanted:
+// fetched when stored, else asked for (urgent: it is playing). Called once
+// the seekbar's own scan of the track is done, so the decodes don't compete.
+- (void)fetchPhraseGrid {
+    if (!_grids.is_valid() || !_currentTrack.is_valid() || !_storedWaveform || ![self wantsBeatGrid]) return;
+    switch (_grids->get_status(_currentTrack)) {
+        case jl_beatgrid::ready: {
+            auto grid = std::make_shared<waveseek::PhraseGrid>();
+            pfc::array_t<jl_beat_region> regions;
+            pfc::array_t<jl_bar_stat> bars;
+            if (!_grids->get(_currentTrack, grid->summary, regions, bars)) return;
+            grid->regions.assign(regions.get_ptr(), regions.get_ptr() + regions.get_size());
+            grid->bars.assign(bars.get_ptr(), bars.get_ptr() + bars.get_size());
+            // Section by section, for markers that follow a new grid
+            pfc::array_t<jl_grid_section> sections;
+            pfc::array_t<jl_bar_stat> sectionBars;
+            if (_grids->get_sections(_currentTrack, sections, sectionBars)) {
+                grid->sections.assign(sections.get_ptr(), sections.get_ptr() + sections.get_size());
+                grid->sectionBars.assign(sectionBars.get_ptr(), sectionBars.get_ptr() + sectionBars.get_size());
+            }
+            // The view takes the new grid before the old one is released
+            self.waveformView.phraseGrid = grid.get();
+            _phraseGrid = grid;
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: " << pfc::format_float(grid->summary.bpm, 0, 2) << " BPM, "
+                                     << grid->bars.size() << " bars, "
+                                     << (grid->sections.empty() ? 1 : grid->sections.size()) << " grid(s)";
+            break;
+        }
+        case jl_beatgrid::not_analysed:
+            _grids->request(_currentTrack, true);
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: asked BPM Analyzer for this track";
+            break;
+        case jl_beatgrid::unavailable:
+            FB2K_console_formatter() << "[WaveSeek] Beat grid: none for this track (no steady beat, or analysis failed)";
+            break;
+        default:   // queued or analysing: on_ready follows
+            break;
+    }
+}
+
+- (void)beatgridReady:(const metadb_handle_ptr &)item {
+    if (_currentTrack.is_valid() && item.is_valid() && _currentTrack->get_location() == item->get_location()) {
+        [self fetchPhraseGrid];
+    }
+}
+
+- (void)dropPhraseGrid {
+    self.waveformView.phraseGrid = nullptr;
+    _phraseGrid.reset();
+}
+
+// The view stops pointing at the detail before it is released
+- (void)dropDetail {
+    if (!_detail) return;
+    self.waveformView.waveformDetail = nullptr;
+    _detail.reset();
+    [self.waveformView refreshDisplay];
+}
+
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.waveformView);
 }
 
 - (void)viewDidLoad {
@@ -96,30 +208,26 @@
         [self.view.heightAnchor constraintGreaterThanOrEqualToConstant:40]
     ]];
 
-    // Restore locked width if previously set
+    // Restore a locked width and height (sized for the screen once the view
+    // is in a window)
     using namespace waveform_config;
-    if (getConfigBool(kKeyLockWidth, false)) {
-        int64_t lockedWidth = getConfigInt(kKeyLockedWidth, 400);
-        if (lockedWidth >= 100) {
-            _widthLocked = YES;
-            _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedWidth)];
-            _widthConstraint.priority = NSLayoutPriorityRequired;
-            _widthConstraint.active = YES;
-            FB2K_console_formatter() << "[WaveSeek] Restored locked width: " << lockedWidth << " pixels";
-        }
+    if (getConfigBool(kKeyLockWidth, false) && getConfigInt(kKeyLockedWidth, 400) >= kMinLockedWidth) {
+        _widthLocked = YES;
+        _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:[self lockedLength:YES]];
+        _widthConstraint.priority = NSLayoutPriorityRequired;
+        _widthConstraint.active = YES;
     }
+    if (getConfigBool(kKeyLockHeight, false) && getConfigInt(kKeyLockedHeight, 80) >= kMinLockedHeight) {
+        _heightLocked = YES;
+        _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:[self lockedLength:NO]];
+        _heightConstraint.priority = NSLayoutPriorityRequired;
+        _heightConstraint.active = YES;
+    }
+    // Another display, or its resolution changed
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
+                                                 name:NSApplicationDidChangeScreenParametersNotification object:nil];
 
-    // Restore locked height if previously set
-    if (getConfigBool(kKeyLockHeight, false)) {
-        int64_t lockedHeight = getConfigInt(kKeyLockedHeight, 80);
-        if (lockedHeight >= 40) {
-            _heightLocked = YES;
-            _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:static_cast<CGFloat>(lockedHeight)];
-            _heightConstraint.priority = NSLayoutPriorityRequired;
-            _heightConstraint.active = YES;
-            FB2K_console_formatter() << "[WaveSeek] Restored locked height: " << lockedHeight << " pixels";
-        }
-    }
+    [self applyMixerAudio];
 
     // Register for playback callbacks
     PlaybackCallbackManager::instance().registerController(self);
@@ -143,12 +251,46 @@
         }
     });
 
+    // BPM Analyzer's beat grids, when it is installed
+    if (fb2k::std_api_try_get(_grids)) {
+        _gridNotify = fb2k::service_new<SeekbarGridNotify>();
+        _gridNotify->owner = self;
+        _grids->add_notify(_gridNotify);
+    }
+
+    // Fine detail for deep zoom, which may come before or after the waveform
+    _detailListenerId = getWaveformService().addDetailListener(
+        [weakSelf](const metadb_handle_ptr& track, std::shared_ptr<const WaveformDetail> detail) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || !detail || !WaveformService::detailEnabled()) return;
+            if (strongSelf->_currentTrack.is_valid() && track.is_valid() &&
+                strongSelf->_currentTrack->get_location() == track->get_location()) {
+                // The view takes the new detail before the old one is released
+                strongSelf.waveformView.waveformDetail = detail.get();
+                strongSelf->_detail = detail;
+                [strongSelf.waveformView refreshDisplay];
+            }
+        });
+
     // Check if something is already playing
     [self syncWithCurrentPlayback];
 }
 
 - (void)viewDidAppear {
     [super viewDidAppear];
+    // The window's screen sizes a locked width or height
+    if (self.view.window != _observedWindow) {
+        if (_observedWindow) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self name:NSWindowDidChangeScreenNotification
+                                                          object:_observedWindow];
+        }
+        _observedWindow = self.view.window;
+        if (_observedWindow) {
+            [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(screenChanged:)
+                                                         name:NSWindowDidChangeScreenNotification object:_observedWindow];
+        }
+    }
+    [self applyLockedSize];
 
     // A layout change tears this element down and builds a fresh one. If the
     // scan for the current track was already in flight, its result went to the
@@ -172,8 +314,10 @@
     [self stopAnalysisWatchdog];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     PlaybackCallbackManager::instance().unregisterController(self);
-    // Remove only our listener from the waveform service
+    // Remove only our listeners from the waveform service
     getWaveformService().removeListener(_waveformListenerId);
+    getWaveformService().removeDetailListener(_detailListenerId);
+    if (_grids.is_valid() && _gridNotify.is_valid()) _grids->remove_notify(_gridNotify);
 }
 
 #pragma mark - Playback State Sync
@@ -214,6 +358,8 @@
 #pragma mark - Playback Event Handlers
 
 - (void)handleNewTrack:(metadb_handle_ptr)track duration:(double)duration bpm:(double)bpm {
+    [self dropDetail];
+    [self dropPhraseGrid];
     _currentTrack = track;
     _isPaused = NO;
     _storedWaveform.reset();  // Clear previous waveform
@@ -239,6 +385,8 @@
 }
 
 - (void)handlePlaybackStop {
+    [self dropDetail];
+    [self dropPhraseGrid];
     _currentTrack.release();
     _isPaused = NO;
     _storedWaveform.reset();  // Release stored waveform
@@ -255,6 +403,9 @@
 }
 
 - (void)handleSeekToTime:(double)time {
+    // The seekbar's own seek: the cursor shows where it plays from, not an
+    // earlier start (a pre-roll)
+    if ([self.waveformView ownSeekPendingFor:time]) return;
     if (self.waveformView.trackDuration > 0) {
         self.waveformView.playbackPosition = time / self.waveformView.trackDuration;
         [self.waveformView refreshDisplay];
@@ -262,6 +413,7 @@
 }
 
 - (void)handlePlaybackTime:(double)time {
+    time = [self.waveformView displayedTimeFor:time];
     if (self.waveformView.trackDuration > 0) {
         self.waveformView.playbackPosition = time / self.waveformView.trackDuration;
         [self.waveformView refreshDisplay];
@@ -293,6 +445,10 @@
         _storedWaveform = std::make_unique<WaveformData>(*waveform);
         // Point view to our owned copy
         self.waveformView.waveformData = _storedWaveform.get();
+        if (!_detail && _currentTrack.is_valid() && WaveformService::detailEnabled()) {
+            getWaveformService().requestDetail(_currentTrack);
+        }
+        if (!_phraseGrid) [self fetchPhraseGrid];
     }
 
     [self.waveformView refreshDisplay];
@@ -300,8 +456,9 @@
 
 #pragma mark - Analysis Watchdog
 
-// Longest a scan is allowed to run before we assume its result is never coming.
-// Generous enough for a long track on a slow or network volume.
+// How long to wait for a result before checking whether it was lost (no scan
+// running for the track). A scan still running is waited for: a long stream
+// downloads as it decodes and can take minutes.
 static const NSTimeInterval kAnalysisTimeout = 30.0;
 static const int kAnalysisMaxRetries = 1;
 
@@ -326,6 +483,11 @@ static const int kAnalysisMaxRetries = 1;
 
     if (!self.waveformView.analyzing) return;
 
+    if (_currentTrack.is_valid() && getWaveformService().isScanning(_currentTrack)) {
+        [self startAnalysisWatchdog];
+        return;
+    }
+
     if (_currentTrack.is_valid() && _analysisRetries < kAnalysisMaxRetries) {
         _analysisRetries++;
         FB2K_console_formatter() << "[WaveSeek] Analysis timed out, re-requesting waveform";
@@ -342,7 +504,8 @@ static const int kAnalysisMaxRetries = 1;
 #pragma mark - Position Timer
 
 - (void)startPositionTimer {
-    [self stopPositionTimer];
+    [_positionTimer invalidate];    // restarted: the view's decode-ahead goes on
+    _positionTimer = nil;
 
     // 60 FPS for smooth animation
     // Use block-based timer with weak self to avoid retain cycle
@@ -363,6 +526,7 @@ static const int kAnalysisMaxRetries = 1;
 }
 
 - (void)stopPositionTimer {
+    if (_positionTimer) [self.waveformView positionChecksStopped];
     [_positionTimer invalidate];
     _positionTimer = nil;
 }
@@ -370,37 +534,34 @@ static const int kAnalysisMaxRetries = 1;
 - (void)updatePosition:(NSTimer *)timer {
     @autoreleasepool {
         if (_isPaused) return;
-        if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
+        // On whole device pixels while in sight (a beat loop below runs either way)
+        if (self.view.window && !self.view.isHiddenOrHasHiddenAncestor) {
+            JLPixelSnapContent(self.view, self.waveformView);
+        }
 
         try {
             auto pc = playback_control::get();
             if (pc.is_valid() && pc->is_playing() && !pc->is_paused()) {
                 double position = pc->playback_get_position();
+                // A beat loop keeps going while the view is out of sight
+                [self.waveformView followLoopAt:position];
+                position = [self.waveformView displayedTimeFor:position];
+                if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
                 if (self.waveformView.trackDuration > 0) {
                     double newPos = position / self.waveformView.trackDuration;
 
-                    // Redraw once the cursor moves at least a quarter pixel, or
-                    // the time chip reaches the next second
+                    // Redraw once the cursor moves at least a quarter pixel (of
+                    // the zoomed waveform), or the time chip reaches the next second
                     CGFloat viewWidth = self.waveformView.bounds.size.width;
-                    double threshold = waveseek::positionRedrawThreshold(viewWidth);
+                    double threshold = waveseek::positionRedrawThreshold(viewWidth) / self.waveformView.zoomFactor;
                     const double oldTime = self.waveformView.playbackPosition * self.waveformView.trackDuration;
                     const bool nextSecond = self.waveformView.showCursorTime &&
                                             std::floor(position) != std::floor(oldTime);
 
                     // Animated cursor effects need continuous redraw to stay smooth
-                    BOOL animatedEffect = NO;
-                    if (self.waveformView.shadePlayedPortion && self.waveformView.playedDimming > 0) {
-                        switch (self.waveformView.cursorEffect) {
-                            case WaveformCursorEffectGlow:
-                            case WaveformCursorEffectScanline:
-                            case WaveformCursorEffectPulse:
-                            case WaveformCursorEffectShimmer:
-                                animatedEffect = YES;
-                                break;
-                            default:
-                                break;
-                        }
-                    }
+                    const BOOL animatedEffect = self.waveformView.shadePlayedPortion &&
+                                                self.waveformView.playedDimming > 0 &&
+                                                waveform_config::cursorEffectAnimates((int)self.waveformView.cursorEffect);
 
                     if (animatedEffect || nextSecond || fabs(newPos - self.waveformView.playbackPosition) > threshold) {
                         self.waveformView.playbackPosition = newPos;
@@ -429,6 +590,15 @@ static const int kAnalysisMaxRetries = 1;
     } catch (...) {
         console::error("[WaveSeek] Unknown seek error");
     }
+}
+
+- (double)waveformSeekbarViewPlaybackTime:(WaveformSeekbarView *)view {
+    try {
+        auto pc = playback_control::get();
+        if (pc.is_valid() && pc->is_playing()) return pc->playback_get_position();
+    } catch (...) {
+    }
+    return NAN;
 }
 
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point {
@@ -476,82 +646,98 @@ static const int kAnalysisMaxRetries = 1;
     } @catch (...) {
         console::error("[WaveSeek] Failed to open preferences");
     }
+    // Already open behind other windows: show_preferences switches the page
+    // but leaves it there, so bring it forward
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (NSWindow *window in NSApp.windows) {
+            if (window.isVisible && [window.title rangeOfString:@"Preferences" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                [window makeKeyAndOrderFront:nil];
+                break;
+            }
+        }
+        [NSApp activateIgnoringOtherApps:YES];
+    });
+}
+
+#pragma mark - Mixer Audio
+
+- (void)applyMixerAudio {
+    using namespace waveform_config;
+    const bool mixer = getConfigInt(kKeyControlsMode, kDefaultControlsMode) == ControlsMixer;
+    beatloop::setInChain(mixer);
+    beatloop::applyMixerBuffer(mixer, static_cast<int>(getConfigInt(kKeyMixerOutputBufferMs, kDefaultMixerOutputBufferMs)));
+}
+
+#pragma mark - Locked Size
+
+// A locked width or height: the points stored when it was locked, or while
+// it follows the screen, the same share of the window's screen as then
+- (CGFloat)lockedLength:(BOOL)width {
+    using namespace waveform_config;
+    const CGFloat minimum = width ? kMinLockedWidth : kMinLockedHeight;
+    const int64_t points = getConfigInt(width ? kKeyLockedWidth : kKeyLockedHeight, width ? 400 : 80);
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    if (!getConfigBool(kKeyLockRelative, kDefaultLockRelative) || !screen) return std::max<CGFloat>(minimum, points);
+    const CGFloat screenLength = width ? screen.frame.size.width : screen.frame.size.height;
+    if (!(screenLength > 0)) return std::max<CGFloat>(minimum, points);
+    const char *shareKey = width ? kKeyLockedWidthShare : kKeyLockedHeightShare;
+    int64_t share = getConfigInt(shareKey, 0);
+    if (share <= 0) {   // locked before shares were kept: its share of this screen
+        share = std::llround(points / screenLength * 1e6);
+        setConfigInt(shareKey, share);
+    }
+    return std::max<CGFloat>(minimum, std::round(share / 1e6 * screenLength));
+}
+
+- (void)applyLockedSize {
+    if (_widthLocked && _widthConstraint) _widthConstraint.constant = [self lockedLength:YES];
+    if (_heightLocked && _heightConstraint) _heightConstraint.constant = [self lockedLength:NO];
+}
+
+- (void)screenChanged:(NSNotification *)notification {
+    [self applyLockedSize];
+}
+
+// Locks to the current length, kept in points and as a share of the screen
+- (void)lockLength:(BOOL)width {
+    using namespace waveform_config;
+    const CGFloat length = width ? self.view.frame.size.width : self.view.frame.size.height;
+    NSLayoutConstraint *__strong &constraint = width ? _widthConstraint : _heightConstraint;
+    if (constraint) constraint.active = NO;
+    constraint = [width ? self.view.widthAnchor : self.view.heightAnchor constraintEqualToConstant:length];
+    constraint.priority = NSLayoutPriorityRequired;
+    constraint.active = YES;
+    setConfigBool(width ? kKeyLockWidth : kKeyLockHeight, true);
+    setConfigInt(width ? kKeyLockedWidth : kKeyLockedHeight, static_cast<int64_t>(length));
+    NSScreen *screen = self.view.window.screen ?: NSScreen.mainScreen;
+    const CGFloat screenLength = screen ? (width ? screen.frame.size.width : screen.frame.size.height) : 0;
+    setConfigInt(width ? kKeyLockedWidthShare : kKeyLockedHeightShare,
+                 screenLength > 0 ? std::llround(length / screenLength * 1e6) : 0);
+}
+
+- (void)unlockLength:(BOOL)width {
+    using namespace waveform_config;
+    NSLayoutConstraint *__strong &constraint = width ? _widthConstraint : _heightConstraint;
+    if (constraint) constraint.active = NO;
+    constraint = nil;
+    setConfigBool(width ? kKeyLockWidth : kKeyLockHeight, false);
 }
 
 - (void)menuToggleLockWidth:(NSMenuItem *)sender {
-    using namespace waveform_config;
-
     _widthLocked = !_widthLocked;
-
-    if (_widthLocked) {
-        // Lock to current width
-        CGFloat currentWidth = self.view.frame.size.width;
-
-        // Remove existing width constraint if any
-        if (_widthConstraint) {
-            [self.view removeConstraint:_widthConstraint];
-        }
-
-        // Create exact width constraint
-        _widthConstraint = [self.view.widthAnchor constraintEqualToConstant:currentWidth];
-        _widthConstraint.priority = NSLayoutPriorityRequired;
-        _widthConstraint.active = YES;
-
-        // Save to config
-        setConfigBool(kKeyLockWidth, YES);
-        setConfigInt(kKeyLockedWidth, static_cast<int64_t>(currentWidth));
-
-        FB2K_console_formatter() << "[WaveSeek] Width locked to " << static_cast<int>(currentWidth) << " pixels";
-    } else {
-        // Unlock - remove constraint
-        if (_widthConstraint) {
-            [self.view removeConstraint:_widthConstraint];
-            _widthConstraint = nil;
-        }
-
-        // Save to config
-        setConfigBool(kKeyLockWidth, NO);
-
-        FB2K_console_formatter() << "[WaveSeek] Width unlocked";
-    }
+    if (_widthLocked) [self lockLength:YES];
+    else [self unlockLength:YES];
 }
 
 - (void)menuToggleLockHeight:(NSMenuItem *)sender {
-    using namespace waveform_config;
-
     _heightLocked = !_heightLocked;
-
-    if (_heightLocked) {
-        // Lock to current height
-        CGFloat currentHeight = self.view.frame.size.height;
-
-        // Remove existing height constraint if any
-        if (_heightConstraint) {
-            [self.view removeConstraint:_heightConstraint];
-        }
-
-        // Create exact height constraint
-        _heightConstraint = [self.view.heightAnchor constraintEqualToConstant:currentHeight];
-        _heightConstraint.priority = NSLayoutPriorityRequired;
-        _heightConstraint.active = YES;
-
-        // Save to config
-        setConfigBool(kKeyLockHeight, YES);
-        setConfigInt(kKeyLockedHeight, static_cast<int64_t>(currentHeight));
-
-        FB2K_console_formatter() << "[WaveSeek] Height locked to " << static_cast<int>(currentHeight) << " pixels";
-    } else {
-        // Unlock - remove constraint
-        if (_heightConstraint) {
-            [self.view removeConstraint:_heightConstraint];
-            _heightConstraint = nil;
-        }
-
-        // Save to config
-        setConfigBool(kKeyLockHeight, NO);
-
-        FB2K_console_formatter() << "[WaveSeek] Height unlocked";
-    }
+    if (_heightLocked) [self lockLength:NO];
+    else [self unlockLength:NO];
 }
 
 @end
+
+void SeekbarGridNotify::on_ready(const metadb_handle_ptr &item) {
+    WaveformSeekbarController *controller = owner;
+    [controller beatgridReady:item];
+}

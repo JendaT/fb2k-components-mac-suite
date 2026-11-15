@@ -4,6 +4,7 @@
 //
 
 #import "SpectrumController.h"
+#include "../../../../shared/PixelSnap.h"
 #include "../Core/SpectrumAnalyzer.h"
 #include "../Core/SpectrumConfig.h"
 #include <memory>
@@ -141,6 +142,12 @@ namespace {
     self.view = container;
 
     [self updateGlassBackground];
+}
+
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.spectrumView);
 }
 
 - (void)viewDidLoad {
@@ -319,6 +326,7 @@ static const CFTimeInterval kMinTickInterval = 0.0105;
         if (g_shutdown.load()) { [self stopTimer]; return; }
         const double dt = _lastTick > 0 ? now - _lastTick : 1.0 / 60.0;
         _lastTick = now;
+        JLPixelSnapContent(self.view, self.spectrumView);
 
         NSWindow *window = self.view.window;
         if (!window || self.view.isHiddenOrHasHiddenAncestor) return;

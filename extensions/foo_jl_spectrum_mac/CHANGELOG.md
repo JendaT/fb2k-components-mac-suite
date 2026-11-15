@@ -2,6 +2,11 @@
 
 All notable changes to Spectrum Analyzer will be documented in this file.
 
+## [1.1.1] - 2026-11-09
+
+### Fixed
+- **Pixel alignment**: The drawing view sits on whole device pixels, so a panel placed between pixels by a splitter is no longer resampled every frame (thanks @Scannou, #59).
+
 ## [1.1.0] - 2026-10-30
 
 Display P3 colors contributed by @Scannou (#55).

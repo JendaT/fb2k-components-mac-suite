@@ -14,8 +14,8 @@
 #define PLORG_VERSION_INT 151
 
 // Waveform Seekbar
-#define WAVEFORM_VERSION "2.0.0"
-#define WAVEFORM_VERSION_INT 200
+#define WAVEFORM_VERSION "2.1.0"
+#define WAVEFORM_VERSION_INT 210
 
 // Last.fm Scrobbler
 #define SCROBBLE_VERSION "1.4.1"
@@ -30,8 +30,8 @@
 #define BIOGRAPHY_VERSION_INT 110
 
 // Queue Manager
-#define QUEUE_MANAGER_VERSION "1.2.0"
-#define QUEUE_MANAGER_VERSION_INT 120
+#define QUEUE_MANAGER_VERSION "1.2.1"
+#define QUEUE_MANAGER_VERSION_INT 121
 
 // Cloud Streamer
 #define CLOUD_STREAMER_VERSION "0.2.0"
@@ -50,12 +50,16 @@
 #define TIDAL_VERSION_INT 040
 
 // Spectrum Analyzer
-#define SPECTRUM_VERSION "1.1.0"
-#define SPECTRUM_VERSION_INT 110
+#define SPECTRUM_VERSION "1.1.1"
+#define SPECTRUM_VERSION_INT 111
 
 // Vectorscope
-#define VECTORSCOPE_VERSION "1.1.0"
-#define VECTORSCOPE_VERSION_INT 110
+#define VECTORSCOPE_VERSION "1.1.1"
+#define VECTORSCOPE_VERSION_INT 111
+
+// Spectrogram
+#define SPECTROGRAM_VERSION "0.1.0"
+#define SPECTROGRAM_VERSION_INT 010
 
 // Intake (music intake pipeline — SimPlaylist decorator provider)
 #define INTAKE_VERSION "0.1.0"

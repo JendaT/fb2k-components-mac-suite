@@ -2,12 +2,16 @@
 
 All notable changes to Playlist Organizer will be documented in this file.
 
-## [1.5.1] - 2026-09-25
+## [1.5.1] - 2026-11-09
 
 ### Changed
 - **Requires macOS 12**: Built with Xcode 27, which cannot target macOS 11.
+- **About**: Shows the layout element name (`plorg`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+- **foobar2000 SDK 2026-10-01**: Built against the current SDK.
 
 ### Fixed
+- **Playing playlist marker**: The play icon and bold name stay on the playlist that is playing instead of following the selected one; they clear on stop and stay on pause (thanks @Scannou, #54).
 - **Crash on restart after a repair**: foobar2000 could be reopened while the migration still held the database, logging "SQLite error" and segfaulting. The migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database.
 - **Database growth**: cached rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and no longer needs a VACUUM to give the space back.
 - **Migration speed**: 29.1s down to 4.6s on a 2.35 GB / 157,781-row database, with a byte-identical result.
@@ -16,6 +20,7 @@ All notable changes to Playlist Organizer will be documented in this file.
 
 ### Added
 - **`Scripts/volume_registry_prune.sh`**: Removes foobar2000 volume bookmarks for the music share that no live playlist or cached metadata uses; each stale bookmark is a way for the share to be mounted a second time. Dry run by default; refuses to write while foobar2000 runs.
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
 
 ## [1.5.0] - 2026-08-26
 

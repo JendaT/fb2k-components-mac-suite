@@ -271,12 +271,16 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Playlist Organizer
 
-### [1.5.1] - 2026-09-25
+### [1.5.1] - 2026-11-09
 
 #### Changed
 - **Requires macOS 12**: built with Xcode 27, which cannot target macOS 11
+- **About**: shows the layout element name and the preferences path; MIT license line instead of the copyright notice
+- **Preferences title**: same size as foobar2000's own page titles
+- **foobar2000 SDK 2026-10-01**: built against the current SDK
 
 #### Fixed
+- **Playing playlist marker**: the play icon and bold name stay on the playing playlist instead of the selected one (thanks @Scannou, #54)
 - **Crash on restart after a repair**: the migration now runs on a staged copy and is swapped in by rename, so reopening foobar2000 while it works cannot disturb the live database
 - **Database growth**: rows are renamed in place instead of copied and deleted, so the file no longer doubles during a migration and needs no VACUUM
 - **Migration speed**: 29.1s down to 4.6s on a 2.35 GB database, byte-identical result
@@ -285,6 +289,7 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 #### Added
 - **`Scripts/volume_registry_prune.sh`**: removes unused volume bookmarks for the music share; dry run by default, refuses to write while foobar2000 runs
+- **Component details**: a "?" button next to the preferences title shows the component file, version and layout element names
 
 ### [1.5.0] - 2026-08-26
 
@@ -360,6 +365,42 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 ---
 
 ## Waveform Seekbar
+
+### [2.1.0] - 2026-11-10
+
+Phrase markers and the mixer need BPM Analyzer 0.1.0 or later.
+
+#### Added
+- **Zoom**: Pinch, mouse wheel or vertical trackpad scroll zooms about the pointer; horizontal scroll pans; Reset zoom button while zoomed.
+- **Zoom settings**: Zoom can be switched off; optional fine detail keeps 7-8x finer detail per track for deeper zoom.
+- **Following the cursor**: Zoomed in, the view follows the cursor at a set spot or keeps it centred.
+- **Phrase markers**: With BPM Analyzer, a line every 16 or 32 beats coloured by how well the music stays on the beat grid.
+- **Follow tempo changes**: Phrase markers and beat-synced effects move to a new grid where the tempo changes or the track is edited.
+- **Install BPM Analyzer**: The phrase marker settings download, verify and install BPM Analyzer when it is missing or too old.
+- **Bottom bar controls**: A cog on hover picks no controls, the mixer, or analytics (readout and loudness summary).
+- **Beat jumps and loops**: The mixer jumps 1-32 beats and loops 1-32 beats on the beat grid, keeping the place in the beat.
+- **Snap**: Mixer toggle (on by default): clicks go to the nearest beat, keeping the place in the beat; off, clicks go exactly where clicked.
+- **Gapless loops and jumps**: A "Beat loop" DSP plays loops, loop changes and jumps as splices, without a gap or a click.
+- **Decode-ahead**: With a beat grid the mixer keeps 32 beats decoded ahead, so jumps forward and back mostly need no seek.
+- **Loop moves and sizes**: Option-drag or Option-jump moves the loop by whole beats; the loop stays set until switched off.
+- **Phrase-aware loops**: Loops started near a 16-beat phrase start begin on it.
+- **Mixer output buffer**: foobar2000's output buffer is short while the mixer is on, so changes are heard at once.
+- **Trusted grid sections**: Grid sections that don't fit their own bars give way to the main grid for beats, jumps and loops.
+- **Locked size follows the screen**: Locked width and height keep their share of the screen across displays.
+- **Experimental cursor effects**: Particles, Firewall and Earthcrusher.
+- **Clear Missing Files**: A Cache button removes only cached tracks whose files were deleted or moved.
+
+#### Changed
+- **Glow cursor effect**: A bloom centred on the cursor line.
+- **Trail cursor effect**: Removed; shows as Gradient.
+- **Redraw speed**: Zooming, resizing and track changes redraw the waveform 3-10x faster.
+- **BPM sync**: With a beat grid from BPM Analyzer, animated cursor effects peak on every beat.
+- **Preferences**: Three columns of settings in a wide preferences window.
+
+#### Fixed
+- **Long streams**: SoundCloud mixes and other long remote tracks no longer end as "No waveform" after 60 s.
+- **Pixel alignment**: The drawing view sits on whole device pixels, so a panel placed between pixels by a splitter is no longer resampled every frame (thanks @Scannou, #59).
+- **Clear Cache**: The cache file now shrinks on disk.
 
 ### [2.0.0] - 2026-10-30
 
@@ -561,6 +602,22 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 ## Queue Manager
 
+### [1.2.1] - 2026-11-07
+
+#### Added
+- **Component details**: A "?" button next to the preferences title shows the component file, version and layout element names, ready to copy.
+
+#### Fixed
+- **Double-click and Enter**: Play the item and keep the rest of the queue instead of clearing it (thanks @Scannou, #57).
+- **Tracks not in a playlist**: Double-click plays the clicked track instead of the first queued one (thanks @Scannou, #57).
+- **Stop After Queue**: Double-clicking the last queued item now stops playback after it (thanks @Scannou, #57).
+- **SimPlaylist drop position**: Tracks dragged from SimPlaylist go in at the drop point instead of at the end of the queue.
+
+#### Changed
+- **About**: New feature list; shows the layout element name (`queue_manager`) and the preferences path; the copyright notice is replaced by the MIT license line.
+- **Preferences title**: Same size as foobar2000's own page titles.
+- **foobar2000 SDK 2026-10-01**: Built against the current SDK.
+
 ### [1.2.0] - 2026-10-02
 
 #### Added
@@ -682,6 +739,11 @@ Redesign and Display P3 colours contributed by @Scannou (#49, #55).
 
 ## Spectrum Analyzer
 
+### [1.1.1] - 2026-11-09
+
+#### Fixed
+- **Pixel alignment**: The drawing view sits on whole device pixels (thanks @Scannou, #59).
+
 ### [1.1.0] - 2026-10-30
 
 Display P3 colors contributed by @Scannou (#55).
@@ -756,6 +818,17 @@ Display P3 colors contributed by @Scannou (#55).
 - **Lifecycle**: Streams released via `initquit` before service teardown (fixes abort on quit).
 
 ## Vectorscope
+
+### [1.1.1] - 2026-11-09
+
+Contributed by @Scannou (#58, #59).
+
+#### Changed
+- **P3 amber**: Dark mid and high bands are now olive and cyan; pick the theme again to get them.
+
+#### Fixed
+- **Main-thread color conversion**: The trace image is built in the window's color space instead of being converted every frame.
+- **Pixel alignment**: The drawing view sits on whole device pixels.
 
 ### [1.1.0] - 2026-10-30
 
@@ -877,7 +950,19 @@ Fixes the long-standing "playback stops until restart" cascade and restores drag
 #### Added
 - Initial public release: browser, search, library, playlists, sync, ISRC matching, album art
 
----
+## Spectrogram
+
+### [0.1.0] - 2026-11-09
+
+First release, contributed by @Scannou (#45).
+
+#### Added
+- **Scrolling spectrogram**: Frequency over time, level as colour; holds on pause and stop.
+- **Analysis**: Reassigned (default), Multi-resolution or Standard mode; levels in dBFS; FFT 1024 to 16384.
+- **Orientation**: Vertical or horizontal, reversible scroll direction, matching the Spectrum Analyzer's setting.
+- **Full screen**: Double-click, with its own orientation setting.
+- **Colours**: Nine colormaps, one ramp per Spectrum Analyzer theme, custom ramp.
+- **Readout**: Click and hold for frequency and nearest note.
 
 ## Intake
 

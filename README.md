@@ -9,12 +9,13 @@ DISCLAIMER: All of this is a WIP, actively tested on my foobar2000 instance, but
 | Extension | Description | Version | Docs |
 |-----------|-------------|---------|------|
 | [SimPlaylist](#simplaylist) | Lightweight playlist viewer with album art and grouping | 1.6.1 | [📖](docs/simplaylist.md) |
-| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.0 | [📖](docs/plorg.md) |
-| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.0.0 | [📖](docs/waveform.md) |
-| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.0 | [📖](docs/spectrum.md) |
-| [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.0 | [📖](docs/vectorscope.md) |
+| [Playlist Organizer](#playlist-organizer) | Tree-based playlist management | 1.5.1 | [📖](docs/plorg.md) |
+| [Waveform Seekbar](#waveform-seekbar) | Waveform seekbar with loudness analysis | 2.1.0 | [📖](docs/waveform.md) |
+| [Spectrum Analyzer](#spectrum-analyzer) | Real-time frequency spectrum with bars or curve display | 1.1.1 | [📖](docs/spectrum.md) |
+| [Vectorscope](#vectorscope) | Stereo goniometer with afterglow and phase correlation meter | 1.1.1 | [📖](docs/vectorscope.md) |
+| [Spectrogram](#spectrogram) | Scrolling spectrogram with sharp bass lines and transients | 0.1.0 | [📖](docs/spectrogram.md) |
 | [Album Art (Extended)](#album-art-extended) | Multi-type album art viewer with selection support | 1.0.1 | [📖](docs/albumart.md) |
-| [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.0 | [📖](docs/queuemanager.md) |
+| [Queue Manager](#queue-manager) | Visual playback queue management | 1.2.1 | [📖](docs/queuemanager.md) |
 | [Last.fm Scrobbler](#lastfm-scrobbler) | Last.fm integration and scrobbling | 1.4.1 | – |
 | [Effects DSP](#effects-dsp) | 11 audio effects (echo, reverb, pitch shift, etc.) | 1.0.0 | – |
 
@@ -69,7 +70,9 @@ Waveform seekbar with per-track loudness analysis. This one was my favorite, a n
 - Simple (Two-tone, Glow, Heat) and Classic (Heat map, Rainbow, Solid) styles; stereo, mono or split (L up, R down)
 - Hover readout (LUFS-S, peak, crest, correlation, Lo/Mid/Hi) and click-to-seek
 - Loudness summary: integrated, LRA, true peak, PLR, clip count; clip markers
-- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Trail, Shimmer), optionally synced to the track's BPM
+- Played part dimming with cursor effects (Gradient, Glow, Scanline, Pulse, Shimmer, plus experimental ones), synced to the beat grid or the track's BPM
+- Zoom with pinch or scroll; the view can follow the cursor
+- With BPM Analyzer: phrase markers every 16 or 32 beats, and a mixer with beat jumps and gapless beat loops that keep the beat
 - Optional time ruler and level scale; themes shared with Spectrum Analyzer
 
 ---
@@ -114,6 +117,26 @@ Stereo vectorscope (goniometer) panel with an oscilloscope-style afterglow and a
 - Meter below, above, left or right of the scope, with adjustable bar thickness and a band showing its recent range
 - Grid with level guides, L / R / M / S labels and adjustable opacity
 - Color presets (P31 green, P3 amber, P4 white and P7 blue phosphors, Nord, Dracula, Gruvbox, ...) with separate light/dark colors, band colors and optional glass background
+
+---
+
+### Spectrogram
+
+Scrolling spectrogram panel: frequency over time, level as color.
+
+| Colormaps | Settings |
+|-----------|----------|
+| ![Spectrogram with the Inferno colormap](docs/images/spectrogram-inferno.png)<br>![Spectrogram with the Viridis colormap](docs/images/spectrogram-viridis.png)<br>![Spectrogram with the P3 amber theme ramp](docs/images/spectrogram-p3-amber.png) | ![Spectrogram Settings](docs/images/spectrogram-settings.png) |
+
+**Features:**
+- Reassigned analysis: thin tonal lines (bass notes included) and short kicks at the same time; multi-resolution and standard modes too
+- Logarithmic, mel, or linear frequency scale with adjustable range (default 20 Hz – 20 kHz)
+- Colormaps (Inferno, Magma, Classic, Viridis, Turbo, ...) plus ramps matching the Spectrum Analyzer themes, with a dB color scale
+- Adjustable top level, dB range, slope and scroll speed; levels calibrated in dBFS
+- Mid, left, right, or side channel
+- Horizontal or vertical orientation (same meaning as in the Spectrum Analyzer, so the two line up), either scroll direction
+- Frequency axis and gridlines; click and hold to read the frequency and note under the cursor
+- Double-click for full screen, with its own orientation setting; freeze and clear from the context menu
 
 ---
 
@@ -193,9 +216,10 @@ Each effect registers as a separate DSP in foobar2000's chain (Preferences > Pla
 |-----------|----------|-------|
 | SimPlaylist | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=simplaylist) | TBD |
 | Playlist Organizer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=plorg) | TBD |
-| Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | TBD |
+| Waveform Seekbar | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=waveform) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,130123.0.html) |
 | Spectrum Analyzer | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrum) | TBD |
 | Vectorscope | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=vectorscope) | TBD |
+| Spectrogram | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=spectrogram) | TBD |
 | Album Art (Extended) | [1.0.1](https://github.com/JendaT/fb2k-components-mac-suite/releases/tag/albumart-v1.0.1) | TBD |
 | Queue Manager | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=Queue+Manager) | [Hydrogenaudio](https://hydrogenaudio.org/index.php/topic,129975.new.html) |
 | Last.fm Scrobbler | [All Releases](https://github.com/JendaT/fb2k-components-mac-suite/releases?q=scrobble) | TBD |
@@ -300,6 +324,7 @@ cd extensions/foo_jl_<name>_mac  # e.g., foo_jl_simplaylist_mac
 - [Queue Manager](docs/queuemanager.md) - Features, configuration, and usage
 - [Spectrum Analyzer](docs/spectrum.md) - Features, configuration, and usage
 - [Vectorscope](docs/vectorscope.md) - Features, configuration, and usage
+- [Spectrogram](docs/spectrogram.md) - Features, configuration, and usage
 
 ### Development
 - [Knowledge Base](knowledge_base/) - SDK patterns and best practices
@@ -335,6 +360,7 @@ Use these names in the layout text:
 | Album Art (Extended) | `albumart_ext` | `foo_jl_album_art`, `jl_album_art`, `jl_albumart`, `jl_albumart_ext` |
 | Queue Manager | `queue_manager` | `Queue Manager`, `QueueManager`, `Queue`, `foo_jl_queue_manager`, `jl_queue_manager` |
 | Last.fm Scrobbler (stats widget) | `lastfm_scrobbler` | `lastfm-scrobbler`, `scrobbler`, `foo_jl_scrobble`, `jl_scrobble` |
+| Spectrogram | `spectrogram` | `Spectrogram`, `foo_jl_spectrogram`, `jl_spectrogram` |
 
 ### Example Layout
 

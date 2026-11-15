@@ -34,4 +34,17 @@ std::vector<size_t> planMove(size_t itemCount,
                              const std::vector<size_t>& sortedSources,
                              size_t destRow);
 
+// One position in a rebuilt queue: an existing entry (by old position)
+// or the n-th newly inserted item.
+struct InsertSlot {
+    bool inserted;  // true: index into the new items; false: old position
+    size_t index;
+};
+
+// Plan inserting `insertCount` new items, in order, before row `destRow`
+// of a queue holding `itemCount` items (an "insert before this row"
+// index; values > itemCount are clamped to itemCount, i.e. append).
+// Returns the full new queue sequence, size itemCount + insertCount.
+std::vector<InsertSlot> planInsert(size_t itemCount, size_t insertCount, size_t destRow);
+
 }  // namespace queue_reorder
