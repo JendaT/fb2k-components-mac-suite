@@ -29,6 +29,22 @@
     return self;
 }
 
+- (instancetype)initRenameFromName:(NSString *)previousName
+                            toName:(NSString *)name
+                       tracksAdded:(NSInteger)added
+                     tracksRemoved:(NSInteger)removed
+                         tidalUUID:(NSString *)uuid {
+    self = [self initWithType:JLTidalSyncChangeTypeRename
+                         name:name
+                  tracksAdded:added
+                tracksRemoved:removed
+                    tidalUUID:uuid];
+    if (self) {
+        _previousName = [previousName copy];
+    }
+    return self;
+}
+
 @end
 
 #pragma mark - JLTidalSyncReport
@@ -39,16 +55,18 @@
     self = [super init];
     if (self) {
         _changes = [changes copy];
-        NSInteger created = 0, updated = 0, deleted = 0, unchanged = 0;
+        NSInteger created = 0, renamed = 0, updated = 0, deleted = 0, unchanged = 0;
         for (JLTidalSyncChange *c in changes) {
             switch (c.changeType) {
                 case JLTidalSyncChangeTypeCreate: created++; break;
+                case JLTidalSyncChangeTypeRename: renamed++; break;
                 case JLTidalSyncChangeTypeUpdate: updated++; break;
                 case JLTidalSyncChangeTypeDelete: deleted++; break;
                 case JLTidalSyncChangeTypeUnchanged: unchanged++; break;
             }
         }
         _totalCreated = created;
+        _totalRenamed = renamed;
         _totalUpdated = updated;
         _totalDeleted = deleted;
         _totalUnchanged = unchanged;
@@ -59,6 +77,10 @@
 - (NSString *)summary {
     NSMutableString *s = [NSMutableString string];
     if (_totalCreated > 0) [s appendFormat:@"%ld new", (long)_totalCreated];
+    if (_totalRenamed > 0) {
+        if (s.length > 0) [s appendString:@", "];
+        [s appendFormat:@"%ld moved", (long)_totalRenamed];
+    }
     if (_totalUpdated > 0) {
         if (s.length > 0) [s appendString:@", "];
         [s appendFormat:@"%ld updated", (long)_totalUpdated];
@@ -73,6 +95,29 @@
     }
     if (s.length == 0) [s appendString:@"No changes"];
     return [s copy];
+}
+
+@end
+
+#pragma mark - JLTidalPullSnapshot
+
+@implementation JLTidalPullSnapshot
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _playlists = @[];
+        _nameByUUID = @{};
+        _tracksByUUID = @{};
+        _failedUUIDs = [NSSet set];
+        _favoriteTracks = @[];
+        _favoriteAlbums = @[];
+        _localCountsByName = @{};
+        _localTrackIDsByName = @{};
+        _nameToUUID = @{};
+        _uuidToName = @{};
+    }
+    return self;
 }
 
 @end
@@ -257,6 +302,164 @@
                                        tracksAdded:0
                                      tracksRemoved:0
                                          tidalUUID:albumKey];
+}
+
++ (NSString *)favoriteTracksKey {
+    return @"__favorites__";
+}
+
++ (BOOL)isFavoritesName:(NSString *)foobarName {
+    if ([foobarName isEqualToString:[self favoriteTracksName]]) return YES;
+    return [foobarName hasPrefix:[self favoriteAlbumNameForTitle:@""]];
+}
+
++ (NSString *)moveCandidateForTargetName:(NSString *)targetName
+                                   title:(NSString *)title
+                              mappedName:(NSString *)mappedName {
+    if (mappedName.length > 0 && ![mappedName isEqualToString:targetName]) {
+        return mappedName;
+    }
+    NSString *legacy = [self foobarNameForTitle:title folderPath:nil];
+    return [legacy isEqualToString:targetName] ? nil : legacy;
+}
+
++ (NSArray<JLTidalSyncChange *> *)pullChangesForSnapshot:(JLTidalPullSnapshot *)s {
+    NSMutableArray<JLTidalSyncChange *> *changes = [NSMutableArray array];
+    // Local names whose remote state could not be verified (fetch failed):
+    // never modified, never proposed for delete.
+    NSMutableSet<NSString *> *protectedNames = [NSMutableSet set];
+    // Old names a Rename takes over: the playlist lives on under its new name.
+    NSMutableSet<NSString *> *consumedNames = [NSMutableSet set];
+
+    // Who wants which local name in this pull. Failed playlists count too:
+    // their claim is unknown, not absent, so both their mapped and their
+    // legacy name count as claimed.
+    NSCountedSet<NSString *> *targetClaims = [NSCountedSet set];
+    NSCountedSet<NSString *> *candidateClaims = [NSCountedSet set];
+    NSMutableDictionary<NSString *, NSString *> *candidateByUUID = [NSMutableDictionary dictionary];
+    for (JLTidalPlaylist *playlist in s.playlists) {
+        NSString *uuid = playlist.playlistUUID;
+        NSString *target = s.nameByUUID[uuid];
+        if (!target) continue;
+        [targetClaims addObject:target];
+        NSString *candidate = [self moveCandidateForTargetName:target
+                                                         title:playlist.title
+                                                    mappedName:s.uuidToName[uuid]];
+        NSMutableSet<NSString *> *claimed = [NSMutableSet set];
+        if (candidate) {
+            candidateByUUID[uuid] = candidate;
+            [claimed addObject:candidate];
+        }
+        if ([s.failedUUIDs containsObject:uuid]) {
+            NSString *legacy = [self foobarNameForTitle:playlist.title folderPath:nil];
+            if (![legacy isEqualToString:target]) [claimed addObject:legacy];
+        }
+        for (NSString *name in claimed) [candidateClaims addObject:name];
+    }
+
+    for (JLTidalPlaylist *playlist in s.playlists) {
+        NSString *uuid = playlist.playlistUUID;
+        NSString *target = s.nameByUUID[uuid];
+        if (!target) continue;
+
+        if ([s.failedUUIDs containsObject:uuid]) {
+            // Unknown remote state: protect every name this playlist may
+            // still have locally, so a flat-named playlist is never deleted
+            // because its folder move could not be verified.
+            [protectedNames addObject:target];
+            NSString *mapped = s.uuidToName[uuid];
+            if (mapped) [protectedNames addObject:mapped];
+            [protectedNames addObject:[self foobarNameForTitle:playlist.title folderPath:nil]];
+            continue;
+        }
+
+        NSArray<JLTidalTrack *> *tracks = s.tracksByUUID[uuid] ?: @[];
+        BOOL targetExists = s.localCountsByName[target] != nil;
+
+        if (!targetExists) {
+            NSString *candidate = candidateByUUID[uuid];
+            NSString *candidateOwner = candidate ? s.nameToUUID[candidate] : nil;
+            BOOL canMove = candidate != nil
+                && s.localCountsByName[candidate] != nil
+                && (candidateOwner == nil || [candidateOwner isEqualToString:uuid])
+                && [candidateClaims countForObject:candidate] == 1
+                && [targetClaims countForObject:candidate] == 0
+                && [targetClaims countForObject:target] == 1
+                && ![self isFavoritesName:candidate]
+                && ![consumedNames containsObject:candidate];
+            if (canMove) {
+                // Diff against the old playlist: identical tracks make a
+                // pure rename.
+                JLTidalSyncChange *diff =
+                    [self pullChangeForName:target
+                                       uuid:uuid
+                                tidalTracks:tracks
+                             foobarTrackIDs:s.localTrackIDsByName[candidate] ?: [NSSet set]];
+                [changes addObject:[[JLTidalSyncChange alloc] initRenameFromName:candidate
+                                                                          toName:target
+                                                                     tracksAdded:diff.tracksAdded
+                                                                   tracksRemoved:diff.tracksRemoved
+                                                                       tidalUUID:uuid]];
+                [consumedNames addObject:candidate];
+                continue;
+            }
+        }
+
+        // nil foobarTrackIDs = playlist absent -> Create; else diff sets
+        NSSet<NSString *> *foobarTrackIDs = nil;
+        if (targetExists) {
+            foobarTrackIDs = s.localTrackIDsByName[target] ?: [NSSet set];
+        }
+        [changes addObject:[self pullChangeForName:target
+                                              uuid:uuid
+                                       tidalTracks:tracks
+                                    foobarTrackIDs:foobarTrackIDs]];
+    }
+
+    // Favorite tracks (skipped entirely when the fetch failed)
+    NSString *favName = [self favoriteTracksName];
+    if (s.favoriteTracksFailed) {
+        [protectedNames addObject:favName];
+    } else {
+        NSNumber *existing = s.localCountsByName[favName];
+        [changes addObject:[self favoritesPullChangeForName:favName
+                                                       uuid:[self favoriteTracksKey]
+                                                 tidalCount:(NSInteger)s.favoriteTracks.count
+                                              existingCount:existing ? existing.integerValue : -1]];
+    }
+
+    // Favorite albums (skipped entirely when the fetch failed)
+    if (!s.favoriteAlbumsFailed) {
+        for (JLTidalAlbum *album in s.favoriteAlbums) {
+            NSString *albumName = [self favoriteAlbumNameForTitle:album.title];
+            [changes addObject:[self favoriteAlbumPullChangeForAlbum:album
+                                                              exists:(s.localCountsByName[albumName] != nil)]];
+        }
+    }
+
+    // Local TIDAL playlists that no longer exist on TIDAL. Sorted so the
+    // preview lists them in a stable order.
+    NSMutableSet<NSString *> *knownNames = [NSMutableSet setWithArray:[changes valueForKey:@"playlistName"]];
+    [knownNames unionSet:protectedNames];
+    [knownNames unionSet:consumedNames];
+    NSString *albumNamePrefix = [self favoriteAlbumNameForTitle:@""];
+    NSArray<NSString *> *localNames =
+        [s.localCountsByName.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *foobarName in localNames) {
+        if (![self isTidalSyncedName:foobarName]) continue;
+        if ([knownNames containsObject:foobarName]) continue;
+        // With the album list unfetched, any album playlist may still exist
+        // remotely - do not propose deleting it.
+        if (s.favoriteAlbumsFailed && [foobarName hasPrefix:albumNamePrefix]) continue;
+        [changes addObject:[[JLTidalSyncChange alloc]
+            initWithType:JLTidalSyncChangeTypeDelete
+                    name:foobarName
+             tracksAdded:0
+           tracksRemoved:s.localCountsByName[foobarName].integerValue
+               tidalUUID:s.nameToUUID[foobarName]]];
+    }
+
+    return [changes copy];
 }
 
 #pragma mark Push planning

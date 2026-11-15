@@ -37,8 +37,6 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 
 // Cached data from preview (used during apply)
 @property (nonatomic, strong) NSDictionary<NSString *, NSArray<JLTidalTrack *> *> *cachedPlaylistTracks;
-@property (nonatomic, strong) NSDictionary<NSString *, JLTidalPlaylist *> *cachedPlaylists;
-@property (nonatomic, strong) NSDictionary<NSString *, NSString *> *cachedFolderPaths;
 @end
 
 @implementation JLTidalPlaylistSync
@@ -59,8 +57,6 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         _nameToUUIDMap = [NSMutableDictionary dictionary];
         _stateQueue = dispatch_queue_create("com.foobar2000.tidal.sync.state", DISPATCH_QUEUE_SERIAL);
         _cachedPlaylistTracks = @{};
-        _cachedPlaylists = @{};
-        _cachedFolderPaths = @{};
         [self loadMappings];
     }
     return self;
@@ -236,9 +232,35 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         nameByUUID[playlist.playlistUUID] = [self foobarNameForPlaylist:playlist folderPath:folderPath];
     }
 
-    fb2k::inMainThread([self, playlists, playlistFolderPaths, allTracks, failedUUIDs,
+    // One consistent view of the sync map for the whole plan. Plain locals
+    // afterwards: a __block variable cannot be captured by the C++ lambda.
+    __block NSDictionary<NSString *, NSString *> *mapNameToUUID = nil;
+    __block NSDictionary<NSString *, NSString *> *mapUUIDToName = nil;
+    dispatch_sync(self.stateQueue, ^{
+        mapNameToUUID = [self.nameToUUIDMap copy];
+        mapUUIDToName = [self.uuidToNameMap copy];
+    });
+    NSDictionary<NSString *, NSString *> *nameToUUID = mapNameToUUID;
+    NSDictionary<NSString *, NSString *> *uuidToName = mapUUIDToName;
+
+    // Local playlists to diff: each fetched playlist's target name and its
+    // move candidate (a Move diffs against the old playlist's tracks).
+    NSMutableSet<NSString *> *namesToDiff = [NSMutableSet set];
+    for (JLTidalPlaylist *playlist in playlists) {
+        NSString *uuid = playlist.playlistUUID;
+        if (!allTracks[uuid]) continue;
+        NSString *target = nameByUUID[uuid];
+        if (!target) continue;
+        [namesToDiff addObject:target];
+        NSString *candidate = [JLTidalSyncPlanner moveCandidateForTargetName:target
+                                                                       title:playlist.title
+                                                                  mappedName:uuidToName[uuid]];
+        if (candidate) [namesToDiff addObject:candidate];
+    }
+
+    fb2k::inMainThread([self, playlists, allTracks, failedUUIDs,
                         favTracks, favTracksError, favAlbums, favAlbumsError,
-                        nameByUUID, completion]() {
+                        nameByUUID, nameToUUID, uuidToName, namesToDiff, completion]() {
         auto pm = playlist_manager::get();
 
         // Snapshot: name -> item count for every fb2k playlist (first
@@ -256,9 +278,7 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 
         // Snapshot: track-ID sets for the playlists we will diff.
         NSMutableDictionary<NSString *, NSSet<NSString *> *> *localTrackIDsByName = [NSMutableDictionary dictionary];
-        for (NSString *uuid in allTracks) {
-            NSString *foobarName = nameByUUID[uuid];
-            if (!foobarName) continue;
+        for (NSString *foobarName in namesToDiff) {
             pfc::string8 nameStr([foobarName UTF8String]);
             t_size idx = pm->find_playlist(nameStr, nameStr.length());
             if (idx != SIZE_MAX) {
@@ -267,116 +287,41 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
             }
         }
 
+        JLTidalPullSnapshot *snapshot = [[JLTidalPullSnapshot alloc] init];
+        snapshot.playlists = playlists;
+        snapshot.nameByUUID = nameByUUID;
+        snapshot.tracksByUUID = allTracks;
+        snapshot.failedUUIDs = failedUUIDs;
+        snapshot.favoriteTracks = favTracks ?: @[];
+        snapshot.favoriteTracksFailed = favTracksError != nil;
+        snapshot.favoriteAlbums = favAlbums ?: @[];
+        snapshot.favoriteAlbumsFailed = favAlbumsError != nil;
+        snapshot.localCountsByName = countsByName;
+        snapshot.localTrackIDsByName = localTrackIDsByName;
+        snapshot.nameToUUID = nameToUUID;
+        snapshot.uuidToName = uuidToName;
+
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [self planPullPreviewWithPlaylists:playlists
-                           playlistFolderPaths:playlistFolderPaths
-                                     allTracks:allTracks
-                                   failedUUIDs:failedUUIDs
-                                     favTracks:favTracks
-                                favTracksError:favTracksError
-                                     favAlbums:favAlbums
-                                favAlbumsError:favAlbumsError
-                                    nameByUUID:nameByUUID
-                                  countsByName:countsByName
-                            localTrackIDsByName:localTrackIDsByName
-                                    completion:completion];
+            [self planPullPreviewWithSnapshot:snapshot completion:completion];
         });
     });
 }
 
 // Phase 3 of the pull preview: pure planning on snapshots, off-main.
-- (void)planPullPreviewWithPlaylists:(NSArray<JLTidalPlaylist *> *)playlists
-                 playlistFolderPaths:(NSDictionary<NSString *, NSString *> *)playlistFolderPaths
-                           allTracks:(NSDictionary<NSString *, NSArray<JLTidalTrack *> *> *)allTracks
-                         failedUUIDs:(NSSet<NSString *> *)failedUUIDs
-                           favTracks:(NSArray<JLTidalTrack *> *)favTracks
-                      favTracksError:(NSError *)favTracksError
-                           favAlbums:(NSArray<JLTidalAlbum *> *)favAlbums
-                      favAlbumsError:(NSError *)favAlbumsError
-                          nameByUUID:(NSDictionary<NSString *, NSString *> *)nameByUUID
-                        countsByName:(NSDictionary<NSString *, NSNumber *> *)countsByName
-                 localTrackIDsByName:(NSDictionary<NSString *, NSSet<NSString *> *> *)localTrackIDsByName
-                          completion:(JLTidalSyncPreviewCompletion)completion {
-    NSMutableArray<JLTidalSyncChange *> *changes = [NSMutableArray array];
-    // Remote names whose state could not be verified (fetch failed): they
-    // are excluded from planning and protected from delete detection.
-    NSMutableSet<NSString *> *protectedNames = [NSMutableSet set];
-    NSMutableDictionary<NSString *, JLTidalPlaylist *> *playlistMap = [NSMutableDictionary dictionary];
-
-    for (JLTidalPlaylist *playlist in playlists) {
-        NSString *foobarName = nameByUUID[playlist.playlistUUID];
-        playlistMap[playlist.playlistUUID] = playlist;
-        if ([failedUUIDs containsObject:playlist.playlistUUID]) {
-            [protectedNames addObject:foobarName];
-            continue;
-        }
-        NSArray<JLTidalTrack *> *tracks = allTracks[playlist.playlistUUID] ?: @[];
-        // nil foobarTrackIDs = playlist absent -> Create; else diff sets
-        NSSet<NSString *> *foobarTrackIDs = nil;
-        if (countsByName[foobarName] != nil) {
-            foobarTrackIDs = localTrackIDsByName[foobarName] ?: [NSSet set];
-        }
-        [changes addObject:[JLTidalSyncPlanner pullChangeForName:foobarName
-                                                            uuid:playlist.playlistUUID
-                                                     tidalTracks:tracks
-                                                  foobarTrackIDs:foobarTrackIDs]];
-    }
-
-    // Favorite tracks (skipped entirely when the fetch failed)
-    NSString *favName = [JLTidalSyncPlanner favoriteTracksName];
-    if (favTracksError) {
-        [protectedNames addObject:favName];
-    } else {
-        NSNumber *existing = countsByName[favName];
-        NSInteger existingCount = existing ? existing.integerValue : -1;
-        [changes addObject:[JLTidalSyncPlanner favoritesPullChangeForName:favName
-                                                                     uuid:@"__favorites__"
-                                                               tidalCount:favTracks.count
-                                                            existingCount:existingCount]];
-    }
-
-    // Favorite albums (skipped entirely when the fetch failed)
-    if (!favAlbumsError) {
-        for (JLTidalAlbum *album in favAlbums) {
-            NSString *albumName = [JLTidalSyncPlanner favoriteAlbumNameForTitle:album.title];
-            [changes addObject:[JLTidalSyncPlanner favoriteAlbumPullChangeForAlbum:album
-                                                                            exists:(countsByName[albumName] != nil)]];
-        }
-    }
-
-    // Check for foobar playlists that no longer exist on Tidal. Names whose
-    // remote state is unknown (failed fetches) are never proposed for delete.
-    NSMutableSet<NSString *> *knownRemoteNames =
-        [NSMutableSet setWithArray:[changes valueForKey:@"playlistName"]];
-    [knownRemoteNames unionSet:protectedNames];
-    NSString *albumNamePrefix = [JLTidalSyncPlanner favoriteAlbumNameForTitle:@""];
-    NSDictionary<NSString *, NSString *> *nameToUUIDSnapshot = [self snapshotNameToUUIDMap];
-
-    for (NSString *foobarName in countsByName) {
-        if (![self isTidalSyncedName:foobarName]) continue;
-        if ([knownRemoteNames containsObject:foobarName]) continue;
-        // With the album list unfetched, any album playlist may still exist
-        // remotely - do not propose deleting it.
-        if (favAlbumsError && [foobarName hasPrefix:albumNamePrefix]) continue;
-        [changes addObject:[[JLTidalSyncChange alloc]
-            initWithType:JLTidalSyncChangeTypeDelete
-                    name:foobarName
-             tracksAdded:0
-           tracksRemoved:countsByName[foobarName].integerValue
-               tidalUUID:nameToUUIDSnapshot[foobarName]]];
-    }
+- (void)planPullPreviewWithSnapshot:(JLTidalPullSnapshot *)snapshot
+                         completion:(JLTidalSyncPreviewCompletion)completion {
+    NSArray<JLTidalSyncChange *> *changes = [JLTidalSyncPlanner pullChangesForSnapshot:snapshot];
 
     // Cache for apply phase (successful fetches only - apply can never
     // touch a playlist whose remote state is unknown)
-    NSMutableDictionary *cached = [allTracks mutableCopy];
-    if (!favTracksError) {
-        cached[@"__favorites__"] = favTracks;
+    NSMutableDictionary *cached = [snapshot.tracksByUUID mutableCopy];
+    if (!snapshot.favoriteTracksFailed) {
+        cached[[JLTidalSyncPlanner favoriteTracksKey]] = snapshot.favoriteTracks;
     }
     self.cachedPlaylistTracks = [cached copy];
-    self.cachedPlaylists = [playlistMap copy];
-    self.cachedFolderPaths = [playlistFolderPaths copy];
 
-    NSUInteger excluded = failedUUIDs.count + (favTracksError ? 1 : 0) + (favAlbumsError ? 1 : 0);
+    NSUInteger excluded = snapshot.failedUUIDs.count +
+        (snapshot.favoriteTracksFailed ? 1 : 0) + (snapshot.favoriteAlbumsFailed ? 1 : 0);
     if (excluded > 0) {
         tidal::logError([[NSString stringWithFormat:
             @"PlaylistSync: preview excluded %lu collection(s) whose fetch failed; "
@@ -479,6 +424,10 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                         break;
                     }
 
+                    case JLTidalSyncChangeTypeRename:
+                        [self applyMove:change importGroup:importGroup failureCount:failureCount.get()];
+                        break;
+
                     case JLTidalSyncChangeTypeUnchanged:
                         break;
                 }
@@ -495,9 +444,9 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
                     int failures = failureCount->load();
                     if (failures > 0) {
                         tidal::logError([[NSString stringWithFormat:
-                            @"PlaylistSync: pull finished with %d failed import(s)", failures] UTF8String]);
+                            @"PlaylistSync: pull finished with %d failed import(s) or move(s)", failures] UTF8String]);
                         completion(NO, error ?: JLTidalError(JLTidalErrorInternal,
-                            [NSString stringWithFormat:@"%d playlist import(s) failed", failures]));
+                            [NSString stringWithFormat:@"%d playlist import(s) or move(s) failed", failures]));
                         return;
                     }
                     completion(ok, error);
@@ -674,6 +623,70 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
 }
 
 #pragma mark - Helpers
+
+/// Apply one Move: rename the old local playlist in place, so it keeps its
+/// tracks, order, position and GUID. Main thread only. A failure is logged
+/// and counted, and the old mapping is kept so the next pull plans it again.
+- (void)applyMove:(JLTidalSyncChange *)change
+      importGroup:(dispatch_group_t)importGroup
+     failureCount:(std::atomic<int> *)failureCount {
+    auto pm = playlist_manager::get();
+    NSString *oldName = change.previousName;
+    NSString *newName = change.playlistName;
+    pfc::string8 oldStr([oldName UTF8String]);
+    pfc::string8 newStr([newName UTF8String]);
+
+    t_size idx = pm->find_playlist(oldStr, oldStr.length());
+    if (idx == SIZE_MAX) {
+        tidal::logError([[NSString stringWithFormat:
+            @"Move: \"%@\" no longer exists; keeping its mapping", oldName] UTF8String]);
+        if (failureCount) failureCount->fetch_add(1);
+        return;
+    }
+    // Created since the preview: renaming would leave two playlists with
+    // the same name.
+    if (pm->find_playlist(newStr, newStr.length()) != SIZE_MAX) {
+        tidal::logError([[NSString stringWithFormat:
+            @"Move: \"%@\" already exists; \"%@\" left as it is", newName, oldName] UTF8String]);
+        if (failureCount) failureCount->fetch_add(1);
+        return;
+    }
+
+    // Our own lock blocks rename (filter_rename). Lift it for the rename
+    // only, and put it back whether or not the rename went through.
+    bool hadLock = tidal::removeSyncLock(idx);
+    bool renamed = pm->playlist_rename(idx, newStr.get_ptr(), newStr.length());
+    if (hadLock) tidal::installSyncLock(idx);
+    if (!renamed) {
+        tidal::logError([[NSString stringWithFormat:
+            @"Move: could not rename \"%@\" to \"%@\"; keeping its mapping", oldName, newName] UTF8String]);
+        if (failureCount) failureCount->fetch_add(1);
+        return;
+    }
+
+    // Tracks differ: full re-sync, as Update does. Identical tracks: done.
+    if (change.tracksAdded > 0 || change.tracksRemoved > 0) {
+        pm->playlist_clear(idx);
+        NSArray<JLTidalTrack *> *tracks = self.cachedPlaylistTracks[change.tidalUUID];
+        if (tracks.count > 0) {
+            [self addTracks:tracks toPlaylistIndex:idx
+                importGroup:importGroup failureCount:failureCount];
+        }
+    }
+
+    NSString *uuid = change.tidalUUID;
+    if (uuid) {
+        dispatch_sync(self.stateQueue, ^{
+            self.uuidToNameMap[uuid] = newName;
+            self.nameToUUIDMap[newName] = uuid;
+            if ([self.nameToUUIDMap[oldName] isEqualToString:uuid]) {
+                [self.nameToUUIDMap removeObjectForKey:oldName];
+            }
+        });
+    }
+    tidal::logInfo([[NSString stringWithFormat:@"Move: \"%@\" -> \"%@\"%@", oldName, newName,
+                     (change.tracksAdded > 0 || change.tracksRemoved > 0) ? @" (tracks re-synced)" : @""] UTF8String]);
+}
 
 /// Playlist identity that survives the wait for an async import.
 ///
