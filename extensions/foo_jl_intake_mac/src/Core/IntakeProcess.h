@@ -30,7 +30,11 @@
 //     ~/Library/Caches/foo_jl_intake/), read with the same caps after exit
 //     and then deleted. A command that outlives foobar2000 keeps writing to
 //     its files and never hits SIGPIPE halfway through a non-atomic sidecar
-//     write (PLAN.md 3.4).
+//     write (PLAN.md 3.4). The files are named
+//     intake-<pid>-<seq>-<ms>.out/.err, unique within the process. The
+//     first Files call of a runner into a directory deletes the output files
+//     there whose creating process no longer exists (a call that outlived
+//     an earlier foobar2000 is never reaped, so nothing else would).
 //
 //  Completion: the process has exited and both pipes reached EOF, or at most
 //  `drainGraceSeconds` after exit when an orphaned grandchild still holds a
@@ -47,9 +51,13 @@
 //   - ReportAtBudget (mutating calls): at the budget the budget handler runs
 //     and the process keeps running; the completion delivers its real
 //     result. At `hardCapSeconds` from the start it is terminated like a
-//     read-only call (SIGTERM, then SIGKILL).
+//     read-only call (SIGTERM, then SIGKILL, and on completion the rest of
+//     the group is SIGKILLed).
 //   - Unbounded (execute, resume): no budget, never signalled by the runner,
 //     not even by cancelReadLane().
+//  A budget or hard-cap timer that fires while the leader's exit is still
+//  queued sees the zombie (waitid WNOWAIT) and treats the process as exited,
+//  so a call that ended right at its budget keeps its real result.
 //  If a signalled process is still alive `killGraceSeconds` after its SIGKILL
 //  (uninterruptible sleep on a dead network share), the completion is
 //  delivered anyway with end == Abandoned; the runner keeps watching the pid

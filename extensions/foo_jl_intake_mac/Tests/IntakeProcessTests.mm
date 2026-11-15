@@ -382,6 +382,27 @@ void testSlowMutatingCompletes(ProcessRunner &runner) {
     CHECK(!mock::fileExists(state + "/propose.next"), "its state change was applied");
 }
 
+void testHardCapKillsTheGroup(ProcessRunner &runner, const std::string &scripts) {
+    g_context = "hard-cap-group";
+    // The leader dies of SIGTERM; its background child ignores SIGTERM (an
+    // ignored signal survives exec) and must not outlive the call.
+    std::string script = writeScript(scripts, "hard-cap-group",
+                                     "(trap '' TERM; exec sleep 30) &\n"
+                                     "wait\n");
+    ProcessSpec spec = scriptSpec(script, BudgetPolicy::ReportAtBudget);
+    spec.output = OutputTarget::Files;
+    spec.outputDirectory = mock::newDir("out");
+    spec.limits.budgetSeconds = 0.2;
+    spec.limits.hardCapSeconds = 1.0; // the subshell has set its trap by then
+    auto run = runToEnd(runner, spec);
+    const ProcessResult &r = run->result;
+    CHECK(r.hardCapHit && r.killedForTimeout, "terminated at the hard cap");
+    CHECK(r.end == ProcessEnd::Signaled && r.termSignal == SIGTERM, "the leader died of SIGTERM");
+    CHECK(mock::waitUntil([&] { return mock::groupGone(r.pid); }, 3.0),
+          "the member that ignores SIGTERM was SIGKILLed with the group");
+    mock::killLeftovers();
+}
+
 void testHardCap(ProcessRunner &runner) {
     g_context = "hard-cap";
     std::string state = mock::setupState();
@@ -410,10 +431,14 @@ void testUnbounded(ProcessRunner &runner) {
     ProcessSpec spec = mockSpec(state, {"execute", "itk_00000010", "--json"}, BudgetPolicy::Unbounded,
                                 OutputTarget::Files);
     spec.outputDirectory = mock::newDir("out");
+    // Every limit far below the run time: none of them applies to execute.
     spec.limits.budgetSeconds = 0.2;
+    spec.limits.hardCapSeconds = 0.2;
+    spec.limits.killGraceSeconds = 0.1;
     auto run = runToEnd(runner, spec);
     CHECK_EQ(run->budgetCalls.load(), 0, "no budget at all");
-    CHECK(!run->result.budgetExceeded && !run->result.killedForTimeout, "never signalled");
+    CHECK(!run->result.budgetExceeded && !run->result.killedForTimeout && !run->result.hardCapHit,
+          "never signalled, no budget and no hard cap");
     CHECK(run->result.end == ProcessEnd::Exited && run->result.exitCode == 0, "ran to the end");
     intake::EnvelopeResult env = parsed(*run);
     std::vector<std::string> ids = intake::idsInData(env.data);
@@ -426,24 +451,32 @@ void testCancelReadLane(ProcessRunner &runner) {
     std::string state = mock::setupState();
     mock::setMode(state, "status", "hang");
     mock::setMode(state, "execute", "slow 0.8");
+    mock::setMode(state, "propose", "slow 0.8");
+    mock::writeFile(state + "/propose.next", "b-proposed\n");
 
     ProcessSpec read = mockSpec(state, {"status", "--json"});
     read.limits.budgetSeconds = 30;
     ProcessSpec exec = mockSpec(state, {"execute", "itk_00000010", "--json"}, BudgetPolicy::Unbounded,
                                 OutputTarget::Files);
     exec.outputDirectory = mock::newDir("out");
+    ProcessSpec mutate = mockSpec(state, {"propose", "itk_0000000b", "--json"}, BudgetPolicy::ReportAtBudget,
+                                  OutputTarget::Files);
+    mutate.outputDirectory = exec.outputDirectory;
     auto readRun = startRun(runner, read);
     auto execRun = startRun(runner, exec);
+    auto mutateRun = startRun(runner, mutate);
 
     bool started = mock::waitUntil(
         [&] {
+            std::string log = mock::callsLog(state);
             return mock::fileExists(state + "/hang.pid") &&
-                   mock::callsLog(state).find("execute\titk_00000010") != std::string::npos;
+                   log.find("execute\titk_00000010") != std::string::npos &&
+                   log.find("propose\titk_0000000b") != std::string::npos;
         },
         5.0);
-    CHECK(started, "both processes are running");
+    CHECK(started, "all three processes are running");
     mock::trackHangPids(state);
-    CHECK_EQ(runner.runningCount(), 2, "two processes tracked");
+    CHECK_EQ(runner.runningCount(), 3, "three processes tracked");
     CHECK_EQ(runner.cancelReadLane(), 1, "only the read-lane process is signalled");
 
     CHECK(wait(readRun, 5), "the read call completes promptly");
@@ -462,6 +495,16 @@ void testCancelReadLane(ProcessRunner &runner) {
               execRun->result.exitCode == 0,
           "execute was left running and finished normally");
     CHECK(parsed(*execRun).outcome == CliOutcome::Ok, "execute result delivered");
+
+    // A mutating call is never killed at quit: it may be halfway through
+    // non-atomic sidecar writes (PLAN.md 3.2 on_quit, risk 2).
+    CHECK(wait(mutateRun, 10), "propose completes");
+    CHECK(!mutateRun->result.cancelled && !mutateRun->result.killedForTimeout &&
+              mutateRun->result.end == ProcessEnd::Exited && mutateRun->result.exitCode == 0,
+          "the mutating call was left running and finished normally");
+    std::vector<std::string> proposed = intake::idsInData(parsed(*mutateRun).data);
+    CHECK(proposed.size() == 1 && proposed[0] == "itk_0000000b", "propose result delivered");
+    CHECK(!mock::fileExists(state + "/propose.next"), "its state change was applied");
     CHECK_EQ(runner.runningCount(), 0, "nothing left running");
     mock::killLeftovers();
 }
@@ -507,6 +550,120 @@ void testAbandonUnkillable() {
           "reaped once it exits on its own");
     CHECK(mock::notOurChild(r.pid), "no zombie after the late exit");
     mock::killLeftovers();
+}
+
+std::atomic<bool> g_blockNextTerm{false};
+
+// Sends like kill(-pgid), but the first SIGTERM after g_blockNextTerm is set
+// holds the runner's queue for 1.5 s first, so the timer and exit events of
+// other processes pile up behind it in the order they happen.
+int blockingSender(pid_t pgid, int signal) {
+    if (signal == SIGTERM && g_blockNextTerm.exchange(false)) usleep(1500 * 1000);
+    return ::kill(-pgid, signal);
+}
+
+void testTimerRacingExit(const std::string &scripts) {
+    g_context = "timer-vs-exit";
+    ProcessRunner runner(blockingSender);
+    g_blockNextTerm = true;
+    // Its budget elapses at 0.1 s; the SIGTERM then blocks the queue to ~1.6 s.
+    ProcessSpec blocker = scriptSpec(writeScript(scripts, "blocker", "exec sleep 5\n"));
+    blocker.limits.budgetSeconds = 0.1;
+    // These exit at ~0.5 s: after their budget or hard cap elapsed, but before
+    // the blocked queue can run that timer. The timer then finds a zombie.
+    std::string late = writeScript(scripts, "late-exit",
+                                   "sleep 0.5\necho '{\"ok\":true,\"data\":[],\"errors\":[]}'\n");
+    ProcessSpec readOnly = scriptSpec(late);
+    readOnly.limits.budgetSeconds = 0.3;
+    ProcessSpec mutating = scriptSpec(late, BudgetPolicy::ReportAtBudget);
+    mutating.output = OutputTarget::Files;
+    mutating.outputDirectory = mock::newDir("out");
+    mutating.limits.budgetSeconds = 0.25;
+    mutating.limits.hardCapSeconds = 0.3;
+    auto a = startRun(runner, blocker);
+    auto b = startRun(runner, readOnly);
+    auto c = startRun(runner, mutating);
+    bool done = wait(a);
+    done = wait(b) && done;
+    done = wait(c) && done;
+    CHECK(done, "all three complete");
+    CHECK(a->result.killedForTimeout, "the blocker was killed for its budget");
+    CHECK(b->result.end == ProcessEnd::Exited && b->result.exitCode == 0 && !b->result.killedForTimeout &&
+              !b->result.budgetExceeded && b->budgetCalls.load() == 0,
+          "read-only: exited by the time its budget timer ran, so no timeout");
+    CHECK(parsed(*b).outcome == CliOutcome::Ok, "read-only: its real result is delivered");
+    CHECK(c->result.end == ProcessEnd::Exited && c->result.exitCode == 0 && !c->result.hardCapHit &&
+              !c->result.killedForTimeout,
+          "mutating: exited by the time its hard-cap timer ran, so not terminated");
+    CHECK(parsed(*c).outcome == CliOutcome::Ok, "mutating: its real result is delivered");
+    CHECK_EQ(runner.runningCount(), 0, "nothing left running");
+    mock::killLeftovers();
+}
+
+void testTwoRunnersOneDirectory() {
+    g_context = "two-runners";
+    std::string out = mock::newDir("out");
+    int ok = 0, total = 0;
+    for (int i = 0; i < 4; i++) {
+        // Each runner numbers its tokens from 1, and both start in the same
+        // millisecond: the output file names must still differ.
+        ProcessRunner first, second;
+        ProcessSpec spec = scriptSpec("/bin/echo", BudgetPolicy::ReportAtBudget);
+        spec.output = OutputTarget::Files;
+        spec.outputDirectory = out;
+        auto a = startRun(first, spec);
+        auto b = startRun(second, spec);
+        total += 2;
+        if (wait(a) && a->result.end == ProcessEnd::Exited) ok++;
+        if (wait(b) && b->result.end == ProcessEnd::Exited) ok++;
+    }
+    CHECK_EQ(ok, total, "two runners in one process never collide on an output file name");
+    CHECK(mock::listDir(out).empty(), "every output file was removed");
+}
+
+// A pid that existed a moment ago and has been reaped.
+pid_t deadPid() {
+    pid_t pid = 0;
+    char arg0[] = "/usr/bin/true";
+    char *argv[] = {arg0, nullptr};
+    char *envp[] = {nullptr};
+    if (posix_spawn(&pid, arg0, nullptr, nullptr, argv, envp) != 0) return 0;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return pid;
+}
+
+void testStaleOutputSwept(ProcessRunner &runner) {
+    g_context = "stale-output";
+    std::string out = mock::newDir("out");
+    pid_t dead = deadPid();
+    CHECK(dead > 0 && mock::pidGone(dead), "a pid that no longer exists");
+    const std::string d = std::to_string(dead), me = std::to_string(getpid());
+    const std::vector<std::string> stale = {"intake-" + d + "-1-1700000000000.out",
+                                            "intake-" + d + "-1-1700000000000.err"};
+    const std::vector<std::string> kept = {
+        "intake-" + me + "-999999-1.out", // this process
+        "intake-1-1-1.out",               // launchd: alive (EPERM)
+        "intake-" + d + "-x-1.out",       // not an output file name
+        "intake-" + d + "-1-1.out.bak",
+        "notes.txt",
+    };
+    for (const std::string &name : stale) mock::writeFile(out + "/" + name, "x");
+    for (const std::string &name : kept) mock::writeFile(out + "/" + name, "x");
+    const std::string dirNamedLikeOne = out + "/intake-" + d + "-2-1.out";
+    mkdir(dirNamedLikeOne.c_str(), 0700);
+
+    ProcessSpec spec = scriptSpec("/bin/echo", BudgetPolicy::ReportAtBudget);
+    spec.output = OutputTarget::Files;
+    spec.outputDirectory = out;
+    auto run = runToEnd(runner, spec);
+    CHECK(run->result.end == ProcessEnd::Exited && run->result.exitCode == 0, "the call ran");
+    bool staleGone = true, othersKept = true;
+    for (const std::string &name : stale) staleGone = staleGone && !mock::fileExists(out + "/" + name);
+    for (const std::string &name : kept) othersKept = othersKept && mock::fileExists(out + "/" + name);
+    CHECK(staleGone, "output files of a process that no longer exists are deleted");
+    CHECK(othersKept && mock::fileExists(dirNamedLikeOne), "everything else is kept");
 }
 
 void testFdsMode(ProcessRunner &runner) {
@@ -572,7 +729,7 @@ int main(void) {
             runToEnd(runner, files);
             mock::listDir(files.outputDirectory);
         }
-        int fdsBefore = mock::countOpenFds();
+        std::vector<int> fdsBefore = mock::openFds();
 
         testPipesBasic(runner);
         testFilesOutput(runner);
@@ -585,17 +742,26 @@ int main(void) {
         testNoise(runner);
         testSlowMutatingCompletes(runner);
         testHardCap(runner);
+        testHardCapKillsTheGroup(runner, scripts);
         testUnbounded(runner);
         testCancelReadLane(runner);
         testAbandonUnkillable();
+        testTimerRacingExit(scripts);
+        testTwoRunnersOneDirectory();
+        testStaleOutputSwept(runner);
         testFdsMode(runner);
         testConcurrent(runner);
 
         g_context = "teardown";
         CHECK_EQ(runner.runningCount(), 0, "no process left running");
-        int fdsAfter = mock::countOpenFds();
-        CHECK(fdsBefore > 0, "descriptor count available");
-        CHECK_EQ(fdsAfter, fdsBefore, "open descriptors equal before and after");
+        std::vector<int> fdsAfter = mock::openFds();
+        CHECK(!fdsBefore.empty(), "descriptor list available");
+        CHECK(fdsAfter == fdsBefore, "the same descriptors are open before and after");
+        if (fdsAfter != fdsBefore) {
+            printf("  closed since the baseline: %s; opened since: %s\n",
+                   mock::fdsMissingFrom(fdsBefore, fdsAfter).c_str(),
+                   mock::fdsMissingFrom(fdsAfter, fdsBefore).c_str());
+        }
         int status = 0;
         CHECK(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD, "no child left, zombie or alive");
 

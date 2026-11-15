@@ -3,8 +3,8 @@
 //  foo_jl_intake_mac
 //
 //  Helpers for the tests that run Tests/mock-cli/intake-mock: hermetic
-//  temp directories, mock state setup, file helpers, bounded waits, an open
-//  descriptor count, and a leftover-process sweep.
+//  temp directories, mock state setup, file helpers, bounded waits, the
+//  list of open descriptors, and a leftover-process sweep.
 //
 //  Hermetic: every directory is created under one mkdtemp root in
 //  NSTemporaryDirectory() (never ~/Library) and removed at the end. The mock
@@ -35,6 +35,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -168,13 +169,27 @@ inline bool notOurChild(pid_t pid) {
     return waitpid(pid, &status, WNOHANG) == -1 && errno == ECHILD;
 }
 
-// Open descriptors of this process.
-inline int countOpenFds() {
+// The open descriptor numbers of this process, sorted; empty when they
+// cannot be listed. Comparing the numbers, not just the count, catches a
+// leak hidden by a descriptor closed by mistake.
+inline std::vector<int> openFds() {
+    std::vector<int> out;
     int bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, nullptr, 0);
-    if (bytes <= 0) return -1;
+    if (bytes <= 0) return out;
     std::vector<proc_fdinfo> fds((size_t)bytes / sizeof(proc_fdinfo) + 16);
     bytes = proc_pidinfo(getpid(), PROC_PIDLISTFDS, 0, fds.data(), (int)(fds.size() * sizeof(proc_fdinfo)));
-    return bytes < 0 ? -1 : bytes / (int)sizeof(proc_fdinfo);
+    for (int i = 0; bytes > 0 && i < bytes / (int)sizeof(proc_fdinfo); i++) out.push_back(fds[i].proc_fd);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// The numbers in `a` that are not in `b`, space-separated (both sorted).
+inline std::string fdsMissingFrom(const std::vector<int> &a, const std::vector<int> &b) {
+    std::vector<int> diff;
+    std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(diff));
+    std::string out;
+    for (int fd : diff) out += (out.empty() ? "" : " ") + std::to_string(fd);
+    return out.empty() ? "none" : out;
 }
 
 // --- leftover sweep ---

@@ -16,12 +16,14 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace intake {
 
@@ -31,6 +33,68 @@ using Clock = std::chrono::steady_clock;
 
 int killGroup(pid_t pgid, int signal) {
     return ::kill(-pgid, signal);
+}
+
+// Process-wide, so two runners in one process never build the same output
+// file name (each runner numbers its tokens from 1).
+std::atomic<uint64_t> g_outputFileSeq{0};
+
+// True when the child `pid` has exited, reaped or not. WNOWAIT leaves the
+// zombie for tryFinish. Used where the exit may not have been observed yet:
+// its proc-source event can still be queued behind a timer on this queue.
+bool leaderHasExited(pid_t pid) {
+    siginfo_t info;
+    memset(&info, 0, sizeof info);
+    return waitid(P_PID, (id_t)pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == pid;
+}
+
+// Reads a run of 1 to 18 decimal digits at `s` and advances past it.
+bool readDigits(const char *&s, long long &value) {
+    const char *start = s;
+    value = 0;
+    while (*s >= '0' && *s <= '9') {
+        if (s - start >= 18) return false;
+        value = value * 10 + (*s - '0');
+        s++;
+    }
+    return s > start;
+}
+
+// The pid in an output file name "intake-<pid>-<seq>-<ms>.out" or ".err",
+// or 0 when `name` is not one.
+pid_t outputFileOwner(const char *name) {
+    static const char prefix[] = "intake-";
+    if (strncmp(name, prefix, sizeof prefix - 1) != 0) return 0;
+    const char *s = name + sizeof prefix - 1;
+    long long pid = 0, seq = 0, ms = 0;
+    if (!readDigits(s, pid) || *s++ != '-') return 0;
+    if (!readDigits(s, seq) || *s++ != '-') return 0;
+    if (!readDigits(s, ms)) return 0;
+    if (strcmp(s, ".out") != 0 && strcmp(s, ".err") != 0) return 0;
+    return pid > 0 && pid <= INT32_MAX ? (pid_t)pid : 0;
+}
+
+// Deletes the output files in `dir` whose creating process no longer
+// exists. A call that outlived foobar2000, or was still abandoned at quit,
+// is never reaped by the process that named its files, so nothing else
+// would ever delete them. Files of a live process (this one, or another
+// using the same directory) are kept, and so is anything not named like an
+// output file or not a regular file.
+void sweepStaleOutputFiles(const std::string &dir) {
+    DIR *d = opendir(dir.c_str());
+    if (!d) return;
+    const pid_t self = getpid();
+    std::string base = dir;
+    if (base.back() != '/') base += '/';
+    while (struct dirent *entry = readdir(d)) {
+        pid_t owner = outputFileOwner(entry->d_name);
+        if (owner <= 0 || owner == self) continue;
+        if (::kill(owner, 0) == 0 || errno != ESRCH) continue; // alive (EPERM: someone else's)
+        std::string path = base + entry->d_name;
+        struct stat st;
+        if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode)) ::unlink(path.c_str());
+    }
+    closedir(d);
 }
 
 double secondsSince(Clock::time_point start) {
@@ -179,6 +243,7 @@ struct ProcessRunner::Impl : std::enable_shared_from_this<ProcessRunner::Impl> {
     std::unordered_map<uint64_t, ProcPtr> procs; // started and not yet reaped
     std::atomic<uint64_t> lastToken{0};
     std::vector<char> readBuffer = std::vector<char>(64 * 1024);
+    std::unordered_set<std::string> sweptDirectories; // output directories swept once
 
     void spawn(ProcPtr p);
     void failSpawn(ProcPtr p, const char *stage, int err);
@@ -244,11 +309,14 @@ void Impl::spawn(ProcPtr p) {
                 return;
             }
         }
+        if (sweptDirectories.insert(spec.outputDirectory).second) {
+            sweepStaleOutputFiles(spec.outputDirectory);
+        }
         long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch()).count();
         std::string base = spec.outputDirectory;
         if (base.back() != '/') base += '/';
-        base += "intake-" + std::to_string(getpid()) + "-" + std::to_string(p->token) + "-" +
+        base += "intake-" + std::to_string(getpid()) + "-" + std::to_string(++g_outputFileSeq) + "-" +
                 std::to_string(ms);
         std::string outPath = base + ".out";
         std::string errPath = base + ".err";
@@ -410,6 +478,11 @@ void Impl::startSources(ProcPtr p) {
         p->hardCapTimer = makeTimer(queue, limits.hardCapSeconds, ^{
             cancelTimer(p->hardCapTimer);
             if (p->exited) return;
+            if (leaderHasExited(p->pid)) {
+                // Exited just as the cap elapsed: its real result stands.
+                self->exitObserved(p);
+                return;
+            }
             p->result.hardCapHit = true;
             p->result.killedForTimeout = true;
             self->beginKill(p);
@@ -419,11 +492,7 @@ void Impl::startSources(ProcPtr p) {
     // A child that exited before the source was armed: libdispatch reports
     // that too, but check without reaping (WNOWAIT) so the exit is never
     // missed. exitObserved ignores the second report.
-    siginfo_t info;
-    memset(&info, 0, sizeof info);
-    if (waitid(P_PID, (id_t)p->pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == p->pid) {
-        exitObserved(p);
-    }
+    if (leaderHasExited(p->pid)) exitObserved(p);
 }
 
 void Impl::drain(ProcPtr p, bool isStdout) {
@@ -483,6 +552,12 @@ void Impl::exitObserved(ProcPtr p) {
 void Impl::budgetElapsed(ProcPtr p) {
     cancelTimer(p->budgetTimer);
     if (p->exited) return;
+    if (leaderHasExited(p->pid)) {
+        // The exit event is still queued behind this timer: the process
+        // ended in time, and its real result must not become a timeout.
+        exitObserved(p);
+        return;
+    }
     p->result.budgetExceeded = true;
     if (p->onBudget) {
         ProcessBudgetHandler handler = p->onBudget;
@@ -538,8 +613,12 @@ void Impl::tryFinish(ProcPtr p) {
 
     // The leader is a zombie until the waitpid below, which keeps its
     // process group id from being reused: signalling the group now cannot
-    // reach an unrelated process. A read-only call leaves nothing behind.
-    if (p->spec.policy == BudgetPolicy::KillAtBudget) sendSignal(p->pid, SIGKILL);
+    // reach an unrelated process. A read-only call leaves nothing behind,
+    // and neither does a call terminated at its hard cap: its leader may
+    // have died of SIGTERM while a member that ignores SIGTERM lives on.
+    if (p->spec.policy == BudgetPolicy::KillAtBudget || p->result.hardCapHit) {
+        sendSignal(p->pid, SIGKILL);
+    }
 
     int status = 0;
     pid_t r;
