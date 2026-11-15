@@ -29,7 +29,6 @@
 
 #import "../fb2k_sdk.h"
 #import "../Core/IntakeRootIndex.h"
-#include "IntakePathProbe.h"
 #import "../../../../shared/jl_decorator_api.h"
 
 #include <algorithm>
@@ -45,10 +44,6 @@ public:
         // Contract: out must be resized to items.get_count() and index-aligned;
         // default-constructed entries mean "no decoration".
         out.set_count(items.get_count());
-
-        // TEMPORARY (PLAN.md S0): bounded path-conversion logging, active only
-        // during the probe's one run. Removed with IntakePathProbe.mm.
-        intake_probe::onDecorateBatch(items);
 
         std::lock_guard<std::mutex> lock(m_stateMutex);
         if (m_rootIndex.rootCount == 0) {
