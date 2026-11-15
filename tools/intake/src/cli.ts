@@ -10,7 +10,7 @@ import type { SidecarSummary } from "./sidecar.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
 import { cmdApprove, cmdExecute, cmdGc, cmdPropose, cmdReject } from "./commands-p3.ts";
 import type { TreeSpec } from "./bootstrap.ts";
-import type { Envelope } from "./types.ts";
+import type { Envelope, JsonError } from "./types.ts";
 
 const USAGE = `usage: intake <command> [options]
 
@@ -32,7 +32,10 @@ commands:
   income                                         income folders from income.yaml {name, path, exists}
   bootstrap  --tree <path> [--prior-weight <w>] [--tree ...] [--out <dir>] [--force]
                                                  build genre/label maps from a tree
-  status     [--filter k=v ...]                  sidecar inventory
+  status     [--filter k=v ...]                  sidecar inventory; filters on different keys all match
+                                                 keys: id status needs_review income_folder source_type
+                                                 tier (alias tier_eligible) virtual singles albumartist
+                                                 album root_path
   version                                        {cli, schema, engine, commands}
 
 options:
@@ -56,7 +59,8 @@ interface AllOpts extends CommonOpts {
   relocateDj: boolean;
 }
 
-function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts } {
+/** Parse argv; `errors` holds malformed options (E_BAD_ARGS, reported before dispatch). */
+function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts; errors: JsonError[] } {
   const opts: AllOpts = {
     json: false,
     dryRun: false,
@@ -76,6 +80,8 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     relocateDj: false,
   };
   const args: string[] = [];
+  const errors: JsonError[] = [];
+  const badArgs = (msg: string) => errors.push({ code: "E_BAD_ARGS", msg, path: null });
   let cmd = "";
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -84,9 +90,20 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     else if (a === "--force") opts.force = true;
     else if (a === "--all") opts.all = true;
     else if (a === "--filter") {
-      const kv = argv[++i];
-      const eq = kv?.indexOf("=") ?? -1;
-      if (kv && eq > 0) opts.filters[kv.slice(0, eq)] = kv.slice(eq + 1);
+      // Doc 03: one value per key. A malformed or repeated filter is an error,
+      // never silently dropped or overwritten. An option after --filter is not
+      // its argument (no filter key starts with "--"), so `--filter --json`
+      // still answers with an envelope.
+      const kv = argv[i + 1];
+      if (kv === undefined || kv.startsWith("--")) {
+        badArgs("--filter needs an argument: k=v");
+        continue;
+      }
+      i++;
+      const eq = kv.indexOf("=");
+      if (eq <= 0) badArgs(`malformed --filter "${kv}": expected k=v`);
+      else if (Object.hasOwn(opts.filters, kv.slice(0, eq))) badArgs(`--filter key given twice: ${kv.slice(0, eq)}`);
+      else opts.filters[kv.slice(0, eq)] = kv.slice(eq + 1);
     } else if (a === "--collection") opts.collection = argv[++i] ?? null;
     else if (a === "--by") opts.by = argv[++i] ?? null;
     else if (a === "--tree") {
@@ -109,7 +126,7 @@ function parseArgs(argv: string[]): { cmd: string; args: string[]; opts: AllOpts
     else if (!cmd) cmd = a;
     else args.push(a);
   }
-  return { cmd, args, opts };
+  return { cmd, args, opts, errors };
 }
 
 function printStatus(rows: SidecarSummary[]): void {
@@ -185,10 +202,12 @@ const COMMANDS: Record<string, Handler> = {
 };
 
 async function main(): Promise<number> {
-  const { cmd, args, opts } = parseArgs(process.argv.slice(2));
+  const { cmd, args, opts, errors: argErrors } = parseArgs(process.argv.slice(2));
   let result: CommandResult;
   const handler = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
-  if (handler) {
+  if (handler && argErrors.length > 0) {
+    result = { data: null, errors: argErrors, exitCode: 2 };
+  } else if (handler) {
     result = await handler(args, opts);
   } else {
     if (!opts.json) {

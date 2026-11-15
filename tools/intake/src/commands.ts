@@ -190,23 +190,51 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
   return finish(data, errors);
 }
 
-function sidecarField(s: Sidecar, dir: string, key: string): string {
-  switch (key) {
-    case "status": return s.status;
-    case "needs_review": return String(s.cluster.needs_review);
-    case "income_folder": return s.source.income_folder ?? "";
-    case "source_type": return s.source.source_type;
-    case "tier": case "tier_eligible": return s.quality.tier_eligible;
-    case "virtual": return String(s.virtual);
-    case "singles": return String(s.singles === true);
-    case "albumartist": return s.cluster.albumartist ?? "";
-    case "album": return s.cluster.album ?? "";
-    case "root_path": return dir;
-    default: return "";
+/**
+ * Doc 03 `status --filter` keys, each the sidecar value compared as a string:
+ * `true`/`false` for the flags, "" for an absent value. `tier_eligible` is an
+ * alias of `tier` (one key, so giving both is giving one key twice).
+ */
+const FILTER_KEYS: Record<string, (s: Sidecar, dir: string) => string> = {
+  id: (s) => s.id,
+  status: (s) => s.status,
+  needs_review: (s) => String(s.cluster.needs_review),
+  income_folder: (s) => s.source.income_folder ?? "",
+  source_type: (s) => s.source.source_type ?? "",
+  tier: (s) => s.quality.tier_eligible,
+  virtual: (s) => String(s.virtual),
+  singles: (s) => String(s.singles === true),
+  albumartist: (s) => s.cluster.albumartist ?? "",
+  album: (s) => s.cluster.album ?? "",
+  root_path: (_s, dir) => dir,
+};
+const FILTER_ALIASES: Record<string, string> = { tier_eligible: "tier" };
+
+/** Resolve filter keys to their field readers; an unknown or repeated key is E_BAD_ARGS. */
+function compileFilters(filters: Record<string, string>): { tests: [(s: Sidecar, dir: string) => string, string][]; errors: JsonError[] } {
+  const tests: [(s: Sidecar, dir: string) => string, string][] = [];
+  const errors: JsonError[] = [];
+  const seen = new Map<string, string>();
+  for (const [key, value] of Object.entries(filters)) {
+    const canonical = Object.hasOwn(FILTER_ALIASES, key) ? FILTER_ALIASES[key]! : key;
+    if (!Object.hasOwn(FILTER_KEYS, canonical)) {
+      errors.push({ code: "E_BAD_ARGS", msg: `unknown --filter key: ${key}`, path: null });
+      continue;
+    }
+    const prior = seen.get(canonical);
+    if (prior !== undefined) {
+      errors.push({ code: "E_BAD_ARGS", msg: `--filter key given twice: ${prior} and ${key}`, path: null });
+      continue;
+    }
+    seen.set(canonical, key);
+    tests.push([FILTER_KEYS[canonical]!, value]);
   }
+  return { tests, errors };
 }
 
 export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<SidecarSummary[] | null> {
+  const filters = compileFilters(opts.filters);
+  if (filters.errors.length > 0) return { data: null, errors: filters.errors, exitCode: 2 };
   const income = loadIncome();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
@@ -229,7 +257,7 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
           errors.push({ code: "E_PARSE", msg: "unreadable sidecar", path: p });
           continue;
         }
-        const match = Object.entries(opts.filters).every(([k, v]) => sidecarField(sc, e.path, k) === v);
+        const match = filters.tests.every(([field, v]) => field(sc, e.path) === v);
         if (match) summaries.push({ ...summarize(sc, e.path), _sort: p });
       }
     }
