@@ -274,11 +274,15 @@ Decisions made during implementation; normative for schema v1 consumers.
   ambiguous Discogs hits and rejected shim candidates land in `candidates`,
   max 3) | `unidentified` (no usable artist/album). Anything except
   `fast_path`/`shim` sets `needs_review`. `needs_review` is sticky: identify/
-  assign can raise it, never clear it (clearing is approve's job, P3).
+  assign can raise it, never clear it; only `approve` clears it (doc 03
+  v1.2), and `assign --by user` does not.
 - **Score normalization**: `score = Σ wᵢ·eᵢ / Σ wᵢ over available tiers`, so
   absent network tiers don't deflate confidence. Artist/label tiers count as
   available whenever the input carries a value (an unknown artist is evidence
-  of absence); similar/style tiers only when they produced votes.
+  of absence), except a Various Artists credit (artist and similar tiers
+  unavailable) and a no-label credit (label tier unavailable), see "Library
+  layout and credit rules (amendment 003)"; similar/style tiers only when
+  they produced votes.
 - **Ties** break deterministically by collection name (ascending) after score.
 - **Feedback** lives in a separate `feedback:` section of `genre-map.yaml`
   (same artist→{collection: count} shape, merged with `artists:` at prior
@@ -286,12 +290,25 @@ Decisions made during implementation; normative for schema v1 consumers.
   file via YAML serializer — hand comments are not preserved; keep curated
   notes in the rules repo's git history instead.
 - **Singles**: `structure_slot: "singles"`, `target_path: null` — the singles
-  slot layout is one of the five pending structure TBDs; propose (P3) fills it
-  once decided. Tier `reject` likewise gets `target_path: null`.
-- **Compilations**: an artist of Various Artists (also Various, VA, V.A.,
-  V/A; doc 1 credits a VA release "Various Artists") gets `structure_slot:
-  "compilations"`, `target_path: null` — the compilations slot layout is
-  pending like the singles slot; propose reports it as pending.
+  slot is still pending ("Library layout and credit rules (amendment 003)",
+  Still pending); propose reports it as pending. Tier `reject` likewise gets
+  `target_path: null`.
+- **Library layout** (implements "Library layout for new placements"): the
+  target collection dir in the target tier is listed once per command run
+  (symlinks not followed; a missing dir reads as empty, any other read error
+  stops the command). An artist dir is a non-bracketed subdir whose
+  normalized name equals the artist's; it is reused with its on-disk
+  spelling. Otherwise releases parsed from folder names in `[Releases]` (any
+  case) or loose in the collection dir count, and the new release opens an
+  artist folder spelled as the input artist. Those earlier releases are
+  listed, relative to the tier root, in the optional proposal field
+  `restructure_candidates` and in the propose row; nothing is moved. Names
+  are compared as the map-key normalization of the name after path
+  sanitizing (so "AC/DC" matches the "AC-DC" dir intake creates). A Various
+  Artists release goes to `[Compilations]` (an existing dir reused whatever
+  its case) with the usual release-folder template. `assign` builds the
+  target, and `propose` rebuilds it from the library at propose time for the
+  proposal's collection.
 - **Config** (`structure.yaml`): `assign.weights{artist,label,similar,style}`,
   `assign.short_circuit{min_releases,confidence}`,
   `assign.needs_review{confidence,margin}`, `assign.shim_accept_distance`,
@@ -311,7 +328,9 @@ Decisions made during implementation; normative for schema v1 consumers.
   looked at). A release with no artist level gets its artist only from a name
   parse, never from its dir name; unparsed, it counts as a release with no
   artist and is listed in the report. `releases` in the stats counts every
-  release dir, with or without an artist.
+  release dir, with or without an artist. VA-like names are never recorded as
+  artists and no-label credits never as labels (amendment 003 section). The
+  maps go to `--out`, the naming report to `<out>/docs/`.
 - **Folder-name grammars**, tried in order, first match wins (score = the
   resolver's `name_parse` signal):
   `bracket_year_paren_label` `Artist [YYYY] Title (Label; Cat#)` 1.0;
@@ -344,6 +363,5 @@ Decisions made during implementation; normative for schema v1 consumers.
   single-field block (`[LABEL CD 97]`) is not split (label and catno cannot be
   told apart safely); the name parses as `bracket_year` with the block kept
   in the title.
-- `intake bootstrap` is not (yet) in the doc 03 command surface — filed as
-  CR-001.2 in `CHANGE-REQUESTS.md` for the next contract bump; the component
-  never calls it.
+- `intake bootstrap` is in the doc 03 command surface, marked human-only
+  (CR-001.2, amendment 002); the component never calls it.

@@ -5,7 +5,9 @@ Release-root resolver and sidecar tooling for the intake system. Specs:
 `docs/intake/intake-03-contract-spec.md` (CLI contract — command surface,
 JSON envelope, exit codes, status lifecycle, audio_hash).
 
-Self-contained Bun package; no fb2k SDK or Xcode dependency.
+Self-contained Bun package; no fb2k SDK or Xcode dependency. External tools:
+`flac` (resolve: decodes FLACs whose STREAMINFO MD5 is unset), `metaflac`
+(execute: provenance tags), `unzip`, optionally `7z` (archives).
 
 ## Usage
 
@@ -26,15 +28,24 @@ bun run src/cli.ts approve <root>      # or --batch <file> of ids/paths
 bun run src/cli.ts reject <root> --reason "<text>"   # or --batch <file>; -> rejected
 bun run src/cli.ts execute --approved  # copy, tag, verify, journal, place
 bun run src/cli.ts execute --resume    # crash recovery for `placing` roots
-bun run src/cli.ts gc [--age 30] [--relocate-dj]   # verified local cleanup
+bun run src/cli.ts gc --all [--age 30] [--relocate-dj]   # or gc <root...>; verified local cleanup
 bun run src/cli.ts collections         # genre map folder list (picker)
+bun run src/cli.ts income              # income folders from income.yaml
 bun run src/cli.ts bootstrap --tree <path> --out <dir>          # build maps
 bun run src/cli.ts status --json       # sidecar inventory
+bun run src/cli.ts status --filter status=placed --filter id=itk_0a1b2c3d
+bun run src/cli.ts version --json      # {cli, schema, engine, commands}
 ```
 
 All commands accept `--json` (single envelope on stdout) and `--dry-run`.
 Exit codes: 0 ok, 1 partial, 2 error. Roots are addressed by path or
-sidecar id.
+sidecar id. A command on a root in a status it does not accept reports
+`E_BAD_STATUS` for that root (doc 03 "Legal source statuses"); the
+all-roots forms (`propose --all-resolved`, `execute --approved`,
+`execute --resume`, `gc --all`) skip such roots silently. `status --filter`
+keys: `id`, `status`, `needs_review`, `income_folder`, `source_type`, `tier`
+(alias `tier_eligible`), `virtual`, `singles`, `albumartist`, `album`,
+`root_path`; an unknown, malformed or repeated key is `E_BAD_ARGS`.
 
 Identify/assign run fully offline by default; network evidence is opt-in via
 `DISCOGS_TOKEN` and `LASTFM_API_KEY` (similar-artist cache under
@@ -88,6 +99,17 @@ journal record and the placed files' audio hashes first, then leaves the
 sidecar behind as a `gc_done` tombstone. `propose --all-resolved` never picks
 up `needs_review` roots — offline (no Discogs confirmation) that is every
 root, so unattended auto-proposing effectively requires network identify.
+`needs_review` is sticky: only `approve` clears it.
+
+Targets follow the library layout (doc 02, amendment 003), read from the
+target collection dir when proposing: `<Collection>/<Artist>/` when the
+artist already has a release in that collection (an artist dir, or a
+release in `[Releases]` or loose), else `<Collection>/[Releases]/`; Various
+Artists releases go to `<Collection>/[Compilations]/`. Existing slot dirs
+are reused whatever their case; other bracketed dirs are never targets.
+Existing library folders are never moved: when a new release opens an
+artist folder, the artist's earlier releases outside it are listed as
+`restructure_candidates` on the proposal and the propose row.
 
 `reject` is a state change only (legal from `new`, `resolved`, `proposed`,
 `approved`; `E_BAD_STATUS` otherwise): it flips the sidecar to `rejected` and
@@ -122,9 +144,12 @@ scan reports `E_ARCHIVE_TOOL` — that surface is covered in
 `Bun.which()` reads the environment at process start.
 
 One fixture (`todo/Bluetech [2011] Cosmic Dubwise`) carries a zeroed FLAC
-STREAMINFO MD5 on two of three files, so the `fsha1:` fallback and the
-`flac_md5_unset` quality issue are covered end-to-end alongside the normal
-`flacmd5:` path.
+STREAMINFO MD5 on two of three files, so the decoded-audio key (`flacmd5:`
+computed with `flac`, CR-003) and the `flac_md5_unset` quality issue are
+covered end-to-end alongside the embedded `flacmd5:` path. The `fsha1:`
+fallback without a usable decoder is covered in
+`test/flac-unset-md5.test.ts`, which runs the CLI with a `PATH` that lacks
+`flac`.
 
 Re-blessing goldens: run only after hand-verifying resolver output; the
 golden file is the reviewed source of truth. Regenerating fixtures changes

@@ -16,7 +16,11 @@ Status values: `open` | `accepted` | `rejected` | `superseded`.
 **From:** tools worker (`feature/intake-cli`, HEAD `6fb6d32`)
 **Against:** `docs/intake/intake-03-contract-spec.md` (draft v1, 2026-07-11)
 **Spec basis:** main@3d146d7 + amendment 001
-**Status:** open
+**Status:** accepted (amendment 002, 2026-08-26, contract v1.1). CR-001.1
+accepted with modification, CR-001.2 and CR-001.3 accepted, CR-001.4
+option B accepted (superseded by CR-003 option d, amendment 003), CR-001.5
+option (b). Implemented on this branch: `reject` (0533e25); CR-001.4 by
+CR-003 (4cec147).
 
 Five items surfaced by implementing docs 01–03 in `tools/intake/`. None of
 them blocks the CLI today: the package is feature-complete against the
@@ -284,7 +288,10 @@ frozen.
 **Filed:** 2026-08-13
 **From:** tools worker (`feature/intake-cli`)
 **Re:** `docs/intake/CR-EXT-001-doc03.md` (extension worker, 2026-07-25)
-**Status:** open — for the overseer's decision, not a decision itself
+**Status:** closed (amendment 003, 2026-11-15). The CR-1, CR-2 and CR-4
+positions were accepted in amendment 002 (CR-002.1, CR-002.2, CR-002.4);
+the CR-3 schema-to-semver proposal is superseded by the integer `schema`
+(CR-002.3 option A).
 
 CR-EXT-001 asks the tools worker one direct question (CR-1: "check current
 implementation") and three that carry implementation consequences. Answers
@@ -413,9 +420,12 @@ compatible and would be cleanest resolved in one amendment.
 **From:** tools worker (`feature/intake-cli`, HEAD `9fbcd2c`)
 **Against:** `docs/intake/intake-03-contract-spec.md` v1.1 (2026-08-26)
 **Spec basis:** main@c712783 + amendment 002
-**Status:** open. The user chose option (d) on 2026-11-14 (relayed by the
-overseer). It lands as amendment 003; the code follows the merge of that
-amendment into this branch.
+**Status:** accepted, option (d) (amendment 003, 2026-11-15, contract v1.2),
+with the fallback chosen by the user: without a usable decoder `fsha1:` +
+`flac_decoder_missing`/`flac_decode_failed`, `needs_review` on the root, no
+provenance tags on that file. Implemented in 4cec147 with both regression
+tests; 12/20-bit FLAC still to be checked against a re-encode on the first
+real file.
 **Severity:** A (the contract as written cannot be satisfied)
 
 **Contract says.** Doc 03 "audio_hash": a FLAC whose STREAMINFO MD5 is unset

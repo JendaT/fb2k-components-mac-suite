@@ -119,13 +119,20 @@ from a disc dir that has no disc tag gets the dir's disc number as `disc`.
   dir is its own root; artist dir is never a root if ≥2 children resolved.
 - Hidden/system junk: skip `@eaDir`, `.DS_Store`, `._*`, `Thumbs.db`.
 - Pre-existing sidecar: re-resolve only with `--force`; otherwise trust it.
-- FLAC with unset STREAMINFO MD5: no repair at any stage (doc 3 v1.1,
-  CR-001.4 option B). `resolve` never mutates inputs and `execute` never
-  rewrites the audio of the copies. The file is keyed `fsha1:` (whole-file
-  SHA1) for life, with `flac_md5_unset` in `quality.issues` as the permanent
-  marker. Known defect: execute's tag write changes that whole-file key, so
-  such a release fails verify and cannot be placed. CR-003 proposes keying
-  these files by the MD5 of the decoded audio instead.
+- FLAC with unset STREAMINFO MD5 (doc 3 v1.2, CR-003 option d): keyed
+  `flacmd5:` + MD5 of the decoded audio (`flac -d --force-raw-format
+  --endian=little --sign=signed`, streamed into the hasher), the value a
+  correct STREAMINFO MD5 holds, so tag writes and a later repair keep the
+  key. `flac_md5_unset` in `quality.issues` marks the value as computed. No
+  repair at any stage: `resolve` never mutates inputs and `execute` never
+  rewrites the audio of the copies. Without a usable decoder (`flac` not on
+  PATH, or decoding fails, which often means a corrupt file) the file is
+  keyed `fsha1:` (whole-file SHA1) with `flac_decoder_missing` or
+  `flac_decode_failed` beside `flac_md5_unset`, the root gets
+  `needs_review: true`, and execute writes no provenance tags to that file
+  (issue `provenance_tags_skipped:flac_fsha1`). Verify re-checks each file
+  against the key it was recorded with, so an `fsha1:` file still verifies
+  after `flac` is installed. `flac` is a resolve-time dependency.
 
 ## Tier eligibility (normative)
 
