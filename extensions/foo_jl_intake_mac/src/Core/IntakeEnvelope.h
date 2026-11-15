@@ -8,6 +8,10 @@
 //
 //   1. The stdout, trimmed of ASCII whitespace, must be exactly one JSON
 //      object with a boolean `ok`, an array `errors` and a `data` key.
+//      A \u escape of an unpaired UTF-16 surrogate reads as U+FFFD: bun
+//      writes one for a string sliced inside a surrogate pair (CLI 0.2.1
+//      provenance.ts issues), and NSJSONSerialization would reject the
+//      whole document for it.
 //   2. Exit 0 with ok true and no errors: Ok.
 //   3. Exit 1 with ok false and errors: Partial; `data` is the successful
 //      subset (null is tolerated as "nothing succeeded").

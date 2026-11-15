@@ -147,6 +147,40 @@ int main(void) {
         CHECK(r.outcome == CliOutcome::Failed && r.errors[0].msg.empty() && !r.errors[0].hasPath,
               "rule 6: a non-string msg reads as empty, a non-string path as none");
 
+        // --- unpaired surrogate escapes (rule 1) ---
+        g_context = "lone-surrogates";
+        // What bun 1.4.2's JSON.stringify writes for an execute issue cut by
+        // .slice(0, 120) inside a surrogate pair: the high half alone.
+        const std::string issue = "metaflac_failed: " + std::string(119 - 17, 'x') + "\\ud835";
+        r = intake::parseEnvelope(
+            R"({"ok":true,"data":[{"id":"itk_00000010","root_path":"/r/x","issues":[")" + issue +
+                R"("]}],"errors":[]})",
+            0);
+        CHECK(r.outcome == CliOutcome::Ok, "a placed release with a lone high surrogate in an issue is Ok, not E_NO_CLI");
+        ids = intake::idsInData(r.data);
+        CHECK(ids.size() == 1 && ids[0] == "itk_00000010", "its id is in data");
+        NSString *issueText = r.outcome == CliOutcome::Ok ? r.data[0][@"issues"][0] : nil;
+        CHECK(issueText.length == 120 && [issueText hasSuffix:@"x\uFFFD"], "the lone half reads as U+FFFD");
+
+        auto stringField = [](const EnvelopeResult &e, NSString *key) -> NSString * {
+            if (e.outcome != CliOutcome::Ok || ![e.data isKindOfClass:[NSArray class]]) return nil;
+            return e.data[0][key];
+        };
+        r = intake::parseEnvelope(R"({"ok":true,"data":[{"id":"itk_0000000a","m":"\udc00y"}],"errors":[]})", 0);
+        CHECK([stringField(r, @"m") isEqualToString:@"\uFFFDy"], "a lone low surrogate reads as U+FFFD");
+        r = intake::parseEnvelope(R"({"ok":true,"data":[{"id":"itk_0000000a","m":"\uD835\u0041"}],"errors":[]})", 0);
+        CHECK([stringField(r, @"m") isEqualToString:@"\uFFFDA"],
+              "a high surrogate followed by a non-surrogate escape (uppercase hex) reads as U+FFFD");
+        r = intake::parseEnvelope(
+            R"({"ok":true,"data":[{"id":"itk_0000000a","p":"\ud835\udd82","a":"\\ud835","b":"\ud835"}],"errors":[]})", 0);
+        CHECK([stringField(r, @"p") isEqualToString:@"\U0001D582"], "a proper pair is kept");
+        CHECK([stringField(r, @"a") isEqualToString:@"\\ud835"], "an escaped backslash before 'ud835' is no escape");
+        CHECK([stringField(r, @"b") isEqualToString:@"\uFFFD"], "while a real lone surrogate beside it is replaced");
+        CHECK(isNoCli(intake::parseEnvelope(R"({"ok":true,"data":["\ud835)", 0)),
+              "a truncated document with a lone surrogate is still E_NO_CLI");
+        CHECK(isNoCli(intake::parseEnvelope(R"({"ok":true,"data":[],"errors":[]} \ud835)", 0)),
+              "a surrogate escape outside a string is not repaired");
+
         // --- runner verdicts ---
         g_context = "process";
         CHECK(intake::interpretProcessResult(exited(0, kOkStatus)).outcome == CliOutcome::Ok,

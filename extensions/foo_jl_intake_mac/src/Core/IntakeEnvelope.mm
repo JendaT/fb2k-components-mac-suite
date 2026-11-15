@@ -36,6 +36,69 @@ std::string utf8(NSString *s) {
     return c ? std::string(c) : std::string();
 }
 
+int hexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// The UTF-16 unit of the 4 hex digits at s[i], or -1.
+int hexUnit(std::string_view s, size_t i) {
+    if (i + 4 > s.size()) return -1;
+    int unit = 0;
+    for (size_t k = i; k < i + 4; k++) {
+        int digit = hexDigit(s[k]);
+        if (digit < 0) return -1;
+        unit = unit * 16 + digit;
+    }
+    return unit;
+}
+
+// `json` with every \uXXXX escape of an unpaired UTF-16 surrogate, inside
+// a string, replaced by \ufffd. False when there was none to replace.
+// Everything else is copied as is; malformed text stays malformed.
+bool replaceLoneSurrogates(std::string_view json, std::string &out) {
+    out.clear();
+    out.reserve(json.size());
+    bool inString = false, changed = false;
+    size_t i = 0;
+    while (i < json.size()) {
+        const char c = json[i];
+        if (c == '"') {
+            inString = !inString;
+        } else if (inString && c == '\\' && i + 1 < json.size()) {
+            const int unit = json[i + 1] == 'u' ? hexUnit(json, i + 2) : -1;
+            if (unit < 0) {
+                out.append(json.substr(i, 2)); // a two-character escape, or malformed
+                i += 2;
+                continue;
+            }
+            const bool high = unit >= 0xD800 && unit <= 0xDBFF;
+            const bool low = unit >= 0xDC00 && unit <= 0xDFFF;
+            if (high && i + 7 < json.size() && json[i + 6] == '\\' && json[i + 7] == 'u') {
+                const int next = hexUnit(json, i + 8);
+                if (next >= 0xDC00 && next <= 0xDFFF) {
+                    out.append(json.substr(i, 12)); // a proper pair
+                    i += 12;
+                    continue;
+                }
+            }
+            if (high || low) {
+                out += "\\ufffd";
+                changed = true;
+            } else {
+                out.append(json.substr(i, 6));
+            }
+            i += 6;
+            continue;
+        }
+        out += c;
+        i++;
+    }
+    return changed;
+}
+
 EnvelopeResult host(CliOutcome outcome, const char *code, std::string detail) {
     EnvelopeResult r;
     r.outcome = outcome;
@@ -85,6 +148,12 @@ EnvelopeResult parseEnvelope(std::string_view stdoutText, int exitCode) {
         NSError *error = nil;
         // A second value or trailing text makes this fail: exactly one value.
         id root = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:&error];
+        std::string repaired;
+        if (!root && replaceLoneSurrogates(text, repaired)) {
+            // Once more with the unpaired surrogates as U+FFFD (rule 1).
+            NSData *again = [NSData dataWithBytes:repaired.data() length:repaired.size()];
+            root = [NSJSONSerialization JSONObjectWithData:again options:0 error:nil];
+        }
         if (!root) return hostNoCli("stdout is not one JSON value");
         if (![root isKindOfClass:[NSDictionary class]]) return hostNoCli("stdout is not a JSON object");
         NSDictionary *envelope = root;
