@@ -14,8 +14,8 @@
 //  The switch is reset to 0 before it acts, so it fires once. Nothing else
 //  is read or written.
 //
-//  Temporary: removed with the other acceptance aids before the merge
-//  (PLAN.md B10).
+//  Temporary: removed with the other acceptance aids before the merge to
+//  main.
 //
 
 #import "../fb2k_sdk.h"

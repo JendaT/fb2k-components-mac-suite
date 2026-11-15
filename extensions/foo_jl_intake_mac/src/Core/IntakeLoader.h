@@ -46,7 +46,7 @@
 //  is discarded, the last load is forgotten (an empty view is published,
 //  with invalidate-all when the shown view decorated anything), and a load
 //  with `version` (and `income`) follows. An empty CLI path ends in
-//  NotConfigured. setWatchFolders() replaces the watch_folders setting and
+//  NotConfigured, with an empty watch set. setWatchFolders() replaces the watch_folders setting and
 //  recomputes the watch set; nothing is reloaded (a new stream catches up
 //  by itself, IntakeWatcher).
 //
@@ -68,7 +68,8 @@
 //  before: a share that mounted during the load is not taken for a local
 //  folder), and onWatchSet gets the stream paths only when they differ from
 //  the last ones handed over. That fresh table decides local or network
-//  only; the aliases still change through remount().
+//  only; the aliases still change through remount(). With no CLI path
+//  (NotConfigured) the set is empty: nothing could reload.
 //
 //  Incremental member lists (B4, IntakeSidecarMembers MemberReuse): a load
 //  started only by reloadForChanges() lists again just the directories its
@@ -164,7 +165,12 @@ public:
     // Starts a load, or queues one more after the running one.
     // `recheckVersion` runs `version` (and `income`) again even when it
     // passed before. The member pass lists every directory (no reuse).
-    void reload(bool recheckVersion);
+    // `served` (optional; B5 "Reload now") runs once on the loader queue,
+    // with the status then, when the load attempt that serves this request
+    // ends: the next one to start (a NotConfigured attempt included), never
+    // the one already running. A load discarded by reconfigure() hands it
+    // on to the load that follows. Never runs after shutdown().
+    void reload(bool recheckVersion, LoadFinishedHandler served = nullptr);
     // An FSEvents batch (IntakeWatcher): `directories` hold changed
     // sidecars or moved folders, as the events spelled them; `rescan`:
     // treat everything as changed. Starts or queues one load like

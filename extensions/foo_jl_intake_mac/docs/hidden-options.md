@@ -168,7 +168,7 @@ truncated or rotated; delete it by hand.
 
 ## foo_jl_intake.test_playlist and test_playlist_dir
 
-Temporary acceptance aid, removed before the merge (PLAN.md B10). It lets an
+Temporary acceptance aid, removed before the merge to main. It lets an
 in-app check against the mock CLI build its own playlist, since nobody clicks
 through foobar2000 during those runs.
 
@@ -203,7 +203,7 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.test_open_prefs
 
-Temporary acceptance aid, removed before the merge (PLAN.md B10), like
+Temporary acceptance aid, removed before the merge to main, like
 `test_playlist`. It lets an in-app check take a screenshot of the
 preferences page without clicking.
 

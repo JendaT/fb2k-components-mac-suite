@@ -25,19 +25,6 @@ std::string_view trimmed(std::string_view s, const char *chars) {
     return s.substr(first, last - first + 1);
 }
 
-// Every segment is "", "." or "..": the path names the root.
-bool namesRoot(std::string_view path) {
-    size_t start = 0;
-    while (start <= path.size()) {
-        size_t end = path.find('/', start);
-        if (end == std::string_view::npos) end = path.size();
-        const std::string_view part = path.substr(start, end - start);
-        if (!part.empty() && part != "." && part != "..") return false;
-        start = end + 1;
-    }
-    return true;
-}
-
 // The common start of every check: Empty, NotAbsolute, Missing, or Ok with
 // `st` filled.
 PathCheck statPath(const std::string &path, struct stat &st) {
@@ -52,6 +39,32 @@ PathCheck statPath(const std::string &path, struct stat &st) {
 
 std::string trimmedSetting(std::string_view text) {
     return std::string(trimmed(text, " \t\r\n"));
+}
+
+std::string lexicalAbsolutePath(std::string_view path) {
+    if (path.empty() || path[0] != '/') return std::string();
+    std::vector<std::string_view> parts;
+    size_t start = 1;
+    while (start <= path.size()) {
+        size_t end = path.find('/', start);
+        if (end == std::string_view::npos) end = path.size();
+        const std::string_view part = path.substr(start, end - start);
+        if (part.empty() || part == ".") {
+            // skip
+        } else if (part == "..") {
+            if (!parts.empty()) parts.pop_back();
+        } else {
+            parts.push_back(part);
+        }
+        start = end + 1;
+    }
+    if (parts.empty()) return "/";
+    std::string out;
+    for (std::string_view part : parts) {
+        out += '/';
+        out.append(part.data(), part.size());
+    }
+    return out;
 }
 
 // --- folder lists ---
@@ -69,12 +82,15 @@ std::vector<FolderLine> parseFolderLines(std::string_view text) {
             FolderLine entry;
             entry.line = lineNumber;
             entry.text = std::string(line);
+            // Root and duplicates by the lexical form, as the watch set
+            // cleans its candidates (watchCandidates).
+            const std::string clean = line[0] == '/' ? lexicalAbsolutePath(line) : std::string();
             if (line[0] != '/') {
                 entry.problem = FolderLineProblem::NotAbsolute;
-            } else if (!seen.insert(entry.text).second) {
-                entry.problem = FolderLineProblem::Duplicate;
-            } else if (namesRoot(line)) {
+            } else if (clean == "/") {
                 entry.problem = FolderLineProblem::Root;
+            } else if (!seen.insert(clean).second) {
+                entry.problem = FolderLineProblem::Duplicate;
             }
             out.push_back(std::move(entry));
         }
@@ -218,6 +234,12 @@ std::string findBun(const std::vector<std::string> &searchDirs) {
 
 // --- library mapping ---
 
+std::string normalizedPrefix(std::string_view value) {
+    const std::string_view v = trimmed(value, " \t\r\n");
+    if (v.empty() || v[0] != '/' || hasNul(v)) return std::string(v);
+    return lexicalAbsolutePath(v);
+}
+
 PrefixPairCheck validatePrefixPair(std::string_view from, std::string_view to) {
     const std::string_view f = trimmed(from, " \t\r\n");
     const std::string_view t = trimmed(to, " \t\r\n");
@@ -226,6 +248,8 @@ PrefixPairCheck validatePrefixPair(std::string_view from, std::string_view to) {
     if (t.empty()) return PrefixPairCheck::ToMissing;
     if (f[0] != '/' || hasNul(f)) return PrefixPairCheck::FromNotAbsolute;
     if (t[0] != '/' || hasNul(t)) return PrefixPairCheck::ToNotAbsolute;
+    if (lexicalAbsolutePath(f) == "/") return PrefixPairCheck::FromRoot;
+    if (lexicalAbsolutePath(t) == "/") return PrefixPairCheck::ToRoot;
     return PrefixPairCheck::Ok;
 }
 
@@ -237,6 +261,8 @@ const char *prefixPairCheckText(PrefixPairCheck check) {
         case PrefixPairCheck::ToMissing: return "the Mac path prefix is missing";
         case PrefixPairCheck::FromNotAbsolute: return "the NAS path prefix must be an absolute path";
         case PrefixPairCheck::ToNotAbsolute: return "the Mac path prefix must be an absolute path";
+        case PrefixPairCheck::FromRoot: return "the NAS path prefix cannot be the root folder";
+        case PrefixPairCheck::ToRoot: return "the Mac path prefix cannot be the root folder";
     }
     return "unknown";
 }

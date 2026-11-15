@@ -16,8 +16,9 @@
 //   - bun: the search directories and the candidates in them, in the order
 //     IntakeCommandArgs probes them (PLAN.md 3.4).
 //   - The library mapping (swap_prefix_from / swap_prefix_to, decision 2):
-//     one prefix pair, both absolute or both empty. Stored and validated
-//     only; Swap (B9) uses it.
+//     one prefix pair, both absolute (neither "/") or both empty, stored
+//     lexically clean (normalizedPrefix). Stored and validated only; Swap
+//     (B9) uses it.
 //
 //  Thread-safety: reentrant. The path checks and findBun read the
 //  filesystem (stat, access), so never call them on the decorate path or,
@@ -37,13 +38,20 @@ namespace intake {
 // `text` without surrounding spaces, tabs, CR and LF.
 std::string trimmedSetting(std::string_view text);
 
+// `path` with "//" collapsed, "." segments dropped, ".." popping a segment
+// (staying at "/"), and a trailing '/' removed (except for "/"). Bytes are
+// otherwise kept (no NFC). Empty when `path` is empty or not absolute. No
+// filesystem access. The watch set (IntakeWatchSet) cleans every candidate
+// with it; the folder list and prefix checks below use the same rule.
+std::string lexicalAbsolutePath(std::string_view path);
+
 // --- folder lists ---
 
 enum class FolderLineProblem {
     None,
     NotAbsolute, // does not start with '/' ("~/x" included): ignored
-    Root,        // "/" (or "/.", "//", ...): kept, but never watched (IntakeWatchSet)
-    Duplicate,   // the same text as an earlier line: ignored
+    Root,        // lexically "/" ("/.", "//", "/a/..", ...): kept, but never watched (IntakeWatchSet)
+    Duplicate,   // lexically the same folder as an earlier line ("/a", "/a/"): ignored
 };
 
 struct FolderLine {
@@ -120,15 +128,23 @@ std::string findBun(const std::vector<std::string> &searchDirs);
 // --- library mapping ---
 
 enum class PrefixPairCheck {
-    Ok,              // both set, both absolute
+    Ok,              // both set, both absolute, neither the root folder
     BothEmpty,       // no mapping (the default)
     FromMissing,     // only the Mac prefix is set
     ToMissing,       // only the NAS prefix is set
     FromNotAbsolute,
     ToNotAbsolute,
+    FromRoot,        // lexically "/": it would map every path
+    ToRoot,
 };
 
-// Both values are trimmed first (whitespace only counts as empty).
+// A prefix as stored and used: trimmed and, when absolute (no NUL byte),
+// lexically cleaned (lexicalAbsolutePath: no trailing '/', "." and ".."
+// resolved). Anything else is returned trimmed, as typed.
+std::string normalizedPrefix(std::string_view value);
+
+// Both values are trimmed first (whitespace only counts as empty); the
+// root check is lexical.
 PrefixPairCheck validatePrefixPair(std::string_view from, std::string_view to);
 // Ok and BothEmpty are valid settings; only Ok maps anything.
 inline bool prefixPairValid(PrefixPairCheck check) {

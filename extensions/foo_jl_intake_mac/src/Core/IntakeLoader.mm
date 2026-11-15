@@ -152,6 +152,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::vector<std::string> incomePaths;     // the last good `income` call
     std::vector<IncomeFolder> incomeFolders;  // the same call, for the status (B5)
     bool incomeOffered = false;               // the last passing `version` listed `income`
+    std::string incomeError;                  // why the last `income` call failed; "" after a good one
     WatchSet watchSet;                        // the last one built
     std::vector<std::string> watchInputs;     // the candidates it was built from
     bool watchBuilt = false;
@@ -168,6 +169,10 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     bool pendingParseRetry = false;           // the next load is that retry
     bool inFlightParseRetry = false;          // the running load is
 
+    // B5, loader queue only: reload() requests waiting for their load.
+    std::vector<LoadFinishedHandler> waitersNext;     // served by the next load to start
+    std::vector<LoadFinishedHandler> waitersInFlight; // served by the running load
+
     mutable std::mutex statusMutex;
     LoaderStatus status;
 
@@ -182,6 +187,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         s.partialErrors = partialErrors;
         s.incomeOffered = incomeOffered;
         s.incomeFolders = incomeFolders;
+        s.incomeError = incomeError;
         s.rootFolders = rootFoldersOf(lastGood);
         {
             std::lock_guard<std::mutex> lock(statusMutex);
@@ -198,8 +204,17 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     // --- loads ---
 
-    void requestLoad(bool recheck) {
+    void serveWaiters() {
+        if (waitersInFlight.empty()) return;
+        std::vector<LoadFinishedHandler> waiters = std::move(waitersInFlight);
+        waitersInFlight.clear();
+        const LoaderStatus s = currentStatus();
+        for (const LoadFinishedHandler &w : waiters) w(s);
+    }
+
+    void requestLoad(bool recheck, LoadFinishedHandler served = nullptr) {
         if (stopped) return;
+        if (served) waitersNext.push_back(std::move(served));
         pendingFull = true;
         if (loading) {
             again = true;
@@ -243,13 +258,20 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     void startLoad() {
         if (!mountsRead) readMounts(false);
+        // The requests made before this attempt are the ones it serves.
+        for (LoadFinishedHandler &w : waitersNext) waitersInFlight.push_back(std::move(w));
+        waitersNext.clear();
         if (settings.cli.cliPath.empty()) {
             if (!notConfiguredLogged) {
                 logInfo("not configured: foo_jl_intake.cli_path is empty, so no CLI runs and nothing is decorated");
                 notConfiguredLogged = true;
             }
             setStatus(LoaderState::NotConfigured);
+            // Nothing can reload without a CLI: the watch set empties (a
+            // cleared CLI path stops watching the last load's folders).
+            updateWatchSet();
             if (settings.onLoadFinished) settings.onLoadFinished(currentStatus());
+            serveWaiters();
             return;
         }
         notConfiguredLogged = false;
@@ -321,6 +343,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             if (!incomePaths.empty()) logDebug("income: not offered by this CLI; no income folders watched");
             incomePaths.clear();
             incomeFolders.clear();
+            incomeError.clear();
             startCall(LoadStep::Status);
         }
     }
@@ -355,7 +378,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             },
             &refusal);
         if (!started) {
-            logError("income failed; watching the last known income folders: refused: " + refusal);
+            incomeError = "refused: " + refusal;
+            logError("income failed; watching the last known income folders: " + incomeError);
             startCall(LoadStep::Status);
         }
     }
@@ -374,6 +398,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
                 for (const IncomeFolder &f : parsed.folders) paths.push_back(f.path);
                 incomePaths = std::move(paths);
                 incomeFolders = parsed.folders;
+                incomeError.clear();
                 if (isLogEnabled(LogLevel::Debug)) {
                     logDebug("income: " + std::to_string(parsed.folders.size()) + " folder(s)" +
                              (parsed.skipped ? ", " + std::to_string(parsed.skipped) + " unusable entries skipped"
@@ -381,10 +406,12 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
                 }
                 if (env.outcome == CliOutcome::Partial) logInfo("income: partial result: " + loadErrorText(env));
             } else {
-                logError("income failed; watching the last known income folders: " + parsed.error);
+                incomeError = parsed.error;
+                logError("income failed; watching the last known income folders: " + incomeError);
             }
         } else {
-            logError("income failed; watching the last known income folders: " + loadErrorText(env));
+            incomeError = loadErrorText(env);
+            logError("income failed; watching the last known income folders: " + incomeError);
         }
         startCall(LoadStep::Status);
     }
@@ -576,7 +603,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     }
 
     // `updateWatch` false: a load discarded after reconfigure(); its
-    // successor, already due, computes the set from the new settings.
+    // successor, already due, computes the set from the new settings and
+    // serves the reload requests this one was serving.
     void finishLoad(bool notify, bool updateWatch = true) {
         loading = false;
         if (stopped) return;
@@ -591,6 +619,13 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         memberPassRan = false;
         if (updateWatch) updateWatchSet();
         if (notify && settings.onLoadFinished) settings.onLoadFinished(currentStatus());
+        if (updateWatch) {
+            serveWaiters();
+        } else {
+            waitersNext.insert(waitersNext.begin(), std::make_move_iterator(waitersInFlight.begin()),
+                               std::make_move_iterator(waitersInFlight.end()));
+            waitersInFlight.clear();
+        }
         if (again) {
             again = false;
             if (againRecheck) needVersion = true;
@@ -614,6 +649,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         incomeOffered = false;
         incomeFolders.clear();
         incomePaths.clear();
+        incomeError.clear();
         lastGood.reset();
         pendingFull = true;
         pendingKeys.clear();
@@ -663,7 +699,10 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             rootPaths.reserve(lastGood->size());
             for (const IntakeRecord &rec : lastGood->records()) rootPaths.push_back(rec.rootPath);
         }
-        std::vector<std::string> inputs = watchCandidates(settings.watchFolders, incomePaths, rootPaths);
+        // No CLI path: nothing to reload, so nothing to watch.
+        std::vector<std::string> inputs = settings.cli.cliPath.empty()
+                                              ? std::vector<std::string>()
+                                              : watchCandidates(settings.watchFolders, incomePaths, rootPaths);
         if (watchBuilt && !watchDirty && inputs == watchInputs) return;
         const LinkReader &readLink = settings.readLink ? settings.readLink : posixLinkReaderFunction();
         watchSet = WatchSet::build(inputs, mountEntries, readLink);
@@ -736,10 +775,11 @@ IntakeLoader::~IntakeLoader() {
     shutdown();
 }
 
-void IntakeLoader::reload(bool recheckVersion) {
+void IntakeLoader::reload(bool recheckVersion, LoadFinishedHandler served) {
     std::shared_ptr<Impl> impl = impl_;
+    auto handler = std::make_shared<LoadFinishedHandler>(std::move(served));
     dispatch_async(impl->queue, ^{
-        impl->requestLoad(recheckVersion);
+        impl->requestLoad(recheckVersion, std::move(*handler));
     });
 }
 

@@ -430,20 +430,29 @@ static void testIncomeDisplay() {
     s.rootFolders = {"/fixture/income/dump"};
     IncomeDisplay d = incomeDisplay(s);
     CHECK(d.fromCli && d.rows.size() == 2 && d.rows[0].name == "dump" && d.rows[0].exists &&
-              d.rows[1].path == "/fixture/income/offline" && !d.rows[1].exists && d.note == "From intake income.",
+              d.rows[1].path == "/fixture/income/offline" && !d.rows[1].exists && d.note == "As listed by the CLI.",
           "income listed by the CLI, the missing folder marked");
+    s.incomeError = "E_INTERNAL: fixture failure";
+    d = incomeDisplay(s);
+    CHECK(d.fromCli && d.rows.size() == 2 && d.note.find("listing them again failed: E_INTERNAL") != std::string::npos,
+          "a failed income call after a good one: the earlier list, the failure named");
     s.incomeFolders.clear();
-    CHECK(incomeDisplay(s).rows.empty() && incomeDisplay(s).note == "intake income lists no folders.",
+    d = incomeDisplay(s);
+    CHECK(d.fromCli && d.rows.empty() &&
+              d.note == "The CLI could not list the income folders: E_INTERNAL: fixture failure",
+          "a failed income call with no good one: the failure, not an empty answer");
+    s.incomeError.clear();
+    CHECK(incomeDisplay(s).rows.empty() && incomeDisplay(s).note == "The CLI lists no income folders.",
           "the CLI lists none: no fallback to the roots");
 
     s.incomeOffered = false;
     s.rootFolders = {"/fixture/income/dump", "/fixture/income/shop"};
     d = incomeDisplay(s);
     CHECK(!d.fromCli && d.rows.size() == 2 && d.rows[1].path == "/fixture/income/shop" && d.rows[1].exists &&
-              d.rows[1].name.empty() && d.note.find("no income command") != std::string::npos,
+              d.rows[1].name.empty() && d.note.find("cannot list income folders") != std::string::npos,
           "without an income command: the roots' folders");
     s.rootFolders.clear();
-    CHECK(incomeDisplay(s).note == "No roots loaded.", "nothing loaded");
+    CHECK(incomeDisplay(s).note == "No releases loaded.", "nothing loaded");
     s.state = LoaderState::Loading;
     CHECK(incomeDisplay(s).note == "Loading\xE2\x80\xA6", "loading");
     s.state = LoaderState::NotConfigured;

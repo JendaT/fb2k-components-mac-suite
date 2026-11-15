@@ -67,14 +67,9 @@
 #include <vector>
 
 #include "IntakeMountAliases.h"
-#include "IntakeSettingsParse.h"  // WatchFolderList, parseWatchFolders
+#include "IntakeSettingsParse.h"  // WatchFolderList, parseWatchFolders, lexicalAbsolutePath
 
 namespace intake {
-
-// `path` with "//" collapsed, "." segments dropped, ".." popping a segment
-// (staying at "/"), and a trailing '/' removed (except for "/"). Bytes are
-// otherwise kept (no NFC). Empty when `path` is empty or not absolute.
-std::string lexicalAbsolutePath(std::string_view path);
 
 // The parent of a lexically clean absolute path: "/a" for "/a/b", "/" for
 // "/a", "" for "/" or a relative path.

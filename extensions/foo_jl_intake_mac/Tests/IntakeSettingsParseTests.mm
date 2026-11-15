@@ -202,6 +202,48 @@ static void testPrefixPair() {
           "valid settings: a full pair or none");
     CHECK(std::string(prefixPairCheckText(PrefixPairCheck::ToMissing)).find("Mac path prefix") != std::string::npos,
           "texts name the field");
+
+    // B5 review: the root maps every path; the check is lexical.
+    CHECK(validatePrefixPair("/", "/fixture/mac") == PrefixPairCheck::FromRoot &&
+              validatePrefixPair("/fixture/..", "/fixture/mac") == PrefixPairCheck::FromRoot &&
+              validatePrefixPair("/fixture/nas", "//") == PrefixPairCheck::ToRoot &&
+              validatePrefixPair("/fixture/nas", "/fixture/./..") == PrefixPairCheck::ToRoot,
+          "the root folder, however spelled, is not usable on either side");
+    CHECK(!prefixPairValid(PrefixPairCheck::FromRoot) && !prefixPairValid(PrefixPairCheck::ToRoot),
+          "and not a valid setting");
+    CHECK(std::string(prefixPairCheckText(PrefixPairCheck::FromRoot)).find("root folder") != std::string::npos,
+          "the root text");
+    CHECK(validatePrefixPair("/fixture/nas/", "/fixture/mac/") == PrefixPairCheck::Ok, "trailing slashes are fine");
+}
+
+static void testNormalizedPrefix() {
+    g_context = "normalized-prefix";
+    CHECK(normalizedPrefix(" /fixture/nas/ ") == "/fixture/nas", "trimmed, no trailing slash");
+    CHECK(normalizedPrefix("/fixture//nas/./x/..") == "/fixture/nas", "lexically clean");
+    CHECK(normalizedPrefix("/") == "/" && normalizedPrefix("//") == "/", "the root stays the root");
+    CHECK(normalizedPrefix(" relative/x/ ") == "relative/x/" && normalizedPrefix("\t").empty(),
+          "not absolute: trimmed only, as typed");
+    CHECK(normalizedPrefix(std::string("/a\0/b/", 6)) == std::string("/a\0/b/", 6), "a NUL byte: left alone");
+}
+
+static void testLexicalFolderLines() {
+    g_context = "folder-lines-lexical";
+    // B5 review: the page flags what the watch set will skip or merge
+    // (watchCandidates cleans every line with lexicalAbsolutePath).
+    const std::vector<FolderLine> lines =
+        parseFolderLines("/fixture/..\n/fixture/a/../..\n/fixture/a\n/fixture/a/\n/fixture/./a\n/fixture/b/../a2");
+    CHECK_EQ(lines.size(), 6, "six lines");
+    if (lines.size() == 6) {
+        CHECK(lines[0].problem == FolderLineProblem::Root && lines[1].problem == FolderLineProblem::Root,
+              "\"..\" back to / is the root");
+        CHECK(lines[2].problem == FolderLineProblem::None, "the first spelling");
+        CHECK(lines[3].problem == FolderLineProblem::Duplicate && lines[4].problem == FolderLineProblem::Duplicate,
+              "a trailing slash or \".\" names the same folder");
+        CHECK(lines[5].problem == FolderLineProblem::None, "another folder");
+    }
+    WatchFolderList l = parseWatchFolders("/fixture/a\n/fixture/a/\n/fixture/..");
+    CHECK(l.folders.size() == 2 && l.folders[0] == "/fixture/a" && l.folders[1] == "/fixture/..",
+          "a lexical duplicate is dropped; a root line is kept (watchCandidates skips it)");
 }
 
 int main(void) {
@@ -217,6 +259,8 @@ int main(void) {
         testPathChecks();
         testBun();
         testPrefixPair();
+        testNormalizedPrefix();
+        testLexicalFolderLines();
         removeTree(g_tempRoot);
     }
     TEST_MAIN_END();

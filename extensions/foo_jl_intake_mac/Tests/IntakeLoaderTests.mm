@@ -19,7 +19,11 @@
 //  over). B4 review fixes: a partial `status` whose E_PARSE names a
 //  sidecar keeps that root's last record (no untint, no invalidation) and
 //  retries once 1 s later; the watch set reads the mount table again, so a
-//  share that mounted during the load is never resolved.
+//  share that mounted during the load is never resolved. B5 review fixes:
+//  reload()'s `served` handler runs after the load serving the request (not
+//  the one already running; handed on past a load discarded by reconfigure;
+//  never after shutdown), a failed `income` call is named in the status,
+//  and no CLI path means an empty watch set.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -720,6 +724,11 @@ static void testIncomeAndWatchSet() {
           "status still runs after the failed income call");
     CHECK(logCount("income failed; watching the last known income folders") == 1, "one log line");
     CHECK_EQ(w->count(), 1, "the last good income folders stay watched");
+    {
+        const LoaderStatus st = loader.status();
+        CHECK(st.incomeOffered && st.incomeFolders.size() == 3 && !st.incomeError.empty(),
+              "the status keeps the last good folders and names the failure");
+    }
     clearMode(state, "income");
 
     g_context = "income-folder-removed";
@@ -729,6 +738,22 @@ static void testIncomeAndWatchSet() {
     loader.reload(true);
     CHECK(waitFinished(*h, 4), "a recheck finishes");
     CHECK(w->count() == 2 && w->last().size() == 2, "the changed set is handed over: dump and shop");
+    CHECK(loader.status().incomeError.empty(), "a good income call clears the failure");
+
+    g_context = "income-first-call-fails";
+    // The very first income call fails: no good list exists, and the status
+    // says so instead of looking like an empty answer.
+    std::string fresh = mock::setupState("default");
+    mock::setMode(fresh, "income", "exit2");
+    auto h2 = std::make_shared<Harness>();
+    IntakeLoader loader2(settingsFor(fresh, h2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1) && h2->lastFinished().state == LoaderState::Ready, "the load is Ready");
+    const LoaderStatus st2 = loader2.status();
+    CHECK(st2.incomeOffered && st2.incomeFolders.empty() && !st2.incomeError.empty(),
+          "offered, no folders, the failure named");
+    CHECK(incomeDisplay(st2).note.find("could not list the income folders") != std::string::npos,
+          "the page names the failure");
 }
 
 static void testIncomeNotOffered() {
@@ -1105,6 +1130,114 @@ static void testSetWatchFolders() {
     CHECK_EQ(w->count(), 3, "an unchanged set is not handed over");
     CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "no CLI call for a watch folder change");
     CHECK_EQ(h->finishedCount(), 1, "and no load");
+
+    g_context = "set-watch-folders-no-cli";
+    // B5 review: clearing the CLI path stops watching the last load's
+    // folders (nothing could reload); a watch_folders change made then keeps
+    // the set empty, and restoring the path brings the folders back.
+    loader.setWatchFolders({extra});
+    CHECK(mock::waitUntil([&] { return w->count() == 4; }, 10), "the extra folder is watched");
+    CliConfig none = mockCli(state);
+    none.cliPath.clear();
+    loader.reconfigure(none);
+    CHECK(waitFinished(*h, 2) && h->lastFinished().state == LoaderState::NotConfigured, "not configured");
+    CHECK(w->count() == 5 && w->last().empty(), "the watch set empties");
+    loader.setWatchFolders({real + "/income/dump"});
+    mock::waitUntil([] { return false; }, 0.5);
+    CHECK(w->count() == 5, "a watch folder change with no CLI path hands over nothing");
+    loader.reconfigure(mockCli(state));
+    CHECK(waitFinished(*h, 3) && h->lastFinished().state == LoaderState::Ready, "ready again");
+    CHECK(w->count() == 6 && w->last().size() == 3, "the income folders are watched again");
+}
+
+// B5 review: reload()'s `served` handler runs when the load serving the
+// request ends, not when an earlier one does.
+struct Served {
+    std::mutex m;
+    std::vector<LoaderStatus> statuses;
+    std::vector<size_t> finishedAt;  // the harness's finished count when it ran
+
+    LoadFinishedHandler handler(const std::shared_ptr<Harness> &h, const std::shared_ptr<Served> &self) {
+        return [h, self](const LoaderStatus &status) {
+            const size_t finished = h->finishedCount();
+            std::lock_guard<std::mutex> lock(self->m);
+            self->statuses.push_back(status);
+            self->finishedAt.push_back(finished);
+        };
+    }
+    size_t count() {
+        std::lock_guard<std::mutex> lock(m);
+        return statuses.size();
+    }
+};
+
+static void testReloadServed() {
+    g_context = "reload-served-idle";
+    std::string state = mock::setupState("default");
+    auto h = std::make_shared<Harness>();
+    IntakeLoader loader(settingsFor(state, h));
+    auto a = std::make_shared<Served>();
+    loader.reload(true, a->handler(h, a));
+    CHECK(mock::waitUntil([&] { return a->count() == 1; }, 20), "served once");
+    {
+        std::lock_guard<std::mutex> lock(a->m);
+        CHECK(a->statuses[0].state == LoaderState::Ready && a->finishedAt[0] == 1,
+              "after the load it started, with its status");
+    }
+
+    g_context = "reload-served-running";
+    mock::setMode(state, "status", "slow 1");
+    loader.reload(false);
+    CHECK(mock::waitUntil([&] { return calls(state).size() >= 4; }, 10), "the slow status started");
+    auto b = std::make_shared<Served>();
+    loader.reload(false, b->handler(h, b));
+    CHECK(waitFinished(*h, 3), "the running load and one more finish");
+    CHECK(mock::waitUntil([&] { return b->count() == 1; }, 10), "served once");
+    {
+        std::lock_guard<std::mutex> lock(b->m);
+        CHECK(b->finishedAt[0] == 3, "by the load after the running one, not by the running one");
+    }
+
+    g_context = "reload-served-reconfigure";
+    const size_t before = h->finishedCount();
+    auto c = std::make_shared<Served>();
+    mock::setMode(state, "status", "slow 3");
+    loader.reload(false, c->handler(h, c));
+    CHECK(mock::waitUntil([&] { return calls(state).size() >= 6; }, 10), "the slow status started");
+    loader.reconfigure(mockCli(state));
+    clearMode(state, "status");
+    CHECK(waitFinished(*h, before + 1, 20), "the load with the new settings finishes");
+    CHECK(mock::waitUntil([&] { return c->count() == 1; }, 10), "served once");
+    {
+        std::lock_guard<std::mutex> lock(c->m);
+        CHECK(c->finishedAt[0] == before + 1 && c->statuses[0].state == LoaderState::Ready,
+              "a discarded load hands the request on to the load with the new settings");
+    }
+
+    g_context = "reload-served-shutdown";
+    auto d = std::make_shared<Served>();
+    mock::setMode(state, "status", "slow 3");
+    loader.reload(false, d->handler(h, d));
+    CHECK(mock::waitUntil([&] { return calls(state).size() >= 10; }, 10), "the slow status started");
+    loader.shutdown();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK_EQ(d->count(), 0, "never served after shutdown");
+    clearMode(state, "status");
+    mock::killLeftovers();
+
+    g_context = "reload-served-not-configured";
+    std::string none = mock::setupState("default");
+    auto h2 = std::make_shared<Harness>();
+    LoaderSettings s2 = settingsFor(none, h2);
+    s2.cli.cliPath.clear();
+    IntakeLoader loader2(std::move(s2));
+    auto e = std::make_shared<Served>();
+    loader2.reload(true, e->handler(h2, e));
+    CHECK(mock::waitUntil([&] { return e->count() == 1; }, 10), "served once");
+    {
+        std::lock_guard<std::mutex> lock(e->m);
+        CHECK(e->statuses[0].state == LoaderState::NotConfigured, "with the not-configured status");
+    }
 }
 
 int main(void) {
@@ -1135,6 +1268,7 @@ int main(void) {
         testStatusForPreferences();
         testReconfigure();
         testSetWatchFolders();
+        testReloadServed();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

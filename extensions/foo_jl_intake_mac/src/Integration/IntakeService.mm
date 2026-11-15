@@ -167,7 +167,7 @@ public:
         unmountObserver_ = nil;
         if (settingsObserver_) [[NSNotificationCenter defaultCenter] removeObserver:settingsObserver_];
         settingsObserver_ = nil;
-        testRunner_.closeReadLane();  // a running Test CLI call is killed, none starts
+        testRunner_->closeReadLane();  // a running Test CLI call is killed, none starts
         if (watcher_) {
             watcher_->stop();  // no batch reaches the loader after this
             watcher_.reset();
@@ -179,10 +179,25 @@ public:
         }
     }
 
-    void reload(bool recheckVersion) {
+    void reload(bool recheckVersion, std::function<void(const LoaderStatus &)> finished) {
         // Refresh is the user's way back from a volume the guard marked.
         if (resetSlowVolumes("refresh")) providerInvalidateAll();
-        if (loader_) loader_->reload(recheckVersion);
+        if (!loader_) {
+            if (finished) finished(status());
+            return;
+        }
+        LoadFinishedHandler served;
+        if (finished) {
+            // Loader queue: hand the status to the main thread.
+            served = [finished](const LoaderStatus &st) {
+                std::function<void(const LoaderStatus &)> done = finished;
+                LoaderStatus copy = st;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    done(copy);
+                });
+            };
+        }
+        loader_->reload(recheckVersion, std::move(served));
     }
 
     void refreshAfterCommand() {
@@ -227,26 +242,41 @@ public:
         // if that notification has not been handled yet (a no-op when it
         // has).
         applySettings();
-        CliRequest request;
-        request.command = CliCommand::Version;
-        CliRunOptions options;
-        std::string refusal;
-        const bool started = startCliCommand(
-            testRunner_, cliConfig(), request, options, testQueue_, nullptr,
-            [completion](CliResult &&result) {
-                // testQueue_: parse here, report on main.
-                VersionGateResult gate;
-                if (result.envelope.outcome == CliOutcome::Ok || result.envelope.outcome == CliOutcome::Partial) {
-                    gate = checkVersionGate(result.envelope.data);
-                }
-                const CliTestSummary summary = cliTestSummary(result.envelope, gate);
-                logInfo(std::string("Test CLI: ") + summary.text);
+        // The environment snapshot is main-thread only; everything after it
+        // runs on testQueue_: building the call stats the CLI and bun paths
+        // (IntakeCommandArgs), which may lie on a share that stalls.
+        auto config = std::make_shared<CliConfig>(cliConfig());
+        std::shared_ptr<ProcessRunner> runner = testRunner_;
+        dispatch_queue_t queue = testQueue_;
+        dispatch_async(queue, ^{
+            auto report = [completion](bool ok, const std::string &text) {
+                // Local copies: the main-queue block copies them in.
+                std::function<void(bool, const std::string &)> done = completion;
+                std::string message = text;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(summary.ok, summary.text);
+                    done(ok, message);
                 });
-            },
-            &refusal);
-        if (!started) completion(false, "refused: " + refusal);
+            };
+            CliRequest request;
+            request.command = CliCommand::Version;
+            CliRunOptions options;
+            std::string refusal;
+            const bool started = startCliCommand(
+                *runner, *config, request, options, queue, nullptr,
+                [report](CliResult &&result) {
+                    // testQueue_: parse here, report on main.
+                    VersionGateResult gate;
+                    if (result.envelope.outcome == CliOutcome::Ok ||
+                        result.envelope.outcome == CliOutcome::Partial) {
+                        gate = checkVersionGate(result.envelope.data);
+                    }
+                    const CliTestSummary summary = cliTestSummary(result.envelope, gate);
+                    logInfo(std::string("Test CLI: ") + summary.text);
+                    report(summary.ok, summary.text);
+                },
+                &refusal);
+            if (!started) report(false, "refused: " + refusal);
+        });
     }
 
     // A volume came or went: the share may have mounted after startup
@@ -273,7 +303,9 @@ private:
     id mountObserver_ = nil;
     id unmountObserver_ = nil;
     id settingsObserver_ = nil;
-    ProcessRunner testRunner_;  // Test CLI only; its read lane closes in stop()
+    // Test CLI only; its read lane closes in stop(). Shared with the blocks
+    // on testQueue_, which may still run after the service is deleted.
+    std::shared_ptr<ProcessRunner> testRunner_ = std::make_shared<ProcessRunner>();
     dispatch_queue_t testQueue_ = nil;
 };
 
@@ -320,8 +352,12 @@ FB2K_SERVICE_FACTORY(intake_initquit);
 
 } // anonymous namespace
 
-void serviceReload(bool recheckVersion) {
-    if (g_service != nullptr) g_service->reload(recheckVersion);
+void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &status)> finished) {
+    if (g_service != nullptr) {
+        g_service->reload(recheckVersion, std::move(finished));
+    } else if (finished) {
+        finished(serviceStatus());
+    }
 }
 
 void serviceRefreshAfterCommand() {

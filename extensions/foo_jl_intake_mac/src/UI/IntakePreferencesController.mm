@@ -18,23 +18,33 @@
 //     highlighted in place and listed under the field (lexical checks
 //     only, no filesystem access: these folders are usually on a share).
 //   - Library mapping: one prefix pair, NAS path prefix -> Mac path prefix,
-//     stored and validated only (Swap, B9, uses it).
+//     stored lexically clean (normalizedPrefix) and validated only (Swap,
+//     B9, uses it).
 //   - Logging: the log level.
-//   - Status: state, CLI version, roots and last error from the loader
-//     (statusDisplay), refreshed on IntakeStatusDidChangeNotification while
-//     the page is visible (no timer); Test CLI (`version --json` through the
-//     CLI runner on a background queue) and Reload now (serviceReload).
+//   - Status: state, CLI version, roots ("Releases") and last error from
+//     the loader (statusDisplay), refreshed on
+//     IntakeStatusDidChangeNotification while the page is visible (no
+//     timer); Test CLI (`version --json`, built and run on a background
+//     queue) and Reload now (serviceReload; "Reload finished." when the load
+//     serving the click has ended, not on the first status change).
 //   - Income folders: read-only (incomeDisplay): `intake income` when the
-//     CLI offers it, otherwise the folders holding the loaded roots.
+//     CLI offers it (a failed call is named, never shown as an empty list),
+//     otherwise the folders holding the loaded roots.
 //
 //  Applying changes: a text field is written to configStore when editing
 //  ends (Return, Tab, focus loss, and when the page goes away), the popup
 //  at once; then IntakeSettingsDidChangeNotification is posted and
 //  IntakeService applies it without a restart.
 //
-//  Keyboard: the key view loop runs top to bottom through every control
-//  (Tab in the watched folders field moves on instead of inserting a tab).
-//  Every control has an accessibility label.
+//  Keyboard: the key view order runs top to bottom through every control
+//  (Tab in the watched folders field moves on instead of inserting a tab);
+//  it joins the host's key view loop when there is one after the page's
+//  root view, else it closes inside the page (joinHostKeyViewLoop). Every
+//  control has an accessibility label.
+//
+//  Wrapping labels (status values, the Test CLI result, the folder
+//  problems) wrap at their own width (IntakePrefsWrappingLabel), so they fit
+//  the column at any page width.
 //
 
 #import "IntakePreferencesController.h"
@@ -59,7 +69,10 @@ namespace {
 constexpr CGFloat kLabelColumnWidth = 112;
 constexpr CGFloat kButtonColumnWidth = 92;
 constexpr CGFloat kMinimumPageWidth = 540;
-constexpr CGFloat kWrapWidth = 380;
+// The first wrap width of a wrapping label, below the narrowest column it
+// can get (about 264 pt at kMinimumPageWidth); it then follows the label's
+// width (IntakePrefsWrappingLabel).
+constexpr CGFloat kInitialWrapWidth = 200;
 constexpr size_t kMaxListedProblems = 6;
 
 NSString *NSStr(const std::string &s) {
@@ -140,6 +153,22 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 }
 @end
 
+// A wrapping label whose wrap width follows its own width, so its height
+// fits the column the grid gives it at any page width: a fixed
+// preferredMaxLayoutWidth wider than the column would compute too few lines
+// and clip the last one.
+@interface IntakePrefsWrappingLabel : NSTextField
+@end
+@implementation IntakePrefsWrappingLabel
+- (void)setFrameSize:(NSSize)size {
+    [super setFrameSize:size];
+    if (size.width > 1 && fabs(self.preferredMaxLayoutWidth - size.width) > 0.5) {
+        self.preferredMaxLayoutWidth = size.width;
+        [self invalidateIntrinsicContentSize];
+    }
+}
+@end
+
 @interface IntakePreferencesController () <NSTextFieldDelegate, NSTextViewDelegate, NSTableViewDataSource,
                                            NSTableViewDelegate>
 @property (nonatomic, strong) NSButton *infoButton;
@@ -186,7 +215,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 @property (nonatomic, copy) NSString *savedPrefixTo;
 
 @property (nonatomic, assign) BOOL observingStatus;
-@property (nonatomic, assign) BOOL reloadPending;
+@property (nonatomic, assign) NSUInteger reloadToken;  // the latest Reload now click
 @property (nonatomic, assign) NSUInteger hintGeneration;
 @end
 
@@ -239,10 +268,13 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 }
 
 - (NSTextField *)wrappingLabel {
-    NSTextField *label = [NSTextField wrappingLabelWithString:@""];
+    NSTextField *label = [IntakePrefsWrappingLabel wrappingLabelWithString:@""];
     label.font = [NSFont systemFontOfSize:11];
     label.textColor = [NSColor secondaryLabelColor];
-    label.preferredMaxLayoutWidth = kWrapWidth;
+    label.preferredMaxLayoutWidth = kInitialWrapWidth;
+    // The column decides the width; the text never widens the page.
+    [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
     label.selectable = YES;
     return label;
 }
@@ -407,7 +439,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     [stack addArrangedSubview:JLCreateSectionHeader(@"Status")];
     self.stateValue = [self valueLabelWithAccessibilityLabel:@"State"];
     self.cliVersionValue = [self valueLabelWithAccessibilityLabel:@"CLI version"];
-    self.rootsValue = [self valueLabelWithAccessibilityLabel:@"Roots"];
+    self.rootsValue = [self valueLabelWithAccessibilityLabel:@"Releases"];
     self.errorValue = [self valueLabelWithAccessibilityLabel:@"Last error"];
     self.testButton = [self buttonWithTitle:@"Test CLI"
                                      action:@selector(testCli:)
@@ -428,7 +460,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     NSGridView *statusGrid = [self gridWithRows:@[
         @[ JLCreateLabel(@"State:"), self.stateValue, [self empty] ],
         @[ JLCreateLabel(@"CLI version:"), self.cliVersionValue, [self empty] ],
-        @[ JLCreateLabel(@"Roots:"), self.rootsValue, [self empty] ],
+        @[ JLCreateLabel(@"Releases:"), self.rootsValue, [self empty] ],
         @[ JLCreateLabel(@"Last error:"), self.errorValue, [self empty] ],
         @[ [self empty], buttons, [self empty] ],
         @[ [self empty], self.actionResult, [self empty] ],
@@ -572,8 +604,21 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
                                                    object:nil];
         self.observingStatus = YES;
     }
+    [self joinHostKeyViewLoop];
     [self refreshStatus];
     [self refreshPathHints];
+}
+
+// When the host's key view loop goes on after the page's root view, the
+// page's controls join it there, so Tab leaves the page after the last one;
+// otherwise the loop stays closed inside the page (buildKeyViewLoop), which
+// keeps Tab working with no chain from the host.
+- (void)joinHostKeyViewLoop {
+    NSView *root = self.view;
+    NSView *hostNext = root.nextKeyView;
+    if (hostNext == nil || hostNext == root || [hostNext isDescendantOf:root]) return;  // none, or joined
+    root.nextKeyView = self.infoButton;
+    self.incomeTable.nextKeyView = hostNext;
 }
 
 - (void)viewWillDisappear {
@@ -598,8 +643,8 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     self.savedBun = NSStr(trimmedSetting(config::getString(config::kBunPath, "")));
     self.savedRules = NSStr(trimmedSetting(config::getString(config::kRulesDir, "")));
     self.savedFolders = NSStr(config::getString(config::kWatchFolders, ""));
-    self.savedPrefixFrom = NSStr(trimmedSetting(config::getString(config::kSwapPrefixFrom, "")));
-    self.savedPrefixTo = NSStr(trimmedSetting(config::getString(config::kSwapPrefixTo, "")));
+    self.savedPrefixFrom = NSStr(normalizedPrefix(config::getString(config::kSwapPrefixFrom, "")));
+    self.savedPrefixTo = NSStr(normalizedPrefix(config::getString(config::kSwapPrefixTo, "")));
 
     self.cliField.stringValue = self.savedCli;
     self.bunField.stringValue = self.savedBun;
@@ -652,12 +697,13 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
         self.savedFolders = folders;
         changed = YES;
     }
-    NSString *from = Trimmed(self.prefixFromField.stringValue);
+    // The prefixes are stored lexically clean ("/a/" as "/a").
+    NSString *from = NSStr(normalizedPrefix(StdStr(self.prefixFromField.stringValue)));
     if ([self saveString:from key:config::kSwapPrefixFrom saved:self.savedPrefixFrom]) {
         self.savedPrefixFrom = from;
         changed = YES;
     }
-    NSString *to = Trimmed(self.prefixToField.stringValue);
+    NSString *to = NSStr(normalizedPrefix(StdStr(self.prefixToField.stringValue)));
     if ([self saveString:to key:config::kSwapPrefixTo saved:self.savedPrefixTo]) {
         self.savedPrefixTo = to;
         changed = YES;
@@ -689,8 +735,10 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     id field = notification.object;
     if ([field isKindOfClass:[NSTextField class]]) {
         NSTextField *textField = field;
-        NSString *trimmed = Trimmed(textField.stringValue);
-        if (![trimmed isEqualToString:textField.stringValue]) textField.stringValue = trimmed;
+        const BOOL prefix = textField == self.prefixFromField || textField == self.prefixToField;
+        NSString *clean = prefix ? NSStr(normalizedPrefix(StdStr(textField.stringValue))) : Trimmed(textField.stringValue);
+        if (![clean isEqualToString:textField.stringValue]) textField.stringValue = clean;
+        if (prefix) [self refreshPrefixHint];
     }
     [self saveAllFields];
 }
@@ -789,12 +837,12 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     // Rules folder
     if (h.rules == PathCheck::Empty) {
         [self setHint:self.rulesHint
-                       text:@"Empty: an inherited INTAKE_RULES_DIR, else the CLI's own config."
+                       text:@"Empty: the CLI uses its own rules setting."
                        tone:StatusTone::Neutral
             neutralIsHelper:YES];
     } else if (h.rules == PathCheck::Ok) {
         [self setHint:self.rulesHint
-                       text:@"Passed to the CLI as INTAKE_RULES_DIR."
+                       text:@"The CLI reads its rules from this folder."
                        tone:StatusTone::Neutral
             neutralIsHelper:YES];
     } else {
@@ -822,9 +870,8 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
             break;
         case PrefixPairCheck::Ok:
             [self setHint:self.prefixHint
-                           text:[NSString stringWithFormat:@"%@/… maps to %@/…",
-                                                           Trimmed(self.prefixFromField.stringValue),
-                                                           Trimmed(self.prefixToField.stringValue)]
+                           text:[NSString stringWithFormat:@"%@/… maps to %@/…", NSStr(normalizedPrefix(from)),
+                                                           NSStr(normalizedPrefix(to))]
                            tone:StatusTone::Neutral
                 neutralIsHelper:YES];
             break;
@@ -890,7 +937,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 
     if (problemCount == 0) {
         self.foldersHint.stringValue = @"One absolute path per line, added to the income folders and the folders of "
-                                       @"known roots, which are always watched.";
+                                       @"known releases, which are always watched.";
         self.foldersHint.textColor = [NSColor tertiaryLabelColor];
     } else {
         self.foldersHint.attributedStringValue = listing;
@@ -954,7 +1001,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     panel.canChooseFiles = NO;
     panel.canChooseDirectories = YES;
     panel.canCreateDirectories = NO;
-    panel.message = @"Choose the intake rules folder (INTAKE_RULES_DIR).";
+    panel.message = @"Choose the folder that holds the intake rules.";
     NSString *current = Trimmed(self.rulesField.stringValue);
     panel.directoryURL = [NSURL fileURLWithPath:current.length ? current : NSHomeDirectory() isDirectory:YES];
     __weak IntakePreferencesController *weakSelf = self;
@@ -991,10 +1038,19 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 
 - (void)reloadNow:(id)sender {
     [self commitEdits];
-    self.reloadPending = YES;
+    // Only the latest click reports; an earlier one finishing is not it.
+    const NSUInteger token = ++self.reloadToken;
     self.actionResult.stringValue = @"Reloading…";
     self.actionResult.textColor = [NSColor secondaryLabelColor];
-    serviceReload(true);
+    __weak IntakePreferencesController *weakSelf = self;
+    serviceReload(true, ^(const LoaderStatus &status) {
+        IntakePreferencesController *strongSelf = weakSelf;
+        if (strongSelf == nil || token != strongSelf.reloadToken) return;
+        strongSelf.actionResult.stringValue =
+            status.state == LoaderState::Stopped ? @"Not running." : @"Reload finished.";
+        strongSelf.actionResult.textColor = [NSColor secondaryLabelColor];
+        [strongSelf refreshStatus];
+    });
 }
 
 - (void)showComponentInfo:(NSButton *)sender {
@@ -1009,11 +1065,6 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 #pragma mark - Status
 
 - (void)statusChanged:(NSNotification *)notification {
-    if (self.reloadPending) {
-        self.reloadPending = NO;
-        self.actionResult.stringValue = @"Reload finished.";
-        self.actionResult.textColor = [NSColor secondaryLabelColor];
-    }
     [self refreshStatus];
 }
 
@@ -1032,7 +1083,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     NSMutableArray<NSArray<NSString *> *> *rows = [NSMutableArray array];
     NSMutableIndexSet *missing = [NSMutableIndexSet indexSet];
     for (const IncomeDisplayRow &row : income.rows) {
-        NSString *state = income.fromCli ? (row.exists ? @"Found" : @"Missing") : @"Holds roots";
+        NSString *state = income.fromCli ? (row.exists ? @"Found" : @"Missing") : @"Has releases";
         if (!row.exists) [missing addIndex:rows.count];
         [rows addObject:@[ NSStr(row.name), NSStr(row.path), state ]];
     }

@@ -82,8 +82,8 @@ IntakeSettings load() {
     WatchFolderList folders = parseWatchFolders(getString(kWatchFolders, ""));
     s.watchFolders = std::move(folders.folders);
     s.ignoredWatchFolders = std::move(folders.ignored);
-    s.swapPrefixFrom = trimmedSetting(getString(kSwapPrefixFrom, ""));
-    s.swapPrefixTo = trimmedSetting(getString(kSwapPrefixTo, ""));
+    s.swapPrefixFrom = normalizedPrefix(getString(kSwapPrefixFrom, ""));
+    s.swapPrefixTo = normalizedPrefix(getString(kSwapPrefixTo, ""));
     return s;
 }
 

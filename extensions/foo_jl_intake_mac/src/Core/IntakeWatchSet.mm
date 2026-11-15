@@ -74,32 +74,6 @@ std::string joinPath(const std::string &directory, std::string_view name) {
 
 } // anonymous namespace
 
-std::string lexicalAbsolutePath(std::string_view path) {
-    if (path.empty() || path[0] != '/') return std::string();
-    std::vector<std::string_view> parts;
-    size_t start = 1;
-    while (start <= path.size()) {
-        size_t end = path.find('/', start);
-        if (end == std::string_view::npos) end = path.size();
-        const std::string_view part = path.substr(start, end - start);
-        if (part.empty() || part == ".") {
-            // skip
-        } else if (part == "..") {
-            if (!parts.empty()) parts.pop_back();
-        } else {
-            parts.push_back(part);
-        }
-        start = end + 1;
-    }
-    if (parts.empty()) return "/";
-    std::string out;
-    for (std::string_view part : parts) {
-        out += '/';
-        out.append(part.data(), part.size());
-    }
-    return out;
-}
-
 std::string parentDirectory(std::string_view path) {
     if (path.size() < 2 || path[0] != '/') return std::string();
     const size_t slash = path.rfind('/');

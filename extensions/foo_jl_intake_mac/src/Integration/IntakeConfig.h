@@ -51,7 +51,7 @@ struct IntakeSettings {
     bool logFile = false;  // hidden: mirror log lines to ~/Library/Logs/foobar2000/jl_intake.log
     std::vector<std::string> watchFolders;        // absolute paths, in order
     std::vector<std::string> ignoredWatchFolders; // lines that were not absolute paths
-    std::string swapPrefixFrom;  // trimmed; validatePrefixPair decides if it is usable
+    std::string swapPrefixFrom;  // normalizedPrefix; validatePrefixPair decides if it is usable
     std::string swapPrefixTo;
 };
 
@@ -83,8 +83,9 @@ void setString(const char *key, const std::string &value);
 int defaultLogLevel();
 
 // Every key, with surrounding whitespace trimmed from the strings
-// (trimmedSetting), log_level clamped to 0-2 and watch_folders split into
-// lines (parseWatchFolders).
+// (trimmedSetting), the swap prefixes lexically cleaned (normalizedPrefix),
+// log_level clamped to 0-2 and watch_folders split into lines
+// (parseWatchFolders).
 IntakeSettings load();
 
 } // namespace config

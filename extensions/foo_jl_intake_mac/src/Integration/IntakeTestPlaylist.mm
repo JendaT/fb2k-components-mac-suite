@@ -17,8 +17,8 @@
 //  must be a local absolute path: anything under /Volumes or /volume1 is
 //  refused, so this can never read a network share.
 //
-//  Temporary: removed with the other acceptance aids before the merge
-//  (PLAN.md B10).
+//  Temporary: removed with the other acceptance aids before the merge to
+//  main.
 //
 
 #import "../fb2k_sdk.h"

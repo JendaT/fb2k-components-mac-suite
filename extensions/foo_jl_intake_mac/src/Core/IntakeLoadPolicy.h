@@ -125,6 +125,7 @@ struct LoaderStatus {
     // B5, for the preferences page's income folder list (incomeDisplay):
     bool incomeOffered = false;             // the last passing `version` listed `income`
     std::vector<IncomeFolder> incomeFolders; // the last good `income` call (CLI order)
+    std::string incomeError;                // why the last `income` call failed; "" after a good one
     std::vector<std::string> rootFolders;   // parents of the roots in use, lexically clean, sorted, each once
 };
 
@@ -151,6 +152,8 @@ StatusDisplay statusDisplay(const LoaderStatus &status);
 // the parent folders of the loaded roots. `exists` comes from the CLI for
 // income folders; a root's parent held a root at the last load, so it is
 // shown as existing (the page never stats folders that may lie on a share).
+// A failed `income` call (incomeError) is named in the note, with the last
+// good list if there is one, never shown as an empty answer.
 struct IncomeDisplayRow {
     std::string name;  // from `income`; empty for a root's parent
     std::string path;

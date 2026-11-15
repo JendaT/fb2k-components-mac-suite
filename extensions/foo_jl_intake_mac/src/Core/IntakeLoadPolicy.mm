@@ -245,16 +245,23 @@ IncomeDisplay incomeDisplay(const LoaderStatus &status) {
     if (status.incomeOffered) {
         d.fromCli = true;
         for (const IncomeFolder &f : status.incomeFolders) d.rows.push_back({f.name, f.path, f.exists});
-        d.note = d.rows.empty() ? "intake income lists no folders." : "From intake income.";
+        if (!status.incomeError.empty()) {
+            // The CLI did not answer: never shown as an empty list.
+            d.note = d.rows.empty() ? "The CLI could not list the income folders: " + status.incomeError
+                                    : "As the CLI listed them earlier; listing them again failed: " +
+                                          status.incomeError;
+        } else {
+            d.note = d.rows.empty() ? "The CLI lists no income folders." : "As listed by the CLI.";
+        }
         return d;
     }
     for (const std::string &folder : status.rootFolders) d.rows.push_back({std::string(), folder, true});
     if (!d.rows.empty()) {
-        d.note = "Folders holding the loaded roots (this CLI has no income command).";
+        d.note = "This CLI version cannot list income folders; showing the folders of the loaded releases.";
     } else if (status.state == LoaderState::Loading) {
         d.note = "Loading\xE2\x80\xA6";
     } else {
-        d.note = "No roots loaded.";
+        d.note = "No releases loaded.";
     }
     return d;
 }

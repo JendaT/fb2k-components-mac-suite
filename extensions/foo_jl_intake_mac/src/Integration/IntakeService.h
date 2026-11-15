@@ -65,8 +65,12 @@ namespace intake {
 // before on_init and after on_quit. For Refresh (B6) and the preferences
 // page (B5). `recheckVersion` runs `version` (and `income`) again first.
 // Also forgets the slow mac-volumes (one invalidate-all when one was
-// marked), so Refresh brings their tints back.
-void serviceReload(bool recheckVersion);
+// marked), so Refresh brings their tints back. `finished` (optional) runs
+// once on the main thread with the loader's status when the load serving
+// this request has ended (IntakeLoader::reload), at once with state
+// Stopped before on_init and after on_quit; never after on_quit for a
+// request still waiting then.
+void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &status)> finished = nullptr);
 
 // Main thread. The post-command refresh (B6 calls it when a command the
 // component started exits, PLAN.md 3.5, doc 04 "Refresh and invalidation"):
@@ -85,11 +89,12 @@ std::string serviceStatusLine();
 LoaderStatus serviceStatus();
 
 // Main thread. "Test CLI" (B5): one `version --json` with the current
-// settings, through the CLI runner on a background queue (a read-only call:
-// killed at the 10 s budget, and on quit). `completion` runs once on the
-// main thread with whether the version gate passed and a one-line result
-// (cliTestSummary). Before on_init and after on_quit it runs at once with
-// "not running".
+// settings, built and run through the CLI runner on a background queue, so
+// the CLI and bun path checks never block the main thread (a read-only
+// call: killed at the 10 s budget, and on quit). `completion` runs once on
+// the main thread, later, with whether the version gate passed and a
+// one-line result (cliTestSummary). Before on_init and after on_quit it
+// runs at once with "not running".
 void serviceTestCli(std::function<void(bool ok, const std::string &text)> completion);
 
 } // namespace intake
