@@ -2,9 +2,11 @@
 
 A fake `intake` CLI for testing foo_jl_intake_mac without the real tool or
 real music. It prints the doc 03 envelope (`{ok, data, errors}`, contract
-v1.1) with the data shapes of CLI 0.2.1 (branch `feature/intake-cli`) for
-`version`, `status`, `collections`, `propose`, `assign`, `approve`,
-`reject`, `execute` (with `--dry-run` and `--resume`) and `gc`.
+v1.2) with the data shapes of CLI 0.3.0 (branch `feature/intake-cli`) for
+`version`, `status`, `collections`, `income`, `propose`, `assign`,
+`approve`, `reject`, `execute` (with `--dry-run` and `--resume`) and `gc`.
+The `cli-0.2.1` scenario switches to what CLI 0.2.1 does, for testing the
+consumer's fallbacks.
 
 Plain bash 3.2 (`/bin/bash` on macOS) plus `find`, `cp`, `mkdir` and `rm`.
 All fixtures are synthetic.
@@ -38,17 +40,33 @@ the marker are kept.
 
 ## Scenarios (`scenarios/<name>/`)
 
-| Scenario | What it is |
-|---|---|
-| `default` | 15 roots in `income/dump` and `income/shop`: every status (`new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `gc_done`, `rejected`); `needs_review` on a resolved root, an engine proposal and a user override; `ranked` on every engine proposal and `[]` on a user-only one; a Various Artists root with `structure_slot: compilations` and a null target (propose refuses it with `E_NO_TARGET`); two virtual roots sharing one folder; library copies of the placed and gc_done roots under `root/library/` |
-| `no-ranked` | `default` with `proposal.ranked` absent from the `status` summaries (sidecars keep it, as with the real CLI) |
-| `cli-0.1` | `default` as CLI 0.1.0 would show it: `version` reports 0.1.0, `reject` is an unknown command, no rejected root, `ranked` absent from the `status` summaries (sidecars keep it) |
-| `schema2` | `default` with `"schema": 2` in `version` |
-| `schema-string` | `default` with `"schema": "1"` (a string) in `version` |
-| `perf-200` | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
+| Scenario | CLI | What it is |
+|---|---|---|
+| `default` | 0.3.0 | 15 roots in `income/dump` and `income/shop`: every status (`new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `gc_done`, `rejected`); `needs_review` on a new (virtual) root, a resolved root, an engine proposal and a user override; `ranked` on every engine proposal and `[]` on a user-only one; `assigned_by` `"user"` on the override (`itk_0000000f`: confidence 1, `needs_review` still set) and on the user-only proposal, `"engine"` elsewhere; `target_path` on every proposal but the Various Artists root, which has `structure_slot: compilations` and a null target (propose refuses it with `E_NO_TARGET`); two virtual roots sharing one folder; library copies of the placed and gc_done roots under `root/library/`; income folders `dump`, `shop` and `offline` (configured, missing) |
+| `cli-0.2.1` | 0.2.1 | `default` as CLI 0.2.1 shows it: `version` without `commands`, summaries without `assigned_by` and `target_path`, no `income` command, assign accepted from any status, `gc` without roots collects every placed root and skips a named root that is not placed without an error |
+| `no-ranked` | 0.2.1 | `cli-0.2.1` with `proposal.ranked` absent from the `status` summaries (sidecars keep it, as with the real CLI) |
+| `cli-0.1` | 0.1.0 | `cli-0.2.1` as CLI 0.1.0 would show it: `version` reports 0.1.0, `reject` is an unknown command, no rejected root, `ranked` absent from the `status` summaries (sidecars keep it) |
+| `schema2` | 0.3.0 | `default` with `"schema": 2` in `version` |
+| `schema-string` | 0.3.0 | `default` with `"schema": "1"` (a string) in `version` |
+| `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 
 The `default` ids are `itk_0000000a` to `itk_00000018`; `status --json` lists
 them with their states.
+
+### CLI 0.3.0 and 0.2.1 differences
+
+`responses/cli-rules` (one line, `0.3.0` when the file is missing) picks the
+status and gc rules; `version.json`, `commands`, `income` and the summaries
+in `status.d/` carry the rest.
+
+| | 0.3.0 (contract v1.2) | 0.2.1 |
+|---|---|---|
+| `version` data | `{cli, schema, engine, commands}` | `{cli, schema, engine}` |
+| `status` summary `proposal` | adds `assigned_by`, `target_path` | without them |
+| `income` | `[{name, path, exists}]` | unknown command (`E_BAD_ARGS`) |
+| `assign` | `E_BAD_STATUS` on `rejected`, `placing`, `placed`, `gc_done` | any status |
+| `gc` without roots | `E_BAD_ARGS` unless `--all`; `--all` collects every placed root | collects every placed root |
+| `gc` on a named root that is not placed | `E_BAD_STATUS` | skipped without an error |
 
 ## Modes: `$INTAKE_MOCK_STATE/<command>.mode`
 
@@ -82,13 +100,15 @@ that state before it prints its reply, the same order the real CLI writes
 sidecars in. Applying a state rewrites the affected sidecars in `root/`, so
 file watchers see the change.
 
-States in `default`:
+States in `default` (`cli-0.2.1`, `no-ranked` and `cli-0.1` keep their own
+copies in their shapes; a state is taken whole from the last scenario in the
+`base` chain that has it):
 
 | State | Change |
 |---|---|
-| `b-proposed`, `b-approved`, `b-placed`, `b-gc_done` | walk `itk_0000000b` through the lifecycle; `b-placed` adds the library copy and `b-gc_done` deletes the local audio |
-| `e-rejected` | rejects `itk_0000000e` |
-| `e-assigned` | user-assigns `itk_0000000e` to the `--collection` of the call that applied it; `needs_review` stays set, as with the real CLI |
+| `b-proposed`, `b-approved`, `b-placed`, `b-gc_done` | walk `itk_0000000b` through the lifecycle; `b-placed` adds the library copy (and, under the 0.3.0 rules, drops b's assign replies) and `b-gc_done` deletes the local audio |
+| `e-rejected` | rejects `itk_0000000e` (0.3.0: drops its assign replies) |
+| `e-assigned` | user-assigns `itk_0000000e` to the `--collection` of the call that applied it: `assigned_by` `"user"`, confidence 1, the engine's `ranked` kept, `needs_review` still set, as with the real CLI |
 
 For example, for the whole flow on one root:
 
@@ -118,8 +138,17 @@ inside an argument is written as `\\`, `\t` or `\n`.
 `$INTAKE_MOCK_STATE/responses/`, copied from the scenario at setup:
 
 - `commands`: the commands this CLI knows; anything else is
-  `E_BAD_ARGS "unknown command: <name>"`, exit 2.
-- `version.json`, `collections.json`: the `data` member.
+  `E_BAD_ARGS "unknown command: <name>"`, exit 2. A listed command the mock
+  does not model (`scan`, `resolve`, `identify`, `bootstrap`) needs a
+  `<name>.json` or `<name>.envelope` reply; without one the mock exits 64.
+- `version.json`, `collections.json`: the `data` member. `default` lists the
+  real CLI's command names in `version.json` `commands`; keep it in step
+  with `commands`.
+- `income`: one line per income folder, `<name><TAB><path under root/>`, in
+  `income.yaml` order. `exists` is checked at call time, so creating or
+  deleting the folder under `root/` changes it. A file with no entry gives
+  `E_NO_RULES`, as the CLI does with no income folder configured.
+- `cli-rules`: `0.3.0` or `0.2.1`, see above.
 - `status.d/<id>.json`: one summary row per root, listed in id order. The
   real CLI sorts by sidecar path with `localeCompare`, so the order is
   unspecified and consumers must not rely on it. `--filter` works for `status`, `needs_review`, `root_path`, `albumartist`
@@ -139,15 +168,25 @@ the result. `--batch` is read by `approve` and `reject` only, as in the CLI.
 
 A root with no reply file gets the CLI's
 `E_BAD_STATUS "cannot <command> from status <s>"` when the CLI refuses that
-status for the command (`propose`: not `resolved`; `approve`: not
-`proposed`; `reject`: not `new`, `resolved`, `proposed` or `approved`;
-`execute`: not `approved`; `--resume`: not `placing`). `gc` skips a root
-that is not `placed` silently, like the CLI (CR-004.14). `assign` accepts
-every status. A root in an accepted status with no reply file is a gap in
-the scenario: the mock exits 64 instead of inventing a refusal. Unknown ids
-and other refs get the CLI's `E_NOT_FOUND` messages. Exit codes and `data`
-follow the CLI's `finish()`: 0 with rows, 1 with rows and errors, 2 with
-`data: null`.
+status for the command, as doc 03 v1.2 "Legal source statuses" has it:
+
+| Command | Legal source status |
+|---|---|
+| `assign` | `new`, `resolved`, `proposed`, `approved` (0.2.1 rules: any) |
+| `propose` | `resolved` |
+| `approve` | `proposed` |
+| `reject` | `new`, `resolved`, `proposed`, `approved` |
+| `execute` | `approved` |
+| `execute --resume` | `placing` |
+| `gc` | `placed` (0.2.1 rules: others skipped without an error) |
+
+`identify` is not modelled. The all-roots forms (`propose --all-resolved`,
+`execute --approved`, `execute --resume` without roots, `gc --all`) select
+roots in a legal status and skip the rest without an error. A root in an
+accepted status with no reply file is a gap in the scenario: the mock exits
+64 instead of inventing a refusal. Unknown ids and other refs get the CLI's
+`E_NOT_FOUND` messages. Exit codes and `data` follow the CLI's `finish()`:
+0 with rows, 1 with rows and errors, 2 with `data: null`.
 
 A root named twice is answered once per occurrence, except by `reject`,
 which skips the repeat like the CLI. The real CLI answers a repeat from the

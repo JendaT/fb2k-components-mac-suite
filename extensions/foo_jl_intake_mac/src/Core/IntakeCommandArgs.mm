@@ -152,6 +152,7 @@ const char *cliCommandWord(CliCommand command) {
         case CliCommand::Version: return "version";
         case CliCommand::Status: return "status";
         case CliCommand::Collections: return "collections";
+        case CliCommand::Income: return "income";
         case CliCommand::Propose: return "propose";
         case CliCommand::Assign: return "assign";
         case CliCommand::Approve: return "approve";
@@ -172,6 +173,7 @@ bool isMutatingCommand(CliCommand command) {
         case CliCommand::Version:
         case CliCommand::Status:
         case CliCommand::Collections:
+        case CliCommand::Income:
             return false;
         case CliCommand::Propose:
         case CliCommand::Assign:
@@ -187,9 +189,8 @@ bool isMutatingCommand(CliCommand command) {
 
 CommandClass commandClass(const CliRequest &request) {
     if (!isMutatingCommand(request.command)) return CommandClass::ReadOnly;
-    if (request.dryRun) return CommandClass::DryRun;
     if (request.command == CliCommand::Execute || request.command == CliCommand::Resume) {
-        return CommandClass::Detached;
+        return request.dryRun ? CommandClass::ExecuteDryRun : CommandClass::Detached;
     }
     return CommandClass::Mutating;
 }

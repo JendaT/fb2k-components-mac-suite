@@ -446,6 +446,38 @@ void testUnbounded(ProcessRunner &runner) {
           "execute result delivered");
 }
 
+// ReportOnly (execute and resume dry runs, doc 03 v1.2): the budget is
+// reported and the process keeps running with no hard cap; cancelReadLane()
+// leaves it alone too.
+void testReportOnly(ProcessRunner &runner) {
+    g_context = "report-only";
+    std::string state = mock::setupState();
+    mock::setMode(state, "execute", "slow 0.8");
+    ProcessSpec spec = mockSpec(state, {"execute", "itk_00000010", "--dry-run", "--json"},
+                                BudgetPolicy::ReportOnly, OutputTarget::Files);
+    spec.outputDirectory = mock::newDir("out");
+    // Budget and hard cap far below the run time: only the budget applies.
+    spec.limits.budgetSeconds = 0.2;
+    spec.limits.hardCapSeconds = 0.2;
+    spec.limits.killGraceSeconds = 0.1;
+    auto run = startRun(runner, spec);
+    bool started = mock::waitUntil(
+        [&] { return mock::callsLog(state).find("execute\titk_00000010\t--dry-run") != std::string::npos; }, 5.0);
+    CHECK(started, "the dry run is running");
+    CHECK_EQ(runner.cancelReadLane(), 0, "cancelReadLane signals nothing");
+    CHECK(wait(run, 10), "the dry run completes");
+    const ProcessResult &r = run->result;
+    CHECK_EQ(run->budgetCalls.load(), 1, "the budget is reported");
+    CHECK(r.budgetExceeded && !r.killedForTimeout && !r.hardCapHit && !r.cancelled,
+          "ran past the budget, never signalled, no hard cap");
+    CHECK(r.end == ProcessEnd::Exited && r.exitCode == 0 && r.elapsedSeconds >= 0.75, "ran to the end");
+    intake::EnvelopeResult env = parsed(*run);
+    std::vector<std::string> ids = intake::idsInData(env.data);
+    CHECK(env.outcome == CliOutcome::Ok && ids.size() == 1 && ids[0] == "itk_00000010",
+          "the dry-run result is delivered");
+    mock::killLeftovers();
+}
+
 void testCancelReadLane(ProcessRunner &runner) {
     g_context = "cancel";
     std::string state = mock::setupState();
@@ -744,6 +776,7 @@ int main(void) {
         testHardCap(runner);
         testHardCapKillsTheGroup(runner, scripts);
         testUnbounded(runner);
+        testReportOnly(runner);
         testCancelReadLane(runner);
         testAbandonUnkillable();
         testTimerRacingExit(scripts);

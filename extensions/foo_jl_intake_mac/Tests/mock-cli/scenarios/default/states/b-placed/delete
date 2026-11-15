@@ -1,3 +1,6 @@
 responses/execute.d/itk_0000000b.json
 responses/execute.dry-run.d/itk_0000000b.json
 responses/reject.d/itk_0000000b.json
+# CLI 0.3.0 refuses assign on placed, gc_done, rejected and placing roots.
+responses/assign.d/itk_0000000b.json
+responses/assign.user.d/itk_0000000b.json

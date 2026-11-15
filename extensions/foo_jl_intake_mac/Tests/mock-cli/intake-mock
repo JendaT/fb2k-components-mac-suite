@@ -2,12 +2,13 @@
 #
 # intake-mock - a fake `intake` CLI for foo_jl_intake_mac tests.
 #
-# Emits the doc 03 (contract v1.1) JSON envelope with the data shapes of the
-# real CLI 0.2.1 (branch feature/intake-cli) for version, status, collections,
-# propose, assign, approve, reject, execute (incl. --dry-run and --resume) and
-# gc, from synthetic fixtures. Everything it reads or writes at run time lives
-# in the state directory named by INTAKE_MOCK_STATE, so tests are hermetic.
-# It never touches real music, income folders or the real CLI.
+# Emits the doc 03 (contract v1.2) JSON envelope with the data shapes of the
+# real CLI 0.3.0 (branch feature/intake-cli) for version, status, collections,
+# income, propose, assign, approve, reject, execute (incl. --dry-run and
+# --resume) and gc, from synthetic fixtures. A scenario can switch to the
+# rules of CLI 0.2.1 (responses/cli-rules). Everything it reads or writes at
+# run time lives in the state directory named by INTAKE_MOCK_STATE, so tests
+# are hermetic. It never touches real music, income folders or the real CLI.
 #
 # Usage:
 #   INTAKE_MOCK_STATE=/abs/dir intake-mock --mock-setup <scenario>
@@ -309,7 +310,7 @@ generate_roots() {
         case "$st" in
             new | resolved) ;;
             *)
-                prop="{\"target_collection\":\"Test Collection A\",\"confidence\":$conf,\"ranked\":[{\"collection\":\"Test Collection A\",\"confidence\":$conf},{\"collection\":\"Test Collection B\",\"confidence\":0.2}]}"
+                prop="{\"target_collection\":\"Test Collection A\",\"confidence\":$conf,\"ranked\":[{\"collection\":\"Test Collection A\",\"confidence\":$conf},{\"collection\":\"Test Collection B\",\"confidence\":0.2}],\"assigned_by\":\"engine\",\"target_path\":\"$tgt\"}"
                 sc_prop="{\"engine_version\":\"0.2.0\",\"ranked\":[{\"collection\":\"Test Collection A\",\"score\":$conf,$ev},{\"collection\":\"Test Collection B\",\"score\":0.2,$ev}],\"target_collection\":\"Test Collection A\",\"confidence\":$conf,\"margin\":0.3,\"target_path\":\"$tgt\",\"structure_slot\":\"artist\",\"assigned_by\":\"engine\",\"alternates_shown\":false}" ;;
         esac
         case "$st" in
@@ -372,6 +373,7 @@ CMD=""
 REFS=()
 JSON=0
 DRY=0
+ALL=0
 ALL_RESOLVED=0
 APPROVED=0
 RESUME=0
@@ -389,7 +391,8 @@ while [ $i -lt ${#ARGV[@]} ]; do
     case "$a" in
         --json) JSON=1 ;;
         --dry-run) DRY=1 ;;
-        --force | --all | --relocate-dj) ;;
+        --all) ALL=1 ;;
+        --force | --relocate-dj) ;;
         --filter)
             i=$((i + 1))
             [ $i -lt ${#ARGV[@]} ] && FILTERS+=("${ARGV[$i]}") ;;
@@ -414,6 +417,19 @@ done
 
 [ $JSON -eq 1 ] || die "only --json output is supported"
 [ -d "$RESP" ] || die "no scenario set up in $STATE; run: intake-mock --mock-setup <scenario>"
+
+# Which CLI's status and gc rules apply (responses/cli-rules, one line):
+# 0.3.0, contract v1.2 and the default; or 0.2.1, where assign takes any
+# status and gc without roots collects every placed root.
+CLI_RULES=0.3.0
+if [ -f "$RESP/cli-rules" ]; then
+    read_line "$RESP/cli-rules"
+    CLI_RULES="$REPLY"
+fi
+case "$CLI_RULES" in
+    0.2.1 | 0.3.0) ;;
+    *) die "responses/cli-rules must be 0.2.1 or 0.3.0: $CLI_RULES" ;;
+esac
 
 ROOT_JSON="$ROOT"
 json_escape "$COLLECTION"
@@ -558,6 +574,40 @@ cmd_status() {
     EXIT=0
 }
 
+# income (contract v1.2): one {name, path, exists} per line of
+# responses/income ("<name><TAB><path under root/>"), in file order; exists
+# is checked now, so deleting a folder under root/ shows as false. No entry
+# at all is E_NO_RULES, as with the CLI.
+cmd_income() {
+    if [ -f "$RESP/income.envelope" ]; then emit_verbatim income; fi
+    [ -f "$RESP/income" ] || die "scenario has no responses/income"
+    local line name rel path exists rows=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in '' | '#'*) continue ;; esac
+        case "$line" in
+            *$'\t'*) ;;
+            *) die "responses/income lines are <name><TAB><path under root/>: $line" ;;
+        esac
+        name="${line%%$'\t'*}"
+        rel="${line#*$'\t'}"
+        case "$rel" in
+            '' | /* | .. | ../* | */.. | */../*) die "responses/income path must stay under root/: $rel" ;;
+        esac
+        path="$ROOT/$rel"
+        exists=false
+        [ -d "$path" ] && exists=true
+        json_escape "$name"; name="$REPLY"
+        json_escape "$path"; path="$REPLY"
+        rows="$rows${rows:+,}{\"name\":\"$name\",\"path\":\"$path\",\"exists\":$exists}"
+    done < "$RESP/income"
+    if [ -z "$rows" ]; then
+        fail E_NO_RULES "no income folders configured (rules dir: not found)"
+        return
+    fi
+    DATA="[$rows]"
+    EXIT=0
+}
+
 # Refs from argv plus --batch (one per line, blank lines and # comments
 # skipped), as cli.ts refsWithBatch. Only approve and reject read --batch
 # (commands-p3.ts); the other commands ignore it. Returns 1 after fail()
@@ -590,11 +640,13 @@ pick_key() {
     KEY="$1"   # no replies at all: see handle_id for what a missing reply means
 }
 
-# Whether the real CLI accepts a root in status $2 for verb $1
-# (commands-p2.ts cmdAssign, commands-p3.ts). assign never checks status.
+# Whether the real CLI accepts a root in status $2 for verb $1: doc 03 v1.2
+# "Legal source statuses" (commands-p2.ts, commands-p3.ts). Under the 0.2.1
+# rules assign never checks status.
 status_legal() {
     case "$1:$2" in
-        assign:*) return 0 ;;
+        assign:new | assign:resolved | assign:proposed | assign:approved) return 0 ;;
+        assign:*) [ "$CLI_RULES" = "0.2.1" ] && return 0 ;;
         propose:resolved | approve:proposed | execute:approved | resume:placing | gc:placed) return 0 ;;
         reject:new | reject:resolved | reject:proposed | reject:approved) return 0 ;;
     esac
@@ -602,9 +654,10 @@ status_legal() {
 }
 
 # One root id through the reply directory: forced error, row, or the CLI's
-# status refusal ("cannot <verb> from status <s>"; gc silently skips). A
-# root in a status the CLI accepts but with no reply file is a gap in the
-# scenario, never a refusal: the mock exits 64 so the gap shows.
+# status refusal ("cannot <verb> from status <s>"; under the 0.2.1 rules gc
+# skips a root that is not placed without a word). A root in a status the
+# CLI accepts but with no reply file is a gap in the scenario, never a
+# refusal: the mock exits 64 so the gap shows.
 ROWS=""
 ROOT_ERRS=""
 handle_id() {
@@ -628,7 +681,9 @@ handle_id() {
     if status_legal "$verb" "$st"; then
         die "scenario gap: no responses/$KEY.d/$id.json or .error for $verb on $id (status $st)"
     fi
-    [ "$CMD" = "gc" ] && return   # gc filters to placed roots without a word (CR-004.14)
+    # CLI 0.2.1 gc filtered named roots to placed ones silently; 0.3.0 refuses
+    # them (CR-004.14).
+    [ "$CMD" = "gc" ] && [ "$CLI_RULES" = "0.2.1" ] && return
     error_json E_BAD_STATUS "cannot $verb from status $st" "$path"
     ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
 }
@@ -754,7 +809,13 @@ cmd_rows() {
         gc)
             if [ $DRY -eq 1 ]; then pick_key gc.dry-run gc; else pick_key gc; fi
             if [ ${#ALLREFS[@]} -eq 0 ]; then
-                # No ids: every placed root in every income folder (CR-004.14).
+                # CLI 0.3.0: roots or --all, an empty ref list is never every
+                # root (CR-004.14). CLI 0.2.1: no roots means every root.
+                if [ "$CLI_RULES" = "0.3.0" ] && [ $ALL -eq 0 ]; then
+                    fail E_BAD_ARGS "usage: intake gc <root...>|--all [--age <days>] [--relocate-dj]"
+                    return
+                fi
+                # Every placed root in every income folder; the rest skipped.
                 [ -f "$RESP/$KEY.envelope" ] && emit_verbatim "$KEY"
                 ids_with_status placed
                 run_ids "$verb" ${IDS[@]+"${IDS[@]}"}
@@ -813,11 +874,14 @@ run_command() {
     case "$CMD" in
         version | collections) cmd_data_file ;;
         status) cmd_status ;;
+        income) cmd_income ;;
         propose | assign | approve | reject | execute | gc) cmd_rows ;;
         *)
+            # A command the scenario lists (scan, resolve, identify,
+            # bootstrap) that the mock does not model: canned replies only.
             if [ -f "$RESP/$CMD.envelope" ]; then emit_verbatim "$CMD"; fi
             if [ -f "$RESP/$CMD.json" ]; then cmd_data_file
-            else fail E_BAD_ARGS "unknown command: $CMD"
+            else die "the mock does not model $CMD; give the scenario responses/$CMD.json or $CMD.envelope"
             fi ;;
     esac
     apply_next

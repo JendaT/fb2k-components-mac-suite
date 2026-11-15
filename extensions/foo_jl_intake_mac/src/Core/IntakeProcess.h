@@ -53,6 +53,10 @@
 //     result. At `hardCapSeconds` from the start it is terminated like a
 //     read-only call (SIGTERM, then SIGKILL, and on completion the rest of
 //     the group is SIGKILLed).
+//   - ReportOnly (execute and resume dry runs): at the budget the budget
+//     handler runs and the process keeps running, like ReportAtBudget, but
+//     there is no hard cap: never signalled by the runner, not even by
+//     cancelReadLane().
 //   - Unbounded (execute, resume): no budget, never signalled by the runner,
 //     not even by cancelReadLane().
 //  A budget or hard-cap timer that fires while the leader's exit is still
@@ -96,7 +100,8 @@ enum class OutputTarget {
 enum class BudgetPolicy {
     KillAtBudget,   // read-only: report, SIGTERM the group, SIGKILL after the grace
     ReportAtBudget, // mutating: report, keep running; terminate at the hard cap
-    Unbounded,      // execute and resume: never signalled by the runner
+    ReportOnly,     // execute dry runs: report, keep running; never signalled
+    Unbounded,      // execute and resume: no report, never signalled by the runner
 };
 
 struct ProcessLimits {
@@ -177,7 +182,7 @@ public:
 
     // Synchronously sends SIGKILL to the group of every KillAtBudget process
     // that has not exited, and marks it cancelled; its completion follows as
-    // usual. ReportAtBudget and Unbounded processes are left running
+    // usual. ReportAtBudget, ReportOnly and Unbounded processes are left running
     // (on_quit, PLAN.md 3.2). Returns how many groups were signalled.
     size_t cancelReadLane();
 

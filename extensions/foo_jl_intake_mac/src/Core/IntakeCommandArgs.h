@@ -9,9 +9,11 @@
 //
 //  HARD INVARIANT (PLAN.md risk 3a): a mutating command (propose, assign,
 //  approve, reject, execute, resume, gc; dry runs included) with no ids is
-//  refused, and nothing is spawned. With no roots the CLI acts on everything:
-//  `gc` collects every placed root in every income folder
-//  (commands-p3.ts:491-493), `execute --approved` places every approved root.
+//  refused, and nothing is spawned. With no roots the CLI can act on
+//  everything: up to CLI 0.2.1 a bare `gc` collects every placed root in
+//  every income folder (commands-p3.ts:491-493; from 0.3.0, contract v1.2,
+//  it is E_BAD_ARGS without --all), and `execute --approved` places every
+//  approved root.
 //  For the same reason this module never emits --all-resolved, --approved,
 //  --all or a bare `gc`, and it only accepts sidecar ids
 //  (^itk_[0-9a-f]{8}$, commands-p2.ts:30): a directory would select every
@@ -70,6 +72,7 @@ enum class CliCommand {
     Version,
     Status,
     Collections,
+    Income,  // contract v1.2 (CLI 0.3.0); feature-detect with cliSupportsCommand
     Propose,
     Assign,
     Approve,
@@ -83,7 +86,8 @@ enum class CliCommand {
 const char *cliCommandWord(CliCommand command);
 // A distinct name for logs ("resume" for Resume).
 const char *cliCommandName(CliCommand command);
-// Propose, Assign, Approve, Reject, Execute, Resume and Gc.
+// Propose, Assign, Approve, Reject, Execute, Resume and Gc. Version, Status,
+// Collections and Income are read-only.
 bool isMutatingCommand(CliCommand command);
 
 struct CliRequest {
@@ -109,13 +113,19 @@ struct CliConfig {
     std::string cliVersion;
 };
 
-// How a call runs (PLAN.md 3.2, 3.4, 3.7).
+// How a call runs (PLAN.md 3.2, 3.4; doc 03 v1.2 "Timeouts"). A mutating
+// command is classified by command, whatever its flags: a dry run is never
+// killed at the 10 s budget.
 enum class CommandClass {
-    ReadOnly, // version, status, collections: pipes, killed at the budget
-    DryRun,   // a mutating command with --dry-run: mutation lane, output
-              // files, killed at the budget (it writes nothing; 3.7 step 1)
-    Mutating, // the rest: output files, reported at the budget
-    Detached, // execute and resume (not dry runs): output files, never killed
+    ReadOnly,      // version, status, collections, income: pipes, killed at
+                   // the budget
+    Mutating,      // propose, assign, approve, reject, gc, dry runs included:
+                   // output files, reported at the budget, killed only at
+                   // the 15-minute hard cap
+    ExecuteDryRun, // execute or resume with --dry-run: output files, reported
+                   // at the budget, never killed (execute is never killed)
+    Detached,      // execute and resume: output files, no budget report,
+                   // never killed
 };
 
 CommandClass commandClass(const CliRequest &request);

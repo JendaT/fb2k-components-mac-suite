@@ -1,1 +1,1 @@
-{"cli":"0.2.1","schema":1,"engine":"0.2.0"}
+{"cli":"0.3.0","schema":1,"engine":"0.2.0","commands":["scan","resolve","identify","assign","propose","approve","reject","execute","gc","status","collections","income","version","bootstrap"]}

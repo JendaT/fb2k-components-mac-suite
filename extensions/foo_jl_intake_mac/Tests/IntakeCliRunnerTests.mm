@@ -6,17 +6,21 @@
 //  Tests/mock-cli/intake-mock: every mock mode mapped to its outcome and
 //  error scope, the zero-id invariant (nothing reaches the mock: calls.log
 //  stays as setup left it), literal argument passing, the command classes
-//  and the budget policy and output target each one gets, and the E_NO_CLI
+//  and the budget policy and output target each one gets (doc 03 v1.2
+//  "Timeouts"), income, command feature detection from `version`, the v1.2
+//  legal source statuses against the CLI 0.2.1 rules, and the E_NO_CLI
 //  configurations. Each case gets a fresh mock state.
 //
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
 // TEST_DEPS: src/Core/IntakeProcess.mm src/Core/IntakeLog.mm src/Core/IntakeSemver.mm
+// TEST_DEPS: src/Core/IntakeCapabilities.mm
 //
 
 #import <Foundation/Foundation.h>
 
+#include "../src/Core/IntakeCapabilities.h"
 #include "../src/Core/IntakeCliRunner.h"
 #include "../src/Core/IntakeErrorMap.h"
 #include "MockCliSupport.h"
@@ -51,7 +55,7 @@ intake::CliConfig mockConfig(const std::string &state) {
     config.cliPath = mock::mockPath();
     config.bunSearchDirs = {g_noBunDir};
     config.baseEnvironment = mock::mockEnv(state);
-    config.cliVersion = "0.2.1"; // what the mock's version reports
+    config.cliVersion = "0.3.0"; // what the mock's default version reports
     return config;
 }
 
@@ -133,9 +137,9 @@ void testVersionAndStatus(intake::ProcessRunner &runner) {
     CHECK(run->result.envelope.outcome == CliOutcome::Ok, "version: Ok");
     CHECK(run->result.commandClass == CommandClass::ReadOnly, "version: read-only class");
     NSDictionary *data = run->result.envelope.data;
-    CHECK([data isKindOfClass:[NSDictionary class]] && [data[@"cli"] isEqual:@"0.2.1"] &&
-              [data[@"schema"] isEqual:@1],
-          "version data: cli 0.2.1, schema 1");
+    CHECK([data isKindOfClass:[NSDictionary class]] && [data[@"cli"] isEqual:@"0.3.0"] &&
+              [data[@"schema"] isEqual:@1] && [data[@"commands"] isKindOfClass:[NSArray class]],
+          "version data: cli 0.3.0, schema 1, a commands array");
 
     run = runCli(runner, mockConfig(state), request(CliCommand::Status), testOptions());
     CHECK(run->result.envelope.outcome == CliOutcome::Ok, "status: Ok");
@@ -299,8 +303,8 @@ void testMutatingCalls(intake::ProcessRunner &runner) {
     gcDry.dryRun = true;
     run = runCli(runner, mockConfig(state), gcDry, options);
     CHECK(mock::lastLine(mock::callsLog(state)) == "gc\titk_00000012\t--dry-run\t--json", "gc --dry-run argv");
-    CHECK(run->result.commandClass == CommandClass::DryRun && run->result.envelope.outcome == CliOutcome::Ok,
-          "gc --dry-run: dry-run class, Ok");
+    CHECK(run->result.commandClass == CommandClass::Mutating && run->result.envelope.outcome == CliOutcome::Ok,
+          "gc --dry-run: mutating class, Ok");
     run = runCli(runner, mockConfig(state), request(CliCommand::Gc, {"itk_00000012"}), options);
     CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 1, "gc one root: Ok");
 
@@ -363,27 +367,156 @@ void testClassPolicies(intake::ProcessRunner &runner) {
           "status: read through pipes, no output file");
 }
 
-// A dry run writes nothing, so it is killed at the budget instead of holding
-// the mutation lane until the hard cap (PLAN.md 3.7 step 1).
-void testDryRunKilledAtBudget(intake::ProcessRunner &runner) {
-    g_context = "dry-run-budget";
+// Doc 03 v1.2 "Timeouts": a mutating command is classified by command,
+// whatever its flags, so a dry run is never killed at the budget. gc
+// --dry-run gets the mutating policy (reported, killed only at the hard
+// cap); execute --dry-run is reported and never killed, not even at the
+// hard cap. Both outlive the budget here and must still deliver their real
+// result: this fails if either were killed at the budget.
+void testDryRunsNotKilledAtBudget(intake::ProcessRunner &runner) {
+    g_context = "dry-run-gc";
     std::string state = mock::setupState();
-    mock::setMode(state, "execute", "slow 5");
+    mock::setMode(state, "gc", "slow 1");
     intake::CliRunOptions options = testOptions(0.3);
+    options.keepOutputFiles = true;
+    CliRequest gc = request(CliCommand::Gc, {"itk_00000012"});
+    gc.dryRun = true;
+    auto run = runCli(runner, mockConfig(state), gc, options);
+    const CliResult &g = run->result;
+    CHECK(mock::lastLine(mock::callsLog(state)) == "gc\titk_00000012\t--dry-run\t--json", "gc --dry-run argv");
+    CHECK(g.commandClass == CommandClass::Mutating, "gc --dry-run: mutating class");
+    CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
+    CHECK(g.process.budgetExceeded && !g.process.killedForTimeout && !g.process.hardCapHit,
+          "gc --dry-run: ran past the budget, never signalled");
+    std::vector<std::string> got = ids(g);
+    CHECK(g.envelope.outcome == CliOutcome::Ok && got.size() == 1 && got[0] == "itk_00000012",
+          "gc --dry-run: the real result arrived after the timeout report");
+    CHECK(under(g.process.stdoutPath, options.outputDirectory), "gc --dry-run output went to a file");
+
+    g_context = "dry-run-execute";
+    state = mock::setupState();
+    mock::setMode(state, "execute", "slow 1");
+    options = testOptions(0.3);
+    options.limits.hardCapSeconds = 0.3; // no hard cap applies to execute
+    options.limits.killGraceSeconds = 0.1;
     options.keepOutputFiles = true;
     CliRequest dry = request(CliCommand::Execute, {"itk_00000010"});
     dry.dryRun = true;
-    auto run = runCli(runner, mockConfig(state), dry, options);
-    const CliResult &r = run->result;
+    run = runCli(runner, mockConfig(state), dry, options);
+    const CliResult &e = run->result;
     CHECK(mock::lastLine(mock::callsLog(state)) == "execute\titk_00000010\t--dry-run\t--json",
           "execute --dry-run argv");
-    CHECK(r.commandClass == CommandClass::DryRun, "execute --dry-run: dry-run class");
+    CHECK(e.commandClass == CommandClass::ExecuteDryRun, "execute --dry-run: its own class");
     CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
-    CHECK(r.process.killedForTimeout && !r.process.hardCapHit, "killed for its budget, not at the hard cap");
-    CHECK(r.envelope.outcome == CliOutcome::Timeout && hasCode(r, "E_CLI_TIMEOUT"), "outcome Timeout");
-    CHECK(r.process.elapsedSeconds < 0.3 + 0.5 + 0.3 + 2.0, "ended promptly, long before the 5 s run");
-    CHECK(under(r.process.stdoutPath, options.outputDirectory), "dry run output went to a file");
+    CHECK(e.process.budgetExceeded && !e.process.killedForTimeout && !e.process.hardCapHit,
+          "execute --dry-run: never signalled, no hard cap");
+    CHECK(e.process.end == intake::ProcessEnd::Exited && e.process.elapsedSeconds >= 0.95,
+          "execute --dry-run: ran its full second");
+    got = ids(e);
+    CHECK(e.envelope.outcome == CliOutcome::Ok && got.size() == 1 && got[0] == "itk_00000010",
+          "execute --dry-run: the real result arrived");
+    NSArray *rows = e.envelope.data;
+    NSDictionary *row = [rows isKindOfClass:[NSArray class]] && rows.count == 1 ? rows[0] : nil;
+    CHECK([row isKindOfClass:[NSDictionary class]] && [row[@"dry_run"] isEqual:@YES] &&
+              [row[@"files"] isEqual:@2] && [row[@"artifacts"] isEqual:@0] && [row[@"skipped_shadows"] isEqual:@0] &&
+              [row[@"target_path"] isKindOfClass:[NSString class]],
+          "execute --dry-run row: {id, root_path, target_path, dry_run, files, artifacts, skipped_shadows}");
+    CHECK(under(e.process.stdoutPath, options.outputDirectory), "execute --dry-run output went to a file");
     mock::killLeftovers();
+}
+
+// income (contract v1.2): read-only, no ids; CLI 0.2.1 does not know it.
+void testIncome(intake::ProcessRunner &runner) {
+    g_context = "income";
+    std::string state = mock::setupState();
+    auto run = runCli(runner, mockConfig(state), request(CliCommand::Income), testOptions());
+    const CliResult &r = run->result;
+    CHECK(mock::lastLine(mock::callsLog(state)) == "income\t--json", "income argv");
+    CHECK(r.commandClass == CommandClass::ReadOnly && r.process.stdoutPath.empty(),
+          "income: read-only, through pipes");
+    NSArray *rows = r.envelope.data;
+    bool shaped = r.envelope.outcome == CliOutcome::Ok && [rows isKindOfClass:[NSArray class]] && rows.count == 3;
+    CHECK(shaped, "income: Ok, one row per configured folder");
+    if (shaped) {
+        CHECK([rows[0][@"name"] isEqual:@"dump"] &&
+                  [rows[0][@"path"] isEqual:@((state + "/root/income/dump").c_str())] &&
+                  [rows[0][@"exists"] isEqual:@YES],
+              "income row: {name, path, exists}, absolute path");
+        CHECK([rows[1][@"name"] isEqual:@"shop"] && [rows[2][@"name"] isEqual:@"offline"],
+              "income rows in file order");
+        CHECK([rows[2][@"exists"] isEqual:@NO], "a configured folder that is missing: exists false");
+    }
+
+    state = mock::setupState("cli-0.2.1");
+    run = runCli(runner, mockConfig(state), request(CliCommand::Income), testOptions());
+    CHECK(run->result.envelope.outcome == CliOutcome::Failed && hasCode(run->result, "E_BAD_ARGS"),
+          "CLI 0.2.1: income is an unknown command");
+    CHECK(intake::resultScope(CliCommand::Income, run->result.envelope) == ErrorScope::PerCommand,
+          "and that failure is per command, never inert");
+}
+
+// What `version` from each mock scenario says about command support.
+void testFeatureDetection(intake::ProcessRunner &runner) {
+    struct Case {
+        const char *scenario;
+        bool hasCommands, income, reject, resume;
+    };
+    const Case cases[] = {
+        {"default", true, true, true, true},       // CLI 0.3.0: the commands array
+        {"cli-0.2.1", false, false, true, true},   // fallback: semver
+        {"cli-0.1", false, false, false, false},   // fallback: too old for both
+    };
+    for (const Case &c : cases) {
+        g_context = std::string("feature-detection ") + c.scenario;
+        std::string state = mock::setupState(c.scenario);
+        auto run = runCli(runner, mockConfig(state), request(CliCommand::Version), testOptions());
+        CHECK(run->result.envelope.outcome == CliOutcome::Ok, "version: Ok");
+        intake::CliVersionInfo info = intake::parseCliVersionInfo(run->result.envelope.data);
+        CHECK(info.hasCommands == c.hasCommands, "commands array presence");
+        CHECK(intake::cliSupportsCommand(info, CliCommand::Income) == c.income, "income");
+        CHECK(intake::cliSupportsCommand(info, CliCommand::Reject) == c.reject, "reject");
+        CHECK(intake::cliSupportsCommand(info, CliCommand::Resume) == c.resume, "per-root resume");
+        CHECK(intake::cliSupportsCommand(info, CliCommand::Status), "status");
+    }
+}
+
+// Doc 03 v1.2 legal source statuses through the runner: E_BAD_STATUS per
+// root (exit 1 when others succeed, 2 when none do), against the CLI 0.2.1
+// rules (assign from any status, gc skipping a root that is not placed).
+void testLegalSourceStatuses(intake::ProcessRunner &runner) {
+    g_context = "legal-statuses v1.2";
+    std::string state = mock::setupState();
+    CliRequest assignPlaced = request(CliCommand::Assign, {"itk_00000012"});
+    assignPlaced.collection = "Test Collection B";
+    auto run = runCli(runner, mockConfig(state), assignPlaced, testOptions());
+    CHECK(run->result.envelope.outcome == CliOutcome::Failed && hasCode(run->result, "E_BAD_STATUS") &&
+              run->result.envelope.data == nil,
+          "assign on a placed root: E_BAD_STATUS, exit 2");
+    CHECK(intake::resultScope(CliCommand::Assign, run->result.envelope) == ErrorScope::PerCommand,
+          "E_BAD_STATUS is per command");
+
+    run = runCli(runner, mockConfig(state), request(CliCommand::Gc, {"itk_00000012", "itk_0000000d"}),
+                 testOptions());
+    std::vector<std::string> got = ids(run->result);
+    CHECK(run->result.envelope.outcome == CliOutcome::Partial && got.size() == 1 && got[0] == "itk_00000012" &&
+              hasCode(run->result, "E_BAD_STATUS"),
+          "gc on a placed and a proposed root: partial, the proposed one refused");
+    run = runCli(runner, mockConfig(state), request(CliCommand::Gc, {"itk_00000014"}), testOptions());
+    CHECK(run->result.envelope.outcome == CliOutcome::Failed && hasCode(run->result, "E_BAD_STATUS"),
+          "gc on a rejected root alone: E_BAD_STATUS, exit 2");
+
+    g_context = "legal-statuses 0.2.1";
+    state = mock::setupState("cli-0.2.1");
+    intake::CliConfig legacy = mockConfig(state);
+    legacy.cliVersion = "0.2.1";
+    run = runCli(runner, legacy, assignPlaced, testOptions());
+    CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 1,
+          "CLI 0.2.1: assign on a placed root is accepted");
+    run = runCli(runner, legacy, request(CliCommand::Gc, {"itk_0000000d"}), testOptions());
+    NSArray *empty = run->result.envelope.data;
+    CHECK(run->result.envelope.outcome == CliOutcome::Ok && [empty isKindOfClass:[NSArray class]] &&
+              empty.count == 0,
+          "CLI 0.2.1: gc skips a root that is not placed, without an error");
 }
 
 void testResumeNeedsScopedCli(intake::ProcessRunner &runner) {
@@ -543,7 +676,10 @@ int main(void) {
         testMutatingCalls(runner);
         testSlowMutatingReportsThenCompletes(runner);
         testClassPolicies(runner);
-        testDryRunKilledAtBudget(runner);
+        testDryRunsNotKilledAtBudget(runner);
+        testIncome(runner);
+        testFeatureDetection(runner);
+        testLegalSourceStatuses(runner);
         testResumeNeedsScopedCli(runner);
         testZeroIdsRefused(runner);
         testZeroIdsGcRefused(runner);

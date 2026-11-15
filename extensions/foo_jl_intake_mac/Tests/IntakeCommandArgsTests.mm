@@ -101,6 +101,9 @@ int main(void) {
         CHECK(args(intake::buildInvocation(plainConfig(), req(CliCommand::Collections))) ==
                   v({"/opt/intake/bin/intake", "collections", "--json"}),
               "collections argv");
+        CHECK(args(intake::buildInvocation(plainConfig(), req(CliCommand::Income))) ==
+                  v({"/opt/intake/bin/intake", "income", "--json"}),
+              "income argv");
         CHECK(args(intake::buildInvocation(plainConfig(),
                                            req(CliCommand::Propose, {"itk_0000000b", "itk_0000000c"}))) ==
                   v({"/opt/intake/bin/intake", "propose", "itk_0000000b", "itk_0000000c", "--json"}),
@@ -180,9 +183,13 @@ int main(void) {
         // --- other request checks ---
         g_context = "request-checks";
         CHECK(refusedFor(req(CliCommand::Status, {"itk_0000000b"})), "status takes no ids");
+        CHECK(refusedFor(req(CliCommand::Income, {"itk_0000000b"})), "income takes no ids");
         CliRequest dryRead = req(CliCommand::Version);
         dryRead.dryRun = true;
         CHECK(refusedFor(dryRead), "read commands have no --dry-run");
+        CliRequest dryIncome = req(CliCommand::Income);
+        dryIncome.dryRun = true;
+        CHECK(refusedFor(dryIncome), "income has no --dry-run");
         CliRequest noCollection = req(CliCommand::Assign, {"itk_0000000e"});
         CHECK(refusedFor(noCollection), "assign without a collection is refused");
         CliRequest stray = req(CliCommand::Approve, {"itk_0000000d"});
@@ -206,7 +213,7 @@ int main(void) {
         // --- forbidden flags never appear in any argv ---
         g_context = "forbidden-flags";
         std::vector<CliRequest> all = {req(CliCommand::Version), req(CliCommand::Status),
-                                       req(CliCommand::Collections)};
+                                       req(CliCommand::Collections), req(CliCommand::Income)};
         for (CliCommand cmd : mutating) {
             for (bool dry : {false, true}) {
                 CliRequest r = req(cmd, {"itk_0000000b"});
@@ -230,28 +237,37 @@ int main(void) {
         CHECK(clean, "no --all-resolved, --approved, --all or bare gc in any argv");
         CHECK(allJson, "every argv ends with --json");
 
-        // --- command classes ---
+        // --- command classes (doc 03 v1.2 "Timeouts") ---
         g_context = "classes";
         CHECK(intake::commandClass(req(CliCommand::Status)) == CommandClass::ReadOnly, "status: read-only");
+        CHECK(intake::commandClass(req(CliCommand::Income)) == CommandClass::ReadOnly,
+              "income: read-only, killable at the budget");
+        CHECK(!intake::isMutatingCommand(CliCommand::Income), "income is not mutating");
         CHECK(intake::commandClass(req(CliCommand::Approve, {"itk_0000000d"})) == CommandClass::Mutating,
               "approve: mutating");
         CHECK(intake::commandClass(req(CliCommand::Execute, {"itk_00000010"})) == CommandClass::Detached,
               "execute: detached");
         CHECK(intake::commandClass(req(CliCommand::Resume, {"itk_00000011"})) == CommandClass::Detached,
               "resume: detached");
-        // Dry runs write nothing, so they are killable (PLAN.md 3.7 step 1).
+        // A mutating command is classified by command, whatever its flags: a
+        // dry run is never killed at the budget.
         CliRequest dryExec = req(CliCommand::Execute, {"itk_00000010"});
         dryExec.dryRun = true;
-        CHECK(intake::commandClass(dryExec) == CommandClass::DryRun, "execute --dry-run: dry run");
+        CHECK(intake::commandClass(dryExec) == CommandClass::ExecuteDryRun,
+              "execute --dry-run: reported at the budget, never killed");
         CliRequest dryGc = req(CliCommand::Gc, {"itk_00000012"});
         dryGc.dryRun = true;
-        CHECK(intake::commandClass(dryGc) == CommandClass::DryRun, "gc --dry-run: dry run");
+        CHECK(intake::commandClass(dryGc) == CommandClass::Mutating, "gc --dry-run: mutating policy");
         CliRequest dryResume = req(CliCommand::Resume, {"itk_00000011"});
         dryResume.dryRun = true;
-        CHECK(intake::commandClass(dryResume) == CommandClass::DryRun, "resume --dry-run: dry run");
+        CHECK(intake::commandClass(dryResume) == CommandClass::ExecuteDryRun,
+              "resume --dry-run: execute's dry-run policy");
         CliRequest dryPropose = req(CliCommand::Propose, {"itk_0000000b"});
         dryPropose.dryRun = true;
-        CHECK(intake::commandClass(dryPropose) == CommandClass::DryRun, "propose --dry-run: dry run");
+        CHECK(intake::commandClass(dryPropose) == CommandClass::Mutating, "propose --dry-run: mutating policy");
+        CliRequest dryReject = req(CliCommand::Reject, {"itk_0000000a"});
+        dryReject.dryRun = true;
+        CHECK(intake::commandClass(dryReject) == CommandClass::Mutating, "reject --dry-run: mutating policy");
         CHECK(intake::commandClass(req(CliCommand::Gc, {"itk_00000012"})) == CommandClass::Mutating,
               "gc: mutating");
         CHECK(std::string(intake::cliCommandName(CliCommand::Resume)) == "resume" &&

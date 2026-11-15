@@ -1,2 +1,5 @@
 responses/reject.d/itk_0000000e.json
 responses/approve.d/itk_0000000e.json
+# CLI 0.3.0 refuses assign on a rejected root.
+responses/assign.d/itk_0000000e.json
+responses/assign.user.d/itk_0000000e.json

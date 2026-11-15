@@ -54,7 +54,7 @@
     "albumartist": "Fixture Artist B",
     "album": "Loose Album",
     "confidence": 0.55,
-    "needs_review": false,
+    "needs_review": true,
     "signals": {
       "purity": 1,
       "seq": 1,
