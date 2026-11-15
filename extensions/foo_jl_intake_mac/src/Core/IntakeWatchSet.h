@@ -6,8 +6,8 @@
 //  match keys (PLAN.md B4, 3.5; doc 04 v1.2 "Refresh and invalidation").
 //
 //  Candidates, in this order (watchCandidates):
-//   - the `foo_jl_intake.watch_folders` setting (parseWatchFolders: one
-//     absolute path per line);
+//   - the `foo_jl_intake.watch_folders` setting (parseWatchFolders in
+//     IntakeSettingsParse: one absolute path per line);
 //   - the income folders from `intake income --json` (CLI 0.3.0 and later);
 //   - the parent directory of every root_path from the last `status` load.
 //  "/" is never watched (a firehose for a stream with file events).
@@ -67,18 +67,9 @@
 #include <vector>
 
 #include "IntakeMountAliases.h"
+#include "IntakeSettingsParse.h"  // WatchFolderList, parseWatchFolders
 
 namespace intake {
-
-struct WatchFolderList {
-    std::vector<std::string> folders;  // absolute, trimmed, in order, each once
-    std::vector<std::string> ignored;  // non-empty lines that are not absolute paths
-};
-
-// The watch_folders setting: lines split on '\n' or '\r', each trimmed of
-// spaces and tabs; empty lines skipped; a line that does not start with '/'
-// is ignored (reported in `ignored`).
-WatchFolderList parseWatchFolders(std::string_view text);
 
 // `path` with "//" collapsed, "." segments dropped, ".." popping a segment
 // (staying at "/"), and a trailing '/' removed (except for "/"). Bytes are

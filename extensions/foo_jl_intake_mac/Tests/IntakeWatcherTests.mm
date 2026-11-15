@@ -26,6 +26,7 @@
 // TEST_FRAMEWORKS: CoreServices
 // TEST_DEPS: src/Core/IntakeWatchFilter.mm src/Core/IntakeDebounce.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeWatchSet.mm src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>

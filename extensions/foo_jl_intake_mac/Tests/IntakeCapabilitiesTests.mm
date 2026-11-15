@@ -9,7 +9,7 @@
 //
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
-// TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm
+// TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>

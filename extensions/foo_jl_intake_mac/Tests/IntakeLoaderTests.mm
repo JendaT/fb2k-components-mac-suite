@@ -30,6 +30,7 @@
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
 // TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeWatchFilter.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -40,6 +41,7 @@
 #include "MockCliSupport.h"
 #include "TestHarness.h"
 
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
 #include <map>
@@ -91,7 +93,17 @@ struct Harness {
     mutable std::mutex m;
     std::vector<Published> published;
     std::vector<LoaderStatus> finished;
+    std::vector<LoaderStatus> statusChanges;
     std::vector<MountEntry> mounts;
+
+    size_t statusChangeCount() const {
+        std::lock_guard<std::mutex> lock(m);
+        return statusChanges.size();
+    }
+    std::vector<Published> publishedCopy() const {
+        std::lock_guard<std::mutex> lock(m);
+        return published;
+    }
 
     size_t publishCount() const {
         std::lock_guard<std::mutex> lock(m);
@@ -136,7 +148,20 @@ LoaderSettings settingsFor(const std::string &state, const std::shared_ptr<Harne
         std::lock_guard<std::mutex> lock(h->m);
         h->finished.push_back(status);
     };
+    s.onStatusChanged = [h](const LoaderStatus &status) {
+        std::lock_guard<std::mutex> lock(h->m);
+        h->statusChanges.push_back(status);
+    };
     return s;
+}
+
+// The mock's CLI settings, for reconfigure().
+CliConfig mockCli(const std::string &state) {
+    CliConfig c;
+    c.cliPath = mock::mockPath();
+    c.bunSearchDirs = {g_noBunDir};
+    c.baseEnvironment = mock::mockEnv(state);
+    return c;
 }
 
 bool waitFinished(const Harness &h, size_t count, double timeout = 20) {
@@ -932,6 +957,156 @@ static void testWatchSetAfterShutdown() {
     mock::killLeftovers();
 }
 
+// B5: the status carries what the preferences page shows, and every change
+// of it reaches onStatusChanged.
+static void testStatusForPreferences() {
+    g_context = "status-income";
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    auto h = std::make_shared<Harness>();
+    IntakeLoader loader(settingsFor(state, h));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    LoaderStatus st = loader.status();
+    CHECK(st.incomeOffered && st.incomeFolders.size() == 3, "CLI 0.3.0: income offered, three folders");
+    size_t missing = 0;
+    for (const IncomeFolder &f : st.incomeFolders) {
+        if (!f.exists) {
+            missing++;
+            CHECK(f.name == "offline" && f.path == root + "/income/offline", "the missing one is offline");
+        }
+    }
+    CHECK_EQ(missing, 1, "one income folder does not exist");
+    CHECK(st.rootFolders.size() == 2 && st.rootFolders[0] == root + "/income/dump" &&
+              st.rootFolders[1] == root + "/income/shop",
+          "the roots' parent folders, sorted, each once");
+    {
+        std::lock_guard<std::mutex> lock(h->m);
+        CHECK(h->statusChanges.size() >= 2 && h->statusChanges.front().state == LoaderState::Loading &&
+                  h->statusChanges.back().state == LoaderState::Ready,
+              "status changes: loading, then ready");
+    }
+    const size_t before = h->statusChangeCount();
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "a reload finishes");
+    CHECK(h->statusChangeCount() > before, "every load end is reported, even an unchanged one");
+
+    g_context = "status-income-0.2.1";
+    std::string old = mock::setupState("cli-0.2.1");
+    auto h2 = std::make_shared<Harness>();
+    IntakeLoader loader2(settingsFor(old, h2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1) && h2->lastFinished().state == LoaderState::Ready, "loads");
+    st = loader2.status();
+    CHECK(!st.incomeOffered && st.incomeFolders.empty() && st.rootFolders.size() == 2,
+          "no income command: no income folders, the roots' folders instead");
+}
+
+// B5: reconfigure() starts over with the new CLI settings.
+static void testReconfigure() {
+    g_context = "reconfigure-empty";
+    clearLog();
+    std::string state = mock::setupState("default");
+    auto h = std::make_shared<Harness>();
+    IntakeLoader loader(settingsFor(state, h));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+
+    CliConfig none = mockCli(state);
+    none.cliPath.clear();
+    loader.reconfigure(none);
+    CHECK(waitFinished(*h, 2), "the reconfigured attempt finishes");
+    CHECK(h->lastFinished().state == LoaderState::NotConfigured && loader.status().roots == 0 &&
+              loader.status().cliVersion.empty(),
+          "no CLI path: not configured, nothing kept");
+    Published cleared = h->lastPublished();
+    CHECK(cleared.reason == PublishReason::Reconfigured && cleared.invalidate && cleared.view &&
+              cleared.view->rendersNothing() && !cleared.view->isInert(),
+          "an empty view replaces the tinted one, with invalidate-all");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "nothing is spawned without a CLI path");
+    CHECK(logCount("not configured") == 1, "the not-configured line");
+
+    g_context = "reconfigure-back";
+    loader.reconfigure(mockCli(state));
+    CHECK(waitFinished(*h, 3), "the load with the restored path finishes");
+    CHECK(h->lastFinished().state == LoaderState::Ready && loader.status().roots == 16 &&
+              loader.status().cliVersion == "0.3.0",
+          "ready again");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kVersion, kIncome, kStatus}),
+          "a fresh start: version and income again before status");
+    Published back = h->lastPublished();
+    CHECK(back.reason == PublishReason::Load && back.invalidate, "a first load again: invalidate-all");
+
+    g_context = "reconfigure-rules";
+    const size_t publishes = h->publishCount();
+    CliConfig rules = mockCli(state);
+    rules.rulesDir = state + "/rules-fixture";
+    loader.reconfigure(rules);
+    CHECK(waitFinished(*h, 4) && h->lastFinished().state == LoaderState::Ready, "a rules folder change reloads");
+    std::vector<Published> all = h->publishedCopy();
+    CHECK(all.size() == publishes + 2 && all[publishes].reason == PublishReason::Reconfigured &&
+              all[publishes].invalidate && all[publishes + 1].reason == PublishReason::Load,
+          "forgotten, then loaded: two publishes");
+
+    g_context = "reconfigure-in-flight";
+    clearLog();
+    mock::setMode(state, "status", "slow 3");
+    const size_t finishedBefore = h->finishedCount();
+    const size_t publishesBefore = h->publishCount();
+    loader.reload(false);
+    // Let the slow status start, then change the settings under it.
+    CHECK(mock::waitUntil([&] { return calls(state).size() >= 10; }, 10), "the slow status started");
+    loader.reconfigure(mockCli(state));
+    clearMode(state, "status");
+    CHECK(waitFinished(*h, finishedBefore + 1, 20), "the load with the new settings finishes");
+    CHECK(h->lastFinished().state == LoaderState::Ready, "ready");
+    CHECK_EQ(h->finishedCount(), finishedBefore + 1, "the discarded load reported no finish of its own");
+    all = h->publishedCopy();
+    CHECK(all.size() == publishesBefore + 2 && all[publishesBefore].reason == PublishReason::Reconfigured &&
+              all[publishesBefore + 1].reason == PublishReason::Load,
+          "nothing from the old settings was published");
+    CHECK(logCount("status: discarded, the CLI settings changed") == 1, "the old status result was discarded");
+    std::vector<std::string> got = calls(state);
+    CHECK(got.size() >= 3 && got[got.size() - 3] == kVersion && got[got.size() - 2] == kIncome &&
+              got.back() == kStatus,
+          "then version, income and status with the new settings");
+    loader.shutdown();
+    mock::killLeftovers();
+}
+
+// B5: setWatchFolders() replaces the watch_folders setting: a new watch set,
+// no reload.
+static void testSetWatchFolders() {
+    g_context = "set-watch-folders";
+    std::string state = mock::setupState("default");
+    const std::string real = realOf(state + "/root");
+    const std::string extra = mock::newDir("extra-watch");
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && w->count() == 1 && w->last().size() == 3, "first load: three folders");
+
+    loader.setWatchFolders({extra});
+    CHECK(mock::waitUntil([&] { return w->count() == 2; }, 10), "a new watch set is handed over");
+    std::vector<std::string> set = w->last();
+    CHECK(set.size() == 4 && std::find(set.begin(), set.end(), realOf(extra)) != set.end(),
+          "the configured folder joins the income folders (resolved)");
+
+    // The extra folder leaves; an income folder that is watched anyway takes
+    // its place: back to the three income folders, handed over once.
+    loader.setWatchFolders({real + "/income/dump"});
+    CHECK(mock::waitUntil([&] { return w->count() == 3; }, 10), "removing it hands over a set again");
+    CHECK(w->last().size() == 3, "back to the three income folders");
+    // Same stream paths: nothing is handed over.
+    loader.setWatchFolders({});
+    mock::waitUntil([] { return false; }, 0.5);
+    CHECK_EQ(w->count(), 3, "an unchanged set is not handed over");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "no CLI call for a watch folder change");
+    CHECK_EQ(h->finishedCount(), 1, "and no load");
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -957,6 +1132,9 @@ int main(void) {
         testUnreadableSidecar();
         testShareMountsDuringLoad();
         testWatchSetAfterShutdown();
+        testStatusForPreferences();
+        testReconfigure();
+        testSetWatchFolders();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

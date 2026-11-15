@@ -17,6 +17,18 @@
 //  re-reads the mount table, reloads and restarts the watch stream), and
 //  starts the first load.
 //
+//  Settings (B5): the preferences page writes configStore and posts
+//  IntakeSettingsDidChangeNotification on the main thread. The service
+//  reads every key again (config::load) and applies what changed, with no
+//  restart: a new CLI path, bun path or rules folder rebuilds the CLI
+//  configuration (a fresh environment snapshot, main thread) and hands it to
+//  IntakeLoader::reconfigure, which reloads with `version`; new watched
+//  folders go to IntakeLoader::setWatchFolders (a new watch set); a new log
+//  level applies at once. The library mapping is only stored (B9 uses it).
+//  After every loader status change it posts
+//  IntakeStatusDidChangeNotification on the main thread, so the page
+//  refreshes its status block while visible (no polling).
+//
 //  Live updates (B4): a watcher batch (sidecar changes, moved folders, a
 //  stream start; debounced 1 s) becomes IntakeLoader::reloadForChanges: one
 //  coalesced full `status --json`, the fingerprint diff, invalidate-all
@@ -35,7 +47,17 @@
 
 #pragma once
 
+#import <Foundation/Foundation.h>
+
+#include <functional>
 #include <string>
+
+#include "../Core/IntakeLoadPolicy.h"
+
+// Main thread, posted by the preferences page after it wrote a setting.
+FOUNDATION_EXPORT NSNotificationName const IntakeSettingsDidChangeNotification;
+// Main thread, posted by the service after the loader's status changed.
+FOUNDATION_EXPORT NSNotificationName const IntakeStatusDidChangeNotification;
 
 namespace intake {
 
@@ -53,8 +75,21 @@ void serviceReload(bool recheckVersion);
 // fingerprint diff. A no-op before on_init and after on_quit.
 void serviceRefreshAfterCommand();
 
-// Main thread. The loader's status line for the preferences page (B5);
-// "Stopped" before on_init and after on_quit.
+// Main thread. The loader's status line; "Stopped" before on_init and
+// after on_quit.
 std::string serviceStatusLine();
+
+// Main thread. The loader's status for the preferences page (B5): state,
+// CLI version, roots, error and the income folders; state Stopped before
+// on_init and after on_quit.
+LoaderStatus serviceStatus();
+
+// Main thread. "Test CLI" (B5): one `version --json` with the current
+// settings, through the CLI runner on a background queue (a read-only call:
+// killed at the 10 s budget, and on quit). `completion` runs once on the
+// main thread with whether the version gate passed and a one-line result
+// (cliTestSummary). Before on_init and after on_quit it runs at once with
+// "not running".
+void serviceTestCli(std::function<void(bool ok, const std::string &text)> completion);
 
 } // namespace intake

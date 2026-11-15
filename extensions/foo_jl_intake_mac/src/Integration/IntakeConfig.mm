@@ -6,7 +6,7 @@
 #include "IntakeConfig.h"
 
 #include "../Core/IntakeLog.h"
-#include "../Core/IntakeWatchSet.h"
+#include "../Core/IntakeSettingsParse.h"
 
 namespace intake {
 namespace config {
@@ -17,14 +17,6 @@ pfc::string8 fullKey(const char *key) {
     pfc::string8 out;
     out << kPrefix << key;
     return out;
-}
-
-std::string trimmed(std::string text) {
-    const char *space = " \t\r\n";
-    const size_t first = text.find_first_not_of(space);
-    if (first == std::string::npos) return std::string();
-    const size_t last = text.find_last_not_of(space);
-    return text.substr(first, last - first + 1);
 }
 
 } // anonymous namespace
@@ -78,9 +70,9 @@ int defaultLogLevel() {
 
 IntakeSettings load() {
     IntakeSettings s;
-    s.cliPath = trimmed(getString(kCliPath, ""));
-    s.bunPath = trimmed(getString(kBunPath, ""));
-    s.rulesDir = trimmed(getString(kRulesDir, ""));
+    s.cliPath = trimmedSetting(getString(kCliPath, ""));
+    s.bunPath = trimmedSetting(getString(kBunPath, ""));
+    s.rulesDir = trimmedSetting(getString(kRulesDir, ""));
     int64_t level = getInt(kLogLevel, defaultLogLevel());
     if (level < 0) level = 0;
     if (level > 2) level = 2;
@@ -90,6 +82,8 @@ IntakeSettings load() {
     WatchFolderList folders = parseWatchFolders(getString(kWatchFolders, ""));
     s.watchFolders = std::move(folders.folders);
     s.ignoredWatchFolders = std::move(folders.ignored);
+    s.swapPrefixFrom = trimmedSetting(getString(kSwapPrefixFrom, ""));
+    s.swapPrefixTo = trimmedSetting(getString(kSwapPrefixTo, ""));
     return s;
 }
 

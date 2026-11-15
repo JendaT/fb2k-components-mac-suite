@@ -7,9 +7,6 @@
 
 #include "IntakeSemver.h"
 
-#include <sys/stat.h>
-#include <unistd.h>
-
 #include <unordered_set>
 
 extern char **environ;
@@ -26,22 +23,6 @@ bool hasNul(const std::string &s) {
     return s.find('\0') != std::string::npos;
 }
 
-bool endsWith(std::string_view s, std::string_view suffix) {
-    return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
-}
-
-// The value of NAME in a "NAME=value" list (first match, like getenv), or
-// nullopt.
-std::optional<std::string> envValue(const std::vector<std::string> &env, std::string_view name) {
-    for (const std::string &entry : env) {
-        if (entry.size() > name.size() && entry.compare(0, name.size(), name) == 0 &&
-            entry[name.size()] == '=') {
-            return entry.substr(name.size() + 1);
-        }
-    }
-    return std::nullopt;
-}
-
 // Removes every NAME=... entry, then appends NAME=value.
 void setEnv(std::vector<std::string> &env, std::string_view name, const std::string &value) {
     std::vector<std::string> kept;
@@ -53,16 +34,6 @@ void setEnv(std::vector<std::string> &env, std::string_view name, const std::str
     }
     kept.push_back(std::string(name) + "=" + value);
     env = std::move(kept);
-}
-
-bool isExecutableFile(const std::string &path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(path.c_str(), X_OK) == 0;
-}
-
-bool isReadableFile(const std::string &path) {
-    struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(path.c_str(), R_OK) == 0;
 }
 
 std::string dirName(const std::string &path) {
@@ -210,19 +181,6 @@ bool isSidecarId(std::string_view text) {
     return true;
 }
 
-std::vector<std::string> defaultBunSearchDirs(const std::vector<std::string> &environment) {
-    std::vector<std::string> dirs;
-    std::optional<std::string> home = envValue(environment, "HOME");
-    if (home && !home->empty() && (*home)[0] == '/') {
-        std::string h = *home;
-        while (h.size() > 1 && h.back() == '/') h.pop_back();
-        dirs.push_back((h == "/" ? std::string() : h) + "/.bun/bin");
-    }
-    dirs.push_back("/opt/homebrew/bin");
-    dirs.push_back("/usr/local/bin");
-    return dirs;
-}
-
 CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request) {
     std::string problem = checkRequest(request);
     if (!problem.empty()) return refused(problem);
@@ -260,7 +218,7 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
     }
     env = std::move(cleaned);
 
-    const bool script = endsWith(cli, ".ts");
+    const bool script = isScriptCliPath(cli);
 
     // bun: explicit, else probed. A bad explicit bun only matters when the
     // CLI needs bun to start.
@@ -275,19 +233,7 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
             probe = true;
         }
     }
-    if (probe) {
-        std::vector<std::string> dirs =
-            config.bunSearchDirs.empty() ? defaultBunSearchDirs(env) : config.bunSearchDirs;
-        for (std::string dir : dirs) {
-            if (dir.empty() || dir[0] != '/' || hasNul(dir)) continue;
-            while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
-            std::string candidate = (dir == "/" ? std::string() : dir) + "/bun";
-            if (isExecutableFile(candidate)) {
-                bun = candidate;
-                break;
-            }
-        }
-    }
+    if (probe) bun = findBun(config.bunSearchDirs.empty() ? defaultBunSearchDirs(env) : config.bunSearchDirs);
 
     if (script) {
         if (bun.empty()) return noCli("bun was not found; it is needed to run " + cli);
@@ -324,7 +270,7 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
     if (request.dryRun) args.push_back("--dry-run");
     args.push_back("--json");
 
-    setEnv(env, "PATH", buildPath(bun.empty() ? std::string() : dirName(bun), envValue(env, "PATH")));
+    setEnv(env, "PATH", buildPath(bun.empty() ? std::string() : dirName(bun), environmentValue(env, "PATH")));
     if (!config.rulesDir.empty()) setEnv(env, "INTAKE_RULES_DIR", config.rulesDir);
     inv.environment = std::move(env);
     inv.status = BuildStatus::Ok;

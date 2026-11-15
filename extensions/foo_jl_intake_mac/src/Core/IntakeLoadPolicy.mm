@@ -191,6 +191,99 @@ std::string statusLine(const LoaderStatus &status) {
     return std::string();
 }
 
+StatusDisplay statusDisplay(const LoaderStatus &status) {
+    static const std::string kUnknown = "\xE2\x80\x94";  // an em dash (U+2014)
+    StatusDisplay d;
+    d.cliVersion = status.cliVersion.empty() ? kUnknown : status.cliVersion;
+    d.roots = std::to_string(status.roots);
+    d.lastError = status.error.empty() ? std::string("none") : status.error;
+    switch (status.state) {
+        case LoaderState::NotConfigured:
+            d.state = "Not configured: set the CLI path";
+            d.roots = kUnknown;
+            break;
+        case LoaderState::Loading:
+            d.state = "Loading\xE2\x80\xA6";
+            d.roots = kUnknown;
+            break;
+        case LoaderState::Ready:
+            d.state = "Active";
+            d.tone = StatusTone::Good;
+            if (status.partialErrors > 0) {
+                d.lastError = std::to_string(status.partialErrors) +
+                              (status.partialErrors == 1 ? " error in the last load: " : " errors in the last load: ") +
+                              status.error;
+                d.tone = StatusTone::Warning;
+            }
+            break;
+        case LoaderState::Stale:
+            d.state = "Active, last refresh failed";
+            d.tone = StatusTone::Warning;
+            break;
+        case LoaderState::Inert:
+            d.state = "Inactive: " + status.error;
+            d.tone = StatusTone::Error;
+            break;
+        case LoaderState::Failed:
+            d.state = "Inactive: the first load failed";
+            d.roots = kUnknown;
+            d.tone = StatusTone::Error;
+            break;
+        case LoaderState::Stopped:
+            d.state = "Stopped";
+            break;
+    }
+    return d;
+}
+
+IncomeDisplay incomeDisplay(const LoaderStatus &status) {
+    IncomeDisplay d;
+    if (status.state == LoaderState::NotConfigured || status.state == LoaderState::Stopped) {
+        d.note = "No CLI is running.";
+        return d;
+    }
+    if (status.incomeOffered) {
+        d.fromCli = true;
+        for (const IncomeFolder &f : status.incomeFolders) d.rows.push_back({f.name, f.path, f.exists});
+        d.note = d.rows.empty() ? "intake income lists no folders." : "From intake income.";
+        return d;
+    }
+    for (const std::string &folder : status.rootFolders) d.rows.push_back({std::string(), folder, true});
+    if (!d.rows.empty()) {
+        d.note = "Folders holding the loaded roots (this CLI has no income command).";
+    } else if (status.state == LoaderState::Loading) {
+        d.note = "Loading\xE2\x80\xA6";
+    } else {
+        d.note = "No roots loaded.";
+    }
+    return d;
+}
+
+CliTestSummary cliTestSummary(const EnvelopeResult &result, const VersionGateResult &gate) {
+    CliTestSummary out;
+    if (result.outcome == CliOutcome::Cancelled) {
+        out.text = "Cancelled";
+        return out;
+    }
+    if (result.outcome != CliOutcome::Ok && result.outcome != CliOutcome::Partial) {
+        out.text = "Failed: " + loadErrorText(result);
+        return out;
+    }
+    if (!gate.passed()) {
+        out.text = "Unsupported CLI: " + (gate.detail.empty() ? std::string("version data not understood") : gate.detail);
+        if (!gate.info.cli.empty()) out.text += ", cli " + gate.info.cli;
+        return out;
+    }
+    out.ok = true;
+    out.text = "CLI " + (gate.info.cli.empty() ? std::string("(no version string)") : gate.info.cli) + ", schema " +
+               std::to_string(kSupportedSchema);
+    if (gate.info.hasCommands) {
+        const size_t n = gate.info.commands.size();
+        out.text += ", " + std::to_string(n) + (n == 1 ? " command" : " commands");
+    }
+    return out;
+}
+
 std::string rulesSourceDescription(const CliConfig &config) {
     if (!config.rulesDir.empty()) return "rules folder from the rules_dir preference: " + config.rulesDir;
     if (config.baseEnvironment) {

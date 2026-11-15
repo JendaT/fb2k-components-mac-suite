@@ -19,8 +19,10 @@
 //   - remountChangesRows: the invalidation diff of a mount table change.
 //   - carryOverUnreadable: a partial `status` that could not read a sidecar
 //     keeps the last record of that root (PLAN.md 3.5, risk 7).
-//   - The status line for the preferences page (B5) and the log, and the
-//     Debug line naming the rules source.
+//   - The status line for the log, the status block and the income folder
+//     list of the preferences page (B5: statusDisplay, incomeDisplay), the
+//     "Test CLI" result (cliTestSummary), and the Debug line naming the
+//     rules source.
 //
 //  Thread-safety: pure functions, no shared state.
 //
@@ -33,9 +35,11 @@
 
 #include "IntakeCommandArgs.h"
 #include "IntakeEnvelope.h"
+#include "IntakeIncome.h"
 #include "IntakeMountAliases.h"
 #include "IntakeSnapshot.h"
 #include "IntakeStatusModel.h"
+#include "IntakeVersionGate.h"
 
 namespace intake {
 
@@ -118,11 +122,55 @@ struct LoaderStatus {
     size_t roots = 0;         // in the snapshot in use
     std::string error;        // Inert, Stale, Failed: why; Ready: a partial load's errors
     size_t partialErrors = 0; // Ready: errors reported by a partial (exit 1) status
+    // B5, for the preferences page's income folder list (incomeDisplay):
+    bool incomeOffered = false;             // the last passing `version` listed `income`
+    std::vector<IncomeFolder> incomeFolders; // the last good `income` call (CLI order)
+    std::vector<std::string> rootFolders;   // parents of the roots in use, lexically clean, sorted, each once
 };
 
 // "Ready · CLI 0.3.0 · 16 roots", "Inactive: ...", ... (UTF-8, a middle dot
 // between parts).
 std::string statusLine(const LoaderStatus &status);
+
+// The preferences page's status block (B5). Every field is UTF-8 text ready
+// to show; an unknown value is an em dash.
+enum class StatusTone { Neutral, Good, Warning, Error };
+struct StatusDisplay {
+    std::string state;      // "Not configured", "Loading…", "Active",
+                            // "Active, last refresh failed",
+                            // "Inactive: <reason>", "Stopped"
+    std::string cliVersion; // "0.3.0"
+    std::string roots;      // "16"
+    std::string lastError;  // "none", or the error the status carries
+    StatusTone tone = StatusTone::Neutral;
+};
+StatusDisplay statusDisplay(const LoaderStatus &status);
+
+// The income folders the page lists (B5, doc 04 "Preferences page"): the
+// folders from `intake income` when the CLI lists that command, otherwise
+// the parent folders of the loaded roots. `exists` comes from the CLI for
+// income folders; a root's parent held a root at the last load, so it is
+// shown as existing (the page never stats folders that may lie on a share).
+struct IncomeDisplayRow {
+    std::string name;  // from `income`; empty for a root's parent
+    std::string path;
+    bool exists = true;
+};
+struct IncomeDisplay {
+    bool fromCli = false;
+    std::vector<IncomeDisplayRow> rows;
+    std::string note;  // where the list comes from, or why it is empty
+};
+IncomeDisplay incomeDisplay(const LoaderStatus &status);
+
+// The "Test CLI" result: one `version --json` call (its envelope) and, when
+// it answered (Ok or Partial), the version gate over its data. `ok` only
+// when the gate passed.
+struct CliTestSummary {
+    bool ok = false;
+    std::string text;  // "CLI 0.3.0, schema 1, 11 commands", "Unsupported CLI: ...", "Failed: ..."
+};
+CliTestSummary cliTestSummary(const EnvelopeResult &result, const VersionGateResult &gate);
 
 // Which rules folder the CLI will use, for a Debug line (PLAN.md 3.10): the
 // configured folder, an inherited INTAKE_RULES_DIR, or the CLI's own

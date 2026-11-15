@@ -39,13 +39,6 @@ bool isUnderExact(std::string_view key, std::string_view base) {
     return key.size() == base.size() || key[base.size()] == '/';
 }
 
-std::string_view trimmedLine(std::string_view s) {
-    size_t begin = 0, end = s.size();
-    while (begin < end && (s[begin] == ' ' || s[begin] == '\t')) begin++;
-    while (end > begin && (s[end - 1] == ' ' || s[end - 1] == '\t')) end--;
-    return s.substr(begin, end - begin);
-}
-
 std::string keyFor(const std::string &path) {
     std::string key;
     if (normalizePath(path, key) != PathStatus::Ok) key.clear();
@@ -80,27 +73,6 @@ std::string joinPath(const std::string &directory, std::string_view name) {
 }
 
 } // anonymous namespace
-
-WatchFolderList parseWatchFolders(std::string_view text) {
-    WatchFolderList out;
-    std::unordered_set<std::string> seen;
-    size_t start = 0;
-    while (start <= text.size()) {
-        size_t end = text.find_first_of("\r\n", start);
-        if (end == std::string_view::npos) end = text.size();
-        const std::string_view line = trimmedLine(text.substr(start, end - start));
-        if (!line.empty()) {
-            if (line[0] == '/') {
-                std::string folder(line);
-                if (seen.insert(folder).second) out.folders.push_back(std::move(folder));
-            } else {
-                out.ignored.emplace_back(line);
-            }
-        }
-        start = end + 1;
-    }
-    return out;
-}
 
 std::string lexicalAbsolutePath(std::string_view path) {
     if (path.empty() || path[0] != '/') return std::string();

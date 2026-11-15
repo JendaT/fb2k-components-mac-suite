@@ -15,7 +15,7 @@
 //  (/var -> /private/var) and compares with realpath(3). Synthetic names
 //  only.
 //
-// TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm
+// TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>

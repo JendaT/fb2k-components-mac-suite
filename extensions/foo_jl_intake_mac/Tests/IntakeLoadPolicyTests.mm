@@ -365,6 +365,125 @@ static void testStatusLine() {
           "the preference wins");
 }
 
+static void testStatusDisplay() {
+    g_context = "status-display";
+    const std::string dash = "\xE2\x80\x94";
+    LoaderStatus s;
+    s.state = LoaderState::NotConfigured;
+    StatusDisplay d = statusDisplay(s);
+    CHECK(d.state == "Not configured: set the CLI path" && d.cliVersion == dash && d.roots == dash &&
+              d.lastError == "none" && d.tone == StatusTone::Neutral,
+          "not configured: unknown version and roots, no error");
+    s.state = LoaderState::Loading;
+    CHECK(statusDisplay(s).state == "Loading\xE2\x80\xA6" && statusDisplay(s).roots == dash, "loading");
+
+    s.state = LoaderState::Ready;
+    s.cliVersion = "0.3.0";
+    s.roots = 16;
+    d = statusDisplay(s);
+    CHECK(d.state == "Active" && d.cliVersion == "0.3.0" && d.roots == "16" && d.lastError == "none" &&
+              d.tone == StatusTone::Good,
+          "active");
+    s.partialErrors = 2;
+    s.error = "Unreadable sidecar (+1 more)";
+    d = statusDisplay(s);
+    CHECK(d.state == "Active" && d.tone == StatusTone::Warning &&
+              d.lastError == "2 errors in the last load: Unreadable sidecar (+1 more)",
+          "active after a partial load: a warning with the errors");
+    s.partialErrors = 0;
+
+    s.state = LoaderState::Stale;
+    s.error = "status: Intake CLI timed out";
+    d = statusDisplay(s);
+    CHECK(d.state == "Active, last refresh failed" && d.lastError == "status: Intake CLI timed out" &&
+              d.roots == "16" && d.tone == StatusTone::Warning,
+          "stale: still active, with the error");
+
+    s.state = LoaderState::Inert;
+    s.error = "unsupported intake CLI (schema unsupported: schema 2, supported 1)";
+    d = statusDisplay(s);
+    CHECK(d.state == "Inactive: unsupported intake CLI (schema unsupported: schema 2, supported 1)" &&
+              d.tone == StatusTone::Error,
+          "inert: inactive with the reason");
+
+    s.state = LoaderState::Failed;
+    s.roots = 0;
+    s.error = "status: Intake CLI internal error";
+    d = statusDisplay(s);
+    CHECK(d.state == "Inactive: the first load failed" && d.lastError == "status: Intake CLI internal error" &&
+              d.roots == dash && d.tone == StatusTone::Error,
+          "failed first load: inactive");
+    s.state = LoaderState::Stopped;
+    CHECK(statusDisplay(s).state == "Stopped", "stopped");
+
+    s = LoaderStatus();
+    s.state = LoaderState::Ready;
+    CHECK(statusDisplay(s).cliVersion == dash, "a CLI without a version string");
+}
+
+static void testIncomeDisplay() {
+    g_context = "income-display";
+    LoaderStatus s;
+    s.state = LoaderState::Ready;
+    s.incomeOffered = true;
+    s.incomeFolders = {{"dump", "/fixture/income/dump", true}, {"offline", "/fixture/income/offline", false}};
+    s.rootFolders = {"/fixture/income/dump"};
+    IncomeDisplay d = incomeDisplay(s);
+    CHECK(d.fromCli && d.rows.size() == 2 && d.rows[0].name == "dump" && d.rows[0].exists &&
+              d.rows[1].path == "/fixture/income/offline" && !d.rows[1].exists && d.note == "From intake income.",
+          "income listed by the CLI, the missing folder marked");
+    s.incomeFolders.clear();
+    CHECK(incomeDisplay(s).rows.empty() && incomeDisplay(s).note == "intake income lists no folders.",
+          "the CLI lists none: no fallback to the roots");
+
+    s.incomeOffered = false;
+    s.rootFolders = {"/fixture/income/dump", "/fixture/income/shop"};
+    d = incomeDisplay(s);
+    CHECK(!d.fromCli && d.rows.size() == 2 && d.rows[1].path == "/fixture/income/shop" && d.rows[1].exists &&
+              d.rows[1].name.empty() && d.note.find("no income command") != std::string::npos,
+          "without an income command: the roots' folders");
+    s.rootFolders.clear();
+    CHECK(incomeDisplay(s).note == "No roots loaded.", "nothing loaded");
+    s.state = LoaderState::Loading;
+    CHECK(incomeDisplay(s).note == "Loading\xE2\x80\xA6", "loading");
+    s.state = LoaderState::NotConfigured;
+    s.incomeOffered = true;
+    s.incomeFolders = {{"dump", "/fixture/income/dump", true}};
+    CHECK(incomeDisplay(s).rows.empty() && incomeDisplay(s).note == "No CLI is running.",
+          "not configured: nothing listed");
+}
+
+static void testCliTestSummary() {
+    g_context = "cli-test-summary";
+    VersionGateResult pass;
+    pass.verdict = GateVerdict::Pass;
+    pass.info.cli = "0.3.0";
+    pass.info.hasCommands = true;
+    pass.info.commands = {"version", "status", "income"};
+    CliTestSummary t = cliTestSummary(result(CliOutcome::Ok), pass);
+    CHECK(t.ok && t.text == "CLI 0.3.0, schema 1, 3 commands", "a passing CLI with a commands list");
+    pass.info.hasCommands = false;
+    pass.info.commands.clear();
+    pass.info.cli = "0.2.1";
+    CHECK(cliTestSummary(result(CliOutcome::Ok), pass).text == "CLI 0.2.1, schema 1", "no commands list");
+
+    VersionGateResult fail;
+    fail.verdict = GateVerdict::SchemaUnsupported;
+    fail.detail = "schema 2, supported 1";
+    fail.info.cli = "0.3.0";
+    t = cliTestSummary(result(CliOutcome::Ok), fail);
+    CHECK(!t.ok && t.text == "Unsupported CLI: schema 2, supported 1, cli 0.3.0", "a failed gate");
+
+    t = cliTestSummary(hostNoCli("the intake CLI path must be absolute: relative/intake"), VersionGateResult());
+    CHECK(!t.ok && t.text.rfind("Failed: ", 0) == 0 && t.text.find("relative/intake") != std::string::npos,
+          "E_NO_CLI: failed, with the reason");
+    t = cliTestSummary(result(CliOutcome::Failed, {"E_NO_RULES"}), VersionGateResult());
+    CHECK(!t.ok && t.text.find("no rules dir") != std::string::npos, "a CLI error");
+    CHECK(!cliTestSummary(result(CliOutcome::Cancelled), pass).ok &&
+              cliTestSummary(result(CliOutcome::Cancelled), pass).text == "Cancelled",
+          "cancelled at quit");
+}
+
 static void testDecorStats() {
     g_context = "decor-stats";
     DecorStats stats;
@@ -409,6 +528,9 @@ int main(void) {
         testCarryOverUnreadable();
         testRemountChangesRows();
         testStatusLine();
+        testStatusDisplay();
+        testIncomeDisplay();
+        testCliTestSummary();
         testDecorStats();
     }
     TEST_MAIN_END();

@@ -1,4 +1,4 @@
-# Hidden options (config-store only)
+# Settings and hidden options (config store)
 
 foo_jl_intake keeps its settings in foobar2000 v2's config store, a SQLite
 database:
@@ -21,11 +21,20 @@ A key with no row uses its default.
 
 **Quit foobar2000 before editing.** It keeps the configuration in memory and
 writes it back when it quits, so an edit made while it runs is overwritten.
-The component reads these keys once, at startup.
+The component reads every key at startup.
 
-The preferences page (PLAN.md B5) will take over the first four keys and
-`watch_folders`. Until then they can only be set here. `decor_stats` stays
-hidden after that.
+**On the preferences page (Tools > Intake, B5):** `cli_path`, `bun_path`,
+`rules_dir`, `watch_folders`, `swap_prefix_from`, `swap_prefix_to` and
+`log_level`. These are no longer hidden: the page writes them and they apply
+at once, with no restart (a CLI, bun or rules change reloads with `version`;
+a watched-folders change rebuilds the watch set; the log level applies
+immediately). They are described below because in-app checks set them with
+`sqlite3` while foobar2000 is quit.
+
+**Hidden (config store only):** `decor_stats`, `log_file` and the temporary
+acceptance aids `test_playlist`, `test_playlist_dir` and `test_open_prefs`.
+
+# Keys on the preferences page
 
 ## foo_jl_intake.cli_path
 
@@ -92,6 +101,17 @@ At `log_level` 1 the console shows `[intake] watching N folder(s) for sidecar
 changes` whenever the watch set changes; at 2 also the folders (`watch: ...`)
 and one line per change batch (`watch: changes in N folder(s) ...`, or
 `watch: a stream started, catching up`).
+
+## foo_jl_intake.swap_prefix_from and swap_prefix_to
+
+`configStrings`. The library mapping for "Swap to library paths" (B9): one
+prefix pair, the library's path prefix as the intake CLI reports it on the
+NAS (`swap_prefix_from`) and the same folder as this Mac mounts it
+(`swap_prefix_to`), e.g. `/share/library` and `/Volumes/library`. Both must be
+absolute paths, or both empty (the default: no mapping). The page flags a
+half-filled or relative pair. Stored and validated only until Swap exists.
+
+# Hidden keys
 
 ## foo_jl_intake.decor_stats
 
@@ -181,7 +201,27 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
      ON CONFLICT(name) DO UPDATE SET value=1;"
 ```
 
-## Reverting everything
+## foo_jl_intake.test_open_prefs
+
+Temporary acceptance aid, removed before the merge (PLAN.md B10), like
+`test_playlist`. It lets an in-app check take a screenshot of the
+preferences page without clicking.
+
+`configInts`, read at startup: `1` opens the Tools > Intake preferences page
+about 5 s after start (`ui_control::show_preferences` with the page's GUID)
+and brings the preferences window to the front; `0` (default) does nothing.
+The component sets the value back to `0` before acting, and foobar2000
+writes that back when it quits. One console line reports it
+(`[intake] test_open_prefs: opened the Intake preferences page`).
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_open_prefs',1)
+     ON CONFLICT(name) DO UPDATE SET value=1;"
+```
+
+# Reverting everything
 
 ```bash
 # quit foobar2000 first

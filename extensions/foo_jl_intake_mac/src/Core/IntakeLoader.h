@@ -39,6 +39,17 @@
 //  one log line, the last good folder list is kept, and the load goes on
 //  with `status` (never inert).
 //
+//  Settings changes (B5, the preferences page through IntakeService):
+//  reconfigure() replaces the CLI path, bun path, rules folder and
+//  environment and starts over as a new loader would: a running load is
+//  cancelled (its read-lane process killed) and whatever it still delivers
+//  is discarded, the last load is forgotten (an empty view is published,
+//  with invalidate-all when the shown view decorated anything), and a load
+//  with `version` (and `income`) follows. An empty CLI path ends in
+//  NotConfigured. setWatchFolders() replaces the watch_folders setting and
+//  recomputes the watch set; nothing is reloaded (a new stream catches up
+//  by itself, IntakeWatcher).
+//
 //  Triggers: reload() (init, a mount event, later Refresh, preferences and
 //  the post-command refresh), reloadForChanges() (an FSEvents batch, B4)
 //  and remount(), which re-reads the mount table and, when the aliases
@@ -78,7 +89,8 @@
 //  left running.
 //
 //  Thread-safety: every public method may be called from any thread. The
-//  publish and load-finished handlers run on the loader queue.
+//  publish, load-finished and status-changed handlers run on the loader
+//  queue.
 //
 //  Lifetime: queued work and pending CLI completions keep the loader's state
 //  alive after the IntakeLoader object is destroyed; the destructor calls
@@ -109,11 +121,15 @@ enum class PublishReason {
     Remount,    // the mount aliases changed: the last load's keys were rebuilt
     GatePassed, // the gate passed again after failing, then `status` failed:
                 // the last load, no longer inert (state Stale)
+    Reconfigured, // reconfigure(): the last load is forgotten (an empty view)
 };
 
 using PublishHandler =
     std::function<void(std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason)>;
 using LoadFinishedHandler = std::function<void(const LoaderStatus &status)>;
+// Every change of status(): a load starting (Loading), every load attempt's
+// end, NotConfigured. Not called for Stopped (shutdown).
+using StatusChangedHandler = std::function<void(const LoaderStatus &status)>;
 using MountReader = std::function<std::vector<MountEntry>()>;
 // The stream paths (IntakeWatchSet::streamPaths()), sorted; empty: nothing
 // to watch. Runs on the loader queue, never after shutdown().
@@ -131,6 +147,7 @@ struct LoaderSettings {
     SidecarFileAccess *files = nullptr; // null: posixSidecarFileAccess(); must outlive the loader
     PublishHandler publish;
     LoadFinishedHandler onLoadFinished; // optional: after every load attempt
+    StatusChangedHandler onStatusChanged; // optional (B5: the preferences page)
     // B4 watch set. watchFolders: the watch_folders setting (absolute paths).
     std::vector<std::string> watchFolders;
     WatchSetHandler onWatchSet;         // optional
@@ -156,6 +173,13 @@ public:
     void reloadForChanges(std::vector<std::string> directories, bool rescan);
     // Re-reads the mount table (see the top of this file).
     void remount();
+    // B5 (see the top of this file). From `cli`: cliPath, bunPath,
+    // bunSearchDirs, rulesDir and baseEnvironment (take it with
+    // processEnvironmentSnapshot() on the main thread); cliVersion and
+    // cliListsCommands are reset.
+    void reconfigure(CliConfig cli);
+    // B5: the watch_folders setting (absolute paths, parseWatchFolders).
+    void setWatchFolders(std::vector<std::string> folders);
     // See the top of this file. Idempotent.
     void shutdown();
 

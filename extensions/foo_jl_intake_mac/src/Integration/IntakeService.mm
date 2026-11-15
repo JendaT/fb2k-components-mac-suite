@@ -14,9 +14,11 @@
 #include "IntakeMounts.h"
 #include "IntakeNativePath.h"
 
+#include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCommandArgs.h"
 #include "../Core/IntakeLoader.h"
 #include "../Core/IntakeLog.h"
+#include "../Core/IntakeVersionGate.h"
 #include "../Core/IntakeWatcher.h"
 
 #include <atomic>
@@ -25,6 +27,9 @@
 #include <mutex>
 #include <string>
 #include <sys/time.h>
+
+NSNotificationName const IntakeSettingsDidChangeNotification = @"JLIntakeSettingsDidChange";
+NSNotificationName const IntakeStatusDidChangeNotification = @"JLIntakeStatusDidChange";
 
 namespace intake {
 
@@ -74,14 +79,35 @@ void consoleBackend(LogLevel level, const char *message) {
     if (g_logToFile.load(std::memory_order_relaxed)) appendToLogFile(level, message);
 }
 
+// The loader's status changed (loader queue): one notification on the main
+// thread, coalesced while one is still queued.
+std::atomic<bool> g_statusPostQueued{false};
+
+void postStatusChanged() {
+    if (g_statusPostQueued.exchange(true)) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        g_statusPostQueued = false;
+        [[NSNotificationCenter defaultCenter] postNotificationName:IntakeStatusDidChangeNotification object:nil];
+    });
+}
+
+void logIgnoredWatchFolders(const std::vector<std::string> &ignored) {
+    for (const std::string &line : ignored) {
+        logInfo("watch_folders: ignoring \"" + line + "\" (not an absolute path)");
+    }
+}
+
 class Service {
 public:
-    explicit Service(const IntakeSettings &settings) : settings_(settings) {}
+    explicit Service(const IntakeSettings &settings) : settings_(settings) {
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
+            DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
+        attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_USER_INITIATED, 0);
+        testQueue_ = dispatch_queue_create("com.foobar2000.intake.cli-test", attr);
+    }
 
     void start() {
-        for (const std::string &line : settings_.ignoredWatchFolders) {
-            logInfo("watch_folders: ignoring \"" + line + "\" (not an absolute path)");
-        }
+        logIgnoredWatchFolders(settings_.ignoredWatchFolders);
         // The handler runs on the watcher's queue; stop() in on_quit clears
         // it (waiting out a running call) before the loader goes, so the raw
         // pointer never outlives the loader.
@@ -91,15 +117,13 @@ public:
         });
 
         LoaderSettings ls;
-        ls.cli.cliPath = settings_.cliPath;
-        ls.cli.bunPath = settings_.bunPath;
-        ls.cli.rulesDir = settings_.rulesDir;
-        ls.cli.baseEnvironment = processEnvironmentSnapshot();  // main thread only
+        ls.cli = cliConfig();
         ls.readMounts = [] { return readMountTable(); };
         ls.publish = [](std::shared_ptr<const IntakeView> view, bool invalidateAll, PublishReason reason) {
             providerPublish(std::move(view), invalidateAll, reason == PublishReason::Load);
         };
         ls.watchFolders = settings_.watchFolders;
+        ls.onStatusChanged = [](const LoaderStatus &) { postStatusChanged(); };
         // Runs on the loader queue; a weak reference, so a watch set handed
         // over while on_quit runs finds the watcher gone (or stopped).
         std::weak_ptr<IntakeWatcher> weakWatcher = watcher_;
@@ -123,6 +147,14 @@ public:
                                            usingBlock:^(NSNotification *) {
                                                volumesChanged();
                                            }];
+        // Removed in stop(), before the service is deleted.
+        Service *service = this;
+        settingsObserver_ = [[NSNotificationCenter defaultCenter] addObserverForName:IntakeSettingsDidChangeNotification
+                                                                              object:nil
+                                                                               queue:main
+                                                                          usingBlock:^(NSNotification *) {
+                                                                              service->applySettings();
+                                                                          }];
 
         loader_->reload(true);
     }
@@ -133,6 +165,9 @@ public:
         if (unmountObserver_) [center removeObserver:unmountObserver_];
         mountObserver_ = nil;
         unmountObserver_ = nil;
+        if (settingsObserver_) [[NSNotificationCenter defaultCenter] removeObserver:settingsObserver_];
+        settingsObserver_ = nil;
+        testRunner_.closeReadLane();  // a running Test CLI call is killed, none starts
         if (watcher_) {
             watcher_->stop();  // no batch reaches the loader after this
             watcher_.reset();
@@ -156,17 +191,90 @@ public:
 
     std::string statusLine() const { return loader_ ? loader_->statusLine() : std::string("Stopped"); }
 
+    LoaderStatus status() const {
+        if (loader_) return loader_->status();
+        LoaderStatus stopped;
+        stopped.state = LoaderState::Stopped;
+        return stopped;
+    }
+
+    // Main thread: the page wrote a setting. Applies what changed (see
+    // IntakeService.h).
+    void applySettings() {
+        if (!loader_) return;
+        IntakeSettings next = config::load();
+        if (next.logLevel != settings_.logLevel) {
+            setLogLevel(next.logLevel);
+            logInfo("log level " + std::to_string(next.logLevel));
+        }
+        const bool cliChanged = next.cliPath != settings_.cliPath || next.bunPath != settings_.bunPath ||
+                                next.rulesDir != settings_.rulesDir;
+        const bool watchChanged = next.watchFolders != settings_.watchFolders;
+        // Hidden options (decor_stats, log_file) keep their startup values.
+        next.decorStats = settings_.decorStats;
+        next.logFile = settings_.logFile;
+        settings_ = std::move(next);
+        if (watchChanged) {
+            logIgnoredWatchFolders(settings_.ignoredWatchFolders);
+            loader_->setWatchFolders(settings_.watchFolders);
+        }
+        if (cliChanged) loader_->reconfigure(cliConfig());
+    }
+
+    // Main thread (see serviceTestCli).
+    void testCli(std::function<void(bool, const std::string &)> completion) {
+        // The page saved its fields just before: test what is stored, even
+        // if that notification has not been handled yet (a no-op when it
+        // has).
+        applySettings();
+        CliRequest request;
+        request.command = CliCommand::Version;
+        CliRunOptions options;
+        std::string refusal;
+        const bool started = startCliCommand(
+            testRunner_, cliConfig(), request, options, testQueue_, nullptr,
+            [completion](CliResult &&result) {
+                // testQueue_: parse here, report on main.
+                VersionGateResult gate;
+                if (result.envelope.outcome == CliOutcome::Ok || result.envelope.outcome == CliOutcome::Partial) {
+                    gate = checkVersionGate(result.envelope.data);
+                }
+                const CliTestSummary summary = cliTestSummary(result.envelope, gate);
+                logInfo(std::string("Test CLI: ") + summary.text);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(summary.ok, summary.text);
+                });
+            },
+            &refusal);
+        if (!started) completion(false, "refused: " + refusal);
+    }
+
     // A volume came or went: the share may have mounted after startup
     // (`status` skips missing income folders) or one alias may be gone.
     static void volumesChanged();
 
 private:
-    IntakeSettings settings_;  // read once in on_init; never on the decorate path
+    // Main thread: the CLI settings with a fresh environment snapshot.
+    CliConfig cliConfig() const {
+        CliConfig c;
+        c.cliPath = settings_.cliPath;
+        c.bunPath = settings_.bunPath;
+        c.rulesDir = settings_.rulesDir;
+        c.baseEnvironment = processEnvironmentSnapshot();  // main thread only
+        return c;
+    }
+
+    // Read in on_init and again on every settings notification (main
+    // thread); never on the decorate path.
+    IntakeSettings settings_;
     std::shared_ptr<IntakeWatcher> watcher_;
     std::unique_ptr<IntakeLoader> loader_;
     IntakeLoader *loaderForWatcher_ = nullptr;  // read by the watcher's handler
     id mountObserver_ = nil;
     id unmountObserver_ = nil;
+    id settingsObserver_ = nil;
+    ProcessRunner testRunner_;  // Test CLI only; its read lane closes in stop()
+    dispatch_queue_t testQueue_ = nil;
 };
 
 Service *g_service = nullptr;  // main thread only
@@ -222,6 +330,22 @@ void serviceRefreshAfterCommand() {
 
 std::string serviceStatusLine() {
     return g_service != nullptr ? g_service->statusLine() : std::string("Stopped");
+}
+
+LoaderStatus serviceStatus() {
+    if (g_service != nullptr) return g_service->status();
+    LoaderStatus stopped;
+    stopped.state = LoaderState::Stopped;
+    return stopped;
+}
+
+void serviceTestCli(std::function<void(bool ok, const std::string &text)> completion) {
+    if (!completion) return;
+    if (g_service == nullptr) {
+        completion(false, "not running");
+        return;
+    }
+    g_service->testCli(std::move(completion));
 }
 
 } // namespace intake

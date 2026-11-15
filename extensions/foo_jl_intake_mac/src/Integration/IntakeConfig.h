@@ -7,21 +7,27 @@
 //  wrapped in try/catch: the store may be gone during shutdown
 //  (foo_jl_cloud_streamer_mac CloudConfig.mm).
 //
-//  B3 keys (no preferences page until B5; docs/hidden-options.md):
+//  On the preferences page (B5, IntakePreferencesController):
 //   - cli_path (string): the intake CLI. Empty, the default, means not
 //     configured: nothing runs and nothing is decorated.
 //   - bun_path (string): bun for a .ts CLI; empty: probed.
 //   - rules_dir (string): INTAKE_RULES_DIR for the CLI; empty: inherited.
+//   - watch_folders (string, B4): extra folders to watch for sidecar
+//     changes, one absolute path per line (IntakeSettingsParse
+//     parseWatchFolders); default empty.
+//   - swap_prefix_from / swap_prefix_to (strings): the library mapping, one
+//     prefix pair (NAS path prefix, Mac path prefix; PLAN.md decision 2).
+//     Stored and validated only (validatePrefixPair); Swap (B9) uses it.
 //   - log_level (int 0-2): Error, Info, Debug. Default 1 (2 in DEBUG builds).
+//  Hidden (docs/hidden-options.md):
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
-//   - watch_folders (string, B4): extra folders to watch for sidecar
-//     changes, one absolute path per line (IntakeWatchSet
-//     parseWatchFolders); default empty. The B5 preference edits it.
+//   - log_file (int, 0 or 1): mirror log lines to a file.
 //
-//  load() reads every key once (on_init, later the preferences page); the
-//  values are kept in memory by the caller and never read on the decorate
-//  path.
+//  load() reads every key: once in on_init, and again in IntakeService
+//  whenever the preferences page posts IntakeSettingsDidChangeNotification.
+//  The values are kept in memory by the caller and never read on the
+//  decorate path.
 //
 //  Thread-safety: configStore calls belong on the main thread.
 //
@@ -45,6 +51,8 @@ struct IntakeSettings {
     bool logFile = false;  // hidden: mirror log lines to ~/Library/Logs/foobar2000/jl_intake.log
     std::vector<std::string> watchFolders;        // absolute paths, in order
     std::vector<std::string> ignoredWatchFolders; // lines that were not absolute paths
+    std::string swapPrefixFrom;  // trimmed; validatePrefixPair decides if it is usable
+    std::string swapPrefixTo;
 };
 
 namespace config {
@@ -57,6 +65,13 @@ inline constexpr const char *kLogLevel = "log_level";
 inline constexpr const char *kDecorStats = "decor_stats";
 inline constexpr const char *kLogFile = "log_file";
 inline constexpr const char *kWatchFolders = "watch_folders";
+inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
+inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
+
+// The preferences page (Tools > Intake), for ui_control::show_preferences.
+// {B5B6AB95-DB13-45D9-A9F1-A85E014C08C8}
+inline constexpr GUID kPreferencesPageGuid = {
+    0xb5b6ab95, 0xdb13, 0x45d9, {0xa9, 0xf1, 0xa8, 0x5e, 0x01, 0x4c, 0x08, 0xc8}};
 
 // `key` without the prefix.
 int64_t getInt(const char *key, int64_t defaultValue);
@@ -67,8 +82,9 @@ void setString(const char *key, const std::string &value);
 // 1 (Info), or 2 (Debug) in DEBUG builds (PLAN.md 3.9).
 int defaultLogLevel();
 
-// Every key, with surrounding whitespace trimmed from the strings,
-// log_level clamped to 0-2 and watch_folders split into lines.
+// Every key, with surrounding whitespace trimmed from the strings
+// (trimmedSetting), log_level clamped to 0-2 and watch_folders split into
+// lines (parseWatchFolders).
 IntakeSettings load();
 
 } // namespace config

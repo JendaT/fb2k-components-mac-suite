@@ -31,7 +31,8 @@
 //     (cli.ts:1). Anything else is executed directly.
 //   - bun is the configured bun path when one is set, otherwise the first
 //     executable `bun` in the search directories (default ~/.bun/bin,
-//     /opt/homebrew/bin, /usr/local/bin). It is probed for every call, so a
+//     /opt/homebrew/bin, /usr/local/bin; IntakeSettingsParse findBun, which
+//     the preferences page shows too). It is probed for every call, so a
 //     non-.ts CLI with a bun shebang finds it on PATH too. A configured bun
 //     path that is not an executable file is an error (NoCli) only for a .ts
 //     CLI; any other CLI does not need bun, so it is ignored and bun probed.
@@ -66,6 +67,8 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include "IntakeSettingsParse.h"  // defaultBunSearchDirs, findBun, isExecutableFile
 
 namespace intake {
 
@@ -157,10 +160,6 @@ struct CliInvocation {
 // A copy of this process's environment, "NAME=value" each. Reads `environ`,
 // so call it on the main thread (at init), never on a worker queue.
 std::vector<std::string> processEnvironmentSnapshot();
-
-// ~/.bun/bin (from HOME in `environment`, skipped when HOME is unset or not
-// absolute), /opt/homebrew/bin, /usr/local/bin.
-std::vector<std::string> defaultBunSearchDirs(const std::vector<std::string> &environment);
 
 // Request checks first (Refused, including Resume on a CLI older than
 // 0.2.1), then the configuration (NoCli).

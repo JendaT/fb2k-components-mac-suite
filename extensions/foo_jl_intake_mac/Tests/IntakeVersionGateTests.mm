@@ -8,6 +8,7 @@
 //  runs with INTAKE_MOCK_STATE in a fresh temp directory.
 //
 // TEST_DEPS: src/Core/IntakeCapabilities.mm src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeEnvelope.mm
 //
 

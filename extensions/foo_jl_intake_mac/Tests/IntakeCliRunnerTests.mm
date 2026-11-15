@@ -15,7 +15,7 @@
 //
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
 // TEST_DEPS: src/Core/IntakeProcess.mm src/Core/IntakeLog.mm src/Core/IntakeSemver.mm
-// TEST_DEPS: src/Core/IntakeCapabilities.mm
+// TEST_DEPS: src/Core/IntakeCapabilities.mm src/Core/IntakeSettingsParse.mm
 //
 
 #import <Foundation/Foundation.h>

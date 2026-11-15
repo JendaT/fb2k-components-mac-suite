@@ -86,6 +86,20 @@ void appendUnique(std::vector<std::string> &into, const std::vector<std::string>
     }
 }
 
+// The parent folder of every root, lexically clean, sorted, each once.
+std::vector<std::string> rootFoldersOf(const std::shared_ptr<const IntakeSnapshot> &snapshot) {
+    std::vector<std::string> out;
+    if (!snapshot) return out;
+    out.reserve(snapshot->size());
+    for (const IntakeRecord &rec : snapshot->records()) {
+        std::string parent = parentDirectory(lexicalAbsolutePath(rec.rootPath));
+        if (!parent.empty()) out.push_back(std::move(parent));
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 const char *stopName(MemberLoadStop stop) {
     switch (stop) {
         case MemberLoadStop::None: return "none";
@@ -117,6 +131,9 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     std::atomic<bool> stopped{false};  // also the member load's cancel flag
 
     // Loader queue only.
+    // Bumped by reconfigure(): a CLI result or timer of an older generation
+    // belongs to the previous settings and is discarded.
+    uint64_t generation = 0;
     bool loading = false;
     bool again = false;
     bool againRecheck = false;
@@ -133,6 +150,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     // B4, loader queue only.
     std::vector<MountEntry> mountEntries;     // the last table read (remount or watch set)
     std::vector<std::string> incomePaths;     // the last good `income` call
+    std::vector<IncomeFolder> incomeFolders;  // the same call, for the status (B5)
+    bool incomeOffered = false;               // the last passing `version` listed `income`
     WatchSet watchSet;                        // the last one built
     std::vector<std::string> watchInputs;     // the candidates it was built from
     bool watchBuilt = false;
@@ -161,9 +180,15 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         s.roots = lastGood ? lastGood->size() : 0;
         s.error = std::move(error);
         s.partialErrors = partialErrors;
-        std::lock_guard<std::mutex> lock(statusMutex);
-        if (status.state == LoaderState::Stopped) return;
-        status = std::move(s);
+        s.incomeOffered = incomeOffered;
+        s.incomeFolders = incomeFolders;
+        s.rootFolders = rootFoldersOf(lastGood);
+        {
+            std::lock_guard<std::mutex> lock(statusMutex);
+            if (status.state == LoaderState::Stopped) return;
+            status = s;
+        }
+        if (settings.onStatusChanged) settings.onStatusChanged(s);
     }
 
     LoaderStatus currentStatus() const {
@@ -248,10 +273,15 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         CliRunOptions options;
         options.limits = settings.limits;
         std::shared_ptr<Impl> self = shared_from_this();
+        const uint64_t gen = generation;
         std::string refusal;
         const bool started = startCliCommand(
             runner, settings.cli, request, options, queue, nullptr,
-            [self, step](CliResult &&result) {
+            [self, step, gen](CliResult &&result) {
+                if (gen != self->generation) {
+                    self->discardStale(result);
+                    return;
+                }
                 if (step == LoadStep::Version) {
                     self->onVersion(std::move(result));
                 } else {
@@ -284,13 +314,24 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         gateFailed = false;
         logDebug("version: cli " + (gate.info.cli.empty() ? std::string("(none)") : gate.info.cli) +
                  ", schema 1" + (gate.info.hasCommands ? ", commands listed" : ", no commands list"));
-        if (cliSupportsCommand(gate.info, CliCommand::Income)) {
+        incomeOffered = cliSupportsCommand(gate.info, CliCommand::Income);
+        if (incomeOffered) {
             startIncomeCall();
         } else {
             if (!incomePaths.empty()) logDebug("income: not offered by this CLI; no income folders watched");
             incomePaths.clear();
+            incomeFolders.clear();
             startCall(LoadStep::Status);
         }
+    }
+
+    // A result of a load started before reconfigure(): its settings are
+    // gone. The load ends here; the "reload again" flag reconfigure() set
+    // starts the next one.
+    void discardStale(const CliResult &r) {
+        logCall(r);
+        logDebug(std::string(cliCommandName(r.command)) + ": discarded, the CLI settings changed");
+        finishLoad(false, false);
     }
 
     // `income --json` (read-only, so killable like status). Any failure is
@@ -301,10 +342,18 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         CliRunOptions options;
         options.limits = settings.limits;
         std::shared_ptr<Impl> self = shared_from_this();
+        const uint64_t gen = generation;
         std::string refusal;
         const bool started = startCliCommand(
             runner, settings.cli, request, options, queue, nullptr,
-            [self](CliResult &&result) { self->onIncome(std::move(result)); }, &refusal);
+            [self, gen](CliResult &&result) {
+                if (gen != self->generation) {
+                    self->discardStale(result);
+                    return;
+                }
+                self->onIncome(std::move(result));
+            },
+            &refusal);
         if (!started) {
             logError("income failed; watching the last known income folders: refused: " + refusal);
             startCall(LoadStep::Status);
@@ -324,6 +373,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
                 std::vector<std::string> paths;
                 for (const IncomeFolder &f : parsed.folders) paths.push_back(f.path);
                 incomePaths = std::move(paths);
+                incomeFolders = parsed.folders;
                 if (isLogEnabled(LogLevel::Debug)) {
                     logDebug("income: " + std::to_string(parsed.folders.size()) + " folder(s)" +
                              (parsed.skipped ? ", " + std::to_string(parsed.skipped) + " unusable entries skipped"
@@ -456,11 +506,12 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         if (parseRetryArmed) return;
         parseRetryArmed = true;
         std::weak_ptr<Impl> weak = shared_from_this();
+        const uint64_t gen = generation;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(NSEC_PER_SEC)), queue, ^{
             std::shared_ptr<Impl> self = weak.lock();
             if (!self) return;
             self->parseRetryArmed = false;
-            if (self->stopped) return;
+            if (self->stopped || gen != self->generation) return;
             appendUnique(self->pendingKeys, self->parseRetryKeys);
             self->parseRetryKeys.clear();
             self->pendingParseRetry = true;
@@ -524,7 +575,9 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         setStatus(LoaderState::Inert, reason);
     }
 
-    void finishLoad(bool notify) {
+    // `updateWatch` false: a load discarded after reconfigure(); its
+    // successor, already due, computes the set from the new settings.
+    void finishLoad(bool notify, bool updateWatch = true) {
         loading = false;
         if (stopped) return;
         if (!memberPassRan) {
@@ -536,7 +589,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         inFlightKeys.clear();
         inFlightFull = false;
         memberPassRan = false;
-        updateWatchSet();
+        if (updateWatch) updateWatchSet();
         if (notify && settings.onLoadFinished) settings.onLoadFinished(currentStatus());
         if (again) {
             again = false;
@@ -544,6 +597,51 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             againRecheck = false;
             startLoad();
         }
+    }
+
+    // --- settings (B5) ---
+
+    void applyReconfigure(CliConfig cli) {
+        if (stopped) return;
+        generation++;
+        cli.cliVersion.clear();
+        cli.cliListsCommands = false;
+        settings.cli = std::move(cli);
+        needVersion = true;
+        gateFailed = false;
+        everLoaded = false;
+        notConfiguredLogged = false;
+        incomeOffered = false;
+        incomeFolders.clear();
+        incomePaths.clear();
+        lastGood.reset();
+        pendingFull = true;
+        pendingKeys.clear();
+        parseRetryKeys.clear();
+        pendingParseRetry = false;
+        if (published) {
+            const bool shown = !published->rendersNothing();
+            publish(IntakeView::make(IntakeSnapshot::empty(), aliases), shown, PublishReason::Reconfigured);
+        }
+        logInfo(settings.cli.cliPath.empty() ? "CLI settings changed: no CLI path"
+                                             : "CLI settings changed: loading with the new settings");
+        if (loading) {
+            // The running call belongs to the old settings: kill it (read
+            // lane only), discard what it delivers, then load again.
+            again = true;
+            againRecheck = true;
+            runner.cancelReadLane();
+            setStatus(settings.cli.cliPath.empty() ? LoaderState::NotConfigured : LoaderState::Loading);
+            return;
+        }
+        startLoad();
+    }
+
+    void applyWatchFolders(std::vector<std::string> folders) {
+        if (stopped) return;
+        settings.watchFolders = std::move(folders);
+        // A running load recomputes the set when it finishes.
+        if (!loading) updateWatchSet();
     }
 
     // --- watch set ---
@@ -661,6 +759,22 @@ void IntakeLoader::remount() {
         // A mount change may move keys and folders: the next load lists all.
         impl->pendingFull = true;
         if (!impl->loading) impl->updateWatchSet();
+    });
+}
+
+void IntakeLoader::reconfigure(CliConfig cli) {
+    std::shared_ptr<Impl> impl = impl_;
+    auto config = std::make_shared<CliConfig>(std::move(cli));
+    dispatch_async(impl->queue, ^{
+        impl->applyReconfigure(std::move(*config));
+    });
+}
+
+void IntakeLoader::setWatchFolders(std::vector<std::string> folders) {
+    std::shared_ptr<Impl> impl = impl_;
+    auto list = std::make_shared<std::vector<std::string>>(std::move(folders));
+    dispatch_async(impl->queue, ^{
+        impl->applyWatchFolders(std::move(*list));
     });
 }
 
