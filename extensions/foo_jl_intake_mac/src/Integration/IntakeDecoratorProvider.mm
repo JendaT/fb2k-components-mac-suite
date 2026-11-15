@@ -2,128 +2,210 @@
 //  IntakeDecoratorProvider.mm
 //  foo_jl_intake
 //
-//  The intake system's jl_row_decorator_provider (intake doc 04, Part B) —
-//  the first real consumer of the Part A extension point.
+//  The intake system's jl_row_decorator_provider (intake doc 04, Part B).
+//  It answers from the IntakeView that the loader (IntakeService,
+//  IntakeLoader) publishes; it never runs the CLI or touches the filesystem.
 //
-//  SCAFFOLD STATE: this provider registers and honours the full API contract
-//  but has no state to decorate with yet. The root index is always empty, so
-//  every decorate() answers "no decoration" and every decorate_group() answers
-//  false. Installing the component therefore adds an empty 16 pt gutter to
-//  SimPlaylist and nothing else — provider PRESENCE is what enables the gutter
-//  (doc 04, Part A), not provider activity.
+//  decorate() (PLAN.md 3.2; jl_decorator_api.h threading contract): called
+//  off the main thread on one serial queue per SimPlaylist panel, possibly
+//  concurrently across panels. It copies the view's shared_ptr under a short
+//  lock, then per row, inside an autorelease pool: get_path ->
+//  IntakeNativePath (g_get_native_path inline for mac-volume://, other
+//  schemes no match) -> IntakeView::visualFor (normalize, mount alias,
+//  snapshot lookup) -> a copy into jl_row_decoration. No I/O, no CLI, no
+//  invalidate fired from here, so it returns promptly (v2's shutdown waits
+//  for in-flight batches). Before the first load there is no view and every
+//  row is answered empty, never pending: v2 commits a pending answer like an
+//  empty one, and the loader fires invalidate-all after its first load.
 //
-//  State acquisition (`intake version` gate, `intake status --json` load,
-//  FSEvents watch) is deliberately absent: it is blocked on doc 03 change
-//  requests CR-002.1 (is the status payload enveloped?) and CR-002.3 (which
-//  schema version does the gate compare against?). See
-//  docs/intake/CHANGE-REQUESTS.md. Building that parser against a guess would
-//  be rework, so the scaffold stops at the boundary.
+//  decorate_group returns false (group badges are B6); context_actions is
+//  empty (B6).
 //
-//  Threading (jl_decorator_api.h): decorate()/decorate_group() arrive off the
-//  main thread and may arrive CONCURRENTLY (one query queue per SimPlaylist
-//  panel), so all shared state lives behind m_stateMutex. Neither call may
-//  block: no I/O, no subprocess, no waiting on the main thread. Once the CLI
-//  bridge exists, a cache miss must answer pending=true and re-request after
-//  the invalidate callback rather than shelling out inline.
+//  decor_stats (hidden, docs/hidden-options.md): with it off, a batch pays
+//  one relaxed atomic load; with it on, each batch is timed and one
+//  cumulative line is logged (IntakeDecorStats).
 //
 
 #import "../fb2k_sdk.h"
-#import "../Core/IntakeRootIndex.h"
-#import "../../../../shared/jl_decorator_api.h"
+
+#include "IntakeDecoratorProvider.h"
+#include "IntakeNativePath.h"
+
+#include "../Core/IntakeDecorStats.h"
+#include "../Core/IntakeDecorationMap.h"
+#include "../Core/IntakeLog.h"
+#include "../Core/IntakeView.h"
+#include "../../../../shared/jl_decorator_api.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <vector>
 
+// IntakeIcon mirrors jl_icon_id value for value (append-only ABI), and a
+// visual's colours are jl_rgba_t, so the copy below is a plain cast.
+static_assert(sizeof(intake::IntakeRgba) == sizeof(jl_rgba_t), "IntakeRgba is jl_rgba_t");
+static_assert(sizeof(intake::IntakeIcon) == sizeof(jl_icon_id), "IntakeIcon has jl_icon_id's size");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::None) == jl_icon_none, "icon None");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::CircleOpen) == jl_icon_circle_open, "icon CircleOpen");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::CircleLeftHalf) == jl_icon_circle_left_half,
+              "icon CircleLeftHalf");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::CircleRightHalf) == jl_icon_circle_right_half,
+              "icon CircleRightHalf");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::CircleFilled) == jl_icon_circle_filled, "icon CircleFilled");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::Warning) == jl_icon_warning, "icon Warning");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::Cross) == jl_icon_cross, "icon Cross");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::Check) == jl_icon_check, "icon Check");
+static_assert(static_cast<uint32_t>(intake::IntakeIcon::ArrowRight) == jl_icon_arrow_right, "icon ArrowRight");
+
+namespace intake {
+
 namespace {
+
+struct ProviderState {
+    std::mutex viewMutex;
+    std::shared_ptr<const IntakeView> view;  // null until the first publish
+
+    std::mutex callbackMutex;
+    std::vector<jl_decoration_invalidate_callback *> callbacks;
+
+    std::atomic<bool> statsEnabled{false};
+    DecorStats stats;
+};
+
+// Leaked on purpose: no static destructor, so the host may still register,
+// unregister or be called back after on_quit and during process exit.
+ProviderState &providerState() {
+    static ProviderState *state = new ProviderState();
+    return *state;
+}
+
+std::shared_ptr<const IntakeView> currentView(ProviderState &state) {
+    std::lock_guard<std::mutex> lock(state.viewMutex);
+    return state.view;
+}
+
+void fireInvalidateAll(ProviderState &state) {
+    std::vector<jl_decoration_invalidate_callback *> callbacks;
+    {
+        std::lock_guard<std::mutex> lock(state.callbackMutex);
+        callbacks = state.callbacks;
+    }
+    state.stats.noteInvalidation();
+    if (isLogEnabled(LogLevel::Debug)) {
+        logDebug("invalidate-all to " + std::to_string(callbacks.size()) + " host panel(s)");
+    }
+    // Outside the lock: a host that re-enters the provider from its
+    // callback must not deadlock against registration.
+    metadb_handle_list everything;  // empty: everything from this provider changed
+    for (jl_decoration_invalidate_callback *cb : callbacks) {
+        cb->on_decorations_invalidated(everything);
+    }
+}
+
+void copyVisual(const IntakeRowVisual &visual, jl_row_decoration &out) {
+    out.bg_tint = visual.bgTint;
+    out.icon = static_cast<jl_icon_id>(visual.icon);
+    out.icon_color = visual.iconColor;
+    if (!visual.tooltip.empty()) out.tooltip.set_string(visual.tooltip.data(), visual.tooltip.size());
+    out.strikethrough = visual.strikethrough;
+    out.pending = false;
+}
 
 class intake_decorator_provider : public jl_row_decorator_provider {
 public:
-    void decorate(metadb_handle_list_cref items,
-                  pfc::list_t<jl_row_decoration> &out) override {
-        // Contract: out must be resized to items.get_count() and index-aligned;
-        // default-constructed entries mean "no decoration".
-        out.set_count(items.get_count());
+    void decorate(metadb_handle_list_cref items, pfc::list_t<jl_row_decoration> &out) override {
+        const t_size count = items.get_count();
+        // Contract: index-aligned with items, default entries mean "no
+        // decoration". Cleared first in case the host reuses the list.
+        out.remove_all();
+        out.set_count(count);
 
-        std::lock_guard<std::mutex> lock(m_stateMutex);
-        if (m_rootIndex.rootCount == 0) {
-            // Nothing indexed: every row is undecorated. Returning early keeps
-            // the empty case free of per-row work, mirroring the zero-provider
-            // guard on the host side.
-            return;
+        ProviderState &state = providerState();
+        const bool stats = state.statsEnabled.load(std::memory_order_relaxed);
+        const auto start = stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+
+        const std::shared_ptr<const IntakeView> view = currentView(state);
+        if (view && !view->rendersNothing()) {
+            pfc::string8 native;
+            ViewScratch scratch;
+            for (t_size i = 0; i < count; i++) {
+                @autoreleasepool {
+                    const metadb_handle_ptr handle = items[i];
+                    if (!handle.is_valid()) continue;
+                    const char *path = intakeNativePath(handle->get_path(), native);
+                    if (path == nullptr) continue;
+                    if (const IntakeRowVisual *visual = view->visualFor(path, scratch)) copyVisual(*visual, out[i]);
+                }
+            }
         }
-        // Per-row resolution lands here once state acquisition exists.
+
+        if (stats) {
+            const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - start)
+                                    .count();
+            state.stats.noteBatch(count, static_cast<uint64_t>(micros));
+            logInfo(DecorStats::formatLine(state.stats.figures()));
+        }
     }
 
-    bool decorate_group(const jl_group_key &key,
-                        metadb_handle_list_cref members,
+    bool decorate_group(const jl_group_key &key, metadb_handle_list_cref members,
                         jl_group_decoration &out) override {
         (void)key;
         (void)members;
         (void)out;
-        return false;  // No proposal badges until status data is loaded.
+        return false;  // group badges are B6
     }
 
-    void context_actions(metadb_handle_list_cref sel,
-                         pfc::list_t<jl_context_action> &out) override {
+    void context_actions(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out) override {
         (void)sel;
-        out.set_count(0);
-        // The doc 04 Part B menu (Propose / Assign to <alternates> / Approve /
-        // Execute / Delete local copy / Swap to library paths) attaches here.
-        // "Assign to <alternates>" additionally needs CR-002.2
-        // (proposal.ranked in the status summary) to avoid parsing sidecars.
+        out.remove_all();  // context actions are B6
     }
 
-    void execute_context_action(uint32_t action_id,
-                                metadb_handle_list_cref sel) override {
+    void execute_context_action(uint32_t action_id, metadb_handle_list_cref sel) override {
         (void)sel;
-        // No actions are offered yet, so anything arriving here is a host bug
-        // or a stale menu; log rather than fail silently.
-        FB2K_console_formatter()
-            << "[intake] unexpected context action " << (unsigned)action_id
-            << " (provider offers none in this build)";
+        // Nothing is offered, so a call here is a host bug or a stale menu.
+        logInfo("unexpected context action " + std::to_string(action_id) + " (this build offers none)");
     }
 
     void register_invalidate_callback(jl_decoration_invalidate_callback *cb) override {
         if (cb == nullptr) return;
-        std::lock_guard<std::mutex> lock(m_callbackMutex);
-        // Contract: multiple concurrent callbacks, one per host panel.
-        if (std::find(m_callbacks.begin(), m_callbacks.end(), cb) == m_callbacks.end()) {
-            m_callbacks.push_back(cb);
+        ProviderState &state = providerState();
+        std::lock_guard<std::mutex> lock(state.callbackMutex);
+        // Contract: several callbacks at once, one per host panel.
+        if (std::find(state.callbacks.begin(), state.callbacks.end(), cb) == state.callbacks.end()) {
+            state.callbacks.push_back(cb);
         }
     }
 
     void unregister_invalidate_callback(jl_decoration_invalidate_callback *cb) override {
-        std::lock_guard<std::mutex> lock(m_callbackMutex);
-        // Contract: tolerate a callback that was never registered.
-        m_callbacks.erase(std::remove(m_callbacks.begin(), m_callbacks.end(), cb),
-                          m_callbacks.end());
+        // Contract: tolerate a callback that was never registered; also
+        // works after on_quit (the state is never destroyed).
+        ProviderState &state = providerState();
+        std::lock_guard<std::mutex> lock(state.callbackMutex);
+        state.callbacks.erase(std::remove(state.callbacks.begin(), state.callbacks.end(), cb),
+                              state.callbacks.end());
     }
-
-private:
-    // Fires "everything changed" at every host panel. Unused until state
-    // acquisition lands; kept because the copy-then-invoke shape is the part
-    // that is easy to get wrong -- invoking under the lock would deadlock
-    // against a host that re-enters the provider from its callback.
-    void fireInvalidateAll() {
-        std::vector<jl_decoration_invalidate_callback *> callbacks;
-        {
-            std::lock_guard<std::mutex> lock(m_callbackMutex);
-            callbacks = m_callbacks;
-        }
-        metadb_handle_list empty;  // Empty list = invalidate everything.
-        for (auto *cb : callbacks) {
-            cb->on_decorations_invalidated(empty);
-        }
-    }
-
-    std::mutex m_stateMutex;
-    IntakeRootIndex *m_rootIndex = [[IntakeRootIndex alloc] init];
-
-    std::mutex m_callbackMutex;
-    std::vector<jl_decoration_invalidate_callback *> m_callbacks;
 };
 
 FB2K_SERVICE_FACTORY(intake_decorator_provider);
 
-}  // namespace
+} // anonymous namespace
+
+void providerPublish(std::shared_ptr<const IntakeView> view, bool invalidateAll, bool countAsLoad) {
+    ProviderState &state = providerState();
+    {
+        std::lock_guard<std::mutex> lock(state.viewMutex);
+        state.view.swap(view);
+    }
+    view.reset();  // the previous view, released outside the lock
+    if (countAsLoad) state.stats.noteLoad();
+    if (invalidateAll) fireInvalidateAll(state);
+}
+
+void providerSetStatsEnabled(bool enabled) {
+    providerState().statsEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+} // namespace intake

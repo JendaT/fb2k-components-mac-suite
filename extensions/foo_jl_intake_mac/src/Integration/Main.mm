@@ -6,8 +6,8 @@
 //  provider (intake doc 04, Part B).
 //
 //  This component has no layout element of its own in v1: it exists entirely
-//  through SimPlaylist decorations and context menu contributions, registered
-//  in IntakeDecoratorProvider.mm.
+//  through SimPlaylist decorations (IntakeDecoratorProvider.mm), fed by the
+//  loader that IntakeService.mm starts in on_init.
 //
 
 #import "../fb2k_sdk.h"
@@ -21,8 +21,8 @@ DECLARE_COMPONENT_VERSION(
     "Registers a row decorator provider that tints playlist rows by intake "
     "status and contributes intake actions to the context menu. All state is "
     "read from the intake CLI; this component mutates nothing directly.\n\n"
-    "SCAFFOLD BUILD: the provider registers but has no state source yet, so it "
-    "renders no decorations.\n\n"
+    "The CLI is set by the foo_jl_intake.cli_path setting (no preferences page "
+    "yet). While it is empty nothing runs and no row is decorated.\n\n"
     "MIT License - https://github.com/JendaT/fb2k-components-mac-suite"
 );
 
