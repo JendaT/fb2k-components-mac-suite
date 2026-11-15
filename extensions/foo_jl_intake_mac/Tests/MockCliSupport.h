@@ -293,6 +293,41 @@ inline int runSync(const std::vector<std::string> &argv, const std::vector<std::
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
+// Runs argv synchronously like runSync, with stdout captured through a file
+// in a fresh temp directory; returns the exit code, or -1.
+inline int runCapture(const std::vector<std::string> &argv, const std::vector<std::string> &env,
+                      std::string &stdoutText) {
+    stdoutText.clear();
+    std::string dir = newDir("capture");
+    if (dir.empty()) return -1;
+    std::string outPath = dir + "/stdout";
+    std::vector<std::string> a = argv, e = env;
+    std::vector<char *> av, ev;
+    for (std::string &s : a) av.push_back(&s[0]);
+    av.push_back(nullptr);
+    for (std::string &s : e) ev.push_back(&s[0]);
+    ev.push_back(nullptr);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&actions, 1, outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, a[0].c_str(), &actions, &attr, av.data(), ev.data());
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    if (rc != 0) return -1;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    stdoutText = readFile(outPath);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 // A fresh state directory with `scenario` set up, or "" on failure.
 inline std::string setupState(const std::string &scenario = "default") {
     std::string dir = newDir("state");

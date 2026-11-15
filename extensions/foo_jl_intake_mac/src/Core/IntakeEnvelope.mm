@@ -132,6 +132,21 @@ EnvelopeResult hostTimeout(std::string detail) {
     return host(CliOutcome::Timeout, kErrorCliTimeout, std::move(detail));
 }
 
+id parseJsonValue(std::string_view text) {
+    // A copy, so nothing the parser hands back can point into the caller's
+    // buffer.
+    NSData *bytes = [NSData dataWithBytes:text.data() length:text.size()];
+    // A second value or trailing text makes this fail: exactly one value.
+    id root = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:nil];
+    std::string repaired;
+    if (!root && replaceLoneSurrogates(text, repaired)) {
+        // Once more with the unpaired surrogates as U+FFFD (rule 1).
+        NSData *again = [NSData dataWithBytes:repaired.data() length:repaired.size()];
+        root = [NSJSONSerialization JSONObjectWithData:again options:0 error:nil];
+    }
+    return root;
+}
+
 EnvelopeResult parseEnvelope(std::string_view stdoutText, int exitCode) {
     // Rule 5 first: other exit codes say nothing usable, whatever stdout holds.
     if (exitCode != 0 && exitCode != 1 && exitCode != 2) {
@@ -142,18 +157,7 @@ EnvelopeResult parseEnvelope(std::string_view stdoutText, int exitCode) {
     if (text.empty()) return hostNoCli("empty stdout (exit " + std::to_string(exitCode) + ")");
 
     @autoreleasepool {
-        // A copy, so nothing the parser hands back can point into the
-        // caller's buffer.
-        NSData *bytes = [NSData dataWithBytes:text.data() length:text.size()];
-        NSError *error = nil;
-        // A second value or trailing text makes this fail: exactly one value.
-        id root = [NSJSONSerialization JSONObjectWithData:bytes options:0 error:&error];
-        std::string repaired;
-        if (!root && replaceLoneSurrogates(text, repaired)) {
-            // Once more with the unpaired surrogates as U+FFFD (rule 1).
-            NSData *again = [NSData dataWithBytes:repaired.data() length:repaired.size()];
-            root = [NSJSONSerialization JSONObjectWithData:again options:0 error:nil];
-        }
+        id root = parseJsonValue(text);
         if (!root) return hostNoCli("stdout is not one JSON value");
         if (![root isKindOfClass:[NSDictionary class]]) return hostNoCli("stdout is not a JSON object");
         NSDictionary *envelope = root;

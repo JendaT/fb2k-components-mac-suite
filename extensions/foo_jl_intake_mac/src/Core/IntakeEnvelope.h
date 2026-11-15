@@ -89,6 +89,13 @@ struct EnvelopeResult {
 // Rules 1 to 7 for a process that exited with `exitCode`.
 EnvelopeResult parseEnvelope(std::string_view stdoutText, int exitCode);
 
+// Exactly one JSON value (trailing text or a second value fails), with
+// unpaired \u surrogate escapes read as U+FFFD (rule 1), or nil. The text is
+// copied, so the result never points into the caller's buffer. Also used for
+// sidecars (IntakeSidecarMembers), which the same bun JSON.stringify writes.
+// Call inside an autorelease pool; the result is autoreleased.
+id _Nullable parseJsonValue(std::string_view text);
+
 // The runner's verdict first (timeout, cancel, spawn failure, signal,
 // truncation, unreadable output), then parseEnvelope.
 EnvelopeResult interpretProcessResult(const ProcessResult &result);
