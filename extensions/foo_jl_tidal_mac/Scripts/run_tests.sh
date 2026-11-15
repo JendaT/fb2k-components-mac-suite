@@ -95,6 +95,20 @@ clang++ "${OBJCXX_FLAGS[@]}" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/sync_planner_tests"
 
+echo "==> Compiling unit tests (FolderTreeWalker)..."
+clang++ "${OBJCXX_FLAGS[@]}" \
+    "$PROJECT_DIR/Tests/FolderTreeWalkerTests.mm" \
+    "$PROJECT_DIR/src/Core/FolderTreeWalker.mm" \
+    "$PROJECT_DIR/src/Core/ResponseParser.mm" \
+    "$PROJECT_DIR/src/Core/SyncPlanner.mm" \
+    "$PROJECT_DIR/src/Core/TidalModels.mm" \
+    "$PROJECT_DIR/src/Core/ManifestParser.mm" \
+    "$PROJECT_DIR/src/API/TidalSession.mm" \
+    "$PROJECT_DIR/src/Core/TidalErrors.mm" \
+    "$PROJECT_DIR/src/Core/TidalLog.mm" \
+    -framework Foundation \
+    -o "$TEST_BUILD_DIR/folder_tree_walker_tests"
+
 echo "==> Compiling unit tests (LibraryLayout)..."
 clang++ "${OBJCXX_FLAGS[@]}" \
     "$PROJECT_DIR/Tests/LibraryLayoutTests.mm" \
@@ -143,6 +157,7 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/tidal_session_tests"
 "$TEST_BUILD_DIR/response_parser_tests"
 "$TEST_BUILD_DIR/sync_planner_tests"
+"$TEST_BUILD_DIR/folder_tree_walker_tests"
 "$TEST_BUILD_DIR/browser_logic_tests"
 "$TEST_BUILD_DIR/dash_cache_policy_tests"
 "$TEST_BUILD_DIR/library_layout_tests"

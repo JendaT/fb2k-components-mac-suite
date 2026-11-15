@@ -13,6 +13,7 @@
 #import "TidalConfig.h"
 #import "TidalModels.h"
 #import "SyncPlanner.h"
+#import "FolderTreeWalker.h"
 #import "URLUtils.h"
 #import "../API/TidalAPI.h"
 #import "../Integration/TidalPlaylistLock.h"
@@ -103,20 +104,20 @@ static NSString * const kSyncMapKey = @"foo_tidal.sync_map";
         dispatch_group_leave(group);
     }];
 
-    // Fetch folders (v2). NOT an acceptable fallback to treat as empty: local
-    // names embed the folder path, so an empty folder list renames every
-    // foldered playlist to a flat "TIDAL > X" and the planner then proposes
-    // Delete for every local name that no longer appears -- exactly the
+    // Fetch the folder tree (v2). NOT an acceptable fallback to treat as
+    // empty: local names embed the folder path, so an empty or cut-off tree
+    // moves every foldered playlist back to a flat "TIDAL > X" -- exactly the
     // "a failed fetch is never an empty collection" rule stated three lines
-    // below for favourites.
+    // below for favourites. The walker fails the whole fetch on any
+    // incomplete listing.
     dispatch_group_enter(group);
-    [[JLTidalAPI shared] getPlaylistFoldersWithCompletion:^(NSArray<JLTidalPlaylistFolder *> *result, NSError *error) {
+    [[JLTidalAPI shared] getPlaylistFolderTreeWithCompletion:^(JLTidalFolderTree *tree, NSError *error) {
         if (error) {
             tidal::logError([[NSString stringWithFormat:@"PlaylistSync: folder fetch failed: %@",
                               error.localizedDescription] UTF8String]);
             foldersError = error;
         }
-        folders = result ?: @[];
+        folders = tree.folders ?: @[];
         dispatch_group_leave(group);
     }];
 

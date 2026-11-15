@@ -343,52 +343,40 @@ static NSString *stringIDFromValue(id value) {
 
 @implementation JLTidalPlaylistFolder
 
-- (instancetype)initWithDictionary:(NSDictionary *)dict {
+- (instancetype)initWithFolderID:(NSString *)folderID name:(NSString *)name {
     self = [super init];
     if (self) {
-        // v2 API uses "trn" like "trn:folder:uuid" or just "id"
-        NSString *trn = dict[@"trn"];
-        if ([trn isKindOfClass:[NSString class]] && trn.length > 0) {
-            // Extract UUID from TRN format "trn:folder:{uuid}"
-            NSArray *parts = [trn componentsSeparatedByString:@":"];
-            _folderID = parts.lastObject ?: trn;
-        } else {
-            _folderID = stringIDFromValue(dict[@"id"]) ?: [[NSUUID UUID] UUIDString];
-        }
-
-        id name = dict[@"name"];
-        _name = [name isKindOfClass:[NSString class]] ? name : @"Untitled Folder";
-        id parentID = dict[@"parentFolderId"];
-        if ([parentID isKindOfClass:[NSString class]]) _parentFolderID = parentID;
+        _folderID = [folderID copy];
+        _name = [name copy];
         _subfolders = [NSMutableArray array];
         _playlistUUIDs = [NSMutableArray array];
-
-        // Parse nested items if present
-        NSArray *items = dict[@"items"];
-        if ([items isKindOfClass:[NSArray class]]) {
-            for (NSDictionary *item in items) {
-                if (![item isKindOfClass:[NSDictionary class]]) continue;
-                id type = item[@"type"];
-                if (![type isKindOfClass:[NSString class]]) continue;
-                if ([type isEqualToString:@"FOLDER"]) {
-                    JLTidalPlaylistFolder *subfolder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
-                    if (subfolder) {
-                        [_subfolders addObject:subfolder];
-                    }
-                } else if ([type isEqualToString:@"PLAYLIST"]) {
-                    NSDictionary *data = item[@"data"];
-                    if (![data isKindOfClass:[NSDictionary class]]) continue;
-                    id rawUUID = data[@"uuid"];
-                    NSString *uuid = [rawUUID isKindOfClass:[NSString class]]
-                        ? rawUUID : stringIDFromValue(data[@"id"]);
-                    if (uuid.length > 0) {
-                        [_playlistUUIDs addObject:uuid];
-                    }
-                }
-            }
-        }
     }
     return self;
+}
+
+- (instancetype)initWithDictionary:(NSDictionary *)dict {
+    // Live shape (docs/research/2026-11-14-v2-folders-redirect.md): the item
+    // carries itemType, trn, name, parent and data{id, name, ...}. There is
+    // no "type" key and no nested "items" -- each level is its own listing.
+    NSDictionary *data = [dict[@"data"] isKindOfClass:[NSDictionary class]] ? dict[@"data"] : nil;
+
+    NSString *folderID = stringIDFromValue(data[@"id"]);
+    if (folderID.length == 0) {
+        // "trn:folder:<id>"
+        id trn = dict[@"trn"];
+        if (JLTidalIsString(trn)) {
+            NSRange colon = [(NSString *)trn rangeOfString:@":" options:NSBackwardsSearch];
+            folderID = colon.location == NSNotFound
+                ? nil : [(NSString *)trn substringFromIndex:NSMaxRange(colon)];
+        }
+    }
+    if (folderID.length == 0) return nil;
+
+    id name = data[@"name"];
+    if (!JLTidalIsString(name) || [name length] == 0) name = dict[@"name"];
+    if (!JLTidalIsString(name) || [name length] == 0) name = @"Untitled Folder";
+
+    return [self initWithFolderID:folderID name:name];
 }
 
 @end

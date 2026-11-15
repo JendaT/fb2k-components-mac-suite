@@ -52,14 +52,13 @@ static void testNaming(void) {
 }
 
 static void testFolderPaths(void) {
-    JLTidalPlaylistFolder *root = [[JLTidalPlaylistFolder alloc] initWithDictionary:@{
-        @"id": @"f1", @"name": @"Moods",
-        @"items": @[
-            @{@"type": @"FOLDER", @"id": @"f2", @"name": @"Evening",
-              @"items": @[@{@"type": @"PLAYLIST", @"data": @{@"uuid": @"pl-deep"}}]},
-            @{@"type": @"PLAYLIST", @"data": @{@"uuid": @"pl-top"}},
-        ],
-    }];
+    // The shape JLTidalFolderTreeWalker builds: one folder per listing, with
+    // subfolders and playlists attached as each folder is listed.
+    JLTidalPlaylistFolder *root = [[JLTidalPlaylistFolder alloc] initWithFolderID:@"f1" name:@"Moods"];
+    JLTidalPlaylistFolder *evening = [[JLTidalPlaylistFolder alloc] initWithFolderID:@"f2" name:@"Evening"];
+    [evening.playlistUUIDs addObject:@"pl-deep"];
+    [root.subfolders addObject:evening];
+    [root.playlistUUIDs addObject:@"pl-top"];
 
     NSDictionary *paths = [Planner folderPathsForFolders:@[root]];
     CHECK_STREQ(paths[@"f1"], @"Moods", "root folder path");
