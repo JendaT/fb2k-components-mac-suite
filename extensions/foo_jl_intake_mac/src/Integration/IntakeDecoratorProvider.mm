@@ -178,10 +178,31 @@ public:
     void register_invalidate_callback(jl_decoration_invalidate_callback *cb) override {
         if (cb == nullptr) return;
         ProviderState &state = providerState();
-        std::lock_guard<std::mutex> lock(state.callbackMutex);
-        // Contract: several callbacks at once, one per host panel.
-        if (std::find(state.callbacks.begin(), state.callbacks.end(), cb) == state.callbacks.end()) {
-            state.callbacks.push_back(cb);
+        bool added = false;
+        {
+            std::lock_guard<std::mutex> lock(state.callbackMutex);
+            // Contract: several callbacks at once, one per host panel.
+            if (std::find(state.callbacks.begin(), state.callbacks.end(), cb) == state.callbacks.end()) {
+                state.callbacks.push_back(cb);
+                added = true;
+            }
+        }
+        // A panel that registers after a view was published missed that
+        // publish's invalidate-all. SimPlaylist v2 registers before it
+        // decorates, so nothing is stale there, but the API does not promise
+        // that order: send this one callback an invalidate-all, off the
+        // registering call, if it is still registered by then.
+        if (added && currentView(state) != nullptr) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                ProviderState &s = providerState();
+                {
+                    std::lock_guard<std::mutex> lock(s.callbackMutex);
+                    if (std::find(s.callbacks.begin(), s.callbacks.end(), cb) == s.callbacks.end()) return;
+                }
+                logDebug("invalidate-all to a host panel that registered after the last publish");
+                metadb_handle_list everything;
+                cb->on_decorations_invalidated(everything);
+            });
         }
     }
 
