@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <climits>
-#include <cstdlib>
+#include <deque>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <unordered_set>
 
 namespace intake {
@@ -50,25 +52,31 @@ std::string keyFor(const std::string &path) {
     return key;
 }
 
-// realpath of `path`, or of its deepest existing ancestor with the rest
-// appended as written. `path` is lexically clean and absolute.
-std::string resolveWithAncestors(const std::string &path, const PathResolver &resolve) {
-    std::string head = path;
-    std::string tail;
-    while (true) {
-        std::string resolved;
-        if (resolve(head, resolved) && !resolved.empty() && resolved[0] == '/') {
-            if (tail.empty()) return resolved;
-            if (resolved.back() != '/') resolved += '/';
-            return resolved + tail;
-        }
-        if (head == "/") return path;
-        const std::string parent = parentDirectory(head);
-        if (parent.empty()) return path;
-        const std::string name = head.substr(parent == "/" ? 1 : parent.size() + 1);
-        tail = tail.empty() ? name : name + "/" + tail;
-        head = parent;
+constexpr int kMaxSymlinks = 32;  // MAXSYMLINKS
+constexpr std::string_view kDataVolume = "/System/Volumes/Data";
+
+// The '/'-separated parts of `path`, empty ones dropped.
+void appendParts(std::string_view path, std::deque<std::string> &into, bool front) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (start <= path.size()) {
+        size_t end = path.find('/', start);
+        if (end == std::string_view::npos) end = path.size();
+        if (end > start) parts.emplace_back(path.substr(start, end - start));
+        start = end + 1;
     }
+    if (front) {
+        into.insert(into.begin(), parts.begin(), parts.end());
+    } else {
+        into.insert(into.end(), parts.begin(), parts.end());
+    }
+}
+
+std::string joinPath(const std::string &directory, std::string_view name) {
+    std::string out = directory;
+    if (out.empty() || out.back() != '/') out += '/';
+    out.append(name.data(), name.size());
+    return out;
 }
 
 } // anonymous namespace
@@ -139,14 +147,30 @@ bool isNetworkMount(const MountEntry &mount) {
 }
 
 const MountEntry *mountHolding(std::string_view path, const std::vector<MountEntry> &mounts) {
+    // Both sides as IntakePath keys (NFC), as MountAliases::build does: an
+    // NFD mount point must still hold the NFC spelling of a path under it.
+    std::string pathKey;
+    if (normalizePath(path, pathKey) != PathStatus::Ok) return nullptr;
     const MountEntry *best = nullptr;
     size_t bestLength = 0;
+    std::string point;
     for (const MountEntry &m : mounts) {
-        const std::string point = lexicalAbsolutePath(m.mountPoint);
-        if (point.empty() || !isUnderIgnoringCase(path, point)) continue;
-        if (!best || point.size() > bestLength) {
+        if (normalizePath(m.mountPoint, point) != PathStatus::Ok) continue;
+        size_t length = 0;
+        if (isUnderIgnoringCase(pathKey, point)) {
+            length = point.size();
+        } else if (point.size() > kDataVolume.size() + 1 && isUnderIgnoringCase(point, kDataVolume)) {
+            // A mount on the Data volume also holds its firmlinked spelling
+            // (/System/Volumes/Data/home is /home).
+            const std::string_view firmlinked = std::string_view(point).substr(kDataVolume.size());
+            if (isUnderIgnoringCase(pathKey, firmlinked)) length = firmlinked.size();
+        }
+        if (length == 0) continue;
+        // ">=": of two mounts on one point the later one is stacked on top
+        // (getmntinfo lists in mount order), as in MountAliases.
+        if (!best || length >= bestLength) {
             best = &m;
-            bestLength = point.size();
+            bestLength = length;
         }
     }
     return best;
@@ -157,11 +181,63 @@ bool mayResolvePath(std::string_view path, const std::vector<MountEntry> &mounts
     return m != nullptr && !isNetworkMount(*m);
 }
 
-bool realPathResolver(const std::string &path, std::string &resolved) {
+LinkCheck posixLinkReader(const std::string &path, std::string &target) {
+    target.clear();
+    struct stat st;
+    if (::lstat(path.c_str(), &st) != 0) return LinkCheck::Missing;
+    if (!S_ISLNK(st.st_mode)) return LinkCheck::NotLink;
     char buffer[PATH_MAX];
-    if (::realpath(path.c_str(), buffer) == nullptr) return false;
-    resolved = buffer;
-    return true;
+    const ssize_t n = ::readlink(path.c_str(), buffer, sizeof buffer);
+    if (n <= 0 || static_cast<size_t>(n) >= sizeof buffer) return LinkCheck::Missing;
+    target.assign(buffer, static_cast<size_t>(n));
+    return LinkCheck::Link;
+}
+
+std::string resolveLocalPath(const std::string &path, const std::vector<MountEntry> &mounts,
+                             const LinkReader &readLink, bool *touched) {
+    if (touched) *touched = false;
+    if (!readLink || path.empty() || path[0] != '/') return path;
+    std::deque<std::string> todo;
+    appendParts(path, todo, false);
+    // Resolved so far: no symlink in it, every component examined locally,
+    // so ".." is its physical parent.
+    std::string done = "/";
+    int links = 0;
+    while (!todo.empty()) {
+        std::string name = std::move(todo.front());
+        todo.pop_front();
+        if (name == ".") continue;
+        if (name == "..") {
+            const std::string parent = parentDirectory(done);
+            if (!parent.empty()) done = parent;
+            continue;
+        }
+        const std::string next = joinPath(done, name);
+        // Under a network mount, or under none known: not one lstat there.
+        if (!mayResolvePath(next, mounts)) {
+            todo.push_front(std::move(name));
+            break;
+        }
+        std::string target;
+        const LinkCheck check = readLink(next, target);
+        if (touched) *touched = true;
+        if (check == LinkCheck::NotLink) {
+            done = next;
+            continue;
+        }
+        if (check == LinkCheck::Missing || target.empty() || ++links > kMaxSymlinks) {
+            todo.push_front(std::move(name));
+            if (links > kMaxSymlinks) return path;  // a loop: as written
+            break;
+        }
+        // The link's text replaces it; a relative one is read from `done`.
+        if (target[0] == '/') done = "/";
+        appendParts(target, todo, true);
+    }
+    std::string out = done;
+    for (const std::string &name : todo) out = joinPath(out, name);
+    const std::string clean = lexicalAbsolutePath(out);
+    return clean.empty() ? path : clean;
 }
 
 std::vector<std::string> watchCandidates(const std::vector<std::string> &configured,
@@ -180,7 +256,7 @@ std::vector<std::string> watchCandidates(const std::vector<std::string> &configu
 }
 
 WatchSet WatchSet::build(const std::vector<std::string> &candidates, const std::vector<MountEntry> &mounts,
-                         const PathResolver &resolve) {
+                         const LinkReader &readLink) {
     WatchSet set;
     set.entries_.reserve(candidates.size());
     for (const std::string &candidate : candidates) {
@@ -188,10 +264,8 @@ WatchSet WatchSet::build(const std::vector<std::string> &candidates, const std::
         e.original = lexicalAbsolutePath(candidate);
         if (e.original.empty() || e.original == "/") continue;
         e.fsPath = e.original;
-        if (resolve && mayResolvePath(e.original, mounts)) {
-            e.fsPath = lexicalAbsolutePath(resolveWithAncestors(e.original, resolve));
-            if (e.fsPath.empty()) e.fsPath = e.original;
-            e.resolved = true;
+        if (readLink && mayResolvePath(e.original, mounts)) {
+            e.fsPath = resolveLocalPath(e.original, mounts, readLink, &e.resolved);
         }
         if (e.fsPath == "/") continue;
         e.originalKey = keyFor(e.original);

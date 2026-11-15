@@ -17,6 +17,8 @@
 //   - applyMountAliases: re-derives every record's rootKey from its rootPath
 //     through the alias table, at load and when the mount table changes.
 //   - remountChangesRows: the invalidation diff of a mount table change.
+//   - carryOverUnreadable: a partial `status` that could not read a sidecar
+//     keeps the last record of that root (PLAN.md 3.5, risk 7).
 //   - The status line for the preferences page (B5) and the log, and the
 //     Debug line naming the rules source.
 //
@@ -76,6 +78,27 @@ void applyMountAliases(std::vector<IntakeRecord> &records, const MountAliases &a
 // e.g. a share that holds no root mounting or unmounting.
 bool remountChangesRows(const IntakeSnapshot &oldSnapshot, const MountAliases &before,
                         const IntakeSnapshot &newSnapshot, const MountAliases &after);
+
+// A partial `status` (exit 1) leaves out each root whose sidecar it could
+// not read, with an E_PARSE error naming the sidecar in `path` (CLI
+// commands.ts cmdStatus). Sidecar writes are not atomic, so a load that
+// runs while a CLI run writes can catch one half written; dropping the
+// root would untint its rows and invalidate everything twice (drop, then
+// return). So for each E_PARSE whose path ends in a sidecar name
+// (IntakeWatchFilter's rule), every record of `previous` it names that
+// `records` lacks (by id) is appended to `records` (a relative path names
+// nothing):
+//   - ".intake.<id>.json": the previous record with that id (ASCII case
+//     ignored);
+//   - ".intake.json": the previous records whose root path is the
+//     sidecar's folder (compared as IntakePath keys).
+// Other errors and paths are left alone.
+struct UnreadableSidecars {
+    std::vector<std::string> directories;  // each named sidecar's folder, as the CLI spelled it, each once
+    std::vector<std::string> carriedIds;   // the records appended
+};
+UnreadableSidecars carryOverUnreadable(std::vector<IntakeRecord> &records, const std::vector<CliError> &errors,
+                                       const std::vector<IntakeRecord> &previous);
 
 enum class LoaderState {
     NotConfigured, // no CLI path: nothing runs, nothing renders (not an error)

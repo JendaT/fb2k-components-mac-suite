@@ -73,9 +73,12 @@ Default: empty.
 The component always watches the income folders that `intake income --json`
 lists (CLI 0.3.0 and later) and the parent folder of every known root; this
 key adds to them. Watching is FSEvents, recursive, with no polling. A change
-to a sidecar (`.intake.json`, `.intake.<id>.json`) made through this Mac,
-Terminal runs included, reloads the colours about 2 s later. Changes made on
-the NAS itself are not reported by macOS and need Refresh (B6) or a mount
+to a sidecar (`.intake.json`, `.intake.<id>.json`), or a folder renamed,
+moved or trashed under a watched folder, made through this Mac, Terminal
+runs included, reloads the colours about 2 s later. Each time a watch stream
+starts on a folder no stream watched before (startup, a new folder, a mount
+event), one more reload catches up on changes made before it. Changes made
+on the NAS itself are not reported by macOS and need Refresh (B6) or a mount
 event.
 
 ```bash
@@ -87,7 +90,8 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 At `log_level` 1 the console shows `[intake] watching N folder(s) for sidecar
 changes` whenever the watch set changes; at 2 also the folders (`watch: ...`)
-and one line per change batch (`watch: sidecar changes in N folder(s) ...`).
+and one line per change batch (`watch: changes in N folder(s) ...`, or
+`watch: a stream started, catching up`).
 
 ## foo_jl_intake.decor_stats
 

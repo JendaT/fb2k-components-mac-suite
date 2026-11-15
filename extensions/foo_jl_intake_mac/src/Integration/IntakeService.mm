@@ -145,6 +145,8 @@ public:
     }
 
     void reload(bool recheckVersion) {
+        // Refresh is the user's way back from a volume the guard marked.
+        if (resetSlowVolumes("refresh")) providerInvalidateAll();
         if (loader_) loader_->reload(recheckVersion);
     }
 
@@ -170,7 +172,10 @@ private:
 Service *g_service = nullptr;  // main thread only
 
 void Service::volumesChanged() {
-    resetSlowVolumes();
+    // Rows of a volume the guard marked were answered empty and the host
+    // cached that; a reload that finds nothing changed would not repaint
+    // them.
+    if (resetSlowVolumes("mount change")) providerInvalidateAll();
     if (g_service == nullptr || !g_service->loader_) return;
     g_service->loader_->remount();
     g_service->loader_->reload(false);

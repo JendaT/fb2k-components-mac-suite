@@ -24,10 +24,39 @@ std::atomic<size_t> g_liveStreams{0};
 // Set on the watcher's queue so stop() can tell it is running there.
 const void *const kWatcherQueueKey = &kWatcherQueueKey;
 
+// RootChanged is not listed: it arrives only with
+// kFSEventStreamCreateFlagWatchRoot, which this stream does not use (see
+// the header). A watched folder that moves is a directory event instead.
 constexpr FSEventStreamEventFlags kRescanFlags =
     kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped |
-    kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount |
-    kFSEventStreamEventFlagUnmount;
+    kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount;
+
+// A directory renamed, moved or removed. FSEvents keeps item flags sticky
+// for a while, so a later event on the same folder may repeat them: at
+// worst one more coalesced load.
+constexpr FSEventStreamEventFlags kDirectoryMoveFlags =
+    kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemRemoved;
+
+// `path` equals `base` or lies under it ('/' boundary), byte-exact.
+bool coveredBy(const std::string &path, const std::string &base) {
+    if (path.size() < base.size() || path.compare(0, base.size(), base) != 0) return false;
+    return path.size() == base.size() || path[base.size()] == '/' || base == "/";
+}
+
+// Some path of `next` lies under no path of `previous`.
+bool addsUncoveredPath(const std::vector<std::string> &next, const std::vector<std::string> &previous) {
+    for (const std::string &p : next) {
+        bool covered = false;
+        for (const std::string &q : previous) {
+            if (coveredBy(p, q)) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered) return true;
+    }
+    return false;
+}
 
 void streamCallback(ConstFSEventStreamRef stream, void *info, size_t count, void *paths,
                     const FSEventStreamEventFlags flags[], const FSEventStreamEventId ids[]);
@@ -59,6 +88,7 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
 
     // Queue only.
     FSEventStreamRef stream = nullptr;
+    std::vector<FSEventStreamRef> retiring;  // replaced, flushed, released after a delay
     std::vector<std::string> paths;
     DebounceWindow window;
     WatchBatchBuilder builder;
@@ -134,15 +164,40 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
                  " folder(s); sidecar changes need Refresh until the next watch change");
     }
 
-    void releaseStream() {
-        if (!stream) return;
-        FSEventStreamStop(stream);
-        FSEventStreamInvalidate(stream);
-        FSEventStreamRelease(stream);
-        stream = nullptr;
+    static void destroyStream(FSEventStreamRef s) {
+        FSEventStreamStop(s);
+        FSEventStreamInvalidate(s);
+        FSEventStreamRelease(s);
         g_liveStreams.fetch_sub(1);
+    }
+
+    // Every stream, the current one and the retiring ones (stop(), the
+    // destructor).
+    void releaseStream() {
+        for (FSEventStreamRef s : retiring) destroyStream(s);
+        retiring.clear();
+        if (!stream) return;
+        destroyStream(stream);
+        stream = nullptr;
         std::lock_guard<std::mutex> lock(statsMutex);
         stats.streamRunning = false;
+    }
+
+    // A replaced stream: flushed now, so what sits in its latency buffer is
+    // delivered, and released once that had time to arrive.
+    void retireStream(FSEventStreamRef old) {
+        FSEventStreamFlushAsync(old);
+        retiring.push_back(old);
+        const double delay = options.latencySeconds + 0.5;
+        std::weak_ptr<Impl> weak = shared_from_this();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delay * NSEC_PER_SEC)), queue, ^{
+            std::shared_ptr<Impl> self = weak.lock();
+            if (!self) return;
+            auto it = std::find(self->retiring.begin(), self->retiring.end(), old);
+            if (it == self->retiring.end()) return;  // stop() released it already
+            self->retiring.erase(it);
+            destroyStream(old);
+        });
     }
 
     void applyPaths(std::vector<std::string> next, bool force) {
@@ -151,17 +206,27 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
         next.erase(std::unique(next.begin(), next.end()), next.end());
         const bool same = next == paths && (stream != nullptr || paths.empty());
         if (same && !force) return;
-        releaseStream();
+        // A folder the old stream did not watch may have changed unseen.
+        const bool catchUp = force || stream == nullptr || addsUncoveredPath(next, paths);
+        FSEventStreamRef previous = stream;
+        stream = nullptr;
         paths = std::move(next);
         {
             std::lock_guard<std::mutex> lock(statsMutex);
             stats.paths = paths;
+            stats.streamRunning = false;
         }
         if (paths.empty()) {
             logDebug("watch: no folders, no stream");
-            return;
+        } else {
+            startStream();
         }
-        startStream();
+        // After the new stream started: no gap between the two.
+        if (previous) retireStream(previous);
+        if (stream && catchUp) {
+            builder.addStreamStart();
+            if (window.add(Clock::now())) arm();
+        }
     }
 
     // --- events ---
@@ -175,7 +240,12 @@ struct IntakeWatcher::Impl : std::enable_shared_from_this<IntakeWatcher::Impl> {
                 relevant = true;
                 continue;
             }
-            if (eventPaths[i] != nullptr && builder.addPath(eventPaths[i])) relevant = true;
+            if (eventPaths[i] == nullptr) continue;
+            if ((flags[i] & kFSEventStreamEventFlagItemIsDir) && (flags[i] & kDirectoryMoveFlags)) {
+                if (builder.addDirectory(eventPaths[i])) relevant = true;
+                continue;
+            }
+            if (builder.addPath(eventPaths[i])) relevant = true;
         }
         if (!relevant) return;
         if (window.add(Clock::now())) arm();

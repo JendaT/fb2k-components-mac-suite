@@ -16,7 +16,10 @@
 //  more `status` (the reload-again flag), and incremental member lists
 //  (unchanged folders not listed again; a full listing on reload(true),
 //  remount, rescan or an unmapped folder; changes of a failed load carried
-//  over).
+//  over). B4 review fixes: a partial `status` whose E_PARSE names a
+//  sidecar keeps that root's last record (no untint, no invalidation) and
+//  retries once 1 s later; the watch set reads the mount table again, so a
+//  share that mounted during the load is never resolved.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -26,7 +29,7 @@
 // TEST_DEPS: src/Core/IntakeStatusModel.mm src/Core/IntakeSidecarMembers.mm src/Core/IntakeSnapshot.mm
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeMountAliases.mm src/Core/IntakeLoadPolicy.mm src/Core/IntakeView.mm
-// TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm
+// TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeWatchFilter.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -37,10 +40,13 @@
 #include "MockCliSupport.h"
 #include "TestHarness.h"
 
+#include <climits>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace intake;
@@ -209,7 +215,7 @@ private:
 struct WatchHarness {
     std::mutex m;
     std::vector<std::vector<std::string>> sets;  // every onWatchSet call
-    std::vector<std::string> resolved;           // every path the resolver saw
+    std::vector<std::string> resolved;           // every path the link reader examined
 
     size_t count() {
         std::lock_guard<std::mutex> lock(m);
@@ -230,18 +236,18 @@ struct WatchHarness {
 
 const MountEntry kLocalRoot{"/", "/dev/disk-fixture", "apfs", true};
 
-// settingsFor plus the B4 hooks: a recording resolver (realpath underneath)
-// and the watch-set handler.
+// settingsFor plus the B4 hooks: a recording link reader (lstat/readlink
+// underneath) and the watch-set handler.
 LoaderSettings watchSettingsFor(const std::string &state, const std::shared_ptr<Harness> &h,
                                 const std::shared_ptr<WatchHarness> &w, CountingAccess *files = nullptr) {
     LoaderSettings s = settingsFor(state, h);
     s.files = files;
-    s.resolvePath = [w](const std::string &path, std::string &out) {
+    s.readLink = [w](const std::string &path, std::string &target) {
         {
             std::lock_guard<std::mutex> lock(w->m);
             w->resolved.push_back(path);
         }
-        return realPathResolver(path, out);
+        return posixLinkReader(path, target);
     };
     s.onWatchSet = [w](const std::vector<std::string> &paths) {
         std::lock_guard<std::mutex> lock(w->m);
@@ -251,8 +257,34 @@ LoaderSettings watchSettingsFor(const std::string &state, const std::shared_ptr<
 }
 
 std::string realOf(const std::string &path) {
-    std::string out;
-    return realPathResolver(path, out) ? out : path;
+    char buffer[PATH_MAX];
+    return ::realpath(path.c_str(), buffer) ? std::string(buffer) : path;
+}
+
+// A canned exit-1 `status` (responses/status.envelope): every row but
+// `omitId`'s, and one E_PARSE naming `sidecar`, as the CLI answers when it
+// reads a sidecar half written.
+bool writeParsePartial(const std::string &state, const std::string &omitId, const std::string &sidecar) {
+    const std::string dir = state + "/responses/status.d";
+    std::string rows;
+    for (const std::string &name : mock::listDir(dir)) {
+        if (name == omitId + ".json") continue;
+        std::string row = mock::readFile(dir + "/" + name);
+        while (!row.empty() && (row.back() == '\n' || row.back() == '\r')) row.pop_back();
+        if (row.empty()) continue;
+        if (!rows.empty()) rows += ",";
+        rows += row;
+    }
+    const std::string envelope = "{\"ok\":false,\"data\":[" + rows +
+                                 "],\"errors\":[{\"code\":\"E_PARSE\",\"msg\":\"unreadable sidecar\",\"path\":\"" +
+                                 sidecar + "\"}]}\n";
+    return mock::writeFile(state + "/responses/status.envelope", envelope) &&
+           mock::writeFile(state + "/responses/status.exit", "1\n");
+}
+
+void clearParsePartial(const std::string &state) {
+    unlink((state + "/responses/status.envelope").c_str());
+    unlink((state + "/responses/status.exit").c_str());
 }
 
 } // anonymous namespace
@@ -700,7 +732,8 @@ static void testNetworkWatchSet() {
     IntakeLoader loader(watchSettingsFor(state, h, w));
     loader.reload(true);
     CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "loads");
-    CHECK(!w->resolvedUnder(root), "realpath never runs on a folder under the network mount");
+    CHECK(!w->resolvedUnder(root) && !w->resolvedUnder(realOf(root)),
+          "nothing under the network mount is examined (either spelling)");
     std::vector<std::string> set = w->last();
     CHECK(set.size() == 3 && set[0] == root + "/income/dump", "the stream gets the folders as the CLI spelled them");
 
@@ -709,7 +742,7 @@ static void testNetworkWatchSet() {
     h->setMounts({kLocalRoot});  // the share is gone: the same folders are now local paths
     loader.remount();
     CHECK(mock::waitUntil([&] { return w->count() > before; }, 10), "a remount recomputes the watch set");
-    CHECK(w->resolvedUnder(root) && w->last().size() == 3 && w->last()[0] == realOf(root) + "/income/dump",
+    CHECK(w->resolvedUnder(realOf(root)) && w->last().size() == 3 && w->last()[0] == realOf(root) + "/income/dump",
           "now local: resolved");
 }
 
@@ -805,6 +838,81 @@ static void testIncrementalMembers() {
           "every trigger is one full status (never --filter); version and income only on reload(true)");
 }
 
+static void testUnreadableSidecar() {
+    g_context = "unreadable-sidecar";
+    clearLog();
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1), "first load");
+    const size_t watchSets = w->count();
+
+    // New Album (a whole-directory root) caught half written by a CLI run.
+    CHECK(writeParsePartial(state, "itk_0000000a", root + "/income/dump/Fixture Artist - New Album/.intake.json"),
+          "canned partial status");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "the partial load finishes");
+    LoaderStatus st = h->lastFinished();
+    CHECK(st.state == LoaderState::Ready && st.partialErrors == 1 && st.roots == 16,
+          "ready with the error counted, 16 roots: the unreadable root is kept");
+    Published p = h->lastPublished();
+    ViewScratch scratch;
+    const IntakeRowVisual *kept = p.view ? p.view->visualFor(newAlbum(root), scratch) : nullptr;
+    CHECK(kept && kept->icon == IntakeIcon::CircleOpen && kept->bgTint == 0x4A90D938, "its rows keep their tint");
+    CHECK(!p.invalidate, "nothing renders differently: no invalidation");
+    CHECK(logCount("kept the last record of 1 root(s); retrying in 1 s") == 1, "one Info line");
+
+    CHECK(waitFinished(*h, 3, 5), "one retry about 1 s later");
+    CHECK(h->lastFinished().roots == 16 && !h->lastPublished().invalidate, "still kept, still no invalidation");
+    CHECK(logCount("already a retry, waiting for the next change") == 1, "the retry meets the error again");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+    CHECK_EQ(h->finishedCount(), 3, "and does not retry again");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus}), "calls.log: the load, then one retry");
+    CHECK_EQ(w->count(), watchSets, "the watch set did not change");
+
+    g_context = "unreadable-sidecar-recovers";
+    // A virtual root's named sidecar: kept by the id in its name.
+    CHECK(writeParsePartial(state, "itk_00000016",
+                            root + "/income/shop/Loose Tracks/.intake.itk_00000016.json"),
+          "canned partial status");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 4), "another partial load");
+    CHECK(h->lastFinished().roots == 16 && !h->lastPublished().invalidate, "the named sidecar's root is kept");
+    clearParsePartial(state);  // the write completes before the retry
+    CHECK(waitFinished(*h, 5, 5), "the retry");
+    st = h->lastFinished();
+    CHECK(st.state == LoaderState::Ready && st.partialErrors == 0 && st.roots == 16, "the retry loads it in full");
+    CHECK(!h->lastPublished().invalidate, "no invalidation at any step");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus, kStatus, kStatus}),
+          "calls.log: one status and one retry each time");
+}
+
+static void testShareMountsDuringLoad() {
+    g_context = "share-mounts-during-load";
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w));
+    mock::setMode(state, "status", "slow 1");
+    loader.reload(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    // The share mounts while `status` runs; its notification's remount()
+    // would queue behind the load.
+    h->setMounts({kLocalRoot, MountEntry{root, "//user@host-lan/fixture-share", "smbfs", false}});
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "the load finishes");
+    clearMode(state, "status");
+    CHECK(!w->resolvedUnder(root) && !w->resolvedUnder(realOf(root)),
+          "the folders on the share that just mounted are never examined");
+    CHECK(w->count() == 1 && w->last().size() == 3 && w->last()[0] == root + "/income/dump",
+          "the stream gets them as the CLI spelled them");
+}
+
 static void testWatchSetAfterShutdown() {
     g_context = "watch-set-shutdown";
     std::string state = mock::setupState("default");
@@ -846,6 +954,8 @@ int main(void) {
         testNetworkWatchSet();
         testChangeCoalescing();
         testIncrementalMembers();
+        testUnreadableSidecar();
+        testShareMountsDuringLoad();
         testWatchSetAfterShutdown();
 
         setLogBackend(nullptr);

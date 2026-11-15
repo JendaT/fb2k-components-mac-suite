@@ -4,8 +4,8 @@
 //
 //  Unit tests for IntakeWatchFilter: the CLI's isSidecarName rule
 //  (feature/intake-cli util.ts), the directory of a sidecar event, and the
-//  batch builder (each directory once, rescan, other names ignored).
-//  Synthetic paths only.
+//  batch builder (each directory once, moved directories, rescan, a stream
+//  start, other names ignored). Synthetic paths only.
 //
 
 #import <Foundation/Foundation.h>
@@ -100,6 +100,27 @@ static void testBatchBuilder() {
     WatchBatch rescan = b.take();
     CHECK(rescan.rescan && rescan.directories.empty() && !rescan.empty(), "rescan without directories");
     CHECK(b.empty() && !b.take().rescan, "the rescan flag is cleared by take()");
+
+    g_context = "batch-builder-directories";
+    // A folder renamed or moved: its sidecars move without events of their own.
+    CHECK(b.addDirectory("/w/dump/Artist/Album"), "a moved folder counts");
+    CHECK(b.addPath("/w/dump/Artist/Album/.intake.json"), "a sidecar in the same folder");
+    CHECK(b.addDirectory("/w/dump/Sorted/Album/"), "the new location (a trailing '/' dropped)");
+    CHECK(b.addDirectory("/w/dump/Sorted/Album"), "reported twice");
+    CHECK(!b.addDirectory("relative/Album") && !b.addDirectory(""), "relative and empty paths do not");
+    WatchBatch moved = b.take();
+    CHECK(moved.directories.size() == 2 && moved.directories[0] == "/w/dump/Artist/Album" &&
+              moved.directories[1] == "/w/dump/Sorted/Album",
+          "each folder once, shared with sidecar events, in arrival order");
+    CHECK(moved.directoryEvents == 3 && moved.sidecarEvents == 1 && !moved.rescan, "counted apart");
+
+    g_context = "batch-builder-stream-start";
+    b.addStreamStart();
+    CHECK(!b.empty(), "a stream start alone makes a batch");
+    WatchBatch started = b.take();
+    CHECK(started.streamStarted && started.directories.empty() && !started.rescan && !started.empty(),
+          "the catch-up batch");
+    CHECK(b.empty() && !b.take().streamStarted, "cleared by take()");
 }
 
 int main(void) {

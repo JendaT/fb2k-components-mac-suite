@@ -12,7 +12,12 @@
 //      recheck): the integer schema gate (IntakeVersionGate), then `cli` and
 //      `commands` into CliConfig (cliVersion, cliListsCommands);
 //   2. `status --json` (Ok, or Partial: the subset that loaded, errors
-//      logged): IntakeStatusModel;
+//      logged): IntakeStatusModel. A Partial whose E_PARSE errors name
+//      sidecars (a write in progress) keeps the last record of each root
+//      they name (carryOverUnreadable, PLAN.md 3.5, risk 7) and retries
+//      once 1 s later: one more load, listing those folders again, which
+//      does not retry again if it meets E_PARSE once more (the writer's own
+//      FSEvents event triggers the next load);
 //   3. every root key through the mount aliases (IntakeMountAliases);
 //   4. member lists (IntakeSidecarMembers), bounded by a deadline and a
 //      cancel flag that shutdown() sets;
@@ -47,9 +52,12 @@
 //  Watch set (B4, IntakeWatchSet): after every load attempt and every
 //  remount, the candidates (LoaderSettings::watchFolders, the income
 //  folders, the parent of every root_path of the last good load) are
-//  resolved and reduced on the loader queue (realpath only for local paths,
-//  decided from the mount table already read), and onWatchSet gets the
-//  stream paths only when they differ from the last ones handed over.
+//  resolved and reduced on the loader queue (lstat/readlink only on local
+//  paths, decided from the mount table, read again with MNT_NOWAIT right
+//  before: a share that mounted during the load is not taken for a local
+//  folder), and onWatchSet gets the stream paths only when they differ from
+//  the last ones handed over. That fresh table decides local or network
+//  only; the aliases still change through remount().
 //
 //  Incremental member lists (B4, IntakeSidecarMembers MemberReuse): a load
 //  started only by reloadForChanges() lists again just the directories its
@@ -58,7 +66,9 @@
 //  trigger, a remount, a rescan batch, a batch directory that maps to no
 //  watched folder, or a member pass that stopped early makes the next load
 //  list everything as before. Directories named by a load that failed
-//  before its member pass carry over to the next load.
+//  before its member pass carry over to the next load. A batch with no
+//  directory and no rescan (the watcher's catch-up after a stream started)
+//  runs `status` and lists only what is new.
 //
 //  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
 //  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
@@ -124,7 +134,7 @@ struct LoaderSettings {
     // B4 watch set. watchFolders: the watch_folders setting (absolute paths).
     std::vector<std::string> watchFolders;
     WatchSetHandler onWatchSet;         // optional
-    PathResolver resolvePath;           // empty: realpath (local paths only)
+    LinkReader readLink;                // empty: posixLinkReader (local paths only)
 };
 
 class IntakeLoader {
@@ -139,9 +149,10 @@ public:
     // passed before. The member pass lists every directory (no reuse).
     void reload(bool recheckVersion);
     // An FSEvents batch (IntakeWatcher): `directories` hold changed
-    // sidecars, as the events spelled them; `rescan`: treat everything as
-    // changed. Starts or queues one load like reload(false), but its member
-    // pass reuses what did not change (see the top of this file).
+    // sidecars or moved folders, as the events spelled them; `rescan`:
+    // treat everything as changed. Starts or queues one load like
+    // reload(false), but its member pass reuses what did not change (see
+    // the top of this file).
     void reloadForChanges(std::vector<std::string> directories, bool rescan);
     // Re-reads the mount table (see the top of this file).
     void remount();

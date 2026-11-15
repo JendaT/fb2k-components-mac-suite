@@ -16,8 +16,8 @@
 //  invalidate fired from here, so it returns promptly (v2's shutdown waits
 //  for in-flight batches); g_get_native_path on a stale or unmounted UUID
 //  is the one unmeasured call, so IntakeNativePath times it and stops
-//  calling it for a volume once one call took over 20 ms (B4
-//  IntakeSlowVolumeGuard, until the next mount change). Before the first load
+//  calling it for a volume once three calls in a row took over 20 ms (B4
+//  IntakeSlowVolumeGuard, until the next mount change or Refresh). Before the first load
 //  there is no view and every row is answered empty, never pending: v2
 //  commits a pending answer like an empty one, and the loader fires
 //  invalidate-all after its first load.
@@ -208,6 +208,10 @@ void providerPublish(std::shared_ptr<const IntakeView> view, bool invalidateAll,
     view.reset();  // the previous view, released outside the lock
     if (countAsLoad) state.stats.noteLoad();
     if (invalidateAll) fireInvalidateAll(state);
+}
+
+void providerInvalidateAll() {
+    fireInvalidateAll(providerState());
 }
 
 void providerSetStatsEnabled(bool enabled) {

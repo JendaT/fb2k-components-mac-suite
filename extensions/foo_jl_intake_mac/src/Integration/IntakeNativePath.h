@@ -12,11 +12,11 @@
 //     decorate queue. S0 sampled resolvable UUIDs on mounted volumes only:
 //     a stale UUID or one whose share is unmounted is unmeasured
 //     (docs/VOLUME_UUID_ISSUE.md records timeouts for unresolvable UUIDs
-//     elsewhere), so each call is timed (B4, IntakeSlowVolumeGuard): one
-//     that takes over 20 ms marks its UUID slow, and later rows of that UUID
-//     get no match without calling the SDK until resetSlowVolumes(). One
-//     Info line per UUID marked. While no UUID is slow the guard costs one
-//     atomic load and two clock reads per mac-volume row.
+//     elsewhere), so each call is timed (B4, IntakeSlowVolumeGuard): three
+//     calls in a row over 20 ms mark its UUID slow, and later rows of that
+//     UUID get no match without calling the SDK until resetSlowVolumes().
+//     One Info line per UUID marked. While no UUID is slow or suspect the
+//     guard costs two atomic loads and two clock reads per mac-volume row.
 //   - Every other scheme (tidal://, soundcloud://, http://, archives, ...)
 //     is no match at once, without calling into the SDK.
 //
@@ -35,7 +35,10 @@ namespace intake {
 const char *intakeNativePath(const char *path, pfc::string_base &scratch);
 
 // Any thread (IntakeService calls it on the main thread for every
-// NSWorkspace mount or unmount notification): forgets every slow volume.
-void resetSlowVolumes();
+// NSWorkspace mount or unmount notification and on Refresh): forgets every
+// slow volume. True when a volume was marked: rows the host cached empty
+// for it then need an invalidate-all (the caller's job). `why` starts the
+// log line ("mount change", "refresh").
+bool resetSlowVolumes(const char *why);
 
 } // namespace intake

@@ -9,6 +9,7 @@
 #include "IntakeCliRunner.h"
 #include "IntakeIncome.h"
 #include "IntakeLog.h"
+#include "IntakePath.h"
 #include "IntakeStatusModel.h"
 #include "IntakeVersionGate.h"
 
@@ -130,7 +131,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     Clock::time_point loadStart;
 
     // B4, loader queue only.
-    std::vector<MountEntry> mountEntries;     // the table `aliases` was built from
+    std::vector<MountEntry> mountEntries;     // the last table read (remount or watch set)
     std::vector<std::string> incomePaths;     // the last good `income` call
     WatchSet watchSet;                        // the last one built
     std::vector<std::string> watchInputs;     // the candidates it was built from
@@ -143,6 +144,10 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     bool inFlightFull = true;                 // the running load's
     std::vector<std::string> inFlightKeys;
     bool memberPassRan = false;               // the running load reached its member pass
+    bool parseRetryArmed = false;             // the 1 s E_PARSE retry timer is set
+    std::vector<std::string> parseRetryKeys;  // folders of the unreadable sidecars, as match keys
+    bool pendingParseRetry = false;           // the next load is that retry
+    bool inFlightParseRetry = false;          // the running load is
 
     mutable std::mutex statusMutex;
     LoaderStatus status;
@@ -196,7 +201,9 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             appendUnique(pendingKeys, keys);
         }
         if (isLogEnabled(LogLevel::Debug)) {
-            std::string line = "watch: sidecar changes in " + std::to_string(directories.size()) + " folder(s)";
+            std::string line = directories.empty() && !rescan
+                                   ? std::string("watch: a stream started, catching up")
+                                   : "watch: changes in " + std::to_string(directories.size()) + " folder(s)";
             if (rescan) line += ", rescan requested";
             if (unmapped) line += ", " + std::to_string(unmapped) + " outside the watched folders";
             line += loading ? "; one more load after the running one" : "; reloading";
@@ -227,6 +234,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         inFlightKeys = std::move(pendingKeys);
         pendingKeys.clear();
         pendingFull = false;
+        inFlightParseRetry = pendingParseRetry;
+        pendingParseRetry = false;
         memberPassRan = false;
         if (!everLoaded) setStatus(LoaderState::Loading);
         if (isLogEnabled(LogLevel::Debug)) logDebug("load: rules from " + rulesSourceDescription(settings.cli));
@@ -350,14 +359,18 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
         size_t partialErrors = 0;
         std::string partialText;
+        UnreadableSidecars unreadable;
         if (env.outcome == CliOutcome::Partial) {
             partialErrors = env.errors.size();
             partialText = loadErrorText(env);
             logInfo("status: partial result, " + std::to_string(partialErrors) + " error(s); loaded the rest: " +
                     partialText);
+            static const std::vector<IntakeRecord> kNoRecords;
+            unreadable = carryOverUnreadable(parsed.records, env.errors, lastGood ? lastGood->records() : kNoRecords);
         }
 
         applyMountAliases(parsed.records, *aliases);
+        if (!unreadable.directories.empty()) noteUnreadable(unreadable);
 
         MemberLoadLimits limits;
         limits.cancel = &stopped;
@@ -416,6 +429,47 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
         setStatus(LoaderState::Ready, partialText, partialErrors);
         finishLoad(true);
+    }
+
+    // A partial `status` met half-written sidecars: their roots kept the
+    // last record (carryOverUnreadable); one retry 1 s later, unless this
+    // load is that retry.
+    void noteUnreadable(const UnreadableSidecars &unreadable) {
+        std::vector<std::string> keys;
+        std::string normalized;
+        std::string buffer;
+        for (const std::string &dir : unreadable.directories) {
+            if (normalizePath(dir, normalized) != PathStatus::Ok) continue;
+            std::string key(aliases->rewrite(normalized, buffer));
+            if (std::find(keys.begin(), keys.end(), key) == keys.end()) keys.push_back(std::move(key));
+        }
+        const bool retry = !inFlightParseRetry;
+        logInfo("status: " + std::to_string(unreadable.directories.size()) +
+                " folder(s) with an unreadable sidecar (a write in progress?); kept the last record of " +
+                std::to_string(unreadable.carriedIds.size()) + " root(s)" +
+                (retry ? "; retrying in 1 s" : "; already a retry, waiting for the next change"));
+        if (retry) armParseRetry(std::move(keys));
+    }
+
+    void armParseRetry(std::vector<std::string> keys) {
+        appendUnique(parseRetryKeys, keys);
+        if (parseRetryArmed) return;
+        parseRetryArmed = true;
+        std::weak_ptr<Impl> weak = shared_from_this();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(NSEC_PER_SEC)), queue, ^{
+            std::shared_ptr<Impl> self = weak.lock();
+            if (!self) return;
+            self->parseRetryArmed = false;
+            if (self->stopped) return;
+            appendUnique(self->pendingKeys, self->parseRetryKeys);
+            self->parseRetryKeys.clear();
+            self->pendingParseRetry = true;
+            if (self->loading) {
+                self->again = true;
+                return;
+            }
+            self->startLoad();
+        });
     }
 
     void failLoad(LoadStep step, const EnvelopeResult &result) {
@@ -496,6 +550,16 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     void updateWatchSet() {
         if (stopped || !settings.onWatchSet) return;
+        // MNT_NOWAIT, no server contact: the local/network decision below
+        // must see a share that mounted while the load ran (its
+        // notification's remount() is still queued behind this block).
+        if (settings.readMounts) {
+            std::vector<MountEntry> fresh = settings.readMounts();
+            if (!sameMountEntries(fresh, mountEntries)) {
+                mountEntries = std::move(fresh);
+                watchDirty = true;
+            }
+        }
         std::vector<std::string> rootPaths;
         if (lastGood) {
             rootPaths.reserve(lastGood->size());
@@ -503,8 +567,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
         std::vector<std::string> inputs = watchCandidates(settings.watchFolders, incomePaths, rootPaths);
         if (watchBuilt && !watchDirty && inputs == watchInputs) return;
-        const PathResolver &resolve = settings.resolvePath ? settings.resolvePath : realPathResolverFunction();
-        watchSet = WatchSet::build(inputs, mountEntries, resolve);
+        const LinkReader &readLink = settings.readLink ? settings.readLink : posixLinkReaderFunction();
+        watchSet = WatchSet::build(inputs, mountEntries, readLink);
         watchInputs = std::move(inputs);
         watchBuilt = true;
         watchDirty = false;
@@ -518,9 +582,9 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         settings.onWatchSet(watchHandedOver);
     }
 
-    static const PathResolver &realPathResolverFunction() {
-        static const PathResolver resolver = &realPathResolver;
-        return resolver;
+    static const LinkReader &posixLinkReaderFunction() {
+        static const LinkReader reader = &posixLinkReader;
+        return reader;
     }
 
     // --- mounts ---

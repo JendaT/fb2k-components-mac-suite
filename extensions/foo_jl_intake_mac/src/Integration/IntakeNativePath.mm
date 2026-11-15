@@ -54,12 +54,14 @@ const char *intakeNativePath(const char *path, pfc::string_base &scratch) {
     }
     const uint64_t micros = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
-    if (isSlowNativePathCall(micros) && guard.noteCall(uuid, micros, generation)) {
+    if (guard.noteCall(uuid, micros, generation)) {
         char line[256];
         snprintf(line, sizeof line,
-                 "mac-volume %.*s: converting a path took %llu ms; its rows get no tint until the next mount or "
-                 "unmount",
-                 static_cast<int>(uuid.size()), uuid.data(), static_cast<unsigned long long>(micros / 1000));
+                 "mac-volume %.*s: %d path conversions in a row took over %llu ms (the last %llu ms); its rows get "
+                 "no tint until the next mount, unmount or Refresh",
+                 static_cast<int>(uuid.size()), uuid.data(), kSlowCallsToMark,
+                 static_cast<unsigned long long>(kSlowNativePathMicros / 1000),
+                 static_cast<unsigned long long>(micros / 1000));
         logInfo(line);
     }
     if (!converted) return nullptr;
@@ -67,11 +69,12 @@ const char *intakeNativePath(const char *path, pfc::string_base &scratch) {
     return native[0] == '/' ? native : nullptr;
 }
 
-void resetSlowVolumes() {
+bool resetSlowVolumes(const char *why) {
     SlowVolumeGuard &guard = slowVolumes();
     const size_t slow = guard.slowCount();
     guard.reset();
-    if (slow) logInfo("mount change: " + std::to_string(slow) + " slow mac-volume(s) get tints again");
+    if (slow) logInfo(std::string(why) + ": " + std::to_string(slow) + " slow mac-volume(s) get tints again");
+    return slow != 0;
 }
 
 } // namespace intake

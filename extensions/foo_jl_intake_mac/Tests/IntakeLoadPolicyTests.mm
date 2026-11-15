@@ -4,12 +4,14 @@
 //
 //  Unit tests for IntakeLoadPolicy (the inert-state decision of doc 03 v1.2,
 //  the invalidation diffs of a load and of a remount, alias application,
-//  status lines, the rules source line) and IntakeDecorStats (the hidden
-//  decor_stats counters). Synthetic records only.
+//  keeping the last record of a root whose sidecar a partial `status` could
+//  not read, status lines, the rules source line) and IntakeDecorStats (the
+//  hidden decor_stats counters). Synthetic records only.
 //
 // TEST_DEPS: src/Core/IntakeErrorMap.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSnapshot.mm src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm
 // TEST_DEPS: src/Core/IntakeReviewRule.mm src/Core/IntakeMountAliases.mm src/Core/IntakeDecorStats.mm
+// TEST_DEPS: src/Core/IntakeWatchFilter.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -187,6 +189,80 @@ static void testApplyAliases() {
     CHECK(bad[0].rootKey.empty(), "an unusable rootPath gets an empty key");
 }
 
+static CliError parseError(const std::string &path, const std::string &code = "E_PARSE") {
+    CliError e;
+    e.code = code;
+    e.msg = "unreadable sidecar";
+    e.path = path;
+    e.hasPath = true;
+    return e;
+}
+
+static bool hasId(const std::vector<IntakeRecord> &records, const std::string &id) {
+    for (const IntakeRecord &r : records) {
+        if (r.id == id) return true;
+    }
+    return false;
+}
+
+static void testCarryOverUnreadable() {
+    g_context = "carry-over";
+    const std::vector<IntakeRecord> previous = {
+        record("itk_00000001", "/income/dump/Album One"),
+        record("itk_00000002", "/income/dump/Album Two", IntakeStatus::Proposed),
+        record("itk_00000016", "/income/shop/Loose Tracks"),
+        record("itk_00000017", "/income/shop/Loose Tracks"),
+        record("itk_00000020", "/income/dump/Mu\xCC\x81sica"),
+    };
+    // This load: Album One and itk_00000016 missing, their sidecars unreadable.
+    std::vector<IntakeRecord> records = {previous[1], previous[3], previous[4]};
+    UnreadableSidecars u = carryOverUnreadable(
+        records,
+        {parseError("/income/dump/Album One/.intake.json"),
+         parseError("/income/shop/Loose Tracks/.intake.ITK_00000016.json")},
+        previous);
+    CHECK(records.size() == 5 && hasId(records, "itk_00000001") && hasId(records, "itk_00000016"),
+          "both roots kept: a whole-directory sidecar by folder, a named one by id (case ignored)");
+    CHECK(u.carriedIds.size() == 2 && u.carriedIds[0] == "itk_00000001" && u.carriedIds[1] == "itk_00000016",
+          "the carried ids, in error order");
+    CHECK(u.directories.size() == 2 && u.directories[0] == "/income/dump/Album One" &&
+              u.directories[1] == "/income/shop/Loose Tracks",
+          "the folders of the unreadable sidecars");
+    CHECK(records[3].status == IntakeStatus::Resolved && records[3].rootPath == "/income/dump/Album One",
+          "the last record itself");
+
+    g_context = "carry-over-present";
+    records = {previous[0], previous[1]};
+    u = carryOverUnreadable(records, {parseError("/income/dump/Album One/.intake.json")}, previous);
+    CHECK(records.size() == 2 && u.carriedIds.empty() && u.directories.size() == 1,
+          "a root the load has is not added twice; its folder still counts");
+
+    g_context = "carry-over-ignored";
+    records = {};
+    u = carryOverUnreadable(records,
+                            {parseError("/income/dump/Album One/.intake.json", "E_INTERNAL"),
+                             parseError("/income/dump/Album One/.intake-tmp-1"),
+                             parseError("/income/dump/Album One/notes.txt"), parseError("relative/.intake.json")},
+                            previous);
+    CHECK(records.empty() && u.carriedIds.empty() && u.directories.empty(),
+          "other codes, non-sidecar names and relative paths are left alone");
+    CliError noPath = parseError("/income/dump/Album One/.intake.json");
+    noPath.hasPath = false;
+    u = carryOverUnreadable(records, {noPath}, previous);
+    CHECK(records.empty() && u.directories.empty(), "an E_PARSE without a path is left alone");
+    u = carryOverUnreadable(records, {parseError("/income/dump/Album Nine/.intake.json")}, previous);
+    CHECK(records.empty() && u.directories.size() == 1, "no previous record there (a first load): nothing kept");
+
+    g_context = "carry-over-keys";
+    records = {};
+    u = carryOverUnreadable(records,
+                            {parseError("/income/dump//M\xC3\xBAsica/.intake.json"),
+                             parseError("/income/shop/Loose Tracks/.intake.itk_0000001.json")},
+                            previous);
+    CHECK(records.size() == 1 && records[0].id == "itk_00000020",
+          "folders compare as path keys (NFC, '//'); a shorter id is another root");
+}
+
 static std::shared_ptr<const IntakeSnapshot> keyedSnapshot(std::vector<IntakeRecord> records,
                                                            const MountAliases &aliases) {
     applyMountAliases(records, aliases);
@@ -330,6 +406,7 @@ int main(void) {
         testFailureEffect();
         testRendersAlike();
         testApplyAliases();
+        testCarryOverUnreadable();
         testRemountChangesRows();
         testStatusLine();
         testDecorStats();

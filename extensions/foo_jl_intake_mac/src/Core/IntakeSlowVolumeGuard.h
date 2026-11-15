@@ -9,21 +9,30 @@
 //  decorate() must return promptly: SimPlaylist v2's shutdown waits for
 //  in-flight batches.
 //
-//  Policy: when one conversion of a mac-volume://<UUID>/... path takes more
-//  than kSlowNativePathMicros (20 ms), that UUID is remembered as slow, and
+//  Policy: a conversion of a mac-volume://<UUID>/... path that takes more
+//  than kSlowNativePathMicros (20 ms) is a slow call. When
+//  kSlowCallsToMark (3) calls on one UUID in a row are slow, with no fast
+//  call on that UUID between them, the UUID is remembered as slow, and
 //  later rows of the same UUID get no match without calling the SDK, until
 //  reset() (Integration calls it on every NSWorkspace mount or unmount
-//  notification). noteCall() reports the first marking of a UUID per reset,
-//  so the caller logs once per UUID.
+//  notification and on a user Refresh, then invalidates every row). A
+//  single slow sample is not enough: S0 measured 1-15 us per call with no
+//  I/O, so one 20 ms sample on a mounted volume is far more likely a
+//  scheduling or paging stall than a stale UUID, and marking a share's
+//  UUID untints most rows of the playlist. A stale UUID whose every call
+//  blocks still costs at most three slow calls before it is marked.
+//  noteCall() reports the marking of a UUID once per reset, so the caller
+//  logs once per UUID.
 //
-//  A call that started before a reset and ends after it does not mark: the
+//  A call that started before a reset and ends after it does not count: the
 //  caller passes the generation() it read before the call, and a stale one
 //  is ignored (the volume may just have been remounted).
 //
-//  Cost on the decorate path: while no UUID is slow, isSlow() is one atomic
-//  load (acquire) and takes no lock. Otherwise it locks one mutex around a
-//  short vector (one entry per slow volume). The caller times the SDK call
-//  itself (two steady_clock reads).
+//  Cost on the decorate path: while no UUID is slow and no slow call is
+//  pending a streak, isSlow() and a fast noteCall() are one atomic load each
+//  (acquire) and take no lock. Otherwise they lock one mutex around short
+//  vectors (one entry per slow or suspect volume). The caller times the SDK
+//  call itself (two steady_clock reads).
 //
 //  Thread-safety: every member may be called from any thread.
 //
@@ -40,6 +49,7 @@
 namespace intake {
 
 inline constexpr uint64_t kSlowNativePathMicros = 20000;
+inline constexpr int kSlowCallsToMark = 3;
 
 // The <UUID> of "mac-volume://<UUID>/<path>" (scheme ignoring ASCII case),
 // or "" for another scheme or an empty UUID. Views `path`.
@@ -57,16 +67,24 @@ public:
     // Read before the SDK call and pass it to noteCall.
     uint64_t generation() const { return generation_.load(std::memory_order_acquire); }
     // One conversion of a path on `uuid` took `micros`, and started at
-    // `generation`. True only when this call newly marks the UUID slow.
+    // `generation`; call it for every conversion, fast or slow. True only
+    // when this call newly marks the UUID slow.
     bool noteCall(std::string_view uuid, uint64_t micros, uint64_t generation);
-    // Forgets every slow UUID (a mount or unmount notification).
+    // Forgets every slow UUID and every streak (a mount or unmount
+    // notification, a Refresh).
     void reset();
     size_t slowCount() const;
 
 private:
+    struct Streak {
+        std::string uuid;
+        int slowCalls = 0;
+    };
     mutable std::mutex mutex_;
     std::vector<std::string> slow_;  // guarded by mutex_
+    std::vector<Streak> streaks_;    // guarded by mutex_: suspects not yet marked
     std::atomic<bool> any_{false};
+    std::atomic<bool> anyStreak_{false};
     std::atomic<uint64_t> generation_{0};
 };
 

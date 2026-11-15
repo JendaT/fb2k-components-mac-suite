@@ -11,10 +11,11 @@
 //  a share path.
 //
 //  MountEntry::local is MNT_LOCAL from f_flags (IntakeWatchSet uses it to
-//  keep realpath off network paths).
+//  keep lstat/readlink off network paths).
 //
-//  Called on the loader queue at the first load and after
-//  NSWorkspaceDidMount/DidUnmount notifications. Unit tests feed synthetic
+//  Called on the loader queue at the first load, after
+//  NSWorkspaceDidMount/DidUnmount notifications, and before every watch set
+//  build. Unit tests feed synthetic
 //  lists to IntakeMountAliases instead; nothing here runs in them.
 //
 //  Thread-safety: reentrant.

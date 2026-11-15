@@ -12,6 +12,7 @@
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeView.mm src/Core/IntakeSnapshot.mm
 // TEST_DEPS: src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
 // TEST_DEPS: src/Core/IntakeLoadPolicy.mm src/Core/IntakeErrorMap.mm src/Core/IntakeEnvelope.mm
+// TEST_DEPS: src/Core/IntakeWatchFilter.mm
 //
 
 #import <Foundation/Foundation.h>

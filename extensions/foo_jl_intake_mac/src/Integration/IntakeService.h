@@ -13,12 +13,14 @@
 //  reader (IntakeMounts), the provider as its publish target, the
 //  watch_folders setting and the watcher as its watch-set target. It
 //  observes NSWorkspaceDidMount/DidUnmountNotification (each one forgets
-//  the slow mac-volumes, re-reads the mount table, reloads and restarts the
-//  watch stream), and starts the first load.
+//  the slow mac-volumes, with one invalidate-all when one was marked,
+//  re-reads the mount table, reloads and restarts the watch stream), and
+//  starts the first load.
 //
-//  Live updates (B4): a watcher batch (sidecar changes, debounced 1 s)
-//  becomes IntakeLoader::reloadForChanges: one coalesced full `status
-//  --json`, the fingerprint diff, invalidate-all only on change.
+//  Live updates (B4): a watcher batch (sidecar changes, moved folders, a
+//  stream start; debounced 1 s) becomes IntakeLoader::reloadForChanges: one
+//  coalesced full `status --json`, the fingerprint diff, invalidate-all
+//  only on change.
 //
 //  on_quit, in PLAN.md 3.2 order: removes the observers, stops the watch
 //  stream and releases the watcher (no batch reaches the loader after
@@ -40,6 +42,8 @@ namespace intake {
 // Main thread. Starts a load (coalesced with a running one); a no-op
 // before on_init and after on_quit. For Refresh (B6) and the preferences
 // page (B5). `recheckVersion` runs `version` (and `income`) again first.
+// Also forgets the slow mac-volumes (one invalidate-all when one was
+// marked), so Refresh brings their tints back.
 void serviceReload(bool recheckVersion);
 
 // Main thread. The post-command refresh (B6 calls it when a command the

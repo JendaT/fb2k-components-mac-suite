@@ -14,18 +14,30 @@
 //
 //  Each candidate is cleaned lexically (lexicalAbsolutePath: no NFC, no
 //  filesystem access) and then, only when it lies on a local filesystem,
-//  resolved with realpath (e.g. /tmp -> /private/tmp, /var -> /private/var),
-//  because FSEvents reports resolved paths. Whether a path is local is read
-//  from the mount table the loader already has (getmntinfo MNT_NOWAIT):
-//  the longest mount point holding it (ignoring ASCII case, as
-//  IntakeMountAliases does) must be a local filesystem
-//  (MountEntry::local and not a network type). A path under a network
-//  mount (smbfs, nfs, afpfs, webdav, autofs, ...), or any path when the
-//  table is empty, is never resolved: realpath is a round trip per
-//  component on the share (S0: 7-139 ms each, and a stalled share blocks for
-//  the SMB timeout). A local path that does not exist yet (an income folder
-//  not created yet) resolves its deepest existing ancestor and keeps the
-//  rest as written.
+//  its symlinks are resolved (e.g. /tmp -> /private/tmp, /var ->
+//  /private/var), because FSEvents reports resolved paths. Whether a path
+//  is local is read from the mount table the loader has (getmntinfo
+//  MNT_NOWAIT): the longest mount point holding it must be a local
+//  filesystem (MountEntry::local and not a network type). Mount points and
+//  paths are compared as IntakePath keys (NFC) ignoring ASCII case, as
+//  IntakeMountAliases does; of two mounts on one mount point the later
+//  (stacked on top) wins; a mount under the Data volume
+//  ("/System/Volumes/Data/home", the autofs maps) also holds the
+//  firmlinked spelling ("/home"). A path under a network mount (smbfs, nfs,
+//  afpfs, webdav, autofs, ...), or any path when the table is empty, is
+//  never touched: each lstat is a round trip on the share (S0: 7-139 ms,
+//  and a stalled share blocks for the SMB timeout).
+//
+//  Resolution (resolveLocalPath) walks the path one component at a time
+//  with lstat/readlink (LinkReader), and checks every component against
+//  the mount table before touching it. So a symlink on a local disk that
+//  points into a share is followed lexically (readlink is local), and the
+//  walk stops where the target enters the network mount, keeping the rest
+//  as written; realpath(3), which would lstat every component of the
+//  target, is not used. A component that does not exist (an income folder
+//  not created yet, an unmounted share's mount point) also ends the walk,
+//  with the rest kept as written. More than 32 links (a loop) keeps the
+//  path as written.
 //
 //  The stream gets the resolved paths reduced to top-level ancestors
 //  (FSEvents is recursive): a path equal to or under another one is dropped
@@ -43,8 +55,8 @@
 //  no candidate maps to nothing and returns false: the caller then treats
 //  everything as changed.
 //
-//  Thread-safety: a built WatchSet is immutable; build() runs the resolver
-//  on the calling thread (the loader queue).
+//  Thread-safety: a built WatchSet is immutable; build() runs the link
+//  reader on the calling thread (the loader queue).
 //
 
 #pragma once
@@ -81,16 +93,28 @@ std::string parentDirectory(std::string_view path);
 // the type is smbfs, nfs, afpfs, webdav, cifs, ftp, autofs or a FUSE type.
 bool isNetworkMount(const MountEntry &mount);
 
-// The longest mount point holding `path` (ignoring ASCII case), or null.
+// The longest mount point holding `path` (see the top of this file), or
+// null.
 const MountEntry *mountHolding(std::string_view path, const std::vector<MountEntry> &mounts);
 
-// True only when the mount holding `path` is known and local: then realpath
-// cannot reach a server.
+// True only when the mount holding `path` is known and local: then an
+// lstat of `path` cannot reach a server.
 bool mayResolvePath(std::string_view path, const std::vector<MountEntry> &mounts);
 
-// realpath(3) into `resolved`; false when it fails.
-using PathResolver = std::function<bool(const std::string &path, std::string &resolved)>;
-bool realPathResolver(const std::string &path, std::string &resolved);
+// One lstat of `path` (a final symlink is not followed).
+enum class LinkCheck {
+    NotLink, // exists, not a symlink
+    Link,    // a symlink; `target` holds readlink's text
+    Missing, // does not exist, or cannot be examined
+};
+using LinkReader = std::function<LinkCheck(const std::string &path, std::string &target)>;
+LinkCheck posixLinkReader(const std::string &path, std::string &target);
+
+// `path` (lexically clean, absolute) with its symlinks resolved as far as
+// the mount table allows (see the top of this file). `readLink` runs only
+// on paths mayResolvePath allows; `touched` (optional) is set when it ran.
+std::string resolveLocalPath(const std::string &path, const std::vector<MountEntry> &mounts,
+                             const LinkReader &readLink, bool *touched = nullptr);
 
 // The candidates in the order described above, lexically cleaned, each once
 // (by exact bytes), "/" and anything not absolute left out. `rootPaths` are
@@ -106,13 +130,13 @@ public:
         std::string fsPath;      // what FSEvents gets (resolved when local)
         std::string originalKey; // IntakePath key of `original`
         std::string fsKey;       // IntakePath key of `fsPath`
-        bool resolved = false;   // realpath ran on it (a local path)
+        bool resolved = false;   // resolveLocalPath read a component (a local path)
     };
 
-    // `resolve` runs only for candidates mayResolvePath allows; an empty
+    // `readLink` runs only on paths mayResolvePath allows; an empty
     // function resolves nothing.
     static WatchSet build(const std::vector<std::string> &candidates, const std::vector<MountEntry> &mounts,
-                          const PathResolver &resolve);
+                          const LinkReader &readLink);
 
     // Top-level resolved paths for the stream, sorted.
     const std::vector<std::string> &streamPaths() const { return streamPaths_; }

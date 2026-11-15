@@ -6,7 +6,8 @@
 //  IntakeLoader over the mock CLI the way IntakeService wires them, on a
 //  fresh mock state in a temp directory:
 //   - the first load runs version, income, status and hands the watch set
-//     to the watcher;
+//     to the watcher; the stream's start is caught up with one more status
+//     (changes between the first status and the stream would be unseen);
 //   - a mock state change applied by a CLI call from outside (the
 //     `.next` mechanism, like a Terminal run) retints within a few seconds,
 //     with exactly one more `status`;
@@ -131,10 +132,14 @@ static void testLiveUpdates() {
     CHECK(mock::waitUntil([&] { return sink->finishedCount() >= 1; }, 20), "the first load finishes");
     CHECK(mock::waitUntil([&] { return watcher->stats().streamRunning; }, 5), "the watch stream runs");
     CHECK(watcher->stats().paths.size() == 3, "watching dump, offline and shop");
+    CHECK(mock::waitUntil([&] { return sink->finishedCount() >= 2; }, 6),
+          "the stream's start is caught up with one more load");
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     std::vector<std::string> c = calls(state);
-    CHECK(c.size() == 3 && c[0] == "version\t--json" && c[1] == "income\t--json" && c[2] == "status\t--json",
-          "calls.log: version, income, status");
+    CHECK(c.size() == 4 && c[0] == "version\t--json" && c[1] == "income\t--json" && c[2] == "status\t--json" &&
+              c[3] == "status\t--json",
+          "calls.log: version, income, status, then the catch-up status");
+    CHECK(!sink->last().invalidate, "the catch-up found nothing new: no invalidation");
     ViewScratch scratch;
     const IntakeRowVisual *before = sink->last().view ? sink->last().view->visualFor(root + kResolvedTrack, scratch)
                                                       : nullptr;
@@ -158,7 +163,7 @@ static void testLiveUpdates() {
                                                      : nullptr;
     CHECK(after && after->icon == IntakeIcon::CircleLeftHalf, "the row is proposed (teal, half circle) now");
     c = calls(state);
-    CHECK(c.size() == 5 && c[3] == "propose\titk_0000000b\t--json" && c[4] == "status\t--json",
+    CHECK(c.size() == 6 && c[4] == "propose\titk_0000000b\t--json" && c[5] == "status\t--json",
           "calls.log: the outside run, then exactly one status");
 
     g_context = "live-idle";
@@ -166,7 +171,7 @@ static void testLiveUpdates() {
     mock::writeFile(root + "/income/dump/Fixture Artist - New Album/.intake-tmp-1", "{}");
     mock::writeFile(root + "/income/shop/Loose Tracks/.intake-hint.json", "{}");
     std::this_thread::sleep_for(std::chrono::milliseconds(2500));
-    CHECK_EQ(calls(state).size(), 5, "non-sidecar writes and idle time run nothing");
+    CHECK_EQ(calls(state).size(), 6, "non-sidecar writes and idle time run nothing");
 
     g_context = "live-burst";
     const size_t statusBefore = statusCalls(state);

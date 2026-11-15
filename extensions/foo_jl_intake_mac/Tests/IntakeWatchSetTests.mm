@@ -4,12 +4,16 @@
 //
 //  Unit tests for IntakeWatchSet: the watch_folders setting, lexical
 //  cleaning, the candidates (settings, income folders, parents of roots),
-//  the local/network decision from a synthetic mount table, realpath only
-//  for local paths (a recording resolver proves network paths are never
-//  resolved), the reduction to top-level ancestors, and mapping event
-//  directories back to match keys (realpath'd spellings, a second mount
-//  point of a share, NFD, case of the mount point). One test resolves a
-//  real temp directory (/var -> /private/var). Synthetic names only.
+//  the local/network decision from a synthetic mount table (NFD mount
+//  points, stacked mounts, the Data volume's firmlinked autofs maps), the
+//  component-wise resolution (a recording link reader over a fake
+//  filesystem proves nothing under a network mount is ever examined, also
+//  through a local symlink into a share; relative links, "..", loops), the
+//  reduction to top-level ancestors, and mapping event directories back to
+//  match keys (resolved spellings, a second mount point of a share, NFD,
+//  case of the mount point). One test resolves a real temp directory
+//  (/var -> /private/var) and compares with realpath(3). Synthetic names
+//  only.
 //
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeMountAliases.mm
 //
@@ -21,7 +25,10 @@
 #include "../src/Core/IntakeWatchSet.h"
 #include "TestHarness.h"
 
+#include <climits>
+#include <cstdlib>
 #include <map>
+#include <set>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -41,16 +48,23 @@ const MountEntry kOddSmb{"/Volumes/odd", "//host-b/odd", "smbfs", true};
 // A local type without MNT_LOCAL (e.g. a FUSE mount) counts as network.
 const MountEntry kNotLocal{"/Volumes/fuse", "fuse-a", "apfs", false};
 
+// A fake filesystem: `links` are symlinks (path -> link text), `missing`
+// paths do not exist (nor anything under them); every other path exists
+// and is no link. Every lstat is recorded.
 struct RecordingResolver {
-    std::map<std::string, std::string> answers;  // path -> resolved; missing: fails
+    std::map<std::string, std::string> links;
+    std::set<std::string> missing;
     std::vector<std::string> calls;
-    PathResolver fn() {
-        return [this](const std::string &path, std::string &resolved) {
+    LinkReader fn() {
+        return [this](const std::string &path, std::string &target) {
             calls.push_back(path);
-            auto it = answers.find(path);
-            if (it == answers.end()) return false;
-            resolved = it->second;
-            return true;
+            for (const std::string &m : missing) {
+                if (path == m || path.rfind(m + "/", 0) == 0) return LinkCheck::Missing;
+            }
+            auto it = links.find(path);
+            if (it == links.end()) return LinkCheck::NotLink;
+            target = it->second;
+            return LinkCheck::Link;
         };
     }
     bool called(const std::string &path) const {
@@ -132,17 +146,83 @@ static void testMounts() {
     CHECK(!mayResolvePath("/Users/fixture", {}), "an empty mount table resolves nothing");
     CHECK(mayResolvePath("/Volumes/fixture-share/income", {kRoot}),
           "an unmounted share's path lies on the local disk: resolving it cannot reach a server");
+
+    g_context = "mounts-nfc";
+    // The share mounted under an NFD name; the CLI spells the path NFC.
+    const MountEntry nfd{"/Volumes/Mu\xCC\x81sica", "//user@host-lan/musica", "smbfs", false};
+    const std::vector<MountEntry> nfdMounts = {kRoot, nfd};  // mountHolding points into it
+    m = mountHolding("/Volumes/M\xC3\xBAsica/income/dump", nfdMounts);
+    CHECK(m && m->mountPoint == nfd.mountPoint, "an NFD mount point holds the NFC spelling of a path under it");
+    CHECK(!mayResolvePath("/Volumes/M\xC3\xBAsica/income/dump", {kRoot, nfd}), "so that path is never resolved");
+    const MountEntry nfc{"/Volumes/M\xC3\xBAsica", "//user@host-lan/musica", "smbfs", false};
+    CHECK(!mayResolvePath("/Volumes/Mu\xCC\x81sica/income", {kRoot, nfc}), "and the other way round");
+
+    g_context = "mounts-stacked";
+    // Two mounts on one point: the later one is on top (MountAliases agrees).
+    const MountEntry under{"/Volumes/fixture-stack", "/dev/disk9s1", "apfs", true};
+    const MountEntry over{"/Volumes/fixture-stack", "//user@host-lan/fixture-stack", "smbfs", false};
+    CHECK(!mayResolvePath("/Volumes/fixture-stack/income", {kRoot, under, over}), "a share mounted over a disk");
+    CHECK(mayResolvePath("/Volumes/fixture-stack/income", {kRoot, over, under}), "a disk mounted over a share");
+
+    g_context = "mounts-firmlink";
+    const MountEntry home{"/System/Volumes/Data/home", "map auto_home", "autofs", true};
+    const std::vector<MountEntry> homeMounts = {kRoot, kData, home};
+    m = mountHolding("/home/fixture/income", homeMounts);
+    CHECK(m && m->fsType == "autofs", "the autofs map on the Data volume holds the firmlinked /home");
+    CHECK(!mayResolvePath("/home/fixture/income", {kRoot, kData, home}), "so /home paths are never resolved");
+    CHECK(!mayResolvePath("/System/Volumes/Data/home/fixture", {kRoot, kData, home}), "nor the full spelling");
+    CHECK(mayResolvePath("/homework/fixture", {kRoot, kData, home}), "a name that only starts like it is local");
+    CHECK(mayResolvePath("/Users/fixture", {kRoot, kData, home}), "the Data volume itself maps nothing");
+}
+
+static void testResolveLocal() {
+    g_context = "resolve-local";
+    const std::vector<MountEntry> mounts = {kRoot, kLan};
+    RecordingResolver r;
+    r.links["/tmp"] = "private/tmp";                          // relative, as on macOS
+    r.links["/Users/fixture/NAS"] = "/Volumes/fixture-share/income";  // a local link into the share
+    r.links["/Users/fixture/up"] = "../fixture/real";         // ".." from the link's folder
+    r.links["/Users/fixture/loop"] = "/Users/fixture/loop";
+    r.missing.insert("/Users/fixture/later");
+    bool touched = false;
+
+    CHECK(resolveLocalPath("/tmp/fixture-watch", mounts, r.fn(), &touched) == "/private/tmp/fixture-watch" && touched,
+          "a relative link is read from its folder");
+    CHECK(resolveLocalPath("/Users/fixture/NAS/dump", mounts, r.fn()) == "/Volumes/fixture-share/income/dump",
+          "a local link into the share is followed as text");
+    CHECK(!r.calledUnder("/Volumes/fixture-share"), "and nothing on the share is examined");
+    CHECK(r.called("/Volumes"), "only the local components of the link text are");
+    CHECK(resolveLocalPath("/Users/fixture/up/x", mounts, r.fn()) == "/Users/fixture/real/x", "'..' in a link");
+    CHECK(resolveLocalPath("/Users/fixture/later/a/b", mounts, r.fn()) == "/Users/fixture/later/a/b" &&
+              !r.called("/Users/fixture/later/a"),
+          "a missing component ends the walk; the rest kept as written");
+    CHECK(resolveLocalPath("/Users/fixture/loop/x", mounts, r.fn()) == "/Users/fixture/loop/x",
+          "a link loop keeps the path as written");
+    r.calls.clear();
+    CHECK(resolveLocalPath("/Volumes/fixture-share/income", mounts, r.fn(), &touched) ==
+                  "/Volumes/fixture-share/income" &&
+              r.calls.size() == 1 && r.calls[0] == "/Volumes",
+          "the walk stops at the share's mount point (never lstat'd)");
+    CHECK(resolveLocalPath("/x", mounts, LinkReader(), &touched) == "/x" && !touched, "no reader: as written");
+
+    g_context = "resolve-nested";
+    // A local disk image mounted inside the share: the path's own mount is
+    // local, but its parents are on the share.
+    const MountEntry dmg{"/Volumes/fixture-share/images/disk", "/dev/disk8s1", "apfs", true};
+    RecordingResolver n;
+    WatchSet ws = WatchSet::build({"/Volumes/fixture-share/images/disk/income"}, {kRoot, kLan, dmg}, n.fn());
+    CHECK(!n.calledUnder("/Volumes/fixture-share"), "no lstat on the share's components above the image");
+    CHECK(ws.streamPaths().size() == 1 && ws.streamPaths()[0] == "/Volumes/fixture-share/images/disk/income",
+          "kept as written");
 }
 
 static void testBuild() {
     g_context = "build";
     const std::vector<MountEntry> mounts = {kRoot, kLan, kVpn};
     RecordingResolver r;
-    r.answers["/tmp/fixture-watch/extra"] = "/private/tmp/fixture-watch/extra";
-    r.answers["/tmp/fixture-watch"] = "/private/tmp/fixture-watch";
-    r.answers["/Users/fixture/income/dump"] = "/Users/fixture/income/dump";
-    r.answers["/Users/fixture/income"] = "/Users/fixture/income";
-    r.answers["/link"] = "/";
+    r.links["/tmp"] = "private/tmp";
+    r.links["/link"] = "/";
+    r.missing.insert("/private/tmp/fixture-watch/new");
     std::vector<std::string> candidates = {
         "/tmp/fixture-watch/extra",              // local, a symlinked prefix
         "/tmp/fixture-watch/new/later",          // local, does not exist yet
@@ -154,10 +234,10 @@ static void testBuild() {
         "/link",                                 // resolves to "/": dropped
     };
     WatchSet ws = WatchSet::build(candidates, mounts, r.fn());
-    CHECK(!r.calledUnder("/Volumes/"), "realpath never runs on a path under a network mount");
-    CHECK(r.called("/tmp/fixture-watch/extra") && r.called("/Users/fixture/income/dump"), "local paths are resolved");
-    CHECK(r.called("/tmp/fixture-watch/new/later") && r.called("/tmp/fixture-watch/new") &&
-              r.called("/tmp/fixture-watch"),
+    CHECK(!r.calledUnder("/Volumes/"), "nothing under a network mount is ever examined");
+    CHECK(r.called("/private/tmp/fixture-watch/extra") && r.called("/Users/fixture/income/dump"),
+          "local paths are resolved");
+    CHECK(r.called("/private/tmp/fixture-watch/new") && !r.called("/private/tmp/fixture-watch/new/later"),
           "a missing local folder resolves its deepest existing ancestor");
     const std::vector<std::string> &paths = ws.streamPaths();
     CHECK(paths.size() == 5, "five top-level folders");
@@ -171,7 +251,7 @@ static void testBuild() {
     RecordingResolver r2 = r;
     WatchSet again = WatchSet::build(candidates, mounts, r2.fn());
     CHECK(again.streamPaths() == ws.streamPaths(), "the same inputs give an equal set (no stream restart)");
-    WatchSet none = WatchSet::build(candidates, mounts, PathResolver());
+    WatchSet none = WatchSet::build(candidates, mounts, LinkReader());
     CHECK(none.streamPaths().size() == 6 && none.streamPaths().back() == "/tmp/fixture-watch/new/later",
           "with no resolver, paths stay as written");
     CHECK(WatchSet::build({}, mounts, r.fn()).empty(), "no candidates: no stream");
@@ -182,7 +262,7 @@ static void testMapping() {
     const std::vector<MountEntry> mounts = {kRoot, kLan, kVpn};
     std::shared_ptr<const MountAliases> aliases = MountAliases::build(mounts);
     RecordingResolver r;
-    r.answers["/tmp/fixture-watch/income"] = "/private/tmp/fixture-watch/income";
+    r.links["/tmp"] = "private/tmp";
     WatchSet ws = WatchSet::build({"/tmp/fixture-watch/income", "/Volumes/fixture-share/income/dump"}, mounts, r.fn());
 
     std::vector<std::string> keys;
@@ -248,12 +328,14 @@ static void testRealTempDirectory() {
     const std::string income = dir + "/income";
     mkdir(income.c_str(), 0755);
 
-    WatchSet ws = WatchSet::build({income, dir + "/not-yet"}, {kRoot}, &realPathResolver);
-    std::string real;
-    CHECK(realPathResolver(income, real), "the temp folder resolves");
+    WatchSet ws = WatchSet::build({income, dir + "/not-yet"}, {kRoot}, &posixLinkReader);
+    char buffer[PATH_MAX];
+    const bool ok = ::realpath(income.c_str(), buffer) != nullptr;
+    const std::string real = ok ? buffer : income;
+    CHECK(ok, "the temp folder resolves");
     CHECK(ws.streamPaths().size() == 2, "two stream paths");
     CHECK(ws.entries().size() == 2 && ws.entries()[0].fsPath == real && ws.entries()[0].resolved,
-          "the stream gets realpath's spelling");
+          "the stream gets realpath's spelling (lstat/readlink one component at a time)");
     CHECK(ws.entries().size() == 2 && ws.entries()[1].fsPath == parentDirectory(real) + "/not-yet",
           "a missing folder: its parent resolved, the rest kept");
     std::vector<std::string> keys;
@@ -271,6 +353,7 @@ int main(void) {
         testLexical();
         testCandidates();
         testMounts();
+        testResolveLocal();
         testBuild();
         testMapping();
         testRealTempDirectory();

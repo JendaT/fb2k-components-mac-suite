@@ -23,6 +23,11 @@ class IntakeView;
 // counter.
 void providerPublish(std::shared_ptr<const IntakeView> view, bool invalidateAll, bool countAsLoad);
 
+// Any thread, never from decorate(): fires every registered host callback
+// once with an empty list, keeping the view. For a change the view does not
+// carry (the slow mac-volume guard was reset).
+void providerInvalidateAll();
+
 // Main thread (on_init, later the preferences page): turns the hidden
 // decor_stats per-batch counters and log line on or off.
 void providerSetStatsEnabled(bool enabled);

@@ -7,8 +7,11 @@
 
 #include "IntakeErrorMap.h"
 #include "IntakePath.h"
+#include "IntakeWatchFilter.h"
 
+#include <algorithm>
 #include <string_view>
+#include <unordered_set>
 
 namespace intake {
 
@@ -95,6 +98,44 @@ void applyMountAliases(std::vector<IntakeRecord> &records, const MountAliases &a
         }
         r.rootKey.assign(aliases.rewrite(normalized, aliased));
     }
+}
+
+UnreadableSidecars carryOverUnreadable(std::vector<IntakeRecord> &records, const std::vector<CliError> &errors,
+                                       const std::vector<IntakeRecord> &previous) {
+    UnreadableSidecars out;
+    std::unordered_set<std::string> present;
+    for (const IntakeRecord &r : records) present.insert(r.id);
+    std::string directory;
+    std::string directoryKey;
+    std::string previousKey;
+    for (const CliError &e : errors) {
+        if (e.code != "E_PARSE" || !e.hasPath || e.path.empty() || e.path[0] != '/') continue;
+        if (!sidecarEventDirectory(e.path, directory)) continue;
+        if (std::find(out.directories.begin(), out.directories.end(), directory) == out.directories.end()) {
+            out.directories.push_back(directory);
+        }
+        const std::string_view name = pathFileName(e.path);
+        const bool wholeDirectory = name == ".intake.json";
+        // ".intake.<id>.json": the id between the fixed parts.
+        const std::string_view id =
+            wholeDirectory ? std::string_view() : name.substr(8, name.size() - 8 - 5);
+        if (wholeDirectory && normalizePath(directory, directoryKey) != PathStatus::Ok) continue;
+        for (const IntakeRecord &p : previous) {
+            if (present.count(p.id)) continue;
+            bool named = false;
+            if (wholeDirectory) {
+                named = normalizePath(p.rootPath, previousKey) == PathStatus::Ok && previousKey == directoryKey;
+            } else if (p.id.size() == id.size()) {
+                named = std::equal(id.begin(), id.end(), p.id.begin(),
+                                   [](char a, char b) { return asciiLower(a) == asciiLower(b); });
+            }
+            if (!named) continue;
+            records.push_back(p);
+            present.insert(p.id);
+            out.carriedIds.push_back(p.id);
+        }
+    }
+    return out;
 }
 
 bool remountChangesRows(const IntakeSnapshot &oldSnapshot, const MountAliases &before,

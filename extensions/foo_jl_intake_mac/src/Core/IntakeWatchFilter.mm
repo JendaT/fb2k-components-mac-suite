@@ -70,6 +70,16 @@ bool WatchBatchBuilder::addPath(std::string_view path) {
     return true;
 }
 
+bool WatchBatchBuilder::addDirectory(std::string_view path) {
+    if (path.empty() || path[0] != '/') return false;
+    // "/a/b/" and "/a/b" are one folder.
+    while (path.size() > 1 && path.back() == '/') path.remove_suffix(1);
+    batch_.directoryEvents++;
+    std::string directory(path);
+    if (seen_.insert(directory).second) batch_.directories.push_back(std::move(directory));
+    return true;
+}
+
 WatchBatch WatchBatchBuilder::take() {
     WatchBatch out = std::move(batch_);
     batch_ = WatchBatch();
