@@ -22,8 +22,8 @@
 //   Detached       files in outputDirectory Unbounded (no report, never
 //                                           killed)
 //
-//  ProcessRunner::cancelReadLane() (on_quit) kills ReadOnly calls only and
-//  leaves every other class running.
+//  ProcessRunner::cancelReadLane() and closeReadLane() (on_quit) kill
+//  ReadOnly calls only and leave every other class running.
 //
 //  A refused request (IntakeCommandArgs: a mutating command with no ids, an
 //  invalid id, ...) returns false synchronously: nothing is spawned and no

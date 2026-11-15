@@ -244,6 +244,7 @@ struct ProcessRunner::Impl : std::enable_shared_from_this<ProcessRunner::Impl> {
     std::atomic<uint64_t> lastToken{0};
     std::vector<char> readBuffer = std::vector<char>(64 * 1024);
     std::unordered_set<std::string> sweptDirectories; // output directories swept once
+    bool readLaneClosed = false; // closeReadLane(): KillAtBudget specs are no longer spawned
 
     void spawn(ProcPtr p);
     void failSpawn(ProcPtr p, const char *stage, int err);
@@ -271,6 +272,14 @@ void Impl::failSpawn(ProcPtr p, const char *stage, int err) {
 void Impl::spawn(ProcPtr p) {
     ProcessSpec &spec = p->spec;
     p->start = Clock::now();
+
+    // Spawn and closeReadLane() run on this queue, so a read-only call that
+    // was queued after the quit sweep cannot slip past it.
+    if (readLaneClosed && spec.policy == BudgetPolicy::KillAtBudget) {
+        p->result.cancelled = true;
+        failSpawn(p, "read lane closed", ECANCELED);
+        return;
+    }
 
     if (spec.executable.empty() || spec.arguments.empty() || hasNul(spec.executable)) {
         failSpawn(p, "arguments", EINVAL);
@@ -712,10 +721,12 @@ uint64_t ProcessRunner::start(ProcessSpec spec, dispatch_queue_t callbackQueue,
     return p->token;
 }
 
-size_t ProcessRunner::cancelReadLane() {
+namespace {
+
+size_t cancelReads(std::shared_ptr<Impl> impl, bool close) {  // by value: the blocks copy it
     __block size_t count = 0;
-    auto impl = impl_;
     dispatch_sync(impl->queue, ^{
+        if (close) impl->readLaneClosed = true;
         for (auto &entry : impl->procs) {
             ProcPtr p = entry.second;
             if (p->spec.policy != BudgetPolicy::KillAtBudget || p->exited || p->delivered) continue;
@@ -735,6 +746,16 @@ size_t ProcessRunner::cancelReadLane() {
         }
     });
     return count;
+}
+
+} // anonymous namespace
+
+size_t ProcessRunner::cancelReadLane() {
+    return cancelReads(impl_, false);
+}
+
+size_t ProcessRunner::closeReadLane() {
+    return cancelReads(impl_, true);
 }
 
 size_t ProcessRunner::runningCount() const {

@@ -100,6 +100,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     bool againRecheck = false;
     bool needVersion = true;
     bool everLoaded = false;
+    bool gateFailed = false;  // the last `version` that answered failed the gate
     bool mountsRead = false;
     bool notConfiguredLogged = false;
     std::shared_ptr<const MountAliases> aliases = MountAliases::none();
@@ -200,6 +201,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         settings.cli.cliVersion = gate.info.cli;
         settings.cli.cliListsCommands = gate.info.hasCommands;
         needVersion = false;
+        gateFailed = false;
         logDebug("version: cli " + (gate.info.cli.empty() ? std::string("(none)") : gate.info.cli) +
                  ", schema 1" + (gate.info.hasCommands ? ", commands listed" : ", no commands list"));
         startCall(LoadStep::Status);
@@ -288,11 +290,19 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         } else if (!everLoaded) {
             logError(std::string(command) + " failed; nothing to show yet: " + text);
             setStatus(LoaderState::Failed, std::string(command) + ": " + text);
-        } else if (published && published->isInert()) {
+        } else if (published && published->isInert() && gateFailed) {
             // After a successful load only a gate failure is inert, and the
             // gate has not passed since, so the inert view stays.
             logError(std::string(command) + " failed; still inactive: " + text);
             setStatus(LoaderState::Inert, published->inertReason());
+        } else if (published && published->isInert()) {
+            // The gate failed after a successful load and this load's
+            // `version` passed it again: doc 03 v1.2 is inert only while the
+            // gate fails, and a failed refresh keeps the last loaded data.
+            publish(IntakeView::make(lastGood, aliases), !lastGood->isEmpty(), PublishReason::GatePassed);
+            logError(std::string(command) + " failed; the version gate passes again, showing the last loaded data: " +
+                     text);
+            setStatus(LoaderState::Stale, std::string(command) + ": " + text);
         } else {
             logError(std::string(command) + " failed; keeping the last loaded data: " + text);
             setStatus(LoaderState::Stale, std::string(command) + ": " + text);
@@ -302,6 +312,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     void failGate(const VersionGateResult &gate) {
         needVersion = true;
+        gateFailed = true;
         std::string reason = std::string("unsupported intake CLI (") + gateVerdictName(gate.verdict);
         if (!gate.detail.empty()) reason += ": " + gate.detail;
         if (!gate.info.cli.empty()) reason += ", cli " + gate.info.cli;
@@ -346,6 +357,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             if (firstRead) logDebug("mount aliases: " + next->describe());
             return;
         }
+        const std::shared_ptr<const MountAliases> previous = aliases;
         aliases = next;
         if (firstRead) {
             logDebug("mount aliases: " + aliases->describe());
@@ -357,9 +369,14 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         std::vector<IntakeRecord> records = lastGood->records();
         applyMountAliases(records, *aliases);
         auto rebuilt = IntakeSnapshot::build(std::move(records), lastGood->members(), settings.palette);
+        // The new table is published either way (rows and roots must be
+        // keyed with one table), but invalidated only when a row can change:
+        // a share holding no root mounting or unmounting changes none.
+        const bool rowsChange = remountChangesRows(*lastGood, *previous, *rebuilt, *aliases);
         lastGood = rebuilt;
         const std::string reason = published ? published->inertReason() : std::string();
-        publish(IntakeView::make(rebuilt, aliases, reason), !rebuilt->isEmpty(), PublishReason::Remount);
+        publish(IntakeView::make(rebuilt, aliases, reason), rowsChange, PublishReason::Remount);
+        if (!rowsChange) logDebug("mount aliases changed under no intake root: no row changes, no invalidation");
     }
 
     void publish(std::shared_ptr<const IntakeView> view, bool invalidate, PublishReason reason) {
@@ -391,7 +408,10 @@ void IntakeLoader::remount() {
 
 void IntakeLoader::shutdown() {
     if (impl_->stopped.exchange(true)) return;
-    impl_->runner.cancelReadLane();
+    // Closed, not only cancelled: a call the loader queue starts after the
+    // `stopped` check it already passed is refused instead of outliving
+    // the sweep.
+    impl_->runner.closeReadLane();
     std::lock_guard<std::mutex> lock(impl_->statusMutex);
     impl_->status.state = LoaderState::Stopped;
 }

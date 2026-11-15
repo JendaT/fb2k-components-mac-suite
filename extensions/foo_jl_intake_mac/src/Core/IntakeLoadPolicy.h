@@ -16,6 +16,7 @@
 //     membership and the same visual. Anything else is one invalidate-all.
 //   - applyMountAliases: re-derives every record's rootKey from its rootPath
 //     through the alias table, at load and when the mount table changes.
+//   - remountChangesRows: the invalidation diff of a mount table change.
 //   - The status line for the preferences page (B5) and the log, and the
 //     Debug line naming the rules source.
 //
@@ -62,6 +63,19 @@ bool rendersAlike(const IntakeSnapshot &a, const IntakeSnapshot &b);
 // rootKey = aliases.rewrite(normalize(rootPath)) for every record; a record
 // whose rootPath does not normalize gets an empty key (matches nothing).
 void applyMountAliases(std::vector<IntakeRecord> &records, const MountAliases &aliases);
+
+// A mount table change (PLAN.md risk 5): the alias table went from `before`
+// to `after` and the last load's keys were rebuilt from `oldSnapshot`
+// (keyed with `before`) into `newSnapshot` (keyed with `after`). True when
+// some row can decorate differently, so invalidate-all is needed. A row's
+// key rewrites differently only under a changed mount point, and then lies
+// under one of MountAliases::changedBases; a row can match a root only when
+// the root key and the row's key are on one path. So this is false when the
+// snapshots render alike and no root key of either snapshot is a changed
+// base, under one, or above one (ignoring ASCII case, conservatively):
+// e.g. a share that holds no root mounting or unmounting.
+bool remountChangesRows(const IntakeSnapshot &oldSnapshot, const MountAliases &before,
+                        const IntakeSnapshot &newSnapshot, const MountAliases &after);
 
 enum class LoaderState {
     NotConfigured, // no CLI path: nothing runs, nothing renders (not an error)

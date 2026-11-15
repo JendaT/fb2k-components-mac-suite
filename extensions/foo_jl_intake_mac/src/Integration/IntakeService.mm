@@ -110,7 +110,7 @@ public:
         const IntakeSettings settings = config::load();
         setLogLevel(settings.logLevel);
         providerSetStatsEnabled(settings.decorStats);
-        if (settings.decorStats) logInfo("decor_stats on: one line per decorate batch");
+        if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");
         g_service = new Service(settings);
         g_service->start();
     }

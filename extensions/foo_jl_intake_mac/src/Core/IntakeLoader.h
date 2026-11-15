@@ -24,17 +24,21 @@
 //  nothing renders, and it is not an error.
 //  Failures follow loadFailureEffect / gateFailureEffect (doc 03 v1.2
 //  "Inert state"): an inert view, or the last data kept with one log line.
+//  A gate failure's inert view lasts while the gate fails: once `version`
+//  passes again, a failed `status` shows the last load (Stale).
 //
 //  Triggers: reload() (init, a mount event, later Refresh and preferences)
 //  and remount(), which re-reads the mount table and, when the aliases
-//  changed, rebuilds the keys of the last load and publishes them with
-//  invalidate-all. A reload requested while a load runs is coalesced into
-//  one more load after it.
+//  changed, rebuilds the keys of the last load and publishes them, with
+//  invalidate-all only when a row can decorate differently
+//  (remountChangesRows). A reload requested while a load runs is coalesced
+//  into one more load after it.
 //
-//  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag and kills the
-//  read-lane processes (ProcessRunner::cancelReadLane); it never waits for
-//  the loader queue, which may sit in a slow share call. Nothing is
-//  published after it. Only read-only calls run here, so nothing else is
+//  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
+//  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
+//  so a call already on its way to the runner is never spawned. It never
+//  waits for the loader queue, which may sit in a slow share call. Nothing
+//  is published after it. Only read-only calls run here, so nothing else is
 //  left running.
 //
 //  Thread-safety: every public method may be called from any thread. The
@@ -63,9 +67,11 @@
 namespace intake {
 
 enum class PublishReason {
-    Load,    // a successful status load
-    Inert,   // the inert state began, or its reason changed
-    Remount, // the mount aliases changed: the last load's keys were rebuilt
+    Load,       // a successful status load
+    Inert,      // the inert state began, or its reason changed
+    Remount,    // the mount aliases changed: the last load's keys were rebuilt
+    GatePassed, // the gate passed again after failing, then `status` failed:
+                // the last load, no longer inert (state Stale)
 };
 
 using PublishHandler =

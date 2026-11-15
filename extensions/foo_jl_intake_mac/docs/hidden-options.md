@@ -32,8 +32,8 @@ then they can only be set here. `decor_stats` stays hidden after that.
 runs through bun (`bun_path`). Default: empty.
 
 While it is empty the component is **not configured**. It starts no process,
-writes one console line (`[intake] not configured: ...`) and decorates no row.
-This is not an error state.
+writes one console line (`[intake] not configured: ...`, at `log_level` 1 or
+higher) and decorates no row. This is not an error state.
 
 ```bash
 # quit foobar2000 first
@@ -60,7 +60,7 @@ source in use (`[intake] load: rules from ...`).
 `configInts`. `0` errors only, `1` also information (default), `2` also debug.
 Debug lines show each CLI call's arguments, how it ended (outcome, exit code,
 duration, error codes) and the member-list I/O. They never show the CLI's
-output.
+output. The `decor_stats` lines ignore this setting.
 
 ## foo_jl_intake.decor_stats
 
@@ -68,7 +68,8 @@ output.
 (PLAN.md B3, "INTAKE_DECOR_STATS"). They work with SimPlaylist v2 as it is, and
 the Release build has them.
 
-With it on, every decorate batch writes one console line:
+With it on, every decorate batch writes one console line, whatever
+`log_level` is set to:
 
 ```
 [intake] decor_stats: batch 64 items 210 us; since invalidation 128 items; totals 3 batches, 192 items, avg 180 us, max 260 us; loads 1, invalidations 1

@@ -14,16 +14,18 @@
 //  schemes no match) -> IntakeView::visualFor (normalize, mount alias,
 //  snapshot lookup) -> a copy into jl_row_decoration. No I/O, no CLI, no
 //  invalidate fired from here, so it returns promptly (v2's shutdown waits
-//  for in-flight batches). Before the first load there is no view and every
-//  row is answered empty, never pending: v2 commits a pending answer like an
-//  empty one, and the loader fires invalidate-all after its first load.
+//  for in-flight batches); g_get_native_path on a stale or unmounted UUID
+//  is the one unmeasured call (IntakeNativePath.h). Before the first load
+//  there is no view and every row is answered empty, never pending: v2
+//  commits a pending answer like an empty one, and the loader fires
+//  invalidate-all after its first load.
 //
 //  decorate_group returns false (group badges are B6); context_actions is
 //  empty (B6).
 //
 //  decor_stats (hidden, docs/hidden-options.md): with it off, a batch pays
 //  one relaxed atomic load; with it on, each batch is timed and one
-//  cumulative line is logged (IntakeDecorStats).
+//  cumulative line is logged whatever log_level is (IntakeDecorStats).
 //
 
 #import "../fb2k_sdk.h"
@@ -146,7 +148,9 @@ public:
                                     std::chrono::steady_clock::now() - start)
                                     .count();
             state.stats.noteBatch(count, static_cast<uint64_t>(micros));
-            logInfo(DecorStats::formatLine(state.stats.figures()));
+            // Unfiltered: the option is an explicit opt-in, so log_level 0
+            // must not swallow the measurement (docs/hidden-options.md).
+            logUnfiltered(LogLevel::Info, DecorStats::formatLine(state.stats.figures()));
         }
     }
 

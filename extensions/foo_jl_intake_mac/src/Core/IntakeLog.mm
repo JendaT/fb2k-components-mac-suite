@@ -53,6 +53,10 @@ bool isLogEnabled(LogLevel level) {
 
 void logMessage(LogLevel level, const char *message) {
     if (!isLogEnabled(level)) return;
+    logUnfiltered(level, message);
+}
+
+void logUnfiltered(LogLevel level, const char *message) {
     std::string msg = "[intake] ";
     if (message) msg += message;
     g_backend.load(std::memory_order_acquire)(level, msg.c_str());

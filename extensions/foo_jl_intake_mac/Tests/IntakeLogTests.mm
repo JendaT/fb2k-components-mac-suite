@@ -2,7 +2,8 @@
 //  IntakeLogTests.mm
 //  foo_jl_intake_mac
 //
-//  Unit tests for IntakeLog (level gating, backend swap, no-op default).
+//  Unit tests for IntakeLog (level gating, unfiltered lines, backend swap,
+//  no-op default).
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
 
@@ -89,6 +90,18 @@ int main(void) {
 
     CHECK(intake::isLogEnabled(LogLevel::Error), "Error is always enabled");
     CHECK(!intake::isLogEnabled(LogLevel::Info), "Info disabled at Error threshold");
+
+    // --- unfiltered: delivered whatever the threshold (decor_stats) ---
+    g_context = "unfiltered";
+    g_first.clear();
+    intake::setLogLevel(LogLevel::Error);
+    intake::logUnfiltered(LogLevel::Info, std::string("decor_stats: batch 1"));
+    intake::logUnfiltered(LogLevel::Debug, nullptr);
+    CHECK(g_first.size() == 2 && g_first[0].message == "[intake] decor_stats: batch 1" &&
+              g_first[0].level == LogLevel::Info,
+          "an Info line passes the Error threshold, prefixed, its level kept");
+    CHECK(g_first.size() == 2 && g_first[1].message == "[intake] " && g_first[1].level == LogLevel::Debug,
+          "a null message is an empty one");
 
     // --- integer levels from the preference are clamped ---
     g_context = "clamp";

@@ -29,6 +29,14 @@
 //  mount (another share, a local disk image) is matched first, so its paths
 //  are rewritten for that mount or not at all.
 //
+//  Mount points match ignoring ASCII case: macOS compares volume names
+//  case-insensitively and /Volumes on the default APFS volume is
+//  case-insensitive, so a CLI root under /Volumes/music works on disk while
+//  the share is mounted at /Volumes/Music. Only the mount-point prefix is
+//  folded; the rest of a path keeps its case, as everywhere else in
+//  matching. Trade-off: on a case-sensitive boot volume a folder that
+//  differs from a mount point only in case is treated as that mount.
+//
 //  No filesystem access: the input is a mount list (Integration reads it
 //  with getmntinfo(MNT_NOWAIT), which never asks the server). A share that is
 //  unmounted is simply absent from the list, so its paths are not rewritten
@@ -85,6 +93,14 @@ public:
     bool hasAliases() const { return aliasCount_ != 0; }
     // Same entries (mount point -> alias), whatever the input order.
     bool sameAs(const MountAliases &other) const;
+    // Where `a` and `b` can rewrite a key differently. For every mount point
+    // whose entry differs between the two tables (added, removed, or another
+    // alias): that mount point as `a` rewrites it and as `b` rewrites it. A
+    // key that `a` and `b` rewrite differently lies under one such mount
+    // point, and its rewrite by `a` lies under that mount point's rewrite by
+    // `a` (the same for `b`; "under" ignoring ASCII case, as matching does).
+    // Empty when the tables are the same.
+    static std::vector<std::string> changedBases(const MountAliases &a, const MountAliases &b);
     // "<mount point> -> <alias>; ..." for the log; "no smbfs mounts" when empty.
     std::string describe() const;
 

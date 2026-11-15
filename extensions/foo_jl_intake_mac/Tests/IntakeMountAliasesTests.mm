@@ -5,8 +5,9 @@
 //  Unit tests for IntakeMountAliases (share-relative keys for SMB mounts,
 //  PLAN.md B3) and for IntakeView's per-row lookup through them: two aliases
 //  of one share, different shares, nested mount points, the mount point
-//  itself, no mounts, NFD names, and losing one mount point. Synthetic
-//  mount lists only: nothing here reads the real mount table.
+//  itself, no mounts, NFD names, mount points in another case, the changed
+//  bases of two tables, and losing one mount point. Synthetic mount lists
+//  only: nothing here reads the real mount table.
 //
 // TEST_DEPS: src/Core/IntakePath.mm src/Core/IntakeView.mm src/Core/IntakeSnapshot.mm
 // TEST_DEPS: src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
@@ -189,6 +190,45 @@ static void testStackedAndSame() {
     CHECK(d->sameAs(*b), "user and host do not matter");
 }
 
+static void testChangedBases() {
+    g_context = "changed-bases";
+    using Bases = std::vector<std::string>;
+    auto a = MountAliases::build(withSystem({smb("/Volumes/share", "//user@host/share")}));
+    CHECK(MountAliases::changedBases(*a, *a).empty(), "the same table: none");
+    auto b = MountAliases::build(withSystem({smb("/Volumes/share", "//user@host/share"),
+                                             smb("/Volumes/backup", "//user@host/backup")}));
+    CHECK(MountAliases::changedBases(*a, *b) == Bases({"/Volumes/backup", "/smbfs:backup"}),
+          "an added mount: its mount point as each table rewrites it");
+    CHECK(MountAliases::changedBases(*b, *a) == Bases({"/smbfs:backup", "/Volumes/backup"}), "a removed one");
+    auto c = MountAliases::build({smb("/Volumes/share", "//user@host/other")});
+    CHECK(MountAliases::changedBases(*a, *c) == Bases({"/smbfs:share", "/smbfs:other"}),
+          "another share at the same mount point");
+    auto nested = MountAliases::build({smb("/Volumes/share", "//user@host/share"), local("/Volumes/share/disk", "hfs")});
+    CHECK(MountAliases::changedBases(*nested, *a) == Bases({"/Volumes/share/disk", "/smbfs:share/disk"}),
+          "a nested pass-through mount going away: its keys now go through the share's alias");
+    auto withUsb = MountAliases::build(withSystem({smb("/Volumes/share", "//user@host/share"), local("/Volumes/usb")}));
+    CHECK(MountAliases::changedBases(*a, *withUsb).empty(), "a local mount outside every share changes nothing");
+}
+
+static void testMountPointCase() {
+    g_context = "mount-case";
+    auto a = MountAliases::build({smb("/Volumes/Music", "//user@host/Music")});
+    CHECK(rw(*a, "/Volumes/music/income/Fixture Album") == "/smbfs:music/income/Fixture Album",
+          "a CLI root spelled in another case is aliased");
+    CHECK(rw(*a, "/Volumes/Music/income/Fixture Album/01.wav") == "/smbfs:music/income/Fixture Album/01.wav",
+          "a row on the mount point as mounted");
+    CHECK(rw(*a, "/VOLUMES/MUSIC") == "/smbfs:music", "the mount point itself, in any case");
+    CHECK(rw(*a, "/Volumes/music/Income/x") == "/smbfs:music/Income/x", "the rest of the path keeps its case");
+    CHECK(rw(*a, "/Volumes/musicx/a") == "/Volumes/musicx/a", "still only at a path boundary");
+    auto accented = MountAliases::build({smb("/Volumes/\xC3\x89T\xC3\x89", "//user@host/ete")});  // "ÉTÉ"
+    CHECK(rw(*accented, "/Volumes/\xC3\xA9t\xC3\xA9/a") == "/Volumes/\xC3\xA9t\xC3\xA9/a",
+          "non-ASCII letters are compared as bytes");
+    CHECK(rw(*accented, "/volumes/\xC3\x89t\xC3\x89/a") == "/smbfs:ete/a", "ASCII around them is folded");
+    auto nested = MountAliases::build({smb("/Volumes/Share", "//user@host/share"), local("/Volumes/Share/Disk", "hfs")});
+    CHECK(rw(*nested, "/volumes/share/disk/a") == "/volumes/share/disk/a",
+          "a nested pass-through mount is matched ignoring case too");
+}
+
 // --- IntakeView over aliased snapshots ---
 
 static IntakeRecord record(const std::string &id, const std::string &rootPath, IntakeStatus status) {
@@ -295,6 +335,22 @@ static void testViewInert() {
     CHECK(inertVisual("x").tooltip == std::string(kInertTooltipPrefix) + "x", "inertVisual");
 }
 
+static void testViewMountPointCase() {
+    g_context = "view-mount-case";
+    // The CLI config names /Volumes/music; the share is mounted at
+    // /Volumes/Music, where foobar2000 resolves its rows.
+    auto aliases = MountAliases::build(withSystem({smb("/Volumes/Music", "//user@host/Music")}));
+    std::vector<IntakeRecord> records = {
+        record("itk_00000001", "/Volumes/music/income/dump/Fixture Artist - New Album", IntakeStatus::New)};
+    auto view = IntakeView::make(aliasedSnapshot(records, *aliases), aliases);
+    ViewScratch scratch;
+    const IntakeRowVisual *row =
+        view->visualFor("/Volumes/Music/income/dump/Fixture Artist - New Album/01 - Test Track One.wav", scratch);
+    CHECK(row && row->icon == IntakeIcon::CircleOpen, "a row under the mount point as mounted matches");
+    CHECK(view->visualFor("/Volumes/Music/Income/dump/Fixture Artist - New Album/01.wav", scratch) == nullptr,
+          "a case difference past the mount point still matches nothing");
+}
+
 int main(void) {
     @autoreleasepool {
         testShareKey();
@@ -305,8 +361,11 @@ int main(void) {
         testNoMounts();
         testNfd();
         testStackedAndSame();
+        testChangedBases();
+        testMountPointCase();
         testViewThroughAliases();
         testViewInert();
+        testViewMountPointCase();
     }
     TEST_MAIN_END();
 }

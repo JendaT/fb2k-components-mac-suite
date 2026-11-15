@@ -9,7 +9,10 @@
 //   - "mac-volume://<UUID>/..." (network-share tracks) goes through
 //     filesystem::g_get_native_path into `scratch`: inline, no cache. S0
 //     measured about 1 us per call, no I/O, thread-safe, fine on v2's
-//     decorate queue.
+//     decorate queue. S0 sampled resolvable UUIDs on mounted volumes only:
+//     a stale UUID or one whose share is unmounted is unmeasured (needs
+//     validation in the app; docs/VOLUME_UUID_ISSUE.md records timeouts
+//     for unresolvable UUIDs elsewhere).
 //   - Every other scheme (tidal://, soundcloud://, http://, archives, ...)
 //     is no match at once, without calling into the SDK.
 //

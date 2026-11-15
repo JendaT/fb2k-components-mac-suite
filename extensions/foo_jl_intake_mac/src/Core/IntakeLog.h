@@ -46,6 +46,12 @@ bool isLogEnabled(LogLevel level);
 // message is logged as an empty one.
 void logMessage(LogLevel level, const char *message);
 
+// Prefixed and handed to the backend whatever the threshold. Only for output
+// the user turned on by name (the decor_stats lines), which log_level must
+// not hide. `level` is passed through to the backend unchanged.
+void logUnfiltered(LogLevel level, const char *message);
+inline void logUnfiltered(LogLevel level, const std::string &message) { logUnfiltered(level, message.c_str()); }
+
 inline void logError(const char *message) { logMessage(LogLevel::Error, message); }
 inline void logInfo(const char *message) { logMessage(LogLevel::Info, message); }
 inline void logDebug(const char *message) { logMessage(LogLevel::Debug, message); }

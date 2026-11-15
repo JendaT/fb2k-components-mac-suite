@@ -8,6 +8,8 @@
 #include "IntakeErrorMap.h"
 #include "IntakePath.h"
 
+#include <string_view>
+
 namespace intake {
 
 namespace {
@@ -26,6 +28,31 @@ bool sameMembers(const MemberTable &a, const MemberTable &b, const std::string &
 
 std::string rootsText(size_t roots) {
     return std::to_string(roots) + (roots == 1 ? " root" : " roots");
+}
+
+char asciiLower(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// One of two match keys is the other or lies under it, ignoring ASCII case.
+bool onOnePath(std::string_view a, std::string_view b) {
+    const std::string_view shorter = a.size() <= b.size() ? a : b;
+    const std::string_view longer = a.size() <= b.size() ? b : a;
+    if (shorter.empty()) return false;
+    for (size_t i = 0; i < shorter.size(); i++) {
+        if (asciiLower(shorter[i]) != asciiLower(longer[i])) return false;
+    }
+    return longer.size() == shorter.size() || shorter.back() == '/' || longer[shorter.size()] == '/';
+}
+
+bool anyRootOnBase(const IntakeSnapshot &snapshot, const std::vector<std::string> &bases) {
+    for (const IntakeRecord &r : snapshot.records()) {
+        if (r.rootKey.empty()) continue;  // matches nothing
+        for (const std::string &base : bases) {
+            if (onOnePath(r.rootKey, base)) return true;
+        }
+    }
+    return false;
 }
 
 } // anonymous namespace
@@ -68,6 +95,13 @@ void applyMountAliases(std::vector<IntakeRecord> &records, const MountAliases &a
         }
         r.rootKey.assign(aliases.rewrite(normalized, aliased));
     }
+}
+
+bool remountChangesRows(const IntakeSnapshot &oldSnapshot, const MountAliases &before,
+                        const IntakeSnapshot &newSnapshot, const MountAliases &after) {
+    if (!rendersAlike(oldSnapshot, newSnapshot)) return true;
+    const std::vector<std::string> bases = MountAliases::changedBases(before, after);
+    return anyRootOnBase(oldSnapshot, bases) || anyRootOnBase(newSnapshot, bases);
 }
 
 const char *loaderStateName(LoaderState state) {

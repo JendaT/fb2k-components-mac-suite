@@ -58,11 +58,21 @@ bool hasSafeParts(std::string_view path) {
     return true;
 }
 
-// `key` is `mount` or lies under it (both normalized).
+char asciiLower(char c) {
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+// `key` is `mount` or lies under it (both normalized). The mount point is
+// compared ignoring ASCII case (see the header); bytes past it are not
+// compared here, and ASCII folding keeps lengths, so the caller's
+// key.substr(mount.size()) is still the rest of `key`.
 bool isUnder(std::string_view key, std::string_view mount) {
     if (mount == "/") return !key.empty() && key[0] == '/';
-    return key.size() >= mount.size() && key.compare(0, mount.size(), mount) == 0 &&
-           (key.size() == mount.size() || key[mount.size()] == '/');
+    if (key.size() < mount.size() || (key.size() > mount.size() && key[mount.size()] != '/')) return false;
+    for (size_t i = 0; i < mount.size(); i++) {
+        if (asciiLower(key[i]) != asciiLower(mount[i])) return false;
+    }
+    return true;
 }
 
 } // anonymous namespace
@@ -78,9 +88,7 @@ std::string smbShareKey(std::string_view source) {
     std::string key = percentDecode(rest);
     if (!hasSafeParts(key)) return std::string();
     const size_t shareEnd = std::min(key.find('/'), key.size());
-    for (size_t i = 0; i < shareEnd; i++) {
-        if (key[i] >= 'A' && key[i] <= 'Z') key[i] = static_cast<char>(key[i] - 'A' + 'a');
-    }
+    for (size_t i = 0; i < shareEnd; i++) key[i] = asciiLower(key[i]);
     return key;
 }
 
@@ -160,6 +168,20 @@ bool MountAliases::sameAs(const MountAliases &other) const {
         }
     }
     return true;
+}
+
+std::vector<std::string> MountAliases::changedBases(const MountAliases &a, const MountAliases &b) {
+    std::map<std::string, std::pair<const std::string *, const std::string *>> byMount;  // mount -> (a, b) alias
+    for (const Entry &e : a.entries_) byMount[e.mountKey].first = &e.aliasKey;
+    for (const Entry &e : b.entries_) byMount[e.mountKey].second = &e.aliasKey;
+    std::vector<std::string> bases;
+    for (const auto &[mount, aliasPair] : byMount) {
+        const auto &[inA, inB] = aliasPair;
+        if (inA && inB && *inA == *inB) continue;
+        bases.push_back(a.rewritten(mount));
+        bases.push_back(b.rewritten(mount));
+    }
+    return bases;
 }
 
 std::string MountAliases::describe() const {

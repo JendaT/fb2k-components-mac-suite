@@ -6,9 +6,11 @@
 //  not configured (nothing spawned), the default load (version then status,
 //  invalidate-all only on the first load and on a visual change), the inert
 //  state per doc 03 v1.2 (garbage, E_NO_RULES, timeout, a failed gate after
-//  a successful load), a failed refresh keeping the last data, coalesced
-//  reloads, mount aliases (a row on another mount point of the share, then
-//  losing that mount point), and shutdown killing the read lane.
+//  a successful load and the gate passing again before a failed status), a
+//  failed refresh keeping the last data, coalesced reloads, mount aliases (a
+//  row on another mount point of the share, then losing that mount point,
+//  and a share holding no root coming and going without invalidation), and
+//  shutdown killing the read lane.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -399,6 +401,34 @@ static void testRefreshFailures() {
     CHECK(waitFinished(*h, 7) && h->lastFinished().state == LoaderState::Ready, "the gate passes again");
     Published back = h->lastPublished();
     CHECK(back.invalidate && back.view && !back.view->isInert(), "leaving the inert state invalidates all");
+
+    // Doc 03 v1.2: inert only while the gate fails. A gate that passes again
+    // followed by a failed `status` is a failed refresh: the last data, stale.
+    g_context = "gate-passes-status-fails";
+    CHECK(mock::runSync({mock::mockPath(), "--mock-setup", "schema2"}, mock::mockEnv(state)) == 0, "schema2 again");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 8) && h->lastFinished().state == LoaderState::Inert, "the gate fails again: inert");
+    CHECK(mock::runSync({mock::mockPath(), "--mock-setup", "default"}, mock::mockEnv(state)) == 0, "default again");
+    mock::setMode(state, "status", "garbage");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 9), "the gate passes, then status fails");
+    st = h->lastFinished();
+    CHECK(st.state == LoaderState::Stale && st.roots == 16 && st.error.rfind("status: ", 0) == 0,
+          "stale with the status error, not inert");
+    CHECK(loader.statusLine().rfind(
+              "Refresh failed, showing the last data (CLI 0.3.0 \xC2\xB7 16 roots): status: ", 0) == 0,
+          "status line: not 'Inactive'");
+    Published stale = h->lastPublished();
+    CHECK(stale.reason == PublishReason::GatePassed && stale.invalidate && stale.view && !stale.view->isInert(),
+          "the last load is published again without the inert reason, invalidated");
+    const IntakeRowVisual *again = stale.view ? stale.view->visualFor(newAlbum(root), scratch) : nullptr;
+    CHECK(again && again->icon == IntakeIcon::CircleOpen && again->bgTint == 0x4A90D938 &&
+              again->tooltip.find("intake inactive") == std::string::npos,
+          "rows render the last loaded visual again");
+    clearMode(state, "status");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 10) && h->lastFinished().state == LoaderState::Ready, "recovers");
+    CHECK(!h->lastPublished().invalidate, "recovered, unchanged: no invalidation");
 }
 
 static void testCoalescing() {
@@ -463,6 +493,30 @@ static void testMountAliases() {
     CHECK(h->publishCount() == before + 2 && h->lastPublished().reason == PublishReason::Load &&
               !h->lastPublished().invalidate,
           "an unchanged mount table publishes nothing; the reload is unchanged");
+
+    // A share that holds no intake root mounts and unmounts: the new table
+    // is published (rows and roots keyed alike) without invalidation.
+    g_context = "mount-unrelated";
+    clearLog();
+    const MountEntry backup{state + "/backup", "//user@host-a/fixture-backup", "smbfs"};
+    size_t count = h->publishCount();
+    h->setMounts({lan, backup});
+    loader.remount();
+    CHECK(mock::waitUntil([&] { return h->publishCount() > count; }, 10), "the new table is published");
+    Published unrelated = h->lastPublished();
+    CHECK(unrelated.reason == PublishReason::Remount && !unrelated.invalidate &&
+              unrelated.view && unrelated.view->aliases().aliasCount() == 2,
+          "carrying the new alias, without invalidation");
+    const IntakeRowVisual *still = unrelated.view ? unrelated.view->visualFor(newAlbum(root), scratch) : nullptr;
+    CHECK(still && still->icon == IntakeIcon::CircleOpen, "rows on the roots' share keep matching");
+    count = h->publishCount();
+    h->setMounts({lan});
+    loader.remount();
+    CHECK(mock::waitUntil([&] { return h->publishCount() > count; }, 10), "the unmount is published");
+    CHECK(h->lastPublished().reason == PublishReason::Remount && !h->lastPublished().invalidate,
+          "and does not invalidate either");
+    CHECK(logCount("mount aliases changed under no intake root") == 2, "one Debug line each");
+    CHECK(callsAre(state, {kVersion, kStatus, kStatus}), "no CLI call for either");
 }
 
 static void testShutdown() {

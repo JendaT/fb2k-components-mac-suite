@@ -3,9 +3,9 @@
 //  foo_jl_intake_mac
 //
 //  Unit tests for IntakeLoadPolicy (the inert-state decision of doc 03 v1.2,
-//  the invalidation diff, alias application, status lines, the rules source
-//  line) and IntakeDecorStats (the hidden decor_stats counters). Synthetic
-//  records only.
+//  the invalidation diffs of a load and of a remount, alias application,
+//  status lines, the rules source line) and IntakeDecorStats (the hidden
+//  decor_stats counters). Synthetic records only.
 //
 // TEST_DEPS: src/Core/IntakeErrorMap.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSnapshot.mm src/Core/IntakeLog.mm src/Core/IntakeDecorationMap.mm
@@ -187,6 +187,64 @@ static void testApplyAliases() {
     CHECK(bad[0].rootKey.empty(), "an unusable rootPath gets an empty key");
 }
 
+static std::shared_ptr<const IntakeSnapshot> keyedSnapshot(std::vector<IntakeRecord> records,
+                                                           const MountAliases &aliases) {
+    applyMountAliases(records, aliases);
+    return IntakeSnapshot::build(std::move(records), {});
+}
+
+static void testRemountChangesRows() {
+    g_context = "remount-diff";
+    const MountEntry lan{"/Volumes/share", "//user@host-a/share", "smbfs"};
+    const MountEntry vpn{"/Volumes/share-1", "//user@host-b/share", "smbfs"};
+    const MountEntry backup{"/Volumes/backup", "//user@host-a/backup", "smbfs"};
+    const std::vector<IntakeRecord> roots = {record("itk_00000001", "/Volumes/share/income/a"),
+                                             record("itk_00000002", "/Users/someone/income/b")};
+    auto shareOnly = MountAliases::build({lan});
+    auto withBackup = MountAliases::build({lan, backup});
+    auto both = MountAliases::build({lan, vpn});
+    auto none = MountAliases::build({});
+    auto s0 = keyedSnapshot(roots, *shareOnly);
+
+    CHECK(!remountChangesRows(*s0, *shareOnly, *keyedSnapshot(roots, *withBackup), *withBackup),
+          "a share holding no root mounts: no row changes");
+    CHECK(!remountChangesRows(*keyedSnapshot(roots, *withBackup), *withBackup, *s0, *shareOnly),
+          "nor when it unmounts");
+
+    auto s1 = keyedSnapshot(roots, *both);
+    CHECK(rendersAlike(*s0, *s1), "a second mount point of the roots' share keeps the root keys");
+    CHECK(remountChangesRows(*s0, *shareOnly, *s1, *both),
+          "but rows under the new mount point start matching: changed (item side only)");
+    CHECK(remountChangesRows(*s1, *both, *s0, *shareOnly), "and stop matching when it goes");
+
+    auto raw = keyedSnapshot(roots, *none);
+    CHECK(remountChangesRows(*s0, *shareOnly, *raw, *none), "the roots' share unmounting: root keys change");
+    CHECK(remountChangesRows(*raw, *none, *s0, *shareOnly), "and mounting again");
+
+    std::vector<IntakeRecord> above = {record("itk_00000003", "/Volumes")};
+    CHECK(remountChangesRows(*keyedSnapshot(above, *shareOnly), *shareOnly, *keyedSnapshot(above, *withBackup),
+                             *withBackup),
+          "a root above a changed mount point: its rows under that mount change");
+    std::vector<IntakeRecord> cased = {record("itk_00000004", "/VOLUMES")};
+    CHECK(remountChangesRows(*keyedSnapshot(cased, *shareOnly), *shareOnly, *keyedSnapshot(cased, *withBackup),
+                             *withBackup),
+          "the path test ignores ASCII case (conservative)");
+
+    std::vector<IntakeRecord> local = {record("itk_00000005", "/Users/someone/income/c")};
+    CHECK(!remountChangesRows(*keyedSnapshot(local, *none), *none, *keyedSnapshot(local, *both), *both),
+          "local roots only: shares mounting change no row");
+    CHECK(!remountChangesRows(*IntakeSnapshot::empty(), *none, *IntakeSnapshot::empty(), *both),
+          "no roots: no row changes");
+    std::vector<IntakeRecord> unusable = {record("itk_00000006", "relative/path")};
+    CHECK(!remountChangesRows(*keyedSnapshot(unusable, *none), *none, *keyedSnapshot(unusable, *both), *both),
+          "a root with no usable key matches nothing");
+
+    std::vector<IntakeRecord> visual = roots;
+    visual[1].status = IntakeStatus::Proposed;
+    CHECK(remountChangesRows(*s0, *shareOnly, *keyedSnapshot(visual, *withBackup), *withBackup),
+          "snapshots that do not render alike always count");
+}
+
 static void testStatusLine() {
     g_context = "status-line";
     LoaderStatus s;
@@ -272,6 +330,7 @@ int main(void) {
         testFailureEffect();
         testRendersAlike();
         testApplyAliases();
+        testRemountChangesRows();
         testStatusLine();
         testDecorStats();
     }

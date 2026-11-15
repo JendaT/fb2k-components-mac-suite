@@ -70,9 +70,10 @@
 //
 //  Thread-safety: every method may be called from any thread. All process
 //  state lives on one private serial queue. Do not call the synchronous
-//  methods (cancelReadLane, runningCount) from inside a budget or completion
-//  handler that runs on a queue those methods could be waiting behind; the
-//  runner's own queue is private, so ordinary caller queues are fine.
+//  methods (cancelReadLane, closeReadLane, runningCount) from inside a
+//  budget or completion handler that runs on a queue those methods could be
+//  waiting behind; the runner's own queue is private, so ordinary caller
+//  queues are fine.
 //
 //  Lifetime: the runner's state stays alive while any of its processes is
 //  running, even if the ProcessRunner object is destroyed first; destroying
@@ -186,6 +187,14 @@ public:
     // usual. ReportAtBudget, ReportOnly and Unbounded processes are left running
     // (on_quit, PLAN.md 3.2). Returns how many groups were signalled.
     size_t cancelReadLane();
+
+    // cancelReadLane(), and the read lane stays closed: a KillAtBudget
+    // process whose spawn runs after this call (a start() racing it
+    // included) is never spawned; it completes with cancelled set and
+    // end == SpawnFailed (stage "read lane closed", ECANCELED). Other
+    // policies still start. For on_quit, so nothing read-only outlives the
+    // sweep. Returns like cancelReadLane().
+    size_t closeReadLane();
 
     // Synchronously: processes started and not yet reaped, abandoned ones
     // included. For diagnostics and tests.

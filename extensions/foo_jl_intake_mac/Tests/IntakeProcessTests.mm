@@ -541,6 +541,32 @@ void testCancelReadLane(ProcessRunner &runner) {
     mock::killLeftovers();
 }
 
+// closeReadLane() (on_quit): a read-only call started after it is never
+// spawned and completes as cancelled; the mutation lane still starts. Its own
+// runner, so the shared one keeps an open read lane.
+void testClosedReadLane() {
+    g_context = "closed-lane";
+    ProcessRunner closed;
+    std::string state = mock::setupState();
+    CHECK_EQ(closed.closeReadLane(), 0, "nothing running: nothing signalled");
+    auto read = runToEnd(closed, mockSpec(state, {"version", "--json"}), 5);
+    CHECK(read->completed, "the refused read call still completes");
+    CHECK(read->result.cancelled && read->result.end == ProcessEnd::SpawnFailed && read->result.pid == 0 &&
+              read->result.spawnStage == "read lane closed" && read->result.spawnErrno == ECANCELED,
+          "cancelled, never spawned");
+    intake::EnvelopeResult env = parsed(*read);
+    CHECK(env.outcome == CliOutcome::Cancelled && env.errors.empty(), "interpreted as cancelled, no error");
+    CHECK(mock::callsLog(state).find("version\t--json") == std::string::npos, "the CLI never ran");
+
+    ProcessSpec mutate = mockSpec(state, {"version", "--json"}, BudgetPolicy::ReportAtBudget, OutputTarget::Files);
+    mutate.outputDirectory = mock::newDir("out");
+    auto run = runToEnd(closed, mutate);
+    CHECK(!run->result.cancelled && run->result.end == ProcessEnd::Exited && parsed(*run).outcome == CliOutcome::Ok,
+          "a mutation-lane call still runs");
+    CHECK_EQ(closed.runningCount(), 0, "nothing left running");
+    mock::killLeftovers();
+}
+
 std::mutex g_signalsMutex;
 std::vector<std::pair<pid_t, int>> g_signals;
 
@@ -778,6 +804,7 @@ int main(void) {
         testUnbounded(runner);
         testReportOnly(runner);
         testCancelReadLane(runner);
+        testClosedReadLane();
         testAbandonUnkillable();
         testTimerRacingExit(scripts);
         testTwoRunnersOneDirectory();
