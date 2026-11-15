@@ -4,6 +4,10 @@ All notable changes to TIDAL Integration will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Playlist folders**: Pull places each TIDAL playlist under its TIDAL folder ("TIDAL » Folder » Title"), so Playlist Organizer shows the same folders.
+- **Moved playlists**: Playlists renamed or moved on TIDAL, and ones pulled before folders were read, are renamed in place on the next Pull (shown as "Move") and keep their tracks and order.
+
 ### Fixed
 - **Pull from TIDAL**: Works again. In 0.4.0 it stopped with an error on every run, because the playlist-folder request lost its sign-in on a server redirect.
 

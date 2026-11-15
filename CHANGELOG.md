@@ -866,6 +866,9 @@ Display P3 colors contributed by @Scannou (#55).
 
 ### [Unreleased]
 
+#### Added
+- **Playlist folders**: Pull mirrors TIDAL playlist folders and renames already-pulled playlists in place instead of recreating them.
+
 #### Fixed
 - **Pull from TIDAL**: Works again; in 0.4.0 it stopped with an error on every run.
 

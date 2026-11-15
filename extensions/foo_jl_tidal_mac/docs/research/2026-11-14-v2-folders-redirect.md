@@ -32,3 +32,12 @@ Same shape for all three requests: no params, `folderId=root`, and `folderId=roo
 - **Four favourite-album playlists are empty:** `GET /v1/albums/<id>` answers `404 Album not found` for them (checked for CZ and US), while other favourites load. TIDAL has removed those albums from its catalogue, but they are still in the favourites list.
   - `fetchAndApplyFavoriteAlbums` ignores album-track fetch errors, so Pull reports success.
   - The planner then treats the existing empty playlist as Unchanged.
+
+## Folder mirroring, live run (2026-11-15)
+
+Same method: a temporary self-test (not committed), with Playlist Organizer built with its outside-rename fix.
+- **Folder walk:** 8 requests (the root with `includeOnly=FOLDER`, then one per folder), 7 folders, 23 playlists in folders, no subfolders, no second page. Paging and nesting are covered by unit tests only.
+- **Preview:** 0 create, 20 move, 0 update, 0 delete, 73 unchanged. Every move had identical tracks (+0 -0), so each was a pure rename.
+- **Apply (moves only):** each old playlist first got the TIDAL lock, to exercise the lock path. 20/20 were renamed with their item counts intact, the lock was back on every one, and the GUIDs and playlist order were unchanged (132 before and after).
+- **Playlist Organizer** followed all 20 renames live: 6 folders were created under TIDAL, and the nodes moved into them. Every one of the 93 TIDAL nodes resolves to a playlist; the rest of the tree is unchanged.
+- **Three foldered playlists are not pulled at all:** the 3 in folder "externals" are not in `getUserPlaylists`, the list Pull works from (presumably other users' playlists added to a folder), so that folder gets no local playlists. This is unchanged behaviour.
