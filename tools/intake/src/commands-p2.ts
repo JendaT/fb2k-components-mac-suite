@@ -14,7 +14,7 @@ import {
   saveGenreMap, saveLabelMap,
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
-import type { HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
+import type { AssignConfig, HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
 import { CLI_VERSION, PRE_LIBRARY_STATUSES } from "./types.ts";
 import { isSidecarName, isVariousArtists, isoLocal, round2, walkDirs } from "./util.ts";
 
@@ -231,6 +231,23 @@ function assignInput(root: RootRef): AssignInput {
     tier_eligible: root.sidecar.quality.tier_eligible,
     singles: root.sidecar.singles === true,
   };
+}
+
+/**
+ * Recompute a proposal's target from the library as it is now, keeping its
+ * collection (doc 02: "already has" is read from disk at propose time). A
+ * target built by an earlier `assign` may predate releases added to the
+ * collection since, or the layout itself (a compilation assigned before
+ * amendment 003 has no target).
+ */
+export function refreshTarget(root: RootRef, library: LibraryProbe, cfg: AssignConfig = loadAssignConfig()): void {
+  const p = root.sidecar.proposal;
+  if (!p) return;
+  const plan = buildTargetPath(assignInput(root), p.target_collection, cfg, library);
+  p.target_path = plan.target_path;
+  p.structure_slot = plan.structure_slot;
+  if (plan.restructure_candidates.length > 0) p.restructure_candidates = plan.restructure_candidates;
+  else delete p.restructure_candidates;
 }
 
 /** Assign an already-resolved RootRef list in place (see identifyRoots). */

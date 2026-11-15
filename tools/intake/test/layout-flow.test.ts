@@ -136,18 +136,22 @@ test("a VA root: override, propose under [Compilations], approve, execute into [
   expect(assigned.errors).toEqual([]);
   expect(doc(VA_ROOT()).proposal).toMatchObject({ structure_slot: "compilations", target_path: target });
 
-  // Formerly refused with "compilations slot pending".
+  // Formerly refused with "compilations slot pending". Propose identifies the
+  // root and rebuilds the target, so the release folder now has the year.
   const proposed = await cmdPropose([VA_ROOT()], OPTS, OFFLINE);
   expect(proposed.errors).toEqual([]);
-  expect(proposed.data).toMatchObject([{ status: "proposed", target_path: target }]);
+  const placedTarget = hq(PSY, "[Compilations]", folder.replace(
+    "Various Artists Example", "Various Artists [2011] Example",
+  ));
+  expect(proposed.data).toMatchObject([{ status: "proposed", target_path: placedTarget }]);
 
   expect(cmdApprove([VA_ROOT()], OPTS).errors).toEqual([]);
   const executed = await cmdExecute([VA_ROOT()], OPTS);
   expect(executed.errors).toEqual([]);
   const placed = doc(VA_ROOT());
   expect(placed.status).toBe("placed");
-  expect(placed.placed!.target_path).toBe(target);
+  expect(placed.placed!.target_path).toBe(placedTarget);
   expect(readdirSync(hq(PSY))).toEqual(["[Compilations]"]);
-  for (const f of placed.files) expect(existsSync(join(target, f.path))).toBe(true);
-  expect(readdirSync(join(target, "cd1")).filter((n) => n.endsWith(".mp3")).length).toBeGreaterThan(0);
+  for (const f of placed.files) expect(existsSync(join(placedTarget, f.path))).toBe(true);
+  expect(readdirSync(join(placedTarget, "cd1")).filter((n) => n.endsWith(".mp3")).length).toBeGreaterThan(0);
 });

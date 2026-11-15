@@ -10,7 +10,8 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHashAs } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import {
-  assignRoots, diskLibraryProbe, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef,
+  assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, writeSidecarWithEvent,
+  type P2Deps, type RootRef,
 } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
 import { CLI_VERSION, type JsonError, type Status, type TierDef } from "./types.ts";
@@ -136,7 +137,9 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
 
   const data: ProposeRow[] = [];
   // One library probe for the run: its listings are shared by every root.
-  const p2deps: P2Deps = { ...deps, library: deps.library ?? diskLibraryProbe() };
+  const library = deps.library ?? diskLibraryProbe();
+  const p2deps: P2Deps = { ...deps, library };
+  const assignCfg = loadAssignConfig();
   for (const root of roots) {
     if (root.sidecar.status !== "resolved") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot propose from status ${root.sidecar.status}`, path: root.dir });
@@ -153,6 +156,9 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
         await assignRoots([root], { ...opts, collection: null, by: null }, rdir, p2deps);
       }
     }
+    // The layout is read at propose time (doc 02), also for a proposal that an
+    // earlier `assign` built: same collection, target from the library now.
+    refreshTarget(root, library, assignCfg);
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
       const why = root.sidecar.singles ? "singles slot pending"

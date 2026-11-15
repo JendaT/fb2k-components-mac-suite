@@ -150,7 +150,11 @@ test("a VA root lands in the compilations slot; propose proposes its [Compilatio
   };
   const proposed = await cmdPropose([dir], { ...OPTS, allResolved: false }, offline);
   expect(proposed.errors).toEqual([]);
-  expect(proposed.data).toMatchObject([{ status: "proposed", target_path: target }]);
+  // Propose identifies the root and rebuilds the target at propose time, so
+  // the release folder gains the identified year.
+  expect(proposed.data).toMatchObject([{
+    status: "proposed", target_path: `/library/music.hq/[Ambient]/[Compilations]/Various Artists [2012] ${ALBUM}`,
+  }]);
 });
 
 test("a user override on a VA root is logged but adds no feedback for the VA credit", async () => {
