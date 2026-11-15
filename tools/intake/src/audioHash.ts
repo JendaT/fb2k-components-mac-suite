@@ -1,7 +1,7 @@
 // audio_hash per docs/intake/intake-03-contract-spec.md (normative).
 // Tag edits must not change the hash for flac/mp3/wav/aiff.
 
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { ext } from "./util.ts";
 
 export interface HashResult {
@@ -9,9 +9,26 @@ export interface HashResult {
   issues: string[]; // e.g. flac_md5_unset
 }
 
+/**
+ * Issues of an unset-MD5 FLAC that could not be decoded and is keyed by the
+ * `fsha1:` fallback (doc 03): the root gets needs_review.
+ */
+const FLAC_FALLBACK_ISSUES: readonly string[] = ["flac_decoder_missing", "flac_decode_failed"];
+
+export function isFlacFallbackIssue(issue: string): boolean {
+  return FLAC_FALLBACK_ISSUES.includes(issue);
+}
+
 function sha1Of(buf: Uint8Array): string {
   const h = new Bun.CryptoHasher("sha1");
   h.update(buf);
+  return h.digest("hex");
+}
+
+/** Whole-file SHA1, streamed: the file is never held in memory at once. */
+async function sha1File(path: string): Promise<string> {
+  const h = new Bun.CryptoHasher("sha1");
+  for await (const chunk of Bun.file(path).stream()) h.update(chunk);
   return h.digest("hex");
 }
 
@@ -45,10 +62,15 @@ function skipId3v2(b: Uint8Array): number {
   return off;
 }
 
-/** FLAC: "flacmd5:" + embedded STREAMINFO MD5. */
-function flacHash(b: Uint8Array): HashResult {
+type StreamInfo =
+  | { kind: "md5"; md5: string } // STREAMINFO MD5 set
+  | { kind: "unset" } // STREAMINFO MD5 all zeros
+  | { kind: "invalid"; issue: "flac_bad_magic" | "flac_no_streaminfo" };
+
+/** Read the STREAMINFO MD5 of a FLAC (or the head of one). */
+function flacStreamInfo(b: Uint8Array): StreamInfo {
   let off = skipId3v2(b);
-  if (ascii(b, off, 4) !== "fLaC") return { hash: "fsha1:" + sha1Of(b), issues: ["flac_bad_magic"] };
+  if (ascii(b, off, 4) !== "fLaC") return { kind: "invalid", issue: "flac_bad_magic" };
   off += 4;
   while (off + 4 <= b.length) {
     const header = b[off]!;
@@ -59,13 +81,67 @@ function flacHash(b: Uint8Array): HashResult {
       // STREAMINFO is 34 bytes; MD5 is the trailing 16.
       const md5 = b.subarray(off + 18, off + 34);
       const hex = Array.from(md5, (x) => x.toString(16).padStart(2, "0")).join("");
-      if (hex === "0".repeat(32)) return { hash: "fsha1:" + sha1Of(b), issues: ["flac_md5_unset"] };
-      return { hash: "flacmd5:" + hex, issues: [] };
+      return hex === "0".repeat(32) ? { kind: "unset" } : { kind: "md5", md5: hex };
     }
     if (header & 0x80) break; // last block and no STREAMINFO seen
     off += len;
   }
-  return { hash: "fsha1:" + sha1Of(b), issues: ["flac_no_streaminfo"] };
+  return { kind: "invalid", issue: "flac_no_streaminfo" };
+}
+
+// Decode to exactly what a correctly set STREAMINFO MD5 covers: interleaved
+// samples, little-endian, signed, whole bytes per sample (doc 03).
+const FLAC_DECODE_ARGS = ["-d", "-c", "-s", "--force-raw-format", "--endian=little", "--sign=signed"];
+
+type Decoded = { md5: string } | { issue: "flac_decoder_missing" | "flac_decode_failed" };
+
+/**
+ * MD5 of the decoded audio of a FLAC file (path) or buffer (fed on stdin).
+ * The decoder's stdout is streamed into the hasher, never buffered whole.
+ * `flac` is located on PATH like `metaflac` (provenance.ts).
+ */
+async function flacDecodedMd5(src: string | Uint8Array): Promise<Decoded> {
+  const flac = Bun.which("flac");
+  if (flac === null) return { issue: "flac_decoder_missing" };
+  let proc;
+  try {
+    proc = Bun.spawn([flac, ...FLAC_DECODE_ARGS, typeof src === "string" ? resolve(src) : "-"], {
+      stdin: typeof src === "string" ? "ignore" : src,
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+  } catch {
+    return { issue: "flac_decoder_missing" }; // found on PATH but cannot be started
+  }
+  try {
+    const h = new Bun.CryptoHasher("md5");
+    for await (const chunk of proc.stdout) h.update(chunk);
+    // Non-zero exit: CRC mismatch, lost sync, truncation (sample count short).
+    if ((await proc.exited) !== 0) return { issue: "flac_decode_failed" };
+    return { md5: h.digest("hex") };
+  } catch {
+    proc.kill();
+    return { issue: "flac_decode_failed" };
+  }
+}
+
+/**
+ * Unset STREAMINFO MD5: key by the MD5 of the decoded audio, the value a
+ * correct STREAMINFO would hold, so tag writes and a later repair keep the
+ * key. Without a usable decoder: whole-file SHA1 fallback (doc 03).
+ */
+async function flacUnsetMd5Hash(src: string | Uint8Array, wholeFileSha1: () => Promise<string>): Promise<HashResult> {
+  const d = await flacDecodedMd5(src);
+  if ("md5" in d) return { hash: "flacmd5:" + d.md5, issues: ["flac_md5_unset"] };
+  return { hash: "fsha1:" + (await wholeFileSha1()), issues: ["flac_md5_unset", d.issue] };
+}
+
+/** FLAC: "flacmd5:" + STREAMINFO MD5 (embedded, or computed when unset). */
+async function flacHash(b: Uint8Array): Promise<HashResult> {
+  const info = flacStreamInfo(b);
+  if (info.kind === "md5") return { hash: "flacmd5:" + info.md5, issues: [] };
+  if (info.kind === "unset") return flacUnsetMd5Hash(b, async () => sha1Of(b));
+  return { hash: "fsha1:" + sha1Of(b), issues: [info.issue] };
 }
 
 /** MP3: SHA1 of bytes minus ID3v2 head block(s), minus ID3v1/APEv2 tail. */
@@ -126,7 +202,7 @@ function dsfHash(b: Uint8Array): HashResult {
   return { hash: "fsha1:" + sha1Of(b), issues: ["dsf_no_data_chunk"] };
 }
 
-export function audioHashBuffer(name: string, b: Uint8Array): HashResult {
+export async function audioHashBuffer(name: string, b: Uint8Array): Promise<HashResult> {
   switch (ext(name)) {
     case "flac": return flacHash(b);
     case "mp3": return mp3Hash(b);
@@ -146,13 +222,29 @@ const FLAC_PREFIX = 1 << 20;
 export async function audioHash(path: string): Promise<HashResult> {
   const file = Bun.file(path);
   if (ext(basename(path)) === "flac") {
-    const prefix = new Uint8Array(await file.slice(0, FLAC_PREFIX).arrayBuffer());
-    const r = flacHash(prefix);
-    // A resolved STREAMINFO MD5 is independent of the rest of the file, so it
-    // is byte-identical to the full-file result. Any fallback (fsha1 over the
-    // whole buffer, bad magic, unset MD5) needs the complete file, so re-read.
-    if (r.hash.startsWith("flacmd5:")) return r;
+    const info = flacStreamInfo(new Uint8Array(await file.slice(0, FLAC_PREFIX).arrayBuffer()));
+    // A set STREAMINFO MD5 is independent of the rest of the file, so it is
+    // byte-identical to the full-file result.
+    if (info.kind === "md5") return { hash: "flacmd5:" + info.md5, issues: [] };
+    // So is an unset one: the bytes up to STREAMINFO are the same in the full
+    // file. The decoder reads the file itself and its output is streamed into
+    // the hasher, as is the fsha1 fallback, so neither loads the whole file.
+    if (info.kind === "unset") return flacUnsetMd5Hash(path, () => sha1File(path));
+    // Bad magic / no STREAMINFO may be an artifact of the 1 MiB cut: re-read.
   }
   const buf = new Uint8Array(await file.arrayBuffer());
   return audioHashBuffer(basename(path), buf);
+}
+
+/**
+ * Re-hash a file to check it against its recorded key `expected` (execute
+ * verify, `--resume`, gc re-verify). A whole-file key (`fsha1:`) is checked as
+ * a whole-file SHA1 whatever the format: an unset-MD5 FLAC keyed by the
+ * fallback while `flac` was missing still verifies after `flac` is installed
+ * (audioHash would now give its `flacmd5:` key). No tags are written to such a
+ * file, so byte identity holds; for every other `fsha1:` file the two agree.
+ */
+export async function audioHashAs(path: string, expected: string): Promise<HashResult> {
+  if (expected.startsWith("fsha1:")) return { hash: "fsha1:" + (await sha1File(path)), issues: [] };
+  return audioHash(path);
 }

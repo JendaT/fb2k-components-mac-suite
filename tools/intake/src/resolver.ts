@@ -4,7 +4,7 @@
 
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { audioHash } from "./audioHash.ts";
+import { audioHash, isFlacFallbackIssue } from "./audioHash.ts";
 import { albumFromTags, parseDirName } from "./naming.ts";
 import { readSnapshot, parseFilename, type AudioSnapshot } from "./tags.ts";
 import type {
@@ -337,7 +337,11 @@ export class Resolver {
     }
     for (const iss of opts.extraIssues ?? []) issues.push(iss);
 
-    const needsReview = review || tier === "reject" || opts.singles || confidence < config.thresholds.review;
+    // An unset-MD5 FLAC that would not decode is keyed by the fsha1 fallback;
+    // a decode failure often means a corrupt file, so it must be seen (doc 03).
+    const needsReview =
+      review || tier === "reject" || opts.singles || confidence < config.thresholds.review ||
+      issues.some(isFlacFallbackIssue);
     const status = resolved || review ? "resolved" : "new";
 
     const cluster: Cluster = {

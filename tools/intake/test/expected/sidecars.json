@@ -1434,7 +1434,7 @@
     "files": [
       {
         "path": "01 - Rainmaker.flac",
-        "audio_hash": "fsha1:8853f71afd45077740995dbaf596ff522ec6a6b6",
+        "audio_hash": "flacmd5:62b0c875596da67b50de3e70cfe07bbb",
         "codec": "flac",
         "lossless": true,
         "sample_rate": 44100,
@@ -1453,7 +1453,7 @@
       },
       {
         "path": "02 - Prima Materia.flac",
-        "audio_hash": "fsha1:6a129e1688a2fc38dc2832237172a60adb943c03",
+        "audio_hash": "flacmd5:e017d144d825a2990bb87f21222d2494",
         "codec": "flac",
         "lossless": true,
         "sample_rate": 44100,

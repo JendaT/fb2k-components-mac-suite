@@ -7,7 +7,7 @@ import {
   readFileSync, readdirSync, renameSync, rmSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { audioHash } from "./audioHash.ts";
+import { audioHashAs } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
@@ -301,7 +301,11 @@ async function verifyTree(base: string, audio: { to: string; hash: string }[]): 
   const results = await mapLimit(audio, IO_CONCURRENCY, async (a) => {
     const p = join(base, a.to);
     if (!existsSync(p)) return `missing: ${a.to}`;
-    return (await audioHash(p)).hash !== a.hash ? `hash mismatch: ${a.to}` : null;
+    const r = await audioHashAs(p, a.hash);
+    if (r.hash === a.hash) return null;
+    // An unset-MD5 FLAC keyed by its decoded audio cannot be re-checked
+    // without the decoder; say so instead of reporting a corrupt copy.
+    return r.issues.includes("flac_decoder_missing") ? `flac decoder missing: ${a.to}` : `hash mismatch: ${a.to}`;
   });
   return results.find((r) => r !== null) ?? null;
 }
@@ -406,7 +410,7 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         copyFileSync(item.from, dest);
       }
       for (const a of plan.audio) {
-        const r = await writeProvenance(join(tmp, a.to), tags);
+        const r = await writeProvenance(join(tmp, a.to), tags, a.hash);
         if (r.issue) issues.push(r.issue);
         fsyncFile(join(tmp, a.to));
       }

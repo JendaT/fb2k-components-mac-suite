@@ -256,9 +256,9 @@ async function main(): Promise<void> {
   });
 
   // FLAC with unset STREAMINFO MD5 — rippers/encoders that skip the signature.
-  // audio_hash must fall back to `fsha1:` and the root must carry a
-  // `flac_md5_unset` quality issue. Two of the three files are unset so one
-  // root exercises both the fallback and the normal `flacmd5:` path.
+  // audio_hash must be `flacmd5:` over the decoded audio (CR-003) and the root
+  // must carry a `flac_md5_unset` quality issue. Two of the three files are
+  // unset so one root exercises both the computed and the embedded MD5 path.
   const bluetech = "todo/Bluetech [2011] Cosmic Dubwise";
   for (const [i, title] of ["Rainmaker", "Prima Materia", "Dawn Chorus"].entries()) {
     const file = join(INCOME, bluetech, `${String(i + 1).padStart(2, "0")} - ${title}.flac`);
