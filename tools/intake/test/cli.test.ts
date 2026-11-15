@@ -31,7 +31,7 @@ test("version --json returns {cli, schema, engine, commands} in an envelope", ()
   const env = JSON.parse(r.stdout);
   expect(env).toEqual({
     ok: true,
-    data: { cli: "0.2.1", schema: 1, engine: "0.2.0", commands: expect.any(Array) },
+    data: { cli: "0.3.0", schema: 1, engine: "0.2.0", commands: expect.any(Array) },
     errors: [],
   });
 });
