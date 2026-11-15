@@ -112,6 +112,24 @@ enum BodyTint {
 };
 constexpr float kBodyTintStrength[] = { 0.0f, 0.5f, 1.0f };
 
+// The controls the cog at the bottom right offers on hover: none, the mixer
+// (beat jumps and loops, clicks seek to a beat) or analytics (the loudness
+// summary and the hover readout, as set in the preferences)
+enum ControlsMode {
+    ControlsNone = 0,
+    ControlsMixer = 1,
+    ControlsAnalytics = 2
+};
+
+// Zoomed in, how the view follows the playback cursor: not at all; keeping
+// it where it is once it is in view (panning moves that spot); or keeping it
+// in the centre, the only mode that shows space beyond the track's ends
+enum ZoomFollow {
+    FollowNone = 0,
+    FollowCursor = 1,
+    FollowCentre = 2
+};
+
 // Where the hover readout sits
 enum ReadoutPosition {
     ReadoutFollowsMouse = 0,
@@ -135,23 +153,66 @@ constexpr int kTextSizes[] = { 10, 12, 14, 16 };
 constexpr bool kDefaultTimeRuler = false;
 constexpr bool kDefaultLevelScale = true;
 constexpr int kDefaultChannelMode = ChannelsStereo;
-// Played part: dimmed by an overlay of the background, shaped at the cursor
+// Played part: dimmed by an overlay of the background, shaped at the cursor.
+// Stored under cursor_effect by number, so the numbers stay put: a retired
+// effect keeps its number and loads as another (cursorEffectFromStored).
 enum CursorEffect {
-    CursorEffectNone = 0,      // Sharp transition, no effect
-    CursorEffectGradient = 1,  // Fade gradient at edge
-    CursorEffectGlow = 2,      // Pulsing halo/bloom
-    CursorEffectScanline = 3,  // Multiple thin vertical lines
-    CursorEffectPulse = 4,     // Breathing played area
-    CursorEffectTrail = 5,     // Motion blur trail behind cursor
-    CursorEffectShimmer = 6,   // Oscillating brightness bands
+    CursorEffectNone = 0,           // Sharp transition, no effect
+    CursorEffectGradient = 1,       // Fade gradient at edge
+    CursorEffectGlow = 2,           // Bloom from the cursor line, pulsing
+    CursorEffectScanline = 3,       // Multiple thin vertical lines
+    CursorEffectPulse = 4,          // Breathing played area
+    CursorEffectTrail = 5,          // Retired (a longer Gradient): loads as Gradient
+    CursorEffectShimmer = 6,        // Oscillating brightness bands
+    CursorEffectParticles = 7,      // Sparks off the waveform, more where louder (experimental)
+    CursorEffectFirewall = 8,       // Flames standing on the cursor (experimental)
+    CursorEffectEarthcrusher = 9,   // Jagged cursor, cracked scorched waveform behind it (experimental)
     CursorEffectCount
 };
+
+// The effect to draw for a stored value: Trail as Gradient, anything unknown
+// as None (the default)
+constexpr int cursorEffectFromStored(int64_t stored) {
+    if (stored == CursorEffectTrail) return CursorEffectGradient;
+    return stored >= 0 && stored < CursorEffectCount ? (int)stored : CursorEffectNone;
+}
+
+// Effects that move by themselves: redrawn every frame while playing
+constexpr bool cursorEffectAnimates(int effect) {
+    switch (effect) {
+        case CursorEffectGlow: case CursorEffectScanline: case CursorEffectPulse: case CursorEffectShimmer:
+        case CursorEffectParticles: case CursorEffectFirewall: case CursorEffectEarthcrusher:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Animated effects whose pulse follows the beat with BPM sync on. Particles
+// burst on the music's own beats, from the waveform's level.
+constexpr bool cursorEffectSyncsToBeat(int effect) {
+    return cursorEffectAnimates(effect) && effect != CursorEffectParticles;
+}
 constexpr bool kDefaultShadePlayedPortion = true;
 constexpr int kDefaultPlayedDimming = 25;       // percent: 0 = as bright as the rest
 constexpr int kDefaultCursorEffect = CursorEffectNone;
 constexpr bool kDefaultBpmSync = false;         // sync animated cursor effects to the track's BPM
 constexpr bool kDefaultCursorTime = false;       // elapsed time chip beside the cursor
 constexpr bool kDefaultGlassBackground = false; // Opaque background by default
+constexpr bool kDefaultZoomEnabled = true;
+constexpr bool kDefaultZoomDetail = false;      // fine detail: more disk per track, see TrackAnalyzer.h
+constexpr bool kDefaultPhraseMarkers = false;   // off until validated against a library
+constexpr int kDefaultPhraseLength = 32;
+constexpr bool kDefaultPhraseBreakColours = true;
+constexpr bool kDefaultPhraseFollowGrid = true;
+constexpr int kDefaultControlsMode = ControlsNone;
+constexpr int kDefaultMixerOutputBufferMs = 100;   // a loop or jump change is heard after about this
+constexpr int kMixerOutputBufferChoices[] = { 0, 50, 100, 150, 200 };
+constexpr bool kDefaultSnapToBeat = true;        // mixer: a click jumps to the nearest beat, keeping the beat
+constexpr bool kDefaultLockRelative = true;     // a locked size stays in proportion on another display
+constexpr int kMinLockedWidth = 100;            // points; the element's own minimum size
+constexpr int kMinLockedHeight = 40;
+constexpr int kDefaultZoomFollow = FollowNone;
 constexpr int kDefaultCacheSizeMB = 2048;
 constexpr int kDefaultCacheRetentionDays = 180;
 

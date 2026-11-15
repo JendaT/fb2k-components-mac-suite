@@ -51,6 +51,17 @@ void addOrphanItem(metadb_handle_ptr handle);
 void rebuildInOrder(const std::vector<t_playback_queue_item>& contents,
                     const std::vector<size_t>& order);
 
+// Insert playlist items (in the given order) into the queue before row
+// `destRow` of `contents`, the queue as currently captured. The SDK can
+// only append, so a mid-queue insert flushes and re-adds everything
+// (stale playlist references are re-added by handle); destRow at or past
+// the end appends without a rebuild. Fires one SDK callback per mutation;
+// callers suppress reloads around this (see QueueManagerController).
+void insertFromPlaylist(const std::vector<t_playback_queue_item>& contents,
+                        size_t destRow,
+                        size_t playlist,
+                        const std::vector<size_t>& playlistItems);
+
 // Snapshot the current queue as location + playlist position entries
 std::vector<queue_persist::SavedEntry> captureForPersistence();
 
@@ -71,10 +82,11 @@ bool isItemValid(const t_playback_queue_item& item);
 // Check if item is an orphan (not from a playlist)
 bool isOrphanItem(const t_playback_queue_item& item);
 
-// Play a queue item: from its source playlist position when the item is
-// still valid, otherwise by starting playback so the queue is consumed.
-// Always returns true (kept for interface stability).
-bool playItem(const t_playback_queue_item& item);
+// Play the first queue item and remove it from the queue, keeping the rest.
+// Starting a track directly (e.g. from its playlist position) would make
+// fb2k flush the whole queue, so callers move the wanted item to the front
+// first and let "next" consume it.
+void playQueueFront();
 
 // Format a queue item for display using title format script
 pfc::string8 formatItem(const t_playback_queue_item& item, const char* formatString);

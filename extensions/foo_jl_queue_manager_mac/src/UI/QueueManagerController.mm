@@ -297,15 +297,21 @@ public:
     NSInteger row = _tableView.selectedRow;
     if (row < 0 || row >= (NSInteger)_queueItems.count) return;
 
-    QueueItemWrapper* item = _queueItems[row];
+    // fb2k flushes the whole queue when a track is started directly, so
+    // move the item to the front and let playback take it from the queue.
+    // The rest of the queue stays, and Stop After Queue sees a normal advance.
+    auto contents = queue_ops::getContentsVector();
+    if ((size_t)row >= contents.size() ||
+        contents[row].m_handle != [_queueItems[row] handle]) {
+        return;  // View is stale; the pending callback will reload it
+    }
 
-    // Build a t_playback_queue_item for playItem
-    t_playback_queue_item queueItem;
-    queueItem.m_handle = [item handle];
-    queueItem.m_playlist = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourcePlaylist;
-    queueItem.m_item = item.isOrphan ? queue_config::kOrphanPlaylistIndex : item.sourceItem;
+    auto newOrder = queue_reorder::planMove(contents.size(), {(size_t)row}, 0);
+    if (!newOrder.empty()) {  // Empty when the item is already first
+        [self rebuildQueue:contents inOrder:newOrder];
+    }
 
-    queue_ops::playItem(queueItem);
+    queue_ops::playQueueFront();
 }
 
 - (void)tableViewDoubleClick:(id)sender {
@@ -382,7 +388,7 @@ public:
 
     // Handle drop from SimPlaylist
     if ([pasteboard.types containsObject:SimPlaylistPasteboardType]) {
-        return [self handleSimPlaylistDropFromPasteboard:pasteboard];
+        return [self handleSimPlaylistDropAtRow:row fromPasteboard:pasteboard];
     }
 
     // Handle file URL drop from Finder
@@ -423,14 +429,20 @@ public:
         return NO;
     }
 
-    // Rebuild the queue in the planned order (flush-and-readd; the SDK has
-    // no reorder primitive for the playback queue). The flag suppresses the
-    // per-mutation callbacks, which arrive synchronously on this thread —
-    // it must be reset and the view reloaded even if an SDK call throws
-    // mid-rebuild, otherwise updates stay suppressed forever.
+    [self rebuildQueue:contents inOrder:newOrder];
+    return YES;
+}
+
+// Rebuild the queue in a planned order (flush-and-readd; the SDK has no
+// reorder primitive for the playback queue). The flag suppresses the
+// per-mutation callbacks, which arrive synchronously on this thread —
+// it must be reset and the view reloaded even if an SDK call throws
+// mid-rebuild, otherwise updates stay suppressed forever.
+- (void)rebuildQueue:(const std::vector<t_playback_queue_item>&)contents
+             inOrder:(const std::vector<size_t>&)order {
     _isReorderingInProgress = YES;
     try {
-        queue_ops::rebuildInOrder(contents, newOrder);
+        queue_ops::rebuildInOrder(contents, order);
     } catch (...) {
         console::error("[Queue Manager] Queue rebuild failed mid-reorder");
     }
@@ -438,12 +450,10 @@ public:
 
     // Manually reload since callbacks were suppressed
     [self reloadQueueContents];
-
-    return YES;
 }
 
-// Handle drop from SimPlaylist component
-- (BOOL)handleSimPlaylistDropFromPasteboard:(NSPasteboard*)pasteboard {
+// Handle drop from SimPlaylist component, inserting before targetRow
+- (BOOL)handleSimPlaylistDropAtRow:(NSInteger)targetRow fromPasteboard:(NSPasteboard*)pasteboard {
     NSData* data = [pasteboard dataForType:SimPlaylistPasteboardType];
 
     QueueDropRequest* request = [QueueDropRequest requestFromDragData:data];
@@ -473,10 +483,27 @@ public:
 
     size_t playlistItemCount = queue_ops::playlistItemCount(sourcePlaylist);
 
-    // Add each item to the queue, skipping stale rows past the playlist end
+    // Skip stale rows past the playlist end
+    std::vector<size_t> playlistItems;
     for (NSNumber* rowNum in [request indicesBelowItemCount:playlistItemCount]) {
-        queue_ops::addItemFromPlaylist(sourcePlaylist, [rowNum unsignedLongValue]);
+        playlistItems.push_back([rowNum unsignedLongValue]);
     }
+    if (playlistItems.empty()) return NO;
+
+    if (targetRow < 0) targetRow = 0;
+
+    // A mid-queue insert is a flush-and-readd; suppress the per-mutation
+    // callbacks exactly as rebuildQueue:inOrder: does
+    _isReorderingInProgress = YES;
+    try {
+        queue_ops::insertFromPlaylist(queue_ops::getContentsVector(), (size_t)targetRow,
+                                      sourcePlaylist, playlistItems);
+    } catch (...) {
+        console::error("[Queue Manager] Queue rebuild failed mid-insert");
+    }
+    _isReorderingInProgress = NO;
+
+    [self reloadQueueContents];
 
     return YES;
 }

@@ -2,6 +2,17 @@
 
 All notable changes to Vectorscope will be documented in this file.
 
+## [1.1.1] - 2026-11-09
+
+Contributed by @Scannou (#58, #59).
+
+### Changed
+- **P3 amber**: Dark mid and high bands are now olive (CA9F35) and cyan (59CEDF). If P3 amber was selected, the selector shows Custom with the old colors until the theme is picked again.
+
+### Fixed
+- **Main-thread color conversion**: The trace image is built in the window's color space, so the screen no longer converts it every frame. On a non-P3 external display, this conversion and the same one in the Spectrogram took about 15% of the main thread during playback.
+- **Pixel alignment**: The drawing view sits on whole device pixels, so a panel placed between pixels by a splitter is no longer resampled every frame.
+
 ## [1.1.0] - 2026-10-30
 
 Display P3 colors contributed by @Scannou (#55).

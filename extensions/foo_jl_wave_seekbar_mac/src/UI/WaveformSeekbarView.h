@@ -14,8 +14,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Forward declaration for C++ struct
 #ifdef __cplusplus
 struct WaveformData;
+struct WaveformDetail;
+namespace waveseek { struct PhraseGrid; }
 #else
 typedef struct WaveformData WaveformData;
+typedef struct WaveformDetail WaveformDetail;
 #endif
 
 @class WaveformSeekbarView;
@@ -25,16 +28,22 @@ typedef struct WaveformData WaveformData;
 @optional
 - (void)waveformSeekbarViewRequestsContextMenu:(WaveformSeekbarView *)view atPoint:(NSPoint)point;
 - (void)waveformSeekbarView:(WaveformSeekbarView *)view requestsSeekToTime:(double)time;
+// The playback position in seconds, read now (beat jumps and loops start from it)
+- (double)waveformSeekbarViewPlaybackTime:(WaveformSeekbarView *)view;
 @end
 
+// The values are waveform_config::CursorEffect's
 typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
-    WaveformCursorEffectNone = 0,      // Sharp transition
-    WaveformCursorEffectGradient = 1,  // Fade gradient at edge
-    WaveformCursorEffectGlow = 2,      // Pulsing halo/bloom
-    WaveformCursorEffectScanline = 3,  // Multiple thin vertical lines
-    WaveformCursorEffectPulse = 4,     // Breathing played area
-    WaveformCursorEffectTrail = 5,     // Motion blur trail
-    WaveformCursorEffectShimmer = 6    // Oscillating brightness bands
+    WaveformCursorEffectNone = 0,           // Sharp transition
+    WaveformCursorEffectGradient = 1,       // Fade gradient at edge
+    WaveformCursorEffectGlow = 2,           // Bloom from the cursor line, pulsing
+    WaveformCursorEffectScanline = 3,       // Multiple thin vertical lines
+    WaveformCursorEffectPulse = 4,          // Breathing played area
+    // 5 was Trail, retired: a stored 5 loads as Gradient
+    WaveformCursorEffectShimmer = 6,        // Oscillating brightness bands
+    WaveformCursorEffectParticles = 7,      // Sparks off the waveform (experimental)
+    WaveformCursorEffectFirewall = 8,       // Flames standing on the cursor (experimental)
+    WaveformCursorEffectEarthcrusher = 9    // Jagged cursor, scorched cracks behind it (experimental)
 };
 
 @interface WaveformSeekbarView : NSView
@@ -57,12 +66,33 @@ typedef NS_ENUM(NSInteger, WaveformCursorEffect) {
 @property (nonatomic, assign, getter=isPlaying) BOOL playing;
 @property (nonatomic, assign, getter=isAnalyzing) BOOL analyzing;  // Shows "Analyzing..." message
 
+// Zoom: 1 shows the whole track; wheel, trackpad scroll and pinch change it
+@property (nonatomic, readonly) double zoomFactor;
+
 // Colors (automatically switch based on appearance)
 @property (nonatomic, strong) NSColor *waveformColor;
 @property (nonatomic, strong) NSColor *backgroundColor;
 
 // Waveform data (const pointer to C++ struct, not owned)
 @property (nonatomic, nullable, assign) const WaveformData *waveformData;
+// Its fine detail for deep zoom, when there is one (not owned); ignored
+// unless it matches waveformData
+@property (nonatomic, nullable, assign) const WaveformDetail *waveformDetail;
+// The track's beat grid from BPM Analyzer, for phrase markers (not owned)
+@property (nonatomic, nullable, assign) const waveseek::PhraseGrid *phraseGrid;
+
+// A beat loop, if one is on: called with the playback position at every
+// position check while playing; seeks back to the loop's start on time
+- (void)followLoopAt:(double)seconds;
+// The track time to show for foobar2000's playback position: while the
+// loop DSP holds the playback, where its passes are, else `seconds`
+- (double)displayedTimeFor:(double)seconds;
+// foobar2000's seek to `time` is the seekbar's own, which may start before
+// where it plays from (a pre-roll): the cursor already shows that place
+- (BOOL)ownSeekPendingFor:(double)time;
+// The position checks (followLoopAt:) stopped: no decode-ahead or short
+// steps are asked of the loop DSP until they come again
+- (void)positionChecksStopped;
 
 // Actions
 - (void)clearWaveform;

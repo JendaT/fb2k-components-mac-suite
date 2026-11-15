@@ -20,19 +20,31 @@
 #include "../Core/ConfigHelper.h"
 #include "../Core/ColumnAggregator.h"
 #include "../Core/LayeredShape.h"
+#include "../Core/MaskPaths.h"
 #include "../Core/SimpleShape.h"
 #include "../Core/OverlayText.h"
 #include "../Core/WaveformColorMap.h"
 #include "../Core/WaveformGeometry.h"
 #include "../Core/GradientBandTable.h"
 #include "../Core/ThemeTokens.h"
+#include "../Core/ZoomRange.h"
+#include "../Core/PhraseMarkers.h"
+#include "../Core/BeatJump.h"
+#include "../Core/CursorFx.h"
+#include "CursorEffectPainter.h"
+#include "../Integration/BeatLoop.h"
 #include "../../../../shared/ThemeColor.h"
+#include "../../../../shared/jl_beatgrid_api.h"
 #include <algorithm>
 #include <cmath>
+#include <climits>
+#include <memory>
 #include <vector>
 
 namespace analysis = waveseek::analysis;
+namespace fx = waveseek::fx;
 namespace layered = waveseek::layered;
+namespace masks = waveseek::masks;
 namespace overlay = waveseek::overlay;
 namespace simple = waveseek::simple;
 namespace theme = waveseek::theme;
@@ -93,6 +105,7 @@ theme::RGB heatMapColor(float amplitude) {
 // without a gap, peaks 4 pt from the edges (WaveformGeometry.h). Solid's
 // gradient bands step down to 40 % at full amplitude (bandAlpha).
 const size_t kClassicBuckets = 2048;
+const size_t kClassicStrokeRun = 256;
 const CGFloat kClassicPadding = waveseek::kWaveformPadding;
 
 // Rainbow: fully saturated hue by position across the track, 0..1
@@ -127,20 +140,6 @@ Lanes lanesFor(CGFloat height, CGFloat unit, int count, Family family = FamilySi
     return l;
 }
 
-// Area between two signed outlines around a lane centre, one vertex per
-// column centre
-void addBand(CGMutablePathRef path, const std::vector<float>& top, const std::vector<float>& bottom,
-             CGFloat centerY, CGFloat amplitude) {
-    const size_t n = top.size();
-    if (n == 0) return;
-    CGPathMoveToPoint(path, NULL, 0, centerY + top[0] * amplitude);
-    for (size_t c = 0; c < n; ++c) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + top[c] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY + top[n - 1] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY + bottom[n - 1] * amplitude);
-    for (size_t c = n; c-- > 0;) CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + bottom[c] * amplitude);
-    CGPathAddLineToPoint(path, NULL, 0, centerY + bottom[0] * amplitude);
-    CGPathCloseSubpath(path);
-}
 
 // How one mask is coloured: flat, or a vertical gradient mirrored around
 // each lane's centre (edge, mid, centre, mid, edge)
@@ -170,6 +169,14 @@ void setStroke(CGContextRef ctx, const theme::RGB& c, CGFloat alpha) {
     CGContextSetStrokeColor(ctx, comps);
 }
 
+fx::Colour fxColour(const theme::RGB& c) {
+    return { c.r, c.g, c.b };
+}
+
+// Firewall's own colours, the same in every theme
+const fx::Colour kFireGlow = { 1.0, 0.42, 0.08 };
+const fx::Colour kFireCore = { 1.0, 0.80, 0.40 };
+
 NSString *str(const std::string& s) {
     return [NSString stringWithUTF8String:s.c_str()] ?: @"";
 }
@@ -186,6 +193,7 @@ const uint32_t kOverlayBorder = 0x3A3326;
 const uint32_t kOverlayValue = 0xF2E9D6;
 const uint32_t kOverlayLabel = 0x9A907D;
 const uint32_t kOverlayAlert = 0xF0603F;     // TP above 0, clips
+const uint32_t kOverlayWarning = 0xE5A50A;   // phrase markers drifting off the grid
 const uint32_t kBandColors[3] = { 0xC7772A, 0xD9C26A, 0xA8D4F2 };   // Lo, Mid, Hi
 
 // Hover readout layout, points from the box's top
@@ -228,6 +236,40 @@ const CGFloat kBadgeRadius = 3.0;
 const CGFloat kClipMarkerWidth = 2.0;
 const CGFloat kClipMarkerHeight = 5.0;
 
+// The bottom bar's controls: segments in one box at the bottom right,
+// groups apart by a gap with a hairline in it; the loop's colour
+const CGFloat kBarSegmentPadX = 5.0;
+const CGFloat kBarGroupGap = 7.0;
+const CGFloat kBarIconSize = 11.0;
+const double kLoopLookahead = 2.5 / 60.0;   // the loop's end within 2.5 position checks: seek on time
+const double kSeekLanded = 0.15;            // the playback position this near a seek's target shows it
+const double kSeekTimeout = 1.0;            // a seek not shown by then is taken as done
+const double kDeckMargin = 0.05;            // a splice target this far inside the DSP's audio, at least
+const uint32_t kLoopColor = 0x35C27A;
+// With Snap on, the line at the beat a click would go to
+const CGFloat kSnapLineAlpha = 0.7;
+// The decode-ahead reserve while the mixer has the track's beats: 32 beats
+// and 2 s, at least 20 s. The audio decoded ahead (the reserve's, or while
+// hovering) stays under half of what is left of the track before its last
+// kAheadEndSeconds, so it drains towards the end and the next track starts live.
+const double kReserveBeats = 32.0;
+const double kReserveExtraSeconds = 2.0;
+const double kReserveMinSeconds = 20.0;
+const double kAheadEndSeconds = 20.0;
+// A seek of our own with the mixer's beats starts this much before its
+// target (32 beats and 1 s, at most 30 s): the DSP keeps that audio as
+// history without playing it, so a jump back right after the seek is a splice
+const double kPrerollBeats = 32.0;
+const double kPrerollExtraSeconds = 1.0;
+const double kPrerollMaxSeconds = 30.0;
+
+// Zoom: vertical scroll and pinch zoom about the pointer, horizontal scroll
+// pans. A wheel notch is one line; trackpad scroll comes in points.
+const double kZoomOctavesPerLine = 0.25;        // ~1.19x per notch
+const double kZoomOctavesPerPoint = 0.01;       // 2x per 100 pt
+const CGFloat kPanPointsPerLine = 10.0;
+const CGFloat kEffectReach = 50.0;              // cursor effects reach 40 pt from the cursor
+
 // Greyscale mask: black hides, white shows
 CGContextRef createMaskContext(size_t width, size_t height) {
     CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
@@ -241,31 +283,16 @@ CGContextRef createMaskContext(size_t width, size_t height) {
     return ctx;
 }
 
-// Area between the centre line and the heights, one vertex per column
-// centre; `dir` +1 grows up, -1 down
-void addHalfShape(CGMutablePathRef path, const std::vector<float>& frac, CGFloat centerY,
-                  CGFloat amplitude, CGFloat dir) {
-    const size_t n = frac.size();
-    if (n == 0) return;
-    CGPathMoveToPoint(path, NULL, 0, centerY);
-    CGPathAddLineToPoint(path, NULL, 0, centerY + dir * frac[0] * amplitude);
-    for (size_t c = 0; c < n; ++c) {
-        CGPathAddLineToPoint(path, NULL, c + 0.5, centerY + dir * frac[c] * amplitude);
-    }
-    CGPathAddLineToPoint(path, NULL, n, centerY + dir * frac[n - 1] * amplitude);
-    CGPathAddLineToPoint(path, NULL, n, centerY);
-    CGPathCloseSubpath(path);
-}
-
 // The outline of the heights, broken where they drop under half a pixel so
 // silence leaves only the centre line, and where they sit at full scale so a
 // track limited to 0 dBFS doesn't draw a flat line along the top
 const float kEdgeCeiling = 0.995f;   // within ~0.2 dB of 0 dBFS on the -36 dB axis
 
 // Stroked kEdgeChunk columns at a time: one path with a vertex per pixel
-// column takes CoreGraphics 0.1-0.35 s to stroke, on the main thread. Each
-// run starts where the last one ended; round caps close the joins.
-const size_t kEdgeChunk = 64;
+// column takes CoreGraphics 0.1-0.35 s to stroke, on the main thread, and
+// runs of 16 take about half as long as runs of 64. Each run starts where
+// the last one ended; round caps close the joins.
+const size_t kEdgeChunk = 16;
 
 void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat centerY,
                 CGFloat amplitude, CGFloat dir) {
@@ -292,6 +319,30 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 } // namespace
 
+// The bottom bar, left to right: with the mixer, the jumps with the size
+// menu among them, Snap and the loop (of that size); always the cog with
+// the controls' and the zoom's modes
+typedef NS_ENUM(NSInteger, BarControl) {
+    BarControlNone = 0,
+    BarControlBack32,
+    BarControlBack16,
+    BarControlBackSize,
+    BarControlSizeMenu,
+    BarControlForwardSize,
+    BarControlForward16,
+    BarControlForward32,
+    BarControlSnap,
+    BarControlLoop,
+    BarControlCog,
+};
+
+struct BarSegment {
+    BarControl control = BarControlNone;
+    NSString *title = nil;      // nil: an icon
+    bool groupStart = false;    // a gap and a hairline before it
+    CGRect rect = CGRectZero;
+};
+
 @interface WaveformSeekbarView () {
     NSTrackingArea *_trackingArea;
     CGColorSpaceRef _deviceRGBColorSpace;       // Cached for the cursor effects' gradients
@@ -301,7 +352,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     // Mouse over the view, for the readout and the summary badge
     BOOL _hovering;
-    CGFloat _hoverX;
+    CGFloat _hoverX, _hoverY;
     BOOL _seeking;               // a click on the waveform, until the mouse is up
     BOOL _showReadout;
     int _readoutPosition;
@@ -314,6 +365,13 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     // Per-column readout values at the masks' pixel width
     analysis::Columns _readout;
+    // The experimental cursor effects: their drawing and images, the
+    // track's level envelope (for the waveform data it was built from) and
+    // this frame's sparks
+    std::unique_ptr<fx::Painter> _fxPainter;
+    fx::LevelEnvelope _fxLevels;
+    const WaveformData *_fxLevelsFor;
+    std::vector<fx::Spark> _sparks;
     NSDictionary *_placeholderAttributes;
     NSFont *_chipFont;
     theme::Tokens _tokens;
@@ -333,6 +391,121 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     int _style;
     bool _mono;
     bool _split;                       // L up, R down in one lane
+
+    // The part of the track the waveform shows, and the part the masks show
+    // (more than that while the view follows the cursor, so it can move
+    // without rebuilding them) with the view's zoom and pixel width they
+    // were built for, and where they were last drawn, in pixels from the
+    // waveform's left edge
+    waveseek::ZoomRange _zoom;
+    waveseek::ZoomRange _maskZoom;
+    double _maskViewZoom;
+    size_t _maskViewWidth;
+    long _maskOffsetPx;
+    size_t _classicBuckets;
+    // Following the cursor: the spot it stays at (a fraction across; taken
+    // where the cursor is when it comes into view), and when the zoom last
+    // changed (masks for following wait for a pause)
+    double _followSpot;
+    bool _followSpotSet;
+    // A jump or click of ours while following at a spot (holdSpot:): the
+    // spot to keep the cursor at once the jump shows (NAN: none), the DSP
+    // output time it shows from (NAN: not taken yet), when it was asked for;
+    // the output time the cursor was last placed from (displayedTimeFor:);
+    // the spot just taken, kept even with the cursor out of view
+    double _jumpSpot;
+    double _jumpSpotFrom;
+    CFAbsoluteTime _jumpSpotAt;
+    double _shownOut;
+    bool _spotJustSet;
+    CFAbsoluteTime _lastZoomChange;
+    bool _zoomEnabled;
+
+    // Phrase markers: settings, the markers for the grid shown, and where
+    // they were drawn this frame (for the readout)
+    bool _phraseMarkers;
+    int _phraseLength;
+    bool _phraseBreakColours;
+    bool _phraseFollowGrid;     // markers and beat-synced effects follow a new grid
+    std::vector<waveseek::PhraseMarker> _phrases;
+    const waveseek::PhraseGrid *_phrasesFor;
+    int _phraseBeatsDrawn;
+    std::vector<std::pair<CGFloat, size_t>> _phraseHits;   // x, index into _phrases
+    int _phraseNoneLogged;
+    // trustedGrid(*_phraseGrid): the beats, jumps, loops and beat-synced
+    // effects go by it (sections that don't fit give way to the master);
+    // the markers show the grid as stored
+    std::unique_ptr<waveseek::PhraseGrid> _trustedGrid;
+
+    // The bottom bar: the cog's controls and zoom modes, and whether BPM
+    // Analyzer is there for the mixer. The mixer: the loop and jump size,
+    // the beats of the grid shown, the loop, and a seek sent but not yet in
+    // the playback position
+    int _controlsMode;
+    int _followMode;
+    bool _haveBeatGrids;
+    bool _barMenuOpen;
+    NSMutableDictionary<NSString *, NSImage *> *_barIcons;   // by symbol and colour
+    int _beatSize;
+    bool _snapToBeat;               // clicks go to the nearest beat, in phase; a line shows it on hover
+    std::vector<double> _beats;
+    const waveseek::PhraseGrid *_beatsFor;
+    bool _beatsFollow;
+    double _beatsDuration;
+    waveseek::BeatLoop _loop;
+    unsigned _loopGeneration;       // a scheduled seek to the start is for this loop
+    bool _loopEndScheduled;
+    double _pendingSeek;            // NAN when none
+    CFAbsoluteTime _pendingSince;
+    // The loop DSP: its status as of the last position check, the seek
+    // whose timeline the cursor follows, a seek of ours on its way, a
+    // request on its way and the seek that replaces it when turned down,
+    // the track time being measured, the low-latency hint
+    beatloop::Status _deck;
+    uint64_t _deckEpoch;
+    uint64_t _armId;
+    CFAbsoluteTime _armAt;
+    double _armTarget;              // where our seek plays from (the cursor shows it)
+    double _armSent;                // the time sent to foobar2000 (earlier with a pre-roll)
+    double _prerollSeconds;         // the last pre-roll asked for, for the console
+    CFAbsoluteTime _loopCheckAfter;
+    uint64_t _requestId;
+    double _requestTarget;          // where it plays from, for the console when it is turned down
+    bool _requestNoted;             // say so in the console when it is turned down (not for a drag)
+    double _fallbackTarget;
+    bool _fallbackHasThen;
+    waveseek::LoopAction _fallbackThen;
+    std::vector<double> _syncSamples;
+    uint64_t _syncEpoch;
+    bool _lowLatency;
+    CFAbsoluteTime _latencyNoteAt;
+    // The visualisation clock less the audio actually heard (measured while
+    // the audio is untouched; 0 when the clock is exact)
+    double _clockOffset;
+    std::vector<double> _clockSamples;
+    bool _jumpMovesLoop;
+    CFAbsoluteTime _loopRearmAt;
+    CFAbsoluteTime _timingNoteAt;
+    bool _wasInsideLoop;            // playback was in the loop at the last check (seek-based looping)
+    // A click's drag: the seeks it makes are not noted in the console, and
+    // with Snap the beat it went to last (NAN: none yet), so staying on one
+    // beat doesn't jump again
+    bool _dragSeeking;
+    double _dragBeat;
+    double _measuredLag;
+    // A seek of our own, from asking for it to hearing its target (0: not
+    // measured yet), and the seek being measured (0: none)
+    double _seekGap;
+    uint64_t _gapEpoch;
+    CFAbsoluteTime _gapFrom;
+    // The DSP's seek last noted in the console without the track time (once per seek)
+    uint64_t _unsyncedEpoch;
+    // Option-dragging the loop: the beat under the mouse when it began, the
+    // loop then, and where it would go
+    bool _loopDragging;
+    double _loopDragBeat;
+    waveseek::BeatLoop _loopDragOrigin;
+    waveseek::BeatLoop _loopDragPreview;
 }
 
 @end
@@ -367,6 +540,16 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     // Default display settings from config
     [self reloadSettings];
 
+    _pendingSeek = NAN;
+    _requestTarget = NAN;
+    _dragBeat = NAN;
+    _followSpot = 0.5;
+    _jumpSpot = NAN;
+    _jumpSpotFrom = NAN;
+    _shownOut = NAN;
+    jl_beatgrid::ptr grids;
+    _haveBeatGrids = fb2k::std_api_try_get(grids);
+
     // Default playback state
     _playbackPosition = 0.0;
     _trackDuration = 0.0;
@@ -391,6 +574,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    beatloop::setReserve(0.0, INFINITY);   // a seekbar that goes away asks no decode-ahead
+    beatloop::setLowLatency((__bridge const void *)self, false);   // nor short steps or the hint
     [self invalidateMasks];
     if (_deviceRGBColorSpace) CGColorSpaceRelease(_deviceRGBColorSpace);
 }
@@ -415,8 +600,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _split = split;
     _shadePlayedPortion = getConfigBool(kKeyShadePlayedPortion, kDefaultShadePlayedPortion);
     _playedDimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100) / 100.0;
-    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
-    _cursorEffect = (WaveformCursorEffect)(effect >= 0 && effect < CursorEffectCount ? effect : kDefaultCursorEffect);
+    _cursorEffect = (WaveformCursorEffect)cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect));
     _bpmSync = getConfigBool(kKeyBpmSync, kDefaultBpmSync);
     _showCursorTime = getConfigBool(kKeyCursorTime, kDefaultCursorTime);
     _gradientBands = (int)getConfigInt(kKeyGradientBands, kDefaultGradientBands);
@@ -449,6 +633,24 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     _showTimeRuler = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler);
     _showLevelScale = getConfigBool(kKeyLevelScale, kDefaultLevelScale);
     _glassBackground = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground);
+    _zoomEnabled = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled);
+    if (!_zoomEnabled) _zoom.reset();
+    _phraseMarkers = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers);
+    _phraseLength = getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32;
+    _phraseBreakColours = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours);
+    _phraseFollowGrid = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid);
+    _phraseBeatsDrawn = 0;   // rebuild the markers
+    _controlsMode = (int)std::clamp<int64_t>(getConfigInt(kKeyControlsMode, kDefaultControlsMode), ControlsNone,
+                                             ControlsAnalytics);
+    _followMode = (int)std::clamp<int64_t>(getConfigInt(kKeyZoomFollow, kDefaultZoomFollow), FollowNone, FollowCentre);
+    if (_followMode != FollowCentre) _zoom.clampToTrack();
+    [self followCursor];
+    const int64_t size = getConfigInt(kKeyBeatSize, waveseek::kDefaultBeatSize);
+    _beatSize = std::find(std::begin(waveseek::kBeatSizeChoices), std::end(waveseek::kBeatSizeChoices), size)
+                    != std::end(waveseek::kBeatSizeChoices) ? (int)size : waveseek::kDefaultBeatSize;
+    _snapToBeat = getConfigBool(kKeySnapToBeat, kDefaultSnapToBeat);
+    _barIcons = nil;   // the text size may have changed
+    if (_controlsMode != ControlsMixer) [self endLoop];
     [self updateColorsForAppearance];
     [self setNeedsDisplay:YES];
 }
@@ -553,12 +755,51 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 - (void)setWaveformData:(const WaveformData *)waveformData {
     _waveformData = waveformData;
+    _fxLevels.clear();
+    _fxLevelsFor = nullptr;
+    if (!waveformData) _zoom.reset();   // a new track, or none
     [self invalidateMasks];
 }
 
-- (BOOL)buildMasksWidth:(size_t)width height:(size_t)height {
+- (void)setWaveformDetail:(const WaveformDetail *)waveformDetail {
+    if (waveformDetail == _waveformDetail) return;
+    _waveformDetail = waveformDetail;
     [self invalidateMasks];
-    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width);
+}
+
+- (void)setPhraseGrid:(const waveseek::PhraseGrid *)phraseGrid {
+    _phraseGrid = phraseGrid;
+    _trustedGrid = phraseGrid ? std::make_unique<waveseek::PhraseGrid>(waveseek::trustedGrid(*phraseGrid)) : nullptr;
+    _phrases.clear();
+    _phrasesFor = nullptr;
+    _phraseHits.clear();
+    _beatsFor = nullptr;
+    _beats.clear();
+    [self endLoop];   // its beats are another grid's, or none
+    [self setNeedsDisplay:YES];
+}
+
+// The fine detail, when it belongs to the waveform shown
+- (const WaveformDetail *)usableDetail {
+    return _waveformDetail && _waveformData && _waveformDetail->matches(*_waveformData) ? _waveformDetail : nullptr;
+}
+
+- (double)zoomFactor {
+    return _zoom.zoom;
+}
+
+// Masks `width` pixels wide for `range` of the track, at the scale of a
+// view `viewWidth` pixels wide at the current zoom
+- (BOOL)buildMasksForRange:(const waveseek::ZoomRange &)range width:(size_t)width height:(size_t)height
+                 viewWidth:(size_t)viewWidth {
+    [self invalidateMasks];
+    _maskZoom = range;
+    _maskViewZoom = _zoom.zoom;
+    _maskViewWidth = viewWidth;
+    // Classic keeps its bucket count per view width
+    _classicBuckets = std::max<size_t>(1, (size_t)std::lround((double)kClassicBuckets * width / std::max<size_t>(1, viewWidth)));
+    analysis::Columns cols = analysis::aggregateColumns(*self.waveformData, width, _maskZoom.start, _maskZoom.end(),
+                                                        [self usableDetail]);
     if (cols.count != width) return NO;
     _readout = cols;
     const CGFloat scale = [self backingScale];
@@ -616,17 +857,15 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
                 }
             }
         } else {
-            CGMutablePathRef path = CGPathCreateMutable();
-            for (int l = 0; l < lanes.count; ++l) {
-                for (int half = 0; half < 2; ++half) {
-                    const int ch = channelOf(l, half);
-                    const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[ch] : shape.body[ch];
-                    addHalfShape(path, frac, lanes.center[l], lanes.amplitude, dirs[half]);
+            masks::fillInRuns(ctx, width, [&](size_t c0, size_t c1) {
+                for (int l = 0; l < lanes.count; ++l) {
+                    for (int half = 0; half < 2; ++half) {
+                        const int ch = channelOf(l, half);
+                        const std::vector<float>& frac = m == MaskPeakFill ? shape.peak[ch] : shape.body[ch];
+                        masks::addHalfShape(ctx, frac, c0, c1, lanes.center[l], lanes.amplitude, dirs[half]);
+                    }
                 }
-            }
-            CGContextAddPath(ctx, path);
-            CGContextFillPath(ctx);
-            CGPathRelease(path);
+            });
         }
         _masks[m] = CGBitmapContextCreateImage(ctx);
         CGContextRelease(ctx);
@@ -646,15 +885,13 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     for (int m : { (int)MaskSimplePeak, (int)MaskSimpleCore }) {
         CGContextRef ctx = createMaskContext(width, height);
         if (!ctx) return NO;
-        CGMutablePathRef path = CGPathCreateMutable();
-        for (int l = 0; l < shape.lanes; ++l) {
-            const simple::Lane& lane = shape.lane[l];
-            if (m == MaskSimplePeak) addBand(path, lane.top, lane.bottom, lanes.center[l], lanes.amplitude);
-            else addBand(path, lane.coreTop, lane.coreBottom, lanes.center[l], lanes.amplitude);
-        }
-        CGContextAddPath(ctx, path);
-        CGContextFillPath(ctx);
-        CGPathRelease(path);
+        masks::fillInRuns(ctx, width, [&](size_t c0, size_t c1) {
+            for (int l = 0; l < shape.lanes; ++l) {
+                const simple::Lane& lane = shape.lane[l];
+                if (m == MaskSimplePeak) masks::addBand(ctx, lane.top, lane.bottom, c0, c1, lanes.center[l], lanes.amplitude);
+                else masks::addBand(ctx, lane.coreTop, lane.coreBottom, c0, c1, lanes.center[l], lanes.amplitude);
+            }
+        });
         _masks[m] = CGBitmapContextCreateImage(ctx);
         CGContextRelease(ctx);
         if (!_masks[m]) return NO;
@@ -669,8 +906,10 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 // lane, up to L's peak and down to R's.
 - (BOOL)buildClassicMasks:(const analysis::Columns&)cols width:(size_t)width height:(size_t)height
                     scale:(CGFloat)scale {
-    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, kClassicBuckets);
-    if (buckets.count != kClassicBuckets) return NO;
+    const size_t bucketCount = _classicBuckets;
+    const analysis::Columns buckets = analysis::aggregateColumns(*self.waveformData, bucketCount,
+                                                                 _maskZoom.start, _maskZoom.end(), [self usableDetail]);
+    if (buckets.count != bucketCount) return NO;
     const bool stereo = buckets.channels == 2 && !_mono;
     const bool split = stereo && _split;
     const bool averageMono = _style == waveform_config::StyleSolid;
@@ -692,21 +931,24 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     CGContextRef ctx = createMaskContext(width, height);
     if (!ctx) return NO;
+    // Stroked kClassicStrokeRun buckets at a time: all 4096 strokes in one
+    // path take CoreGraphics 20-60 ms. Where two runs meet, the neighbouring
+    // strokes' overlap is blended instead of merged, a few pixels slightly off.
     CGContextSetLineWidth(ctx, scale);
-    CGMutablePathRef path = CGPathCreateMutable();
-    for (int l = 0; l < lanes.count; ++l) {
-        for (size_t i = 0; i < kClassicBuckets; ++i) {
-            const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
-            const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
-            if (up <= 0.0 && down <= 0.0) continue;
-            const CGFloat x = (CGFloat)i / kClassicBuckets * width;
-            CGPathMoveToPoint(path, NULL, x, lanes.center[l] - down);
-            CGPathAddLineToPoint(path, NULL, x, lanes.center[l] + up);
+    for (size_t i0 = 0; i0 < bucketCount; i0 += kClassicStrokeRun) {
+        const size_t i1 = std::min(bucketCount, i0 + kClassicStrokeRun);
+        for (int l = 0; l < lanes.count; ++l) {
+            for (size_t i = i0; i < i1; ++i) {
+                const CGFloat up = std::min(1.0f, peakOf(buckets, i, l)) * lanes.amplitude;
+                const CGFloat down = split ? std::min(1.0f, peakOf(buckets, i, 1)) * lanes.amplitude : up;
+                if (up <= 0.0 && down <= 0.0) continue;
+                const CGFloat x = (CGFloat)i / bucketCount * width;
+                CGContextMoveToPoint(ctx, x, lanes.center[l] - down);
+                CGContextAddLineToPoint(ctx, x, lanes.center[l] + up);
+            }
         }
+        CGContextStrokePath(ctx);
     }
-    CGContextAddPath(ctx, path);
-    CGContextStrokePath(ctx);
-    CGPathRelease(path);
     _masks[MaskSimplePeak] = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
 
@@ -715,7 +957,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     for (int l = 0; l < (split ? 2 : lanes.count); ++l) {
         _lanePeak[l].resize(width);
         for (size_t c = 0; c < width; ++c) {
-            const size_t i = std::min(kClassicBuckets - 1, (size_t)((c + 0.5) / width * kClassicBuckets));
+            const size_t i = std::min(bucketCount - 1, (size_t)((c + 0.5) / width * bucketCount));
             _lanePeak[l][c] = std::min(1.0f, peakOf(buckets, i, l));
         }
     }
@@ -880,8 +1122,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
                               : l == 0 ? CGRectMake(0, mid, _maskWidth, _maskHeight - mid)
                                        : CGRectMake(0, 0, _maskWidth, mid);
             drawStrip(_masks[MaskSimplePeak], band, [&](size_t c) {
-                return _style == waveform_config::StyleHeatMap ? heatMapColor(_lanePeak[l][c])
-                                                               : rainbowColor((c + 0.5f) / _maskWidth);
+                return _style == waveform_config::StyleHeatMap
+                    ? heatMapColor(_lanePeak[l][c])
+                    : rainbowColor((float)_maskZoom.positionAt((c + 0.5) / _maskWidth));
             });
         }
     }
@@ -924,6 +1167,8 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
         if (hasWaveform) {
             [self drawWaveformInContext:context rect:wave];
+            // Under the played part's dimming and the cursor
+            [self drawPhraseMarkersInContext:context rect:[self cursorRectFor:wave]];
         } else {
             [self drawPlaceholderInContext:context rect:wave];
         }
@@ -932,6 +1177,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         if (CGRectGetMaxX(wave) < CGRectGetMaxX(bounds)) [self drawLevelScaleInContext:context wave:wave];
 
         [self drawPlayedOverlayInContext:context rect:[self cursorRectFor:wave]];
+        if (hasWaveform) [self drawLoopInContext:context rect:[self cursorRectFor:wave]];
         if (hasWaveform && _showClipMarkers) [self drawClipMarkersInContext:context rect:[self cursorRectFor:wave]];
         // The cursor runs through the margins too
         [self drawCursorInContext:context rect:[self cursorRectFor:wave]];
@@ -1042,12 +1288,112 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     const size_t pixelH = (size_t)std::lround(pixelSize.height);
     if (pixelW == 0 || pixelH == 0) return;
 
-    if (pixelW != _maskWidth || pixelH != _maskHeight || !_masks[0] || _maskFamily != familyOf(_style) || _maskMono != _mono) {
-        if (![self buildMasksWidth:pixelW height:pixelH]) return;
+    // The part of the track in view (less than the view when centring
+    // shows space beyond its ends), and a pixel's share of the track
+    const double grid = _zoom.span() / pixelW;
+    const double from = std::max(0.0, _zoom.start), to = std::min(1.0, _zoom.end());
+    if (!(to > from)) return;
+    const bool covered = _masks[0] && pixelH == _maskHeight && _maskFamily == familyOf(_style) && _maskMono == _mono &&
+                         _maskViewWidth == pixelW && _maskViewZoom == _zoom.zoom &&
+                         from >= _maskZoom.start - grid / 2 && to <= _maskZoom.end() + grid / 2;
+    if (!covered) {
+        // Following, once the zoom has settled: a view's width more on each
+        // side, on whole pixels of the track; else just what is in view
+        double m0 = from, m1 = to;
+        if ([self following] && CFAbsoluteTimeGetCurrent() - _lastZoomChange > 0.25) {
+            m0 = std::max(0.0, std::floor((_zoom.start - _zoom.span()) / grid) * grid);
+            m1 = std::min(1.0, _zoom.end() + _zoom.span());
+        }
+        waveseek::ZoomRange range;
+        range.zoom = 1.0 / (m1 - m0);
+        range.start = m0;
+        const size_t width = std::max<size_t>(1, (size_t)std::lround((m1 - m0) / grid));
+        if (![self buildMasksForRange:range width:width height:pixelH viewWidth:pixelW]) return;
     }
     if (!_composite && ![self buildComposite]) return;
 
-    CGContextDrawImage(context, rect, _composite);
+    // At whole pixels, so the composite is never resampled
+    const CGFloat scale = [self backingScale];
+    _maskOffsetPx = std::lround((_maskZoom.start - _zoom.start) / grid);
+    const CGRect dest = CGRectMake(rect.origin.x + _maskOffsetPx / scale, rect.origin.y, _maskWidth / scale, rect.size.height);
+    CGContextSaveGState(context);
+    CGContextClipToRect(context, rect);
+    CGContextDrawImage(context, dest, _composite);
+    CGContextRestoreGState(context);
+}
+
+// Zoomed in with a follow mode on
+- (BOOL)following {
+    return _zoomEnabled && _zoom.zoomed() && _followMode != waveform_config::FollowNone;
+}
+
+// Moves the view with the cursor (see ZoomRange::centreOn, followAt), on
+// whole pixels
+- (void)followCursor {
+    if (![self following]) return;
+    const double pixels = [self convertSizeToBacking:[self waveformRect].size].width;
+    const double grid = pixels >= 1.0 ? _zoom.span() / pixels : 0.0;
+    const double position = std::clamp(_playbackPosition, 0.0, 1.0);
+    if (_followMode == waveform_config::FollowCentre) {
+        _zoom.centreOn(position, grid);
+        return;
+    }
+    // A jump or click of ours: its spot once the jump shows (a splice when
+    // it is heard; a seek takes it in seekTo:), wherever the cursor lands
+    if (!std::isnan(_jumpSpot)) {
+        if (CFAbsoluteTimeGetCurrent() - _jumpSpotAt > 2.0) {
+            _jumpSpot = NAN;   // never shown (turned down and dropped, or a seek from elsewhere)
+        } else if (std::isfinite(_jumpSpotFrom) && std::isfinite(_shownOut) && _shownOut >= _jumpSpotFrom) {
+            [self takeJumpSpot];
+        }
+    }
+    // Held where it is while in view; where it comes into view next time
+    const double across = _zoom.acrossOf(position);
+    if ((across < 0.0 || across > 1.0) && !_spotJustSet) {
+        _followSpotSet = false;
+        return;
+    }
+    _spotJustSet = false;
+    if (!_followSpotSet) {
+        _followSpot = across;
+        _followSpotSet = true;
+    }
+    _zoom.followAt(position, _followSpot, grid);
+}
+
+// Following at a spot through a jump or click of ours: the cursor is kept
+// at `spot` once the jump shows, wherever it lands. Until then the view
+// follows what is heard as before: with the DSP the jump is heard 0.1-0.2 s
+// after the click, and moving the spot at once slid the old position under
+// the mouse and back (and could push the landing out of view, which stops
+// following).
+- (void)holdSpot:(double)spot {
+    if (![self following] || _followMode == waveform_config::FollowCentre || !std::isfinite(spot)) return;
+    _jumpSpot = std::clamp(spot, 0.0, 1.0);
+    _jumpSpotFrom = NAN;
+    _jumpSpotAt = CFAbsoluteTimeGetCurrent();
+}
+
+- (void)takeJumpSpot {
+    _followSpot = _jumpSpot;
+    _followSpotSet = true;
+    _spotJustSet = true;
+    _jumpSpot = NAN;
+    _jumpSpotFrom = NAN;
+}
+
+// After the user moves or zooms the view: where the cursor is becomes the
+// spot it is kept at, when it is in view
+- (void)takeFollowSpot {
+    _jumpSpot = NAN;   // the user's move wins over a jump's spot on its way
+    const double across = _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0));
+    _followSpotSet = across >= 0.0 && across <= 1.0;
+    if (_followSpotSet) _followSpot = across;
+}
+
+- (void)setPlaybackPosition:(double)playbackPosition {
+    _playbackPosition = playbackPosition;
+    [self followCursor];
 }
 
 #pragma mark - Played Part
@@ -1067,12 +1413,22 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     NSColor *bgDeviceColor = [dimBase colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
     if (!bgDeviceColor) return;
 
+    // Zoomed in, the cursor can be off either side: nothing played in view,
+    // or all of it, with the effects at the cursor kept out of sight
     const CGRect bounds = CGRectMake(0, 0, rect.size.width, rect.size.height);
-    const CGFloat playedWidth = bounds.size.width * std::clamp(self.playbackPosition, 0.0, 1.0);
+    const double across = _zoom.acrossOf(std::clamp(self.playbackPosition, 0.0, 1.0));
+    if (across <= 0.0) return;
+    const CGFloat playedWidth = across > 1.0 ? bounds.size.width + kEffectReach : bounds.size.width * across;
     const CGFloat dimOpacity = self.playedDimming;
 
+    // Only over the track: a centred view shows space beyond its ends
+    const CGFloat trackLeft = rect.origin.x + rect.size.width * std::max(0.0, _zoom.acrossOf(0.0));
+    const CGFloat trackRight = rect.origin.x + rect.size.width * std::min(1.0, _zoom.acrossOf(1.0));
+    // The waveform's rect in the effects' coordinates, for those that follow it
+    const CGRect wave = CGRectOffset([self waveformRect], -rect.origin.x, -rect.origin.y);
     CGContextSaveGState(context);
-    CGContextClipToRect(context, rect);
+    CGContextClipToRect(context, CGRectMake(trackLeft, rect.origin.y, std::max<CGFloat>(0.0, trackRight - trackLeft),
+                                            rect.size.height));
     CGContextTranslateCTM(context, rect.origin.x, rect.origin.y);
     switch (self.cursorEffect) {
         case WaveformCursorEffectNone:
@@ -1095,21 +1451,53 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
             [self drawPulseEffectInContext:context bounds:bounds playedWidth:playedWidth
                                    bgColor:bgDeviceColor dimOpacity:dimOpacity];
             break;
-        case WaveformCursorEffectTrail:
-            [self drawTrailEffectInContext:context bounds:bounds playedWidth:playedWidth
-                                   bgColor:bgDeviceColor dimOpacity:dimOpacity];
-            break;
         case WaveformCursorEffectShimmer:
             [self drawShimmerEffectInContext:context bounds:bounds playedWidth:playedWidth
                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectParticles:
+            [self drawParticlesEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                       bgColor:bgDeviceColor dimOpacity:dimOpacity wave:wave];
+            break;
+        case WaveformCursorEffectFirewall:
+            [self drawFirewallEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                      bgColor:bgDeviceColor dimOpacity:dimOpacity];
+            break;
+        case WaveformCursorEffectEarthcrusher:
+            [self drawEarthcrusherEffectInContext:context bounds:bounds playedWidth:playedWidth
+                                          bgColor:bgDeviceColor dimOpacity:dimOpacity wave:wave];
             break;
     }
     CGContextRestoreGState(context);
 }
 
-// Get animation frequency: uses BPM if sync enabled, otherwise returns default
+// The grid at the playback position: following a new grid when the
+// markers do, on the trusted sections
+- (waveseek::GridAt)gridAtPlayback {
+    return waveseek::gridAt(*_trustedGrid, self.playbackPosition * self.trackDuration, _phraseFollowGrid);
+}
+
+// The animation rate: with sync on, the beat grid's tempo when there is one
+// (the section playing), else the BPM tag's; otherwise the effect's own default
 - (CGFloat)animationFrequencyWithDefault:(CGFloat)defaultHz {
+    if (self.bpmSync && _phraseGrid && _phraseGrid->summary.bpm > 0.0) {
+        const waveseek::GridAt grid = [self gridAtPlayback];
+        if (grid.bpm > 0.0) return grid.bpm / 60.0;
+    }
     return waveseek::animationFrequency(self.bpmSync, self.trackBpm, defaultHz);
+}
+
+// The effects' clock. With sync on and a beat grid, while playing: the
+// playback position counted from the grid's anchor, a quarter beat ahead, so
+// a sine at the beat rate peaks exactly on every beat. Otherwise wall time.
+- (double)animationTime {
+    if (self.bpmSync && self.isPlaying && _phraseGrid && _phraseGrid->summary.bpm > 0.0 && self.trackDuration > 0.0) {
+        const waveseek::GridAt grid = [self gridAtPlayback];
+        if (grid.bpm > 0.0) {
+            return waveseek::beatSyncedTime(self.playbackPosition * self.trackDuration, grid.anchorSeconds, grid.bpm);
+        }
+    }
+    return CFAbsoluteTimeGetCurrent();
 }
 
 #pragma mark - Cursor Effects (as before the redesign)
@@ -1155,46 +1543,17 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGGradientRelease(gradient);
 }
 
-// Effect 2: Glow - Pulsing halo at cursor position
+// Effect 2: Glow - a bloom centred on the cursor line, fading with distance,
+// pulsing (on the beat with sync on). On a dark background it lightens what
+// is under it, the waveform too; on a light one the accent's haze is kept
+// faint, as it darkens.
 - (void)drawGlowEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    // Draw solid dimming first
-    NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
-    CGContextSetFillColorWithColor(context, dimColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
-
-    // Pulsing glow at cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
-    CGFloat freq = [self animationFrequencyWithDefault:1.0] * 2.0 * M_PI;  // Default 1Hz
-    CGFloat pulse = 0.5 + 0.5 * sin(time * freq);
-    CGFloat glowWidth = 20.0 + pulse * 10.0;  // 20-30px glow
-
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    // Glow uses waveform color
-    NSColor *waveDeviceColor = [self.waveformColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
-    if (!waveDeviceColor) return;
-
-    CGFloat glowAlpha = 0.3 + pulse * 0.4;  // 0.3-0.7 alpha
-    CGFloat components[8] = {
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, glowAlpha,
-        waveDeviceColor.redComponent, waveDeviceColor.greenComponent, waveDeviceColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    // Draw glow on both sides of cursor
-    CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(playedWidth - glowWidth, 0, glowWidth * 2, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth - glowWidth, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(playedWidth + glowWidth, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const float pulse = (float)waveseek::oscillator([self animationTime], [self animationFrequencyWithDefault:1.0]);
+    const bool dark = [self effectsOnDark];
+    [self fxPainter].glow(context, bounds, playedWidth, fxColour(_tokens.accent),
+                          fxColour(dark ? _tokens.hot : _tokens.cursor), pulse, dark ? 1.0f : 0.5f, dark);
 }
 
 // Effect 3: Scanline - Animated lines traveling near cursor
@@ -1209,7 +1568,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (!waveDeviceColor) return;
 
     // Animated scanlines traveling near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat scanRange = 30.0;  // Lines travel within 30px of cursor
     CGFloat baseFreq = [self animationFrequencyWithDefault:1.0];  // Base frequency
 
@@ -1245,7 +1604,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 - (void)drawPulseEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                      playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
     // Breathing opacity for the entire played area
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat freq = [self animationFrequencyWithDefault:1.5] * 2.0 * M_PI;  // Default 1.5Hz
     CGFloat breath = 0.5 + 0.5 * sin(time * freq);
 
@@ -1257,40 +1616,6 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 }
 
-// Effect 5: Trail - Motion blur trail behind cursor
-- (void)drawTrailEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
-                     playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
-    CGFloat trailLength = 40.0;  // Trail extends 40px behind cursor
-
-    // Draw solid dimming for area before trail
-    if (playedWidth > trailLength) {
-        NSColor *dimColor = [bgColor colorWithAlphaComponent:dimOpacity];
-        CGContextSetFillColorWithColor(context, dimColor.CGColor);
-        CGContextFillRect(context, CGRectMake(0, 0, playedWidth - trailLength, bounds.size.height));
-    }
-
-    // Draw gradient trail
-    CGColorSpaceRef colorSpace = _deviceRGBColorSpace;
-    if (!colorSpace) return;
-
-    CGFloat components[8] = {
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, dimOpacity,
-        bgColor.redComponent, bgColor.greenComponent, bgColor.blueComponent, 0.0
-    };
-
-    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, NULL, 2);
-    if (!gradient) return;
-
-    CGFloat trailStart = MAX(0, playedWidth - trailLength);
-    CGContextSaveGState(context);
-    CGContextClipToRect(context, CGRectMake(trailStart, 0, trailLength, bounds.size.height));
-    CGContextDrawLinearGradient(context, gradient,
-        CGPointMake(trailStart, 0), CGPointMake(playedWidth, 0), 0);
-    CGContextRestoreGState(context);
-
-    CGGradientRelease(gradient);
-}
-
 // Effect 6: Shimmer - Oscillating brightness bands
 - (void)drawShimmerEffectInContext:(CGContextRef)context bounds:(CGRect)bounds
                        playedWidth:(CGFloat)playedWidth bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
@@ -1300,7 +1625,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextFillRect(context, CGRectMake(0, 0, playedWidth, bounds.size.height));
 
     // Draw shimmering bands near cursor
-    CGFloat time = CFAbsoluteTimeGetCurrent();
+    CGFloat time = [self animationTime];
     CGFloat shimmerWidth = 30.0;
     CGFloat bandCount = 5;
     CGFloat baseFreq = [self animationFrequencyWithDefault:2.5];  // Default 2.5Hz
@@ -1325,8 +1650,216 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     }
 }
 
+#pragma mark - Cursor Effects (experimental)
 
+- (fx::Painter &)fxPainter {
+    if (!_fxPainter) _fxPainter = std::make_unique<fx::Painter>(themeSpace());
+    return *_fxPainter;
+}
 
+// The background the effects draw over is dark: their light then lightens
+// what is under it rather than painting over it
+- (bool)effectsOnDark {
+    return theme::isDark(_tokens.background);
+}
+
+// The track's level envelope, built from its fine blocks on first use
+- (const fx::LevelEnvelope &)fxLevels {
+    const WaveformData *data = self.waveformData;
+    if (data != _fxLevelsFor) {
+        _fxLevels.clear();
+        _fxLevelsFor = data;
+        if (data && data->isValid() && data->sampleRate > 0 && data->blockFrames > 0) {
+            const bool stereo = data->channelCount == 2 && data->blockRms[1].size() == data->blockRms[0].size();
+            _fxLevels.build(data->blockRms[0].data(), stereo ? data->blockRms[1].data() : nullptr,
+                            data->blockRms[0].size(), (double)data->blockFrames / data->sampleRate);
+        }
+    }
+    return _fxLevels;
+}
+
+// How far the waveform reaches above and below a lane's centre at x (points
+// from its left edge), roughly as each style draws it, for sparks thrown
+// off its edge
+- (void)edgesAtX:(CGFloat)x lane:(int)lane amplitude:(CGFloat)amplitude top:(CGFloat *)top bottom:(CGFloat *)bottom {
+    *top = *bottom = 0.0;
+    const analysis::Columns& r = _readout;
+    const long c = (long)std::floor(x * [self backingScale]) - _maskOffsetPx;
+    if (r.channels == 0 || c < 0 || c >= (long)r.count) return;
+    const bool two = r.channels == 2;
+    auto up = [&](int ch) { return std::max(0.0f, r.max[ch][c]); };
+    auto down = [&](int ch) { return std::max(0.0f, -r.min[ch][c]); };
+    float t, b;
+    if (_split) {
+        t = std::max(up(0), down(0));
+        b = two ? std::max(up(1), down(1)) : t;
+    } else if ([self laneCount] == 1) {
+        t = two ? std::max(up(0), up(1)) : up(0);
+        b = two ? std::max(down(0), down(1)) : down(0);
+    } else {
+        const int ch = two ? lane : 0;
+        t = up(ch);
+        b = down(ch);
+    }
+    switch (familyOf(_style)) {
+        case FamilyLayered: {
+            // Mirrored on a dBFS axis; in Split L up, R down
+            auto frac = [](float peak) { return layered::fraction(peak > 0.0f ? 20.0f * std::log10(peak) : -INFINITY); };
+            if (_split) {
+                t = frac(t);
+                b = frac(b);
+            } else {
+                t = b = frac(std::max(t, b));
+            }
+            break;
+        }
+        case FamilyClassic:
+            if (!_split) t = b = std::max(t, b);
+            break;
+        case FamilySimple:
+            break;
+    }
+    *top = std::min(1.0f, t) * amplitude;
+    *bottom = std::min(1.0f, b) * amplitude;
+}
+
+// Where sparks go: the cursor's x at a playback time, and the waveform's
+// lanes and edges, in the effects' coordinates
+- (fx::SparkGeometry)sparkGeometryForBounds:(CGRect)bounds wave:(CGRect)wave {
+    fx::SparkGeometry g;
+    const Lanes lanes = lanesFor(wave.size.height, 1.0, [self laneCount], familyOf(_style));
+    g.lanes = lanes.count;
+    for (int l = 0; l < lanes.count; ++l) g.centre[l] = wave.origin.y + lanes.center[l];
+    g.amplitude = lanes.amplitude;
+    g.xAt = [self cursorXAtTimeForWidth:bounds.size.width];
+    const CGFloat amplitude = lanes.amplitude;
+    g.edges = [self, amplitude](CGFloat x, int lane, CGFloat& top, CGFloat& bottom) {
+        [self edgesAtX:x lane:lane amplitude:amplitude top:&top bottom:&bottom];
+    };
+    return g;
+}
+
+// The cursor's x at a playback time (seconds), across `width`
+- (std::function<CGFloat(double)>)cursorXAtTimeForWidth:(CGFloat)width {
+    const waveseek::ZoomRange zoom = _zoom;
+    const double duration = self.trackDuration;
+    return [zoom, duration, width](double t) {
+        return duration > 0.0 ? (CGFloat)(width * zoom.acrossOf(t / duration)) : (CGFloat)NAN;
+    };
+}
+
+// Effect 7: Particles - sparks thrown off the waveform at the cursor, more and
+// farther the louder the track is there, so they burst on its beats by
+// themselves. A function of the playback time: nothing kept between frames.
+- (void)drawParticlesEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                             bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity wave:(CGRect)wave {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return;
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::particleSparks(),
+                 [&levels](double t) { return levels.burst(t); }, _sparks);
+    const bool dark = [self effectsOnDark];
+    [self fxPainter].sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave],
+                            fxColour(dark ? _tokens.hot : _tokens.deep), fxColour(_tokens.accent), dark);
+}
+
+// The pulse of Firewall and Earthcrusher: 0..1, on the beat with sync on
+- (float)effectPulse {
+    return (float)waveseek::oscillator([self animationTime], [self animationFrequencyWithDefault:1.5]);
+}
+
+// The track's smoothed level now, 0..1; middling without a waveform
+- (float)effectLevel {
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return 0.5f;
+    return std::min(1.0f, levels.smooth(self.playbackPosition * self.trackDuration));
+}
+
+// The track's smoothed level at x across `width`, 0..1; middling without a
+// waveform
+- (std::function<float(CGFloat)>)levelAtXForWidth:(CGFloat)width {
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    const waveseek::ZoomRange zoom = _zoom;
+    const double duration = self.trackDuration;
+    if (levels.empty() || duration <= 0.0 || width <= 0.0) return [](CGFloat) { return 0.5f; };
+    return [&levels, zoom, duration, width](CGFloat x) {
+        return std::min(1.0f, levels.smooth(zoom.positionAt(x / width) * duration));
+    };
+}
+
+// Effect 8: Firewall - the played part burns: a row of fires behind the
+// cursor, each as tall as the track is loud there and taller near the
+// cursor, with the warm light and embers at the cursor, all under the loop
+// and markers. The cursor's own fire, the tallest, stands on it
+// (drawEffectCursorInContext), from the same field, stepped here.
+- (void)drawFirewallEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                            bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    const bool dark = [self effectsOnDark];
+    fx::Painter& painter = [self fxPainter];
+    const float pulse = [self effectPulse];
+    // Higher where the track is loud, flaring with the pulse
+    painter.stepFire(bounds, 0.35f + 0.8f * [self effectLevel] + 0.25f * pulse, CFAbsoluteTimeGetCurrent());
+    painter.fireRow(context, bounds, playedWidth, bounds.size.width * _zoom.acrossOf(0.0), [self backingScale],
+                    [self levelAtXForWidth:bounds.size.width]);
+    painter.glow(context, bounds, playedWidth, kFireGlow, kFireCore, pulse, 0.8f, dark, 0.0f);
+    if (self.trackDuration <= 0.0) return;
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::emberSparks(),
+                 [&levels](double t) { return 0.4f + levels.burst(t); }, _sparks);
+    painter.embers(context, _sparks, bounds, [self cursorXAtTimeForWidth:bounds.size.width], dark);
+}
+
+// Earthcrusher's colours: the waveform's own, burnt (fx::earthShades)
+- (fx::EarthColours)earthColours {
+    const fx::EarthShades s = fx::earthShades(_tokens.accent);
+    return { fxColour(s.plate), fxColour(s.crack), fxColour(s.clod), fxColour(s.ember), fxColour(s.core) };
+}
+
+// Effect 9: Earthcrusher - behind the jagged cursor (drawEffectCursorInContext)
+// the 20-40 pt of waveform it just went over lies scorched and cracked, the
+// freshest cracks still glowing, longer where the track is loud; clods and
+// hot bits are kicked up on its beats. All in shades of the wave colour.
+- (void)drawEarthcrusherEffectInContext:(CGContextRef)context bounds:(CGRect)bounds playedWidth:(CGFloat)playedWidth
+                                bgColor:(NSColor *)bgColor dimOpacity:(CGFloat)dimOpacity wave:(CGRect)wave {
+    [self drawNoneEffectInContext:context bounds:bounds playedWidth:playedWidth bgColor:bgColor dimOpacity:dimOpacity];
+    if (!_masks[0] || _maskWidth == 0) return;   // no waveform drawn to crack
+    fx::Painter& painter = [self fxPainter];
+    const float level = [self effectLevel];
+    const CGFloat zone = 20.0 + 20.0 * level;
+    const float flicker = 0.75f + 0.25f * fx::noise1((float)std::fmod(CFAbsoluteTimeGetCurrent(), 1000.0) * 9.0f, 77u);
+    // The waveform's silhouette where it was drawn; the cracks anchored at
+    // the track's start so they stay put on it as the zone moves along
+    const CGFloat scale = [self backingScale];
+    const CGRect maskRect = CGRectMake(_maskOffsetPx / scale, wave.origin.y, _maskWidth / scale, wave.size.height);
+    const fx::EarthColours colours = [self earthColours];
+    painter.scorch(context, CGRectMake(playedWidth - zone, wave.origin.y, zone, wave.size.height), _masks[0], maskRect,
+                   scale, bounds.size.width * _zoom.acrossOf(0.0), 0.6f + 0.4f * level, flicker, colours,
+                   [self effectsOnDark]);
+    const fx::LevelEnvelope& levels = [self fxLevels];
+    if (levels.empty() || self.trackDuration <= 0.0) return;
+    fx::sparksAt(self.playbackPosition * self.trackDuration, fx::debrisSparks(),
+                 [&levels](double t) { return levels.burst(t); }, _sparks);
+    painter.sparks(context, _sparks, [self sparkGeometryForBounds:bounds wave:wave], colours.ember, colours.clod, false);
+}
+
+// Firewall and Earthcrusher draw the cursor themselves while the played part
+// (and so the effect) shows
+- (BOOL)effectDrawsCursor {
+    if (!self.shadePlayedPortion || self.playedDimming <= 0.0 || self.playbackPosition <= 0.0) return NO;
+    return self.cursorEffect == WaveformCursorEffectFirewall || self.cursorEffect == WaveformCursorEffectEarthcrusher;
+}
+
+// The cursor at x in `rect` as the effect draws it: flames, or a jagged line
+- (void)drawEffectCursorInContext:(CGContextRef)context rect:(CGRect)rect x:(CGFloat)x {
+    fx::Painter& painter = [self fxPainter];
+    if (self.cursorEffect == WaveformCursorEffectFirewall) {
+        painter.fireWall(context, rect, x);
+    } else {
+        painter.jaggedCursor(context, rect, x, CFAbsoluteTimeGetCurrent(), 2.0f + 2.5f * [self effectPulse] +
+                             1.5f * [self effectLevel], [self earthColours]);
+    }
+}
 
 - (void)drawPlaceholderInContext:(CGContextRef)context rect:(CGRect)rect {
     NSString *text = self.analyzing ? @"Analyzing..." : @"No waveform";
@@ -1347,19 +1880,31 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (self.trackDuration <= 0.0 || (self.playbackPosition <= 0.0 && !self.playing)) return;
 
     const CGFloat scale = [self backingScale];
-    const CGFloat position = std::clamp(self.playbackPosition, 0.0, 1.0);
-    const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * position) * scale) + 0.5) / scale,
+    const double across = _zoom.acrossOf(std::clamp(self.playbackPosition, 0.0, 1.0));
+    if (across < 0.0 || across > 1.0) return;   // zoomed in on another part
+    const CGFloat x = std::min((std::floor((rect.origin.x + rect.size.width * across) * scale) + 0.5) / scale,
                                CGRectGetMaxX(rect) - 0.5 / scale);
 
-    CGContextSaveGState(context);
-    setStroke(context, _tokens.cursor, 1.0);
-    CGContextSetLineWidth(context, 1.0);
-    CGContextMoveToPoint(context, x, rect.origin.y);
-    CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
-    CGContextStrokePath(context);
-    CGContextRestoreGState(context);
+    if ([self effectDrawsCursor]) {
+        [self drawEffectCursorInContext:context rect:rect x:x];
+    } else {
+        CGContextSaveGState(context);
+        setStroke(context, _tokens.cursor, 1.0);
+        CGContextSetLineWidth(context, 1.0);
+        CGContextMoveToPoint(context, x, rect.origin.y);
+        CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
+        CGContextStrokePath(context);
+        CGContextRestoreGState(context);
+    }
 
     if (!self.showCursorTime) return;
+    [self drawChip:str(overlay::formatClock(self.playbackPosition * self.trackDuration)) atX:x rect:rect
+           context:context];
+}
+
+// `text` in the cursor's chip beside a line at `x`, at the top of `rect`
+// (left of the line near the right edge); none in a view too short for it
+- (void)drawChip:(NSString *)text atX:(CGFloat)x rect:(CGRect)rect context:(CGContextRef)context {
     NSDictionary *attrs = @{
         NSFontAttributeName: _chipFont,
         NSForegroundColorAttributeName: [NSColor colorWithDisplayP3Red:_tokens.cursorText.r
@@ -1367,8 +1912,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
                                                                    blue:_tokens.cursorText.b
                                                                   alpha:1.0]
     };
-    NSString *time = str(overlay::formatClock(self.playbackPosition * self.trackDuration));
-    const NSSize textSize = [time sizeWithAttributes:attrs];
+    const NSSize textSize = [text sizeWithAttributes:attrs];
     const CGFloat chipW = std::ceil(textSize.width + 2 * TS(kChipPadX));
     const CGFloat chipH = std::ceil(textSize.height + 2 * TS(kChipPadY));
     if (chipH + 2 * kChipOffset > rect.size.height) return;
@@ -1385,7 +1929,140 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGPathRelease(shape);
     CGContextRestoreGState(context);
 
-    [time drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
+    [text drawAtPoint:NSMakePoint(chip.origin.x + TS(kChipPadX), chip.origin.y + TS(kChipPadY)) withAttributes:attrs];
+}
+
+#pragma mark - Phrase Markers
+
+// A hairline at every phrase start, coloured by how well the beats sit on
+// the grid there: quiet when locked, a warning tick when drifting, an alert
+// tick when broken, dashed and dim without pulse, and a triangle on the top
+// edge where a new grid begins. On the master grid, or following each new
+// grid (its own tempo and phrase count). Thinned to keep them
+// kMinPhraseSpacing apart; neutral when colours are off or the tempo is
+// uncertain.
+- (void)drawPhraseMarkersInContext:(CGContextRef)context rect:(CGRect)rect {
+    _phraseHits.clear();
+    if (!_phraseMarkers || !_phraseGrid || !(self.trackDuration > 0.0)) {
+        // Diagnostic: why none are drawn, once per reason
+        const int reason = !_phraseMarkers ? 1 : !_phraseGrid ? 2 : 3;
+        if (reason != _phraseNoneLogged) {
+            _phraseNoneLogged = reason;
+            FB2K_console_formatter() << "[WaveSeek] Phrase markers: none drawn ("
+                                     << (reason == 1 ? "switched off" : reason == 2 ? "no beat grid in the view" : "no track length")
+                                     << ")";
+        }
+        return;
+    }
+    _phraseNoneLogged = 0;
+    const jl_beatgrid_summary &grid = _phraseGrid->summary;
+    const int beats = waveseek::thinnedPhraseBeats(_phraseLength, waveseek::densestBpm(*_phraseGrid, _phraseFollowGrid),
+                                                   self.trackDuration, rect.size.width, _zoom.zoom);
+    if (beats != _phraseBeatsDrawn || _phrasesFor != _phraseGrid) {
+        _phrases = waveseek::phraseMarkers(*_phraseGrid, beats, _phraseFollowGrid);
+        _phraseBeatsDrawn = beats;
+        _phrasesFor = _phraseGrid;
+        size_t inView = 0;
+        for (const waveseek::PhraseMarker &m : _phrases) {
+            const double a = _zoom.acrossOf(m.seconds / self.trackDuration);
+            inView += a >= 0.0 && a <= 1.0;
+        }
+        FB2K_console_formatter() << "[WaveSeek] Phrase markers: " << _phrases.size() << " every " << beats << " beats, "
+                                 << inView << " in view, " << pfc::format_int(std::lround(rect.size.width)) << " pt wide, "
+                                 << (_phrases.empty() ? 0.0 : _phrases.front().seconds) << " s first, "
+                                 << _phraseGrid->bars.size() << " bars";
+    }
+    const bool neutral = !_phraseBreakColours || grid.tempo_strength < jl_beatgrid_uncertain_strength;
+    const CGFloat scale = [self backingScale];
+    const CGFloat hairline = 1.0 / scale;
+    auto xAt = [&](double seconds) {
+        return (std::floor((rect.origin.x + rect.size.width * _zoom.acrossOf(seconds / self.trackDuration)) * scale)
+                + 0.5) / scale;
+    };
+
+    CGContextSaveGState(context);
+    CGContextSetLineWidth(context, hairline);
+    long lastPixel = LONG_MIN;
+    for (size_t i = 0; i < _phrases.size(); ++i) {
+        const waveseek::PhraseMarker &m = _phrases[i];
+        const double across = _zoom.acrossOf(m.seconds / self.trackDuration);
+        if (across < 0.0 || across > 1.0) continue;
+        const CGFloat x = xAt(m.seconds);
+        const long pixel = std::lround(x * scale);
+        if (pixel == lastPixel) continue;   // one per pixel column
+        lastPixel = pixel;
+        _phraseHits.push_back({ x, i });
+
+        const jl_phrase_state state = neutral ? jl_phrase_locked : m.state;
+        switch (state) {
+            case jl_phrase_drifting: [p3(kOverlayWarning, 0.55) setStroke]; break;
+            case jl_phrase_broken: [p3(kOverlayAlert, 0.65) setStroke]; break;
+            case jl_phrase_no_pulse: setStroke(context, _tokens.centre, 0.35); break;
+            default: setStroke(context, _tokens.centre, 0.6); break;
+        }
+        if (state == jl_phrase_no_pulse) {
+            const CGFloat dash[2] = { 2.0, 3.0 };
+            CGContextSetLineDash(context, 0, dash, 2);
+        } else {
+            CGContextSetLineDash(context, 0, nullptr, 0);
+        }
+        CGContextMoveToPoint(context, x, rect.origin.y);
+        CGContextAddLineToPoint(context, x, CGRectGetMaxY(rect));
+        CGContextStrokePath(context);
+
+        // Ticks on the bottom edge (clip markers own the top)
+        if (state == jl_phrase_drifting || state == jl_phrase_broken) {
+            [(state == jl_phrase_broken ? p3(kOverlayAlert) : p3(kOverlayWarning)) setFill];
+            const CGFloat left = std::round((x - kClipMarkerWidth / 2) * scale) / scale;
+            CGContextFillRect(context, CGRectMake(left, rect.origin.y, kClipMarkerWidth, kClipMarkerHeight));
+        }
+        // Where the new grid begins, on the top edge
+        if (state == jl_phrase_reanchor && !std::isnan(m.reanchorSeconds)) {
+            const double at = _zoom.acrossOf(m.reanchorSeconds / self.trackDuration);
+            if (at >= 0.0 && at <= 1.0) {
+                const CGFloat tx = xAt(m.reanchorSeconds), top = CGRectGetMaxY(rect);
+                [p3(kOverlayWarning) setFill];
+                CGContextMoveToPoint(context, tx - 3.5, top);
+                CGContextAddLineToPoint(context, tx + 3.5, top);
+                CGContextAddLineToPoint(context, tx, top - 5.0);
+                CGContextClosePath(context);
+                CGContextFillPath(context);
+            }
+        }
+    }
+    CGContextRestoreGState(context);
+}
+
+// The readout's line about the phrase marker under the mouse, if any
+- (NSAttributedString *)phraseLineNear:(CGFloat)x {
+    const std::pair<CGFloat, size_t> *nearest = nullptr;
+    for (const auto &hit : _phraseHits) {
+        if (std::fabs(hit.first - x) <= 4.0 && (!nearest || std::fabs(hit.first - x) < std::fabs(nearest->first - x))) {
+            nearest = &hit;
+        }
+    }
+    if (!nearest) return nil;
+    const waveseek::PhraseMarker &m = _phrases[nearest->second];
+    const bool neutral = !_phraseBreakColours || _phraseGrid->summary.tempo_strength < jl_beatgrid_uncertain_strength;
+    if (m.state == jl_phrase_no_pulse && !neutral) return [self text:@"No pulse" color:kOverlayLabel bold:NO];
+    if (m.phrase < 0) {   // where a section's grid begins
+        NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
+        [line appendAttributedString:[self text:@"New grid · " color:kOverlayLabel bold:NO]];
+        [line appendAttributedString:[self text:str(overlay::formatNumber(m.bpm, 2))
+                                          color:neutral ? kOverlayValue : kOverlayWarning bold:NO]];
+        [line appendAttributedString:[self text:@" BPM" color:kOverlayLabel bold:NO]];
+        return line;
+    }
+    NSString *where = [NSString stringWithFormat:@"Phrase %ld · bar %ld · ", m.phrase + 1, m.startBar + 1];
+    NSString *what = m.state == jl_phrase_reanchor ? @"new grid"
+                   : [NSString stringWithFormat:@"%@ ms", str(overlay::formatNumber(m.offsetMs, 0, true))];
+    NSMutableAttributedString *line = [[NSMutableAttributedString alloc] init];
+    [line appendAttributedString:[self text:where color:kOverlayLabel bold:NO]];
+    const uint32_t color = neutral ? kOverlayValue
+                         : m.state == jl_phrase_broken ? kOverlayAlert
+                         : m.state == jl_phrase_drifting || m.state == jl_phrase_reanchor ? kOverlayWarning : kOverlayValue;
+    [line appendAttributedString:[self text:what color:color bold:NO]];
+    return line;
 }
 
 #pragma mark - Overlays
@@ -1401,7 +2078,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     [p3(kOverlayAlert, _clipMarkerOpacity) setFill];
     long lastPixel = -1;
     for (uint64_t frame : data.clipRunFrames) {
-        const CGFloat x = rect.origin.x + rect.size.width * (CGFloat)(frame / totalFrames);
+        const double across = _zoom.acrossOf(frame / totalFrames);
+        if (across < 0.0 || across > 1.0) continue;
+        const CGFloat x = rect.origin.x + rect.size.width * across;
         const long pixel = std::lround(x * scale);
         if (pixel == lastPixel) continue;
         lastPixel = pixel;
@@ -1414,12 +2093,79 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
 - (void)drawOverlaysInContext:(CGContextRef)context rect:(CGRect)rect {
     using namespace waveform_config;
-    if (_summaryMode == SummaryAlways || (_summaryMode == SummaryOnHover && _hovering)) {
+    if ([self snapLineShownFor:rect]) [self drawSnapLineInContext:context rect:rect];   // under the bar
+    [self drawBarInContext:context rect:rect];
+    if (_zoom.zoomed()) [self drawZoomButtonInContext:context rect:rect];
+    const int summary = [self summaryShown];
+    if (summary == SummaryAlways || (summary == SummaryOnHover && _hovering)) {
         [self drawSummaryInContext:context rect:rect];
     }
-    if (_showReadout && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect)) {
+    if ([self readoutShown] && _hovering && _readout.count > 0 && _hoverX < CGRectGetMaxX(rect) &&
+        ![self isOverZoomButton] && ![self isOverBar]) {
         [self drawReadoutInContext:context rect:rect];
     }
+}
+
+// With Snap on in the mixer, while the mouse is over the waveform (not the
+// bar or the zoom button, not dragging the loop)
+- (BOOL)snapLineShownFor:(CGRect)wave {
+    return _snapToBeat && _hovering && !_loopDragging && _hoverX >= wave.origin.x && _hoverX < CGRectGetMaxX(wave) &&
+           [self mixerReady] && ![self isOverZoomButton] && ![self isOverBar];
+}
+
+// Where a click would go: a line at the beat nearest the mouse (at any
+// zoom; zoomed out the beats are a few points apart) and its time in the
+// cursor's chip
+- (void)drawSnapLineInContext:(CGContextRef)context rect:(CGRect)rect {
+    const double beat = waveseek::nearestBeat([self beats], [self secondsAtX:_hoverX]);
+    if (std::isnan(beat)) return;
+    const double across = _zoom.acrossOf(beat / self.trackDuration);
+    if (across < 0.0 || across > 1.0) return;   // beyond the part shown
+    const CGFloat scale = [self backingScale];
+    const CGRect line = [self cursorRectFor:rect];
+    const CGFloat x = std::min(std::round((rect.origin.x + rect.size.width * across) * scale) / scale,
+                               CGRectGetMaxX(rect) - 1.0);
+    CGContextSaveGState(context);
+    setFill(context, _tokens.cursor, kSnapLineAlpha);
+    CGContextFillRect(context, CGRectMake(x, line.origin.y, 1.0, line.size.height));
+    CGContextRestoreGState(context);
+    [self drawChip:str(overlay::formatClockCentis(beat)) atX:x + 0.5 rect:line context:context];
+}
+
+// Where the bottom row's badges end on the right: the waveform's edge, or
+// the bar while it shows
+- (CGFloat)badgeRowRightFor:(CGRect)wave {
+    CGRect box;
+    [self barSegmentsFor:wave box:&box];
+    return CGRectIsNull(box) ? CGRectGetMaxX(wave) : box.origin.x;
+}
+
+// Reset zoom, at the bottom right of the waveform while zoomed in (left of
+// the bar); the summary badge moves to its left. Null when the
+// waveform is too narrow.
+- (NSAttributedString *)zoomButtonLabelHighlighted:(BOOL)highlighted {
+    return [self text:@"Reset zoom" color:highlighted ? kOverlayValue : kOverlayLabel bold:NO];
+}
+
+- (CGRect)zoomButtonRectFor:(CGRect)wave {
+    if (!_zoom.zoomed()) return CGRectNull;
+    const NSSize size = [self zoomButtonLabelHighlighted:NO].size;
+    const CGFloat w = std::ceil(size.width + 2 * TS(kBadgePadX));
+    const CGFloat h = std::ceil(size.height + 2 * TS(kBadgePadY));
+    const CGRect box = CGRectMake(std::round([self badgeRowRightFor:wave] - kBadgeInset - w), wave.origin.y + kBadgeInset, w, h);
+    return box.origin.x < wave.origin.x ? CGRectNull : box;
+}
+
+- (BOOL)isOverZoomButton {
+    return _hovering && CGRectContainsPoint([self zoomButtonRectFor:[self waveformRect]], CGPointMake(_hoverX, _hoverY));
+}
+
+- (void)drawZoomButtonInContext:(CGContextRef)context rect:(CGRect)rect {
+    const CGRect box = [self zoomButtonRectFor:rect];
+    if (CGRectIsNull(box)) return;
+    [self fillOverlayBox:box radius:kBadgeRadius context:context];
+    [[self zoomButtonLabelHighlighted:[self isOverZoomButton]]
+        drawAtPoint:NSMakePoint(box.origin.x + TS(kBadgePadX), box.origin.y + TS(kBadgePadY))];
 }
 
 - (void)fillOverlayBox:(CGRect)box radius:(CGFloat)radius context:(CGContextRef)context {
@@ -1438,10 +2184,24 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 }
 
 - (NSAttributedString *)text:(NSString *)s color:(uint32_t)color bold:(BOOL)bold {
+    return [self text:s colour:p3(color) bold:bold];
+}
+
+- (NSAttributedString *)text:(NSString *)s colour:(NSColor *)colour bold:(BOOL)bold {
     return [[NSAttributedString alloc] initWithString:s attributes:@{
         NSFontAttributeName: bold ? _overlayBoldFont : _overlayFont,
-        NSForegroundColorAttributeName: p3(color)
+        NSForegroundColorAttributeName: colour
     }];
+}
+
+// The system's accent colour as it shows on a dark background: the
+// overlays are dark in every theme
+- (NSColor *)accentOnOverlay {
+    __block NSColor *colour = nil;
+    [[NSAppearance appearanceNamed:NSAppearanceNameDarkAqua] performAsCurrentDrawingAppearance:^{
+        colour = [NSColor.controlAccentColor colorUsingColorSpace:NSColorSpace.displayP3ColorSpace];
+    }];
+    return colour ?: p3(kOverlayValue);
 }
 
 // `I −12.4 LUFS  LRA 15.9 LU  TP +0.4 dBTP  PLR 12.8  17 clips`, bottom right
@@ -1460,9 +2220,23 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (s.clipRuns > 0) {
         add([NSString stringWithFormat:@"  %u %@", s.clipRuns, s.clipRuns == 1 ? @"clip" : @"clips"], kOverlayAlert);
     }
+    // With phrase markers: the grid and how much of it holds
+    if (_phraseMarkers && _phraseGrid && !_phrases.empty()) {
+        add(@"  Grid ", kOverlayLabel);
+        add(str(overlay::formatNumber(_phraseGrid->summary.bpm, 2)), kOverlayValue);
+        add(@" BPM · ", kOverlayLabel);
+        if (_phraseFollowGrid && _phraseGrid->hasSections()) {
+            add([NSString stringWithFormat:@"%zu", _phraseGrid->sections.size()], kOverlayValue);
+            add(@" grids · ", kOverlayLabel);
+        }
+        add([NSString stringWithFormat:@"%ld%%", std::lround(waveseek::lockedPhraseShare(_phrases) * 100.0)], kOverlayValue);
+        add(@" locked", kOverlayLabel);
+    }
 
     const NSSize size = line.size;
-    const CGRect box = CGRectMake(std::round(CGRectGetMaxX(rect) - kBadgeInset - size.width - 2 * TS(kBadgePadX)),
+    const CGRect zoomButton = [self zoomButtonRectFor:rect];
+    const CGFloat right = CGRectIsNull(zoomButton) ? [self badgeRowRightFor:rect] : zoomButton.origin.x;
+    const CGRect box = CGRectMake(std::round(right - kBadgeInset - size.width - 2 * TS(kBadgePadX)),
                                   rect.origin.y + kBadgeInset,
                                   std::ceil(size.width + 2 * TS(kBadgePadX)), std::ceil(size.height + 2 * TS(kBadgePadY)));
     if (box.origin.x < rect.origin.x) return;   // narrower than the badge
@@ -1487,9 +2261,13 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGContextStrokePath(context);
     CGContextRestoreGState(context);
 
+    // The masks' column under the mouse; none beyond the track's ends
     const analysis::Columns& r = _readout;
-    const size_t c = std::min(r.count - 1, (size_t)std::max<CGFloat>(0.0, (mouseX - rect.origin.x) * scale));
-    const double seconds = (mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width) * self.trackDuration;
+    const long column = (long)std::floor((mouseX - rect.origin.x) * scale) - _maskOffsetPx;
+    if (column < 0 || column >= (long)r.count) return;
+    const size_t c = (size_t)column;
+    const double seconds = _zoom.positionAt((mouseX - rect.origin.x) / std::max<CGFloat>(1.0, rect.size.width))
+                         * self.trackDuration;
 
     using namespace waveform_config;
     const CGFloat width = TS(overlay::kReadoutWidth);
@@ -1504,7 +2282,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     CGFloat floor = self.bounds.origin.y;
     if (onFloor) {
         floor = rect.origin.y + kBadgeInset;
-        if (_summaryMode != SummaryOff) {
+        if ([self summaryShown] != SummaryOff || _zoom.zoomed() || [self barShown]) {   // the badges' row
             const CGFloat badge = std::ceil([@"I" sizeWithAttributes:@{ NSFontAttributeName: _overlayFont }].height
                                             + 2 * TS(kBadgePadY));
             floor += badge + kBadgeInset;
@@ -1516,15 +2294,18 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         }
     }
     const CGFloat room = CGRectGetMaxY(self.bounds) - floor;
-    const bool bands = TS(kReadoutHeight) <= room;
+    // Near a phrase marker: its line under the time, the rows below it
+    NSAttributedString *phraseLine = [self phraseLineNear:mouseX];
+    const CGFloat extra = phraseLine ? TS(kReadoutRowStep) : 0.0;
+    const bool bands = TS(kReadoutHeight) + extra <= room;
     // Without the bands, as many value rows as fit (Corr goes first); in a
     // view too short even for the time, no box
     int rowCount = 4;
     auto compactHeight = [&](int rows) {
-        return TS(rows > 0 ? kReadoutCompactHeight - (4 - rows) * kReadoutRowStep : kReadoutRowsY);
+        return TS(rows > 0 ? kReadoutCompactHeight - (4 - rows) * kReadoutRowStep : kReadoutRowsY) + extra;
     };
     while (!bands && rowCount > 0 && compactHeight(rowCount) > room) --rowCount;
-    const CGFloat height = bands ? TS(kReadoutHeight) : compactHeight(rowCount);
+    const CGFloat height = bands ? TS(kReadoutHeight) + extra : compactHeight(rowCount);
     if (height > room) return;
     // 10 pt from the top, less in views too short for that; at the bottom
     // right it sits on its floor instead
@@ -1545,7 +2326,11 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     };
 
     drawLeft([self text:str(overlay::formatClock(seconds, true)) color:kOverlayValue bold:YES], TS(kReadoutHeaderY));
-    drawRight([self text:@"click to seek" color:kOverlayLabel bold:NO], TS(kReadoutHeaderY));
+    // Thinned markers say how far apart they are instead of the seek hint
+    NSString *hint = phraseLine && _phraseBeatsDrawn != _phraseLength
+        ? [NSString stringWithFormat:@"every %d beats", _phraseBeatsDrawn] : @"click to seek";
+    drawRight([self text:hint color:kOverlayLabel bold:NO], TS(kReadoutHeaderY));
+    if (phraseLine) drawLeft(phraseLine, TS(kReadoutRowsY));
 
     struct Row { NSString *label; std::string value; NSString *unit; };
     const Row rows[4] = {
@@ -1555,7 +2340,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         { @"Corr", overlay::formatNumber(r.correlation[c], 2, true), @"" },
     };
     for (int i = 0; i < rowCount; ++i) {
-        const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep);
+        const CGFloat y = TS(kReadoutRowsY) + i * TS(kReadoutRowStep) + extra;
         drawLeft([self text:rows[i].label color:kOverlayLabel bold:NO], y);
         drawRight([self text:[str(rows[i].value) stringByAppendingString:rows[i].unit] color:kOverlayValue bold:NO], y);
     }
@@ -1563,7 +2348,7 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if (!bands) return;
 
     // Lo / Mid / Hi: stacked bar, then the shares
-    const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - TS(kReadoutBarHeight),
+    const CGRect bar = CGRectMake(left + TS(kReadoutPadX), top - TS(kReadoutBarY) - extra - TS(kReadoutBarHeight),
                                   width - 2 * TS(kReadoutPadX), TS(kReadoutBarHeight));
     CGContextSaveGState(context);
     [p3(kOverlayBorder) setFill];
@@ -1586,9 +2371,9 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         NSString *value = known ? [NSString stringWithFormat:@"%d", percent[b]] : str(overlay::formatNumber(NAN, 0));
         return [self text:[NSString stringWithFormat:@"%@ %@%@", name, value, suffix] color:kOverlayLabel bold:NO];
     };
-    drawLeft(band(@"Lo", 0, @""), TS(kReadoutBandsY));
-    drawCentre(band(@"Mid", 1, @""), TS(kReadoutBandsY));
-    drawRight(band(@"Hi", 2, @" %"), TS(kReadoutBandsY));
+    drawLeft(band(@"Lo", 0, @""), TS(kReadoutBandsY) + extra);
+    drawCentre(band(@"Mid", 1, @""), TS(kReadoutBandsY) + extra);
+    drawRight(band(@"Hi", 2, @" %"), TS(kReadoutBandsY) + extra);
 }
 
 #pragma mark - Scales
@@ -1619,20 +2404,26 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
         CGContextRestoreGState(context);
         return;
     }
-    const double major = overlay::rulerInterval(duration, wave.size.width);
+    // The part of the track in view; ticks stay on whole multiples of the
+    // interval when zoomed in
+    const double first = _zoom.start * duration, shown = _zoom.span() * duration;
+    auto xAt = [&](double seconds) { return wave.origin.x + wave.size.width * ((seconds - first) / shown); };
+    const double major = overlay::rulerInterval(shown, wave.size.width, _zoom.zoomed());
     const double minor = major / 4.0;
     [p3(kScaleLabel, 0.6) setStroke];
-    for (long i = 0; i * minor <= duration; ++i) {
-        const CGFloat x = (std::floor((wave.origin.x + wave.size.width * (i * minor / duration)) * scale) + 0.5) / scale;
+    // Within the track: a centred view shows space beyond its ends
+    const double last = std::min(first + shown, duration);
+    for (long i = std::max(0L, (long)std::ceil(first / minor - 1e-9)); i * minor <= last; ++i) {
+        const CGFloat x = (std::floor(xAt(i * minor) * scale) + 0.5) / scale;
         const CGFloat length = (i % 4 == 0) ? kRulerMajorTick : kRulerMinorTick;
         CGContextMoveToPoint(context, x, top);
         CGContextAddLineToPoint(context, x, top - length);
     }
     CGContextStrokePath(context);
 
-    for (long i = 0; i * major <= duration; ++i) {
+    for (long i = std::max(0L, (long)std::ceil(first / major - 1e-9)); i * major <= last; ++i) {
         NSAttributedString *label = [self scaleText:str(overlay::formatClock(i * major))];
-        const CGFloat x = wave.origin.x + wave.size.width * (i * major / duration) + TS(kRulerLabelGap);
+        const CGFloat x = xAt(i * major) + TS(kRulerLabelGap);
         if (x + label.size.width > CGRectGetMaxX(wave)) break;
         [label drawAtPoint:NSMakePoint(std::round(x), top - TS(kRulerLabelTop) - label.size.height)];
     }
@@ -1710,40 +2501,1021 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     }
 }
 
+#pragma mark - Bottom Bar
+
+// Every beat of the grid shown (following a new grid when the markers do),
+// on the trusted sections: one that doesn't fit its bars takes the master's
+// beats; a new list ends the loop, whose beats were the old one's
+- (const std::vector<double> &)beats {
+    if (_beatsFor != _phraseGrid || _beatsFollow != _phraseFollowGrid || _beatsDuration != self.trackDuration) {
+        _beats = _trustedGrid ? waveseek::beatTimes(*_trustedGrid, self.trackDuration, _phraseFollowGrid)
+                              : std::vector<double>();
+        _beatsFor = _phraseGrid;
+        _beatsFollow = _phraseFollowGrid;
+        _beatsDuration = self.trackDuration;
+        [self endLoop];
+    }
+    return _beats;
+}
+
+- (BOOL)hasTrackShown {
+    return self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
+}
+
+// The mixer is chosen and the track's beats are in
+- (BOOL)mixerReady {
+    return _controlsMode == waveform_config::ControlsMixer && [self hasTrackShown] && [self beats].size() >= 2;
+}
+
+// The loudness summary and the readout show with the analytics controls,
+// as the preferences set them
+- (int)summaryShown {
+    return _controlsMode == waveform_config::ControlsAnalytics ? _summaryMode : waveform_config::SummaryOff;
+}
+
+- (BOOL)readoutShown {
+    return _controlsMode == waveform_config::ControlsAnalytics && _showReadout;
+}
+
+// On hover, and while one of its menus is open
+- (BOOL)barShown {
+    return (_hovering || _barMenuOpen) && [self hasTrackShown];
+}
+
+- (NSImage *)barIcon:(NSString *)name color:(uint32_t)color {
+    if (!_barIcons) _barIcons = [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%@/%06X", name, color];
+    NSImage *icon = _barIcons[key];
+    if (icon) return icon;
+    NSImage *symbol = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nil];
+    if (!symbol) return nil;
+    NSImageSymbolConfiguration *config =
+        [[NSImageSymbolConfiguration configurationWithPointSize:TS(kBarIconSize) weight:NSFontWeightRegular]
+            configurationByApplyingConfiguration:[NSImageSymbolConfiguration configurationWithPaletteColors:@[ p3(color) ]]];
+    icon = [symbol imageWithSymbolConfiguration:config];
+    if (icon) _barIcons[key] = icon;
+    return icon;
+}
+
+// The bar at the bottom right of the waveform, while it shows: the cog,
+// with the mixer's jumps, Snap and loop to its left (without ‹32 and 32›
+// when they don't fit, the cog alone when that still doesn't). `box` gets
+// the box around them, null when none.
+- (std::vector<BarSegment>)barSegmentsFor:(CGRect)wave box:(CGRect *)box {
+    if (box) *box = CGRectNull;
+    if (![self barShown]) return {};
+    NSDictionary *attributes = @{ NSFontAttributeName: _overlayFont };
+    const CGFloat height = std::ceil([@"I" sizeWithAttributes:attributes].height + 2 * TS(kBadgePadY));
+    const CGFloat bottom = wave.origin.y + kBadgeInset;
+    NSImage *cog = [self barIcon:@"gearshape" color:kOverlayLabel];
+
+    // 0: the whole mixer; 1: without ‹32 and 32›; 2: the cog alone
+    auto layout = [&](int stage, CGRect *outBox) {
+        std::vector<BarSegment> segments;
+        if (stage < 2) {
+            NSString *size = [NSString stringWithFormat:@"%d▾", _beatSize];
+            if (stage == 0) segments.push_back({ BarControlBack32, @"‹32" });
+            segments.insert(segments.end(), {
+                { BarControlBack16, @"‹16" }, { BarControlBackSize, @"‹" }, { BarControlSizeMenu, size },
+                { BarControlForwardSize, @"›" }, { BarControlForward16, @"16›" },
+            });
+            if (stage == 0) segments.push_back({ BarControlForward32, @"32›" });
+            segments.insert(segments.end(), { { BarControlSnap, @"Snap", true }, { BarControlLoop, @"Loop" } });
+        }
+        segments.push_back({ BarControlCog, cog ? nil : @"Controls", stage < 2 });
+        CGFloat total = 0.0;
+        for (BarSegment &s : segments) {
+            const CGFloat content = s.title ? [s.title sizeWithAttributes:attributes].width : cog.size.width;
+            s.rect.size = CGSizeMake(std::ceil(content + 2 * TS(kBarSegmentPadX)), height);
+            total += s.rect.size.width + (s.groupStart ? TS(kBarGroupGap) : 0.0);
+        }
+        CGFloat x = std::round(CGRectGetMaxX(wave) - kBadgeInset - total);
+        *outBox = CGRectMake(x, bottom, total, height);
+        for (BarSegment &s : segments) {
+            if (s.groupStart) x += TS(kBarGroupGap);
+            s.rect.origin = CGPointMake(x, bottom);
+            x += s.rect.size.width;
+        }
+        return segments;
+    };
+
+    CGRect frame;
+    int stage = [self mixerReady] ? 0 : 2;
+    std::vector<BarSegment> segments = layout(stage, &frame);
+    while (frame.origin.x < wave.origin.x + kBadgeInset && stage < 2) segments = layout(++stage, &frame);
+    if (frame.origin.x < wave.origin.x + kBadgeInset || CGRectGetMaxY(frame) > CGRectGetMaxY(wave)) return {};
+    if (box) *box = frame;
+    return segments;
+}
+
+- (BOOL)isOverBar {
+    CGRect box;
+    [self barSegmentsFor:[self waveformRect] box:&box];
+    return _hovering && CGRectContainsPoint(box, CGPointMake(_hoverX, _hoverY));
+}
+
+- (void)drawBarInContext:(CGContextRef)context rect:(CGRect)rect {
+    CGRect box;
+    const std::vector<BarSegment> segments = [self barSegmentsFor:rect box:&box];
+    if (segments.empty()) return;
+    [self fillOverlayBox:box radius:kBadgeRadius context:context];
+    const CGFloat scale = [self backingScale];
+    const CGPoint mouse = CGPointMake(_hoverX, _hoverY);
+    CGContextSaveGState(context);
+    for (const BarSegment &s : segments) {
+        if (s.groupStart) {
+            const CGFloat x = std::round((s.rect.origin.x - TS(kBarGroupGap) / 2) * scale) / scale;
+            [p3(kOverlayBorder) setFill];
+            CGContextFillRect(context, CGRectMake(x, s.rect.origin.y + 4.0, 1.0 / scale, s.rect.size.height - 8.0));
+        }
+        const bool hot = (_hovering && CGRectContainsPoint(s.rect, mouse)) || (s.control == BarControlCog && _barMenuOpen);
+        // The toggles while on: Loop in the loop's colour, Snap in the accent
+        const bool looping = s.control == BarControlLoop && _loop.active();
+        const bool snapping = s.control == BarControlSnap && _snapToBeat;
+        const uint32_t color = looping ? kLoopColor : hot ? kOverlayValue : kOverlayLabel;
+        if (!s.title) {
+            NSImage *icon = [self barIcon:@"gearshape" color:color];
+            const NSSize size = icon.size;
+            [icon drawInRect:NSMakeRect(std::round(CGRectGetMidX(s.rect) - size.width / 2),
+                                        std::round(CGRectGetMidY(s.rect) - size.height / 2), size.width, size.height)];
+        } else {
+            NSAttributedString *label = [self text:s.title colour:snapping ? [self accentOnOverlay] : p3(color)
+                                              bold:looping || snapping];
+            [label drawAtPoint:NSMakePoint(std::round(CGRectGetMidX(s.rect) - label.size.width / 2),
+                                           s.rect.origin.y + TS(kBadgePadY))];
+        }
+    }
+    CGContextRestoreGState(context);
+}
+
+// The cog's menu: the controls, and how a zoomed view follows the cursor
+- (void)showControlsMenuFor:(const BarSegment &)segment {
+    using namespace waveform_config;
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Controls"];
+    menu.autoenablesItems = NO;
+    auto add = [&](NSString *title, SEL action, NSInteger tag, bool on, bool enabled) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:action keyEquivalent:@""];
+        item.target = self;
+        item.tag = tag;
+        item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+        item.enabled = enabled;
+        [menu addItem:item];
+    };
+    auto header = [&](NSString *title) {
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+        item.enabled = NO;
+        [menu addItem:item];
+    };
+    header(@"Controls");
+    add(@"No Controls", @selector(controlsModeChosen:), ControlsNone, _controlsMode == ControlsNone, true);
+    add(_haveBeatGrids ? @"Mixer: Beat Jumps and Loops" : @"Mixer: Needs BPM Analyzer", @selector(controlsModeChosen:),
+        ControlsMixer, _controlsMode == ControlsMixer, _haveBeatGrids);
+    add(@"Analytics: Loudness and Readout", @selector(controlsModeChosen:), ControlsAnalytics,
+        _controlsMode == ControlsAnalytics, true);
+    [menu addItem:[NSMenuItem separatorItem]];
+    header(@"Zoomed In");
+    add(@"Don't Follow the Cursor", @selector(followModeChosen:), FollowNone, _followMode == FollowNone, _zoomEnabled);
+    add(@"Follow the Cursor", @selector(followModeChosen:), FollowCursor, _followMode == FollowCursor, _zoomEnabled);
+    add(@"Keep the Cursor Centred", @selector(followModeChosen:), FollowCentre, _followMode == FollowCentre, _zoomEnabled);
+    _barMenuOpen = YES;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(segment.rect.origin.x, CGRectGetMaxY(segment.rect))
+                            inView:self];
+    _barMenuOpen = NO;
+    [self setNeedsDisplay:YES];
+}
+
+// Saved and sent to every seekbar and the preferences; the controller
+// fetches the beat grid for the mixer
+- (void)controlsModeChosen:(NSMenuItem *)item {
+    waveform_config::setConfigInt(waveform_config::kKeyControlsMode, item.tag);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+}
+
+- (void)followModeChosen:(NSMenuItem *)item {
+    waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, item.tag);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+}
+
+// The loop's range in the loop colour, edges and a light fill
+- (void)drawLoopInContext:(CGContextRef)context rect:(CGRect)rect {
+    if (!_loop.active() || !(self.trackDuration > 0.0)) return;
+    const waveseek::BeatLoop &shown = _loopDragging ? _loopDragPreview : _loop;   // where a drag would put it
+    const double a = _zoom.acrossOf(shown.start / self.trackDuration);
+    const double b = _zoom.acrossOf(shown.end / self.trackDuration);
+    if (b <= 0.0 || a >= 1.0) return;
+    const CGFloat scale = [self backingScale];
+    auto xAt = [&](double across) { return std::round((rect.origin.x + rect.size.width * across) * scale) / scale; };
+    const CGFloat left = xAt(std::max(0.0, a));
+    const CGFloat right = std::max(left + 1.0 / scale, xAt(std::min(1.0, b)));
+    CGContextSaveGState(context);
+    [p3(kLoopColor, 0.18) setFill];
+    CGContextFillRect(context, CGRectMake(left, rect.origin.y, right - left, rect.size.height));
+    [p3(kLoopColor, 0.9) setFill];
+    if (a >= 0.0) CGContextFillRect(context, CGRectMake(left, rect.origin.y, 1.0, rect.size.height));
+    if (b <= 1.0) CGContextFillRect(context, CGRectMake(right - 1.0, rect.origin.y, 1.0, rect.size.height));
+    CGContextRestoreGState(context);
+}
+
+// `seconds`, the playback position just read, or where a seek just sent
+// will put it while the position doesn't show that yet
+- (double)settledPosition:(double)seconds {
+    if (std::isnan(_pendingSeek)) return seconds;
+    const double elapsed = CFAbsoluteTimeGetCurrent() - _pendingSince;
+    const double expected = _pendingSeek + (self.playing ? elapsed : 0.0);
+    if (std::fabs(seconds - expected) < kSeekLanded || elapsed > kSeekTimeout) {
+        _pendingSeek = NAN;
+        return seconds;
+    }
+    return expected;
+}
+
+// The audible position: foobar2000's, mapped through the loop DSP's timeline
+// while it changes what plays
+- (double)currentSeconds {
+    double seconds = self.playbackPosition * self.trackDuration;
+    if ([self.delegate respondsToSelector:@selector(waveformSeekbarViewPlaybackTime:)]) {
+        const double read = [self.delegate waveformSeekbarViewPlaybackTime:self];
+        if (std::isfinite(read)) seconds = [self displayedTimeFor:read];
+    }
+    return [self settledPosition:seconds];
+}
+
+- (void)seekTo:(double)seconds {
+    [self seekTo:seconds showing:seconds];
+}
+
+// A seek to `seconds`, the cursor at `shown` (a seek of ours that starts
+// early plays from its target)
+- (void)seekTo:(double)seconds showing:(double)shown {
+    if (!std::isnan(_jumpSpot)) [self takeJumpSpot];   // a seek shows at once
+    _pendingSeek = shown;
+    _pendingSince = CFAbsoluteTimeGetCurrent();
+    [self performSeekToTime:seconds];
+    if (self.trackDuration > 0.0) self.playbackPosition = shown / self.trackDuration;
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setLoop:(const waveseek::BeatLoop &)loop {
+    _loop = loop;
+    ++_loopGeneration;          // a seek scheduled for the old one is dropped
+    _loopEndScheduled = false;
+    [self updateLowLatency];
+    [self setNeedsDisplay:YES];
+}
+
+// Off; with the loop DSP, playback goes on from where it is
+- (void)endLoop {
+    if (!_loop.active()) return;
+    if ([self deckMode]) {
+        waveseek::LoopAction exit;
+        exit.kind = waveseek::LoopAction::Exit;
+        beatloop::act(exit);
+    }
+    [self setLoop:waveseek::BeatLoop()];
+}
+
+#pragma mark - Loop DSP
+
+// The mixer plays through the loop DSP when it is running
+- (BOOL)deckMode {
+    return _controlsMode == waveform_config::ControlsMixer && beatloop::running();
+}
+
+// It knows the track time of what it plays and no seek of ours is on its way
+- (BOOL)deckReady {
+    return [self deckMode] && _deck.synced && _deckEpoch != 0 && _deck.epoch == _deckEpoch && _armId == 0;
+}
+
+// It holds the track's audio over from .. to (to may be NAN: not needed)
+- (BOOL)deckHolds:(double)from to:(double)to {
+    return [self deckReady] && from >= _deck.bufferedFrom + kDeckMargin &&
+           (std::isnan(to) || to <= _deck.bufferedTo - kDeckMargin);
+}
+
+// A seek of our own: it gives the DSP the track time, then `then` applies.
+// With a pre-roll (prerollSeekFor:), except during a drag: scrubbing with
+// one would go silent.
+- (void)armedSeekTo:(double)target then:(const waveseek::LoopAction *)then {
+    [self armedSeekTo:target then:then preroll:!_dragSeeking];
+}
+
+// With `preroll`, it seeks earlier (prerollSeekFor:) and the DSP starts
+// playing at `target`; the cursor shows `target` either way
+- (void)armedSeekTo:(double)target then:(const waveseek::LoopAction *)then preroll:(BOOL)preroll {
+    const double sent = preroll ? [self prerollSeekFor:target] : target;
+    const bool early = sent < target;
+    _armId = beatloop::armSeek(sent, then, early ? target : NAN);
+    _armAt = CFAbsoluteTimeGetCurrent();
+    _armTarget = target;
+    _armSent = sent;
+    if (early) _prerollSeconds = target - sent;
+    _loopCheckAfter = _armAt + 0.5;
+    [self seekTo:sent showing:target];
+}
+
+// Where a seek of ours to `target` starts: kPrerollBeats and
+// kPrerollExtraSeconds before it on the mixer's grid there (at most
+// kPrerollMaxSeconds, never before 0), so the DSP holds the audio before
+// the target as history and a jump back right after the seek is a splice.
+// The cost: that audio is decoded before the first sound (the console's
+// timing line shows how long). Without the DSP or the beats, `target`.
+- (double)prerollSeekFor:(double)target {
+    if (![self deckMode] || ![self mixerReady] || !_trustedGrid || !std::isfinite(target)) return target;
+    const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, target, _phraseFollowGrid);
+    if (!(grid.bpm > 0.0)) return target;
+    const double preroll = std::min(kPrerollMaxSeconds, kPrerollBeats * 60.0 / grid.bpm + kPrerollExtraSeconds);
+    return std::max(0.0, target - preroll);
+}
+
+// foobar2000's seek to `time` is one of ours: on its way, or just taken by
+// the DSP (foobar2000's note of it can come after)
+- (BOOL)ownSeekPendingFor:(double)time {
+    if (![self deckMode]) return NO;
+    if (_armId != 0) return YES;
+    return CFAbsoluteTimeGetCurrent() - _armAt <= beatloop::kArmTimeout && std::fabs(time - _armSent) < 0.01;
+}
+
+// A request to the DSP; when it is turned down, the seek instead
+- (void)request:(waveseek::LoopAction)action orSeekTo:(double)target then:(const waveseek::LoopAction *)then {
+    _requestId = beatloop::act(action);
+    _requestTarget = std::isfinite(action.to) ? action.to : target;
+    _requestNoted = !_dragSeeking;
+    _fallbackTarget = target;
+    _fallbackHasThen = then != nullptr;
+    if (then) _fallbackThen = *then;
+    _loopCheckAfter = CFAbsoluteTimeGetCurrent() + 0.5;
+}
+
+static waveseek::LoopAction makeAction(waveseek::LoopAction::Kind kind, double start, double end, double to) {
+    waveseek::LoopAction a;
+    a.kind = kind;
+    a.start = start;
+    a.end = end;
+    a.to = to;
+    return a;
+}
+
+// Playback to `target`: inside the DSP's audio a splice, else a seek
+// The loop stays set: inside it playback loops, before it playback runs
+// into it, past it playback plays on and the loop waits. The cursor follows
+// the audio, so it moves when the jump is heard.
+- (void)deckSeekTo:(double)target {
+    [self deckSeekTo:target by:NAN onBeat:NO];
+}
+
+// Where a seek in place of a jump lands. It is heard a seek's gap after it
+// is asked for (measured on our own seeks; none until then): relative, `by`
+// from what plays then; in phase, the place nearest `to` at the place
+// within the beat of what plays then; else `to`. The gap is a silence, but
+// the beats after it fall where they would have.
+- (double)seekLandingFor:(double)to
+                      by:(double)by
+                 playing:(const waveseek::GridAt &)playing
+                 landing:(const waveseek::GridAt &)landing {
+    const double resume = [self currentSeconds] + _seekGap;
+    double t = to;
+    if (std::isfinite(by)) {
+        t = resume + by;
+    } else if (playing.bpm > 0.0 && landing.bpm > 0.0) {
+        t = waveseek::inPhaseLanding(resume, 60.0 / playing.bpm, playing.anchorSeconds, to, 60.0 / landing.bpm,
+                                     landing.anchorSeconds);
+    }
+    if (!std::isfinite(t)) return to;
+    return std::clamp(t, 0.0, std::max(0.0, self.trackDuration - waveseek::kBeatEndMargin));
+}
+
+// `by` (relative to what plays when the DSP takes it, so the beat holds
+// however late) or to `target`; onBeat: in phase, the DSP lands at the
+// place nearest `target` at the same place within its beat as what it
+// plays, so the beat holds at once (a wait for the next beat delayed the
+// jump up to a beat): the place within the beat on the grid of what plays,
+// the landing on the grid that holds at `target` (another one across a
+// tempo change). `target` also places the fallback seek (seekLanding) and decides what
+// the loop does. The fallback seek's own `then` plays from its `to`: after
+// a seek there is nothing to be relative to or in phase with.
+- (void)deckSeekTo:(double)target by:(double)by onBeat:(BOOL)onBeat {
+    using Kind = waveseek::LoopAction::Kind;
+    waveseek::GridAt playing{}, landing{};
+    if (onBeat && std::isnan(by) && _trustedGrid) {
+        playing = waveseek::gridAt(*_trustedGrid, [self currentSeconds], _phraseFollowGrid);
+        landing = waveseek::gridAt(*_trustedGrid, target, _phraseFollowGrid);
+    }
+    const bool inPhase = playing.bpm > 0.0 && landing.bpm > 0.0;
+    // In phase from the beat at the loop's end, the landing is within half
+    // a beat of it, inside the loop about half the time: aimed half a beat
+    // later it is between that beat and the next, past the loop. From a
+    // beat further on it is past the loop anyway, within half a beat of it.
+    double to = target, heldTo = target;
+    if (inPhase && _loop.active() && target >= _loop.end && target < _loop.end + 0.5 * 60.0 / landing.bpm) {
+        to = target + 0.5 * 60.0 / landing.bpm;
+        heldTo = target + 60.0 / landing.bpm;
+    }
+    // How the direct request finds where to play from: relative, in phase,
+    // or from `target`
+    auto direct = [&](waveseek::LoopAction a) {
+        a.by = by;
+        if (inPhase) {
+            a.beat = 60.0 / playing.bpm;
+            a.beatAnchor = playing.anchorSeconds;
+            a.toBeat = 60.0 / landing.bpm;
+            a.toBeatAnchor = landing.anchorSeconds;
+        }
+        return a;
+    };
+    const waveseek::LoopAction jump = direct(makeAction(Kind::Jump, 0, 0, to));
+    if (!_loop.active()) {
+        const double landed = [self seekLandingFor:to by:by playing:playing landing:landing];
+        if ([self deckHolds:target to:target]) {
+            [self request:jump orSeekTo:landed then:nullptr];
+        } else {
+            [self noteSeekFor:target];
+            [self armedSeekTo:landed then:nullptr];
+        }
+        return;
+    }
+    // The seek when the DSP does not hold the audio: inside the loop from
+    // its start (playing on from the target once decoded), before it from
+    // where it lands (seekLanding) with the loop set ahead, past it just there
+    const bool inside = _loop.contains(target), before = target < _loop.start;
+    const double landed = inside ? target : [self seekLandingFor:to by:by playing:playing landing:landing];
+    const waveseek::LoopAction setLoop = makeAction(Kind::Loop, _loop.start, _loop.end, landed);   // after a seek
+    const double seekTarget = inside ? _loop.start : landed;
+    const waveseek::LoopAction *then = inside || before ? &setLoop : nullptr;
+    if ([self deckHolds:target to:heldTo]) {
+        const waveseek::LoopAction loopHere = direct(makeAction(Kind::Loop, _loop.start, _loop.end, target));
+        [self request:(_deck.looping || !then) ? jump : loopHere orSeekTo:seekTarget then:then];
+    } else {
+        [self noteSeekFor:target];
+        [self armedSeekTo:seekTarget then:then];
+    }
+}
+
+// A jump, click or loop that becomes a seek (the view finds its target not
+// held, or the DSP turns it down), once in the console: a seek is a gap and
+// lands late, so the beat goes. With the audio the DSP held. Not for a
+// drag: it seeks at every move.
+- (void)noteSeekFor:(double)target {
+    if (_dragSeeking) return;
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer: jump target " << pfc::format_float(target, 0, 2) << " s not in the DSP's audio ";
+    if ([self deckReady]) {
+        out << "(it holds " << pfc::format_float(_deck.bufferedFrom, 0, 2) << "-" << pfc::format_float(_deck.bufferedTo, 0, 2)
+            << " s)";
+    } else {
+        out << "(it has no track time yet)";
+    }
+    out << "; seeking, which does not keep the beat";
+}
+
+// The DSP's status, once per position check: our seek taken, a seek from
+// elsewhere (the loop ends), the track time measured while untouched, a
+// request turned down (seek instead), the DSP leaving a loop by itself
+- (void)pollDeck:(double)seconds {
+    if (![self deckMode]) {
+        if (_deckEpoch != 0) {
+            _deckEpoch = 0;
+            beatloop::releaseClock();
+        }
+        return;
+    }
+    _deck = beatloop::status();
+    const CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (_armId != 0) {
+        if (_deck.boundArmId == _armId) {
+            _armId = 0;
+            _deckEpoch = _deck.epoch;
+            _gapEpoch = _deck.epoch;
+            _gapFrom = _armAt;
+        } else if (now - _armAt > beatloop::kArmTimeout) {
+            _armId = 0;
+            FB2K_console_formatter() << "[WaveSeek] Beat loop: the loop DSP missed a seek";
+        }
+    }
+    if (_armId == 0 && _deckEpoch != 0 && _deck.epoch != _deckEpoch) {   // a seek from elsewhere
+        _deckEpoch = 0;
+        _requestId = 0;   // the loop stays set; it is given to the DSP again below
+    }
+    if (_armId == 0 && _deck.synced) _deckEpoch = _deck.epoch;
+    if (_gapEpoch != 0) [self measureSeekGapAt:now];
+    if (_armId == 0 && ![self deckReady] && self.playing) [self noteUnsyncedAt:seconds];
+    if (_armId == 0 && !_deck.synced && _deck.pristine && self.playing) [self measureTrackTime:seconds];
+    if (_armId == 0 && _deck.synced && _deck.pristine && _deck.live && self.playing) [self measureClock:seconds];
+    if (_requestId != 0 && _deck.rejectedId == _requestId) {
+        _requestId = 0;
+        if (!std::isnan(_fallbackTarget)) {
+            if (_requestNoted) [self noteSeekFor:_requestTarget];
+            // A drag's (not noted) without a pre-roll, as during the drag
+            [self armedSeekTo:_fallbackTarget then:_fallbackHasThen ? &_fallbackThen : nullptr preroll:_requestNoted];
+        }
+    } else if (_requestId != 0 && _deck.lastActionId >= _requestId) {
+        if (_deck.lastTakenId == _requestId) {
+            // A spot held for it: taken once the splice is heard
+            if (!std::isnan(_jumpSpot) && !_deck.timeline.empty()) _jumpSpotFrom = _deck.timeline.back().first;
+            FB2K_console_formatter() << "[WaveSeek] Mixer: request taken by the DSP after "
+                                     << pfc::format_int(std::lround(_deck.lastTakenMs)) << " ms; playback runs "
+                                     << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP";
+        }
+        _requestId = 0;
+    }
+    // The loop set, the DSP without it (a seek from elsewhere, or it ran too
+    // far ahead) and playback before it: set it in the DSP again, ahead, so
+    // it catches playback (once a second at most when turned down)
+    if (_loop.active() && [self deckReady] && !_deck.looping && _requestId == 0 && now > _loopCheckAfter &&
+        now - _loopRearmAt > 1.0 && [self displayedTimeFor:seconds] < _loop.start) {
+        _loopRearmAt = now;
+        [self request:makeAction(waveseek::LoopAction::Loop, _loop.start, _loop.end, NAN) orSeekTo:NAN then:nullptr];
+    }
+    [self noteTimingAt:now seconds:seconds];
+    if (_latencyNoteAt > 0 && now >= _latencyNoteAt && [self deckReady]) {
+        _latencyNoteAt = 0;
+        const double played = beatloop::playedSinceSeek();
+        static bool noted = false;
+        if (std::isfinite(played) && !noted) {
+            noted = true;
+            FB2K_console_formatter() << "[WaveSeek] Beat loop: a change is heard about "
+                                     << pfc::format_float(std::max(0.0, _deck.outSeconds - played), 0, 2)
+                                     << " s after it is made (the output buffer; Preferences > Playback > Output)";
+        }
+    }
+}
+
+// Untouched audio: foobar2000's position less the audio played since the
+// seek is the seek's target, the track time of the DSP's first frame
+- (void)measureTrackTime:(double)seconds {
+    const double played = beatloop::playedSinceSeek();
+    if (!std::isfinite(played) || !std::isfinite(seconds)) return;
+    if (_syncEpoch != _deck.epoch) {
+        _syncEpoch = _deck.epoch;
+        _syncSamples.clear();
+    }
+    _syncSamples.push_back(seconds - played);
+    if (_syncSamples.size() > 12) _syncSamples.erase(_syncSamples.begin());
+    if (_syncSamples.size() < 5) return;
+    std::vector<double> sorted(_syncSamples.end() - 5, _syncSamples.end());
+    std::sort(sorted.begin(), sorted.end());
+    if (sorted.back() - sorted.front() > 0.01) return;   // still settling
+    double t0 = sorted[2];
+    if (std::fabs(t0) < 0.02) t0 = 0.0;                 // from the track's start
+    beatloop::sync(_deck.epoch, t0);
+    _syncSamples.clear();
+}
+
+// Untouched audio: foobar2000's position is what is heard, so the
+// visualisation clock less (position - the seek's track time) is how far
+// the clock runs ahead of the audio (if it does not count the output buffer)
+- (void)measureClock:(double)seconds {
+    const double played = beatloop::playedSinceSeek();
+    if (!std::isfinite(played) || !std::isfinite(seconds)) return;
+    _clockSamples.push_back(played - (seconds - _deck.startTime));
+    if (_clockSamples.size() > 9) _clockSamples.erase(_clockSamples.begin());
+    if (_clockSamples.size() < 5) return;
+    std::vector<double> sorted(_clockSamples);
+    std::sort(sorted.begin(), sorted.end());
+    _clockOffset = sorted[sorted.size() / 2];
+}
+
+// A seek of our own: from asking for it to hearing its target, the wall
+// clock less the audio heard since (once it plays; the clock may still be
+// the one before the seek for a moment). Given up 2 s after the seek.
+- (void)measureSeekGapAt:(CFAbsoluteTime)now {
+    if (_deck.epoch != _gapEpoch || now - _gapFrom > 2.0) {   // another seek came first, or paused
+        _gapEpoch = 0;
+        return;
+    }
+    const double heard = beatloop::playedSinceSeek() - _clockOffset;
+    if (!std::isfinite(heard) || heard < 0.05) return;
+    const double gap = (now - _gapFrom) - heard;
+    if (!(gap >= 0.0 && gap < 1.0)) return;
+    _gapEpoch = 0;
+    _seekGap = _seekGap > 0.0 ? 0.7 * _seekGap + 0.3 * gap : gap;
+}
+
+// The view without the DSP's track time once the DSP has sent 3 s since
+// its seek: once per seek in the console, with the DSP's seek and the
+// view's, whether the DSP is synced and untouched, and the last samples of
+// the measurement (position less the audio played; it needs the audio
+// untouched and them steady)
+- (void)noteUnsyncedAt:(double)seconds {
+    if (_unsyncedEpoch == _deck.epoch || _deck.outSeconds < 3.0) return;
+    _unsyncedEpoch = _deck.epoch;
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer: no track time from the DSP 3 s into playback (its seek "
+        << pfc::format_uint(_deck.epoch) << ", the view's " << pfc::format_uint(_deckEpoch) << ", synced "
+        << (_deck.synced ? "yes" : "no") << ", untouched " << (_deck.pristine ? "yes" : "no") << ", position "
+        << pfc::format_float(seconds, 0, 3) << " s, played since the seek "
+        << pfc::format_float(beatloop::playedSinceSeek(), 0, 3) << " s, position - played:";
+    const size_t first = _syncSamples.size() > 5 ? _syncSamples.size() - 5 : 0;
+    for (size_t i = first; i < _syncSamples.size(); ++i) out << " " << pfc::format_float(_syncSamples[i], 0, 3);
+    if (_syncSamples.empty()) out << " none";
+    out << " s); jumps seek until it has";
+}
+
+// The track time playing: through the DSP's timeline while it changes what
+// plays, else foobar2000's position
+- (double)displayedTimeFor:(double)seconds {
+    if (![self deckMode]) return seconds;
+    // A seek of ours on its way: where it plays from, not foobar2000's
+    // position (the time before it, or an earlier start for a pre-roll)
+    if (_armId != 0) return _armTarget;
+    if (_deckEpoch == 0 || _deck.epoch != _deckEpoch || !_deck.synced || _deck.pristine) return seconds;
+    const double played = beatloop::playedSinceSeek();
+    if (!std::isfinite(played)) return seconds;
+    // Never more than the DSP sent since its seek: right after one the clock
+    // may still count the audio before it (with a pre-roll the cursor would
+    // flick ahead while the first sound is decoded)
+    const double heard = std::min(played - _clockOffset, _deck.outSeconds);
+    _shownOut = heard;
+    const double t = waveseek::trackTimeAt(_deck.timeline, std::max(0.0, heard));
+    return std::isfinite(t) ? t : seconds;
+}
+
+// While a change may come (the mouse over the seekbar, a menu or a drag),
+// short steps from the DSP and foobar2000's low-latency hint; only with the
+// track's beats (not for a stream, or a track without a grid). Sent at
+// every position check too (not renewed, it lapses within a second).
+- (void)updateLowLatency {
+    _lowLatency = [self deckMode] && (_hovering || _barMenuOpen || _loopDragging) && [self mixerReady];
+    beatloop::setLowLatency((__bridge const void *)self, _lowLatency);
+}
+
+// The DSP's decode-ahead at `seconds`, sent at every position check (not
+// refreshed, it lapses within a second). The reserve: while the mixer has
+// the track's beats, 32 beats and 2 s (at least 20 s) decoded ahead when no
+// change is expected, so a forward jump within it plays without a seek;
+// none for a stream or a track without a grid. The cap, on the reserve and
+// on hovering alike: half of what is left of the track before its last
+// kAheadEndSeconds. The audio waiting drains as fast as the cap comes down
+// (half a second per second), so it is gone 20 s before the end and the
+// next track starts live, as without the DSP; no cap for an unknown length.
+- (void)updateReserveAt:(double)seconds {
+    double reserve = 0.0;
+    if ([self deckMode] && [self mixerReady] && _trustedGrid && std::isfinite(seconds)) {
+        const waveseek::GridAt grid = waveseek::gridAt(*_trustedGrid, seconds, _phraseFollowGrid);
+        if (grid.bpm > 0.0) {
+            reserve = std::max(kReserveMinSeconds, kReserveBeats * 60.0 / grid.bpm + kReserveExtraSeconds);
+        }
+    }
+    double cap = INFINITY;
+    if (self.trackDuration > 0.0 && std::isfinite(seconds)) {
+        cap = std::max(0.0, (self.trackDuration - seconds - kAheadEndSeconds) / 2.0);
+    }
+    beatloop::setReserve(reserve, cap);
+}
+
+- (void)positionChecksStopped {
+    beatloop::setReserve(0.0, INFINITY);
+    beatloop::setLowLatency((__bridge const void *)self, false);   // the next check sends it again
+}
+
+#pragma mark - Mixer Actions
+
+- (void)performBarControl:(const BarSegment &)segment {
+    // Option with a jump while looping moves the whole loop
+    const bool option = (NSEvent.modifierFlags & NSEventModifierFlagOption) != 0;
+    _jumpMovesLoop = option;
+    switch (segment.control) {
+        case BarControlCog: [self showControlsMenuFor:segment]; break;
+        case BarControlBack32: [self jumpBeats:-32]; break;
+        case BarControlBack16: [self jumpBeats:-16]; break;
+        case BarControlBackSize: [self jumpBeats:-_beatSize]; break;
+        case BarControlForwardSize: [self jumpBeats:_beatSize]; break;
+        case BarControlForward16: [self jumpBeats:16]; break;
+        case BarControlForward32: [self jumpBeats:32]; break;
+        case BarControlLoop: [self toggleLoop]; break;
+        case BarControlSnap: [self toggleSnap]; break;
+        case BarControlSizeMenu: [self showSizeMenuFor:segment]; break;
+        case BarControlNone: break;
+    }
+    [self setNeedsDisplay:YES];
+}
+
+// The loop moved by `count` beats, playback at the same place in it
+- (void)moveLoopBy:(int)count {
+    const std::vector<double> &beats = [self beats];
+    const waveseek::BeatLoop moved = waveseek::movedLoop(beats, _loop, count, self.trackDuration);
+    if (!moved.active() || count == 0) return;
+    const double now = [self currentSeconds];
+    // Playback elsewhere (the loop waiting): only the loop moves
+    if (!_loop.contains(now)) {
+        [self setLoop:moved];
+        if ([self deckReady]) {
+            [self request:makeAction(waveseek::LoopAction::Loop, moved.start, moved.end, NAN) orSeekTo:NAN then:nullptr];
+        }
+        return;
+    }
+    const double shifted = waveseek::timeAtBeat(beats, waveseek::beatPosition(beats, now) + count);
+    const double target = moved.contains(shifted) ? shifted : waveseek::wrappedIntoLoop(moved, shifted);
+    if ([self deckMode]) {
+        if (_followSpotSet) [self holdSpot:_followSpot];   // the cursor stays at its spot
+        const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, moved.start, moved.end, target);
+        const double delta = moved.start - _loop.start;
+        const bool held = [self deckHolds:moved.start to:NAN] &&
+                          _deck.bufferedTo - kDeckMargin >= std::max(moved.start, now + delta);
+        if (held && _deck.looping) {
+            [self request:makeAction(waveseek::LoopAction::Move, moved.start, moved.end, NAN) orSeekTo:moved.start
+                     then:&then];
+        } else {
+            if (!held) [self noteSeekFor:moved.start];
+            [self armedSeekTo:moved.start then:&then];
+        }
+        [self setLoop:moved];
+        return;
+    }
+    [self setLoop:moved];
+    [self seekTo:target];
+}
+
+// `count` beats on or back, at the same place in the beat. While looping,
+// with Option the whole loop moves (nothing happens when it would leave the
+// track); without, playback jumps and the loop stays set (see deckSeekTo:).
+- (void)jumpBeats:(int)count {
+    if (_loop.active() && _jumpMovesLoop) {
+        [self moveLoopBy:count];
+        return;
+    }
+    const double now = [self currentSeconds];
+    const double target = waveseek::jumpTarget([self beats], now, count, self.trackDuration);
+    if (std::isnan(target)) return;
+    if ([self deckMode]) {
+        if (_followSpotSet) [self holdSpot:_followSpot];   // the cursor stays at its spot
+        [self deckSeekTo:target by:target - now onBeat:NO];   // relative: the beat holds
+        return;
+    }
+    [self seekTo:target];
+}
+
+// Where the 16-beat phrases (and new grids) start, for a loop to catch: on
+// the trusted sections, as the beats; a section's start only where the
+// grid changes there (loopPhraseStarts)
+- (std::vector<double>)phraseStartTimes {
+    if (!_trustedGrid) return {};
+    return waveseek::loopPhraseStarts(*_trustedGrid, 16, _phraseFollowGrid);
+}
+
+// A loop of the chosen length from the beat behind the cursor (or a phrase
+// start near it), playing from its start; or off
+- (void)toggleLoop {
+    if (_loop.active()) {
+        [self endLoop];
+        return;
+    }
+    const double now = [self currentSeconds];
+    const waveseek::BeatLoop loop = waveseek::makeLoop([self beats], now, _beatSize, self.trackDuration,
+                                                       [self phraseStartTimes]);
+    if (!loop.active()) return;
+    [self setLoop:loop];
+    if ([self deckMode]) {
+        // Set around what plays, no jump: it wraps at its end, on the beat
+        // (past its end already: into it as far as its length goes; a phrase
+        // start just ahead: plays into it)
+        waveseek::LoopAction around = makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, NAN);
+        around.keepPhase = true;
+        const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, loop.start, loop.end, loop.start);
+        if ([self deckHolds:loop.start to:NAN]) {
+            [self request:around orSeekTo:loop.start then:&then];
+        } else {
+            [self noteSeekFor:loop.start];
+            [self armedSeekTo:loop.start then:&then];
+        }
+        if (_latencyNoteAt == 0) _latencyNoteAt = CFAbsoluteTimeGetCurrent() + 1.0;
+        return;
+    }
+    [self seekTo:loop.start];
+}
+
+// Snap on or off, saved and sent to every seekbar
+- (void)toggleSnap {
+    waveform_config::setConfigBool(waveform_config::kKeySnapToBeat, !_snapToBeat);
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+}
+
+- (void)showSizeMenuFor:(const BarSegment &)segment {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@"Loop and jump size"];
+    for (int beats : waveseek::kBeatSizeChoices) {
+        NSMenuItem *item = [[NSMenuItem alloc]
+            initWithTitle:[NSString stringWithFormat:@"%d %@", beats, beats == 1 ? @"beat" : @"beats"]
+                   action:@selector(sizeChosen:) keyEquivalent:@""];
+        item.target = self;
+        item.tag = beats;
+        item.state = beats == _beatSize ? NSControlStateValueOn : NSControlStateValueOff;
+        [menu addItem:item];
+    }
+    _barMenuOpen = YES;
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(segment.rect.origin.x, CGRectGetMaxY(segment.rect))
+                            inView:self];
+    _barMenuOpen = NO;
+    [self setNeedsDisplay:YES];
+}
+
+// The new size for the jumps beside the menu and the loop. A loop playing
+// keeps its start and takes the new length at once: playback past its new
+// end goes back into it, as far in as it was past a multiple of the length.
+- (void)sizeChosen:(NSMenuItem *)item {
+    _beatSize = (int)item.tag;
+    waveform_config::setConfigInt(waveform_config::kKeyBeatSize, _beatSize);
+    if (_loop.active()) {
+        const waveseek::BeatLoop resized = waveseek::resizedLoop([self beats], _loop, _beatSize, self.trackDuration);
+        if (resized.active()) {
+            const double now = [self currentSeconds];
+            const bool playing = _loop.contains(now);   // playback in the loop, not elsewhere with it waiting
+            const double into = resized.contains(now) ? now : waveseek::wrappedIntoLoop(resized, now);
+            [self setLoop:resized];
+            if ([self deckMode]) {
+                const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, resized.start, resized.end, into);
+                if ([self deckReady] && _deck.looping) {
+                    [self request:makeAction(waveseek::LoopAction::Resize, resized.start, resized.end, NAN)
+                         orSeekTo:playing ? resized.start : NAN then:&then];
+                } else if (playing) {
+                    [self armedSeekTo:resized.start then:&then];
+                }
+            } else if (playing && !resized.contains(now)) {
+                [self seekTo:into];
+            }
+        }
+    }
+    [self setNeedsDisplay:YES];
+}
+
+// The loop by seeking, at the position checks: without the loop DSP, or
+// with it when it does not hold the loop and playback is inside (after a
+// seek from elsewhere into it; the seek to its start then gives it the loop)
+- (void)followLoopAt:(double)seconds {
+    [self pollDeck:seconds];
+    [self updateLowLatency];
+    const double position = [self displayedTimeFor:seconds];
+    [self updateReserveAt:position];
+    const bool wasInside = _wasInsideLoop;
+    _wasInsideLoop = _loop.active() && _loop.contains(position);
+    if (!_loop.active()) return;
+    if ([self deckMode] && (_deck.looping || _armId != 0 || _requestId != 0)) return;   // the DSP has it
+    const waveseek::LoopStep step = waveseek::loopStep(_loop, [self settledPosition:position], kLoopLookahead, wasInside);
+    switch (step.kind) {
+        case waveseek::LoopStep::None:
+            break;
+        case waveseek::LoopStep::Seek:     // late: as far in as it overran, so the beat holds
+            if ([self deckMode]) [self seekToLoopStartArmed];
+            else [self seekTo:step.value];
+            break;
+        case waveseek::LoopStep::Schedule: {
+            if (_loopEndScheduled) break;
+            _loopEndScheduled = true;
+            const unsigned generation = _loopGeneration;
+            __weak WaveformSeekbarView *weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(step.value * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                WaveformSeekbarView *me = weakSelf;
+                if (!me || me->_loopGeneration != generation) return;
+                me->_loopEndScheduled = false;
+                if (!me->_loop.active() || !me.playing) return;
+                if (![me deckMode]) [me seekTo:me->_loop.start];
+                else if (!me->_deck.looping && me->_armId == 0) [me seekToLoopStartArmed];
+            });
+            break;
+        }
+    }
+}
+
+// To the loop's start, giving the loop DSP the loop there
+- (void)seekToLoopStartArmed {
+    const waveseek::LoopAction then = makeAction(waveseek::LoopAction::Loop, _loop.start, _loop.end, _loop.start);
+    [self armedSeekTo:_loop.start then:&then];
+}
+
+// How far playback runs behind what the DSP takes in, measured while the
+// audio is untouched and passes through (foobar2000's position is then
+// what is heard); every 10 s while the mixer is on, the console line with
+// it, foobar2000's block size and the output buffer
+- (void)noteTimingAt:(CFAbsoluteTime)now seconds:(double)seconds {
+    if (![self deckReady] || !self.playing) return;
+    if (_deck.live && _deck.pristine && std::isfinite(seconds)) {
+        const double lag = _deck.bufferedTo - seconds;
+        // Right after a seek the DSP's status can still be the old one's
+        if (lag >= 0.0 && lag < 5.0) _measuredLag = _measuredLag > 0.0 ? 0.8 * _measuredLag + 0.2 * lag : lag;
+    }
+    if (now < _timingNoteAt) return;
+    _timingNoteAt = now + 10.0;
+    console::formatter out;   // printed as one line when it goes
+    out << "[WaveSeek] Mixer timing: blocks of " << pfc::format_int(std::lround(_deck.blockSeconds * 1000.0))
+        << " ms, playback " << pfc::format_int(std::lround(_measuredLag * 1000.0)) << " ms behind the DSP, output buffer "
+        << pfc::format_int(beatloop::outputBufferMs()) << " ms, " << pfc::format_float(_deck.ahead, 0, 2)
+        << " s decoded ahead" << (_lowLatency ? ", short steps" : "") << ", a seek is heard after "
+        << pfc::format_int(std::lround(_seekGap * 1000.0)) << " ms";
+    // Of that, the last pre-roll's own time: the decoder's seek and the
+    // audio before the target decoded before the first sound
+    if (_deck.prerollMs > 0.0) {
+        out << " (the last pre-roll, " << pfc::format_float(_prerollSeconds, 0, 1) << " s, took "
+            << pfc::format_int(std::lround(_deck.prerollMs)) << " ms)";
+    }
+}
+
 #pragma mark - Mouse Events
 
-- (void)mouseEntered:(NSEvent *)event {
+- (void)trackHoverWithEvent:(NSEvent *)event {
     _hovering = YES;
-    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    _hoverX = p.x;
+    _hoverY = p.y;
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+    [self trackHoverWithEvent:event];
+    [self updateLowLatency];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseMoved:(NSEvent *)event {
-    _hovering = YES;
-    _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
-    if (_showReadout || _summaryMode == waveform_config::SummaryOnHover) [self setNeedsDisplay:YES];
+    [self trackHoverWithEvent:event];
+    // The bar shows on hover, its segments light under the mouse
+    [self setNeedsDisplay:YES];
 }
 
 - (void)mouseExited:(NSEvent *)event {
     _hovering = NO;
+    [self updateLowLatency];
     [self setNeedsDisplay:YES];
 }
 
 - (void)mouseDown:(NSEvent *)event {
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    CGRect bar;
+    for (const BarSegment &segment : [self barSegmentsFor:[self waveformRect] box:&bar]) {
+        if (CGRectContainsPoint(segment.rect, p)) {
+            _seeking = NO;
+            [self performBarControl:segment];
+            return;
+        }
+    }
+    // In the bar between its groups: nothing (no seek; Snap's line does not
+    // show there either)
+    if (CGRectContainsPoint(bar, p)) {
+        _seeking = NO;
+        return;
+    }
+    // Option-drag moves the loop, by whole beats
+    if ((event.modifierFlags & NSEventModifierFlagOption) && _loop.active() && [self mixerReady] &&
+        p.x < CGRectGetMaxX([self waveformRect])) {
+        _seeking = NO;
+        _loopDragging = YES;
+        _loopDragOrigin = _loopDragPreview = _loop;
+        _loopDragBeat = waveseek::beatPosition([self beats], [self secondsAtX:p.x]);
+        [[NSCursor closedHandCursor] push];
+        return;
+    }
+    if (CGRectContainsPoint([self zoomButtonRectFor:[self waveformRect]], p)) {
+        _seeking = NO;
+        _zoom.reset();
+        // Following goes off with the zoom
+        if (_followMode != waveform_config::FollowNone) {
+            waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, waveform_config::FollowNone);
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"WaveformSeekbarSettingsChanged" object:nil];
+        }
+        [self setNeedsDisplay:YES];
+        return;
+    }
     // Not on the level scale: clamped, a click there would seek to the end
     // and skip to the next track
-    const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const CGFloat x = p.x;
     _seeking = x < CGRectGetMaxX([self waveformRect]);
+    _dragBeat = NAN;
     if (_seeking) [self handleSeekWithEvent:event];
 }
 
 - (void)mouseDragged:(NSEvent *)event {
     _hoverX = [self convertPoint:event.locationInWindow fromView:nil].x;
-    if (_seeking) [self handleSeekWithEvent:event];
+    if (_loopDragging) {
+        const long count = std::lround(waveseek::beatPosition([self beats], [self secondsAtX:_hoverX]) - _loopDragBeat);
+        const waveseek::BeatLoop moved = waveseek::movedLoop([self beats], _loopDragOrigin, static_cast<int>(count),
+                                                             self.trackDuration);
+        if (moved.active()) _loopDragPreview = moved;
+        [self setNeedsDisplay:YES];
+        return;
+    }
+    if (_seeking) {
+        _dragSeeking = YES;
+        [self handleSeekWithEvent:event];
+        _dragSeeking = NO;
+        [self setNeedsDisplay:YES];   // Snap's line follows the mouse
+    }
 }
 
 - (void)mouseUp:(NSEvent *)event {
     _seeking = NO;
+    if (_loopDragging) {
+        _loopDragging = NO;
+        [NSCursor pop];
+        const long count = _loopDragPreview.firstBeat - _loopDragOrigin.firstBeat;
+        if (count != 0 && _loop.active() && _loop.firstBeat == _loopDragOrigin.firstBeat) {
+            [self moveLoopBy:static_cast<int>(count)];
+        }
+        [self setNeedsDisplay:YES];
+    }
+}
+
+// The track time under x in the waveform
+- (double)secondsAtX:(CGFloat)x {
+    const CGRect wave = [self waveformRect];
+    const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
+    return std::clamp(_zoom.positionAt(across), 0.0, 1.0) * self.trackDuration;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -1758,11 +3530,36 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
 
     NSPoint location = [self convertPoint:event.locationInWindow fromView:nil];
     const CGRect wave = [self waveformRect];
-    CGFloat normalizedPosition = (location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
-    normalizedPosition = MAX(0.0, MIN(1.0, normalizedPosition));
+    const CGFloat across = std::clamp<CGFloat>((location.x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width),
+                                               0.0, 1.0);
+    double seekTime = _zoom.positionAt(across) * self.trackDuration;
+    // With the mixer and Snap on, a click goes to the nearest beat, in phase
+    // with what plays (at most half a beat from it); with Snap off exactly
+    // where it is. A drag that stays nearest the same beat doesn't jump again.
+    bool onBeat = false;
+    if ([self mixerReady] && _snapToBeat) {
+        const double beat = waveseek::nearestBeat([self beats], seekTime);
+        if (!std::isnan(beat)) {
+            if (_dragSeeking && beat == _dragBeat) return;
+            _dragBeat = beat;
+            seekTime = beat;
+            onBeat = true;
+        }
+    }
+    // Following at a spot: the cursor stays where it was clicked (not at the
+    // beat Snap took the click to); with the DSP once the jump shows
+    if ([self deckMode]) {
+        [self holdSpot:across];
+    } else if ([self following]) {
+        _followSpot = across;
+        _followSpotSet = true;
+    }
 
-    double seekTime = normalizedPosition * self.trackDuration;
-
+    // With the loop DSP, inside its audio without a seek
+    if ([self deckMode]) {
+        [self deckSeekTo:seekTime by:NAN onBeat:onBeat];
+        return;
+    }
     // Seek via SDK - must be on main thread
     if ([NSThread isMainThread]) {
         [self performSeekToTime:seekTime];
@@ -1778,6 +3575,67 @@ void strokeEdge(CGContextRef ctx, const std::vector<float>& frac, CGFloat center
     if ([self.delegate respondsToSelector:@selector(waveformSeekbarView:requestsSeekToTime:)]) {
         [self.delegate waveformSeekbarView:self requestsSeekToTime:seekTime];
     }
+}
+
+#pragma mark - Zoom
+
+- (BOOL)canZoom {
+    return _zoomEnabled && self.waveformData && self.waveformData->isValid() && self.trackDuration > 0.0;
+}
+
+// About the pointer, within the zoom the track's analysis supports: its
+// blocks, or the fine detail's when there is one
+- (void)zoomBy:(double)factor event:(NSEvent *)event {
+    const CGRect wave = [self waveformRect];
+    const CGFloat x = [self convertPoint:event.locationInWindow fromView:nil].x;
+    const double across = (x - wave.origin.x) / std::max<CGFloat>(1.0, wave.size.width);
+    const WaveformDetail *detail = [self usableDetail];
+    const size_t blocks = detail ? detail->blockCount() : self.waveformData->blockCount();
+    // Centred, it zooms about the cursor and stays centred
+    const bool centred = [self following] && _followMode == waveform_config::FollowCentre;
+    const double about = centred ? _zoom.acrossOf(std::clamp(_playbackPosition, 0.0, 1.0)) : across;
+    _zoom.zoomBy(factor, about, waveseek::maxZoomFor(blocks, wave.size.width));
+    _lastZoomChange = CFAbsoluteTimeGetCurrent();
+    [self followCursor];
+    [self takeFollowSpot];
+    [self setNeedsDisplay:YES];
+}
+
+// Vertical scroll zooms: away from you zooms in, whatever the scroll
+// direction setting, and momentum doesn't keep zooming. Horizontal scroll
+// (or Shift with a wheel) pans while zoomed in, the waveform following the
+// fingers.
+- (void)scrollWheel:(NSEvent *)event {
+    if (![self canZoom]) {
+        [super scrollWheel:event];
+        return;
+    }
+    const bool precise = event.hasPreciseScrollingDeltas;
+    const CGFloat dx = event.scrollingDeltaX, dy = event.scrollingDeltaY;
+    if (std::fabs(dx) > std::fabs(dy)) {
+        if (!_zoom.zoomed()) {
+            [super scrollWheel:event];
+            return;
+        }
+        // Centred, the cursor holds the view in place
+        if ([self following] && _followMode == waveform_config::FollowCentre) return;
+        const CGFloat points = precise ? dx : dx * kPanPointsPerLine;
+        _zoom.panBy(-points / std::max<CGFloat>(1.0, [self waveformRect].size.width));
+        [self takeFollowSpot];
+        [self setNeedsDisplay:YES];
+        return;
+    }
+    if (dy == 0.0 || event.momentumPhase != NSEventPhaseNone) return;
+    const CGFloat away = event.isDirectionInvertedFromDevice ? -dy : dy;
+    [self zoomBy:std::exp2(away * (precise ? kZoomOctavesPerPoint : kZoomOctavesPerLine)) event:event];
+}
+
+- (void)magnifyWithEvent:(NSEvent *)event {
+    if (![self canZoom]) {
+        [super magnifyWithEvent:event];
+        return;
+    }
+    [self zoomBy:std::exp(event.magnification) event:event];
 }
 
 #pragma mark - Public Methods

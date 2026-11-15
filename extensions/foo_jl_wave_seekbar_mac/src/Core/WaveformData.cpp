@@ -238,3 +238,115 @@ std::optional<WaveformData> WaveformData::decompress(const uint8_t* data, size_t
     if (!w.isValid()) return std::nullopt;
     return w;
 }
+
+#pragma mark - WaveformDetail
+
+namespace {
+
+// Its own format and version: the detail is stored beside the waveform, not in it
+const uint32_t kDetailVersion = 1;
+
+std::vector<uint8_t> deflateBlob(const std::vector<uint8_t>& raw) {
+    if (raw.empty() || raw.size() > kMaxBlobSize) return {};
+    uLongf compressedSize = compressBound((uLong)raw.size());
+    std::vector<uint8_t> out(compressedSize + 4);
+    const uint32_t rawSize = (uint32_t)raw.size();
+    std::memcpy(out.data(), &rawSize, 4);
+    if (compress2(out.data() + 4, &compressedSize, raw.data(), (uLong)raw.size(), Z_DEFAULT_COMPRESSION) != Z_OK) {
+        return {};
+    }
+    out.resize(compressedSize + 4);
+    return out;
+}
+
+std::optional<std::vector<uint8_t>> inflateBlob(const uint8_t* data, size_t size) {
+    if (!data || size < 5) return std::nullopt;
+    uint32_t rawSize;
+    std::memcpy(&rawSize, data, 4);
+    if (rawSize == 0 || rawSize > kMaxBlobSize) return std::nullopt;
+    std::vector<uint8_t> raw(rawSize);
+    uLongf destLen = rawSize;
+    if (uncompress(raw.data(), &destLen, data + 4, (uLong)(size - 4)) != Z_OK || destLen != rawSize) {
+        return std::nullopt;
+    }
+    return raw;
+}
+
+} // namespace
+
+int16_t WaveformDetail::encodeSample(float v) {
+    return ::encodeSample(std::isfinite(v) ? v : 0.0f);
+}
+
+uint16_t WaveformDetail::encodeRms(float v) {
+    return ::encodeRms(std::isfinite(v) ? v : 0.0f);
+}
+
+bool WaveformDetail::isValid() const {
+    if (channelCount < 1 || channelCount > 2 || sampleRate == 0 || blockFrames == 0 || frames == 0) return false;
+    const size_t blocks = blockCount();
+    if (blocks == 0 || blocks != (frames + blockFrames - 1) / blockFrames) return false;
+    for (uint32_t ch = 0; ch < channelCount; ++ch) {
+        if (blockMin[ch].size() != blocks || blockMax[ch].size() != blocks || blockRms[ch].size() != blocks) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool WaveformDetail::matches(const WaveformData& data) const {
+    return isValid() && data.isValid() && channelCount == data.channelCount && sampleRate == data.sampleRate &&
+           blockFrames < data.blockFrames && std::fabs((double)frames - data.duration * data.sampleRate) <= 1.0;
+}
+
+size_t WaveformDetail::memorySize() const {
+    size_t size = sizeof(*this);
+    for (int ch = 0; ch < 2; ++ch) {
+        size += (blockMin[ch].capacity() + blockMax[ch].capacity()) * sizeof(int16_t)
+              + blockRms[ch].capacity() * sizeof(uint16_t);
+    }
+    return size;
+}
+
+std::vector<uint8_t> WaveformDetail::compress() const {
+    if (!isValid()) return {};
+    Writer w;
+    w.put(kDetailVersion);
+    w.put(channelCount);
+    w.put(sampleRate);
+    w.put(blockFrames);
+    w.put(frames);
+    w.put((uint32_t)blockCount());
+    for (uint32_t ch = 0; ch < channelCount; ++ch) {
+        for (int16_t v : blockMin[ch]) w.put(v);
+        for (int16_t v : blockMax[ch]) w.put(v);
+        for (uint16_t v : blockRms[ch]) w.put(v);
+    }
+    return deflateBlob(w.bytes);
+}
+
+std::optional<WaveformDetail> WaveformDetail::decompress(const uint8_t* data, size_t size) {
+    const std::optional<std::vector<uint8_t>> raw = inflateBlob(data, size);
+    if (!raw) return std::nullopt;
+
+    Reader r(raw->data(), raw->size());
+    WaveformDetail d;
+    uint32_t version = 0, blocks = 0;
+    if (!r.get(version) || version != kDetailVersion) return std::nullopt;
+    if (!r.get(d.channelCount) || !r.get(d.sampleRate) || !r.get(d.blockFrames) || !r.get(d.frames) ||
+        !r.get(blocks)) {
+        return std::nullopt;
+    }
+    if (d.channelCount < 1 || d.channelCount > 2) return std::nullopt;
+    if (!r.remaining((size_t)d.channelCount * blocks * 6)) return std::nullopt;
+    for (uint32_t ch = 0; ch < d.channelCount; ++ch) {
+        for (auto* v : { &d.blockMin[ch], &d.blockMax[ch] }) {
+            v->resize(blocks);
+            for (auto& x : *v) r.get(x);
+        }
+        d.blockRms[ch].resize(blocks);
+        for (auto& x : d.blockRms[ch]) r.get(x);
+    }
+    if (!d.isValid()) return std::nullopt;
+    return d;
+}

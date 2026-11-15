@@ -1,0 +1,17 @@
+{
+ "tag_name": "bpm-v0.1.0",
+ "draft": false,
+ "prerelease": false,
+ "assets": [
+  {
+   "name": "foo_jl_bpm.fb2k-component",
+   "size": 8986039,
+   "browser_download_url": "https://github.com/JendaT/fb2k-components-mac-suite/releases/download/bpm-v0.1.0/foo_jl_bpm.fb2k-component"
+  },
+  {
+   "name": "SHA256SUMS",
+   "size": 92,
+   "browser_download_url": "https://github.com/JendaT/fb2k-components-mac-suite/releases/download/bpm-v0.1.0/SHA256SUMS"
+  }
+ ]
+}

@@ -450,6 +450,7 @@ static NSString* makeUniquePlaylistName(NSString* baseName) {
 @property (nonatomic, copy) NSString *pendingPlaylistsDir;
 @property (nonatomic, weak) TreeNode *pendingTargetFolder;  // Target folder for import operations
 @property (nonatomic, copy) NSString *activePlaylistName;  // Currently active playlist in foobar2000
+@property (nonatomic, copy) NSString *playingPlaylistName; // Playlist that is playing, nil when stopped
 @property (nonatomic, assign) BOOL showTreeLines;  // Show Windows Explorer-style tree lines
 @property (nonatomic, assign) BOOL transparentBackground;  // Glass effect background
 @property (nonatomic, assign) BOOL isImporting;  // Suppress outline view callbacks during import
@@ -594,6 +595,7 @@ static NSString *leafNameForNode(TreeNode *node) {
 
     // Get initial active playlist
     [self refreshActivePlaylist];
+    [self refreshPlayingPlaylist];
 
     // Sync any missing playlists from foobar2000 (delayed to not block startup)
     __weak typeof(self) weakSelf = self;
@@ -613,10 +615,10 @@ static NSString *leafNameForNode(TreeNode *node) {
                                                  name:@"PlorgSettingsChanged"
                                                object:nil];
 
-    // Register for active playlist changes
+    // Register for playing playlist changes
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(activePlaylistDidChange:)
-                                                 name:@"PlorgActivePlaylistChanged"
+                                             selector:@selector(playingPlaylistDidChange:)
+                                                 name:@"PlorgPlayingPlaylistChanged"
                                                object:nil];
 
     // Register for corruption check requests from preferences
@@ -680,25 +682,41 @@ static NSString *leafNameForNode(TreeNode *node) {
     }
 }
 
-- (void)activePlaylistDidChange:(NSNotification *)notification {
-    NSString *newFoobarName = notification.userInfo[@"foobarName"];
-    if (![self.activePlaylistName isEqualToString:newFoobarName]) {
-        // Find old and new active playlist nodes to refresh only those rows
-        TreeNode *oldActiveNode = self.activePlaylistName ? [self.treeModel findPlaylistForFoobarName:self.activePlaylistName] : nil;
-        TreeNode *newActiveNode = newFoobarName ? [self.treeModel findPlaylistForFoobarName:newFoobarName] : nil;
+- (void)refreshPlayingPlaylist {
+    self.playingPlaylistName = nil;
+    @try {
+        if (!playback_control::get()->is_playing()) return;
+        auto pm = playlist_manager::get();
+        t_size playingIndex = pm->get_playing_playlist();
+        pfc::string8 name;
+        if (playingIndex != pfc_infinite && pm->playlist_get_name(playingIndex, name)) {
+            self.playingPlaylistName = [NSString stringWithUTF8String:name.c_str()];
+        }
+    } @catch (...) {
+        self.playingPlaylistName = nil;
+    }
+}
 
-        self.activePlaylistName = newFoobarName;
+- (void)playingPlaylistDidChange:(NSNotification *)notification {
+    NSString *newFoobarName = notification.userInfo[@"foobarName"];
+    if (newFoobarName != self.playingPlaylistName &&
+        ![self.playingPlaylistName isEqualToString:newFoobarName]) {
+        // Find old and new playing playlist nodes to refresh only those rows
+        TreeNode *oldPlayingNode = self.playingPlaylistName ? [self.treeModel findPlaylistForFoobarName:self.playingPlaylistName] : nil;
+        TreeNode *newPlayingNode = newFoobarName ? [self.treeModel findPlaylistForFoobarName:newFoobarName] : nil;
+
+        self.playingPlaylistName = newFoobarName;
 
         // Refresh only the affected rows (preserves selection)
-        if (oldActiveNode) {
-            NSInteger row = [self.outlineView rowForItem:oldActiveNode];
+        if (oldPlayingNode) {
+            NSInteger row = [self.outlineView rowForItem:oldPlayingNode];
             if (row >= 0) {
                 [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
                                            columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
             }
         }
-        if (newActiveNode) {
-            NSInteger row = [self.outlineView rowForItem:newActiveNode];
+        if (newPlayingNode) {
+            NSInteger row = [self.outlineView rowForItem:newPlayingNode];
             if (row >= 0) {
                 [self.outlineView reloadDataForRowIndexes:[NSIndexSet indexSetWithIndex:row]
                                            columnIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.outlineView.numberOfColumns)]];
@@ -1322,27 +1340,26 @@ static NSString *leafNameForNode(TreeNode *node) {
     cellView.textField.delegate = self;
     objc_setAssociatedObject(cellView.textField, kTreeNodeKey, node, OBJC_ASSOCIATION_ASSIGN);
 
-    // Check if this is the active playlist (compare foobar2000 names)
-    BOOL isActivePlaylist = NO;
-    if (!node.isFolder && self.activePlaylistName) {
+    // Mark the playing playlist (not the selected one) so it stays visible while browsing
+    BOOL isPlayingPlaylist = NO;
+    if (!node.isFolder && self.playingPlaylistName) {
         NSString *nodeFoobarName = [self.treeModel foobarNameForNode:node];
-        isActivePlaylist = nodeFoobarName && [nodeFoobarName isEqualToString:self.activePlaylistName];
+        isPlayingPlaylist = nodeFoobarName && [nodeFoobarName isEqualToString:self.playingPlaylistName];
     }
 
     // Set icon if showing
     if (showIcons && cellView.imageView) {
         if (node.isFolder) {
             cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"folder" accessibilityDescription:@"Folder"];
-        } else if (isActivePlaylist) {
-            // Use a different icon for active playlist (playing indicator)
-            cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:@"Active Playlist"];
+        } else if (isPlayingPlaylist) {
+            cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"play.fill" accessibilityDescription:@"Playing Playlist"];
         } else {
             cellView.imageView.image = [NSImage imageWithSystemSymbolName:@"music.note.list" accessibilityDescription:@"Playlist"];
         }
     }
 
     cellView.textField.stringValue = leafNameForNode(node);
-    if (isActivePlaylist) {
+    if (isPlayingPlaylist) {
         cellView.textField.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
     } else {
         cellView.textField.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];

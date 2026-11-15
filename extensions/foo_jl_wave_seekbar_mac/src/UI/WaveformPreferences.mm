@@ -7,6 +7,8 @@
 
 #import "WaveformPreferences.h"
 #include "../fb2k_sdk.h"
+#include "../../../../shared/jl_beatgrid_api.h"
+#import "../Integration/BpmDependency.h"
 #include "../Core/WaveformConfig.h"
 #include "../Core/ConfigHelper.h"
 #include "../Core/WaveformThemes.h"
@@ -26,12 +28,15 @@
 @end
 
 namespace {
-// Two columns of cards: Appearance on the left, Overlays and Scales on the
-// right, Cache across the bottom
-const CGFloat kPageWidth = 660.0;
+// Columns of cards, Cache across the bottom. Two: Appearance, Scales and
+// Zoom on the left, Overlays and Played part on the right. Three, when the
+// panel is wide enough: Appearance | Overlays | Played part, Scales, Zoom.
 const CGFloat kMargin = 20.0;
 const CGFloat kColumnGap = 16.0;
-const CGFloat kColumnWidth = (kPageWidth - 2 * kMargin - kColumnGap) / 2;
+const CGFloat kColumnWidth = 302.0;
+CGFloat pageWidth(int columns) {
+    return 2 * kMargin + columns * kColumnWidth + (columns - 1) * kColumnGap;
+}
 const CGFloat kCardGap = 16.0;
 const CGFloat kCardPad = 14.0;
 const CGFloat kRowGap = 12.0;
@@ -40,6 +45,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 @interface WaveformPreferences () {
     WaveformFlippedView *_page;
+    int _columns;                               // as built: 2, or 3 in a wide panel
 
     // Appearance
     NSPopUpButton *_stylePopup;
@@ -69,19 +75,48 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     NSButton *_clipMarkersCheckbox;
     NSSlider *_clipMarkerOpacitySlider;
     NSTextField *_clipMarkerOpacityLabel;
+    NSButton *_phraseMarkersCheckbox;
+    NSPopUpButton *_phraseLengthPopup;
+    NSButton *_phraseColoursCheckbox;
+    NSButton *_phraseFollowCheckbox;
+    NSPopUpButton *_controlsPopup;
+    NSPopUpButton *_mixerBufferPopup;
+    NSButton *_lockRelativeCheckbox;
+    NSPopUpButton *_zoomFollowPopup;
+    BOOL _haveBeatGrids;                        // BPM Analyzer installed
 
     // Scales
     NSButton *_timeRulerCheckbox;
     NSButton *_levelScaleCheckbox;
+
+    // Zoom
+    NSButton *_zoomCheckbox;
+    NSButton *_zoomDetailCheckbox;
 
     // Cache
     NSTextField *_cacheSizeField;
     NSTextField *_retentionField;
     NSTextField *_cacheStatusLabel;
     NSButton *_clearCacheButton;
+    NSButton *_clearMissingButton;
 }
 
 @end
+
+// Clear Missing Files runs in the background and may outlive the page that
+// started it (the page is rebuilt when the panel widens, and made anew when
+// it is shown again): its result goes to the page showing then.
+// Main thread only.
+static bool s_clearingMissing = false;
+static __weak WaveformPreferences *s_currentPage = nil;
+
+// Bytes as the cache status shows them
+static NSString *formatCacheBytes(size_t bytes) {
+    if (bytes < 1024 * 1024) {
+        return [NSString stringWithFormat:@"%.0f KB", bytes / 1024.0];
+    }
+    return [NSString stringWithFormat:@"%.1f MB", bytes / (1024.0 * 1024.0)];
+}
 
 @implementation WaveformPreferences
 
@@ -96,10 +131,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)loadView {
     // The page scrolls when the preferences window is shorter than it
-    _page = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 600)];
+    _page = [[WaveformFlippedView alloc] initWithFrame:NSMakeRect(0, 0, pageWidth(2), 600)];
     _page.autoresizingMask = 0;
 
-    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, kPageWidth, 600)];
+    NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, pageWidth(2), 600)];
     scrollView.hasVerticalScroller = YES;
     scrollView.autohidesScrollers = YES;
     scrollView.borderType = NSNoBorder;
@@ -112,7 +147,19 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [NSColor setIgnoresAlpha:NO];
     [NSColorPanel sharedColorPanel].showsAlpha = YES;
 
-    [self buildUI];
+    s_currentPage = self;
+    [self buildUIColumns:2];
+    [self loadSettings];
+}
+
+// A third column when the panel is wide enough for it: the page is built
+// again (controls keep no state of their own; settings load back in)
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    const int columns = self.view.bounds.size.width >= pageWidth(3) ? 3 : 2;
+    if (columns == _columns) return;
+    for (NSView *view in [_page.subviews copy]) [view removeFromSuperview];
+    [self buildUIColumns:columns];
     [self loadSettings];
 }
 
@@ -197,7 +244,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 #pragma mark - Cards
 
-- (void)buildUI {
+- (void)buildUIColumns:(int)columns {
+    _columns = columns;
     CGFloat y = 10;
     NSTextField *title = JLCreatePreferencesTitle(@"Waveform Seekbar");
     title.frame = NSMakeRect(kMargin, y, 400, 20);
@@ -205,17 +253,26 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     JLAddPreferencesInfoButton(_page, title, self, @selector(showComponentInfo:));
     y += 32;
 
-    // Appearance and Scales on the left, Overlays and Played part on the
-    // right: the two columns come out about equally tall
-    const CGFloat rightX = kMargin + kColumnWidth + kColumnGap;
-    CGFloat left = [self buildAppearanceAtX:kMargin y:y];
-    left = [self buildScalesAtX:kMargin y:left + kCardGap];
-    CGFloat right = [self buildOverlaysAtX:rightX y:y];
-    right = [self buildPlayedAtX:rightX y:right + kCardGap];
-    y = std::max(left, right) + kCardGap;
-    y = [self buildCacheAtX:kMargin y:y width:kPageWidth - 2 * kMargin];
+    // The columns come out about equally tall either way
+    const CGFloat step = kColumnWidth + kColumnGap;
+    if (columns >= 3) {
+        const CGFloat first = [self buildAppearanceAtX:kMargin y:y];
+        const CGFloat second = [self buildOverlaysAtX:kMargin + step y:y];
+        CGFloat third = [self buildPlayedAtX:kMargin + 2 * step y:y];
+        third = [self buildScalesAtX:kMargin + 2 * step y:third + kCardGap];
+        third = [self buildZoomAtX:kMargin + 2 * step y:third + kCardGap];
+        y = std::max({ first, second, third }) + kCardGap;
+    } else {
+        CGFloat left = [self buildAppearanceAtX:kMargin y:y];
+        left = [self buildScalesAtX:kMargin y:left + kCardGap];
+        left = [self buildZoomAtX:kMargin y:left + kCardGap];
+        CGFloat right = [self buildOverlaysAtX:kMargin + step y:y];
+        right = [self buildPlayedAtX:kMargin + step y:right + kCardGap];
+        y = std::max(left, right) + kCardGap;
+    }
+    y = [self buildCacheAtX:kMargin y:y width:pageWidth(columns) - 2 * kMargin];
 
-    _page.frame = NSMakeRect(0, 0, kPageWidth, y + kMargin);
+    _page.frame = NSMakeRect(0, 0, pageWidth(columns), y + kMargin);
     [self updateCacheStatus];
 }
 
@@ -297,6 +354,10 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _glassBackgroundCheckbox = [self addCheckbox:@"Glass background"
                                             hint:@"Translucent blur behind the waveform instead of the background colour."
                                                x:x y:&y width:w];
+    _lockRelativeCheckbox = [self addCheckbox:@"Locked size follows the screen"
+                                         hint:@"With Lock Width or Lock Height (right-click the seekbar), the size "
+                                               "stays the same share of the screen on another display or resolution."
+                                            x:x y:&y width:w];
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -315,8 +376,44 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self addHint:@"Readout, summary, cursor time and the scales' labels." x:x y:&y width:w lines:1];
     y += kRowGap;
 
+    // Also the cog's first choice at the bottom right
+    y = [self addHeading:@"Controls on hover" x:x y:y width:w];
+    _controlsPopup = [self addPopup:@[] action:@selector(controlsModeChanged:) x:x y:&y width:w];
+    {
+        using namespace waveform_config;
+        const std::pair<NSString *, int> modes[] = {
+            { @"No controls", ControlsNone }, { @"Mixer: beat jumps and loops", ControlsMixer },
+            { @"Analytics: loudness and readout", ControlsAnalytics },
+        };
+        for (const auto &m : modes) {
+            [_controlsPopup addItemWithTitle:m.first];
+            _controlsPopup.lastItem.tag = m.second;
+        }
+    }
+    [self addHint:@"Also on the cog at the bottom right. The mixer needs BPM Analyzer; analytics shows the readout "
+                   "and summary below." x:x y:&y width:w lines:2];
+    y += kRowGap - 4;
+    [self addSmallLabel:@"Output buffer with the mixer" frame:NSMakeRect(x + kHintIndent, y + 4, 170, 15)];
+    _mixerBufferPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(x + kHintIndent + 170, y, w - kHintIndent - 170, 24)
+                                                   pullsDown:NO];
+    _mixerBufferPopup.controlSize = NSControlSizeSmall;
+    _mixerBufferPopup.font = [NSFont systemFontOfSize:11];
+    for (int ms : waveform_config::kMixerOutputBufferChoices) {
+        [_mixerBufferPopup addItemWithTitle:ms ? [NSString stringWithFormat:@"%d ms", ms] : @"Unchanged"];
+        _mixerBufferPopup.lastItem.tag = ms;
+    }
+    _mixerBufferPopup.target = self;
+    _mixerBufferPopup.action = @selector(mixerBufferChanged:);
+    [_page addSubview:_mixerBufferPopup];
+    y += 28;
+    [self addHint:@"foobar2000's output buffer delays every loop and jump change. While the mixer is on it is set to "
+                   "this; yours comes back after (playback restarts once)." x:x + kHintIndent y:&y
+            width:w - kHintIndent lines:2];
+    y += kRowGap;
+
     _readoutCheckbox = [self addCheckbox:@"Readout on hover"
-                                    hint:@"Time, LUFS-S, peak, crest, correlation, band split; click to seek."
+                                    hint:@"Time, LUFS-S, peak, crest, correlation, band split; with the "
+                                          "analytics controls."
                                        x:x y:&y width:w];
     y -= kRowGap - 4;
     _readoutPositionPopup = [self addPopup:@[ @"Follows the mouse", @"Top right", @"Bottom right, above the summary" ]
@@ -330,7 +427,8 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y = [self addHeading:@"Loudness summary" x:x y:y width:w];
     _summaryPopup = [self addPopup:@[ @"Off", @"On hover", @"Always" ]
                             action:@selector(summaryChanged:) x:x y:&y width:w];
-    [self addHint:@"Integrated, LRA, true peak, PLR, clip count." x:x y:&y width:w lines:1];
+    [self addHint:@"Integrated, LRA, true peak, PLR, clip count; with the analytics controls." x:x y:&y width:w
+            lines:1];
     y += kRowGap;
 
     _clipMarkersCheckbox = [self addCheckbox:@"Clip markers"
@@ -356,6 +454,41 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _clipMarkerOpacitySlider.frame = NSMakeRect(x + kHintIndent + 72, y, w - kHintIndent - 72 - 46, 20);
     [_page addSubview:_clipMarkerOpacitySlider];
     y += 24 + kRowGap;
+
+    // Phrase markers, from BPM Analyzer's beat grids
+    jl_beatgrid::ptr grids;
+    _haveBeatGrids = fb2k::std_api_try_get(grids);
+    _phraseMarkersCheckbox = [self addCheckbox:@"Phrase markers"
+                                          hint:@"A line every 16 or 32 beats, coloured by how well the music "
+                                                "stays on one beat grid: amber drifting, red broken, dashed "
+                                                "without a beat. Grids come from BPM Analyzer."
+                                             x:x y:&y width:w];
+    y -= kRowGap - 4;
+    _phraseLengthPopup = [self addPopup:@[] action:@selector(phraseLengthChanged:) x:x + kHintIndent y:&y
+                                  width:w - kHintIndent];
+    [_phraseLengthPopup addItemWithTitle:@"Every 32 beats"];
+    _phraseLengthPopup.lastItem.tag = 32;
+    [_phraseLengthPopup addItemWithTitle:@"Every 16 beats"];
+    _phraseLengthPopup.lastItem.tag = 16;
+    _phraseColoursCheckbox = [self addCheckbox:@"Colour grid breaks"
+                                          hint:@"Off draws every marker in the guide colour."
+                                             x:x + kHintIndent y:&y width:w - kHintIndent];
+    _phraseFollowCheckbox = [self addCheckbox:@"Follow tempo changes"
+                                         hint:@"Where a new grid begins (a tempo change, an edit), the "
+                                               "markers move to it and count phrases from there. Off "
+                                               "keeps them on the track's main grid."
+                                            x:x + kHintIndent y:&y width:w - kHintIndent];
+    // Missing, too old or just installed: the gate says so and installs it
+    JLDependencyManager *bpm = waveseekBpmDependency();
+    if ([bpm needsGate]) {
+        y -= kRowGap - 2;
+        JLDependencyGate *gate = [[JLDependencyGate alloc]
+            initWithFrame:NSMakeRect(x + kHintIndent, y, w - kHintIndent, 62) manager:bpm];
+        const CGFloat height = gate.preferredHeight;
+        [gate setFrameSize:NSMakeSize(w - kHintIndent, height)];
+        [_page addSubview:gate];
+        y += height + kRowGap;
+    }
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -369,6 +502,41 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _levelScaleCheckbox = [self addCheckbox:@"Level scale on the right"
                                        hint:@"dB labels in a gutter; off gives the waveform full width."
                                           x:x y:&y width:w];
+    return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
+}
+
+- (CGFloat)buildZoomAtX:(CGFloat)cardX y:(CGFloat)top {
+    const CGFloat x = cardX + kCardPad, w = kColumnWidth - 2 * kCardPad;
+    CGFloat y = [self addCardTitle:@"Zoom" x:x y:top + kCardPad];
+
+    _zoomCheckbox = [self addCheckbox:@"Zoom with pinch and scroll"
+                                 hint:@"Over the waveform: pinch or scroll vertically to zoom, "
+                                       "horizontally to pan."
+                                    x:x y:&y width:w];
+    _zoomDetailCheckbox = [self addCheckbox:@"Fine detail for deep zoom"
+                                       hint:@"Keeps 7-8x finer detail per track (more for long mixes), so zoom "
+                                             "goes that much deeper. About 1 MB of cache per track, up to 5 MB "
+                                             "for long mixes; tracks analysed before are analysed again when "
+                                             "played (streams download once more)."
+                                          x:x + kHintIndent y:&y width:w - kHintIndent];
+    // Also on the cog at the bottom right
+    _zoomFollowPopup = [self addPopup:@[] action:@selector(zoomFollowChanged:) x:x + kHintIndent y:&y
+                                width:w - kHintIndent];
+    {
+        using namespace waveform_config;
+        const std::pair<NSString *, int> modes[] = {
+            { @"Don't follow the cursor", FollowNone }, { @"Follow the cursor", FollowCursor },
+            { @"Keep the cursor centred", FollowCentre },
+        };
+        for (const auto &m : modes) {
+            [_zoomFollowPopup addItemWithTitle:m.first];
+            _zoomFollowPopup.lastItem.tag = m.second;
+        }
+    }
+    [self addHint:@"Zoomed in. Follow: once the cursor is in view the waveform moves under it, and panning sets "
+                   "where it stays. Centred: the cursor stays in the middle, with space beyond the track's ends."
+                x:x + kHintIndent y:&y width:w - kHintIndent lines:3];
+    y += kRowGap;
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
 
@@ -400,14 +568,24 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     y += 26 + kRowGap;
 
     y = [self addHeading:@"Cursor effect" x:x y:y width:w];
-    _cursorEffectPopup = [self addPopup:@[ @"None", @"Gradient", @"Glow", @"Scanline", @"Pulse", @"Trail", @"Shimmer" ]
+    // Each item's tag is the stored value; Trail (5) is retired and not offered
+    _cursorEffectPopup = [self addPopup:@[ @"None", @"Gradient", @"Glow", @"Scanline", @"Pulse", @"Shimmer",
+                                           @"Particles (experimental)", @"Firewall (experimental)",
+                                           @"Earthcrusher (experimental)" ]
                                  action:@selector(cursorEffectChanged:) x:x y:&y width:w];
-    [self addHint:@"How the dimming meets the cursor; Glow, Scanline, Pulse and Shimmer animate."
+    const int effectTags[] = { CursorEffectNone, CursorEffectGradient, CursorEffectGlow, CursorEffectScanline,
+                               CursorEffectPulse, CursorEffectShimmer, CursorEffectParticles, CursorEffectFirewall,
+                               CursorEffectEarthcrusher };
+    for (NSInteger i = 0; i < _cursorEffectPopup.numberOfItems && i < (NSInteger)std::size(effectTags); ++i) {
+        [_cursorEffectPopup itemAtIndex:i].tag = effectTags[i];
+    }
+    [self addHint:@"How the dimming meets the cursor; all but None and Gradient animate."
                 x:x y:&y width:w lines:1];
     y += kRowGap;
 
     _bpmSyncCheckbox = [self addCheckbox:@"Sync animations to track BPM"
-                                    hint:@"Animated effects follow the track's BPM tag when it has one."
+                                    hint:@"Animated effects pulse on the beat with a beat grid from BPM "
+                                          "Analyzer, else at the tempo of the track's BPM tag."
                                        x:x y:&y width:w];
     return [self closeCardAtX:cardX top:top bottom:y - kRowGap width:kColumnWidth];
 }
@@ -434,14 +612,24 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     _retentionField = numberField(x + 214, 54, 3650);
     [self addSmallLabel:@"days" frame:NSMakeRect(x + 272, y + 4, 34, 15)];
 
+    // Right-aligned beside the fields: they end at x + 306, the two buttons
+    // take about 245 of the narrowest (two-column) card's 592
     _clearCacheButton = [NSButton buttonWithTitle:@"Clear Cache" target:self action:@selector(clearCacheClicked:)];
     [_clearCacheButton sizeToFit];
     _clearCacheButton.frameOrigin = NSMakePoint(x + w - _clearCacheButton.frame.size.width, y - 3);
     [_page addSubview:_clearCacheButton];
+    _clearMissingButton = [NSButton buttonWithTitle:@"Clear Missing Files" target:self
+                                             action:@selector(clearMissingClicked:)];
+    [_clearMissingButton sizeToFit];
+    _clearMissingButton.frameOrigin = NSMakePoint(NSMinX(_clearCacheButton.frame) - 8
+                                                  - _clearMissingButton.frame.size.width, y - 3);
+    _clearMissingButton.enabled = !s_clearingMissing;
+    [_page addSubview:_clearMissingButton];
     y += 28;
 
     _cacheStatusLabel = [self addHint:@"Cache: Loading..." x:x y:&y width:w lines:1];
-    [self addHint:@"Analysis results per track; cleared tracks are analysed again when played."
+    [self addHint:@"Analysis results per track; cleared tracks are analysed again when played. Clear Missing "
+                   "Files removes only tracks whose files were deleted or moved."
                 x:x y:&y width:w lines:1];
     return [self closeCardAtX:cardX top:top bottom:y width:width];
 }
@@ -464,6 +652,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
     // Checkboxes
     _glassBackgroundCheckbox.state = getConfigBool(kKeyGlassBackground, kDefaultGlassBackground) ? NSControlStateValueOn : NSControlStateValueOff;
+    _lockRelativeCheckbox.state = getConfigBool(kKeyLockRelative, kDefaultLockRelative) ? NSControlStateValueOn : NSControlStateValueOff;
 
     [self loadColors];
 
@@ -484,8 +673,7 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     const int64_t dimming = std::clamp<int64_t>(getConfigInt(kKeyPlayedDimming, kDefaultPlayedDimming), 0, 100);
     _playedDimmingSlider.integerValue = dimming;
     _playedDimmingLabel.stringValue = [NSString stringWithFormat:@"%lld%%", dimming];
-    const int64_t effect = getConfigInt(kKeyCursorEffect, kDefaultCursorEffect);
-    [_cursorEffectPopup selectItemAtIndex:(effect >= 0 && effect < CursorEffectCount) ? effect : kDefaultCursorEffect];
+    [_cursorEffectPopup selectItemWithTag:cursorEffectFromStored(getConfigInt(kKeyCursorEffect, kDefaultCursorEffect))];
     _bpmSyncCheckbox.state = getConfigBool(kKeyBpmSync, kDefaultBpmSync) ? NSControlStateValueOn : NSControlStateValueOff;
     [self updatePlayedControls];
     _cursorTimeCheckbox.state = getConfigBool(kKeyCursorTime, kDefaultCursorTime) ? NSControlStateValueOn : NSControlStateValueOff;
@@ -508,6 +696,22 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     // Scales
     _timeRulerCheckbox.state = getConfigBool(kKeyTimeRuler, kDefaultTimeRuler) ? NSControlStateValueOn : NSControlStateValueOff;
     _levelScaleCheckbox.state = getConfigBool(kKeyLevelScale, kDefaultLevelScale) ? NSControlStateValueOn : NSControlStateValueOff;
+    _zoomCheckbox.state = getConfigBool(kKeyZoomEnabled, kDefaultZoomEnabled) ? NSControlStateValueOn : NSControlStateValueOff;
+    _phraseMarkersCheckbox.state = getConfigBool(kKeyPhraseMarkers, kDefaultPhraseMarkers) ? NSControlStateValueOn : NSControlStateValueOff;
+    [_phraseLengthPopup selectItemWithTag:getConfigInt(kKeyPhraseLength, kDefaultPhraseLength) == 16 ? 16 : 32];
+    _phraseColoursCheckbox.state = getConfigBool(kKeyPhraseBreakColours, kDefaultPhraseBreakColours) ? NSControlStateValueOn : NSControlStateValueOff;
+    _phraseFollowCheckbox.state = getConfigBool(kKeyPhraseFollowGrid, kDefaultPhraseFollowGrid) ? NSControlStateValueOn : NSControlStateValueOff;
+    [self updatePhraseControls];
+    _zoomDetailCheckbox.state = getConfigBool(kKeyZoomDetail, kDefaultZoomDetail) ? NSControlStateValueOn : NSControlStateValueOff;
+    _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    [_zoomFollowPopup selectItemWithTag:std::clamp<int64_t>(getConfigInt(kKeyZoomFollow, kDefaultZoomFollow), FollowNone,
+                                                            FollowCentre)];
+    _zoomFollowPopup.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    [_controlsPopup selectItemWithTag:std::clamp<int64_t>(getConfigInt(kKeyControlsMode, kDefaultControlsMode),
+                                                          ControlsNone, ControlsAnalytics)];
+    if (![_mixerBufferPopup selectItemWithTag:getConfigInt(kKeyMixerOutputBufferMs, kDefaultMixerOutputBufferMs)]) {
+        [_mixerBufferPopup selectItemWithTag:kDefaultMixerOutputBufferMs];
+    }
 
     // Cache settings
     _cacheSizeField.integerValue = getConfigInt(kKeyCacheSizeMB, kDefaultCacheSizeMB);
@@ -541,15 +745,12 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 - (void)updateCacheStatus {
     auto stats = getWaveformService().getCacheStats();
 
-    NSString *sizeStr;
-    if (stats.totalSizeBytes < 1024 * 1024) {
-        sizeStr = [NSString stringWithFormat:@"%.0f KB", stats.totalSizeBytes / 1024.0];
-    } else {
-        sizeStr = [NSString stringWithFormat:@"%.1f MB", stats.totalSizeBytes / (1024.0 * 1024.0)];
-    }
+    NSString *sizeStr = formatCacheBytes(stats.totalSizeBytes);
 
-    _cacheStatusLabel.stringValue = [NSString stringWithFormat:@"Cache: %@, %lu tracks",
-                                     sizeStr, (unsigned long)stats.entryCount];
+    NSString *detail = stats.detailCount > 0
+        ? [NSString stringWithFormat:@" (%lu with fine detail)", (unsigned long)stats.detailCount] : @"";
+    _cacheStatusLabel.stringValue = [NSString stringWithFormat:@"Cache: %@, %lu tracks%@",
+                                     sizeStr, (unsigned long)stats.entryCount, detail];
 }
 
 #pragma mark - Actions
@@ -627,6 +828,21 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
     [self notifySettingsChanged];
 }
 
+- (void)controlsModeChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyControlsMode, _controlsPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)mixerBufferChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyMixerOutputBufferMs, _mixerBufferPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
+- (void)zoomFollowChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyZoomFollow, _zoomFollowPopup.selectedTag);
+    [self notifySettingsChanged];
+}
+
 - (void)summaryChanged:(id)sender {
     using namespace waveform_config;
     setConfigInt(kKeySummaryMode, _summaryPopup.indexOfSelectedItem);
@@ -635,7 +851,9 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)checkboxChanged:(id)sender {
     using namespace waveform_config;
-    if (sender == _glassBackgroundCheckbox) {
+    if (sender == _lockRelativeCheckbox) {
+        setConfigBool(kKeyLockRelative, _lockRelativeCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _glassBackgroundCheckbox) {
         setConfigBool(kKeyGlassBackground, _glassBackgroundCheckbox.state == NSControlStateValueOn);
         [self updateStyleHint];
     } else if (sender == _cursorTimeCheckbox) {
@@ -655,6 +873,19 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         setConfigBool(kKeyTimeRuler, _timeRulerCheckbox.state == NSControlStateValueOn);
     } else if (sender == _levelScaleCheckbox) {
         setConfigBool(kKeyLevelScale, _levelScaleCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _zoomCheckbox) {
+        setConfigBool(kKeyZoomEnabled, _zoomCheckbox.state == NSControlStateValueOn);
+        _zoomDetailCheckbox.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+        _zoomFollowPopup.enabled = _zoomCheckbox.state == NSControlStateValueOn;
+    } else if (sender == _zoomDetailCheckbox) {
+        setConfigBool(kKeyZoomDetail, _zoomDetailCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _phraseMarkersCheckbox) {
+        setConfigBool(kKeyPhraseMarkers, _phraseMarkersCheckbox.state == NSControlStateValueOn);
+        [self updatePhraseControls];
+    } else if (sender == _phraseColoursCheckbox) {
+        setConfigBool(kKeyPhraseBreakColours, _phraseColoursCheckbox.state == NSControlStateValueOn);
+    } else if (sender == _phraseFollowCheckbox) {
+        setConfigBool(kKeyPhraseFollowGrid, _phraseFollowCheckbox.state == NSControlStateValueOn);
     }
     [self notifySettingsChanged];
 }
@@ -690,20 +921,35 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
 
 - (void)cursorEffectChanged:(id)sender {
     using namespace waveform_config;
-    setConfigInt(kKeyCursorEffect, _cursorEffectPopup.indexOfSelectedItem);
+    setConfigInt(kKeyCursorEffect, _cursorEffectPopup.selectedTag);
     [self updatePlayedControls];
     [self notifySettingsChanged];
 }
 
-// Dimming and the effect apply while shading is on; BPM sync to the animated effects
+// Dimming and the effect apply while shading is on; BPM sync to the effects
+// that pulse
 - (void)updatePlayedControls {
     using namespace waveform_config;
     const bool shade = _shadePlayedCheckbox.state == NSControlStateValueOn;
     _playedDimmingSlider.enabled = shade;
     _cursorEffectPopup.enabled = shade;
-    const NSInteger effect = _cursorEffectPopup.indexOfSelectedItem;
-    _bpmSyncCheckbox.enabled = shade && (effect == CursorEffectGlow || effect == CursorEffectScanline ||
-                                         effect == CursorEffectPulse || effect == CursorEffectShimmer);
+    _bpmSyncCheckbox.enabled = shade && cursorEffectSyncsToBeat((int)_cursorEffectPopup.selectedTag);
+}
+
+// Without BPM Analyzer the group is greyed out; the length and colours
+// follow the markers' switch. Following a new grid also applies to the
+// mixer's beats and beat-synced effects, so it stays available.
+- (void)updatePhraseControls {
+    _phraseMarkersCheckbox.enabled = _haveBeatGrids;
+    const BOOL on = _haveBeatGrids && _phraseMarkersCheckbox.state == NSControlStateValueOn;
+    _phraseLengthPopup.enabled = on;
+    _phraseColoursCheckbox.enabled = on;
+    _phraseFollowCheckbox.enabled = _haveBeatGrids;
+}
+
+- (void)phraseLengthChanged:(id)sender {
+    waveform_config::setConfigInt(waveform_config::kKeyPhraseLength, _phraseLengthPopup.selectedTag == 16 ? 16 : 32);
+    [self notifySettingsChanged];
 }
 
 - (void)cacheSettingChanged:(id)sender {
@@ -726,6 +972,35 @@ const CGFloat kHintIndent = 20.0;   // under a checkbox's title
         getWaveformService().clearCache();
         [self updateCacheStatus];
     }
+}
+
+// No confirmation: only the entries of files that are gone go
+- (void)clearMissingClicked:(id)sender {
+    if (s_clearingMissing) return;
+    s_clearingMissing = true;
+    _clearMissingButton.enabled = NO;
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        const auto result = getWaveformService().removeMissingFiles();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            s_clearingMissing = false;
+            [s_currentPage clearMissingFinishedRemoving:result.entriesRemoved bytes:result.bytesRemoved];
+        });
+    });
+}
+
+- (void)clearMissingFinishedRemoving:(size_t)entries bytes:(size_t)bytes {
+    _clearMissingButton.enabled = YES;
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Clear Missing Files";
+    alert.informativeText = entries == 0
+        ? @"No missing files found."
+        : [NSString stringWithFormat:@"Removed %lu %@ whose files are gone, freeing %@.", (unsigned long)entries,
+                                     entries == 1 ? @"track" : @"tracks", formatCacheBytes(bytes)];
+    [alert addButtonWithTitle:@"OK"];
+    [alert runModal];
+    [self updateCacheStatus];
 }
 
 - (void)showComponentInfo:(NSButton *)sender {

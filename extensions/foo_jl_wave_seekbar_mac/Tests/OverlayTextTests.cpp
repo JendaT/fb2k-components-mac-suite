@@ -50,6 +50,18 @@ void testClock() {
     CHECK_STR(formatClock(-3), "0:00", "negative clamps");
 }
 
+void testClockCentis() {
+    g_context = "clock centis";
+    CHECK_STR(formatClockCentis(0), "0:00.00", "zero");
+    CHECK_STR(formatClockCentis(12.3456), "0:12.35", "rounds to the nearest hundredth");
+    CHECK_STR(formatClockCentis(12.344), "0:12.34", "rounds down too");
+    CHECK_STR(formatClockCentis(59.996), "1:00.00", "rounding carries into the minute");
+    CHECK_STR(formatClockCentis(612.07), "10:12.07", "leading zero in the hundredths");
+    CHECK_STR(formatClockCentis(3725.25), "1:02:05.25", "hours");
+    CHECK_STR(formatClockCentis(-3), "0:00.00", "negative clamps");
+    CHECK_STR(formatClockCentis(NAN), "0:00.00", "NaN clamps");
+}
+
 void testPlacement() {
     g_context = "placement";
     CHECK_FLOAT_EQ(readoutX(100, 1000), 110, "right of the mouse");
@@ -72,6 +84,12 @@ void testRuler() {
     CHECK_FLOAT_EQ(rulerInterval(0, 1000), 10, "no duration");
     const double interval = rulerInterval(425, 1915);
     CHECK(interval * 1915 / 425 >= kRulerLabelSpacing, "labels at least 110 pt apart");
+
+    // Zoomed in: steps under 10 s
+    CHECK_FLOAT_EQ(rulerInterval(4.5, 800, true), 1, "4.5 s in 800 pt: every second");
+    CHECK_FLOAT_EQ(rulerInterval(60, 2000, true), 5, "60 s in 2000 pt: every 5 s when zoomed");
+    CHECK_FLOAT_EQ(rulerInterval(180, 1200, true), 30, "the usual steps past 5 s");
+    CHECK_FLOAT_EQ(rulerInterval(0, 1000, true), 10, "no duration, zoomed");
 }
 
 } // namespace
@@ -79,6 +97,7 @@ void testRuler() {
 int main() {
     testNumbers();
     testClock();
+    testClockCentis();
     testPlacement();
     testRuler();
     TEST_MAIN_END();

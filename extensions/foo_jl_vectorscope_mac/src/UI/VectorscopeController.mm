@@ -4,6 +4,7 @@
 //
 
 #import "VectorscopeController.h"
+#include "../../../../shared/PixelSnap.h"
 #include "../Core/StereoAnalysis.h"
 #include "../Core/VectorscopeConfig.h"
 #include "../Integration/ScopeSource.h"
@@ -87,6 +88,12 @@ FB2K_SERVICE_FACTORY(vectorscope_initquit);
     self.view = container;
 
     [self updateGlassBackground];
+}
+
+// The host may place the panel between pixels; keep the drawing on whole ones.
+- (void)viewDidLayout {
+    [super viewDidLayout];
+    JLPixelSnapContent(self.view, self.scopeView);
 }
 
 - (void)viewDidLoad {
@@ -206,6 +213,7 @@ FB2K_SERVICE_FACTORY(vectorscope_initquit);
     @autoreleasepool {
         if (g_shutdown.load()) { [self stopTimer]; return; }
         if (!self.view.window || self.view.isHiddenOrHasHiddenAncestor) return;
+        JLPixelSnapContent(self.view, self.scopeView);
 
         // Real elapsed time drives the afterglow and meter decay, so a late
         // timer fire does not slow the fade. Capped so the first frame after
