@@ -1,1 +1,1 @@
-{"id":"itk_0000000a","root_path":"@ROOT@/income/dump/Fixture Artist - New Album","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION@/Fixture Artist/Fixture Artist - 2026 - New Album","assigned_by":"user","kept":false}
+{"id":"itk_0000000a","root_path":"@ROOT@/income/dump/Fixture Artist - New Album","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION_DIR@/Fixture Artist/Fixture Artist - 2026 - New Album","assigned_by":"user","kept":false}

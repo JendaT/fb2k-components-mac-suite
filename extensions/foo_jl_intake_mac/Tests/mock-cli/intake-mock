@@ -17,8 +17,9 @@
 # Bash 3.2 compatible (/bin/bash on macOS): no associative arrays, no ${x,,}.
 #
 # Exit codes: the CLI's own 0 / 1 / 2, or 64 when the mock itself refuses to
-# run (bad state dir, setup missing, unknown mode). 64 never comes with a JSON
-# envelope, so a consumer treats it like any other unusable CLI.
+# run (bad or foreign state dir, setup missing, unknown mode, a reply missing
+# from the scenario). 64 never comes with a JSON envelope, so a consumer
+# treats it like any other unusable CLI.
 
 LC_ALL=C
 export LC_ALL
@@ -54,19 +55,86 @@ while [ "${STATE%/}" != "$STATE" ]; do STATE="${STATE%/}"; done
 ROOT="$STATE/root"
 RESP="$STATE/responses"
 
+# Ownership: setup deletes root/ and responses/, and .next states rewrite
+# them, so the mock only works in a directory it set up itself. The first
+# --mock-setup needs an empty directory and leaves a marker; every other run
+# needs the marker. Checked before anything is written, calls.log included.
+MARKER="$STATE/.intake-mock-state"
+
+dir_is_empty() {
+    local f
+    for f in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+        if [ -e "$f" ] || [ -L "$f" ]; then return 1; fi
+    done
+    return 0
+}
+
+if [ ! -f "$MARKER" ]; then
+    if [ "${1-}" = "--mock-setup" ]; then
+        dir_is_empty "$STATE" ||
+            die "INTAKE_MOCK_STATE is not empty and has no .intake-mock-state marker; use a new empty directory: $STATE"
+        : > "$MARKER" || die "cannot write $MARKER"
+    else
+        die "INTAKE_MOCK_STATE was not set up by intake-mock (no .intake-mock-state); run --mock-setup in an empty directory: $STATE"
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # Small helpers. They return through REPLY so nothing forks a subshell.
 # ---------------------------------------------------------------------------
 
-# JSON string escape of $1 (without the surrounding quotes).
+CONTROL_CHARS=$'\x01'-$'\x1f'   # a bracket range; bash strings cannot hold NUL
+
+# JSON string escape of $1 (without the surrounding quotes). Every control
+# character is escaped, as JSON requires.
 json_escape() {
-    local s="$1"
+    local s="$1" n hex c
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
     s="${s//$'\t'/\\t}"
     s="${s//$'\n'/\\n}"
     s="${s//$'\r'/\\r}"
+    case "$s" in
+        *[$CONTROL_CHARS]*)
+            n=1
+            while [ $n -lt 32 ]; do
+                printf -v hex '%02x' "$n"
+                printf -v c "\\x$hex"
+                s="${s//$c/\\u00$hex}"
+                n=$((n + 1))
+            done ;;
+    esac
     REPLY="$s"
+}
+
+# The CLI's sanitizeComponent (assign.ts) for a path component: / \ and :
+# become '-', control characters go, and leading and trailing spaces and
+# dots are trimmed (the CLI also trims Unicode spaces; fixtures have none).
+sanitize_component() {
+    local s="$1"
+    s="${s//\//-}"
+    s="${s//\\/-}"
+    s="${s//:/-}"
+    s="${s//[$CONTROL_CHARS]/}"
+    while :; do case "$s" in [' '.]*) s="${s#?}" ;; *) break ;; esac; done
+    while :; do case "$s" in *[' '.]) s="${s%?}" ;; *) break ;; esac; done
+    REPLY="$s"
+}
+
+# Lexical path.resolve of absolute path $1: "//" collapses, "." drops, ".."
+# pops a segment (staying at "/"), a trailing "/" goes. No filesystem access.
+resolve_lexically() {
+    local rest="$1/" seg out=""
+    while [ -n "$rest" ]; do
+        seg="${rest%%/*}"
+        rest="${rest#*/}"
+        case "$seg" in
+            '' | .) ;;
+            ..) out="${out%/*}" ;;
+            *) out="$out/$seg" ;;
+        esac
+    done
+    REPLY="${out:-/}"
 }
 
 # Literal replacement of every $2 in $1 by $3. Pattern removal only, so no
@@ -131,12 +199,14 @@ log_call "$@"
 #   tree/       copied over $STATE/root
 #   delete      paths relative to $STATE (responses/... or root/...) to remove
 #   generate    "roots <n>": synthesize n roots (perf scenarios)
-# Text fixtures get @ROOT@ (and, for states, @COLLECTION@) replaced. Every
-# *.wav is written as a 0.1 s silent WAV so foobar2000 can list the rows.
+# Text fixtures get @ROOT@ (and, for states, @COLLECTION@ and the sanitized
+# path component @COLLECTION_DIR@) replaced. Every *.wav is written as a
+# 0.1 s silent WAV so foobar2000 can list the rows.
 # ---------------------------------------------------------------------------
 
 ROOT_JSON=""         # $ROOT as it appears inside JSON strings
 COLLECTION_JSON=""   # --collection of the current call, JSON-escaped
+COLLECTION_DIR_JSON=""   # the same as a target_path component (sanitized)
 SUBST_COLLECTION=0   # 1 while applying a .next state
 SILENCE=""
 
@@ -155,7 +225,10 @@ substitute_file() { # src dst collection(0|1)
     local src="$1" dst="$2" coll="$3" line
     while IFS= read -r line || [ -n "$line" ]; do
         replace_all "$line" "@ROOT@" "$ROOT_JSON"
-        [ "$coll" = "1" ] && replace_all "$REPLY" "@COLLECTION@" "$COLLECTION_JSON"
+        if [ "$coll" = "1" ]; then
+            replace_all "$REPLY" "@COLLECTION_DIR@" "$COLLECTION_DIR_JSON"
+            replace_all "$REPLY" "@COLLECTION@" "$COLLECTION_JSON"
+        fi
         printf '%s\n' "$REPLY"
     done < "$src" > "$dst"
 }
@@ -173,7 +246,8 @@ copy_tree() {
         case "$rel" in
             *.wav) write_wav "$dst/$rel" ;;
             *.json | *.error | *.envelope | *.exit | */commands | commands)
-                # assign.user.d rows keep @COLLECTION@ for reply time.
+                # assign.user.d rows keep @COLLECTION@ / @COLLECTION_DIR@
+                # for reply time.
                 coll=$SUBST_COLLECTION
                 case "$rel" in assign.user.d/*) coll=0 ;; esac
                 substitute_file "$f" "$dst/$rel" "$coll" ;;
@@ -276,6 +350,7 @@ mock_setup() {
     mkdir -p "$ROOT" "$RESP"
     ROOT_JSON="$ROOT"
     COLLECTION_JSON=""
+    COLLECTION_DIR_JSON=""
     for s in "${CHAIN[@]}"; do overlay "$SCENARIOS/$s"; done
     printf '%s\n' "${CHAIN[@]}" > "$STATE/scenario"
     local count=0 f
@@ -343,6 +418,9 @@ done
 ROOT_JSON="$ROOT"
 json_escape "$COLLECTION"
 COLLECTION_JSON="$REPLY"
+sanitize_component "$COLLECTION"
+json_escape "$REPLY"
+COLLECTION_DIR_JSON="$REPLY"
 
 # ---------------------------------------------------------------------------
 # Output. Commands fill DATA (JSON text of the data member), ERRS (comma-
@@ -481,11 +559,13 @@ cmd_status() {
 }
 
 # Refs from argv plus --batch (one per line, blank lines and # comments
-# skipped), as cli.ts refsWithBatch. Returns 1 after fail() when the batch
-# file is missing.
+# skipped), as cli.ts refsWithBatch. Only approve and reject read --batch
+# (commands-p3.ts); the other commands ignore it. Returns 1 after fail()
+# when the batch file is missing.
 collect_refs() {
     ALLREFS=(${REFS[@]+"${REFS[@]}"})
     [ $HAS_BATCH -eq 1 ] || return 0
+    case "$CMD" in approve | reject) ;; *) return 0 ;; esac
     if [ ! -f "$BATCH" ]; then
         fail E_NOT_FOUND "batch file not found" "$BATCH"
         return 1
@@ -507,11 +587,24 @@ pick_key() {
     for k in "$@"; do
         if [ -f "$RESP/$k.envelope" ] || [ -d "$RESP/$k.d" ]; then KEY="$k"; return 0; fi
     done
-    KEY="$1"   # no replies at all: every known root falls through to E_BAD_STATUS
+    KEY="$1"   # no replies at all: see handle_id for what a missing reply means
+}
+
+# Whether the real CLI accepts a root in status $2 for verb $1
+# (commands-p2.ts cmdAssign, commands-p3.ts). assign never checks status.
+status_legal() {
+    case "$1:$2" in
+        assign:*) return 0 ;;
+        propose:resolved | approve:proposed | execute:approved | resume:placing | gc:placed) return 0 ;;
+        reject:new | reject:resolved | reject:proposed | reject:approved) return 0 ;;
+    esac
+    return 1
 }
 
 # One root id through the reply directory: forced error, row, or the CLI's
-# status refusal ("cannot <verb> from status <s>"; gc silently skips).
+# status refusal ("cannot <verb> from status <s>"; gc silently skips). A
+# root in a status the CLI accepts but with no reply file is a gap in the
+# scenario, never a refusal: the mock exits 64 so the gap shows.
 ROWS=""
 ROOT_ERRS=""
 handle_id() {
@@ -528,11 +621,14 @@ handle_id() {
         ROWS="$ROWS${ROWS:+,}$row"
         return
     fi
-    [ "$CMD" = "gc" ] && return   # gc filters to placed roots without a word (CR-004.14)
     status_row "$id" || return
     row="$REPLY"
     json_field status "$row"; st="$REPLY"
     json_field root_path "$row"; path="$REPLY"
+    if status_legal "$verb" "$st"; then
+        die "scenario gap: no responses/$KEY.d/$id.json or .error for $verb on $id (status $st)"
+    fi
+    [ "$CMD" = "gc" ] && return   # gc filters to placed roots without a word (CR-004.14)
     error_json E_BAD_STATUS "cannot $verb from status $st" "$path"
     ROOT_ERRS="$ROOT_ERRS${ROOT_ERRS:+,}$REPLY"
 }
@@ -561,8 +657,9 @@ resolve_refs() {
     REF_ERRS=""
     for ref in ${ALLREFS[@]+"${ALLREFS[@]}"}; do
         if [ -d "$ref" ]; then
+            # path.resolve(ref), as rootsFromRefs (commands-p2.ts).
             case "$ref" in /*) dir="$ref" ;; *) dir="$PWD/$ref" ;; esac
-            while [ "${dir%/}" != "$dir" ] && [ "$dir" != "/" ]; do dir="${dir%/}"; done
+            resolve_lexically "$dir"; dir="$REPLY"
             ids_for_dir "$dir"
             if [ ${#IDS[@]} -eq 0 ]; then
                 add_ref_error E_NOT_FOUND "no sidecar in directory (run resolve first)" "$dir"
@@ -670,7 +767,8 @@ cmd_rows() {
     resolve_refs
     run_ids "$verb" ${RESOLVED[@]+"${RESOLVED[@]}"}
     if [ "$CMD" = "assign" ] && [ -n "$ROWS" ]; then
-        replace_all "$ROWS" "@COLLECTION@" "$COLLECTION_JSON"
+        replace_all "$ROWS" "@COLLECTION_DIR@" "$COLLECTION_DIR_JSON"
+        replace_all "$REPLY" "@COLLECTION@" "$COLLECTION_JSON"
         ROWS="$REPLY"
     fi
     finish_rows
@@ -727,17 +825,34 @@ run_command() {
 
 # ---------------------------------------------------------------------------
 # Modes: $STATE/<cmd>.mode holds one word (plus an optional argument) and
-# stays in force until removed. Modes never apply .next states.
+# stays in force until removed. Modes never apply .next states, except slow,
+# which ends as a normal call.
 # ---------------------------------------------------------------------------
 
 mode_hang() {
     # A sleeping CHILD (not exec): killing only this shell leaves the child
     # holding stdout open, which is what process-group kill must handle.
+    # If the child ever returns, the call ends with empty stdout and exit 0,
+    # without running the command (use slow for a late, valid reply).
     sleep "${INTAKE_MOCK_HANG_SECONDS:-300}" &
     local child=$!
     printf '%s %s\n' "$$" "$child" > "$STATE/hang.pid"
     wait "$child"
     exit 0
+}
+
+mode_slow() {
+    # Outlives the caller's budget, then completes like a normal call: runs
+    # the command, applies .next and prints the envelope (PLAN.md B1: a
+    # mutating call's timeout is reported, and the call still completes).
+    local secs="${MODE_ARG:-${INTAKE_MOCK_SLOW_SECONDS:-2}}" child
+    case "$secs" in '' | . | *[!0-9.]* | *.*.*) die "slow takes seconds like 2 or 0.5: $secs" ;; esac
+    sleep "$secs" &
+    child=$!
+    wait "$child"
+    run_command
+    emit
+    exit "$EXIT"
 }
 
 mode_fds() {
@@ -783,6 +898,7 @@ esac
 case "$MODE" in
     "") run_command; emit; exit "$EXIT" ;;
     hang) mode_hang ;;
+    slow) mode_slow ;;
     fds) mode_fds ;;
     big) mode_big ;;
     garbage)

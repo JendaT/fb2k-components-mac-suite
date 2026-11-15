@@ -22,33 +22,40 @@ quotes, backslashes or control characters in it. The mock refuses to run
 otherwise (exit 64). Every file it writes is inside that directory, and every
 path in its output is under `$INTAKE_MOCK_STATE/root`.
 
+The first `--mock-setup` needs an empty directory and writes the marker
+`.intake-mock-state` into it. Every later run, setup or command, refuses
+(exit 64, nothing written) in a directory without that marker, so a
+misconfigured wrapper cannot delete another directory's `root/` or
+`responses/`.
+
 foobar2000 does not pass this variable on. To point the component at the
 mock, write a small wrapper in your scratch folder (never in the repo) that
 exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 
 `--mock-setup <scenario>` throws away `root/`, `responses/`, every `*.mode`
-and `*.next` file and `hang.pid`, then copies the scenario in. `calls.log` is
-kept.
+and `*.next` file and `hang.pid`, then copies the scenario in. `calls.log` and
+the marker are kept.
 
 ## Scenarios (`scenarios/<name>/`)
 
 | Scenario | What it is |
 |---|---|
 | `default` | 15 roots in `income/dump` and `income/shop`: every status (`new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `gc_done`, `rejected`); `needs_review` on a resolved root, an engine proposal and a user override; `ranked` on every engine proposal and `[]` on a user-only one; a Various Artists root with `structure_slot: compilations` and a null target (propose refuses it with `E_NO_TARGET`); two virtual roots sharing one folder; library copies of the placed and gc_done roots under `root/library/` |
-| `no-ranked` | `default` without `proposal.ranked` anywhere |
-| `cli-0.1` | `default` as CLI 0.1.0 would show it: `version` reports 0.1.0, `reject` is an unknown command, no rejected root, no `ranked` |
+| `no-ranked` | `default` with `proposal.ranked` absent from the `status` summaries (sidecars keep it, as with the real CLI) |
+| `cli-0.1` | `default` as CLI 0.1.0 would show it: `version` reports 0.1.0, `reject` is an unknown command, no rejected root, `ranked` absent from the `status` summaries (sidecars keep it) |
 | `schema2` | `default` with `"schema": 2` in `version` |
 | `schema-string` | `default` with `"schema": "1"` (a string) in `version` |
-| `perf-200` | 200 generated roots in `income/perf`, statuses cycling through the lifecycle |
+| `perf-200` | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 
 The `default` ids are `itk_0000000a` to `itk_00000018`; `status --json` lists
 them with their states.
 
 ## Modes: `$INTAKE_MOCK_STATE/<command>.mode`
 
-The file holds a mode name (`exit2` also takes an error code) and applies to
-every call of that command until you delete it. Modes never apply `.next`
-states.
+The file holds a mode name (`exit2` takes an error code, `slow` a number of
+seconds) and applies to every call of that command until you delete it.
+Modes never apply `.next` states, except `slow`, which ends as a normal
+call.
 
 | Mode | Output |
 |---|---|
@@ -58,7 +65,8 @@ states.
 | `empty` | nothing on stdout, exit 0 |
 | `bare-array` | the data array alone (`[]` for object data), exit 0 |
 | `noise` | about 140 KB of warnings on stderr, then the normal envelope wrapped in blank lines |
-| `hang` | starts `sleep` as a child (not exec) and waits for it. Writes `<shell pid> <child pid>` to `hang.pid`. Killing only the shell leaves the child holding stdout open, so the caller has to kill the process group |
+| `hang` | starts `sleep` as a child (not exec) and waits for it. Writes `<shell pid> <child pid>` to `hang.pid`. Killing only the shell leaves the child holding stdout open, so the caller has to kill the process group. If the child returns, the call ends with empty stdout and exit 0 without running the command |
+| `slow [SECONDS]` | sleeps in a child (2 s unless SECONDS or `INTAKE_MOCK_SLOW_SECONDS` is given), then runs the command normally: applies `.next` and prints the usual envelope and exit code. For a call that outlives the caller's budget and still completes |
 | `big` | about 1 MB of valid status-shaped rows, written row by row, exit 0 |
 | `unknown-code` | exit 2 with the error code `E_MOCK_UNKNOWN_CODE` |
 | `fds` | `{"ok":true,"data":{"fds":[0,1,2]},"errors":[]}`: the descriptors open in the spawned process, read from `/dev/fd` after an exec, so bash's own script descriptor is not listed |
@@ -101,6 +109,7 @@ inside an argument is written as `\\`, `\t` or `\n`.
 | Variable | Default | Effect |
 |---|---|---|
 | `INTAKE_MOCK_HANG_SECONDS` | 300 | how long the `hang` child sleeps |
+| `INTAKE_MOCK_SLOW_SECONDS` | 2 | how long `slow` sleeps when its mode file gives no seconds |
 | `INTAKE_MOCK_BIG_BYTES` | 1048576 | output size for `big` |
 | `INTAKE_MOCK_FD_MAX` | 1024 | highest descriptor number `fds` checks, exclusive |
 
@@ -111,8 +120,9 @@ inside an argument is written as `\\`, `\t` or `\n`.
 - `commands`: the commands this CLI knows; anything else is
   `E_BAD_ARGS "unknown command: <name>"`, exit 2.
 - `version.json`, `collections.json`: the `data` member.
-- `status.d/<id>.json`: one summary row per root, listed in id order.
-  `--filter` works for `status`, `needs_review`, `root_path`, `albumartist`
+- `status.d/<id>.json`: one summary row per root, listed in id order. The
+  real CLI sorts by sidecar path with `localeCompare`, so the order is
+  unspecified and consumers must not rely on it. `--filter` works for `status`, `needs_review`, `root_path`, `albumartist`
   and `album`; another key makes the mock exit 64.
 - `<key>.d/<id>.json` or `<key>.d/<id>.error`: the reply row, or the error
   object, for one root. The key is the command name, with a variant for
@@ -122,18 +132,36 @@ inside an argument is written as `\\`, `\t` or `\n`.
 - `<key>.envelope` (optional, plus `<key>.exit`): a complete stdout printed
   as is, for odd cases a test sets up itself. It skips the `.next` handling.
 
-Roots are named by id or by directory. A directory selects every root whose
-`root_path` is spelled exactly like it. A root with no reply file gets the
-CLI's `E_BAD_STATUS "cannot <command> from status <s>"`; `gc` skips it
-silently, like the CLI (CR-004.14). Unknown ids and other refs get the CLI's
-`E_NOT_FOUND` messages. Exit codes and `data` follow the CLI's `finish()`:
-0 with rows, 1 with rows and errors, 2 with `data: null`.
+Roots are named by id or by directory. A directory is resolved lexically
+like the CLI's `path.resolve` (`//`, `.` and `..`, relative to the current
+directory) and selects every root whose `root_path` is spelled exactly like
+the result. `--batch` is read by `approve` and `reject` only, as in the CLI.
+
+A root with no reply file gets the CLI's
+`E_BAD_STATUS "cannot <command> from status <s>"` when the CLI refuses that
+status for the command (`propose`: not `resolved`; `approve`: not
+`proposed`; `reject`: not `new`, `resolved`, `proposed` or `approved`;
+`execute`: not `approved`; `--resume`: not `placing`). `gc` skips a root
+that is not `placed` silently, like the CLI (CR-004.14). `assign` accepts
+every status. A root in an accepted status with no reply file is a gap in
+the scenario: the mock exits 64 instead of inventing a refusal. Unknown ids
+and other refs get the CLI's `E_NOT_FOUND` messages. Exit codes and `data`
+follow the CLI's `finish()`: 0 with rows, 1 with rows and errors, 2 with
+`data: null`.
+
+A root named twice is answered once per occurrence, except by `reject`,
+which skips the repeat like the CLI. The real CLI answers a repeat from the
+status the first occurrence left behind (`approve` and `propose` refuse it
+with `E_BAD_STATUS`, for example). Consumers should pass each id once.
 
 A fixture directory (a scenario or a state) may hold `responses/`, `tree/`
 (copied into `root/`), `delete` (paths under the state directory to remove,
 starting with `responses/` or `root/`), `base` (the scenario it extends) and
 `generate` (`roots <n>`). In text fixtures `@ROOT@` becomes
 `$INTAKE_MOCK_STATE/root`; in state files, and in `assign.user.d` replies,
-`@COLLECTION@` becomes the call's `--collection`. Every `*.wav` is written as
+`@COLLECTION@` becomes the call's `--collection` and `@COLLECTION_DIR@`
+(used in `target_path`) the same name as the CLI's `sanitizeComponent` makes
+it a folder name (`/`, `\` and `:` become `-`, control characters are
+dropped, leading and trailing spaces and dots trimmed). Every `*.wav` is written as
 a 0.1 s silent WAV, so foobar2000 can list the tracks. The mock refuses to
 apply a state when it finds a symlink under `root/` or `responses/`.

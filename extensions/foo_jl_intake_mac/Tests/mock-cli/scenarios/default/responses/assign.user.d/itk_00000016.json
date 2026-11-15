@@ -1,1 +1,1 @@
-{"id":"itk_00000016","root_path":"@ROOT@/income/shop/Loose Tracks","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION@/Fixture Artist B/Fixture Artist B - 2026 - Loose Album","assigned_by":"user","kept":false}
+{"id":"itk_00000016","root_path":"@ROOT@/income/shop/Loose Tracks","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION_DIR@/Fixture Artist B/Fixture Artist B - 2026 - Loose Album","assigned_by":"user","kept":false}

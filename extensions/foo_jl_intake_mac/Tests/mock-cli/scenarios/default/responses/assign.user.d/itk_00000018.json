@@ -1,1 +1,1 @@
-{"id":"itk_00000018","root_path":"@ROOT@/income/shop/Fixture Artist D - User Pick","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION@/Fixture Artist D/Fixture Artist D - 2026 - User Pick","assigned_by":"user","kept":false}
+{"id":"itk_00000018","root_path":"@ROOT@/income/shop/Fixture Artist D - User Pick","target_collection":"@COLLECTION@","confidence":1,"margin":1,"target_path":"@ROOT@/library/music.hq/@COLLECTION_DIR@/Fixture Artist D/Fixture Artist D - 2026 - User Pick","assigned_by":"user","kept":false}
