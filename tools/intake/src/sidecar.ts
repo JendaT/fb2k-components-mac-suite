@@ -54,13 +54,21 @@ export interface RankedSummary {
   confidence: number;
 }
 
+export interface ProposalSummary {
+  target_collection: string;
+  confidence: number;
+  ranked: RankedSummary[];
+  assigned_by: Proposal["assigned_by"];
+  target_path: string | null; // planned placement; null when no target can be built
+}
+
 export interface SidecarSummary {
   id: string;
   root_path: string;
   status: string;
   needs_review: boolean;
   cluster: { albumartist: string | null; album: string | null };
-  proposal: { target_collection: string; confidence: number; ranked: RankedSummary[] } | null;
+  proposal: ProposalSummary | null;
   placed: { verified: boolean; target_path: string } | null;
 }
 
@@ -89,7 +97,15 @@ export function summarize(sidecar: Sidecar, dir: string): SidecarSummary {
     status: sidecar.status,
     needs_review: sidecar.cluster.needs_review,
     cluster: { albumartist: sidecar.cluster.albumartist, album: sidecar.cluster.album },
-    proposal: p ? { target_collection: p.target_collection, confidence: p.confidence, ranked: rankedSummary(p) } : null,
+    proposal: p
+      ? {
+        target_collection: p.target_collection,
+        confidence: p.confidence,
+        ranked: rankedSummary(p),
+        assigned_by: p.assigned_by,
+        target_path: p.target_path ?? null,
+      }
+      : null,
     placed: sidecar.placed ? { verified: sidecar.placed.verified, target_path: sidecar.placed.target_path } : null,
   };
 }

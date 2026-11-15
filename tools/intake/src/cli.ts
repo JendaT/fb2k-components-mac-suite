@@ -3,8 +3,8 @@
 // docs/intake/intake-03-contract-spec.md; scan/resolve/status per doc 01.
 
 import {
-  cmdResolve, cmdScan, cmdStatus, cmdVersion,
-  type CommandResult, type CommonOpts, type ResolveData, type ScanBlock,
+  cmdIncome, cmdResolve, cmdScan, cmdStatus, cmdVersion,
+  type CommandResult, type CommonOpts, type IncomeRow, type ResolveData, type ScanBlock,
 } from "./commands.ts";
 import type { SidecarSummary } from "./sidecar.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
@@ -29,10 +29,11 @@ commands:
   gc         <root...>|--all [--age <days>] [--relocate-dj]
                                                  re-verify + delete local originals of placed roots
   collections                                    genre map folder list (picker)
+  income                                         income folders from income.yaml {name, path, exists}
   bootstrap  --tree <path> [--prior-weight <w>] [--tree ...] [--out <dir>] [--force]
                                                  build genre/label maps from a tree
   status     [--filter k=v ...]                  sidecar inventory
-  version                                        {cli, schema, engine} versions
+  version                                        {cli, schema, engine, commands}
 
 options:
   --json      machine output (single JSON envelope on stdout)
@@ -147,6 +148,8 @@ function printHuman(cmd: string, result: CommandResult): void {
   const { data, errors } = result;
   if (cmd === "status" && Array.isArray(data)) {
     printStatus(data as SidecarSummary[]);
+  } else if (cmd === "income" && Array.isArray(data)) {
+    for (const i of data as IncomeRow[]) console.log(`${i.name}  ${i.path}${i.exists ? "" : "  (missing)"}`);
   } else if (cmd === "scan" && Array.isArray(data)) {
     printBlocks(data as ScanBlock[]);
   } else if (cmd === "resolve" && data != null) {
@@ -157,55 +160,42 @@ function printHuman(cmd: string, result: CommandResult): void {
   for (const e of errors) console.error(`error ${e.code}: ${e.msg}${e.path ? ` (${e.path})` : ""}`);
 }
 
+type Handler = (args: string[], opts: AllOpts) => CommandResult | Promise<CommandResult>;
+
+/**
+ * The dispatch table: every command this CLI accepts. `version` reports its
+ * keys as `commands` (doc 03 Versioning), so the list cannot drift from what
+ * is dispatched.
+ */
+const COMMANDS: Record<string, Handler> = {
+  scan: (args, opts) => cmdScan(args, opts),
+  resolve: (args, opts) => cmdResolve(args, opts),
+  identify: (args, opts) => cmdIdentify(args, opts),
+  assign: (args, opts) => cmdAssign(args, opts),
+  propose: (args, opts) => cmdPropose(args, opts),
+  approve: (args, opts) => cmdApprove(args, opts),
+  reject: (args, opts) => cmdReject(args, opts),
+  execute: (args, opts) => cmdExecute(args, opts),
+  gc: (args, opts) => cmdGc(args, opts),
+  status: (args, opts) => cmdStatus(args, opts),
+  collections: () => cmdCollections(),
+  income: () => cmdIncome(),
+  version: () => cmdVersion(Object.keys(COMMANDS)),
+  bootstrap: (_args, opts) => cmdBootstrap(opts),
+};
+
 async function main(): Promise<number> {
   const { cmd, args, opts } = parseArgs(process.argv.slice(2));
   let result: CommandResult;
-  switch (cmd) {
-    case "scan":
-      result = await cmdScan(args, opts);
-      break;
-    case "resolve":
-      result = await cmdResolve(args, opts);
-      break;
-    case "identify":
-      result = await cmdIdentify(args, opts);
-      break;
-    case "assign":
-      result = await cmdAssign(args, opts);
-      break;
-    case "propose":
-      result = await cmdPropose(args, opts);
-      break;
-    case "approve":
-      result = cmdApprove(args, opts);
-      break;
-    case "reject":
-      result = cmdReject(args, opts);
-      break;
-    case "execute":
-      result = await cmdExecute(args, opts);
-      break;
-    case "gc":
-      result = await cmdGc(args, opts);
-      break;
-    case "collections":
-      result = cmdCollections();
-      break;
-    case "bootstrap":
-      result = cmdBootstrap(opts);
-      break;
-    case "status":
-      result = cmdStatus(args, opts);
-      break;
-    case "version":
-      result = cmdVersion();
-      break;
-    default:
-      if (!opts.json) {
-        console.error(USAGE);
-        return 2;
-      }
-      result = { data: null, errors: [{ code: "E_BAD_ARGS", msg: `unknown command: ${cmd || "(none)"}`, path: null }], exitCode: 2 };
+  const handler = Object.hasOwn(COMMANDS, cmd) ? COMMANDS[cmd] : undefined;
+  if (handler) {
+    result = await handler(args, opts);
+  } else {
+    if (!opts.json) {
+      console.error(USAGE);
+      return 2;
+    }
+    result = { data: null, errors: [{ code: "E_BAD_ARGS", msg: `unknown command: ${cmd || "(none)"}`, path: null }], exitCode: 2 };
   }
   if (opts.json) {
     const envelope: Envelope = { ok: result.errors.length === 0, data: result.data, errors: result.errors };

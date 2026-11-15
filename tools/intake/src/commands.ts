@@ -239,6 +239,42 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
   return { data, errors, exitCode: errors.length === 0 ? 0 : 1 };
 }
 
-export function cmdVersion(): CommandResult<{ cli: string; schema: number; engine: string }> {
-  return { data: { cli: CLI_VERSION, schema: 1, engine: ENGINE_VERSION }, errors: [], exitCode: 0 };
+/** One configured income folder (doc 03 `income --json`). */
+export interface IncomeRow {
+  name: string;
+  path: string;
+  exists: boolean;
+}
+
+/**
+ * The income folders from income.yaml, in file order. `path` is the absolute
+ * path every other command walks (loadIncome: `~` expanded, relative paths
+ * against the rules dir), so status `root_path`s start with it. Read-only.
+ */
+export function cmdIncome(): CommandResult<IncomeRow[] | null> {
+  const income = loadIncome();
+  if (income.length === 0)
+    return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
+  const data = income.map((inc) => {
+    let exists = false;
+    try {
+      exists = statSync(inc.path).isDirectory();
+    } catch {
+      // missing or unreadable: exists stays false
+    }
+    return { name: inc.name, path: inc.path, exists };
+  });
+  return { data, errors: [], exitCode: 0 };
+}
+
+export interface VersionData {
+  cli: string;
+  schema: number;
+  engine: string;
+  commands: string[];
+}
+
+/** `commands` is the dispatch table's key list (cli.ts), passed in so the two cannot drift. */
+export function cmdVersion(commands: readonly string[]): CommandResult<VersionData> {
+  return { data: { cli: CLI_VERSION, schema: 1, engine: ENGINE_VERSION, commands: [...commands] }, errors: [], exitCode: 0 };
 }

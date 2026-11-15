@@ -25,11 +25,15 @@ afterAll(() => {
   rmSync(corpus.dir, { recursive: true, force: true });
 });
 
-test("version --json returns {cli, schema, engine} in an envelope", () => {
+test("version --json returns {cli, schema, engine, commands} in an envelope", () => {
   const r = run(["version", "--json"]);
   expect(r.code).toBe(0);
   const env = JSON.parse(r.stdout);
-  expect(env).toEqual({ ok: true, data: { cli: "0.2.1", schema: 1, engine: "0.2.0" }, errors: [] });
+  expect(env).toEqual({
+    ok: true,
+    data: { cli: "0.2.1", schema: 1, engine: "0.2.0", commands: expect.any(Array) },
+    errors: [],
+  });
 });
 
 test("unknown command exits 2 with E_BAD_ARGS envelope", () => {

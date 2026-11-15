@@ -74,6 +74,8 @@ test("engine proposal with more than 5 candidates: top 5, engine order, score as
     target_collection: "[C1]",
     confidence: 0.71,
     ranked: SEVEN.slice(0, 5).map(([collection, confidence]) => ({ collection, confidence })),
+    assigned_by: "engine",
+    target_path: "/library/music.hq/[C1]/x",
   });
 });
 
@@ -129,7 +131,11 @@ test("user-only proposal (no engine run) reports ranked: []", async () => {
   const doc = sc(movements);
   expect(doc.proposal!.engine_version).toBe("user");
   expect(doc.proposal!.ranked.length).toBe(1); // the stored synthetic entry...
-  expect(summarize(doc, movements).proposal).toEqual({ target_collection: "[Ambient]", confidence: 1, ranked: [] }); // ...is not reported
+  expect(typeof doc.proposal!.target_path).toBe("string");
+  expect(summarize(doc, movements).proposal).toEqual({
+    target_collection: "[Ambient]", confidence: 1, ranked: [], // ...is not reported
+    assigned_by: "user", target_path: doc.proposal!.target_path,
+  });
 });
 
 // ---- status --json envelope -----------------------------------------------------
@@ -159,7 +165,7 @@ test("status --json: proposal carries ranked [{collection, confidence}], at most
   const withProp = rows.filter((r) => r.proposal !== null);
   expect(withProp.length).toBe(3); // Pollen (override), Movements (user-only), Reflective (engine)
   for (const r of withProp) {
-    expect(Object.keys(r.proposal!).sort()).toEqual(["confidence", "ranked", "target_collection"]);
+    expect(Object.keys(r.proposal!).sort()).toEqual(["assigned_by", "confidence", "ranked", "target_collection", "target_path"]);
     expect(Array.isArray(r.proposal!.ranked)).toBe(true);
     expect(r.proposal!.ranked.length).toBeLessThanOrEqual(5);
     for (const c of r.proposal!.ranked) {
