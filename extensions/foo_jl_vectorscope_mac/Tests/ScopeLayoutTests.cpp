@@ -48,15 +48,19 @@ void testBottom() {
     CHECK_FLOAT_EQ(r.plot.x, 38.0, "scope is centred horizontally");
     CHECK_FLOAT_EQ(r.plot.y, 56.0, "scope is centred above the strip");
     CHECK_EQ(r.bars, 1, "one track");
-    CHECK_FLOAT_EQ(r.track[0].x, 24.0, "bar starts under the scope's left label");
-    CHECK_FLOAT_EQ(r.track[0].w, 314.0, "bar leaves room for the readout");
+    CHECK_FLOAT_EQ(r.track[0].x, 62.0, "bar leaves the readout's room on the left too");
+    CHECK_FLOAT_EQ(r.track[0].w, 276.0, "bar leaves room for the readout");
+    CHECK_FLOAT_EQ(r.track[0].x + r.track[0].w / 2.0, r.plot.x + r.plot.w / 2.0,
+                   "zero lines up with the scope's vertical axis");
     CHECK_FLOAT_EQ(r.track[0].y, 20.5, "bar sits above the scale");
     CHECK_FLOAT_EQ(r.track[0].h, 6.0, "bar has the requested thickness");
 
     const Result bands = layout(panel(400, 400, MeterBottom, 3));
     CHECK_EQ(bands.bars, 3, "three tracks");
     CHECK_FLOAT_EQ(bands.meter.h, 57.0, "three rows");
-    CHECK_FLOAT_EQ(bands.track[0].x - (bands.plot.x - kLabelInset), kRowLabelWidth, "band names take room before the bars");
+    CHECK(bands.track[0].x - (bands.plot.x - kLabelInset) >= kRowLabelWidth, "band names take room before the bars");
+    CHECK_FLOAT_EQ(bands.track[0].x + bands.track[0].w / 2.0, bands.plot.x + bands.plot.w / 2.0,
+                   "zero lines up with the scope's vertical axis");
     CHECK(bands.track[0].y > bands.track[1].y && bands.track[1].y > bands.track[2].y, "low band on top");
     CHECK_FLOAT_EQ(bands.track[0].y - bands.track[1].y, 11.0, "rows are one pitch apart");
 
@@ -244,6 +248,10 @@ void testInvariants() {
                                     CHECK(t.y + t.h + (t.y - r.legend[r.bars - 1].y) <= h, "bars stay centred");
                                 } else {
                                     CHECK(r.legend[i].empty(), "legend only beside the scope with labels");
+                                }
+                                if (!r.vertical) {
+                                    CHECK_FLOAT_EQ(t.x + t.w / 2.0, r.plot.x + r.plot.w / 2.0,
+                                                   "zero lines up with the scope's vertical axis");
                                 }
                                 CHECK(r.vertical ? (t.x >= r.meter.x && t.x + t.w <= r.meter.x + r.meter.w)
                                                  : (t.y >= r.meter.y && t.y + t.h <= r.meter.y + r.meter.h),
