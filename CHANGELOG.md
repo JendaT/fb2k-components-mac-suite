@@ -864,6 +864,11 @@ Display P3 colors contributed by @Scannou (#55).
 
 ## Tidal Integration
 
+### [Unreleased]
+
+#### Fixed
+- **Pull from TIDAL**: Works again; in 0.4.0 it stopped with an error on every run.
+
 ### [0.4.0] - 2026-11-06
 
 #### Added

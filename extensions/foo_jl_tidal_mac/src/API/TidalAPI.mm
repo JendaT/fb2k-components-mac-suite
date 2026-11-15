@@ -1089,7 +1089,11 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
 }
 
 - (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion {
-    NSString *urlStr = [NSString stringWithFormat:@"%@/my-collection/playlists/folders",
+    // The parameters every reference client sends. The parser below still
+    // reads the wrong response shape (review M12), so it finds no folders and
+    // every playlist keeps its flat "TIDAL » title" name, as it always has.
+    NSString *urlStr = [NSString stringWithFormat:
+                        @"%@/my-collection/playlists/folders?folderId=root&includeOnly=FOLDER&limit=50",
                         kTidalAPIv2BaseURL];
     NSURL *url = [NSURL URLWithString:urlStr];
 
