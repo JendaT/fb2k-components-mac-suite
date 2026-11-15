@@ -72,20 +72,21 @@ static void testTable() {
           "new + needs_review: blue, open circle, tooltip \"needs review\"");
     CHECK(is(rowVisualFor(record(IntakeStatus::Resolved)), kBlue, IntakeIcon::CircleOpen, 0, "", false),
           "resolved: blue, open circle");
-    CHECK(is(rowVisualFor(record(IntakeStatus::Resolved, true)), kAmber, IntakeIcon::Warning, kAmberIcon, "", false),
-          "resolved + needs_review (no proposal): amber, warning");
+    CHECK(is(rowVisualFor(record(IntakeStatus::Resolved, true)), kAmber, IntakeIcon::Warning, kAmberIcon,
+             "needs review", false),
+          "resolved + needs_review (no proposal): amber, warning, tooltip \"needs review\"");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Engine)), kTeal,
              IntakeIcon::CircleLeftHalf, 0, "", false),
           "proposed: teal, left half circle");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine)), kAmber,
-             IntakeIcon::CircleLeftHalf, kAmberIcon, "", false),
-          "proposed + needs_review: amber, left half circle");
+             IntakeIcon::CircleLeftHalf, kAmberIcon, "needs review", false),
+          "proposed + needs_review: amber, left half circle, tooltip \"needs review\"");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::User)), kAmber,
-             IntakeIcon::CircleLeftHalf, kAmberIcon, "", false),
-          "proposed + needs_review, user-assigned: still amber (v1.2)");
+             IntakeIcon::CircleLeftHalf, kAmberIcon, "needs review", false),
+          "proposed + needs_review, user-assigned: still amber with the tooltip (v1.2)");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Resolved, true, AssignedBy::User)), kAmber, IntakeIcon::Warning,
-             kAmberIcon, "", false),
-          "resolved + needs_review with a user proposal: amber, warning");
+             kAmberIcon, "needs review", false),
+          "resolved + needs_review with a user proposal: amber, warning, tooltip");
     CHECK(is(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::User)), kTeal,
              IntakeIcon::CircleLeftHalf, 0, "", false),
           "user-assigned without needs_review: teal");
@@ -133,7 +134,8 @@ static void testTooltips() {
           "new with a target: no slot pending");
     IntakeRowVisual amberPending =
         rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine, TargetPathState::Null));
-    CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == "slot pending", "amber and slot pending together");
+    CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == "needs review \xC2\xB7 slot pending",
+          "amber and slot pending together: needs review first");
     CHECK(rowVisualFor(proposed(IntakeStatus::Proposed, false, AssignedBy::Unknown, TargetPathState::Unknown))
               .tooltip.empty(),
           "target_path unknown (CLI 0.2.1): no slot pending");
@@ -152,6 +154,32 @@ static void testTooltips() {
     CHECK(!tooltipOnly.isNone() && tooltipOnly.bgTint == 0 && tooltipOnly.icon == IntakeIcon::None &&
               tooltipOnly.tooltip == "E_VERIFY: mismatch",
           "a last error on a root that renders nothing is tooltip-only");
+
+    g_context = "amber-tooltip";
+    // doc 04 v1.2: every amber row carries "needs review", and only amber
+    // rows (plus new + needs_review) do.
+    const IntakeStatus all[] = {IntakeStatus::New, IntakeStatus::Resolved, IntakeStatus::Proposed,
+                                IntakeStatus::Approved, IntakeStatus::Placing, IntakeStatus::Placed,
+                                IntakeStatus::GcDone, IntakeStatus::Rejected, IntakeStatus::Unknown};
+    int agree = 0, total = 0;
+    for (IntakeStatus st : all) {
+        for (int flag = 0; flag < 2; flag++) {
+            IntakeRecord r = proposed(st, flag == 1, AssignedBy::Engine);
+            r.hasPlaced = true;
+            r.placedVerified = true;
+            const IntakeRowVisual v = rowVisualFor(r);
+            const bool amber = v.bgTint == kAmber;
+            const bool says = v.tooltip.rfind("needs review", 0) == 0;
+            const bool expectSays = amber || (st == IntakeStatus::New && flag == 1);
+            total++;
+            if (says == expectSays) agree++;
+        }
+    }
+    CHECK_EQ(agree, total, "\"needs review\" exactly on amber rows and on new + needs_review");
+    IntakeRecord amberError = record(IntakeStatus::Resolved, true);
+    amberError.lastError = "E_BAD_STATUS: cannot propose from status resolved";
+    CHECK(rowVisualFor(amberError).tooltip == "needs review \xC2\xB7 E_BAD_STATUS: cannot propose from status resolved",
+          "an amber row's last error follows \"needs review\"");
 }
 
 static void testPalette() {

@@ -66,6 +66,7 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
                 v.bgTint = palette.tintReview;
                 v.icon = IntakeIcon::Warning;
                 v.iconColor = opaqueColor(palette.tintReview);
+                appendTooltip(v.tooltip, kTooltipNeedsReview);  // doc 04 v1.2: amber rows say why
             } else {
                 v.bgTint = palette.tintNew;
                 v.icon = IntakeIcon::CircleOpen;
@@ -77,6 +78,7 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
             if (review) {
                 v.bgTint = palette.tintReview;
                 v.iconColor = opaqueColor(palette.tintReview);
+                appendTooltip(v.tooltip, kTooltipNeedsReview);
             } else {
                 v.bgTint = palette.tintProposed;
             }

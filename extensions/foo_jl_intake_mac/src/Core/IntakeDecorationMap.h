@@ -10,9 +10,10 @@
 //   status                          tint   icon               note
 //   new, resolved                   blue   open circle
 //   new + needs_review              blue   open circle        tooltip "needs review"
-//   resolved + needs review         amber  warning            (IntakeReviewRule)
+//   resolved + needs review         amber  warning            tooltip "needs review" (IntakeReviewRule)
 //   proposed                        teal   left half circle
-//   proposed + needs review         amber  left half circle   also when user-assigned
+//   proposed + needs review         amber  left half circle   tooltip "needs review"; also when
+//                                                             user-assigned
 //   approved                        teal   right half circle
 //   placing                         teal   right arrow        tooltip "placing - see intake status"
 //                                                             (an em dash, U+2014, in the text)
@@ -25,6 +26,9 @@
 //  filled circle take their tint's RGB at full alpha as icon colour, as in
 //  SimPlaylist's DebugDummyDecorator; the other icons use the host's label
 //  colour (0). placing uses the approved tint (it follows approve).
+//
+//  Every amber row (resolved or proposed needing review) and a new root
+//  with needs_review start their tooltip with "needs review" (doc 04 v1.2).
 //
 //  Tooltip additions, joined with " \u00B7 " (a middle dot):
 //   - a proposal whose `target_path` is present and null adds

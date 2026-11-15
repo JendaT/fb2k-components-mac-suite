@@ -423,7 +423,8 @@ static void testMockDefault() {
               f->visual.icon == IntakeIcon::CircleLeftHalf,
           "user-assigned proposal with needs_review: amber half circle");
     const IntakeRecord *c = s->lookup(dump + "Fixture Artist - Unsure Album/02 - Test Track Two.wav");
-    CHECK(c && c->visual.icon == IntakeIcon::Warning, "resolved + needs_review without a proposal: amber warning");
+    CHECK(c && c->visual.icon == IntakeIcon::Warning && c->visual.tooltip == kTooltipNeedsReview,
+          "resolved + needs_review without a proposal: amber warning, tooltip \"needs review\"");
     const IntakeRecord *e = s->lookup(dump + "Fixture Artist - Close Call/01 - Test Track One.wav");
     CHECK(e && e->visual.bgTint == 0xE5A50A38, "engine proposal with needs_review: amber");
     const IntakeRecord *d = s->lookup(dump + "Fixture Artist - Proposed Album/01 - Test Track One.wav");
@@ -445,8 +446,8 @@ static void testMockDefault() {
           "Various Artists (CLI 0.3.0): a [Compilations] target, no slot pending");
     const IntakeRecord *single = s->lookup(shop + "Loose Tracks/Fixture Artist E - Single Track.wav");
     CHECK(single && single->id == "itk_00000019" && single->visual.icon == IntakeIcon::Warning &&
-              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == kTooltipSlotPending,
-          "the single (null target, needs_review): amber warning, slot pending");
+              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == "needs review \xC2\xB7 slot pending",
+          "the single (null target, needs_review): amber warning, needs review and slot pending");
     CHECK(s->lookup(p.root + "/library/music.hq/Test Collection A/Fixture Artist/"
                              "Fixture Artist - 2026 - Placed Album/01 - Test Track One.wav") == nullptr,
           "a library copy is not an intake row");
