@@ -110,7 +110,7 @@
     "target_collection": "Fixture Downtempo",
     "confidence": 0.72,
     "margin": 0.21,
-    "target_path": null,
+    "target_path": "@ROOT@/library/music.hq/Fixture Downtempo/[Compilations]/Various Artists - 2026 - Test Compilation",
     "structure_slot": "compilations",
     "assigned_by": "engine",
     "alternates_shown": false

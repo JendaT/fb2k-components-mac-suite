@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "id": "itk_00000019",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "shop",
+    "source_type": "fixture-shop",
+    "archive": null
+  },
+  "virtual": true,
+  "files": [
+    {
+      "path": "Fixture Artist E - Single Track.wav",
+      "audio_hash": "pcmsha1:5d1c0e4b9a7f3e2d8c6b4a2f0e9d8c7b6a5f4e3d",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist E",
+        "artist": "Fixture Artist E",
+        "album": null,
+        "title": "Single Track",
+        "tracknumber": null,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist E",
+    "album": null,
+    "confidence": 0.5,
+    "needs_review": true,
+    "signals": {
+      "purity": 1,
+      "seq": 0,
+      "artifacts": 1,
+      "name_parse": 0,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": null,
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection A",
+        "score": 0.64,
+        "evidence": {
+          "artist_prior": 0.64,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection B",
+        "score": 0.38,
+        "evidence": {
+          "artist_prior": 0.38,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection A",
+    "confidence": 0.64,
+    "margin": 0.26,
+    "target_path": null,
+    "structure_slot": "singles",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "status": "resolved",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:53+01:00",
+      "event": "resolved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:00:54+01:00",
+      "event": "assigned",
+      "by": "intake@0.3.0"
+    }
+  ],
+  "singles": true
+}

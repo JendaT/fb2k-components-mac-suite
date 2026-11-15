@@ -57,6 +57,9 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
             v.icon = IntakeIcon::CircleOpen;
             // CR-004.8: needs_review on new is a tooltip, never amber.
             if (record.needsReview) appendTooltip(v.tooltip, kTooltipNeedsReview);
+            // `assign` is legal from new and leaves the status alone
+            // (contract v1.2), so a new root can carry a null target.
+            canBeSlotPending = true;
             break;
         case IntakeStatus::Resolved:
             if (review) {

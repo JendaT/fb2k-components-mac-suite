@@ -141,7 +141,7 @@ void testPipesBasic(ProcessRunner &runner) {
     CHECK_EQ(run->budgetCalls.load(), 0, "no budget report");
     intake::EnvelopeResult env = parsed(*run);
     CHECK(env.outcome == CliOutcome::Ok, "status parses as Ok");
-    CHECK_EQ(intake::idsInData(env.data).size(), 15, "15 roots");
+    CHECK_EQ(intake::idsInData(env.data).size(), 16, "16 roots");
 }
 
 void testFilesOutput(ProcessRunner &runner) {

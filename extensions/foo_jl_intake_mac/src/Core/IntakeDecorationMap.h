@@ -28,9 +28,11 @@
 //
 //  Tooltip additions, joined with " \u00B7 " (a middle dot):
 //   - a proposal whose `target_path` is present and null adds
-//     "slot pending" on resolved, proposed and approved roots (doc 04: the
-//     singles or compilations slot; CLI 0.3.0). Absent (CLI 0.2.1) adds
-//     nothing: unknown, not pending.
+//     "slot pending" on new, resolved, proposed and approved roots (doc 04
+//     v1.2 wording). From CLI 0.3.0 null means the singles slot or a tier
+//     `reject` root (compilations get a `[Compilations]` target, amendment
+//     003); doc 04 leaves tier reject's own wording open. Absent (CLI
+//     0.2.1) adds nothing: unknown, not pending.
 //   - a non-empty IntakeRecord::lastError (a per-command error that
 //     Integration keeps until the root's status changes) is appended, and
 //     on its own gives a tooltip-only visual.

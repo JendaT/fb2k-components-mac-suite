@@ -120,6 +120,32 @@ int main(void) {
         CHECK(!supports(garbage, CliCommand::Reject) && !supports(garbage, CliCommand::Resume),
               "an unparseable cli turns the version-gated commands off");
         CHECK(supports(garbage, CliCommand::Status), "and leaves the always-present ones on");
+
+        // --- the argv builder accepts Resume exactly where it is offered ---
+        // Integration sets CliConfig::cliVersion and cliListsCommands from
+        // the same CliVersionInfo; buildInvocation must not refuse a Resume
+        // that cliSupportsCommand offers.
+        g_context = "resume-agreement";
+        const char *versions[] = {kV12, preRelease, noIncome, v021, v020, v010, garbage,
+                                  R"({"cli":"0.3.0-rc.1","schema":1,"commands":["status"]})",
+                                  R"({"schema":1,"commands":["execute"]})"};
+        int agreed = 0;
+        for (const char *v : versions) {
+            CliVersionInfo vi = intake::parseCliVersionInfo(json(v));
+            intake::CliConfig config;
+            config.cliPath = "/opt/intake/bin/intake";
+            config.baseEnvironment = std::vector<std::string>{"PATH=/usr/bin:/bin"};
+            config.bunSearchDirs = {"/nonexistent-bun-dir"};
+            config.cliVersion = vi.cli;
+            config.cliListsCommands = vi.hasCommands;
+            intake::CliRequest resume;
+            resume.command = CliCommand::Resume;
+            resume.ids = {"itk_00000011"};
+            const bool built = intake::buildInvocation(config, resume).status == intake::BuildStatus::Ok;
+            if (!intake::cliSupportsCommand(vi, CliCommand::Resume) || built) agreed++;
+        }
+        CHECK_EQ(agreed, (int)(sizeof versions / sizeof versions[0]),
+                 "every Resume that cliSupportsCommand offers also builds (a pre-release that lists execute included)");
     }
     TEST_MAIN_END();
 }

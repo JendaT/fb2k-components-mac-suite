@@ -47,7 +47,11 @@ std::shared_ptr<const IntakeSnapshot> IntakeSnapshot::build(std::vector<IntakeRe
         const MemberKind kind = found == s.members_.end() ? MemberKind::WholeDirectory : found->second.kind;
         switch (kind) {
             case MemberKind::WholeDirectory:
-                s.byDirectory_.insert(r.rootKey, i, lowerId("directory", r.rootKey));
+                // Normalized like the member keys: a rootKey that Integration
+                // rewrote (B3 mount alias of an NFD root_path) still meets
+                // NFC queries. Idempotent on a key that is already normal.
+                if (normalizePath(r.rootKey, normalized) != PathStatus::Ok) break;
+                s.byDirectory_.insert(normalized, i, lowerId("directory", normalized));
                 break;
             case MemberKind::Members:
                 for (const std::string &relative : found->second.relativePaths) {

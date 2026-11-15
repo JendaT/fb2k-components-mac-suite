@@ -84,9 +84,10 @@ static void testProposalFields() {
         {"id":"itk_00000004","root_path":"/i/d","status":"proposed","proposal":{"ranked":[{"confidence":0.4},7,{"collection":"Test Collection C"}],"assigned_by":null,"target_path":5,"confidence":true}},
         {"id":"itk_00000005","root_path":"/i/e","status":"resolved","proposal":null},
         {"id":"itk_00000006","root_path":"/i/f","status":"resolved"},
-        {"id":"itk_00000007","root_path":"/i/g","status":"resolved","proposal":[1]}
+        {"id":"itk_00000007","root_path":"/i/g","status":"resolved","proposal":[1]},
+        {"id":"itk_00000008","root_path":"/i/h","status":"proposed","proposal":{"ranked":[7,{"confidence":0.4},{"collection":5}]}}
     ])");
-    CHECK_EQ(r.records.size(), 7, "seven records");
+    CHECK_EQ(r.records.size(), 8, "eight records");
     const IntakeRecord *user = byId(r, "itk_00000001");
     CHECK(user && user->proposal.assignedBy == AssignedBy::User, "assigned_by user");
     CHECK(user && user->proposal.rankedState == RankedState::Empty, "ranked [] is Empty, not Absent");
@@ -113,6 +114,9 @@ static void testProposalFields() {
     CHECK(p5 && !p5->hasProposal, "proposal null");
     CHECK(p6 && !p6->hasProposal, "proposal missing");
     CHECK(p7 && !p7->hasProposal, "proposal of another type");
+    const IntakeRecord *allBad = byId(r, "itk_00000008");
+    CHECK(allBad && allBad->proposal.rankedState == RankedState::Absent && allBad->proposal.ranked.empty(),
+          "a ranked array with no usable entry is Absent, never Present with nothing in it");
 }
 
 static void testFlagsAndPlaced() {
@@ -232,11 +236,11 @@ static void testMockDefault() {
     std::string root;
     StatusParseResult r = mockStatus("default", &root);
     CHECK(r.ok, "default status parses");
-    CHECK_EQ(r.records.size(), 15, "fifteen roots");
+    CHECK_EQ(r.records.size(), 16, "sixteen roots");
     CHECK_EQ(r.dropped, 0, "nothing dropped");
     std::map<IntakeStatus, int> counts;
     for (const IntakeRecord &rec : r.records) counts[rec.status]++;
-    CHECK(counts[IntakeStatus::New] == 2 && counts[IntakeStatus::Resolved] == 4 &&
+    CHECK(counts[IntakeStatus::New] == 2 && counts[IntakeStatus::Resolved] == 5 &&
               counts[IntakeStatus::Proposed] == 4 && counts[IntakeStatus::Approved] == 1 &&
               counts[IntakeStatus::Placing] == 1 && counts[IntakeStatus::Placed] == 1 &&
               counts[IntakeStatus::GcDone] == 1 && counts[IntakeStatus::Rejected] == 1,
@@ -254,8 +258,14 @@ static void testMockDefault() {
     CHECK(f && f->proposal.assignedBy == AssignedBy::User && f->needsReview, "user override keeps needs_review");
     CHECK(f && f->proposal.hasConfidence && f->proposal.confidence == 1.0, "user override confidence 1");
     const IntakeRecord *va = byId(r, "itk_00000015");
-    CHECK(va && va->status == IntakeStatus::Resolved && va->proposal.targetPathState == TargetPathState::Null,
-          "Various Artists: target_path null (slot pending)");
+    CHECK(va && va->status == IntakeStatus::Resolved && va->proposal.targetPathState == TargetPathState::Set &&
+              va->proposal.targetPath == root + "/library/music.hq/Fixture Downtempo/[Compilations]/"
+                                                "Various Artists - 2026 - Test Compilation",
+          "Various Artists (CLI 0.3.0, amendment 003): a [Compilations] target");
+    const IntakeRecord *single = byId(r, "itk_00000019");
+    CHECK(single && single->status == IntakeStatus::Resolved && single->needsReview && single->album.empty() &&
+              single->proposal.targetPathState == TargetPathState::Null,
+          "the single: target_path null (the singles slot)");
     const IntakeRecord *pick = byId(r, "itk_00000018");
     CHECK(pick && pick->proposal.rankedState == RankedState::Empty, "user-only proposal: ranked []");
     const IntakeRecord *loose = byId(r, "itk_00000016");

@@ -44,6 +44,8 @@ std::string g_noBunDir; // an empty directory: no bun is ever found by accident
 struct CliRun {
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     std::atomic<int> budgetCalls{0};
+    std::atomic<int> timeoutReports{0}; // CliBudgetEvent::Timeout
+    std::atomic<int> laneReleases{0};   // CliBudgetEvent::LaneRelease
     std::atomic<int> completions{0};
     bool started = false;
     std::string refusal;
@@ -73,7 +75,12 @@ std::shared_ptr<CliRun> runCli(intake::ProcessRunner &runner, const intake::CliC
                                const CliRequest &request, const intake::CliRunOptions &options) {
     auto run = std::make_shared<CliRun>();
     run->started = intake::startCliCommand(
-        runner, config, request, options, g_callbacks, [run] { run->budgetCalls++; },
+        runner, config, request, options, g_callbacks,
+        [run](intake::CliBudgetEvent event) {
+            run->budgetCalls++;
+            if (event == intake::CliBudgetEvent::Timeout) run->timeoutReports++;
+            else run->laneReleases++;
+        },
         [run](CliResult &&r) {
             run->result = std::move(r);
             run->completions++;
@@ -143,7 +150,7 @@ void testVersionAndStatus(intake::ProcessRunner &runner) {
 
     run = runCli(runner, mockConfig(state), request(CliCommand::Status), testOptions());
     CHECK(run->result.envelope.outcome == CliOutcome::Ok, "status: Ok");
-    CHECK_EQ(ids(run->result).size(), 15, "status: 15 roots");
+    CHECK_EQ(ids(run->result).size(), 16, "status: 16 roots");
     CHECK(mock::lastLine(mock::callsLog(state)) == "status\t--json", "status argv as expected");
 
     CliRequest filtered = request(CliCommand::Status);
@@ -151,6 +158,19 @@ void testVersionAndStatus(intake::ProcessRunner &runner) {
     run = runCli(runner, mockConfig(state), filtered, testOptions());
     CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 4,
           "status --filter status=proposed: the 4 proposed roots");
+
+    // Contract v1.2 pins `id` (CR-004.5); an unknown key is the CLI's
+    // per-command E_BAD_ARGS, never an unusable CLI (E_NO_CLI).
+    filtered.filters = {{"id", "itk_0000000a"}};
+    run = runCli(runner, mockConfig(state), filtered, testOptions());
+    std::vector<std::string> one = ids(run->result);
+    CHECK(run->result.envelope.outcome == CliOutcome::Ok && one.size() == 1 && one[0] == "itk_0000000a",
+          "status --filter id=...: that root only");
+    filtered.filters = {{"nokey", "x"}};
+    run = runCli(runner, mockConfig(state), filtered, testOptions());
+    CHECK(run->result.envelope.outcome == CliOutcome::Failed && hasCode(run->result, "E_BAD_ARGS") &&
+              !hasCode(run->result, "E_NO_CLI") && run->result.process.exitCode == 2,
+          "status --filter with an unknown key: E_BAD_ARGS, exit 2");
 }
 
 struct ModeCase {
@@ -194,7 +214,7 @@ void testStatusModes(intake::ProcessRunner &runner) {
         }
         CHECK(intake::resultScope(CliCommand::Status, r.envelope) == c.scope, "scope");
         if (c.outcome == CliOutcome::Timeout) {
-            CHECK_EQ(run->budgetCalls.load(), 1, "budget reported once");
+            CHECK(run->budgetCalls.load() == 1 && run->timeoutReports.load() == 1, "E_CLI_TIMEOUT reported once");
             CHECK(r.process.elapsedSeconds < 0.3 + 0.5 + 0.3 + 2.0, "killed promptly");
         }
     }
@@ -205,7 +225,7 @@ void testStatusModes(intake::ProcessRunner &runner) {
     std::string state = mock::setupState();
     mock::setMode(state, "status", "partial");
     auto run = runCli(runner, mockConfig(state), request(CliCommand::Status), testOptions());
-    CHECK_EQ(ids(run->result).size(), 15, "partial: the successful subset is kept");
+    CHECK_EQ(ids(run->result).size(), 16, "partial: the successful subset is kept");
 
     state = mock::setupState();
     mock::setMode(state, "status", "unknown-code");
@@ -253,18 +273,22 @@ void testMutatingCalls(intake::ProcessRunner &runner) {
     std::string state = mock::setupState();
     intake::CliRunOptions options = testOptions();
 
-    // A real partial: one root proposed, the compilation refused.
+    // A real partial: one root proposed, the single refused (no target for
+    // the singles slot). The compilation gets a [Compilations] target from
+    // CLI 0.3.0 (amendment 003), so it is proposed too.
     auto run = runCli(runner, mockConfig(state),
-                      request(CliCommand::Propose, {"itk_0000000b", "itk_00000015"}), options);
+                      request(CliCommand::Propose, {"itk_0000000b", "itk_00000015", "itk_00000019"}), options);
     const CliResult &p = run->result;
     CHECK(p.commandClass == CommandClass::Mutating, "propose: mutating class");
     CHECK(p.envelope.outcome == CliOutcome::Partial, "propose: partial");
     std::vector<std::string> got = ids(p);
-    CHECK(got.size() == 1 && got[0] == "itk_0000000b", "success per root: only b is in data");
+    CHECK(got.size() == 2 && got[0] == "itk_0000000b" && got[1] == "itk_00000015",
+          "success per root: b and the compilation are in data");
     CHECK(p.envelope.errors.size() == 1 && p.envelope.errors[0].code == "E_NO_TARGET" &&
               p.envelope.errors[0].hasPath &&
-              p.envelope.errors[0].path == state + "/root/income/dump/Various Artists - Test Compilation",
-          "the refusal keeps its code and path");
+              p.envelope.errors[0].path == state + "/root/income/shop/Loose Tracks" &&
+              p.envelope.errors[0].msg == "cannot propose: singles slot pending",
+          "the refusal keeps its code, message and path");
     CHECK(mock::listDir(options.outputDirectory).empty(), "output files removed after reading");
 
     // "[A & B]" reaches the CLI byte for byte.
@@ -317,7 +341,7 @@ void testSlowMutatingReportsThenCompletes(intake::ProcessRunner &runner) {
     mock::setMode(state, "approve", "slow 1");
     auto run = runCli(runner, mockConfig(state), request(CliCommand::Approve, {"itk_0000000d"}),
                       testOptions(0.3));
-    CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
+    CHECK(run->budgetCalls.load() == 1 && run->timeoutReports.load() == 1, "E_CLI_TIMEOUT reported at the budget");
     CHECK(run->result.process.budgetExceeded && !run->result.process.killedForTimeout,
           "kept running past the budget");
     std::vector<std::string> got = ids(run->result);
@@ -327,6 +351,15 @@ void testSlowMutatingReportsThenCompletes(intake::ProcessRunner &runner) {
 
 // The policy and output target startCliCommand picks for each class.
 void testClassPolicies(intake::ProcessRunner &runner) {
+    g_context = "budget-events";
+    // Doc 03 v1.2: E_CLI_TIMEOUT at 10 s for every command but execute,
+    // classified by command whatever its flags (doc 04 "Timeouts" table).
+    CHECK(intake::budgetEventFor(CommandClass::ReadOnly) == intake::CliBudgetEvent::Timeout &&
+              intake::budgetEventFor(CommandClass::Mutating) == intake::CliBudgetEvent::Timeout,
+          "read-only and mutating (dry runs included): E_CLI_TIMEOUT");
+    CHECK(intake::budgetEventFor(CommandClass::ExecuteDryRun) == intake::CliBudgetEvent::LaneRelease,
+          "execute and resume dry runs: a lane release, never E_CLI_TIMEOUT");
+
     g_context = "class-policies";
     std::string state = mock::setupState();
     // Execute is never killed: every limit far below its run time (risk 2).
@@ -385,7 +418,8 @@ void testDryRunsNotKilledAtBudget(intake::ProcessRunner &runner) {
     const CliResult &g = run->result;
     CHECK(mock::lastLine(mock::callsLog(state)) == "gc\titk_00000012\t--dry-run\t--json", "gc --dry-run argv");
     CHECK(g.commandClass == CommandClass::Mutating, "gc --dry-run: mutating class");
-    CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
+    CHECK(run->budgetCalls.load() == 1 && run->timeoutReports.load() == 1,
+          "gc --dry-run: E_CLI_TIMEOUT reported at the budget (classified by command)");
     CHECK(g.process.budgetExceeded && !g.process.killedForTimeout && !g.process.hardCapHit,
           "gc --dry-run: ran past the budget, never signalled");
     std::vector<std::string> got = ids(g);
@@ -407,7 +441,8 @@ void testDryRunsNotKilledAtBudget(intake::ProcessRunner &runner) {
     CHECK(mock::lastLine(mock::callsLog(state)) == "execute\titk_00000010\t--dry-run\t--json",
           "execute --dry-run argv");
     CHECK(e.commandClass == CommandClass::ExecuteDryRun, "execute --dry-run: its own class");
-    CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
+    CHECK(run->budgetCalls.load() == 1 && run->laneReleases.load() == 1 && run->timeoutReports.load() == 0,
+          "execute --dry-run: a lane release at the budget, no E_CLI_TIMEOUT (doc 03 excepts execute)");
     CHECK(e.process.budgetExceeded && !e.process.killedForTimeout && !e.process.hardCapHit,
           "execute --dry-run: never signalled, no hard cap");
     CHECK(e.process.end == intake::ProcessEnd::Exited && e.process.elapsedSeconds >= 0.95,
@@ -652,7 +687,7 @@ void testTsThroughBun(intake::ProcessRunner &runner) {
     config.cliPath = cli;
     config.bunSearchDirs = {g_noBunDir, dir};
     auto run = runCli(runner, config, request(CliCommand::Status), testOptions());
-    CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 15,
+    CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 16,
           ".ts CLI ran through bun");
     CHECK(mock::readFile(dir + "/arg1") == cli + "\n", "bun got the .ts path as its first argument");
     CHECK(mock::readFile(dir + "/path").rfind(dir + ":/opt/homebrew/bin:/usr/local/bin:", 0) == 0,

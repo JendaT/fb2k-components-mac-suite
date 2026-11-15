@@ -56,7 +56,8 @@
 //   - ReportOnly (execute and resume dry runs): at the budget the budget
 //     handler runs and the process keeps running, like ReportAtBudget, but
 //     there is no hard cap: never signalled by the runner, not even by
-//     cancelReadLane().
+//     cancelReadLane(). IntakeCliRunner turns that budget into a lane
+//     release, not an E_CLI_TIMEOUT report (doc 03 excepts execute).
 //   - Unbounded (execute, resume): no budget, never signalled by the runner,
 //     not even by cancelReadLane().
 //  A budget or hard-cap timer that fires while the leader's exit is still
@@ -100,7 +101,7 @@ enum class OutputTarget {
 enum class BudgetPolicy {
     KillAtBudget,   // read-only: report, SIGTERM the group, SIGKILL after the grace
     ReportAtBudget, // mutating: report, keep running; terminate at the hard cap
-    ReportOnly,     // execute dry runs: report, keep running; never signalled
+    ReportOnly,     // execute dry runs: budget handler, keep running; never signalled
     Unbounded,      // execute and resume: no report, never signalled by the runner
 };
 

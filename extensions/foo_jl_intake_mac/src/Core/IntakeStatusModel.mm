@@ -47,7 +47,6 @@ void parseProposal(NSDictionary *dict, IntakeProposal &p) {
     id ranked = dict[@"ranked"];
     if ([ranked isKindOfClass:[NSArray class]]) {
         NSArray *list = ranked;
-        p.rankedState = list.count == 0 ? RankedState::Empty : RankedState::Present;
         for (id entry in list) {
             if (![entry isKindOfClass:[NSDictionary class]]) continue;
             id collection = ((NSDictionary *)entry)[@"collection"];
@@ -56,6 +55,15 @@ void parseProposal(NSDictionary *dict, IntakeProposal &p) {
             copyUTF8(collection, c.collection);
             c.hasConfidence = numberValue(((NSDictionary *)entry)[@"confidence"], c.confidence);
             p.ranked.push_back(std::move(c));
+        }
+        // Decided after the filter: Present promises ranked[0]. An array with
+        // no usable entry says nothing, like a ranked that is not an array.
+        if (list.count == 0) {
+            p.rankedState = RankedState::Empty;
+        } else if (!p.ranked.empty()) {
+            p.rankedState = RankedState::Present;
+        } else {
+            logDebug("status: proposal.ranked has no usable entry; treated as absent");
         }
     }
 

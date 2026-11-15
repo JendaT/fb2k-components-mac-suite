@@ -1,2 +1,13 @@
 # CLI 0.2.1 has no income command (new in 0.3.0).
 responses/income
+# The Various Artists root has no target before amendment 003: its 0.3.0
+# propose reply goes (cli-0.2.1 has the "compilations slot pending" error).
+responses/propose.d/itk_00000015.json
+# The singles root (null target) is a 0.3.0 fixture only.
+responses/status.d/itk_00000019.json
+responses/propose.d/itk_00000019.error
+responses/assign.d/itk_00000019.json
+responses/assign.user.d/itk_00000019.json
+responses/reject.d/itk_00000019.json
+root/income/shop/Loose Tracks/.intake.itk_00000019.json
+root/income/shop/Loose Tracks/Fixture Artist E - Single Track.wav

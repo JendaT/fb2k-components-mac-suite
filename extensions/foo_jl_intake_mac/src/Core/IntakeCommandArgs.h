@@ -22,7 +22,8 @@
 //  a repeat from the state the first occurrence left behind).
 //  Ids bound `execute <ids> --resume` only from CLI 0.2.1 (5a665e93); older
 //  CLIs ignore them and resume every placing root. So Resume is refused
-//  unless CliConfig::cliVersion is 0.2.1 or later (cliSupportsPerRootResume).
+//  unless CliConfig::cliVersion is 0.2.1 or later (cliSupportsPerRootResume)
+//  or the CLI lists `commands` (CliConfig::cliListsCommands, contract v1.2).
 //
 //  Executable:
 //   - The configured CLI path must be absolute. A path ending in ".ts" runs
@@ -109,8 +110,15 @@ struct CliConfig {
     // nullopt is a configuration that cannot run (NoCli).
     std::optional<std::vector<std::string>> baseEnvironment;
     // The `cli` version from the last `version` call; empty until known.
-    // Resume is refused unless it is 0.2.1 or later (see the invariant).
+    // Resume is refused unless it is 0.2.1 or later (see the invariant),
+    // or the same call listed `commands`.
     std::string cliVersion;
+    // That `version` call listed `commands` (contract v1.2, CLI 0.3.0 and
+    // later), which scope `execute <ids> --resume` to the ids whatever the
+    // `cli` string says (a pre-release such as "0.3.0-rc.1" fails the strict
+    // semver). Set both from one CliVersionInfo, so Resume is accepted here
+    // whenever cliSupportsCommand offers it.
+    bool cliListsCommands = false;
 };
 
 // How a call runs (PLAN.md 3.2, 3.4; doc 03 v1.2 "Timeouts"). A mutating
@@ -122,7 +130,8 @@ enum class CommandClass {
     Mutating,      // propose, assign, approve, reject, gc, dry runs included:
                    // output files, reported at the budget, killed only at
                    // the 15-minute hard cap
-    ExecuteDryRun, // execute or resume with --dry-run: output files, reported
+    ExecuteDryRun, // execute or resume with --dry-run: output files, no
+                   // E_CLI_TIMEOUT (doc 03 excepts execute), a lane release
                    // at the budget, never killed (execute is never killed)
     Detached,      // execute and resume: output files, no budget report,
                    // never killed

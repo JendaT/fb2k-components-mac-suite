@@ -14,9 +14,11 @@
 //                                           at the hard cap). Dry runs too:
 //                                           doc 03 v1.2 classifies a command
 //                                           whatever its flags.
-//   ExecuteDryRun  files in outputDirectory ReportOnly (E_CLI_TIMEOUT
-//                                           reported, the real result
-//                                           follows; never killed)
+//   ExecuteDryRun  files in outputDirectory ReportOnly (no E_CLI_TIMEOUT:
+//                                           doc 03 excepts `execute`, dry run
+//                                           included; the budget is only the
+//                                           mutation lane's release, the real
+//                                           result follows; never killed)
 //   Detached       files in outputDirectory Unbounded (no report, never
 //                                           killed)
 //
@@ -58,11 +60,25 @@ struct CliResult {
     ProcessResult process;       // diagnostics: stderr, elapsed, pid, flags
 };
 
-// Runs on `queue` when the budget elapses: the moment E_CLI_TIMEOUT is
-// reported for a Mutating or ExecuteDryRun call (it keeps running) or a
-// ReadOnly call (it is being killed; its completion follows with outcome
-// Timeout).
-using CliBudgetHandler = std::function<void()>;
+// What the elapsed budget means for the call (doc 03 v1.2 "Timeouts", doc 04
+// "Timeouts" table: classified by command, whatever its flags).
+enum class CliBudgetEvent {
+    // ReadOnly (being killed; its completion follows with outcome Timeout)
+    // or Mutating, dry runs included (it keeps running): report
+    // E_CLI_TIMEOUT.
+    Timeout,
+    // ExecuteDryRun: `execute` is excepted from the report, so no
+    // E_CLI_TIMEOUT. The call keeps running and is never killed; the
+    // mutation lane may let go of it (doc 04 "Mutation lane").
+    LaneRelease,
+};
+
+// The event for a class: Timeout, except LaneRelease for ExecuteDryRun.
+// Detached calls have no budget and never get one.
+CliBudgetEvent budgetEventFor(CommandClass commandClass);
+
+// Runs on `queue` once, when the budget elapses (never for Detached).
+using CliBudgetHandler = std::function<void(CliBudgetEvent event)>;
 using CliCompletion = std::function<void(CliResult &&result)>;
 
 // ~/Library/Caches/foo_jl_intake (the user Caches directory plus

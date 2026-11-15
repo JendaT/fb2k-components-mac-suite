@@ -3,10 +3,11 @@
 //  foo_jl_intake_mac
 //
 //  Unit tests for IntakeSidecarMembers: sidecar parsing, the CLI's safe
-//  relative path rule, round-trip economy (one listing per directory, a read
-//  only where a named sidecar exists, no I/O for roots that render nothing),
-//  retry-then-keep-previous, and the POSIX access against a temp directory.
-//  Synthetic names only.
+//  relative path rule, round-trip economy (one listing per shared directory,
+//  none for a lone root, a read only where a named sidecar exists, no I/O for
+//  roots that render nothing), retry-then-keep-previous, stopping early
+//  (cancel, deadline, an unreachable share), and the POSIX access against a
+//  temp directory. Synthetic names only.
 //
 // TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm src/Core/IntakeLog.mm
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
@@ -21,9 +22,14 @@
 #include "MockCliSupport.h"
 #include "TestHarness.h"
 
+#include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <deque>
+#include <functional>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace intake;
@@ -33,23 +39,39 @@ class FakeAccess : public SidecarFileAccess {
 public:
     std::map<std::string, std::vector<std::string>> dirs;      // listable directories
     std::map<std::string, std::deque<std::string>> reads;      // per path: successive answers
+    std::map<std::string, int> listErrors, readErrors;         // errno of a failure (default ENOENT)
     std::map<std::string, int> listCalls, readCalls;
+    std::function<void(const std::string &)> onList;           // runs inside each listing
     static constexpr const char *kFail = "<read fails>";       // a read that fails
 
-    bool listDirectory(const std::string &directory, std::vector<std::string> &names) override {
+    bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) override {
         listCalls[directory]++;
+        if (onList) onList(directory);
+        error = 0;
         auto it = dirs.find(directory);
-        if (it == dirs.end()) return false;
+        if (it == dirs.end()) {
+            auto e = listErrors.find(directory);
+            error = e == listErrors.end() ? ENOENT : e->second;
+            return false;
+        }
         names = it->second;
         return true;
     }
-    bool readFile(const std::string &path, std::string &contents) override {
+    bool readFile(const std::string &path, std::string &contents, int &error) override {
         readCalls[path]++;
+        error = 0;
+        auto e = readErrors.find(path);
         auto it = reads.find(path);
-        if (it == reads.end() || it->second.empty()) return false;
+        if (e != readErrors.end() || it == reads.end() || it->second.empty()) {
+            error = e == readErrors.end() ? ENOENT : e->second;
+            return false;
+        }
         std::string answer = it->second.front();
         if (it->second.size() > 1) it->second.pop_front();  // the last answer repeats
-        if (answer == kFail) return false;
+        if (answer == kFail) {
+            error = EINVAL;
+            return false;
+        }
         contents = answer;
         return true;
     }
@@ -152,21 +174,23 @@ static void testEconomy() {
     MemberLoadStats stats;
     MemberTable t = loadMembers(records, fs, nullptr, statusHasVisual, &stats);
     CHECK_EQ(t.size(), 5, "one entry per record");
-    CHECK(t["itk_00000001"].kind == MemberKind::WholeDirectory && t["itk_00000001"].source == MemberSource::Listed,
-          "no named sidecar: whole directory, verified by the listing");
+    CHECK(t["itk_00000001"].kind == MemberKind::WholeDirectory && t["itk_00000001"].source == MemberSource::Assumed,
+          "a lone root: whole directory, assumed without a listing");
     CHECK(t["itk_00000011"].kind == MemberKind::Members && t["itk_00000011"].relativePaths.size() == 1 &&
               t["itk_00000011"].relativePaths[0] == "Fixture Artist - One.wav",
           "single 1 owns its file");
     CHECK(t["itk_00000012"].relativePaths == std::vector<std::string>{"Fixture Artist - Two.wav"}, "single 2");
     CHECK(t["itk_00000013"].relativePaths == std::vector<std::string>{"Fixture Artist - Three.wav"}, "single 3");
     CHECK(fs.listCalls[singles] == 1, "three singles in one directory cost one listing");
-    CHECK(fs.listCalls[album] == 1, "the album directory is listed once");
+    CHECK(fs.listCalls.count(album) == 0, "the lone album root's directory is never listed");
     CHECK(fs.listCalls.count(tomb) == 0, "a gc_done tombstone costs no I/O at all");
     CHECK_EQ(fs.totalReads(), 3, "only the three named sidecars are read; .intake.json never is");
     CHECK(t["itk_00000002"].kind == MemberKind::WholeDirectory && t["itk_00000002"].source == MemberSource::Assumed,
           "the skipped tombstone is assumed whole-directory");
-    CHECK(stats.directories == 3 && stats.directoriesListed == 2 && stats.directoriesSkipped == 1,
-          "stats: 3 directories, 2 listed, 1 skipped");
+    CHECK(stats.directories == 3 && stats.directoriesListed == 1 && stats.directoriesSkipped == 1 &&
+              stats.directoriesAssumed == 1,
+          "stats: 3 directories, 1 listed, 1 skipped, 1 assumed");
+    CHECK(stats.stop == MemberLoadStop::None && stats.directoriesNotTried == 0, "stats: ran to the end");
     CHECK(stats.sidecarReads == 3 && stats.sidecarRetries == 0 && stats.sidecarFailures == 0, "stats: reads");
 
     g_context = "economy-mixed";
@@ -190,15 +214,41 @@ static void testEconomy() {
 
     g_context = "economy-all";
     FakeAccess every;
-    every.dirs[tomb] = {".intake.json"};
-    loadMembers({record("itk_00000002", tomb, IntakeStatus::GcDone)}, every, nullptr, {}, &stats);
-    CHECK(every.listCalls[tomb] == 1, "an empty predicate means every root gets I/O");
+    every.dirs[tomb] = {".intake.itk_00000002.json", ".intake.itk_00000003.json"};
+    every.reads[tomb + "/.intake.itk_00000002.json"] = {sidecarJson({"a.wav"})};
+    every.reads[tomb + "/.intake.itk_00000003.json"] = {sidecarJson({"b.wav"})};
+    loadMembers({record("itk_00000002", tomb, IntakeStatus::GcDone), record("itk_00000003", tomb, IntakeStatus::GcDone)},
+                every, nullptr, {}, &stats);
+    CHECK(every.listCalls[tomb] == 1 && every.totalReads() == 2, "an empty predicate means every root gets I/O");
     FakeAccess unverified;
     loadMembers({record("itk_00000003", "/income/x", IntakeStatus::Placed, false),
-                 record("itk_00000004", "/income/y", IntakeStatus::Placed, true)},
+                 record("itk_00000005", "/income/x", IntakeStatus::GcDone),
+                 record("itk_00000004", "/income/y", IntakeStatus::Placed, true),
+                 record("itk_00000006", "/income/y", IntakeStatus::New)},
                 unverified, nullptr, statusHasVisual, &stats);
     CHECK(unverified.listCalls.count("/income/x") == 0 && unverified.listCalls["/income/y"] == 1,
           "placed unverified is skipped, placed verified is listed");
+
+    g_context = "economy-lone";
+    // A lone root is listed only when the last load found a member list.
+    FakeAccess lone;
+    lone.dirs["/income/one"] = {".intake.itk_00000007.json"};
+    lone.reads["/income/one/.intake.itk_00000007.json"] = {sidecarJson({"a.wav"})};
+    std::vector<IntakeRecord> one = {record("itk_00000007", "/income/one", IntakeStatus::New)};
+    MemberTable first = loadMembers(one, lone, nullptr, statusHasVisual, &stats);
+    CHECK(lone.totalLists() == 0 && first["itk_00000007"].kind == MemberKind::WholeDirectory &&
+              first["itk_00000007"].source == MemberSource::Assumed && stats.directoriesAssumed == 1,
+          "no previous entry: assumed whole-directory, no I/O");
+    MemberTable again = loadMembers(one, lone, &first, statusHasVisual, &stats);
+    CHECK(lone.totalLists() == 0 && again["itk_00000007"].kind == MemberKind::WholeDirectory,
+          "a previous whole-directory class: still no I/O");
+    MemberTable wasMembers;
+    wasMembers["itk_00000007"].kind = MemberKind::Members;
+    wasMembers["itk_00000007"].relativePaths = {"old.wav"};
+    MemberTable listed = loadMembers(one, lone, &wasMembers, statusHasVisual, &stats);
+    CHECK(lone.listCalls["/income/one"] == 1 && listed["itk_00000007"].kind == MemberKind::Members &&
+              listed["itk_00000007"].relativePaths == std::vector<std::string>{"a.wav"},
+          "a previous member list (the folder's siblings went): listed and read again");
 }
 
 static void testRetryAndPrevious() {
@@ -207,7 +257,9 @@ static void testRetryAndPrevious() {
     const std::string path = dir + "/.intake.itk_00000041.json";
     std::string half = sidecarJson({"a.wav", "b.wav"});
     half.resize(half.size() / 2);
-    std::vector<IntakeRecord> records = {record("itk_00000041", dir, IntakeStatus::Resolved)};
+    // A sibling that renders nothing keeps the directory shared (listed).
+    std::vector<IntakeRecord> records = {record("itk_00000041", dir, IntakeStatus::Resolved),
+                                         record("itk_00000042", dir, IntakeStatus::GcDone)};
 
     FakeAccess once;
     once.dirs[dir] = {".intake.itk_00000041.json"};
@@ -250,7 +302,7 @@ static void testRetryAndPrevious() {
           "a failed read is retried and falls back like a parse failure");
 
     g_context = "list-failure";
-    FakeAccess gone;  // nothing listable: unmounted share
+    FakeAccess gone;  // nothing listable: unmounted share (ENOENT)
     MemberTable prevWhole;
     prevWhole["itk_00000051"].kind = MemberKind::WholeDirectory;
     prevWhole["itk_00000051"].source = MemberSource::Listed;
@@ -260,20 +312,133 @@ static void testRetryAndPrevious() {
                      record("itk_00000054", "/income/c", IntakeStatus::Resolved),
                      record("itk_00000041", dir, IntakeStatus::Resolved)},
                     gone, &previous, statusHasVisual, &stats);
-    CHECK(t["itk_00000041"].source == MemberSource::Previous && t["itk_00000041"].relativePaths.size() == 1,
-          "an unlistable directory keeps the previous member list");
+    CHECK(gone.listCalls[dir] == 1 && t["itk_00000041"].source == MemberSource::Previous &&
+              t["itk_00000041"].relativePaths.size() == 1,
+          "a lone root with a previous member list is listed; unlistable, it keeps that list");
     t = loadMembers({record("itk_00000051", "/income/a", IntakeStatus::New),
+                     record("itk_00000055", "/income/a", IntakeStatus::GcDone),
                      record("itk_00000052", "/income/b", IntakeStatus::New),
                      record("itk_00000053", "/income/c", IntakeStatus::New),
                      record("itk_00000054", "/income/c", IntakeStatus::Resolved)},
                     gone, &prevWhole, statusHasVisual, &stats);
     CHECK(t["itk_00000051"].kind == MemberKind::WholeDirectory && t["itk_00000051"].source == MemberSource::Previous,
           "an unlistable directory keeps the previous whole-directory class");
-    CHECK(t["itk_00000052"].kind == MemberKind::WholeDirectory && t["itk_00000052"].source == MemberSource::Assumed,
-          "unlistable, no previous, alone in its directory: assumed whole-directory");
+    CHECK(t["itk_00000055"].kind == MemberKind::None, "its sibling without a previous class matches nothing");
+    CHECK(t["itk_00000052"].kind == MemberKind::WholeDirectory && t["itk_00000052"].source == MemberSource::Assumed &&
+              gone.listCalls.count("/income/b") == 0,
+          "a lone root without a previous member list: assumed whole-directory, never listed");
     CHECK(t["itk_00000053"].kind == MemberKind::None && t["itk_00000054"].kind == MemberKind::None,
           "unlistable, no previous, sharing a directory: matches nothing");
-    CHECK(stats.listFailures == 3 && gone.totalReads() == 0, "three failed listings, no reads");
+    CHECK(stats.listFailures == 2 && gone.totalReads() == 0, "two failed listings, no reads");
+    CHECK(stats.stop == MemberLoadStop::None, "ENOENT is one missing folder, not a dead share: no stop");
+}
+
+static void testStop() {
+    g_context = "stop-share";
+    // A listing that times out (stalled share): no further I/O at all.
+    const std::string a = "/income/a", b = "/income/b", c = "/income/c";
+    std::vector<IntakeRecord> records = {
+        record("itk_00000081", a, IntakeStatus::New),    record("itk_00000082", a, IntakeStatus::New),
+        record("itk_00000083", b, IntakeStatus::New),    record("itk_00000084", b, IntakeStatus::Resolved),
+        record("itk_00000085", c, IntakeStatus::New),    record("itk_00000086", c, IntakeStatus::Resolved),
+        record("itk_00000087", "/income/lone", IntakeStatus::New)};
+    MemberTable previous;
+    previous["itk_00000083"].kind = MemberKind::Members;
+    previous["itk_00000083"].relativePaths = {"old.wav"};
+    previous["itk_00000084"].kind = MemberKind::WholeDirectory;
+    FakeAccess stalled;
+    stalled.listErrors[a] = ETIMEDOUT;
+    stalled.dirs[b] = {".intake.itk_00000083.json"};
+    stalled.dirs[c] = {".intake.itk_00000085.json"};
+    MemberLoadStats stats;
+    MemberTable t = loadMembers(records, stalled, &previous, statusHasVisual, &stats);
+    CHECK(stalled.listCalls[a] == 1 && stalled.listCalls.count(b) == 0 && stalled.listCalls.count(c) == 0 &&
+              stalled.totalReads() == 0,
+          "after an ETIMEDOUT listing nothing else is tried");
+    CHECK(stats.stop == MemberLoadStop::ShareUnreachable && stats.stopError == ETIMEDOUT &&
+              stats.directoriesNotTried == 2 && stats.listFailures == 1,
+          "stats: stopped on an unreachable share, two directories not tried");
+    CHECK(t["itk_00000083"].kind == MemberKind::Members && t["itk_00000083"].source == MemberSource::Previous &&
+              t["itk_00000084"].kind == MemberKind::WholeDirectory && t["itk_00000084"].source == MemberSource::Previous,
+          "untried roots keep their previous classification");
+    CHECK(t["itk_00000085"].kind == MemberKind::None && t["itk_00000081"].kind == MemberKind::None,
+          "untried or unlisted shared roots without a previous class match nothing");
+    CHECK(t["itk_00000087"].kind == MemberKind::WholeDirectory, "a lone root needs no I/O and is still answered");
+    CHECK_EQ(t.size(), records.size(), "every record still gets an entry");
+
+    int unreachable = 0;
+    for (int e : {ETIMEDOUT, ENOTCONN, EIO, EHOSTDOWN, EHOSTUNREACH, ENETDOWN, ENETUNREACH, ECONNRESET, ECONNABORTED,
+                  ESTALE}) {
+        if (isShareUnreachableError(e)) unreachable++;
+    }
+    CHECK(unreachable == 10 && !isShareUnreachableError(ENOENT) && !isShareUnreachableError(EACCES) &&
+              !isShareUnreachableError(0),
+          "share errors stop the load; a missing or forbidden folder does not");
+
+    g_context = "stop-read";
+    // A sidecar read that times out: no retry, no other read, no listing.
+    FakeAccess slowRead;
+    slowRead.dirs[b] = {".intake.itk_00000083.json", ".intake.itk_00000084.json"};
+    slowRead.readErrors[b + "/.intake.itk_00000083.json"] = ENOTCONN;
+    slowRead.reads[b + "/.intake.itk_00000084.json"] = {sidecarJson({"b.wav"})};
+    slowRead.dirs[c] = {};
+    t = loadMembers({records[2], records[3], records[4], records[5]}, slowRead, &previous, statusHasVisual, &stats);
+    CHECK(slowRead.readCalls[b + "/.intake.itk_00000083.json"] == 1 && slowRead.readCalls.count(b + "/.intake.itk_00000084.json") == 0 &&
+              slowRead.listCalls.count(c) == 0,
+          "after an ENOTCONN read: no retry, no further read or listing");
+    CHECK(stats.stop == MemberLoadStop::ShareUnreachable && stats.sidecarRetries == 0 && stats.sidecarFailures == 0,
+          "a read given up on a dead share is a stop, not a sidecar failure");
+    CHECK(t["itk_00000083"].source == MemberSource::Previous && t["itk_00000083"].relativePaths.size() == 1,
+          "the unread root keeps its previous member list");
+    CHECK(t["itk_00000084"].kind == MemberKind::None,
+          "a virtual root not read, with only a previous whole-directory class, matches nothing");
+
+    g_context = "stop-cancel";
+    std::atomic<bool> cancel{true};
+    MemberLoadLimits limits;
+    limits.cancel = &cancel;
+    FakeAccess untouched;
+    untouched.dirs[a] = {};
+    t = loadMembers(records, untouched, &previous, statusHasVisual, &stats, limits);
+    CHECK(untouched.totalLists() == 0 && untouched.totalReads() == 0 && stats.stop == MemberLoadStop::Cancelled &&
+              stats.directoriesNotTried == 3,
+          "cancelled before the start: no I/O at all");
+    CHECK(t["itk_00000083"].source == MemberSource::Previous && t.size() == records.size(),
+          "and every root is still answered");
+
+    // Cancelled while the first listing is in flight: that listing finishes,
+    // nothing after it starts (not even the reads it made worth doing).
+    cancel = false;
+    FakeAccess midway;
+    midway.dirs[a] = {".intake.itk_00000081.json", ".intake.itk_00000082.json"};
+    midway.reads[a + "/.intake.itk_00000081.json"] = {sidecarJson({"a1.wav"})};
+    midway.dirs[b] = {};
+    midway.onList = [&cancel](const std::string &) { cancel = true; };
+    t = loadMembers(records, midway, &previous, statusHasVisual, &stats, limits);
+    CHECK(midway.totalLists() == 1 && midway.totalReads() == 0 && stats.stop == MemberLoadStop::Cancelled,
+          "cancelled mid-load: the call in flight ends, nothing else starts");
+    CHECK(t["itk_00000081"].kind == MemberKind::None && t["itk_00000083"].source == MemberSource::Previous,
+          "unread virtual roots match nothing; untried ones keep their previous class");
+
+    g_context = "stop-deadline";
+    MemberLoadLimits past;
+    past.deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+    FakeAccess late;
+    late.dirs[a] = {};
+    loadMembers(records, late, nullptr, statusHasVisual, &stats, past);
+    CHECK(late.totalLists() == 0 && stats.stop == MemberLoadStop::Deadline, "a deadline already passed: no I/O");
+
+    // A listing that blocks past the deadline: the next one never starts.
+    MemberLoadLimits soon;
+    soon.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    FakeAccess blocking;
+    blocking.dirs[a] = {};
+    blocking.dirs[b] = {};
+    blocking.dirs[c] = {};
+    blocking.onList = [](const std::string &) { std::this_thread::sleep_for(std::chrono::milliseconds(250)); };
+    loadMembers(records, blocking, nullptr, statusHasVisual, &stats, soon);
+    CHECK(blocking.totalLists() == 1 && stats.stop == MemberLoadStop::Deadline && stats.directoriesNotTried == 2,
+          "a slow listing past the deadline: the rest are not tried");
 }
 
 static void testSpellings() {
@@ -315,14 +480,15 @@ static void testPosix() {
     mock::writeFile(singles + "/Fixture Artist - One.wav", "");
 
     std::vector<std::string> names;
-    CHECK(fs.listDirectory(singles, names) && names.size() == 4, "listing returns the four entries");
+    int posixError = 0;
+    CHECK(fs.listDirectory(singles, names, posixError) && names.size() == 4, "listing returns the four entries");
     bool dots = false;
     for (const std::string &n : names) dots = dots || n == "." || n == "..";
     CHECK(!dots, "no . or .. entries");
-    CHECK(!fs.listDirectory(dir + "/missing", names) && names.empty(), "a missing directory fails");
+    CHECK(!fs.listDirectory(dir + "/missing", names, posixError) && names.empty(), "a missing directory fails");
     std::string contents;
-    CHECK(fs.readFile(album + "/.intake.json", contents) && contents == "{\"schema\":1}\n", "readFile");
-    CHECK(!fs.readFile(album + "/missing.json", contents) && contents.empty(), "a missing file fails");
+    CHECK(fs.readFile(album + "/.intake.json", contents, posixError) && contents == "{\"schema\":1}\n", "readFile");
+    CHECK(!fs.readFile(album + "/missing.json", contents, posixError) && contents.empty(), "a missing file fails");
 
     MemberLoadStats stats;
     MemberTable t = loadMembers({record("itk_00000070", album, IntakeStatus::Resolved),
@@ -336,7 +502,11 @@ static void testPosix() {
           "posix: three singles");
     CHECK(t["itk_00000073"].relativePaths == std::vector<std::string>{"Fixture Artist - Three.wav"},
           "posix: the third single's member");
-    CHECK(stats.directoriesListed == 2 && stats.sidecarReads == 3, "posix: two listings, three reads");
+    CHECK(stats.directoriesListed == 1 && stats.directoriesAssumed == 1 && stats.sidecarReads == 3,
+          "posix: one listing (the lone album is assumed), three reads");
+    int error = 0;
+    CHECK(!fs.listDirectory(dir + "/missing", names, error) && error == ENOENT, "posix: a failed listing's errno");
+    CHECK(!fs.readFile(dir + "/missing.json", contents, error) && error == ENOENT, "posix: a failed read's errno");
 }
 
 int main(void) {
@@ -346,6 +516,7 @@ int main(void) {
         testParse();
         testEconomy();
         testRetryAndPrevious();
+        testStop();
         testSpellings();
         testPosix();
     }

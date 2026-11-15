@@ -219,6 +219,19 @@ static void testKeysAndVisuals() {
     CHECK(s->lookupKey("/smbfs:fixture-share/income/Singles/one.wav") != nullptr, "members follow the rewritten key");
     CHECK(s->lookup("/Volumes/fixture-share-1/income/Singles/one.wav") == nullptr,
           "matching uses the key, not the I/O path");
+    // An alias of an NFD root_path that Integration did not normalize: the
+    // directory key is normalized at build, like the member keys.
+    IntakeRecord nfdAlias = record("itk_00000073", "/Volumes/fixture-share-1/income/Cafe\xCC\x81 Album");
+    nfdAlias.rootKey = "/smbfs:fixture-share/income/Cafe\xCC\x81 Album";
+    IntakeRecord nfdSingle = record("itk_00000074", "/Volumes/fixture-share-1/income/Cre\xCC\x80me Singles");
+    nfdSingle.rootKey = "/smbfs:fixture-share/income/Cre\xCC\x80me Singles";
+    auto nfdKeys = IntakeSnapshot::build({nfdAlias, nfdSingle}, {{"itk_00000074", members({"one.wav"})}});
+    const IntakeRecord *nfcHit = nfdKeys->lookupKey("/smbfs:fixture-share/income/Caf\xC3\xA9 Album/01.wav");
+    CHECK(nfcHit && nfcHit->id == "itk_00000073", "an NFC query finds a whole-directory root under an NFD alias key");
+    CHECK(nfdKeys->lookup("/smbfs:fixture-share/income/Cafe\xCC\x81 Album/01.wav") != nullptr,
+          "and so does the NFD spelling");
+    const IntakeRecord *nfcMember = nfdKeys->lookupKey("/smbfs:fixture-share/income/Cr\xC3\xA8me Singles/one.wav");
+    CHECK(nfcMember && nfcMember->id == "itk_00000074", "members under an NFD alias key, as before");
 
     g_context = "visuals";
     IntakePalette custom;
@@ -334,18 +347,19 @@ public:
     explicit CountingAccess(SidecarFileAccess &inner) : inner_(inner) {}
     int lists = 0, reads = 0;
     std::string garbleSuffix;  // reads of a path ending in this return garbage
-    bool listDirectory(const std::string &directory, std::vector<std::string> &names) override {
+    bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) override {
         lists++;
-        return inner_.listDirectory(directory, names);
+        return inner_.listDirectory(directory, names, error);
     }
-    bool readFile(const std::string &path, std::string &contents) override {
+    bool readFile(const std::string &path, std::string &contents, int &error) override {
         reads++;
+        error = 0;
         if (!garbleSuffix.empty() && path.size() >= garbleSuffix.size() &&
             path.compare(path.size() - garbleSuffix.size(), garbleSuffix.size(), garbleSuffix) == 0) {
             contents = "{\"files\":[{\"pa";
             return true;
         }
-        return inner_.readFile(path, contents);
+        return inner_.readFile(path, contents, error);
     }
 
 private:
@@ -385,11 +399,14 @@ static void testMockDefault() {
     CountingAccess io(posixSidecarFileAccess());
     MemberLoadStats stats;
     MemberTable table = loadMembers(p.status.records, io, nullptr, statusHasVisual, &stats);
-    // 15 roots in 14 directories; the gc_done tombstone is skipped; only the
-    // two named sidecars in Loose Tracks are read.
-    CHECK_EQ(io.lists, 13, "13 directory listings for 15 roots");
-    CHECK_EQ(io.reads, 2, "2 sidecar reads (the virtual roots)");
-    CHECK(stats.directories == 14 && stats.directoriesSkipped == 1, "14 directories, the tombstone skipped");
+    // 16 roots in 14 directories: the gc_done tombstone is skipped, the 12
+    // lone roots are assumed whole-directory without I/O, and only Loose
+    // Tracks (two albums and a single, all virtual) is listed and read.
+    CHECK_EQ(io.lists, 1, "1 directory listing for 16 roots");
+    CHECK_EQ(io.reads, 3, "3 sidecar reads (the virtual roots)");
+    CHECK(stats.directories == 14 && stats.directoriesSkipped == 1 && stats.directoriesAssumed == 12 &&
+              stats.directoriesListed == 1,
+          "14 directories: 1 listed, 12 assumed, the tombstone skipped");
     auto s = IntakeSnapshot::build(p.status.records, table);
     const std::string dump = p.root + "/income/dump/";
     const std::string shop = p.root + "/income/shop/";
@@ -423,7 +440,13 @@ static void testMockDefault() {
     const IntakeRecord *rj = s->lookup(dump + "Fixture Artist - Rejected Album/01 - Test Track One.wav");
     CHECK(rj && rj->visual.strikethrough && rj->visual.icon == IntakeIcon::Cross, "rejected: struck, cross");
     const IntakeRecord *va = s->lookup(dump + "Various Artists - Test Compilation/01 - Test Track One.wav");
-    CHECK(va && va->visual.tooltip == kTooltipSlotPending, "Various Artists (v1.2): slot pending");
+    CHECK(va && va->proposal.targetPathState == TargetPathState::Set &&
+              va->proposal.targetPath.find("/[Compilations]/") != std::string::npos && va->visual.tooltip.empty(),
+          "Various Artists (CLI 0.3.0): a [Compilations] target, no slot pending");
+    const IntakeRecord *single = s->lookup(shop + "Loose Tracks/Fixture Artist E - Single Track.wav");
+    CHECK(single && single->id == "itk_00000019" && single->visual.icon == IntakeIcon::Warning &&
+              single->visual.bgTint == 0xE5A50A38 && single->visual.tooltip == kTooltipSlotPending,
+          "the single (null target, needs_review): amber warning, slot pending");
     CHECK(s->lookup(p.root + "/library/music.hq/Test Collection A/Fixture Artist/"
                              "Fixture Artist - 2026 - Placed Album/01 - Test Track One.wav") == nullptr,
           "a library copy is not an intake row");
@@ -455,6 +478,7 @@ static void testMockOld() {
           "0.2.1: assigned_by unknown, the needs_review override is amber");
     const IntakeRecord *b2 = s->lookup(p.root + "/income/shop/Loose Tracks/Fixture Artist B - Loose Two.wav");
     CHECK(b2 && b2->id == "itk_00000016", "0.2.1: virtual roots resolve");
+    CHECK(s->recordForId("itk_00000019") == nullptr, "0.2.1: no single (a 0.3.0 fixture)");
 }
 
 int main(void) {

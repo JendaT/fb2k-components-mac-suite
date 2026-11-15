@@ -121,6 +121,16 @@ static void testTooltips() {
     CHECK(rowVisualFor(proposed(IntakeStatus::Approved, false, AssignedBy::User, TargetPathState::Null)).tooltip ==
               "slot pending",
           "approved with a null target_path: slot pending");
+    // assign is legal from new and keeps the status (contract v1.2): a new
+    // single assigned by the user has a null target.
+    CHECK(is(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User, TargetPathState::Null)), kBlue,
+             IntakeIcon::CircleOpen, 0, "slot pending", false),
+          "new with a null target_path: blue, slot pending");
+    CHECK(rowVisualFor(proposed(IntakeStatus::New, true, AssignedBy::User, TargetPathState::Null)).tooltip ==
+              "needs review \xC2\xB7 slot pending",
+          "new + needs_review with a null target_path: both tooltips");
+    CHECK(rowVisualFor(proposed(IntakeStatus::New, false, AssignedBy::User)).tooltip.empty(),
+          "new with a target: no slot pending");
     IntakeRowVisual amberPending =
         rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine, TargetPathState::Null));
     CHECK(amberPending.bgTint == kAmber && amberPending.tooltip == "slot pending", "amber and slot pending together");

@@ -226,7 +226,8 @@ std::vector<std::string> defaultBunSearchDirs(const std::vector<std::string> &en
 CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request) {
     std::string problem = checkRequest(request);
     if (!problem.empty()) return refused(problem);
-    if (request.command == CliCommand::Resume && !cliSupportsPerRootResume(config.cliVersion)) {
+    if (request.command == CliCommand::Resume && !config.cliListsCommands &&
+        !cliSupportsPerRootResume(config.cliVersion)) {
         return refused("refusing resume: CLI " +
                        (config.cliVersion.empty() ? std::string("version unknown") : config.cliVersion) +
                        "; before 0.2.1 the CLI ignores the ids and resumes every placing root");

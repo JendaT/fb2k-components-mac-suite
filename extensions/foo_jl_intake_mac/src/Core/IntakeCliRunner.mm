@@ -21,6 +21,10 @@ std::string defaultCliOutputDirectory() {
     }
 }
 
+CliBudgetEvent budgetEventFor(CommandClass commandClass) {
+    return commandClass == CommandClass::ExecuteDryRun ? CliBudgetEvent::LaneRelease : CliBudgetEvent::Timeout;
+}
+
 bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRequest &request,
                      const CliRunOptions &options, dispatch_queue_t queue,
                      CliBudgetHandler onBudget, CliCompletion completion, std::string *refusal) {
@@ -88,9 +92,15 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
     }
 
     const CommandClass cls = inv.commandClass;
-    ProcessBudgetHandler budget = [onBudget, command](pid_t) {
-        logInfo(std::string(cliCommandName(command)) + ": no exit within the time budget");
-        if (onBudget) onBudget();
+    const CliBudgetEvent event = budgetEventFor(cls);
+    ProcessBudgetHandler budget = [onBudget, command, event](pid_t) {
+        if (event == CliBudgetEvent::LaneRelease) {
+            logInfo(std::string(cliCommandName(command)) +
+                    " dry run: still running at the lane budget; no timeout reported (execute is excepted)");
+        } else {
+            logInfo(std::string(cliCommandName(command)) + ": no exit within the time budget");
+        }
+        if (onBudget) onBudget(event);
     };
     runner.start(std::move(spec), queue, std::move(budget),
                  [completion, command, cls](ProcessResult &&process) {

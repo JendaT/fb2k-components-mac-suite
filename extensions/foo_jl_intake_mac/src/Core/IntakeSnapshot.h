@@ -17,14 +17,24 @@
 //  Roots of kind None are in neither map; they match nothing. A file in a
 //  directory of singles that no sidecar lists falls through to an ancestor
 //  root, if any.
+//  Known gap: so do a None root's own files, because its member list was
+//  never read (a virtual root that renders nothing, IntakeSidecarMembers,
+//  or one whose sidecar stayed unusable). They take the visual of a
+//  whole-directory root in the same folder (a stale `.intake.json` left by
+//  `resolve --force`) or of the nearest ancestor root, where doc 04 wants
+//  nothing. A whole-directory root that renders nothing is in the directory
+//  map and does shadow its ancestors. Accepted: it needs a stale sidecar or
+//  singles nested under another root, plus a status that renders nothing,
+//  and closing it costs a sidecar read per such root on every load.
 //  Ties are broken by the lowest id (two whole-directory roots on one key,
 //  two virtual roots listing one file), so the answer never depends on the
 //  CLI's row order.
 //
 //  Keys: both maps are keyed from IntakeRecord::rootKey (IntakePath match
-//  key: lexical, NFC), with members as normalize(rootKey + "/" + path), so
-//  NFC and NFD spellings match on both sides, and a rootKey rewritten by
-//  Integration (B3 mount aliases) carries its members along. Matching is
+//  key: lexical, NFC), directories as normalize(rootKey) and members as
+//  normalize(rootKey + "/" + path), so NFC and NFD spellings match on both
+//  sides even when Integration rewrote rootKey (B3 mount aliases) without
+//  normalizing it, and the rewritten key carries its members along. Matching is
 //  case-sensitive. lookup() normalizes the query (file:// stripped; other
 //  schemes and relative paths match nothing); lookupKey() takes a query that
 //  is already a match key, e.g. an alias key.

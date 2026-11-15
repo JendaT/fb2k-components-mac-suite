@@ -26,8 +26,8 @@
 //     v1.2 (CLI 0.3.0). Absent (CLI 0.2.1) they are Unknown, never guessed,
 //     and never filled in from the sidecar: reading sidecars costs tens of
 //     milliseconds each on the share. A present null `target_path` is
-//     Null: no target can be built yet ("slot pending": singles,
-//     compilations, tier reject).
+//     Null: no target can be built (CLI 0.3.0: the singles slot or tier
+//     `reject`; compilations get a `[Compilations]` target, amendment 003).
 //   - Unknown fields are ignored (doc 03 "Versioning").
 //   - State follows `status`, never the presence of `proposal`.
 //
@@ -73,9 +73,11 @@ const char *_Nonnull intakeStatusName(IntakeStatus status);
 IntakeStatus intakeStatusFromString(const std::string &text);
 
 enum class RankedState {
-    Absent,  // no `ranked` member, or not an array
+    Absent,  // no `ranked` member, not an array, or an array whose entries
+             // are all unusable (logged at Debug)
     Empty,   // [] : a proposal made only by the user
-    Present, // a non-empty array (entries that are not {collection: string} are skipped)
+    Present, // at least one usable entry: `ranked` is non-empty (entries
+             // that are not {collection: string} are skipped)
 };
 
 struct RankedCandidate {

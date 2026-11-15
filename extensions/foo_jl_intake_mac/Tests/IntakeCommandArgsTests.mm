@@ -297,6 +297,16 @@ int main(void) {
         old.cliVersion = "0.3.0";
         CHECK(intake::buildInvocation(old, req(CliCommand::Resume, {"itk_00000011"})).status == BuildStatus::Ok,
               "resume builds on a later CLI");
+        // A v1.2 CLI (it lists commands) scopes resume to the ids whatever
+        // its cli string: the same rule as cliSupportsCommand.
+        CliConfig listed = plainConfig();
+        listed.cliListsCommands = true;
+        listed.cliVersion = "0.3.0-rc.1";
+        CHECK(intake::buildInvocation(listed, req(CliCommand::Resume, {"itk_00000011"})).status == BuildStatus::Ok,
+              "resume builds on a pre-release that lists commands");
+        listed.cliVersion.clear();
+        CHECK(intake::buildInvocation(listed, dryResume).status == BuildStatus::Ok,
+              "and on a CLI that lists commands without a cli string");
 
         // --- configuration problems are NoCli, never a spawn ---
         g_context = "no-cli";

@@ -12,13 +12,24 @@
 //
 //  The roots sit on an SMB share where every filesystem round trip costs
 //  7 to 139 ms (S0, docs/intake-mac-paths.md), so the load:
-//   - lists each distinct root directory once (virtual roots share one) and
-//     reads `.intake.<id>.json` only where the listing shows it; it never
-//     stats a file and never reads `.intake.json`;
+//   - lists only directories that hold two or more roots (virtual roots
+//     share one listing), plus a lone root's directory when the previous
+//     load gave that root a member list; it reads `.intake.<id>.json` only
+//     where the listing shows it; it never stats a file and never reads
+//     `.intake.json`;
+//   - takes any other lone root as whole-directory without I/O (Assumed).
+//     The CLI writes virtual roots two or more to a folder (resolver.ts
+//     pass 3: several albums, or several singles). Trade-off: a lone
+//     virtual root is taken as whole-directory, so its folder's other files
+//     take its visual: an ISO root (`files: []`), or, on a first load only,
+//     the survivor of a folder whose sibling sidecars an E_PARSE partial
+//     dropped from `status`;
 //   - spends no I/O at all on a directory whose roots all render nothing
 //     (the caller's `needsMembers` predicate, normally statusHasVisual:
 //     gc_done tombstones, placed unverified, unknown statuses). gc keeps a
-//     tombstone sidecar per root forever (CR-004.13), so these pile up.
+//     tombstone sidecar per root forever (CR-004.13), so these pile up. A
+//     virtual root that renders nothing is not read either (MemberKind::None;
+//     see the known gap in IntakeSnapshot.h).
 //
 //  Sidecar writes are not atomic (CLI sidecar.ts writeFileSync). A named
 //  sidecar that cannot be read or parsed is read once more at once; if it
@@ -37,14 +48,27 @@
 //  is taken as a whole-directory root; several roots in one directory are
 //  virtual for certain and match nothing until a listing succeeds.
 //
+//  Stopping early (a stalled share blocks each call for the SMB timeout,
+//  and the loader queue is also the read lane): before every filesystem
+//  call the load checks `limits.cancel` (on_quit) and `limits.deadline`,
+//  and a listing or read that fails with an errno saying the share is gone
+//  (ETIMEDOUT, ENOTCONN, EIO, EHOSTDOWN, ...: isShareUnreachableError) ends
+//  all further I/O. Every root not yet answered then keeps its previous
+//  classification or is assumed, as for an unlistable directory (a root
+//  whose named sidecar the listing showed keeps only a previous member
+//  list, else matches nothing). At most the call in flight blocks; it
+//  cannot be interrupted.
+//
 //  Thread-safety: loadMembers runs on one thread at a time per
 //  SidecarFileAccess (the loader queue); it calls `fs` synchronously and in
-//  order. The POSIX access is stateless and may be shared. Results are
-//  plain values.
+//  order. The POSIX access is stateless and may be shared. `limits.cancel`
+//  may be set from any thread. Results are plain values.
 //
 
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <string>
@@ -62,10 +86,12 @@ class SidecarFileAccess {
 public:
     virtual ~SidecarFileAccess() = default;
     // The entry names of `directory` (not "." or ".."), raw bytes as stored.
-    // False when it cannot be listed.
-    virtual bool listDirectory(const std::string &directory, std::vector<std::string> &names) = 0;
-    // The whole content of `path`. False when it cannot be read.
-    virtual bool readFile(const std::string &path, std::string &contents) = 0;
+    // False when it cannot be listed, with `error` set to the errno (0 when
+    // there is none).
+    virtual bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) = 0;
+    // The whole content of `path`. False when it cannot be read, with
+    // `error` as above.
+    virtual bool readFile(const std::string &path, std::string &contents, int &error) = 0;
 };
 
 // opendir/readdir and open/read; files over 16 MB fail to read. Stateless,
@@ -82,8 +108,8 @@ enum class MemberKind {
 
 enum class MemberSource {
     Listed,   // this load listed the directory (and read the sidecar for Members)
-    Previous, // kept from `previous` after a failed listing, read or parse
-    Assumed,  // not verified: skipped or unlistable directory (see above)
+    Previous, // kept from `previous` after a failed listing, read or parse, or a stop
+    Assumed,  // not verified: a lone root, or a skipped, unlistable or untried directory
 };
 
 struct RootMembers {
@@ -95,10 +121,29 @@ struct RootMembers {
 // By root id.
 using MemberTable = std::unordered_map<std::string, RootMembers>;
 
+// Why a load stopped doing I/O before the end.
+enum class MemberLoadStop {
+    None,
+    Cancelled,         // limits.cancel was set
+    Deadline,          // limits.deadline passed
+    ShareUnreachable,  // a call failed with isShareUnreachableError
+};
+
+struct MemberLoadLimits {
+    // Checked before every filesystem call; on_quit sets it. Null: none.
+    const std::atomic<bool> *cancel = nullptr;
+    // No filesystem call starts at or after this moment.
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
+};
+
 struct MemberLoadStats {
     size_t directories = 0;        // distinct root directories (by rootKey)
     size_t directoriesListed = 0;  // listDirectory calls
     size_t directoriesSkipped = 0; // no root in it needed members: no I/O
+    size_t directoriesAssumed = 0; // a lone root, no previous member list: whole-directory, no I/O
+    size_t directoriesNotTried = 0; // left unlisted after a stop
+    MemberLoadStop stop = MemberLoadStop::None;
+    int stopError = 0;             // the errno, for ShareUnreachable
     size_t listFailures = 0;
     size_t sidecarReads = 0;       // readFile calls, retries included
     size_t sidecarRetries = 0;     // second reads after a failed read or parse
@@ -112,17 +157,25 @@ std::string namedSidecarName(std::string_view id);
 // The CLI's isSafeRelPath (util.ts).
 bool isSafeRelativePath(std::string_view path);
 
+// An errno that says the share itself is unreachable (a stalled or dropped
+// network mount), not that one entry is missing: ETIMEDOUT, ENOTCONN, EIO,
+// EHOSTDOWN, EHOSTUNREACH, ENETDOWN, ENETUNREACH, ECONNRESET, ECONNABORTED,
+// ESTALE.
+bool isShareUnreachableError(int error);
+
 // The `files[].path` list of a sidecar document; false when the document is
 // not acceptable (see above). Unknown fields are ignored.
 bool parseSidecarMemberPaths(std::string_view json, std::vector<std::string> &paths);
 
 // Classifies every record (one entry per record id). `needsMembers` decides
 // which roots are worth I/O; an empty function means every root. `previous`
-// is the last snapshot's table, or null.
+// is the last snapshot's table, or null. `limits` bounds the I/O (see
+// "Stopping early").
 MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                         SidecarFileAccess &fs,
                         const MemberTable *previous,
                         const std::function<bool(const IntakeRecord &)> &needsMembers,
-                        MemberLoadStats *stats = nullptr);
+                        MemberLoadStats *stats = nullptr,
+                        const MemberLoadLimits &limits = MemberLoadLimits());
 
 } // namespace intake

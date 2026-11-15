@@ -42,22 +42,22 @@ the marker are kept.
 
 | Scenario | CLI | What it is |
 |---|---|---|
-| `default` | 0.3.0 | 15 roots in `income/dump` and `income/shop`: every status (`new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `gc_done`, `rejected`); `needs_review` on a new (virtual) root, a resolved root, an engine proposal and a user override; `ranked` on every engine proposal and `[]` on a user-only one; `assigned_by` `"user"` on the override (`itk_0000000f`: confidence 1, `needs_review` still set) and on the user-only proposal, `"engine"` elsewhere; `target_path` on every proposal but the Various Artists root, which has `structure_slot: compilations` and a null target (propose refuses it with `E_NO_TARGET`); two virtual roots sharing one folder; library copies of the placed and gc_done roots under `root/library/`; income folders `dump`, `shop` and `offline` (configured, missing) |
-| `cli-0.2.1` | 0.2.1 | `default` as CLI 0.2.1 shows it: `version` without `commands`, summaries without `assigned_by` and `target_path`, no `income` command, assign accepted from any status, `gc` without roots collects every placed root and skips a named root that is not placed without an error |
+| `default` | 0.3.0 | 16 roots in `income/dump` and `income/shop`: every status (`new`, `resolved`, `proposed`, `approved`, `placing`, `placed`, `gc_done`, `rejected`); `needs_review` on a new (virtual) root, two resolved roots, an engine proposal and a user override; `ranked` on every engine proposal and `[]` on a user-only one; `assigned_by` `"user"` on the override (`itk_0000000f`: confidence 1, `needs_review` still set) and on the user-only proposal, `"engine"` elsewhere; `target_path` on every proposal but the single: the Various Artists root (`itk_00000015`) has a `<Collection>/[Compilations]/...` target (amendment 003), the single (`itk_00000019`, `singles: true`, resolved with `needs_review`) a null one, and propose refuses it with `E_NO_TARGET` "cannot propose: singles slot pending"; three virtual roots sharing one folder (two albums and the single); library copies of the placed and gc_done roots under `root/library/`; income folders `dump`, `shop` and `offline` (configured, missing) |
+| `cli-0.2.1` | 0.2.1 | `default` as CLI 0.2.1 shows it, without the single (15 roots): `version` without `commands`, summaries without `assigned_by` and `target_path`, no `income` command, assign accepted from any status, `gc` without roots collects every placed root and skips a named root that is not placed without an error, the Various Artists root has no target (its sidecar and a user assign give `target_path: null`, propose refuses it with `E_NO_TARGET` "cannot propose: compilations slot pending"), and `--filter` is parsed leniently |
 | `no-ranked` | 0.2.1 | `cli-0.2.1` with `proposal.ranked` absent from the `status` summaries (sidecars keep it, as with the real CLI) |
 | `cli-0.1` | 0.1.0 | `cli-0.2.1` as CLI 0.1.0 would show it: `version` reports 0.1.0, `reject` is an unknown command, no rejected root, `ranked` absent from the `status` summaries (sidecars keep it) |
 | `schema2` | 0.3.0 | `default` with `"schema": 2` in `version` |
 | `schema-string` | 0.3.0 | `default` with `"schema": "1"` (a string) in `version` |
 | `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 
-The `default` ids are `itk_0000000a` to `itk_00000018`; `status --json` lists
+The `default` ids are `itk_0000000a` to `itk_00000019`; `status --json` lists
 them with their states.
 
 ### CLI 0.3.0 and 0.2.1 differences
 
 `responses/cli-rules` (one line, `0.3.0` when the file is missing) picks the
-status and gc rules; `version.json`, `commands`, `income` and the summaries
-in `status.d/` carry the rest.
+status, gc and `--filter` rules; `version.json`, `commands`, `income`, the
+summaries in `status.d/` and the reply files carry the rest.
 
 | | 0.3.0 (contract v1.2) | 0.2.1 |
 |---|---|---|
@@ -67,6 +67,8 @@ in `status.d/` carry the rest.
 | `assign` | `E_BAD_STATUS` on `rejected`, `placing`, `placed`, `gc_done` | any status |
 | `gc` without roots | `E_BAD_ARGS` unless `--all`; `--all` collects every placed root | collects every placed root |
 | `gc` on a named root that is not placed | `E_BAD_STATUS` | skipped without an error |
+| Various Artists root | `[Compilations]` target; propose accepts it | `target_path: null`; propose: `E_NO_TARGET` "compilations slot pending" |
+| `--filter` | keys `id`, `status`, `needs_review`, `root_path`, `albumartist`, `album` answered; a malformed (`k`, `=v`, missing) or repeated filter is `E_BAD_ARGS` exit 2 for any command; an unknown key is `E_BAD_ARGS` exit 2 | keys `status`, `needs_review`, `root_path`, `albumartist`, `album`; a filter without `=` is ignored; a repeat overwrites |
 
 ## Modes: `$INTAKE_MOCK_STATE/<command>.mode`
 
@@ -151,8 +153,10 @@ inside an argument is written as `\\`, `\t` or `\n`.
 - `cli-rules`: `0.3.0` or `0.2.1`, see above.
 - `status.d/<id>.json`: one summary row per root, listed in id order. The
   real CLI sorts by sidecar path with `localeCompare`, so the order is
-  unspecified and consumers must not rely on it. `--filter` works for `status`, `needs_review`, `root_path`, `albumartist`
-  and `album`; another key makes the mock exit 64.
+  unspecified and consumers must not rely on it. `--filter` follows the
+  table above; a key the CLI knows but the summaries cannot answer
+  (`income_folder`, `source_type`, `tier`, `virtual`, `singles`; and `id`
+  under the 0.2.1 rules) makes the mock exit 64.
 - `<key>.d/<id>.json` or `<key>.d/<id>.error`: the reply row, or the error
   object, for one root. The key is the command name, with a variant for
   `assign.user` (with `--collection`), `execute.dry-run`, `execute.resume`

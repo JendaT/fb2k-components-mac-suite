@@ -365,6 +365,20 @@ if [ "${1-}" = "--mock-setup" ]; then
     exit 0
 fi
 
+# Which CLI's rules apply (responses/cli-rules, one line): 0.3.0, contract
+# v1.2 and the default; or 0.2.1, where assign takes any status, gc without
+# roots collects every placed root and --filter is parsed leniently. Read
+# before argv, because --filter parsing depends on it.
+CLI_RULES=0.3.0
+if [ -f "$RESP/cli-rules" ]; then
+    read_line "$RESP/cli-rules"
+    CLI_RULES="$REPLY"
+fi
+case "$CLI_RULES" in
+    0.2.1 | 0.3.0) ;;
+    *) die "responses/cli-rules must be 0.2.1 or 0.3.0: $CLI_RULES" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Argument parsing: the same rules as tools/intake/src/cli.ts parseArgs.
 # ---------------------------------------------------------------------------
@@ -383,6 +397,16 @@ BY=""
 BATCH=""
 HAS_BATCH=0
 FILTERS=()
+ARG_ERRS=()   # 0.3.0: malformed options, E_BAD_ARGS before dispatch
+
+# Whether FILTERS already holds key $1 (0.3.0: a repeat is E_BAD_ARGS).
+filter_key_seen() {
+    local f
+    for f in ${FILTERS[@]+"${FILTERS[@]}"}; do
+        [ "${f%%=*}" = "$1" ] && return 0
+    done
+    return 1
+}
 
 ARGV=("$@")
 i=0
@@ -394,8 +418,38 @@ while [ $i -lt ${#ARGV[@]} ]; do
         --all) ALL=1 ;;
         --force | --relocate-dj) ;;
         --filter)
-            i=$((i + 1))
-            [ $i -lt ${#ARGV[@]} ] && FILTERS+=("${ARGV[$i]}") ;;
+            if [ "$CLI_RULES" = "0.2.1" ]; then
+                # 0.2.1: the next argument, whatever it is; cmd_status
+                # ignores one without "=", and a repeated key overwrites.
+                i=$((i + 1))
+                if [ $i -lt ${#ARGV[@]} ]; then
+                    kv="${ARGV[$i]}"
+                    kept=()
+                    for f in ${FILTERS[@]+"${FILTERS[@]}"}; do
+                        case "$kv" in *=*) [ "${f%%=*}" = "${kv%%=*}" ] && continue ;; esac
+                        kept+=("$f")
+                    done
+                    FILTERS=(${kept[@]+"${kept[@]}"} "$kv")
+                fi
+            else
+                # 0.3.0: an option is never the argument; a malformed or
+                # repeated filter is E_BAD_ARGS, never dropped or overwritten.
+                kv=""
+                [ $((i + 1)) -lt ${#ARGV[@]} ] && kv="${ARGV[$((i + 1))]}"
+                if [ $((i + 1)) -ge ${#ARGV[@]} ] || [ "${kv#--}" != "$kv" ]; then
+                    ARG_ERRS+=("--filter needs an argument: k=v")
+                else
+                    i=$((i + 1))
+                    fkey="${kv%%=*}"
+                    if [ "$fkey" = "$kv" ] || [ -z "$fkey" ]; then
+                        ARG_ERRS+=("malformed --filter \"$kv\": expected k=v")
+                    elif filter_key_seen "$fkey"; then
+                        ARG_ERRS+=("--filter key given twice: $fkey")
+                    else
+                        FILTERS+=("$kv")
+                    fi
+                fi
+            fi ;;
         --collection)
             i=$((i + 1))
             if [ $i -lt ${#ARGV[@]} ]; then COLLECTION="${ARGV[$i]}"; HAS_COLLECTION=1; fi ;;
@@ -417,19 +471,6 @@ done
 
 [ $JSON -eq 1 ] || die "only --json output is supported"
 [ -d "$RESP" ] || die "no scenario set up in $STATE; run: intake-mock --mock-setup <scenario>"
-
-# Which CLI's status and gc rules apply (responses/cli-rules, one line):
-# 0.3.0, contract v1.2 and the default; or 0.2.1, where assign takes any
-# status and gc without roots collects every placed root.
-CLI_RULES=0.3.0
-if [ -f "$RESP/cli-rules" ]; then
-    read_line "$RESP/cli-rules"
-    CLI_RULES="$REPLY"
-fi
-case "$CLI_RULES" in
-    0.2.1 | 0.3.0) ;;
-    *) die "responses/cli-rules must be 0.2.1 or 0.3.0: $CLI_RULES" ;;
-esac
 
 ROOT_JSON="$ROOT"
 json_escape "$COLLECTION"
@@ -550,21 +591,55 @@ cmd_data_file() { # version, collections: responses/<cmd>.json is the data membe
     EXIT=0
 }
 
+# The summary keys the mock can filter on; the CLI's other keys need sidecar
+# fields the summaries lack. `id` is a key from CLI 0.3.0 (CR-004.5); 0.2.1
+# compared it as "", which the mock does not model.
+mock_filter_key() {
+    case "$1" in status | needs_review | root_path | albumartist | album) return 0 ;; esac
+    [ "$1" = "id" ] && [ "$CLI_RULES" = "0.3.0" ] && return 0
+    return 1
+}
+
 cmd_status() {
     if [ -f "$RESP/status.envelope" ]; then emit_verbatim status; fi
-    local f row rows="" key val fl
+    local f row rows="" key val fl canon seen=" " gap=""
+    if [ "$CLI_RULES" = "0.3.0" ]; then
+        # commands.ts compileFilters: an unknown key, or one key given twice
+        # through its alias (tier, tier_eligible), is E_BAD_ARGS, exit 2.
+        for fl in ${FILTERS[@]+"${FILTERS[@]}"}; do
+            key="${fl%%=*}"
+            canon="$key"
+            [ "$key" = "tier_eligible" ] && canon=tier
+            case "$canon" in
+                id | status | needs_review | income_folder | source_type | tier | virtual | singles | \
+                    albumartist | album | root_path) ;;
+                *) add_error E_BAD_ARGS "unknown --filter key: $key" ""; continue ;;
+            esac
+            case "$seen" in
+                *" $canon="*)
+                    local prior="${seen#*" $canon="}"
+                    add_error E_BAD_ARGS "--filter key given twice: ${prior%% *} and $key" ""
+                    continue ;;
+            esac
+            seen="$seen$canon=$key "
+            mock_filter_key "$canon" || gap="$key"
+        done
+        if [ -n "$ERRS" ]; then
+            DATA="null"
+            EXIT=2
+            return
+        fi
+        [ -z "$gap" ] || die "status --filter $gap is not supported by the mock"
+    fi
     for f in "$RESP"/status.d/*.json; do
         [ -e "$f" ] || continue
         read_line "$f"; row="$REPLY"
         for fl in ${FILTERS[@]+"${FILTERS[@]}"}; do
-            case "$fl" in *=*) ;; *) continue ;; esac   # the CLI ignores k without =
+            case "$fl" in *=*) ;; *) continue ;; esac   # 0.2.1 ignores k without =
             key="${fl%%=*}"
             val="${fl#*=}"
             [ -n "$key" ] || continue
-            case "$key" in
-                status | needs_review | root_path | albumartist | album) ;;
-                *) die "status --filter $key is not supported by the mock" ;;
-            esac
+            mock_filter_key "$key" || die "status --filter $key is not supported by the mock"
             json_field "$key" "$row"
             [ "$REPLY" = "$val" ] || continue 2
         done
@@ -869,6 +944,16 @@ apply_next() {
 run_command() {
     if [ -z "$CMD" ] || ! cmd_known "$CMD"; then
         fail E_BAD_ARGS "unknown command: ${CMD:-(none)}"
+        return
+    fi
+    if [ ${#ARG_ERRS[@]} -gt 0 ]; then
+        # cli.ts main: malformed options answer a known command before
+        # dispatch, every error listed, exit 2 (0.3.0 only).
+        local m
+        DATA="null"
+        ERRS=""
+        for m in ${ARG_ERRS[@]+"${ARG_ERRS[@]}"}; do add_error E_BAD_ARGS "$m" ""; done
+        EXIT=2
         return
     fi
     case "$CMD" in

@@ -28,16 +28,21 @@ constexpr size_t kMaxSidecarBytes = 16u * 1024u * 1024u;
 
 class PosixSidecarFileAccess final : public SidecarFileAccess {
 public:
-    bool listDirectory(const std::string &directory, std::vector<std::string> &names) override {
+    bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) override {
         names.clear();
+        error = 0;
         DIR *dir = opendir(directory.c_str());
-        if (!dir) return false;
+        if (!dir) {
+            error = errno;
+            return false;
+        }
         bool ok = true;
         while (true) {
             errno = 0;
             struct dirent *entry = readdir(dir);
             if (!entry) {
                 ok = errno == 0;  // NULL with errno set is an error, else the end
+                if (!ok) error = errno;
                 break;
             }
             if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
@@ -48,10 +53,14 @@ public:
         return ok;
     }
 
-    bool readFile(const std::string &path, std::string &contents) override {
+    bool readFile(const std::string &path, std::string &contents, int &error) override {
         contents.clear();
+        error = 0;
         const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-        if (fd < 0) return false;
+        if (fd < 0) {
+            error = errno;
+            return false;
+        }
         char buffer[16384];
         bool ok = true;
         while (true) {
@@ -59,10 +68,12 @@ public:
             if (n == 0) break;
             if (n < 0) {
                 if (errno == EINTR) continue;
+                error = errno;
                 ok = false;
                 break;
             }
             if (contents.size() + static_cast<size_t>(n) > kMaxSidecarBytes) {
+                error = EFBIG;
                 ok = false;
                 break;
             }
@@ -102,6 +113,24 @@ const RootMembers *previousFor(const MemberTable *previous, const std::string &i
     return it == previous->end() ? nullptr : &it->second;
 }
 
+// " (<strerror>)" for a real errno, "" for 0.
+std::string errnoSuffix(int error) {
+    if (error == 0) return std::string();
+    char text[128] = {};
+    strerror_r(error, text, sizeof text);
+    return std::string(" (") + text + ")";
+}
+
+const char *stopName(MemberLoadStop stop) {
+    switch (stop) {
+        case MemberLoadStop::None: return "none";
+        case MemberLoadStop::Cancelled: return "cancelled";
+        case MemberLoadStop::Deadline: return "deadline passed";
+        case MemberLoadStop::ShareUnreachable: return "share unreachable";
+    }
+    return "none";
+}
+
 struct DirectoryGroup {
     const std::string *ioPath = nullptr;  // the first record's rootPath
     std::vector<const IntakeRecord *> roots;
@@ -135,6 +164,24 @@ bool isSafeRelativePath(std::string_view path) {
         if (segment.empty() || segment == "." || segment == "..") return false;
         if (slash == std::string_view::npos) return true;
         start = slash + 1;
+    }
+}
+
+bool isShareUnreachableError(int error) {
+    switch (error) {
+        case ETIMEDOUT:
+        case ENOTCONN:
+        case EIO:
+        case EHOSTDOWN:
+        case EHOSTUNREACH:
+        case ENETDOWN:
+        case ENETUNREACH:
+        case ECONNRESET:
+        case ECONNABORTED:
+        case ESTALE:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -174,12 +221,48 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                         SidecarFileAccess &fs,
                         const MemberTable *previous,
                         const std::function<bool(const IntakeRecord &)> &needsMembers,
-                        MemberLoadStats *statsOut) {
+                        MemberLoadStats *statsOut,
+                        const MemberLoadLimits &limits) {
     MemberLoadStats stats;
     MemberTable table;
     table.reserve(records.size());
 
     auto wants = [&](const IntakeRecord &r) { return !needsMembers || needsMembers(r); };
+
+    // Checked before every filesystem call: true once I/O has to end.
+    std::string stopPath;
+    auto stopped = [&](const std::string &path) {
+        if (stats.stop != MemberLoadStop::None) return true;
+        if (limits.cancel && limits.cancel->load(std::memory_order_relaxed)) {
+            stats.stop = MemberLoadStop::Cancelled;
+        } else if (limits.deadline != std::chrono::steady_clock::time_point::max() &&
+                   std::chrono::steady_clock::now() >= limits.deadline) {
+            stats.stop = MemberLoadStop::Deadline;
+        } else {
+            return false;
+        }
+        stopPath = path;
+        return true;
+    };
+    // A failed call whose errno says the share is gone ends all I/O.
+    auto noteFailure = [&](int error, const std::string &path) {
+        if (stats.stop != MemberLoadStop::None || !isShareUnreachableError(error)) return;
+        stats.stop = MemberLoadStop::ShareUnreachable;
+        stats.stopError = error;
+        stopPath = path;
+    };
+    // A root this load could not verify: its previous classification, else
+    // the assumption for its directory.
+    auto keepOrAssume = [&](const IntakeRecord *r, bool shared) {
+        if (const RootMembers *prev = previousFor(previous, r->id)) {
+            RootMembers kept = *prev;
+            kept.source = MemberSource::Previous;
+            table[r->id] = std::move(kept);
+            stats.keptPrevious++;
+        } else {
+            table[r->id] = assumedMembers(shared);
+        }
+    };
 
     // Group by match key, so virtual roots sharing a directory (and NFC/NFD
     // spellings of one directory) cost one listing.
@@ -211,21 +294,32 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
             for (const IntakeRecord *r : g.roots) table[r->id] = assumedMembers(shared);
             continue;
         }
-
-        stats.directoriesListed++;
-        if (!fs.listDirectory(*g.ioPath, names)) {
-            stats.listFailures++;
-            logInfo("members: cannot list " + *g.ioPath + "; keeping the previous members");
-            for (const IntakeRecord *r : g.roots) {
-                if (const RootMembers *prev = previousFor(previous, r->id)) {
-                    RootMembers kept = *prev;
-                    kept.source = MemberSource::Previous;
-                    table[r->id] = std::move(kept);
-                    stats.keptPrevious++;
-                } else {
-                    table[r->id] = assumedMembers(shared);
-                }
+        if (!shared) {
+            // A lone root: virtual roots come two or more to a folder, so
+            // list only when the last load found a member list here.
+            const RootMembers *prev = previousFor(previous, g.roots.front()->id);
+            if (!prev || prev->kind != MemberKind::Members) {
+                stats.directoriesAssumed++;
+                table[g.roots.front()->id] = assumedMembers(false);
+                continue;
             }
+        }
+
+        if (stopped(*g.ioPath)) {
+            stats.directoriesNotTried++;
+            for (const IntakeRecord *r : g.roots) keepOrAssume(r, shared);
+            continue;
+        }
+        stats.directoriesListed++;
+        int listError = 0;
+        if (!fs.listDirectory(*g.ioPath, names, listError)) {
+            stats.listFailures++;
+            noteFailure(listError, *g.ioPath);
+            if (stats.stop == MemberLoadStop::None) {
+                logInfo("members: cannot list " + *g.ioPath + errnoSuffix(listError) +
+                        "; keeping the previous members");
+            }
+            for (const IntakeRecord *r : g.roots) keepOrAssume(r, shared);
             continue;
         }
 
@@ -249,9 +343,13 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
             const std::string path = joinPath(*g.ioPath, sidecar);
             bool parsed = false;
             for (int attempt = 0; attempt < 2 && !parsed; attempt++) {
+                if (stopped(path)) break;
                 if (attempt > 0) stats.sidecarRetries++;
                 stats.sidecarReads++;
-                parsed = fs.readFile(path, contents) && parseSidecarMemberPaths(contents, m.relativePaths);
+                int readError = 0;
+                const bool read = fs.readFile(path, contents, readError);
+                if (!read) noteFailure(readError, path);
+                parsed = read && parseSidecarMemberPaths(contents, m.relativePaths);
             }
             if (parsed) {
                 m.kind = MemberKind::Members;
@@ -259,21 +357,31 @@ MemberTable loadMembers(const std::vector<IntakeRecord> &records,
                 continue;
             }
 
-            stats.sidecarFailures++;
+            // Virtual for certain (the listing showed its sidecar): only a
+            // previous member list can stand in for this one.
+            const bool gaveUp = stats.stop != MemberLoadStop::None;
+            if (!gaveUp) stats.sidecarFailures++;
             const RootMembers *prev = previousFor(previous, r->id);
             if (prev && prev->kind == MemberKind::Members) {
                 RootMembers kept = *prev;
                 kept.source = MemberSource::Previous;
                 table[r->id] = std::move(kept);
                 stats.keptPrevious++;
-                logInfo("members: unreadable " + path + " after a retry; keeping the previous list");
+                if (!gaveUp) logInfo("members: unreadable " + path + " after a retry; keeping the previous list");
             } else {
                 m.kind = MemberKind::None;
                 m.relativePaths.clear();
                 table[r->id] = std::move(m);
-                logInfo("members: unreadable " + path + " after a retry; the root matches nothing");
+                if (!gaveUp) logInfo("members: unreadable " + path + " after a retry; the root matches nothing");
             }
         }
+    }
+
+    if (stats.stop != MemberLoadStop::None) {
+        std::string line = std::string("members: stopped, ") + stopName(stats.stop) + errnoSuffix(stats.stopError) +
+                           ", at " + stopPath + "; " + std::to_string(stats.directoriesNotTried) +
+                           " more directories keep their previous members";
+        logInfo(line);
     }
 
     if (statsOut) *statsOut = stats;
