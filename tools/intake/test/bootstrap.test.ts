@@ -142,3 +142,45 @@ test("bootstrap: Various Artists never becomes an artist entry; VA releases give
     rmSync(vaTree, { recursive: true, force: true });
   }
 });
+
+test("bootstrap: self-released and no-label credits never become label entries", () => {
+  const nlTree = mkdtempSync(join(tmpdir(), "intake-bootstrap-nolabel-"));
+  const COLL_X = "[Collection X]";
+  const COLL_Y = "[Collection Y]";
+  const flat = (path: string) => {
+    mkdirSync(join(nlTree, path), { recursive: true });
+    writeFileSync(join(nlTree, path, "01 - Track.flac"), new Uint8Array(4));
+  };
+  try {
+    // No-label credits in both label-block grammars, under an artist dir.
+    flat(`${COLL_X}/Example Artist/Example Artist [2011] Example Album (Self-Released; none)`);
+    flat(`${COLL_X}/Example Artist/Example Artist [2012] Example Album Two [WEB, Self Released]`);
+    flat(`${COLL_X}/Example Artist/Example Artist [2013] Example Album Three [CD, Not On Label (Example Artist Self-released)]`);
+    flat(`${COLL_X}/Example Artist/Example Artist [2014] Example Album Four (SelfReleased; EX004)`);
+    flat(`${COLL_Y}/Other Example Artist/Other Example Artist [2015] Example Album [2015, No Label]`);
+    flat(`${COLL_Y}/Other Example Artist/Other Example Artist [2016] Example Album Two (self-release; none)`);
+    // A flat release directly under the collection: the artist comes from the parse.
+    flat(`${COLL_Y}/Third Example Artist [2017] Example Album [WEB, Not On Label]`);
+    // A real label.
+    flat(`${COLL_Y}/Other Example Artist/Other Example Artist [2018] Example Album Three (Example Label; EXL001)`);
+
+    const r = bootstrapTrees([{ path: nlTree, weight: 1 }]);
+    expect(Object.keys(r.labels.labels)).toEqual(["Example Label"]);
+    expect(r.labels.labels["Example Label"]).toEqual({ [COLL_Y]: 1 });
+
+    // Artists are still recorded for every release.
+    expect(r.genre.artists).toEqual({
+      "Example Artist": { [COLL_X]: 4 },
+      "Other Example Artist": { [COLL_Y]: 3 },
+      "Third Example Artist": { [COLL_Y]: 1 },
+    });
+
+    // Every release counts, and in the grammar table.
+    expect(r.stats.releases).toBe(8);
+    expect(r.report).toContain("| bracket_year_paren_label | 4 |");
+    expect(r.report).toContain("| bracket_year_bracket_label | 4 |");
+    expect(r.stats.unparsed).toBe(0);
+  } finally {
+    rmSync(nlTree, { recursive: true, force: true });
+  }
+});

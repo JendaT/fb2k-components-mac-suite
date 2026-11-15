@@ -220,6 +220,66 @@ test("non-VA artist still uses its prior (short-circuit and scored path)", async
   ]);
 });
 
+// ---- No-label credits: the label tier is unavailable, not evidence ----------
+
+/** Synthetic rules where no-label credits hold large label priors, as a raw bootstrap left them. */
+function noLabelRules(): AssignRules {
+  const r = vaRules();
+  r.labels = {
+    labels: {
+      "Self-Released": { [COLL_X]: 60, [COLL_Y]: 5 },
+      "Not On Label": { [COLL_X]: 9 },
+      "Example Label": { [COLL_Y]: 3, [COLL_Z]: 1 },
+    },
+  };
+  return r;
+}
+
+// "Self-Released" exercises the prior lookup (the map holds it); the Discogs
+// spelling is not a map key and exercises the denominator.
+const NO_LABEL_INPUTS = ["Self-Released", "self released", "Not On Label (Example Artist Self-released)", "No Label"];
+
+test("no-label input label: no label prior, same scores as a null label", async () => {
+  for (const label of NO_LABEL_INPUTS) {
+    // Scored path: artist plus style evidence.
+    const base = { artist: "Example Mixed", styles: ["Example Style"] };
+    const withLabel = await assign(input({ ...base, label }), noLabelRules());
+    const without = await assign(input({ ...base, label: null }), noLabelRules());
+    expect(withLabel.proposal!.ranked.every((f) => f.evidence.label_prior === 0)).toBe(true);
+    expect(withLabel.proposal!.ranked).toEqual(without.proposal!.ranked);
+    expect(withLabel.proposal!.confidence).toBe(without.proposal!.confidence);
+    expect(withLabel.needs_review).toBe(without.needs_review);
+    // artist 0.5 + style 0.10 = 0.6; X = Y = 0.5*0.5/0.6, Z = 1*0.10/0.6.
+    expect(withLabel.proposal!.ranked.map((f) => [f.collection, f.score])).toEqual([
+      [COLL_X, 0.42], [COLL_Y, 0.42], [COLL_Z, 0.17],
+    ]);
+
+    // An unknown artist and the no-label credit as the only other evidence:
+    // no proposal, as with a null label.
+    const alone = await assign(input({ artist: "Nobody Known", label }), noLabelRules());
+    expect(alone.proposal).toBeNull();
+    expect(alone.needs_review).toBe(true);
+  }
+});
+
+test("a real label still votes beside no-label keys in the map", async () => {
+  const outcome = await assign(input({ artist: "Example Mixed", label: "Example Label" }), noLabelRules());
+  // artist 0.5 + label 0.25 = 0.75; Y = (0.5*0.5 + 0.75*0.25)/0.75, X = 0.5*0.5/0.75.
+  expect(outcome.proposal!.ranked.map((f) => [f.collection, f.score, f.evidence.label_prior])).toEqual([
+    [COLL_Y, 0.58, 0.75],
+    [COLL_X, 0.33, 0],
+    [COLL_Z, 0.08, 0.25],
+  ]);
+});
+
+test("no-label input label still appears in the target folder name", async () => {
+  const outcome = await assign(
+    input({ artist: "Example Artist", album: "Example Album", label: "Self-Released", catno: "none" }),
+    noLabelRules(),
+  );
+  expect(outcome.proposal!.target_path).toContain("Self-Released");
+});
+
 test("target path: tier routing + naming template (doc 02 example shape)", () => {
   const cfg = loadAssignConfig(RULES_DIR);
   const full = buildTargetPath(

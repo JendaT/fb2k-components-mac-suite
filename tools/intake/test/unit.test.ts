@@ -6,8 +6,8 @@ import { DEFAULT_CONFIG, incomeFor, loadConfig, loadIncome } from "../src/config
 import { albumFromTags, parseDirName } from "../src/naming.ts";
 import { parseFilename } from "../src/tags.ts";
 import {
-  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, hasVariousArtistsPrefix, isJunkFile, isVariousArtists, mapLimit,
-  normAlbum, normKey,
+  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, hasVariousArtistsPrefix, isJunkFile, isNoLabel, isVariousArtists,
+  mapLimit, normAlbum, normKey,
 } from "../src/util.ts";
 
 test("naming: full grammars score 1.0", () => {
@@ -229,6 +229,25 @@ test("various artists prefix: a VA token followed by whitespace (scene leftovers
     "VA-Example", "V.A.Something",
   ]) {
     expect(hasVariousArtistsPrefix(n)).toBe(false);
+  }
+});
+
+test("no-label credits: self-released spellings, Not On Label prefix, No Label", () => {
+  for (const n of [
+    "Self-Released", "self released", "Self Release", "SelfReleased", "Self-Release", "SELF-RELEASED", "self_released",
+    "Self - Released", "Self\u2013Released", "(Self-Released)", "Not On Label", "not on label",
+    "Not On Label (Example Artist Self-released)", "Not On Label (Example Artist)", "Not-On-Label", "No Label",
+    "no label", "NO LABEL", "No-Label", "[No Label]",
+  ]) {
+    expect(isNoLabel(n)).toBe(true);
+  }
+  // Placeholders other than these, names that merely start with "Self", and
+  // labels containing "label" are real values.
+  for (const n of [
+    null, "", "none", "unknown", "independent", "Self Destruct Records", "Self Releases Collective", "Selfreleasing",
+    "Labelless Example", "No Labels Example", "Not On Labelle Records", "Example Label", "Example Self-Released Series",
+  ]) {
+    expect(isNoLabel(n)).toBe(false);
   }
 });
 

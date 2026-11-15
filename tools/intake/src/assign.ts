@@ -7,7 +7,7 @@
 import type { AssignConfig, Proposal, RankedFolder, StructureSlot, Tier } from "./types.ts";
 import type { FolderCounts, GenreMap, LabelMap, StyleMap } from "./rules.ts";
 import { findKey } from "./rules.ts";
-import { isVariousArtists, normKey, round2 } from "./util.ts";
+import { isNoLabel, isVariousArtists, normKey, round2 } from "./util.ts";
 
 export const ENGINE_VERSION = "0.2.0";
 
@@ -270,7 +270,15 @@ export async function assign(
     );
   }
 
-  const label = labelPrior(input.label, rules.labels);
+  // A self-released or no-label credit ("Self-Released", Discogs' "Not On
+  // Label (X Self-released)") names no label, so it says nothing about where
+  // the release belongs: the label tier is unavailable, as for a null label,
+  // not evidence of absence. No prior lookup (a map left with such a key by an
+  // older bootstrap would pull every self-released release toward one
+  // collection), and w.label stays out of the denominator. buildTargetPath
+  // still gets input.label for the folder name.
+  const inputLabel = isNoLabel(input.label) ? null : input.label;
+  const label = labelPrior(inputLabel, rules.labels);
   // Skipped for VA as well (artist is null): the similar artists of "Various
   // Artists" would be a Last.fm query that says nothing about this release.
   const similar = await similarVote(artist, rules.genre, providers.similar ?? null);
@@ -288,11 +296,11 @@ export async function assign(
   // so absent network tiers do not deflate confidence (doc 02 example: artist
   // 0.95 + label 0.88 -> ~0.9, not 0.7). An artist/label present in the input
   // but unknown to the maps IS evidence of absence and stays in the
-  // denominator (a VA credit is not: see above); similar/style only count
-  // when they produced votes.
+  // denominator (a VA credit or a no-label credit is not: see above);
+  // similar/style only count when they produced votes.
   const denom =
     (artist ? w.artist : 0) +
-    (input.label ? w.label : 0) +
+    (inputLabel ? w.label : 0) +
     (Object.keys(similar).length > 0 ? w.similar : 0) +
     (Object.keys(style).length > 0 ? w.style : 0);
   const ranked: RankedFolder[] = [...folders]
