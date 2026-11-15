@@ -135,18 +135,22 @@ test("artist album with guest album artists stays the lead artist's album", () =
   expect(docs[0]!.cluster.albumartist).toBe("Lead Artist");
 });
 
-test("a VA root lands in the compilations slot; propose reports it as pending", async () => {
+test("a VA root lands in the compilations slot; propose proposes its [Compilations] target", async () => {
   const dir = join(base, "Example Flat Compilation");
   const assigned = await cmdAssign([dir], { ...OPTS, collection: "[Ambient]", by: "user" });
   expect(assigned.errors).toEqual([]);
+  // Amendment 003: compilations get a real target_path under [Compilations]
+  // (the fixture tier root does not exist, so the canonical slot name).
+  const target = `/library/music.hq/[Ambient]/[Compilations]/Various Artists ${ALBUM}`;
   expect(readSidecar(join(dir, ".intake.json"))!.proposal).toMatchObject({
-    structure_slot: "compilations", target_path: null,
+    structure_slot: "compilations", target_path: target,
   });
   const offline: P2Deps = {
     providers: { discogs: null, similar: null, shim: { identify: async () => ({ candidates: [] }) } } as Providers,
   };
   const proposed = await cmdPropose([dir], { ...OPTS, allResolved: false }, offline);
-  expect(proposed.errors.map((e) => e.msg)).toEqual(["cannot propose: compilations slot pending"]);
+  expect(proposed.errors).toEqual([]);
+  expect(proposed.data).toMatchObject([{ status: "proposed", target_path: target }]);
 });
 
 test("a user override on a VA root is logged but adds no feedback for the VA credit", async () => {
@@ -155,7 +159,8 @@ test("a user override on a VA root is logged but adds no feedback for the VA cre
   expect(assigned.errors).toEqual([]);
   const sc = readSidecar(join(dir, ".intake.json"))!;
   expect(sc.proposal).toMatchObject({
-    target_collection: "[Psytrance]", assigned_by: "user", structure_slot: "compilations", target_path: null,
+    target_collection: "[Psytrance]", assigned_by: "user", structure_slot: "compilations",
+    target_path: `/library/music.hq/[Psytrance]/[Compilations]/Various Artists ${ALBUM}`,
   });
 
   const events = Bun.YAML.parse(readFileSync(join(corpus.rules, "overrides.log.yaml"), "utf8")) as OverrideEvent[];

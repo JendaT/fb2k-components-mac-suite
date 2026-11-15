@@ -135,6 +135,13 @@ export interface Proposal {
   structure_slot: StructureSlot;
   assigned_by: "engine" | "user";
   alternates_shown: boolean;
+  /**
+   * Doc 02 "Existing library folders": the artist's existing releases in
+   * `[Releases]` or loose in the collection that this placement makes belong
+   * in an artist folder, relative to the tier root. Present only when
+   * non-empty; nothing is moved. Not part of the `status` summary.
+   */
+  restructure_candidates?: string[];
 }
 
 export interface Sidecar {

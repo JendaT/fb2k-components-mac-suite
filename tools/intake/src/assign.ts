@@ -7,6 +7,7 @@
 import type { AssignConfig, Proposal, RankedFolder, StructureSlot, Tier } from "./types.ts";
 import type { FolderCounts, GenreMap, LabelMap, StyleMap } from "./rules.ts";
 import { findKey } from "./rules.ts";
+import { libraryLayout, NO_LIBRARY, readCollection, sanitizeComponent, type LibraryProbe } from "./layout.ts";
 import { isNoLabel, isVariousArtists, normKey, round2 } from "./util.ts";
 
 export const ENGINE_VERSION = "0.2.0";
@@ -38,6 +39,11 @@ export interface SimilarArtist {
 export interface AssignProviders {
   similar?: ((artist: string) => Promise<SimilarArtist[] | null>) | null;
   aliases?: ((artist: string) => Promise<string[] | null>) | null;
+  /**
+   * Collection dir listings for the library layout (doc 02, amendment 003).
+   * Absent: no library is read, so every non-VA release lands in `[Releases]`.
+   */
+  library?: LibraryProbe | null;
 }
 
 export interface AssignOutcome {
@@ -176,10 +182,6 @@ export function styleHint(input: AssignInput, styles: StyleMap): FolderCounts {
   return hint;
 }
 
-function sanitizeComponent(s: string): string {
-  return s.replace(/[/\\:]/g, "-").replace(/[\u0000-\u001f]/g, "").replace(/^[\s.]+|[\s.]+$/g, "");
-}
-
 function fillTemplate(tpl: string, fields: Record<string, string | null>): string {
   let out = tpl;
   for (const [k, v] of Object.entries(fields)) out = out.replaceAll(`{${k}}`, v ?? "");
@@ -190,29 +192,47 @@ function fillTemplate(tpl: string, fields: Record<string, string | null>): strin
     .trim();
 }
 
-/** Tier routing + naming: compute target_path within the eligible tier. */
+export interface TargetPlan {
+  target_path: string | null;
+  structure_slot: StructureSlot;
+  /** Existing releases that now belong in the artist folder, relative to the tier root (see Layout). */
+  restructure_candidates: string[];
+}
+
+/**
+ * Tier routing + naming + library layout: compute target_path within the
+ * eligible tier. The layout (artist folder, `[Releases]`, `[Compilations]`)
+ * depends on what the collection dir already holds, read through `library`;
+ * the default reads nothing (every collection dir is absent).
+ */
 export function buildTargetPath(
   input: AssignInput,
   collection: string,
   cfg: AssignConfig,
-): { target_path: string | null; structure_slot: StructureSlot } {
-  if (input.singles) return { target_path: null, structure_slot: "singles" }; // slot layout is a pending TBD
-  // A Various Artists release is not filed under an artist; the compilations
-  // slot layout is pending like the singles slot.
-  if (isVariousArtists(input.artist)) return { target_path: null, structure_slot: "compilations" };
-  if (input.tier_eligible === "reject") return { target_path: null, structure_slot: "artist" };
+  library: LibraryProbe = NO_LIBRARY,
+): TargetPlan {
+  const va = isVariousArtists(input.artist);
+  const none = (structure_slot: StructureSlot): TargetPlan => ({ target_path: null, structure_slot, restructure_candidates: [] });
+  if (input.singles) return none("singles"); // slot layout is still pending (doc 02)
+  if (input.tier_eligible === "reject") return none(va ? "compilations" : "artist");
   const tier = cfg.tiers[`music.${input.tier_eligible}`];
-  if (!tier || !input.artist || !input.album) return { target_path: null, structure_slot: "artist" };
+  if (!tier || !input.artist || !input.album) return none(va ? "compilations" : "artist");
   const tpl = input.label && input.catno ? cfg.naming.release : cfg.naming.release_no_label;
-  const folder = fillTemplate(tpl, {
+  // For a Various Artists release the {artist} field is the VA credit.
+  const folder = sanitizeComponent(fillTemplate(tpl, {
     artist: input.artist,
     year: input.year,
     album: input.album,
     label: input.label,
     catno: input.catno,
-  });
-  const parts = [collection, input.artist, folder].map(sanitizeComponent);
-  return { target_path: `${tier.root}/${parts.join("/")}`, structure_slot: "artist" };
+  }));
+  const coll = sanitizeComponent(collection);
+  const layout = libraryLayout(input.artist, readCollection(library, `${tier.root}/${coll}`, va));
+  return {
+    target_path: `${tier.root}/${coll}/${layout.parent}/${folder}`,
+    structure_slot: layout.structure_slot,
+    restructure_candidates: layout.restructure_candidates.map((p) => `${coll}/${p}`),
+  };
 }
 
 /**
@@ -242,18 +262,19 @@ export async function assign(
     const top = ranked[0]!;
     const margin = round2(ranked.length > 1 ? top.score - ranked[1]!.score : top.score);
     const needsReview = top.score < cfg.needs_review.confidence || margin < cfg.needs_review.margin;
-    const { target_path, structure_slot } = buildTargetPath(input, top.collection, cfg);
+    const plan = buildTargetPath(input, top.collection, cfg, providers.library ?? NO_LIBRARY);
     const proposal: Proposal = {
       engine_version: ENGINE_VERSION,
       ranked,
       target_collection: top.collection,
       confidence: top.score,
       margin,
-      target_path,
-      structure_slot,
+      target_path: plan.target_path,
+      structure_slot: plan.structure_slot,
       assigned_by: "engine",
       alternates_shown: ranked.length > 1,
     };
+    if (plan.restructure_candidates.length > 0) proposal.restructure_candidates = plan.restructure_candidates;
     return { proposal, needs_review: needsReview, learned_aliases: learned, short_circuited: shortCircuited };
   };
 

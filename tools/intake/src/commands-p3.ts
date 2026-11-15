@@ -9,7 +9,9 @@ import {
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHashAs } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
-import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
+import {
+  assignRoots, diskLibraryProbe, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef,
+} from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
 import { CLI_VERSION, type JsonError, type Status, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
@@ -71,6 +73,8 @@ export interface ProposeRow {
   status?: "proposed";
   target_path?: string;
   confidence?: number;
+  /** Proposal's restructure_candidates (existing releases now due an artist folder); only when non-empty. */
+  restructure_candidates?: string[];
   skipped?: "needs_review";
 }
 
@@ -131,6 +135,8 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
   if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
   const data: ProposeRow[] = [];
+  // One library probe for the run: its listings are shared by every root.
+  const p2deps: P2Deps = { ...deps, library: deps.library ?? diskLibraryProbe() };
   for (const root of roots) {
     if (root.sidecar.status !== "resolved") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot propose from status ${root.sidecar.status}`, path: root.dir });
@@ -142,16 +148,15 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     // the outcome is reported as E_NO_TARGET below, as before.
     if (!root.sidecar.identification || !root.sidecar.proposal) {
       const rdir = rulesDir();
-      if (!root.sidecar.identification) await identifyRoots([root], opts, deps);
+      if (!root.sidecar.identification) await identifyRoots([root], opts, p2deps);
       if (!root.sidecar.proposal && rdir) {
-        await assignRoots([root], { ...opts, collection: null, by: null }, rdir, deps);
+        await assignRoots([root], { ...opts, collection: null, by: null }, rdir, p2deps);
       }
     }
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
       const why = root.sidecar.singles ? "singles slot pending"
         : !root.sidecar.proposal ? "no assignment evidence"
-        : root.sidecar.proposal.structure_slot === "compilations" ? "compilations slot pending"
         : "no target path (tier reject?)";
       errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${why}`, path: root.dir });
       continue;
@@ -163,10 +168,13 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     }
     root.sidecar.status = "proposed";
     writeSidecarWithEvent(root, "proposed", opts.dryRun);
-    data.push({
+    const row: ProposeRow = {
       id: root.sidecar.id, root_path: root.dir, status: "proposed",
       target_path: target, confidence: root.sidecar.proposal!.confidence,
-    });
+    };
+    const restructure = root.sidecar.proposal!.restructure_candidates;
+    if (restructure && restructure.length > 0) row.restructure_candidates = restructure;
+    data.push(row);
   }
   return finish(data, errors);
 }

@@ -282,18 +282,20 @@ test("no-label input label still appears in the target folder name", async () =>
 
 test("target path: tier routing + naming template (doc 02 example shape)", () => {
   const cfg = loadAssignConfig(RULES_DIR);
+  // No library probe: every collection dir reads as absent, so a non-VA
+  // release goes to the [Releases] slot (doc 02, amendment 003).
   const full = buildTargetPath(
     input({ artist: "Aes Dana", album: "Pollen", year: "2012", label: "Ultimae Records", catno: "inre042" }),
     PCP, cfg,
   );
-  expect(full.target_path).toBe(`/library/music.hq/${PCP}/Aes Dana/Aes Dana [2012] Pollen (Ultimae Records; inre042)`);
-  expect(full.structure_slot).toBe("artist");
+  expect(full.target_path).toBe(`/library/music.hq/${PCP}/[Releases]/Aes Dana [2012] Pollen (Ultimae Records; inre042)`);
+  expect(full.structure_slot).toBe("releases");
 
   const uhq = buildTargetPath(
     input({ artist: "Sync24", album: "Omnimotion Remixed", year: "2024", tier_eligible: "uhq" }),
     "[Downtempo & Electronica]", cfg,
   );
-  expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/Sync24/Sync24 [2024] Omnimotion Remixed");
+  expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/[Releases]/Sync24 [2024] Omnimotion Remixed");
 
   expect(buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg).target_path).toBeNull();
   const single = buildTargetPath(input({ artist: "X", album: null, singles: true }), AMB, cfg);
@@ -301,14 +303,129 @@ test("target path: tier routing + naming template (doc 02 example shape)", () =>
   expect(single.structure_slot).toBe("singles");
 
   const noYear = buildTargetPath(input({ artist: "X", album: "Y", year: null }), AMB, cfg);
-  expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/X/X Y`);
+  expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/[Releases]/X Y`);
 
-  // Various Artists (the resolver's VA credit, or Discogs' "Various"): compilations
-  // slot, no target until its layout is decided.
+  // Various Artists (the resolver's VA credit, or Discogs' "Various"): the
+  // [Compilations] slot, with a real target (amendment 003).
   for (const artist of ["Various Artists", "Various", "VA"]) {
     const comp = buildTargetPath(input({ artist, album: "Y", label: "Some Label", catno: "CAT1" }), AMB, cfg);
-    expect(comp).toEqual({ target_path: null, structure_slot: "compilations" });
+    expect(comp).toEqual({
+      target_path: `/library/music.hq/${AMB}/[Compilations]/${artist} [2020] Y (Some Label; CAT1)`,
+      structure_slot: "compilations",
+      restructure_candidates: [],
+    });
   }
+});
+
+// ---- Library layout (doc 02, amendment 003) through a fake library ----------
+
+const HQ = "/library/music.hq";
+const UHQ = "/library/music.uhq";
+
+/** A fake LibraryProbe over a dir -> subdir-names table; records every dir it is asked for. */
+function fakeLibrary(tree: Record<string, string[]>) {
+  const asked: string[] = [];
+  const probe = (dir: string): string[] | null => {
+    asked.push(dir);
+    return tree[dir] ?? null;
+  };
+  return { probe, asked };
+}
+
+const EXAMPLE = { artist: "Example Artist", album: "New Album", year: "2024", label: "Example Label", catno: "EX002" };
+const EXAMPLE_FOLDER = "Example Artist [2024] New Album (Example Label; EX002)";
+
+test("target path: the artist's existing dir in the collection, on-disk spelling reused", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({ [`${HQ}/${COLL_X}`]: ["[Releases]", "EXAMPLE ARTÍST"] });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/EXAMPLE ARTÍST/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [],
+  });
+});
+
+test("target path: a new artist in the collection goes to its existing [releases] dir", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_X}`]: ["Another Artist", "[releases]", "[Best Of]"],
+    [`${HQ}/${COLL_X}/[releases]`]: ["Another Artist [2020] Y"],
+    // A curated selection holding the artist: never read, never counted.
+    [`${HQ}/${COLL_X}/[Best Of]`]: ["Example Artist [2019] Old Album"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/[releases]/${EXAMPLE_FOLDER}`,
+    structure_slot: "releases",
+    restructure_candidates: [],
+  });
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`, `${HQ}/${COLL_X}/[releases]`]);
+});
+
+test("target path: releases in [Releases] or loose make an artist folder, reported relative to the tier root", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_X}`]: ["[Releases]", "Example Artist - Loose Album (2015)"],
+    [`${HQ}/${COLL_X}/[Releases]`]: ["Example Artist [2019] Old Album"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/Example Artist/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [
+      `${COLL_X}/Example Artist - Loose Album (2015)`,
+      `${COLL_X}/[Releases]/Example Artist [2019] Old Album`,
+    ],
+  });
+});
+
+test("target path: only the target tier's collection dir counts", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  // The artist has a dir in another collection of the same tier and in the
+  // same collection of the other tier: neither counts.
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_Y}`]: ["Example Artist"],
+    [`${UHQ}/${COLL_X}`]: ["Example Artist"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe).target_path).toBe(`${HQ}/${COLL_X}/[Releases]/${EXAMPLE_FOLDER}`);
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]);
+});
+
+test("target path: Various Artists get [Compilations] (existing [compilations] reused); singles and reject stay null", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({ [`${HQ}/${COLL_X}`]: ["[compilations]", "[Releases]"] });
+  const va = { ...EXAMPLE, artist: "Various Artists" };
+  expect(buildTargetPath(input(va), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/[compilations]/Various Artists [2024] New Album (Example Label; EX002)`,
+    structure_slot: "compilations",
+    restructure_candidates: [],
+  });
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]); // no artist lookup, so no [Releases] read
+
+  expect(buildTargetPath(input({ ...EXAMPLE, singles: true }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: "singles", restructure_candidates: [],
+  });
+  expect(buildTargetPath(input({ ...EXAMPLE, tier_eligible: "reject" }), COLL_X, cfg, lib.probe).target_path).toBeNull();
+  expect(buildTargetPath(input({ ...va, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: "compilations", restructure_candidates: [],
+  });
+});
+
+test("assign(): the library provider drives the layout; without one nothing is read", async () => {
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_Y}`]: ["Example Artist - Loose Album (2015)"],
+  });
+  const withLib = await assign(input(EXAMPLE), vaRules(), { library: lib.probe });
+  expect(withLib.short_circuited).toBe(true);
+  expect(withLib.proposal).toMatchObject({
+    target_collection: COLL_Y,
+    target_path: `${HQ}/${COLL_Y}/Example Artist/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [`${COLL_Y}/Example Artist - Loose Album (2015)`],
+  });
+
+  const without = await assign(input(EXAMPLE), vaRules());
+  expect(without.proposal!.target_path).toBe(`${HQ}/${COLL_Y}/[Releases]/${EXAMPLE_FOLDER}`);
+  expect(without.proposal!.structure_slot).toBe("releases");
+  expect("restructure_candidates" in without.proposal!).toBe(false); // present only when non-empty
 });
 
 test("resolver config unaffected by assign sections in structure.yaml", () => {

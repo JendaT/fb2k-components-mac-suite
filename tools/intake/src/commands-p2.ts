@@ -7,6 +7,7 @@ import { bootstrapTrees, type TreeSpec } from "./bootstrap.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
 import { identifyRoot } from "./identify.ts";
+import type { LibraryProbe } from "./layout.ts";
 import { buildProviders, type Providers } from "./providers.ts";
 import {
   appendOverride, loadGenreMap, loadLabelMap, loadStyleMap, recordFeedback,
@@ -123,6 +124,32 @@ export interface AssignRow {
  */
 export interface P2Deps {
   providers?: Providers;
+  /** Collection dir listings for the library layout; defaults to diskLibraryProbe(). */
+  library?: LibraryProbe;
+}
+
+/**
+ * The disk-reading LibraryProbe: immediate subdirectory names (symlinks not
+ * followed), null when the dir does not exist. Listings are cached for the
+ * probe's lifetime, one command run: nothing in propose/assign writes to the
+ * library. Any other read error is thrown rather than read as an empty
+ * collection, which would silently send an artist's release to `[Releases]`.
+ */
+export function diskLibraryProbe(): LibraryProbe {
+  const cache = new Map<string, string[] | null>();
+  return (dir) => {
+    if (cache.has(dir)) return cache.get(dir)!;
+    let names: string[] | null;
+    try {
+      names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw e;
+      names = null;
+    }
+    cache.set(dir, names);
+    return names;
+  };
 }
 
 /**
@@ -217,9 +244,11 @@ export async function assignRoots(
   const genre = loadGenreMap(rdir);
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
   const providers = deps.providers ?? buildProviders();
+  const library = deps.library ?? diskLibraryProbe();
   const assignProviders: AssignProviders = {
     similar: providers.similar,
     aliases: providers.discogs ? (name) => providers.discogs!.artistAliases(name) : null,
+    library,
   };
 
   const data: AssignRow[] = [];
@@ -234,7 +263,8 @@ export async function assignRoots(
     if (opts.collection) {
       // User override: authoritative pick + feedback loop (doc 02).
       const prior = root.sidecar.proposal;
-      const { target_path, structure_slot } = buildTargetPath(input, opts.collection, rules.config);
+      const { target_path, structure_slot, restructure_candidates } =
+        buildTargetPath(input, opts.collection, rules.config, library);
       const proposal: Proposal = {
         engine_version: prior?.engine_version ?? "user",
         ranked: prior?.ranked ?? [{
@@ -250,6 +280,7 @@ export async function assignRoots(
         assigned_by: "user",
         alternates_shown: prior?.alternates_shown ?? false,
       };
+      if (restructure_candidates.length > 0) proposal.restructure_candidates = restructure_candidates;
       root.sidecar.proposal = proposal;
       writeSidecarWithEvent(root, "assigned", opts.dryRun);
       if (!opts.dryRun) {

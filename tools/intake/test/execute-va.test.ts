@@ -1,10 +1,9 @@
 // Execute's genre-map count update (recordPlacement) skips a Various Artists
 // credit (doc 02, amendment 003): the count would build the artist prior that
-// assign ignores for VA. No VA root can reach execute through propose yet
-// (compilations have no target until the library layout lands), so the test
-// crafts `approved` sidecars with a proposal and a target_path, the way
-// execute-resume.test.ts crafts `placing` ones, and executes them into a temp
-// library.
+// assign ignores for VA. The test crafts `approved` sidecars with a proposal
+// and a target_path, the way execute-resume.test.ts crafts `placing` ones, and
+// executes them into a temp library (layout-flow.test.ts takes a VA root
+// through propose into [Compilations]).
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
