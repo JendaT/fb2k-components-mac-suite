@@ -82,8 +82,13 @@ New sibling `/volume1/music/music.meta/` holding `intake-journal.ndjson`
 
 ## Open TBDs (block execute stage, not resolver development)
 
-- The five structure decisions from `music.hq-structure.md` (artist-folder
-  threshold, collabs, name normalization, singles slot, bracket style).
+- Structure decisions from `music.hq-structure.md`: artist-folder threshold
+  and compilations slot are decided (amendment 003, doc 2 "Library layout
+  and credit rules"); collabs, name normalization, singles slot and bracket
+  style are still open.
+- Restructure of existing library folders (an artist's releases moving from
+  `[Releases]` or loose into an artist folder) and conversion of old flat
+  collections to the new layout: pending, amendment 004.
 - music.todo processed via Mac mount vs on-NAS container run of the same CLI.
 - Whether provenance tags are kept permanently or stripped after N months.
 - Legacy `music` tree as low-weight prior source: yes/no.
