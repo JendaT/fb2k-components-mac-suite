@@ -258,7 +258,7 @@ test("no other command picks a rejected root back up", async () => {
 
   // gc touches only placed roots: a rejected root is not eligible, named or
   // not. Named, it is refused with E_BAD_STATUS (doc 03 v1.2).
-  expect(touches((await cmdGc([], OPTS)).data)).toBe(false);
+  expect(touches((await cmdGc([], { ...OPTS, all: true })).data)).toBe(false);
   const gcNamed = await cmdGc([KOAN()], OPTS);
   expect(gcNamed.exitCode).toBe(2);
   expect(gcNamed.data).toBeNull();

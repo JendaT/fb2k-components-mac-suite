@@ -26,8 +26,8 @@ commands:
                                                  new/resolved/proposed/approved -> rejected
                                                  (state change only; local files kept)
   execute    <root...>|--approved [--resume]     copy to target, verify, journal, place
-  gc         [<root...>] [--age <days>] [--relocate-dj]
-                                                 re-verify + delete local originals
+  gc         <root...>|--all [--age <days>] [--relocate-dj]
+                                                 re-verify + delete local originals of placed roots
   collections                                    genre map folder list (picker)
   bootstrap  --tree <path> [--prior-weight <w>] [--tree ...] [--out <dir>] [--force]
                                                  build genre/label maps from a tree

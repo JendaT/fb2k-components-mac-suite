@@ -496,11 +496,16 @@ async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts):
 // ---- gc -----------------------------------------------------------------------
 
 export interface GcOpts extends CommonOpts {
+  all?: boolean; // --all: every placed root in every income folder
   age: number | null; // days
   relocateDj: boolean;
 }
 
 export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult<GcRow[] | null>> {
+  // Doc 03 `gc` semantics: roots or --all; an empty ref list never means
+  // every root. Named roots are the whole work set, with or without --all.
+  if (args.length === 0 && !opts.all)
+    return fail("E_BAD_ARGS", "usage: intake gc <root...>|--all [--age <days>] [--relocate-dj]");
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
@@ -515,7 +520,7 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
       else errors.push({ code: "E_BAD_STATUS", msg: `cannot gc from status ${r.sidecar.status}`, path: r.dir });
     }
   } else {
-    // The all-roots form selects `placed` roots and skips the rest silently.
+    // --all selects `placed` roots and skips the rest silently.
     roots = allRoots(errors).filter((r) => r.sidecar.status === "placed");
   }
   const data: GcRow[] = [];
