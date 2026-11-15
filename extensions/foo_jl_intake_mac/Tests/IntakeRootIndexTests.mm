@@ -9,10 +9,14 @@
 //  All paths here are synthetic. No real collection names, NAS paths or income
 //  folder contents appear in this repo (see CLAUDE.local.md).
 //
+// TEST_DEPS: src/Core/IntakePath.mm
+//
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/IntakeRootIndex.h"
 #include "TestHarness.h"
+
+#include <string>
 
 static IntakeRoot *root(NSString *identifier, NSString *path) {
     return [[IntakeRoot alloc] initWithIdentifier:identifier rootPath:path];
@@ -117,6 +121,126 @@ int main(void) {
         CHECK_EQ(idx.rootCount, 0, "clearing to an empty set works");
         CHECK(([idx rootForFilePath:@"/income/B/01.flac"] == nil),
               "cleared index matches nothing");
+
+        // --- Unicode: NFC and NFD spell the same folder ---
+        // The CLI reports what it walked and foobar2000 stores what the file
+        // dialog gave it; either side may be NFD (HFS+, SMB) or NFC.
+        g_context = "unicode";
+        NSString *nfc = [NSString stringWithUTF8String:"/income/Caf\xC3\xA9 Album"];
+        NSString *nfd = [NSString stringWithUTF8String:"/income/Cafe\xCC\x81 Album"];
+        [idx setRoots:@[ root(@"nfc", nfc) ]];
+        CHECK([[idx rootForFilePath:[nfd stringByAppendingString:@"/01.flac"]].identifier
+                  isEqualToString:@"nfc"],
+              "NFD query matches an NFC root");
+        CHECK([[idx rootForUTF8Path:"/income/Cafe\xCC\x81 Album/01.flac"].identifier
+                  isEqualToString:@"nfc"],
+              "NFD UTF-8 query matches an NFC root");
+        [idx setRoots:@[ root(@"nfd", nfd) ]];
+        CHECK([[idx rootForFilePath:[nfc stringByAppendingString:@"/01.flac"]].identifier
+                  isEqualToString:@"nfd"],
+              "NFC query matches an NFD root");
+        CHECK([[idx rootForFilePath:nfd].identifier isEqualToString:@"nfd"],
+              "NFD query equal to an NFD root matches");
+        CHECK(([idx rootForFilePath:@"/income/Cafe Album/01.flac"] == nil),
+              "the unaccented spelling is a different folder");
+
+        // --- no filesystem access: /private/tmp is kept as written ---
+        // stringByStandardizingPath strips "/private" when the shorter path
+        // exists on disk; /private/tmp and /tmp both exist on every Mac.
+        g_context = "private-tmp";
+        [idx setRoots:@[ root(@"pt", @"/private/tmp") ]];
+        IntakeRoot *pt = [idx rootForFilePath:@"/private/tmp/fixture.flac"];
+        CHECK([pt.identifier isEqualToString:@"pt"], "/private/tmp root matches its own spelling");
+        CHECK([pt.rootPath isEqualToString:@"/private/tmp"], "root path keeps /private");
+        CHECK(([idx rootForFilePath:@"/tmp/fixture.flac"] == nil),
+              "/tmp is not resolved to /private/tmp");
+        [idx setRoots:@[ root(@"t", @"/tmp") ]];
+        CHECK(([idx rootForFilePath:@"/private/tmp/fixture.flac"] == nil),
+              "/private/tmp is not resolved to /tmp");
+
+        // --- file:// and other schemes ---
+        g_context = "schemes";
+        [idx setRoots:@[ root(@"r1", @"/income/Fixture Artist - Test Album") ]];
+        CHECK([[idx rootForFilePath:@"file:///income/Fixture Artist - Test Album/01.flac"].identifier
+                  isEqualToString:@"r1"],
+              "file:// query matches");
+        CHECK([[idx rootForUTF8Path:"file:///income/Fixture Artist - Test Album/01.flac"].identifier
+                  isEqualToString:@"r1"],
+              "file:// UTF-8 query matches");
+        CHECK(([idx rootForFilePath:@"mac-volume://0A1B2C3D/income/Fixture Artist - Test Album/01.flac"] ==
+               nil),
+              "mac-volume:// query matches nothing (Integration converts it first)");
+        CHECK(([idx rootForFilePath:@"income/Fixture Artist - Test Album/01.flac"] == nil),
+              "relative query matches nothing");
+        CHECK(([idx rootForUTF8Path:NULL] == nil), "NULL UTF-8 query matches nothing");
+        [idx setRoots:@[ root(@"url", @"file:///income/Fixture Artist - Test Album/") ]];
+        CHECK([[idx rootForFilePath:@"/income/Fixture Artist - Test Album/01.flac"].identifier
+                  isEqualToString:@"url"],
+              "file:// root path is normalized too");
+        [idx setRoots:@[ root(@"rel", @"income/Album"), root(@"mv", @"mac-volume://X/income") ]];
+        CHECK_EQ(idx.rootCount, 2, "unusable roots are still counted");
+        CHECK(([idx rootForFilePath:@"/income/Album/01.flac"] == nil),
+              "relative or foreign-scheme roots never match");
+
+        // --- nested roots via the ancestor walk ---
+        g_context = "nested-walk";
+        [idx setRoots:@[ root(@"top", @"/income"),
+                         root(@"box", @"/income/box"),
+                         root(@"disc", @"/income/box/disc2/extras") ]];
+        CHECK([[idx rootForFilePath:@"/income/box/disc2/extras/a/b.flac"].identifier
+                  isEqualToString:@"disc"],
+              "deepest of three nested roots wins");
+        CHECK([[idx rootForFilePath:@"/income/box/disc2/01.flac"].identifier
+                  isEqualToString:@"box"],
+              "a gap between roots falls back to the nearest ancestor");
+        CHECK([[idx rootForFilePath:@"/income/other/01.flac"].identifier isEqualToString:@"top"],
+              "outermost root catches the rest");
+        CHECK(([idx rootForFilePath:@"/elsewhere/01.flac"] == nil), "outside every root");
+        [idx setRoots:@[ root(@"slash", @"/") ]];
+        CHECK([[idx rootForFilePath:@"/any/path.flac"].identifier isEqualToString:@"slash"],
+              "a root at / contains every absolute path");
+
+        // --- ancestor walk at depth, many roots ---
+        g_context = "depth";
+        NSMutableArray<IntakeRoot *> *many = [NSMutableArray array];
+        for (int i = 0; i < 500; i++) {
+            [many addObject:root([NSString stringWithFormat:@"r%d", i],
+                                 [NSString stringWithFormat:@"/income/perf/Fixture Artist %d - Test Album", i])];
+        }
+        [idx setRoots:many];
+        CHECK_EQ(idx.rootCount, 500, "500 roots indexed");
+        std::string deep = "/income/perf/Fixture Artist 317 - Test Album";
+        for (int d = 0; d < 60; d++) deep += "/d" + std::to_string(d);
+        deep += "/track.flac";
+        CHECK([[idx rootForUTF8Path:deep.c_str()].identifier isEqualToString:@"r317"],
+              "a file 60 levels below its root still resolves");
+        CHECK([[idx rootForFilePath:@"/income/perf/Fixture Artist 499 - Test Album/01.flac"].identifier
+                  isEqualToString:@"r499"],
+              "last-registered root resolves");
+        CHECK(([idx rootForFilePath:@"/income/perf/Fixture Artist 500 - Test Album/01.flac"] == nil),
+              "an unregistered sibling resolves to nothing");
+        int hits = 0;
+        for (int i = 0; i < 500; i++) {
+            std::string q = "/income/perf/Fixture Artist " + std::to_string(i) +
+                            " - Test Album/CD1/01.flac";
+            IntakeRoot *r = [idx rootForUTF8Path:q.c_str()];
+            if ([r.identifier isEqualToString:[NSString stringWithFormat:@"r%d", i]]) hits++;
+        }
+        CHECK_EQ(hits, 500, "every root resolves its own files");
+
+        // --- shared directory (virtual roots) ---
+        g_context = "virtual";
+        [idx setRoots:@[ root(@"itk_000000b2", @"/income/loose"),
+                         root(@"itk_000000a1", @"/income/loose") ]];
+        CHECK_EQ(idx.rootCount, 2, "both virtual roots are counted");
+        CHECK([[idx rootForFilePath:@"/income/loose/01.flac"].identifier
+                  isEqualToString:@"itk_000000a1"],
+              "a shared directory answers the lowest identifier");
+        [idx setRoots:@[ root(@"itk_000000a1", @"/income/loose"),
+                         root(@"itk_000000b2", @"/income/loose") ]];
+        CHECK([[idx rootForFilePath:@"/income/loose/01.flac"].identifier
+                  isEqualToString:@"itk_000000a1"],
+              "the answer does not depend on listing order");
     }
     TEST_MAIN_END();
 }

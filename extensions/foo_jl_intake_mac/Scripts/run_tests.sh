@@ -11,7 +11,11 @@
 # linked automatically when it exists (header-only modules need nothing).
 # Extra sources are declared in the test file itself with a comment line:
 #   // TEST_DEPS: src/Core/PlaylistLayoutModel.mm
+# Extra system frameworks the same way (names only, no ".framework"):
+#   // TEST_FRAMEWORKS: CoreServices
 # .mm tests compile as Objective-C++ with Foundation; .cpp tests as plain C++.
+# Both use -std=gnu++20, matching the component build
+# (generate_xcode_project.rb, CLANG_CXX_LANGUAGE_STANDARD).
 #
 # Tests run under ASan+UBSan (tests only — never the component build).
 # UBSan findings abort (-fno-sanitize-recover) so they gate like any failure.
@@ -88,16 +92,35 @@ for test_file in "$PROJECT_DIR"/Tests/*Tests.mm "$PROJECT_DIR"/Tests/*Tests.cpp;
     done
     set +f
 
+    # Per-test frameworks: "// TEST_FRAMEWORKS: <Name> [<Name>...]". Same
+    # whitespace split with globbing off; each name must be a plain identifier
+    # so nothing but a -framework flag can reach the compiler line.
+    frameworks="$(grep -h '^// TEST_FRAMEWORKS:' "$test_file" | sed 's|^// TEST_FRAMEWORKS:||' || true)"
+    framework_flags=()
+    set -f
+    for fw in $frameworks; do
+        case "$fw" in
+            ''|*[!A-Za-z0-9_]*)
+                set +f
+                echo "ERROR: $base declares an invalid TEST_FRAMEWORKS name: $fw" >&2
+                exit 1
+                ;;
+        esac
+        framework_flags+=(-framework "$fw")
+    done
+    set +f
+
     out="$TEST_BUILD_DIR/$name"
     echo "==> Compiling unit tests ($module)..."
     if [[ "$test_file" == *.mm ]]; then
-        clang++ -x objective-c++ -std=c++17 -fobjc-arc "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
+        clang++ -x objective-c++ -std=gnu++20 -fobjc-arc "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
             "${sources[@]}" \
-            -framework Foundation \
+            -framework Foundation ${framework_flags[@]+"${framework_flags[@]}"} \
             -o "$out"
     else
-        clang++ -std=c++17 "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
+        clang++ -std=gnu++20 "$OPT_FLAG" -Wall "${INSTRUMENT_FLAGS[@]}" \
             "${sources[@]}" \
+            ${framework_flags[@]+"${framework_flags[@]}"} \
             -o "$out"
     fi
     BINARIES+=("$out")
