@@ -5,12 +5,16 @@
 // dir may hold disc dirs (CD1, CD2 …): under an artist dir they are never
 // looked at; directly under a collection (no artist level) the entry is one
 // release, not an artist dir.
+// Various Artists is never an artist entry: a VA credit (parsed from a release
+// name, an artist dir named VA, or a flat-files dir) would otherwise vote in
+// the assign engine's artist tier for every compilation. A VA release still
+// counts as a release, in the grammar table, and for its label.
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseDirName } from "./naming.ts";
 import type { GenreMap, LabelMap } from "./rules.ts";
-import { DISC_DIR_RE, isJunkDir, round2 } from "./util.ts";
+import { DISC_DIR_RE, hasVariousArtistsPrefix, isJunkDir, isVariousArtists, round2 } from "./util.ts";
 
 export interface TreeSpec {
   path: string;
@@ -38,6 +42,11 @@ function subdirs(dir: string): string[] {
 function isDiscSet(subs: string[]): boolean {
   const discs = subs.filter((n) => DISC_DIR_RE.test(n)).length;
   return discs > 0 && discs * 2 > subs.length;
+}
+
+/** A VA credit, plain ("VA", "Various Artists") or as a scene-name prefix ("VA  Title (2013) FLAC"). */
+function isVaName(name: string): boolean {
+  return isVariousArtists(name) || hasVariousArtistsPrefix(name);
 }
 
 function hasFiles(dir: string): boolean {
@@ -69,7 +78,7 @@ export function bootstrapTrees(trees: TreeSpec[]): BootstrapResult {
     releaseCount++;
     const who = artist ?? parsed?.artist;
     if (!who) return;
-    bump(artists, who, collection, w);
+    if (!isVaName(who)) bump(artists, who, collection, w);
     if (parsed?.label) bump(labels, parsed.label, collection, w);
   };
 
@@ -98,7 +107,7 @@ export function bootstrapTrees(trees: TreeSpec[]): BootstrapResult {
           for (const rel of releases) countRelease(collection, entry, rel, tree.weight);
           if (releases.length === 0 && hasFiles(entryDir)) {
             releaseCount++;
-            bump(artists, entry, collection, tree.weight);
+            if (!isVaName(entry)) bump(artists, entry, collection, tree.weight);
           }
         }
       }

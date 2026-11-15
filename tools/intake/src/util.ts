@@ -197,6 +197,22 @@ export function isVariousArtists(name: string | null): boolean {
   return k === "variousartists" || k === "various" || k === "va";
 }
 
+// "VA" is uppercase only so real names like "Va Va Voom" stay artists; a bare
+// "Various " prefix is not VA either ("Various Production" is an artist).
+const VA_PREFIX_CASED_RE = /^VA\s/;
+const VA_PREFIX_ANYCASE_RE = /^(?:v\.a\.?|v\/a|various\s+artists)\s/i;
+
+/**
+ * A name that starts with a Various Artists token followed by whitespace:
+ * scene leftovers such as an artist parsed as "VA  Title (2013) FLAC". Tokens:
+ * VA (uppercase), V.A., V.A, V/A, Various Artists (any case).
+ */
+export function hasVariousArtistsPrefix(name: string | null): boolean {
+  if (name == null) return false;
+  const s = name.trimStart();
+  return VA_PREFIX_CASED_RE.test(s) || VA_PREFIX_ANYCASE_RE.test(s);
+}
+
 export function sha1Hex(data: Uint8Array | string): string {
   const h = new Bun.CryptoHasher("sha1");
   h.update(data);

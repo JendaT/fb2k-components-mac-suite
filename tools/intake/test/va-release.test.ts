@@ -5,13 +5,15 @@
 // here. Placeholder names only.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cmdResolve } from "../src/commands.ts";
 import { cmdAssign, type P2Deps } from "../src/commands-p2.ts";
 import { cmdPropose } from "../src/commands-p3.ts";
 import type { Providers } from "../src/providers.ts";
+import { loadGenreMap, type OverrideEvent } from "../src/rules.ts";
 import { readSidecar } from "../src/sidecar.ts";
+import { isVariousArtists } from "../src/util.ts";
 import { collectSidecars, setupCorpus, type Corpus } from "./helpers.ts";
 
 const OPTS = { json: true, dryRun: false, force: false, filters: {} };
@@ -145,4 +147,22 @@ test("a VA root lands in the compilations slot; propose reports it as pending", 
   };
   const proposed = await cmdPropose([dir], { ...OPTS, allResolved: false }, offline);
   expect(proposed.errors.map((e) => e.msg)).toEqual(["cannot propose: compilations slot pending"]);
+});
+
+test("a user override on a VA root is logged but adds no feedback for the VA credit", async () => {
+  const dir = join(base, "Example Numbered Compilation");
+  const assigned = await cmdAssign([dir], { ...OPTS, collection: "[Psytrance]", by: "user" });
+  expect(assigned.errors).toEqual([]);
+  const sc = readSidecar(join(dir, ".intake.json"))!;
+  expect(sc.proposal).toMatchObject({
+    target_collection: "[Psytrance]", assigned_by: "user", structure_slot: "compilations", target_path: null,
+  });
+
+  const events = Bun.YAML.parse(readFileSync(join(corpus.rules, "overrides.log.yaml"), "utf8")) as OverrideEvent[];
+  expect(events.filter((e) => e.sidecar_id === sc.id)).toMatchObject([
+    { artist: "Various Artists", collection: "[Psytrance]", by: "user" },
+  ]);
+
+  const genre = loadGenreMap(corpus.rules);
+  expect(Object.keys(genre.feedback).filter((k) => isVariousArtists(k))).toEqual([]);
 });

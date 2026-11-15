@@ -9,7 +9,7 @@ import type { FolderCounts, GenreMap, LabelMap, StyleMap } from "./rules.ts";
 import { findKey } from "./rules.ts";
 import { isVariousArtists, normKey, round2 } from "./util.ts";
 
-export const ENGINE_VERSION = "0.1.0";
+export const ENGINE_VERSION = "0.2.0";
 
 export interface AssignRules {
   genre: GenreMap;
@@ -226,8 +226,13 @@ export async function assign(
 ): Promise<AssignOutcome> {
   const cfg = rules.config;
   const learned: Record<string, string> = {};
-  const prior = input.artist
-    ? await artistPrior(input.artist, rules.genre, providers.aliases ?? null, learned)
+  // A Various Artists credit says nothing about where a compilation belongs:
+  // the artist tier is unavailable, not evidence of absence. No prior lookup
+  // (so no alias provider call), no short-circuit, and w.artist stays out of
+  // the denominator; label and style decide.
+  const artist = isVariousArtists(input.artist) ? null : input.artist;
+  const prior = artist
+    ? await artistPrior(artist, rules.genre, providers.aliases ?? null, learned)
     : null;
 
   const finish = (ranked: RankedFolder[], shortCircuited: boolean): AssignOutcome => {
@@ -266,7 +271,9 @@ export async function assign(
   }
 
   const label = labelPrior(input.label, rules.labels);
-  const similar = await similarVote(input.artist, rules.genre, providers.similar ?? null);
+  // Skipped for VA as well (artist is null): the similar artists of "Various
+  // Artists" would be a Last.fm query that says nothing about this release.
+  const similar = await similarVote(artist, rules.genre, providers.similar ?? null);
   const style = styleHint(input, rules.styles);
   const artistDist = prior?.dist ?? {};
 
@@ -281,9 +288,10 @@ export async function assign(
   // so absent network tiers do not deflate confidence (doc 02 example: artist
   // 0.95 + label 0.88 -> ~0.9, not 0.7). An artist/label present in the input
   // but unknown to the maps IS evidence of absence and stays in the
-  // denominator; similar/style only count when they produced votes.
+  // denominator (a VA credit is not: see above); similar/style only count
+  // when they produced votes.
   const denom =
-    (input.artist ? w.artist : 0) +
+    (artist ? w.artist : 0) +
     (input.label ? w.label : 0) +
     (Object.keys(similar).length > 0 ? w.similar : 0) +
     (Object.keys(style).length > 0 ? w.style : 0);

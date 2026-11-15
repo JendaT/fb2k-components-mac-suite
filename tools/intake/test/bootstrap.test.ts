@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootstrapTrees, type BootstrapResult } from "../src/bootstrap.ts";
+import { hasVariousArtistsPrefix, isVariousArtists } from "../src/util.ts";
 
 let tree: string;
 let result: BootstrapResult;
@@ -91,4 +92,53 @@ test("bootstrap: disc dirs never appear in the unparsed list", () => {
     .map((l) => l.slice(3, -1));
   expect(unparsed.sort()).toEqual(["Box Set Title", COMPILATION, COMPILATION]);
   expect(result.stats.unparsed).toBe(3);
+});
+
+test("bootstrap: Various Artists never becomes an artist entry; VA releases give label evidence only", () => {
+  const vaTree = mkdtempSync(join(tmpdir(), "intake-bootstrap-va-"));
+  const COLL = "[Collection V]";
+  const flat = (path: string) => {
+    mkdirSync(join(vaTree, path), { recursive: true });
+    writeFileSync(join(vaTree, path, "01 - Track.flac"), new Uint8Array(4));
+  };
+  try {
+    // VA releases in a compilations slot dir, under several spellings.
+    flat(`${COLL}/[Compilations]/VA - Example Comp One (2010)`);
+    flat(`${COLL}/[Compilations]/V.A. - Example Comp Two`);
+    flat(`${COLL}/[Compilations]/Various Artists [2012] Example Comp Three (Synthetic Records; SYN002)`);
+    flat(`${COLL}/[Compilations]/va - Example Comp Four`);
+    // Scene leftover: the parsed artist is "VA Example Moments (2013) FLAC".
+    flat(`${COLL}/[Compilations]/VA  Example Moments (2013) FLAC - Uploader Tag`);
+    // An artist dir named VA: its releases still parse for labels.
+    flat(`${COLL}/VA/VA [2014] Example Comp Five [WEB, Comp, Other Label #SYN005]`);
+    // An unparseable VA-prefixed dir holding flat files (the hasFiles branch).
+    flat(`${COLL}/VA  Example Nights (2015) FLAC`);
+    // Real artists, one whose name merely starts with "Various ".
+    flat(`${COLL}/Example Artist/Example Artist [2011] Example Album (Synthetic Records; SYN010)`);
+    flat(`${COLL}/Various Example Band/Various Example Band - Example Album Two (2016)`);
+
+    const r = bootstrapTrees([{ path: vaTree, weight: 1 }]);
+    const artistKeys = Object.keys(r.genre.artists).sort();
+    expect(artistKeys.filter((k) => isVariousArtists(k) || hasVariousArtistsPrefix(k))).toEqual([]);
+    expect(artistKeys).toEqual(["Example Artist", "Various Example Band"]);
+    expect(r.genre.artists["Various Example Band"]).toEqual({ [COLL]: 1 });
+    expect(r.stats.artists).toBe(2);
+
+    // Labels from VA release names still count: one VA + one artist release,
+    // and the release under the VA artist dir.
+    expect(r.labels.labels["Synthetic Records"]).toEqual({ [COLL]: 2 });
+    expect(r.labels.labels["Other Label"]).toEqual({ [COLL]: 1 });
+
+    // Every VA release still counts as a release and in the grammar table.
+    expect(r.stats.releases).toBe(9);
+    const grammarTotal = r.report
+      .split("\n")
+      .map((l) => l.match(/^\| (\w+) \| (\d+) \|$/))
+      .filter((m): m is RegExpMatchArray => m !== null)
+      .reduce((a, m) => a + Number(m[2]), 0);
+    expect(grammarTotal).toBe(8); // all but the flat-files dir, which is not name-parsed
+    expect(r.stats.unparsed).toBe(0);
+  } finally {
+    rmSync(vaTree, { recursive: true, force: true });
+  }
 });

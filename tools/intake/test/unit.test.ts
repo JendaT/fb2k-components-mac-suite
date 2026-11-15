@@ -6,7 +6,8 @@ import { DEFAULT_CONFIG, incomeFor, loadConfig, loadIncome } from "../src/config
 import { albumFromTags, parseDirName } from "../src/naming.ts";
 import { parseFilename } from "../src/tags.ts";
 import {
-  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, isJunkFile, isVariousArtists, mapLimit, normAlbum, normKey,
+  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, hasVariousArtistsPrefix, isJunkFile, isVariousArtists, mapLimit,
+  normAlbum, normKey,
 } from "../src/util.ts";
 
 test("naming: full grammars score 1.0", () => {
@@ -211,6 +212,23 @@ test("various artists names", () => {
   }
   for (const n of [null, "", "Artist One", "Vanessa", "Various Artists Tribute Band"]) {
     expect(isVariousArtists(n)).toBe(false);
+  }
+});
+
+test("various artists prefix: a VA token followed by whitespace (scene leftovers)", () => {
+  for (const n of [
+    "VA  Example Moments (2013) FLAC", "VA Example Title", "V.A. Something", "v.a. Something", "V.A Something",
+    "V/A Something", "v/a Something", "Various Artists  Example Title (2014)", "various artists Example",
+  ]) {
+    expect(hasVariousArtistsPrefix(n)).toBe(true);
+  }
+  // Bare VA is isVariousArtists' job; "VA" is uppercase only; "Various " alone
+  // is a real artist prefix.
+  for (const n of [
+    null, "", "VA", "Va Va Voom", "va example", "Various Production", "Various Cruelties", "Vanessa", "VAST",
+    "VA-Example", "V.A.Something",
+  ]) {
+    expect(hasVariousArtistsPrefix(n)).toBe(false);
   }
 });
 

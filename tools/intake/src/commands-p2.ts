@@ -15,7 +15,7 @@ import {
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
 import type { HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
 import { CLI_VERSION } from "./types.ts";
-import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
+import { isSidecarName, isVariousArtists, isoLocal, round2, walkDirs } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -250,7 +250,9 @@ export async function assignRoots(
           collection: opts.collection,
           by: "user",
         });
-        if (input.artist) {
+        // No feedback for a VA credit: it would rebuild, under feedback:, the
+        // artist prior that assign() ignores for Various Artists.
+        if (input.artist && !isVariousArtists(input.artist)) {
           recordFeedback(genre, input.artist, opts.collection);
           genreDirty = true;
         }

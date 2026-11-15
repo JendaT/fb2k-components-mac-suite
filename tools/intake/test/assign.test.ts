@@ -5,7 +5,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { artistPrior, assign, buildTargetPath, similarVote, styleHint, type AssignInput, type AssignRules } from "../src/assign.ts";
+import {
+  artistPrior, assign, buildTargetPath, similarVote, styleHint, type AssignInput, type AssignRules, type SimilarArtist,
+} from "../src/assign.ts";
 import { loadAssignConfig, loadConfig } from "../src/config.ts";
 import { loadGenreMap, loadLabelMap, loadStyleMap } from "../src/rules.ts";
 import { FIXTURES } from "./helpers.ts";
@@ -114,6 +116,108 @@ test("no evidence at all: null proposal", async () => {
   const outcome = await assign(input({ artist: "Nobody Known" }), rules());
   expect(outcome.proposal).toBeNull();
   expect(outcome.needs_review).toBe(true);
+});
+
+// ---- Various Artists: the artist tier is unavailable, not evidence -----------
+
+const COLL_X = "[Collection X]";
+const COLL_Y = "[Collection Y]";
+const COLL_Z = "[Collection Z]";
+
+/** Synthetic rules where VA credits hold large priors, as a raw bootstrap left them. */
+function vaRules(): AssignRules {
+  return {
+    genre: {
+      artists: {
+        "Various Artists": { [COLL_X]: 40, [COLL_Y]: 5 },
+        VA: { [COLL_X]: 12 },
+        "Example Artist": { [COLL_Y]: 3 },
+        "Example Mixed": { [COLL_X]: 1, [COLL_Y]: 1 },
+      },
+      feedback: { "Various Artists": { [COLL_X]: 7 } },
+      aliases: {},
+      exceptions: [],
+    },
+    labels: { labels: { "Example Label": { [COLL_Y]: 3, [COLL_Z]: 1 } } },
+    styles: { styles: { "Example Style": [COLL_Z] }, genres: {} },
+    config: loadAssignConfig(RULES_DIR),
+  };
+}
+
+function spyProviders(similarResult: SimilarArtist[] | null = [{ name: "Various Artists", match: 1 }]) {
+  const calls = { similar: [] as string[], aliases: [] as string[] };
+  const providers = {
+    similar: async (a: string) => {
+      calls.similar.push(a);
+      return similarResult;
+    },
+    aliases: async (a: string) => {
+      calls.aliases.push(a);
+      return ["Various Artists"];
+    },
+  };
+  return { calls, providers };
+}
+
+test("VA input: ranked by label alone, no artist prior, no short-circuit", async () => {
+  for (const artist of ["Various Artists", "VA", "Various", "V.A.", "V/A"]) {
+    const outcome = await assign(input({ artist, label: "Example Label" }), vaRules());
+    expect(outcome.short_circuited).toBe(false);
+    const ranked = outcome.proposal!.ranked;
+    expect(ranked.map((f) => f.collection)).toEqual([COLL_Y, COLL_Z]);
+    for (const f of ranked) expect(f.evidence.artist_prior).toBe(0);
+    // Renormalized over the label tier alone: score = P(folder|label).
+    expect(ranked[0]!.score).toBe(0.75);
+    expect(ranked[1]!.score).toBe(0.25);
+    expect(outcome.proposal!.confidence).toBe(0.75);
+    expect(outcome.proposal!.structure_slot).toBe("compilations");
+  }
+});
+
+test("VA input: label and style renormalize over the tiers that spoke", async () => {
+  const outcome = await assign(
+    input({ artist: "Various Artists", label: "Example Label", styles: ["Example Style"] }),
+    vaRules(),
+  );
+  // label 0.25 + style 0.10 = 0.35; Y = 0.75*0.25/0.35, Z = (0.25*0.25 + 1*0.10)/0.35.
+  expect(outcome.proposal!.ranked.map((f) => [f.collection, f.score])).toEqual([[COLL_Y, 0.54], [COLL_Z, 0.46]]);
+});
+
+test("VA input without label or style evidence: no proposal, needs review", async () => {
+  for (const artist of ["Various Artists", "VA"]) {
+    const outcome = await assign(input({ artist }), vaRules());
+    expect(outcome.proposal).toBeNull();
+    expect(outcome.needs_review).toBe(true);
+    expect(outcome.short_circuited).toBe(false);
+  }
+});
+
+test("VA input: similar and alias providers are never called", async () => {
+  for (const artist of ["Various Artists", "Various", "V/A"]) {
+    const { calls, providers } = spyProviders();
+    const outcome = await assign(input({ artist, label: "Example Label" }), vaRules(), providers);
+    expect(calls).toEqual({ similar: [], aliases: [] });
+    expect(outcome.learned_aliases).toEqual({});
+    expect(outcome.proposal!.ranked.every((f) => f.evidence.similar_vote === 0)).toBe(true);
+  }
+});
+
+test("non-VA artist still uses its prior (short-circuit and scored path)", async () => {
+  const strong = await assign(input({ artist: "Example Artist" }), vaRules());
+  expect(strong.short_circuited).toBe(true);
+  expect(strong.proposal?.target_collection).toBe(COLL_Y);
+  expect(strong.proposal?.confidence).toBe(0.95);
+
+  const { calls, providers } = spyProviders(null);
+  const mixed = await assign(input({ artist: "Example Mixed", label: "Example Label" }), vaRules(), providers);
+  expect(mixed.short_circuited).toBe(false);
+  expect(calls.similar).toEqual(["Example Mixed"]);
+  // artist 0.5 + label 0.25 = 0.75; Y = (0.5*0.5 + 0.75*0.25)/0.75, X = 0.5*0.5/0.75.
+  expect(mixed.proposal!.ranked.map((f) => [f.collection, f.score, f.evidence.artist_prior])).toEqual([
+    [COLL_Y, 0.58, 0.5],
+    [COLL_X, 0.33, 0.5],
+    [COLL_Z, 0.08, 0],
+  ]);
 });
 
 test("target path: tier routing + naming template (doc 02 example shape)", () => {

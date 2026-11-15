@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { unpackArchive, type UnpackResult } from "./archive.ts";
+import { ENGINE_VERSION } from "./assign.ts";
 import { incomeFor, loadConfig, loadIncome, rulesDir } from "./config.ts";
 import { Resolver, type ResolveContext } from "./resolver.ts";
 import { readSidecar, summarize, writeRoot, type SidecarSummary } from "./sidecar.ts";
@@ -227,5 +228,5 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
 }
 
 export function cmdVersion(): CommandResult<{ cli: string; schema: number; engine: string }> {
-  return { data: { cli: CLI_VERSION, schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
+  return { data: { cli: CLI_VERSION, schema: 1, engine: ENGINE_VERSION }, errors: [], exitCode: 0 };
 }
