@@ -2,13 +2,14 @@
 //  TreeOpsTests.mm
 //  foo_plorg_mac
 //
-//  Unit tests for PlorgTreeOps (tree queries and import merge).
+//  Unit tests for PlorgTreeOps (tree queries, import merge, outside renames).
 //  Compiled standalone (Foundation only); gating phase of Scripts/build.sh.
 //
 
 #import <Foundation/Foundation.h>
 #import "../src/Core/TreeNode.h"
 #import "../src/Core/PlorgTreeOps.h"
+#import "../src/Core/PlorgPathCodec.h"
 
 #include <string>
 
@@ -38,6 +39,11 @@ static NSMutableArray<TreeNode *> *makeFixture(void) {
     [modal addChild:[TreeNode playlistWithName:@"Kind of Blue"]];
     [jazz addChild:modal];
     return [NSMutableArray arrayWithObjects:jazz, [TreeNode playlistWithName:@"Inbox"], nil];
+}
+
+// foobar2000 name for a path, as Plorg encodes it ("A \u00BB B")
+static NSString *enc(NSArray<NSString *> *components) {
+    return [PlorgPathCodec encodedNameForComponents:components];
 }
 
 int main(void) {
@@ -198,6 +204,210 @@ int main(void) {
         CHECK(added == 1, "one new nested playlist");
         TreeNode *existingModal = ((TreeNode *)roots[0]).children[1];
         CHECK(existingModal.children.count == 2, "merged into existing Modal folder");
+    }
+
+    // --- findPlaylistForFoobarName ---
+    {
+        g_context = "find-foobar-name";
+        TreeNode *jazz = [TreeNode folderWithName:@"Jazz"];
+        TreeNode *nestedX = [TreeNode playlistWithName:@"X"];
+        [jazz addChild:nestedX];
+        TreeNode *rootX = [TreeNode playlistWithName:@"X"];
+        TreeNode *literal = [TreeNode playlistWithName:enc(@[@"Rock", @"Y"])];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:jazz, rootX, literal, nil];
+
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:enc(@[@"Jazz", @"X"]) inRoots:roots] == nestedX,
+              "encoded name resolves by path");
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:@"X" inRoots:roots] == rootX,
+              "one-part name prefers the root-level leaf");
+        [roots removeObjectIdenticalTo:rootX];
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:@"X" inRoots:roots] == nestedX,
+              "one-part name falls back to a nested leaf");
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:enc(@[@"Rock", @"Y"]) inRoots:roots] == literal,
+              "leaf named with the whole string is the last resort");
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:@"Missing" inRoots:roots] == nil, "missing -> nil");
+        CHECK([PlorgTreeOps findPlaylistForFoobarName:@"" inRoots:roots] == nil, "empty -> nil");
+    }
+
+    // --- followRename: move into a new folder ---
+    {
+        g_context = "rename-into-new-folder";
+        TreeNode *tidal = [TreeNode folderWithName:@"TIDAL"];
+        TreeNode *x = [TreeNode playlistWithName:@"X"];
+        TreeNode *y = [TreeNode playlistWithName:@"Y"];
+        [tidal addChild:x];
+        [tidal addChild:y];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:tidal];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:enc(@[@"TIDAL", @"X"])
+                                                       to:enc(@[@"TIDAL", @"Mood", @"X"])
+                                            decodeNewPath:YES
+                                                    roots:roots];
+        TreeNode *mood = [PlorgTreeOps findFolderForComponents:@[@"TIDAL", @"Mood"] inRoots:roots];
+        CHECK(result == x, "the renamed node is returned");
+        CHECK(mood != nil && mood.parent == tidal, "Mood folder created under TIDAL");
+        CHECK(x.parent == mood && mood.children.count == 1, "node moved into Mood");
+        CHECK([x.name isEqualToString:@"X"], "leaf name kept");
+        CHECK(tidal.children.count == 2 && tidal.children[0] == y, "TIDAL keeps Y and gains Mood");
+        CHECK([PlorgTreeOps findPlaylistForComponents:(@[@"TIDAL", @"X"]) inRoots:roots] == nil,
+              "old path is empty");
+        CHECK(roots.count == 1, "no new root nodes");
+    }
+
+    // --- followRename: move between folders ---
+    {
+        g_context = "rename-between-folders";
+        TreeNode *tidal = [TreeNode folderWithName:@"TIDAL"];
+        TreeNode *a = [TreeNode folderWithName:@"A"];
+        TreeNode *b = [TreeNode folderWithName:@"B"];
+        TreeNode *x = [TreeNode playlistWithName:@"X"];
+        TreeNode *z = [TreeNode playlistWithName:@"Z"];
+        [a addChild:x];
+        [b addChild:z];
+        [tidal addChild:a];
+        [tidal addChild:b];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:tidal];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:enc(@[@"TIDAL", @"A", @"X"])
+                                                       to:enc(@[@"TIDAL", @"B", @"X"])
+                                            decodeNewPath:YES
+                                                    roots:roots];
+        CHECK(result == x, "the renamed node is returned");
+        CHECK(x.parent == b, "node now in B");
+        CHECK(a.children.count == 0, "A left empty");
+        CHECK(b.children.count == 2 && b.children[1] == x, "appended after B's playlist");
+        CHECK(tidal.children.count == 2, "existing B reused, no folder created");
+    }
+
+    // --- followRename: plain rename, encoding off ---
+    {
+        g_context = "rename-plain";
+        TreeNode *jazz = [TreeNode folderWithName:@"Jazz"];
+        TreeNode *bebop = [TreeNode playlistWithName:@"Bebop"];
+        [jazz addChild:bebop];
+        [jazz addChild:[TreeNode playlistWithName:@"Cool"]];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:jazz];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:@"Bebop" to:@"Hard Bop"
+                                            decodeNewPath:NO roots:roots];
+        CHECK(result == bebop, "the renamed node is returned");
+        CHECK([bebop.name isEqualToString:@"Hard Bop"], "name updated");
+        CHECK(bebop.parent == jazz && jazz.children[0] == bebop, "stays in place");
+        CHECK(jazz.children.count == 2 && roots.count == 1, "nothing added or removed");
+    }
+
+    // --- followRename: plain rename inside a folder, encoding on ---
+    {
+        g_context = "rename-plain-encoded";
+        TreeNode *jazz = [TreeNode folderWithName:@"Jazz"];
+        TreeNode *bebop = [TreeNode playlistWithName:@"Bebop"];
+        [jazz addChild:bebop];
+        [jazz addChild:[TreeNode playlistWithName:@"Cool"]];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:jazz];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:enc(@[@"Jazz", @"Bebop"])
+                                                       to:enc(@[@"Jazz", @"Hard Bop"])
+                                            decodeNewPath:YES
+                                                    roots:roots];
+        CHECK(result == bebop, "the renamed node is returned");
+        CHECK([bebop.name isEqualToString:@"Hard Bop"], "leaf name updated");
+        CHECK(bebop.parent == jazz && jazz.children[0] == bebop, "keeps its position in the folder");
+        CHECK(jazz.children.count == 2, "nothing added or removed");
+    }
+
+    // --- followRename: escaped separator in the new leaf ---
+    {
+        g_context = "rename-escaped-leaf";
+        TreeNode *tidal = [TreeNode folderWithName:@"TIDAL"];
+        TreeNode *x = [TreeNode playlistWithName:@"X"];
+        [tidal addChild:x];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:tidal];
+        NSString *leaf = @"A \u00BB B";
+
+        [PlorgTreeOps followRenameFrom:enc(@[@"TIDAL", @"X"]) to:enc(@[@"TIDAL", leaf])
+                         decodeNewPath:YES roots:roots];
+        CHECK([x.name isEqualToString:leaf], "leaf unescaped, not split");
+        CHECK(x.parent == tidal && tidal.children.count == 1, "stays in TIDAL");
+    }
+
+    // --- followRename: one-part name moves to the root ---
+    {
+        g_context = "rename-to-root";
+        TreeNode *tidal = [TreeNode folderWithName:@"TIDAL"];
+        TreeNode *x = [TreeNode playlistWithName:@"X"];
+        [tidal addChild:x];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:tidal];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:enc(@[@"TIDAL", @"X"]) to:@"X"
+                                            decodeNewPath:YES roots:roots];
+        CHECK(result == x, "the renamed node is returned");
+        CHECK(x.parent == nil && roots.count == 2 && roots[1] == x, "moved to the root");
+        CHECK(tidal.children.count == 0, "TIDAL left empty");
+    }
+
+    // --- followRename: one-part old name prefers the root-level leaf ---
+    {
+        g_context = "rename-root-preferred";
+        TreeNode *jazz = [TreeNode folderWithName:@"Jazz"];
+        TreeNode *nestedX = [TreeNode playlistWithName:@"X"];
+        [jazz addChild:nestedX];
+        TreeNode *rootX = [TreeNode playlistWithName:@"X"];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:jazz, rootX, nil];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:@"X" to:@"Y" decodeNewPath:YES roots:roots];
+        CHECK(result == rootX, "root-level node renamed");
+        CHECK([rootX.name isEqualToString:@"Y"] && rootX.parent == nil, "renamed in place at root");
+        CHECK([nestedX.name isEqualToString:@"X"], "nested namesake untouched");
+    }
+
+    // --- followRename: stale node already at the target ---
+    {
+        g_context = "rename-stale-target";
+        TreeNode *tidal = [TreeNode folderWithName:@"TIDAL"];
+        TreeNode *mood = [TreeNode folderWithName:@"Mood"];
+        TreeNode *oldX = [TreeNode playlistWithName:@"X"];
+        TreeNode *staleX = [TreeNode playlistWithName:@"X"];
+        [mood addChild:staleX];
+        [tidal addChild:oldX];
+        [tidal addChild:mood];
+        NSMutableArray *roots = [NSMutableArray arrayWithObject:tidal];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:enc(@[@"TIDAL", @"X"])
+                                                       to:enc(@[@"TIDAL", @"Mood", @"X"])
+                                            decodeNewPath:YES
+                                                    roots:roots];
+        CHECK(result == staleX, "the node at the target is kept");
+        CHECK(tidal.children.count == 1 && tidal.children[0] == mood, "old node removed from TIDAL");
+        CHECK(oldX.parent == nil, "old node detached");
+        CHECK(mood.children.count == 1 && mood.children[0] == staleX, "no duplicate at the target");
+    }
+
+    // --- followRename: stale node with the new flat name ---
+    {
+        g_context = "rename-stale-flat";
+        TreeNode *oldNode = [TreeNode playlistWithName:@"Old"];
+        TreeNode *newNode = [TreeNode playlistWithName:@"New"];
+        NSMutableArray *roots = [NSMutableArray arrayWithObjects:oldNode, newNode, nil];
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:@"Old" to:@"New" decodeNewPath:NO roots:roots];
+        CHECK(result == newNode, "the existing node is kept");
+        CHECK(roots.count == 1 && roots[0] == newNode, "old node removed");
+    }
+
+    // --- followRename: no node for the old name ---
+    {
+        g_context = "rename-no-old-node";
+        NSMutableArray *roots = makeFixture();
+
+        TreeNode *result = [PlorgTreeOps followRenameFrom:@"Missing"
+                                                       to:enc(@[@"TIDAL", @"Missing"])
+                                            decodeNewPath:YES
+                                                    roots:roots];
+        CHECK(result == nil, "nil when nothing matches");
+        CHECK([PlorgTreeOps countNodes:roots] == 5, "tree unchanged");
+        CHECK([PlorgTreeOps findFolderForComponents:@[@"TIDAL"] inRoots:roots] == nil, "no folder created");
+        CHECK([PlorgTreeOps followRenameFrom:@"Inbox" to:@"Inbox" decodeNewPath:YES roots:roots] == nil,
+              "same name is a no-op");
     }
 
     // --- countNodes ---

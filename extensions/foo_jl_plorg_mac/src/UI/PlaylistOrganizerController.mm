@@ -2020,8 +2020,7 @@ static NSString *leafNameForNode(TreeNode *node) {
             t_size index = pm->find_playlist([oldFoobarName UTF8String], pfc_infinite);
             if (index != pfc_infinite) {
                 NSString *newFoobarName = [self.treeModel foobarNameForNode:node];
-                pfc::string8 newNameStr([newFoobarName UTF8String]);
-                pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
+                [self.treeModel renameFoobarPlaylistAtIndex:index toName:newFoobarName];
             }
         } @catch (...) {
             FB2K_console_formatter() << "[Plorg] Failed to rename playlist";
@@ -2070,8 +2069,7 @@ static NSString *leafNameForNode(TreeNode *node) {
             t_size index = pm->find_playlist([oldFoobarName UTF8String], pfc_infinite);
             if (index == pfc_infinite) continue;
 
-            pfc::string8 newNameStr([newFoobarName UTF8String]);
-            pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
+            [self.treeModel renameFoobarPlaylistAtIndex:index toName:newFoobarName];
         }
     } @catch (...) {
         FB2K_console_formatter() << "[Plorg] Failed to rename descendant playlists";
