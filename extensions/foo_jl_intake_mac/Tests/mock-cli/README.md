@@ -206,5 +206,9 @@ starting with `responses/` or `root/`), `base` (the scenario it extends) and
 (used in `target_path`) the same name as the CLI's `sanitizeComponent` makes
 it a folder name (`/`, `\` and `:` become `-`, control characters are
 dropped, leading and trailing spaces and dots trimmed). Every `*.wav` is written as
-a 0.1 s silent WAV, so foobar2000 can list the tracks. The mock refuses to
+a 0.1 s silent WAV (PCM, mono, 8 kHz, 8 bit), so foobar2000 can list the
+tracks. A RIFF `LIST`/`INFO` chunk after the audio tags it with `IPRD`
+(album) = its parent folder's name and `INAM` (title) = its file name without
+the extension, so SimPlaylist's default header pattern puts each folder in
+its own group (the five loose tracks share one). The mock refuses to
 apply a state when it finds a symlink under `root/` or `responses/`.

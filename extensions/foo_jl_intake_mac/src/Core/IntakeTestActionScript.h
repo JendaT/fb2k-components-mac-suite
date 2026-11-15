@@ -10,6 +10,8 @@
 //  Steps are separated by ";". Inside a step, words are separated by
 //  spaces or tabs:
 //    menu <id...>                        log the menu for those roots
+//    badge <id...>                       log the group badge for those
+//                                        roots' rows
 //    propose|approve|reject <id...>      dispatch like the menu item
 //    refresh [<id...>]                   (ids are accepted and ignored)
 //    ... reason=<text>                   reject only: everything after
@@ -35,6 +37,7 @@ namespace intake {
 enum class TestStepKind {
     Invalid,
     Menu,
+    Badge,
     Dispatch,
     Wait,
 };

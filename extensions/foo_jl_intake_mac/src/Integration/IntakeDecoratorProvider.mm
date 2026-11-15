@@ -22,12 +22,14 @@
 //  commits a pending answer like an empty one, and the loader fires
 //  invalidate-all after its first load.
 //
-//  decorate_group (B6): the same per-row pipeline for each member the host
-//  passes (at most 64): get_path -> IntakeNativePath -> IntakeView::recordFor.
-//  When every member that maps belongs to one root, that root's badge
-//  (IntakeGroupBadge, computed when the snapshot was built) fills the
-//  jl_group_decoration; no badge for mixed groups, an inert view, or a root
-//  that is not proposed or approved. No I/O, like decorate().
+//  decorate_group (B6), in providerDecorateGroup: the same per-row pipeline
+//  for each member the host passes (at most 64): get_path ->
+//  IntakeNativePath -> IntakeView::recordFor. When every member that maps
+//  belongs to one root, that root's badge (IntakeGroupBadge, computed when
+//  the snapshot was built) fills the jl_group_decoration; no badge for mixed
+//  groups, an inert view, or a root that is not proposed or approved. No
+//  I/O, like decorate(). The test_actions `badge` step (temporary) calls the
+//  same function on the main thread.
 //
 //  context_actions / execute_context_action (main thread) go to
 //  IntakeActions, which keeps the table the menu was built from.
@@ -168,32 +170,7 @@ public:
     bool decorate_group(const jl_group_key &key, metadb_handle_list_cref members,
                         jl_group_decoration &out) override {
         (void)key;
-        const std::shared_ptr<const IntakeView> view = currentView(providerState());
-        if (!view || view->rendersNothing() || view->isInert()) return false;
-        const t_size count = members.get_count();
-        std::vector<const IntakeRecord *> records;
-        records.reserve(count);
-        pfc::string8 native;
-        ViewScratch scratch;
-        for (t_size i = 0; i < count; i++) {
-            @autoreleasepool {
-                const metadb_handle_ptr handle = members[i];
-                if (!handle.is_valid()) continue;
-                const char *path = intakeNativePath(handle->get_path(), native);
-                if (path == nullptr) continue;
-                const IntakeRecord *record = view->recordFor(path, scratch);
-                if (record == nullptr) continue;
-                // Two roots in one group: no badge, no need to look further.
-                if (!records.empty() && records.front()->id != record->id) return false;
-                records.push_back(record);
-            }
-        }
-        const IntakeBadge *badge = groupBadge(records);
-        if (badge == nullptr) return false;
-        out.badge_text.set_string(badge->text.data(), badge->text.size());
-        out.badge_color = badge->color;
-        out.icon = jl_icon_none;
-        return true;
+        return providerDecorateGroup(members, out);
     }
 
     void context_actions(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out) override {
@@ -273,6 +250,35 @@ void providerSetStatsEnabled(bool enabled) {
 
 std::shared_ptr<const IntakeView> providerCurrentView() {
     return currentView(providerState());
+}
+
+bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out) {
+    const std::shared_ptr<const IntakeView> view = currentView(providerState());
+    if (!view || view->rendersNothing() || view->isInert()) return false;
+    const t_size count = members.get_count();
+    std::vector<const IntakeRecord *> records;
+    records.reserve(count);
+    pfc::string8 native;
+    ViewScratch scratch;
+    for (t_size i = 0; i < count; i++) {
+        @autoreleasepool {
+            const metadb_handle_ptr handle = members[i];
+            if (!handle.is_valid()) continue;
+            const char *path = intakeNativePath(handle->get_path(), native);
+            if (path == nullptr) continue;
+            const IntakeRecord *record = view->recordFor(path, scratch);
+            if (record == nullptr) continue;
+            // Two roots in one group: no badge, no need to look further.
+            if (!records.empty() && records.front()->id != record->id) return false;
+            records.push_back(record);
+        }
+    }
+    const IntakeBadge *badge = groupBadge(records);
+    if (badge == nullptr) return false;
+    out.badge_text.set_string(badge->text.data(), badge->text.size());
+    out.badge_color = badge->color;
+    out.icon = jl_icon_none;
+    return true;
 }
 
 } // namespace intake

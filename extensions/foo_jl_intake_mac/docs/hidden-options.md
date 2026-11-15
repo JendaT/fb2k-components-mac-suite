@@ -236,7 +236,8 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 Temporary acceptance aid (B6), removed before the merge to main with the
 other aids (`src/Integration/IntakeTestActions.mm`,
 `src/Core/IntakeTestActionScript.*` and its tests). It lets an in-app check
-drive the intake context menu without clicking.
+drive the intake context menu, and read the group header badges, without
+clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
 the first successful `status` load; the key is reset to `""` before the first
@@ -246,6 +247,7 @@ by `;`, words by spaces:
 | Step | What it does |
 |---|---|
 | `menu <id...>` | Logs the items (title, enabled) the context menu would show for a selection of those roots' rows. The rows are the roots' members from the snapshot (a whole-folder root: its folder), mapped through the same lookup as a real selection, then the same table. |
+| `badge <id...>` | Logs the group header badge for a group made of those roots' rows (the same rows as `menu`, at most the first 64, as SimPlaylist passes): it makes metadb handles for them and runs the provider's own `decorate_group` code on them, on the main thread. The line is `test_actions: badge <ids>: "<text>" color #RRGGBBAA`, with ` (amber)` after the colour when it is the amber review colour (`#00000000` is the host's default secondary colour), or `test_actions: badge <ids>: no badge` (members of two roots, a root that is not `proposed` or `approved`, an inert view). It needs no SimPlaylist panel or grouping preset. |
 | `propose <id...>`, `approve <id...>`, `reject <id...> [reason=<text>]` | Builds that menu and dispatches its item for the action through the same path and mutation lane as a click. Dialogs are skipped: reject runs with the `reason=` text (everything after `reason=` to the end of the step, trimmed), or with none. A disabled item, or a busy lane, runs nothing and says so. |
 | `refresh` | The **Refresh intake status** item (a full reload with `version`). |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
@@ -264,7 +266,7 @@ step that should see its result (the call, then the refresh it triggers).
 # quit foobar2000 first
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
-     'menu itk_0000000b; propose itk_0000000b; wait 4; menu itk_0000000b')
+     'menu itk_0000000b; badge itk_0000000b; propose itk_0000000b; wait 4; menu itk_0000000b; badge itk_0000000b')
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 

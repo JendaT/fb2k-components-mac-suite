@@ -94,6 +94,8 @@ TestActionStep parseStep(const std::string &raw) {
     IntakeAction action = IntakeAction::Refresh;
     if (verb == "menu") {
         kind = TestStepKind::Menu;
+    } else if (verb == "badge") {
+        kind = TestStepKind::Badge;
     } else if (verb == "propose") {
         kind = TestStepKind::Dispatch;
         action = IntakeAction::Propose;

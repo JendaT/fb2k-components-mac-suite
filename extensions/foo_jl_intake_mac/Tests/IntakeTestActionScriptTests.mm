@@ -61,6 +61,33 @@ static void testSteps() {
     CHECK(parseTestActions("wait 30")[0].kind == TestStepKind::Wait, "wait 30 is the limit");
 }
 
+static void testBadge() {
+    g_context = "badge";
+    std::vector<TestActionStep> one = parseTestActions("badge itk_0000000d");
+    CHECK(one.size() == 1 && one[0].kind == TestStepKind::Badge && one[0].ids == v({"itk_0000000d"}),
+          "badge with one id");
+    CHECK(one[0].text == "badge itk_0000000d" && !one[0].hasReason, "the step text; no reason");
+    std::vector<TestActionStep> two = parseTestActions("  badge\titk_0000000d itk_00000010 itk_0000000d ");
+    CHECK(two[0].kind == TestStepKind::Badge && two[0].ids == v({"itk_0000000d", "itk_00000010"}),
+          "badge with two ids; a repeated id is kept once");
+    CHECK(two[0].text == "badge\titk_0000000d itk_00000010 itk_0000000d", "the step text, trimmed");
+
+    CHECK(invalid("badge", "badge needs at least one id"), "badge needs ids");
+    CHECK(invalid("badge   ", "at least one id"), "badge with only spaces after it");
+    CHECK(invalid("badge itk_0000000d /income/dump/Album", "not a sidecar id: /income/dump/Album"),
+          "a path is not an id");
+    CHECK(invalid("badge itk_000000", "not a sidecar id"), "too few hex digits");
+    CHECK(invalid("badge ITK_0000000D", "not a sidecar id"), "ids are lowercase");
+    CHECK(invalid("badge --all", "not a sidecar id"), "no flags");
+    CHECK(invalid("badge itk_0000000d reason=x", "only reject"), "badge takes no reason");
+    CHECK(invalid("badges itk_0000000d", "unknown step"), "the verb is exactly badge");
+
+    std::vector<TestActionStep> mixed = parseTestActions("badge; badge itk_0000000b; menu itk_0000000b");
+    CHECK(mixed.size() == 3 && mixed[0].kind == TestStepKind::Invalid && mixed[1].kind == TestStepKind::Badge &&
+              mixed[2].kind == TestStepKind::Menu,
+          "an invalid badge step does not stop the others");
+}
+
 static void testInvalid() {
     g_context = "invalid";
     CHECK(invalid("wait 31", "at most 30"), "wait over 30");
@@ -87,6 +114,7 @@ static void testInvalid() {
 int main() {
     @autoreleasepool {
         testSteps();
+        testBadge();
         testInvalid();
     }
     TEST_MAIN_END();

@@ -16,6 +16,15 @@
 //                                   whole-folder root: its folder), mapped
 //                                   through the same view lookup as a real
 //                                   selection, then the same table
+//    badge <id...>                  logs the group header badge for a group
+//                                   made of those roots' rows (the same rows
+//                                   as menu, at most 64 like the host, as
+//                                   metadb handles): providerDecorateGroup,
+//                                   the provider's own decorate_group code,
+//                                   on the main thread. One line: the text
+//                                   in quotes and "color #RRGGBBAA", plus
+//                                   " (amber)" for the amber colour; or
+//                                   "no badge"
 //    propose|approve|reject <id...> builds that table and dispatches the
 //                                   item for the action through the same
 //                                   path and lane as a click; dialogs are
@@ -43,6 +52,7 @@
 #include "../Core/IntakeView.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,6 +63,9 @@ namespace {
 
 const char *const kKey = "test_actions";  // under foo_jl_intake.
 
+// SimPlaylist passes at most this many members to decorate_group.
+constexpr size_t kGroupMemberLimit = 64;
+
 bool g_ran = false;  // main thread
 
 std::string joinIds(const std::vector<std::string> &ids) {
@@ -62,9 +75,11 @@ std::string joinIds(const std::vector<std::string> &ids) {
 }
 
 // The rows of those roots, through the view's lookup (see the top of this
-// file). False with `error` when an id is not in the snapshot.
+// file). False with `error` when an id is not in the snapshot. `rowPaths`,
+// when given, gets the rows' paths in order.
 bool rootsForIds(const IntakeView &view, const std::vector<std::string> &ids,
-                 std::vector<const IntakeRecord *> &roots, std::string &error) {
+                 std::vector<const IntakeRecord *> &roots, std::string &error,
+                 std::vector<std::string> *rowPaths = nullptr) {
     const IntakeSnapshot &snapshot = view.snapshot();
     std::vector<const IntakeRecord *> rows;
     ViewScratch scratch;
@@ -86,6 +101,7 @@ bool rootsForIds(const IntakeView &view, const std::vector<std::string> &ids,
             paths.push_back(record->rootPath);
         }
         for (const std::string &path : paths) rows.push_back(view.recordFor(path, scratch));
+        if (rowPaths != nullptr) rowPaths->insert(rowPaths->end(), paths.begin(), paths.end());
     }
     roots = selectionRoots(rows);
     // The lookup can land on another root (a root with no member list in a
@@ -117,6 +133,18 @@ std::string menuText(const ActionTable &table) {
     return out;
 }
 
+// The badge line: "\"<text>\" color #RRGGBBAA", plus " (amber)" when the
+// colour is IntakeGroupBadge's amber (the review tint at full alpha; the
+// snapshot is built with the default palette, LoaderSettings::palette).
+std::string badgeText(const jl_group_decoration &deco) {
+    char color[16];
+    snprintf(color, sizeof(color), "#%08X", static_cast<unsigned>(deco.badge_color));
+    std::string out = "\"" + std::string(deco.badge_text.c_str()) + "\" color " + color;
+    const IntakeRgba amber = opaqueColor(IntakePalette().tintReview);
+    if (amber != 0 && deco.badge_color == amber) out += " (amber)";
+    return out;
+}
+
 void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index);
 
 void next(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index) {
@@ -145,6 +173,32 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
                                runStep(steps, index + 1);
                            });
             return;
+        }
+        case TestStepKind::Badge: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            std::vector<const IntakeRecord *> roots;
+            std::vector<std::string> paths;
+            std::string error;
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (!rootsForIds(*view, step.ids, roots, error, &paths)) {
+                logInfo(label + "skipped (" + error + ")");
+                break;
+            }
+            auto db = metadb::get();
+            metadb_handle_list members;
+            for (size_t i = 0; i < paths.size() && i < kGroupMemberLimit; i++) {
+                members.add_item(db->handle_create(("file://" + paths[i]).c_str(), 0));
+            }
+            jl_group_decoration deco;
+            if (providerDecorateGroup(members, deco)) {
+                logInfo(label + badgeText(deco));
+            } else {
+                logInfo(label + "no badge");
+            }
+            break;
         }
         case TestStepKind::Menu:
         case TestStepKind::Dispatch: {

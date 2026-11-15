@@ -202,7 +202,8 @@ log_call "$@"
 #   generate    "roots <n>": synthesize n roots (perf scenarios)
 # Text fixtures get @ROOT@ (and, for states, @COLLECTION@ and the sanitized
 # path component @COLLECTION_DIR@) replaced. Every *.wav is written as a
-# 0.1 s silent WAV so foobar2000 can list the rows.
+# 0.1 s silent WAV so foobar2000 can list the rows, tagged with its folder's
+# name as the album (write_wav).
 # ---------------------------------------------------------------------------
 
 ROOT_JSON=""         # $ROOT as it appears inside JSON strings
@@ -211,15 +212,45 @@ COLLECTION_DIR_JSON=""   # the same as a target_path component (sanitized)
 SUBST_COLLECTION=0   # 1 while applying a .next state
 SILENCE=""
 
+# $1 as a little-endian u32, written as printf escapes ("\x2a\x00\x00\x00").
+le32() {
+    printf -v REPLY '\\x%02x\\x%02x\\x%02x\\x%02x' \
+        $(($1 & 255)) $(($1 >> 8 & 255)) $(($1 >> 16 & 255)) $(($1 >> 24 & 255))
+}
+
 write_wav() {
+    local path="$1" album title n1 n2 p1 p2 list riff z1="" z2="" e_riff e_list e_n1 e_n2
     if [ -z "$SILENCE" ]; then
         SILENCE=$'\x80'
         while [ ${#SILENCE} -lt 800 ]; do SILENCE="$SILENCE$SILENCE"; done
         SILENCE="${SILENCE:0:800}"
     fi
-    # RIFF/WAVE, PCM, mono, 8 kHz, 8 bit, 800 data bytes.
-    printf 'RIFF\x44\x03\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x20\x03\x00\x00' > "$1"
-    printf '%s' "$SILENCE" >> "$1"
+    # LIST/INFO tags so foobar2000 can group the rows by album: IPRD (album)
+    # is the parent folder's name, INAM (title) the file name without its
+    # extension. ${#x} counts bytes under the script's LC_ALL=C.
+    title="${path##*/}"
+    title="${title%.*}"
+    album="${path%/*}"
+    album="${album##*/}"
+    n1=$((${#album} + 1))     # subchunk sizes include the terminating NUL
+    n2=$((${#title} + 1))
+    p1=$((n1 & 1))            # one pad byte after an odd size, not counted in it
+    p2=$((n2 & 1))
+    [ $p1 -eq 1 ] && z1='\x00'
+    [ $p2 -eq 1 ] && z2='\x00'
+    list=$((4 + 8 + n1 + p1 + 8 + n2 + p2))
+    riff=$((4 + 8 + 16 + 8 + 800 + 8 + list))   # WAVE, fmt, data, LIST
+    le32 $riff; e_riff="$REPLY"
+    le32 $list; e_list="$REPLY"
+    le32 $n1; e_n1="$REPLY"
+    le32 $n2; e_n2="$REPLY"
+    # RIFF/WAVE, PCM, mono, 8 kHz, 8 bit, 800 data bytes, then LIST/INFO.
+    # The names go through %s, so % and \ in them are not format characters.
+    {
+        printf 'RIFF'"$e_riff"'WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x40\x1f\x00\x00\x01\x00\x08\x00data\x20\x03\x00\x00'
+        printf '%s' "$SILENCE"
+        printf 'LIST'"$e_list"'INFOIPRD'"$e_n1"'%s\x00'"$z1"'INAM'"$e_n2"'%s\x00'"$z2" "$album" "$title"
+    } > "$path"
 }
 
 substitute_file() { # src dst collection(0|1)
