@@ -28,14 +28,25 @@ NS_ASSUME_NONNULL_BEGIN
 @interface IntakeRoot : NSObject
 /// Sidecar id (doc 03: roots are addressed by sidecar id OR absolute path).
 @property (nonatomic, copy, readonly) NSString *identifier;
-/// Absolute directory path of the release root, normalized with IntakePath
-/// (file:// stripped, lexical normalization, NFC). A path IntakePath cannot
-/// handle (empty, relative, another scheme) is kept as given, and such a
-/// root never matches anything.
+/// The release root's directory exactly as the CLI reported it (`root_path`).
+/// This is the path for filesystem access (sidecars, watch paths, stat):
+/// on SMB and HFS+ the on-disk name may be NFD, and only this spelling is
+/// sure to address the folder.
 @property (nonatomic, copy, readonly) NSString *rootPath;
+/// The lookup key: the match path normalized with IntakePath (file://
+/// stripped, lexical normalization, NFC). Never use it for I/O. nil when
+/// IntakePath cannot handle the match path (empty, relative, another
+/// scheme); such a root never matches anything.
+@property (nonatomic, copy, readonly, nullable) NSString *matchKey;
 
+/// Matches on `rootPath` itself.
+- (instancetype)initWithIdentifier:(NSString *)identifier rootPath:(NSString *)rootPath;
+/// Matches on `matchPath` when given (e.g. a mount-alias key such as
+/// "/smbfs:<share>/<relative>", which must start with '/'), else on
+/// `rootPath`. `rootPath` is kept as given either way.
 - (instancetype)initWithIdentifier:(NSString *)identifier
-                          rootPath:(NSString *)rootPath NS_DESIGNATED_INITIALIZER;
+                          rootPath:(NSString *)rootPath
+                         matchPath:(nullable NSString *)matchPath NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 @end
 
@@ -43,11 +54,13 @@ NS_ASSUME_NONNULL_BEGIN
 ///
 /// Both sides are normalized with IntakePath (lexical only, no filesystem
 /// access, then NFC), so "/private/tmp" and "/tmp" stay different and an NFD
-/// query matches an NFC root. A path equal to a root matches that root; a
-/// nested root wins over its parent (the nearest ancestor wins). Matching is
-/// case-sensitive: APFS is case-insensitive by default but the CLI reports
-/// the paths it walked, and lowercasing would break on case-sensitive
-/// volumes; callers that need otherwise normalize first.
+/// query matches an NFC root. Queries in another key namespace (a mount-alias
+/// key) must be spelled the way the roots' match paths were, starting with
+/// '/'. A path equal to a root matches that root; a nested root wins over its
+/// parent (the nearest ancestor wins). Matching is case-sensitive: APFS is
+/// case-insensitive by default but the CLI reports the paths it walked, and
+/// lowercasing would break on case-sensitive volumes; callers that need
+/// otherwise normalize first.
 ///
 /// Lookup walks the query's ancestors through a hash map, so its cost grows
 /// with the path's depth, not with the number of roots.

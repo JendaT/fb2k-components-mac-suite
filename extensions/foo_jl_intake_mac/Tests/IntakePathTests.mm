@@ -148,6 +148,61 @@ int main(void) {
                   "out is cleared on failure");
         }
 
+        // --- input viewing the caller's own buffer (normalize in place) ---
+        g_context = "aliasing";
+        {
+            std::string buf = "/x/../y";
+            std::string_view out;
+            CHECK(intake::normalizePath(buf, buf, out) == PathStatus::Ok && out == "/y",
+                  "input viewing buffer: lexical result is correct");
+            CHECK(out.data() == buf.data(), "result lands in the buffer");
+
+            buf = "file:///a//Cafe\xCC\x81/";
+            CHECK(intake::normalizePath(buf, buf, out) == PathStatus::Ok &&
+                      out == "/a/Caf\xC3\xA9",
+                  "input viewing buffer: file:// strip, lexical and NFC");
+
+            buf = "/income/dump/../Fixture Artist - Test Album/./01.flac";
+            const std::string_view tail = std::string_view(buf).substr(7);  // "/dump/../..."
+            CHECK(intake::normalizePath(tail, buf, out) == PathStatus::Ok &&
+                      out == "/Fixture Artist - Test Album/01.flac",
+                  "input viewing the middle of buffer");
+
+            std::string same = "/a//b/";
+            CHECK(intake::normalizePath(same, same) == PathStatus::Ok && same == "/a/b",
+                  "copying overload with input == out (slow path)");
+            same = "file:///a/b";
+            CHECK(intake::normalizePath(same, same) == PathStatus::Ok && same == "/a/b",
+                  "copying overload with input == out (zero-copy path)");
+        }
+
+        // --- idempotence: a second pass returns the same bytes ---
+        // Callers may normalize, rewrite (mount alias, B3), and let the
+        // index normalize again.
+        g_context = "idempotent";
+        {
+            const char *inputs[] = {
+                "/a/./../b//c/", "file:///x/../income/Cafe\xCC\x81/", "/\xE1\x84\x92\xE1\x85\xA1",
+                "/a/\xFF/../b\xFF", "/smbfs:fixture-share/income/Fixture Artist - Test Album",
+            };
+            int stable = 0;
+            for (const char *in : inputs) {
+                std::string once, twice;
+                if (intake::normalizePath(in, once) == PathStatus::Ok &&
+                    intake::normalizePath(once, twice) == PathStatus::Ok && once == twice) {
+                    stable++;
+                }
+            }
+            CHECK_EQ(stable, 5, "normalize(normalize(x)) == normalize(x)");
+        }
+
+        // --- mount-alias keys (PLAN.md B3): must start with '/' ---
+        g_context = "alias-key";
+        checkNormal("/smbfs:fixture-share/income/Fixture Artist - Test Album",
+                    "/smbfs:fixture-share/income/Fixture Artist - Test Album");
+        checkNormal("/smbfs:fixture-share/income//A/", "/smbfs:fixture-share/income/A");
+        checkStatus("smbfs:fixture-share/income/A", PathStatus::Relative);
+
         // --- status names ---
         g_context = "names";
         CHECK(std::string(intake::pathStatusName(PathStatus::Ok)) == "Ok", "Ok name");

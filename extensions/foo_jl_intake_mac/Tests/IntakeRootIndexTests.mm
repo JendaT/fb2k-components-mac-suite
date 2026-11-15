@@ -152,6 +152,7 @@ int main(void) {
         IntakeRoot *pt = [idx rootForFilePath:@"/private/tmp/fixture.flac"];
         CHECK([pt.identifier isEqualToString:@"pt"], "/private/tmp root matches its own spelling");
         CHECK([pt.rootPath isEqualToString:@"/private/tmp"], "root path keeps /private");
+        CHECK([pt.matchKey isEqualToString:@"/private/tmp"], "match key keeps /private");
         CHECK(([idx rootForFilePath:@"/tmp/fixture.flac"] == nil),
               "/tmp is not resolved to /private/tmp");
         [idx setRoots:@[ root(@"t", @"/tmp") ]];
@@ -241,6 +242,66 @@ int main(void) {
         CHECK([[idx rootForFilePath:@"/income/loose/01.flac"].identifier
                   isEqualToString:@"itk_000000a1"],
               "the answer does not depend on listing order");
+
+        // --- rootPath keeps the CLI's spelling for I/O ---
+        // On SMB the folder name on disk is NFD; the NFC match key would not
+        // stat, so rootPath must stay byte-identical to the CLI's root_path.
+        g_context = "io-path";
+        NSData *(^utf8)(NSString *) = ^NSData *(NSString *s) {
+            return [s dataUsingEncoding:NSUTF8StringEncoding];
+        };
+        IntakeRoot *decomposed = root(@"nfd", nfd);
+        CHECK([utf8(decomposed.rootPath) isEqualToData:utf8(nfd)],
+              "rootPath keeps the NFD bytes the CLI reported");
+        CHECK([utf8(decomposed.matchKey) isEqualToData:utf8(nfc)],
+              "matchKey is the NFC spelling");
+        [idx setRoots:@[ decomposed ]];
+        CHECK([utf8([idx rootForFilePath:[nfc stringByAppendingString:@"/01.flac"]].rootPath)
+                  isEqualToData:utf8(nfd)],
+              "a matched root still hands back the NFD I/O path");
+        IntakeRoot *messy = root(@"messy", @"/income//dump/Album/");
+        CHECK([messy.rootPath isEqualToString:@"/income//dump/Album/"],
+              "rootPath is not lexically rewritten");
+        CHECK([messy.matchKey isEqualToString:@"/income/dump/Album"],
+              "matchKey is lexically normalized");
+        IntakeRoot *unusable = root(@"rel", @"income/Album");
+        CHECK(unusable.matchKey == nil, "an unusable path has no match key");
+        CHECK([unusable.rootPath isEqualToString:@"income/Album"],
+              "an unusable path is kept as given");
+
+        // --- a separate match path: the mount-alias key (PLAN.md B3) ---
+        // The alias key must start with '/' to pass IntakePath; rootPath
+        // stays the mount-point spelling for I/O.
+        g_context = "alias-key";
+        IntakeRoot *aliased =
+            [[IntakeRoot alloc] initWithIdentifier:@"alias"
+                                          rootPath:@"/Volumes/fixture-share-1/income/Fixture Artist - Test Album"
+                                         matchPath:@"/smbfs:fixture-share/income/Fixture Artist - Test Album"];
+        CHECK([aliased.matchKey isEqualToString:@"/smbfs:fixture-share/income/Fixture Artist - Test Album"],
+              "an absolute alias key is its own match key");
+        [idx setRoots:@[ aliased ]];
+        IntakeRoot *hit = [idx rootForUTF8Path:"/smbfs:fixture-share/income/Fixture Artist - Test Album/01.flac"];
+        CHECK([hit.identifier isEqualToString:@"alias"], "an alias-key query matches an alias-key root");
+        CHECK([hit.rootPath isEqualToString:@"/Volumes/fixture-share-1/income/Fixture Artist - Test Album"],
+              "the aliased root keeps its mount-point I/O path");
+        CHECK(([idx rootForFilePath:@"/Volumes/fixture-share-1/income/Fixture Artist - Test Album/01.flac"] ==
+               nil),
+              "matching uses the match path, not rootPath");
+        IntakeRoot *aliasNFD = [[IntakeRoot alloc]
+            initWithIdentifier:@"alias-nfd"
+                      rootPath:@"/Volumes/fixture-share/income/x"
+                     matchPath:[NSString stringWithUTF8String:"/smbfs:fixture-share/income/Cafe\xCC\x81"]];
+        [idx setRoots:@[ aliasNFD ]];
+        CHECK([[idx rootForUTF8Path:"/smbfs:fixture-share/income/Caf\xC3\xA9/01.flac"].identifier
+                  isEqualToString:@"alias-nfd"],
+              "alias keys get NFC on both sides too");
+        IntakeRoot *bare = [[IntakeRoot alloc] initWithIdentifier:@"bare"
+                                                         rootPath:@"/Volumes/fixture-share/income/A"
+                                                        matchPath:@"smbfs:fixture-share/income/A"];
+        CHECK(bare.matchKey == nil, "an alias key without a leading '/' is Relative");
+        [idx setRoots:@[ bare ]];
+        CHECK(([idx rootForFilePath:@"/Volumes/fixture-share/income/A/01.flac"] == nil),
+              "and such a root never matches, not even by rootPath");
     }
     TEST_MAIN_END();
 }

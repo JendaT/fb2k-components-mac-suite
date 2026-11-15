@@ -25,6 +25,17 @@
 //
 //  Matching after normalisation stays byte-exact and case-sensitive.
 //
+//  The result is a match key, never a path for filesystem access. NFC
+//  rewrites the bytes of names stored decomposed (SMB shares, HFS+), and an
+//  NFC spelling of such a name does not stat. Keep the original spelling for
+//  any I/O (IntakeRoot.rootPath).
+//
+//  Keys from another namespace must start with '/' to pass; anything else is
+//  Relative. A mount-alias key (PLAN.md B3, IntakeMountAliases) is therefore
+//  spelled "/smbfs:<share>/<relative>", not "smbfs:<share>/<relative>".
+//  Normalisation is idempotent, so a caller may normalise, rewrite, and let
+//  the index normalise again: the second pass returns the same bytes.
+//
 //  Cost: the common case (already-normal ASCII, with or without file://)
 //  is one scan of the input with no allocation and no Foundation call. Other
 //  ASCII input costs one copy into the caller's buffer. Only non-ASCII input
@@ -51,6 +62,8 @@ enum class PathStatus {
 // it was already normal ASCII, so nothing was copied) or `buffer`, which the
 // caller owns and may reuse across calls to keep its capacity. `out` is valid
 // until `input` or `buffer` changes. On any other status `out` is empty.
+// `input` may view `buffer`'s own storage (normalising in place); the call
+// then copies the input first, which costs one allocation.
 //
 // Invalid UTF-8 cannot be normalised to NFC; such input is still lexically
 // normalised and returned as Ok with its bytes otherwise unchanged, so an
@@ -80,8 +93,9 @@ void copyUTF8(NSString *_Nullable string, std::string &out);
 NS_ASSUME_NONNULL_BEGIN
 
 /// Foundation convenience for callers holding NSStrings (e.g. root paths from
-/// parsed status JSON): the normalised path, or nil unless the status is Ok.
-/// `status` (optional) receives the status either way.
+/// parsed status JSON): the normalised match key, or nil unless the status is
+/// Ok. A lookup key only: never use it for filesystem access (see the top of
+/// this file). `status` (optional) receives the status either way.
 NSString *_Nullable IntakeNormalizedPath(NSString *_Nullable path,
                                          intake::PathStatus *_Nullable status);
 

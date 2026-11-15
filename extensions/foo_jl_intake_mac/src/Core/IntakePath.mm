@@ -7,6 +7,8 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
+#include <functional>
+
 namespace intake {
 
 namespace {
@@ -145,7 +147,19 @@ PathStatus normalizePath(std::string_view input, std::string &buffer, std::strin
         return PathStatus::Ok;
     }
 
-    normalizeLexically(p, buffer);
+    // `input` may view `buffer` itself (a path written into the reusable
+    // buffer, then normalized in place). normalizeLexically clears and
+    // appends to `buffer` while reading `p`, so copy it out first.
+    // std::less gives a total order even for unrelated pointers.
+    const std::less<const char *> before;
+    const char *const bufBegin = buffer.data();
+    if (before(p.data(), bufBegin + buffer.capacity()) &&
+        before(bufBegin, p.data() + p.size())) {
+        const std::string copy(p);
+        normalizeLexically(copy, buffer);
+    } else {
+        normalizeLexically(p, buffer);
+    }
     if (hasNonASCII(buffer)) toNFC(buffer);
     out = buffer;
     return PathStatus::Ok;

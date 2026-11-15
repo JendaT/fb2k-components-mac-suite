@@ -36,22 +36,27 @@ struct PathHash {
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier rootPath:(NSString *)rootPath {
+    return [self initWithIdentifier:identifier rootPath:rootPath matchPath:nil];
+}
+
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                          rootPath:(NSString *)rootPath
+                         matchPath:(NSString *)matchPath {
     self = [super init];
     if (self) {
         _identifier = [identifier copy];
+        // The CLI's spelling, untouched: the only one sure to address the
+        // folder on disk (NFD names on SMB).
+        _rootPath = [rootPath copy] ?: @"";
         std::string raw;
-        intake::copyUTF8(rootPath, raw);
+        intake::copyUTF8(matchPath ?: rootPath, raw);
         if (intake::normalizePath(raw, _normalizedPath) == intake::PathStatus::Ok) {
-            _rootPath = [[NSString alloc] initWithBytes:_normalizedPath.data()
+            _matchKey = [[NSString alloc] initWithBytes:_normalizedPath.data()
                                                  length:_normalizedPath.size()
                                                encoding:NSUTF8StringEncoding];
         }
-        if (_rootPath == nil) {
-            // Unusable (or not valid UTF-8 after normalization): keep the
-            // path as given for diagnostics, and never index it.
-            _normalizedPath.clear();
-            _rootPath = [rootPath copy] ?: @"";
-        }
+        // Unusable (or not valid UTF-8 after normalization): never indexed.
+        if (_matchKey == nil) _normalizedPath.clear();
     }
     return self;
 }
