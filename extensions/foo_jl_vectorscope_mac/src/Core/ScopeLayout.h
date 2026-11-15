@@ -96,15 +96,16 @@ inline Result layoutAt(const Input& in, int position) {
     const double scale = !in.labels ? 0.0 : (out.vertical ? kScaleWidth : kScaleHeight);
     double extent = kMeterPad + bars * pitch + scale + kMeterPad;
     // Text on the bars' own axis: name and readout at the ends of a horizontal
-    // bar; under vertical bars a legend, with the same room left above so
-    // zero lines up with the scope's side axis.
+    // bar, with the wider one's room left at both ends; under vertical bars a
+    // legend, with the same room left above. Either way zero lines up with
+    // the scope's axis.
     double text = 0.0;
     if (in.labels && out.vertical) {
         text = 2.0 * (bars * kLegendLine + 1.0);
         const double legend = (bars > 1 ? kLegendNameWidth : 0.0) + kLegendValueWidth;
         extent = std::max(extent, kMeterPad + legend + kMeterPad);
     } else if (in.labels) {
-        text = (bars > 1 ? kRowLabelWidth : 0.0) + kReadoutWidth;
+        text = 2.0 * std::max(bars > 1 ? kRowLabelWidth : 0.0, kReadoutWidth);
     }
     // The meter gives way when the panel is small, when it would crowd out
     // the scope, or when its bars would be too short to read.
@@ -172,14 +173,13 @@ inline Result layoutAt(const Input& in, int position) {
     } else {
         const double total = std::min(in.width - 2.0 * kPad,
                                       std::max(out.plot.w + 2.0 * kLabelInset, kMinMeterLength));
-        const double left = std::round(in.width / 2.0 - total / 2.0);
-        const double barL = left + ((in.labels && bars > 1) ? kRowLabelWidth : 0.0);
-        const double barR = left + total - (in.labels ? kReadoutWidth : 0.0);
+        const double length = 2.0 * std::floor((total - text) / 2.0);
+        const double left = std::round(in.width / 2.0) - length / 2.0;
         const double top = out.meter.y + out.meter.h - kMeterPad;
         for (int i = 0; i < bars; ++i) {
-            out.track[i].x = barL;
+            out.track[i].x = left;
             out.track[i].y = top - (i + 1) * pitch + kBarGap / 2.0;
-            out.track[i].w = barR - barL;
+            out.track[i].w = length;
             out.track[i].h = in.barThickness;
         }
     }
