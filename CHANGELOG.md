@@ -864,7 +864,7 @@ Display P3 colors contributed by @Scannou (#55).
 
 ## Tidal Integration
 
-### [Unreleased]
+### [0.4.1] - 2026-11-15
 
 #### Added
 - **Playlist folders**: Pull mirrors TIDAL playlist folders and renames already-pulled playlists in place instead of recreating them.

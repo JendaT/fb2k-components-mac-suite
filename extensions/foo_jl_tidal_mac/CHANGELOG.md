@@ -2,7 +2,7 @@
 
 All notable changes to TIDAL Integration will be documented in this file.
 
-## [Unreleased]
+## [0.4.1] - 2026-11-15
 
 ### Added
 - **Playlist folders**: Pull places each TIDAL playlist under its TIDAL folder ("TIDAL » Folder » Title"), so Playlist Organizer shows the same folders.
