@@ -31,8 +31,8 @@
 //
 //  Mount points match ignoring ASCII case: macOS compares volume names
 //  case-insensitively and /Volumes on the default APFS volume is
-//  case-insensitive, so a CLI root under /Volumes/music works on disk while
-//  the share is mounted at /Volumes/Music. Only the mount-point prefix is
+//  case-insensitive, so a CLI root under /Volumes/share works on disk while
+//  the share is mounted at /Volumes/Share. Only the mount-point prefix is
 //  folded; the rest of a path keeps its case, as everywhere else in
 //  matching. Trade-off: on a case-sensitive boot volume a folder that
 //  differs from a mount point only in case is treated as that mount.

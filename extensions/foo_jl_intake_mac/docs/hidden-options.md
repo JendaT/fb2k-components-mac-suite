@@ -107,6 +107,41 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "UPDATE configInts SET value=0 WHERE name='foo_jl_intake.decor_stats';"
 ```
 
+## foo_jl_intake.test_playlist and test_playlist_dir
+
+Temporary acceptance aid, removed before the merge (PLAN.md B10). It lets an
+in-app check against the mock CLI build its own playlist, since nobody clicks
+through foobar2000 during those runs.
+
+`foo_jl_intake.test_playlist` (`configInts`), read at startup:
+
+| Value | Meaning |
+|---|---|
+| `0` | Off (default). |
+| `1` | About 4 s after start: remove every playlist named `JL intake test`, create a fresh one holding the `.wav`, `.flac` and `.mp3` files under `test_playlist_dir` (sorted, at most 2,000), and make it active. |
+| `2` | About 4 s after start: remove every playlist named `JL intake test`. |
+
+The component sets the value back to `0` after acting, and foobar2000 writes
+that back when it quits. One console line reports what happened.
+
+`foo_jl_intake.test_playlist_dir` (`configStrings`): an absolute local
+folder, e.g. the mock's `$INTAKE_MOCK_STATE/root`. A path under `/Volumes` or
+`/volume1`, a relative path or one containing `..` is refused with a console
+line, so the switch can never read a network share.
+
+Only playlists with that exact name are created or removed; no other playlist
+is touched. Playlist Organizer may keep a stale `JL intake test` node after
+the playlist is removed; delete it by hand.
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_playlist_dir','/abs/local/folder')
+     ON CONFLICT(name) DO UPDATE SET value=excluded.value;
+   INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_playlist',1)
+     ON CONFLICT(name) DO UPDATE SET value=1;"
+```
+
 ## Reverting everything
 
 ```bash
