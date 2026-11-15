@@ -202,6 +202,9 @@ export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<App
       continue;
     }
     root.sidecar.status = "approved";
+    // Doc 03: needs_review is sticky and approve is the one command that
+    // clears it (a user approval is the review).
+    root.sidecar.cluster.needs_review = false;
     writeSidecarWithEvent(root, "approved", opts.dryRun);
     data.push({ id: root.sidecar.id, root_path: root.dir, status: "approved" });
   }
