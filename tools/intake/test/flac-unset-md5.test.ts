@@ -21,7 +21,7 @@ import { loadGenreMap, saveGenreMap } from "../src/rules.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
 import { sha1Hex } from "../src/util.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const OPTS = {
@@ -139,6 +139,7 @@ beforeAll(() => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   // The placeholder artist needs a prior so assign proposes a target.
   const genre = loadGenreMap(corpus.rules);
   genre.artists[ARTIST] = { [DTE]: 5 };

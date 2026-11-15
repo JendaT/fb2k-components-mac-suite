@@ -6,7 +6,7 @@ import { isSafeRelPath, walkDirs } from "../src/util.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import { cmdScan } from "../src/commands.ts";
 import { cmdApprove, cmdExecute, cmdPropose } from "../src/commands-p3.ts";
-import { setupCorpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {}, all: false,
@@ -77,6 +77,7 @@ test("execute: refuses a target_path outside the configured tier roots", async (
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   const pollen = join(corpus.income, "downloads", "Aes Dana [2012] Pollen (Ultimae Records; inre042)");
   await cmdScan([], { ...OPTS, all: true });
   await cmdPropose([pollen], OPTS);
@@ -91,7 +92,7 @@ test("execute: refuses a target_path outside the configured tier roots", async (
   writeFileSync(scPath, serializeSidecar(doc));
 
   const result = await cmdExecute([pollen], OPTS);
-  expect(result.errors.some((e) => e.code === "E_NO_TARGET")).toBe(true);
+  expect(result.errors.some((e) => e.code === "E_NO_TARGET" && e.msg.includes("outside all configured tier roots"))).toBe(true);
   expect(existsSync(escaped)).toBe(false);
   expect(readSidecar(scPath)!.status).toBe("approved"); // unchanged
 

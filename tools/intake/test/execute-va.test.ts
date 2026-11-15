@@ -15,7 +15,7 @@ import { loadGenreMap } from "../src/rules.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import type { Identification, Proposal, Sidecar } from "../src/types.ts";
 import { isVariousArtists } from "../src/util.ts";
-import { setupCorpus, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {}, all: false,
@@ -75,6 +75,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], { ...OPTS, all: true });
 });
 

@@ -12,7 +12,7 @@ import { cmdApprove, cmdPropose } from "../src/commands-p3.ts";
 import type { Providers } from "../src/providers.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, type Corpus } from "./helpers.ts";
+import { setupCorpus, useTempLibrary, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {}, all: false,
@@ -32,6 +32,7 @@ const summary = (dir: string) => cmdStatus([], { ...OPTS, filters: { root_path: 
 
 beforeAll(async () => {
   corpus = setupCorpus();
+  useTempLibrary(corpus); // propose refuses a tier root that does not exist
   delete process.env.DISCOGS_TOKEN;
   delete process.env.LASTFM_API_KEY;
   await cmdScan([], { ...OPTS, all: true });

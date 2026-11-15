@@ -10,7 +10,7 @@ import { cmdApprove, cmdExecute, cmdGc, cmdPropose } from "../src/commands-p3.ts
 import type { Providers } from "../src/providers.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { collectSidecars, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { collectSidecars, makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const OPTS = {
@@ -60,6 +60,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], { ...OPTS, all: true });
   // Two placed roots in two different income folders.
   for (const dir of [POLLEN(), MOVEMENTS()]) {

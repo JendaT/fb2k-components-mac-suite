@@ -14,7 +14,7 @@ import type { Providers } from "../src/providers.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import type { Sidecar, Status } from "../src/types.ts";
 import { isSidecarName } from "../src/util.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const OPTS = {
@@ -65,6 +65,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], ALL);
 });
 

@@ -14,13 +14,14 @@ import type { Providers } from "../src/providers.ts";
 import { loadGenreMap, type OverrideEvent } from "../src/rules.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import { isVariousArtists } from "../src/util.ts";
-import { collectSidecars, setupCorpus, type Corpus } from "./helpers.ts";
+import { collectSidecars, setupCorpus, useTempLibrary, type Corpus } from "./helpers.ts";
 
 const OPTS = { json: true, dryRun: false, force: false, filters: {} };
 const ALBUM = "Example Compilation";
 
 let corpus: Corpus;
 let base: string;
+let library: string;
 let freq = 2000;
 
 async function tone(path: string, tags: Record<string, string | number>): Promise<void> {
@@ -58,6 +59,7 @@ function sidecarsOf(dir: string): Doc[] {
 
 beforeAll(async () => {
   corpus = setupCorpus();
+  library = useTempLibrary(corpus); // propose refuses a tier root that does not exist
   base = join(corpus.dir, "va");
   // Flat VA compilation: every track by a different artist, tracks 1..5.
   await release("Example Flat Compilation", [
@@ -140,8 +142,8 @@ test("a VA root lands in the compilations slot; propose proposes its [Compilatio
   const assigned = await cmdAssign([dir], { ...OPTS, collection: "[Ambient]", by: "user" });
   expect(assigned.errors).toEqual([]);
   // Amendment 003: compilations get a real target_path under [Compilations]
-  // (the fixture tier root does not exist, so the canonical slot name).
-  const target = `/library/music.hq/[Ambient]/[Compilations]/Various Artists ${ALBUM}`;
+  // (the temp library is empty, so the canonical slot name).
+  const target = `${library}/music.hq/[Ambient]/[Compilations]/Various Artists ${ALBUM}`;
   expect(readSidecar(join(dir, ".intake.json"))!.proposal).toMatchObject({
     structure_slot: "compilations", target_path: target,
   });
@@ -153,7 +155,7 @@ test("a VA root lands in the compilations slot; propose proposes its [Compilatio
   // Propose identifies the root and rebuilds the target at propose time, so
   // the release folder gains the identified year.
   expect(proposed.data).toMatchObject([{
-    status: "proposed", target_path: `/library/music.hq/[Ambient]/[Compilations]/Various Artists [2012] ${ALBUM}`,
+    status: "proposed", target_path: `${library}/music.hq/[Ambient]/[Compilations]/Various Artists [2012] ${ALBUM}`,
   }]);
 });
 
@@ -164,7 +166,7 @@ test("a user override on a VA root is logged but adds no feedback for the VA cre
   const sc = readSidecar(join(dir, ".intake.json"))!;
   expect(sc.proposal).toMatchObject({
     target_collection: "[Psytrance]", assigned_by: "user", structure_slot: "compilations",
-    target_path: `/library/music.hq/[Psytrance]/[Compilations]/Various Artists ${ALBUM}`,
+    target_path: `${library}/music.hq/[Psytrance]/[Compilations]/Various Artists ${ALBUM}`,
   });
 
   const events = Bun.YAML.parse(readFileSync(join(corpus.rules, "overrides.log.yaml"), "utf8")) as OverrideEvent[];

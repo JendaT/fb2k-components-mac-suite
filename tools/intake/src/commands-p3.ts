@@ -19,6 +19,7 @@ import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
+import { targetTierProblem, type MountFs } from "./tierroot.ts";
 import {
   IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, isVariousArtists, mapLimit, sha1Hex, walkDirs,
 } from "./util.ts";
@@ -165,6 +166,13 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
         : !root.sidecar.proposal ? "no assignment evidence"
         : "no target path (tier reject?)";
       errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${why}`, path: root.dir });
+      continue;
+    }
+    // A missing or unmounted tier root reads as an empty library, so the
+    // layout above cannot be trusted: refuse this root, the others proceed.
+    const tierProblem = targetTierProblem(target, assignCfg.tiers, deps.mountFs);
+    if (tierProblem) {
+      errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${tierProblem}`, path: root.dir });
       continue;
     }
     if (opts.allResolved && root.sidecar.cluster.needs_review) {
@@ -338,7 +346,16 @@ function fsyncFile(path: string): void {
   }
 }
 
-export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<CommandResult<ExecuteRow[] | null>> {
+export interface ExecuteDeps {
+  /** Filesystem facts for the tier root check; defaults to the real disk. */
+  mountFs?: MountFs;
+}
+
+export async function cmdExecute(
+  args: string[],
+  opts: ExecuteOpts,
+  deps: ExecuteDeps = {},
+): Promise<CommandResult<ExecuteRow[] | null>> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
@@ -377,6 +394,13 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         errors.push({ code: "E_BAD_STATUS", msg: `cannot resume from status ${sc.status}`, path: root.dir });
         continue;
       }
+      // An unmounted share would read as "copy missing" and revert a root
+      // whose copy may be complete on the share: leave it `placing`.
+      const resumeProblem = target ? targetTierProblem(target, tiers, deps.mountFs) : null;
+      if (resumeProblem) {
+        errors.push({ code: "E_NO_TARGET", msg: `cannot resume: ${resumeProblem}`, path: root.dir });
+        continue;
+      }
       data.push(await resumeRoot(root, cfg.journal_path, opts));
       continue;
     }
@@ -390,6 +414,13 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     }
     if (!targetUnderTierRoot(target, tiers)) {
       errors.push({ code: "E_NO_TARGET", msg: "target_path is outside all configured tier roots", path: target });
+      continue;
+    }
+    // Never write the library copy onto a missing tier root or a stale mount
+    // point dir on the local disk (share not mounted).
+    const tierProblem = targetTierProblem(target, tiers, deps.mountFs);
+    if (tierProblem) {
+      errors.push({ code: "E_NO_TARGET", msg: `cannot execute: ${tierProblem}`, path: root.dir });
       continue;
     }
     if (existsSync(target)) {

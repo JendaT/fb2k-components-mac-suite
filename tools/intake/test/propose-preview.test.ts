@@ -17,7 +17,7 @@ import type { P2Deps } from "../src/commands-p2.ts";
 import type { Providers } from "../src/providers.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { setupCorpus, treeHash, useTempLibrary, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {},
@@ -43,6 +43,7 @@ const onDisk = (): Sidecar => readSidecar(sidecarPath)!;
 
 beforeAll(async () => {
   corpus = setupCorpus();
+  useTempLibrary(corpus); // propose refuses a tier root that does not exist
   delete process.env.DISCOGS_TOKEN;
   delete process.env.LASTFM_API_KEY;
   delete process.env.INTAKE_BEETS_SHIM;

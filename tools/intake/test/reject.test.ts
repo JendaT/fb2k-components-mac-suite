@@ -13,7 +13,7 @@ import { rootsFromRefs } from "../src/commands-p2.ts";
 import { cmdApprove, cmdExecute, cmdGc, cmdPropose, cmdReject } from "../src/commands-p3.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import type { Sidecar, Status } from "../src/types.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const OPTS = {
@@ -108,6 +108,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], { ...OPTS, all: true });
 });
 

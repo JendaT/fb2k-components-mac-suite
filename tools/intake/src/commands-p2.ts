@@ -8,6 +8,7 @@ import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
 import { identifyRoot } from "./identify.ts";
 import type { LibraryProbe } from "./layout.ts";
+import type { MountFs } from "./tierroot.ts";
 import { buildProviders, type Providers } from "./providers.ts";
 import {
   appendOverride, loadGenreMap, loadLabelMap, loadStyleMap, recordFeedback,
@@ -126,6 +127,8 @@ export interface P2Deps {
   providers?: Providers;
   /** Collection dir listings for the library layout; defaults to diskLibraryProbe(). */
   library?: LibraryProbe;
+  /** Filesystem facts for the tier root check (propose); defaults to the real disk. */
+  mountFs?: MountFs;
 }
 
 /**

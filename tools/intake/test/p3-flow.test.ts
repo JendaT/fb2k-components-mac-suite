@@ -13,7 +13,7 @@ import { readJournal } from "../src/journal.ts";
 import { loadGenreMap } from "../src/rules.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {},
@@ -56,6 +56,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], { ...OPTS, all: true });
   pristineIncome = treeHash(corpus.income);
 });
