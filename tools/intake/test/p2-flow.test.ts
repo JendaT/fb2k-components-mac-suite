@@ -148,7 +148,9 @@ test("bootstrap: read-only tree scan produces maps and naming report", () => {
   };
   expect(labels.labels["Ultimae Records"]?.[PCP]).toBe(2);
 
-  const report = readFileSync(join(out, "naming-variants-report.md"), "utf8");
+  // The report goes to docs/ (the rules repo layout), not the --out root.
+  expect(existsSync(join(out, "naming-variants-report.md"))).toBe(false);
+  const report = readFileSync(join(out, "docs", "naming-variants-report.md"), "utf8");
   expect(report).toContain("bracket_year_paren_label | 2");
   expect(report).toContain("completely unparseable dirname");
 

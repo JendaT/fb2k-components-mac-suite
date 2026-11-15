@@ -365,7 +365,10 @@ export function cmdBootstrap(opts: BootstrapOpts): CommandResult {
     mkdirSync(out, { recursive: true });
     saveGenreMap(out, result.genre);
     saveLabelMap(out, result.labels);
-    writeFileSync(join(out, "naming-variants-report.md"), result.report);
+    // The rules repo keeps reports under docs/, next to the structure notes.
+    const docsDir = join(out, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSync(join(docsDir, "naming-variants-report.md"), result.report);
   }
   return {
     data: { out, dry_run: opts.dryRun, ...result.stats, trees: opts.trees.map((t) => ({ ...t, path: resolve(t.path) })) },
