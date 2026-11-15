@@ -9,6 +9,8 @@
 //
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
+// TEST_DEPS: src/Core/IntakeSemver.mm
+//
 
 #import <Foundation/Foundation.h>
 
@@ -36,6 +38,7 @@ CliConfig plainConfig() {
     c.cliPath = kCli;
     c.bunSearchDirs = {g_noBunDir};
     c.baseEnvironment = std::vector<std::string>{"HOME=/Users/test", "PATH=/usr/bin:/bin", "LANG=C"};
+    c.cliVersion = "0.2.1";
     return c;
 }
 
@@ -236,12 +239,48 @@ int main(void) {
               "execute: detached");
         CHECK(intake::commandClass(req(CliCommand::Resume, {"itk_00000011"})) == CommandClass::Detached,
               "resume: detached");
+        // Dry runs write nothing, so they are killable (PLAN.md 3.7 step 1).
         CliRequest dryExec = req(CliCommand::Execute, {"itk_00000010"});
         dryExec.dryRun = true;
-        CHECK(intake::commandClass(dryExec) == CommandClass::Mutating, "execute --dry-run: mutation lane");
+        CHECK(intake::commandClass(dryExec) == CommandClass::DryRun, "execute --dry-run: dry run");
+        CliRequest dryGc = req(CliCommand::Gc, {"itk_00000012"});
+        dryGc.dryRun = true;
+        CHECK(intake::commandClass(dryGc) == CommandClass::DryRun, "gc --dry-run: dry run");
+        CliRequest dryResume = req(CliCommand::Resume, {"itk_00000011"});
+        dryResume.dryRun = true;
+        CHECK(intake::commandClass(dryResume) == CommandClass::DryRun, "resume --dry-run: dry run");
+        CliRequest dryPropose = req(CliCommand::Propose, {"itk_0000000b"});
+        dryPropose.dryRun = true;
+        CHECK(intake::commandClass(dryPropose) == CommandClass::DryRun, "propose --dry-run: dry run");
+        CHECK(intake::commandClass(req(CliCommand::Gc, {"itk_00000012"})) == CommandClass::Mutating,
+              "gc: mutating");
         CHECK(std::string(intake::cliCommandName(CliCommand::Resume)) == "resume" &&
                   std::string(intake::cliCommandWord(CliCommand::Resume)) == "execute",
               "resume is logged as resume, sent as execute");
+
+        // --- resume needs a CLI that scopes it to the ids (0.2.1, 5a665e93) ---
+        g_context = "resume-version";
+        CliConfig old = plainConfig();
+        int resumeRefused = 0;
+        const char *tooOld[] = {"", "0.1.0", "0.2.0", "0.2.1-rc.1", "garbage"};
+        for (const char *version : tooOld) {
+            old.cliVersion = version;
+            CliInvocation i = intake::buildInvocation(old, req(CliCommand::Resume, {"itk_00000011"}));
+            if (i.status == BuildStatus::Refused && i.arguments.empty() &&
+                i.message.find("every placing root") != std::string::npos) {
+                resumeRefused++;
+            }
+        }
+        CHECK_EQ(resumeRefused, (int)(sizeof tooOld / sizeof tooOld[0]),
+                 "resume is refused while the CLI is unknown or older than 0.2.1");
+        old.cliVersion = "0.2.0";
+        CHECK(intake::buildInvocation(old, dryResume).status == BuildStatus::Refused,
+              "resume --dry-run is refused on 0.2.0 too");
+        CHECK(intake::buildInvocation(old, req(CliCommand::Execute, {"itk_00000010"})).status == BuildStatus::Ok,
+              "plain execute is scoped by its ids on every version");
+        old.cliVersion = "0.3.0";
+        CHECK(intake::buildInvocation(old, req(CliCommand::Resume, {"itk_00000011"})).status == BuildStatus::Ok,
+              "resume builds on a later CLI");
 
         // --- configuration problems are NoCli, never a spawn ---
         g_context = "no-cli";
@@ -284,7 +323,7 @@ int main(void) {
         CHECK(inv.executable == dirC + "/bun", "an explicit bun path wins over the search");
         c.bunPath = dirA + "/bun";
         CHECK(intake::buildInvocation(c, req(CliCommand::Status)).status == BuildStatus::NoCli,
-              "an explicit bun that is not executable: NoCli, no fallback");
+              "a .ts CLI with an explicit bun that is not executable: NoCli, no fallback");
         c.bunPath.clear();
         c.bunSearchDirs = {g_noBunDir, dirA};
         inv = intake::buildInvocation(c, req(CliCommand::Status));
@@ -301,6 +340,14 @@ int main(void) {
         inv = intake::buildInvocation(c, req(CliCommand::Status));
         CHECK(inv.executable == kCli && envValue(inv, "PATH").rfind(dirB + ":", 0) == 0,
               "non-.ts CLI: run directly, bun dir still first on PATH");
+        // It does not need bun, so a stale explicit bun is ignored, not fatal.
+        for (const std::string &stale : {dirA + "/bun", std::string("/nonexistent/bun"), std::string("bun")}) {
+            c.bunPath = stale;
+            inv = intake::buildInvocation(c, req(CliCommand::Status));
+            CHECK(inv.status == BuildStatus::Ok && inv.executable == kCli &&
+                      envValue(inv, "PATH").rfind(dirB + ":", 0) == 0,
+                  "non-.ts CLI with an unusable explicit bun: ignored, bun probed instead");
+        }
 
         std::vector<std::string> dirs =
             intake::defaultBunSearchDirs({"HOME=/Users/test/", "PATH=/x"});
@@ -338,11 +385,17 @@ int main(void) {
         CHECK(envValue(inv, "PATH") == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
               "no inherited PATH: the standard directories");
 
+        // buildInvocation never reads environ (worker queues); the caller
+        // snapshots it on the main thread.
         setenv("INTAKE_B1_TEST_MARKER", "present", 1);
         c.baseEnvironment.reset();
         inv = intake::buildInvocation(c, req(CliCommand::Status));
-        CHECK(envValue(inv, "INTAKE_B1_TEST_MARKER") == "present",
-              "no base environment given: this process's environment is inherited");
+        CHECK(inv.status == BuildStatus::NoCli && inv.message.find("environment") != std::string::npos,
+              "no environment snapshot: NoCli, environ is not read");
+        c.baseEnvironment = intake::processEnvironmentSnapshot();
+        inv = intake::buildInvocation(c, req(CliCommand::Status));
+        CHECK(inv.status == BuildStatus::Ok && envValue(inv, "INTAKE_B1_TEST_MARKER") == "present",
+              "a snapshot of this process's environment is inherited");
         unsetenv("INTAKE_B1_TEST_MARKER");
 
         // --- a built argv against the mock: "[A & B]" arrives literally ---

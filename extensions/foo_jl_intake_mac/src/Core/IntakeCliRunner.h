@@ -8,10 +8,15 @@
 //
 //   Class      Output                  Budget
 //   ReadOnly   pipes                   KillAtBudget (E_CLI_TIMEOUT, killed)
+//   DryRun     files in outputDirectory KillAtBudget (E_CLI_TIMEOUT, killed;
+//                                      a dry run writes nothing, 3.7 step 1)
 //   Mutating   files in outputDirectory ReportAtBudget (E_CLI_TIMEOUT
 //                                      reported through onBudget, the real
 //                                      result follows; hard cap)
 //   Detached   files in outputDirectory Unbounded (never killed)
+//
+//  ProcessRunner::cancelReadLane() (on_quit) kills ReadOnly and DryRun
+//  calls and leaves Mutating and Detached ones running.
 //
 //  A refused request (IntakeCommandArgs: a mutating command with no ids, an
 //  invalid id, ...) returns false synchronously: nothing is spawned and no
@@ -37,7 +42,7 @@ namespace intake {
 
 struct CliRunOptions {
     ProcessLimits limits;        // budgets and caps; the defaults are production's
-    std::string outputDirectory; // required for Mutating and Detached calls
+    std::string outputDirectory; // required for every class but ReadOnly
     bool keepOutputFiles = false;
 };
 
@@ -49,14 +54,14 @@ struct CliResult {
 };
 
 // Runs on `queue` when the budget elapses: the moment E_CLI_TIMEOUT is
-// reported for a Mutating call (it keeps running) or a ReadOnly call (it is
-// being killed; its completion follows with outcome Timeout).
+// reported for a Mutating call (it keeps running) or a ReadOnly or DryRun
+// call (it is being killed; its completion follows with outcome Timeout).
 using CliBudgetHandler = std::function<void()>;
 using CliCompletion = std::function<void(CliResult &&result)>;
 
 // ~/Library/Caches/foo_jl_intake (the user Caches directory plus
-// foo_jl_intake): the production output directory for Mutating and Detached
-// calls. Only computed; IntakeProcess creates it on first use. Empty when
+// foo_jl_intake): the production output directory for DryRun, Mutating and
+// Detached calls. Only computed; IntakeProcess creates it on first use. Empty when
 // Foundation reports no Caches directory.
 std::string defaultCliOutputDirectory();
 

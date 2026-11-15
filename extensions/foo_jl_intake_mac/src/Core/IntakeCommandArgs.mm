@@ -5,6 +5,8 @@
 
 #include "IntakeCommandArgs.h"
 
+#include "IntakeSemver.h"
+
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -51,12 +53,6 @@ void setEnv(std::vector<std::string> &env, std::string_view name, const std::str
     }
     kept.push_back(std::string(name) + "=" + value);
     env = std::move(kept);
-}
-
-std::vector<std::string> processEnvironment() {
-    std::vector<std::string> env;
-    for (char **e = environ; e && *e; e++) env.emplace_back(*e);
-    return env;
 }
 
 bool isExecutableFile(const std::string &path) {
@@ -191,11 +187,17 @@ bool isMutatingCommand(CliCommand command) {
 
 CommandClass commandClass(const CliRequest &request) {
     if (!isMutatingCommand(request.command)) return CommandClass::ReadOnly;
-    if ((request.command == CliCommand::Execute || request.command == CliCommand::Resume) &&
-        !request.dryRun) {
+    if (request.dryRun) return CommandClass::DryRun;
+    if (request.command == CliCommand::Execute || request.command == CliCommand::Resume) {
         return CommandClass::Detached;
     }
     return CommandClass::Mutating;
+}
+
+std::vector<std::string> processEnvironmentSnapshot() {
+    std::vector<std::string> env;
+    for (char **e = environ; e && *e; e++) env.emplace_back(*e);
+    return env;
 }
 
 bool isSidecarId(std::string_view text) {
@@ -223,6 +225,11 @@ std::vector<std::string> defaultBunSearchDirs(const std::vector<std::string> &en
 CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request) {
     std::string problem = checkRequest(request);
     if (!problem.empty()) return refused(problem);
+    if (request.command == CliCommand::Resume && !cliSupportsPerRootResume(config.cliVersion)) {
+        return refused("refusing resume: CLI " +
+                       (config.cliVersion.empty() ? std::string("version unknown") : config.cliVersion) +
+                       "; before 0.2.1 the CLI ignores the ids and resumes every placing root");
+    }
 
     CliInvocation inv;
     inv.commandClass = commandClass(request);
@@ -238,9 +245,9 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
     if (hasNul(cli) || cli[0] != '/') return noCli("the intake CLI path must be absolute: " + cli);
     if (hasNul(config.rulesDir)) return noCli("the rules folder path contains a NUL byte");
     if (hasNul(config.bunPath)) return noCli("the bun path contains a NUL byte");
+    if (!config.baseEnvironment) return noCli("no environment snapshot was given");
 
-    std::vector<std::string> env =
-        config.baseEnvironment ? *config.baseEnvironment : processEnvironment();
+    std::vector<std::string> env = *config.baseEnvironment;
     // Malformed entries (no '=', or a NUL) would only confuse the child.
     std::vector<std::string> cleaned;
     cleaned.reserve(env.size());
@@ -251,14 +258,22 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
     }
     env = std::move(cleaned);
 
-    // bun: explicit, else probed.
+    const bool script = endsWith(cli, ".ts");
+
+    // bun: explicit, else probed. A bad explicit bun only matters when the
+    // CLI needs bun to start.
     std::string bun;
-    if (!config.bunPath.empty()) {
-        if (config.bunPath[0] != '/' || !isExecutableFile(config.bunPath)) {
+    bool probe = config.bunPath.empty();
+    if (!probe) {
+        if (config.bunPath[0] == '/' && isExecutableFile(config.bunPath)) {
+            bun = config.bunPath;
+        } else if (script) {
             return noCli("bun is not an executable file: " + config.bunPath);
+        } else {
+            probe = true;
         }
-        bun = config.bunPath;
-    } else {
+    }
+    if (probe) {
         std::vector<std::string> dirs =
             config.bunSearchDirs.empty() ? defaultBunSearchDirs(env) : config.bunSearchDirs;
         for (std::string dir : dirs) {
@@ -272,7 +287,6 @@ CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request
         }
     }
 
-    const bool script = endsWith(cli, ".ts");
     if (script) {
         if (bun.empty()) return noCli("bun was not found; it is needed to run " + cli);
         if (!isReadableFile(cli)) return noCli("the intake CLI script is not a readable file: " + cli);

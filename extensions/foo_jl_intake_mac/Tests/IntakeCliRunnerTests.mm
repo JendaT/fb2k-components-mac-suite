@@ -5,13 +5,14 @@
 //  End-to-end CLI calls through IntakeCliRunner against
 //  Tests/mock-cli/intake-mock: every mock mode mapped to its outcome and
 //  error scope, the zero-id invariant (nothing reaches the mock: calls.log
-//  stays as setup left it), literal argument passing, the command classes,
-//  and the E_NO_CLI configurations. Each case gets a fresh mock state.
+//  stays as setup left it), literal argument passing, the command classes
+//  and the budget policy and output target each one gets, and the E_NO_CLI
+//  configurations. Each case gets a fresh mock state.
 //
 //  Compiled standalone under ASan+UBSan; see Scripts/run_tests.sh.
 //
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
-// TEST_DEPS: src/Core/IntakeProcess.mm src/Core/IntakeLog.mm
+// TEST_DEPS: src/Core/IntakeProcess.mm src/Core/IntakeLog.mm src/Core/IntakeSemver.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -50,6 +51,7 @@ intake::CliConfig mockConfig(const std::string &state) {
     config.cliPath = mock::mockPath();
     config.bunSearchDirs = {g_noBunDir};
     config.baseEnvironment = mock::mockEnv(state);
+    config.cliVersion = "0.2.1"; // what the mock's version reports
     return config;
 }
 
@@ -105,6 +107,19 @@ std::vector<std::string> ids(const CliResult &r) {
 // Drains g_callbacks, so any completion that was queued has run.
 void flushCallbacks() {
     dispatch_sync(g_callbacks, ^{});
+}
+
+// Completions of `runs` so far; flushes g_callbacks first, so a completion a
+// refused call queued by mistake is counted too.
+int completionsAfterFlush(const std::vector<std::shared_ptr<CliRun>> &runs) {
+    flushCallbacks();
+    int n = 0;
+    for (const auto &run : runs) n += run->completions.load();
+    return n;
+}
+
+bool under(const std::string &path, const std::string &dir) {
+    return !path.empty() && path.rfind(dir + "/", 0) == 0;
 }
 
 // --- tests ---
@@ -284,8 +299,8 @@ void testMutatingCalls(intake::ProcessRunner &runner) {
     gcDry.dryRun = true;
     run = runCli(runner, mockConfig(state), gcDry, options);
     CHECK(mock::lastLine(mock::callsLog(state)) == "gc\titk_00000012\t--dry-run\t--json", "gc --dry-run argv");
-    CHECK(run->result.commandClass == CommandClass::Mutating && run->result.envelope.outcome == CliOutcome::Ok,
-          "gc --dry-run: mutating lane, Ok");
+    CHECK(run->result.commandClass == CommandClass::DryRun && run->result.envelope.outcome == CliOutcome::Ok,
+          "gc --dry-run: dry-run class, Ok");
     run = runCli(runner, mockConfig(state), request(CliCommand::Gc, {"itk_00000012"}), options);
     CHECK(run->result.envelope.outcome == CliOutcome::Ok && ids(run->result).size() == 1, "gc one root: Ok");
 
@@ -306,6 +321,84 @@ void testSlowMutatingReportsThenCompletes(intake::ProcessRunner &runner) {
           "the real result arrived after the timeout report");
 }
 
+// The policy and output target startCliCommand picks for each class.
+void testClassPolicies(intake::ProcessRunner &runner) {
+    g_context = "class-policies";
+    std::string state = mock::setupState();
+    // Execute is never killed: every limit far below its run time (risk 2).
+    mock::setMode(state, "execute", "slow 1");
+    intake::CliRunOptions options = testOptions(0.3);
+    options.limits.hardCapSeconds = 0.3;
+    options.limits.killGraceSeconds = 0.1;
+    options.keepOutputFiles = true;
+    auto run = runCli(runner, mockConfig(state), request(CliCommand::Execute, {"itk_00000010"}), options);
+    const CliResult &e = run->result;
+    CHECK(e.commandClass == CommandClass::Detached, "execute: detached");
+    CHECK(run->budgetCalls.load() == 0 && !e.process.budgetExceeded && !e.process.killedForTimeout &&
+              !e.process.hardCapHit,
+          "execute: no budget report, never signalled, no hard cap");
+    CHECK(e.process.end == intake::ProcessEnd::Exited && e.process.elapsedSeconds >= 0.95,
+          "execute: ran its full second");
+    std::vector<std::string> got = ids(e);
+    CHECK(e.envelope.outcome == CliOutcome::Ok && got.size() == 1 && got[0] == "itk_00000010", "execute: Ok");
+    CHECK(under(e.process.stdoutPath, options.outputDirectory) &&
+              under(e.process.stderrPath, options.outputDirectory),
+          "execute: stdout and stderr went to files in the output directory");
+    CHECK(mock::readFile(e.process.stdoutPath) == e.process.stdoutData, "execute: the result is the file");
+
+    // Mutating calls write to files too (no SIGPIPE after a quit). A normal
+    // budget from here on: a slow machine must not turn these into timeouts.
+    intake::CliRunOptions keep = testOptions();
+    keep.keepOutputFiles = true;
+    run = runCli(runner, mockConfig(state), request(CliCommand::Approve, {"itk_0000000d"}), keep);
+    CHECK(run->result.commandClass == CommandClass::Mutating && run->result.envelope.outcome == CliOutcome::Ok,
+          "approve: mutating, Ok");
+    CHECK(under(run->result.process.stdoutPath, keep.outputDirectory),
+          "approve: stdout went to a file in the output directory");
+
+    // Read-only calls use pipes: no file even when files would be kept.
+    run = runCli(runner, mockConfig(state), request(CliCommand::Status), keep);
+    CHECK(run->result.envelope.outcome == CliOutcome::Ok && run->result.process.stdoutPath.empty() &&
+              run->result.process.stdoutEOF,
+          "status: read through pipes, no output file");
+}
+
+// A dry run writes nothing, so it is killed at the budget instead of holding
+// the mutation lane until the hard cap (PLAN.md 3.7 step 1).
+void testDryRunKilledAtBudget(intake::ProcessRunner &runner) {
+    g_context = "dry-run-budget";
+    std::string state = mock::setupState();
+    mock::setMode(state, "execute", "slow 5");
+    intake::CliRunOptions options = testOptions(0.3);
+    options.keepOutputFiles = true;
+    CliRequest dry = request(CliCommand::Execute, {"itk_00000010"});
+    dry.dryRun = true;
+    auto run = runCli(runner, mockConfig(state), dry, options);
+    const CliResult &r = run->result;
+    CHECK(mock::lastLine(mock::callsLog(state)) == "execute\titk_00000010\t--dry-run\t--json",
+          "execute --dry-run argv");
+    CHECK(r.commandClass == CommandClass::DryRun, "execute --dry-run: dry-run class");
+    CHECK_EQ(run->budgetCalls.load(), 1, "E_CLI_TIMEOUT reported at the budget");
+    CHECK(r.process.killedForTimeout && !r.process.hardCapHit, "killed for its budget, not at the hard cap");
+    CHECK(r.envelope.outcome == CliOutcome::Timeout && hasCode(r, "E_CLI_TIMEOUT"), "outcome Timeout");
+    CHECK(r.process.elapsedSeconds < 0.3 + 0.5 + 0.3 + 2.0, "ended promptly, long before the 5 s run");
+    CHECK(under(r.process.stdoutPath, options.outputDirectory), "dry run output went to a file");
+    mock::killLeftovers();
+}
+
+void testResumeNeedsScopedCli(intake::ProcessRunner &runner) {
+    g_context = "resume-version";
+    std::string state = mock::setupState();
+    const std::string logAfterSetup = mock::callsLog(state);
+    intake::CliConfig old = mockConfig(state);
+    old.cliVersion = "0.2.0";
+    auto run = runCli(runner, old, request(CliCommand::Resume, {"itk_00000011"}), testOptions());
+    CHECK(!run->started && run->refusal.find("every placing root") != std::string::npos,
+          "resume on CLI 0.2.0 is refused: it would resume every placing root");
+    CHECK_EQ(completionsAfterFlush({run}), 0, "no handler ran");
+    CHECK(mock::callsLog(state) == logAfterSetup, "nothing reached the mock");
+}
+
 void testZeroIdsRefused(intake::ProcessRunner &runner) {
     g_context = "zero-ids";
     std::string state = mock::setupState();
@@ -314,7 +407,8 @@ void testZeroIdsRefused(intake::ProcessRunner &runner) {
 
     const CliCommand mutating[] = {CliCommand::Propose, CliCommand::Assign, CliCommand::Approve,
                                    CliCommand::Reject, CliCommand::Execute, CliCommand::Resume};
-    int refused = 0, total = 0, completions = 0;
+    std::vector<std::shared_ptr<CliRun>> runs;
+    int refused = 0, total = 0;
     for (CliCommand cmd : mutating) {
         for (bool dry : {false, true}) {
             CliRequest r = request(cmd);
@@ -323,25 +417,26 @@ void testZeroIdsRefused(intake::ProcessRunner &runner) {
             auto run = runCli(runner, mockConfig(state), r, testOptions());
             total++;
             if (!run->started && !run->refusal.empty()) refused++;
-            completions += run->completions.load();
+            runs.push_back(run);
         }
     }
-    flushCallbacks();
     CHECK_EQ(refused, total, "every mutating command with no ids is refused");
-    CHECK_EQ(completions, 0, "no handler ran for a refused call");
+    CHECK_EQ(completionsAfterFlush(runs), 0, "no handler ran for a refused call");
     CHECK(mock::callsLog(state) == logAfterSetup, "nothing reached the mock");
 
     // Invalid ids could select more than meant, or turn into flags.
     const char *badIds[] = {"--approved", "--all", "--all-resolved", "itk_0000000G", "itk_0000000b ",
                             "ITK_0000000B", "", "/tmp", "income/dump"};
     int badRefused = 0;
+    runs.clear();
     for (const char *bad : badIds) {
         auto run = runCli(runner, mockConfig(state), request(CliCommand::Execute, {"itk_00000010", bad}),
                           testOptions());
         if (!run->started) badRefused++;
+        runs.push_back(run);
     }
-    flushCallbacks();
     CHECK_EQ(badRefused, (int)(sizeof badIds / sizeof badIds[0]), "every invalid id is refused");
+    CHECK_EQ(completionsAfterFlush(runs), 0, "no handler ran for an invalid id");
     CHECK(mock::callsLog(state) == logAfterSetup, "still nothing reached the mock");
 }
 
@@ -356,8 +451,7 @@ void testZeroIdsGcRefused(intake::ProcessRunner &runner) {
     dry.dryRun = true;
     auto dryRun = runCli(runner, mockConfig(state), dry, testOptions());
     CHECK(!dryRun->started, "bare gc --dry-run is refused too");
-    flushCallbacks();
-    CHECK(run->completions.load() == 0 && dryRun->completions.load() == 0, "no handler ran");
+    CHECK_EQ(completionsAfterFlush({run, dryRun}), 0, "no handler ran");
     CHECK(mock::callsLog(state) == logAfterSetup, "gc never reached the mock");
 }
 
@@ -398,7 +492,12 @@ void testNoCliConfigurations(intake::ProcessRunner &runner) {
     noOut.outputDirectory.clear();
     run = runCli(runner, mockConfig(state), request(CliCommand::Approve, {"itk_0000000d"}), noOut);
     CHECK(!run->started, "a mutating call without an output directory is refused");
-    flushCallbacks();
+    CHECK_EQ(completionsAfterFlush({run}), 0, "no handler ran for it");
+    CliRequest dryNoOut = request(CliCommand::Gc, {"itk_00000012"});
+    dryNoOut.dryRun = true;
+    run = runCli(runner, mockConfig(state), dryNoOut, noOut);
+    CHECK(!run->started, "a dry run without an output directory is refused");
+    CHECK_EQ(completionsAfterFlush({run}), 0, "no handler ran for it either");
     CHECK(mock::callsLog(state) == logAfterSetup, "none of these reached the mock");
 }
 
@@ -443,6 +542,9 @@ int main(void) {
         testInventoryScopes(runner);
         testMutatingCalls(runner);
         testSlowMutatingReportsThenCompletes(runner);
+        testClassPolicies(runner);
+        testDryRunKilledAtBudget(runner);
+        testResumeNeedsScopedCli(runner);
         testZeroIdsRefused(runner);
         testZeroIdsGcRefused(runner);
         testNoCliConfigurations(runner);

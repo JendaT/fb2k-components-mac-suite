@@ -18,6 +18,9 @@
 //  virtual root in it (commands-p2.ts:62-73), and a value starting with "-"
 //  would be parsed as a flag. Duplicate ids are passed once (the CLI answers
 //  a repeat from the state the first occurrence left behind).
+//  Ids bound `execute <ids> --resume` only from CLI 0.2.1 (5a665e93); older
+//  CLIs ignore them and resume every placing root. So Resume is refused
+//  unless CliConfig::cliVersion is 0.2.1 or later (cliSupportsPerRootResume).
 //
 //  Executable:
 //   - The configured CLI path must be absolute. A path ending in ".ts" runs
@@ -26,10 +29,12 @@
 //   - bun is the configured bun path when one is set, otherwise the first
 //     executable `bun` in the search directories (default ~/.bun/bin,
 //     /opt/homebrew/bin, /usr/local/bin). It is probed for every call, so a
-//     non-.ts CLI with a bun shebang finds it on PATH too.
+//     non-.ts CLI with a bun shebang finds it on PATH too. A configured bun
+//     path that is not an executable file is an error (NoCli) only for a .ts
+//     CLI; any other CLI does not need bun, so it is ignored and bun probed.
 //
-//  Environment: the base environment (the process's own unless one is
-//  given), with
+//  Environment: the base environment (CliConfig::baseEnvironment, a
+//  snapshot taken on the main thread), with
 //   - PATH = the bun directory (when bun was found), then
 //     /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin, then
 //     the remaining entries of the inherited PATH; duplicates dropped. Child
@@ -46,8 +51,9 @@
 //     IntakeCliRunner reports it as host-synthesized E_NO_CLI (doc 03).
 //
 //  Thread-safety: buildInvocation is reentrant. It reads the filesystem
-//  (access/stat on the bun candidates and a .ts CLI path) and, without a
-//  given base environment, `environ`; never call it on the decorate path.
+//  (access/stat on the bun candidates and a .ts CLI path), so never call it
+//  on the decorate path. It never reads `environ`: a concurrent setenv can
+//  reallocate that array under a reader on another thread.
 //
 
 #pragma once
@@ -94,15 +100,21 @@ struct CliConfig {
     std::string bunPath;   // explicit bun; empty means probe the search directories
     std::vector<std::string> bunSearchDirs; // empty means defaultBunSearchDirs()
     std::string rulesDir;  // empty means INTAKE_RULES_DIR is left as inherited
-    // The environment to start from, "NAME=value" each. nullopt means a copy
-    // of this process's environment.
+    // The environment to start from, "NAME=value" each: take it with
+    // processEnvironmentSnapshot() on the main thread and keep it here.
+    // nullopt is a configuration that cannot run (NoCli).
     std::optional<std::vector<std::string>> baseEnvironment;
+    // The `cli` version from the last `version` call; empty until known.
+    // Resume is refused unless it is 0.2.1 or later (see the invariant).
+    std::string cliVersion;
 };
 
-// How a call runs (PLAN.md 3.2, 3.4).
+// How a call runs (PLAN.md 3.2, 3.4, 3.7).
 enum class CommandClass {
     ReadOnly, // version, status, collections: pipes, killed at the budget
-    Mutating, // the rest, dry runs included: output files, reported at the budget
+    DryRun,   // a mutating command with --dry-run: mutation lane, output
+              // files, killed at the budget (it writes nothing; 3.7 step 1)
+    Mutating, // the rest: output files, reported at the budget
     Detached, // execute and resume (not dry runs): output files, never killed
 };
 
@@ -123,11 +135,16 @@ struct CliInvocation {
     CommandClass commandClass = CommandClass::ReadOnly;
 };
 
+// A copy of this process's environment, "NAME=value" each. Reads `environ`,
+// so call it on the main thread (at init), never on a worker queue.
+std::vector<std::string> processEnvironmentSnapshot();
+
 // ~/.bun/bin (from HOME in `environment`, skipped when HOME is unset or not
 // absolute), /opt/homebrew/bin, /usr/local/bin.
 std::vector<std::string> defaultBunSearchDirs(const std::vector<std::string> &environment);
 
-// Request checks first (Refused), then the configuration (NoCli).
+// Request checks first (Refused, including Resume on a CLI older than
+// 0.2.1), then the configuration (NoCli).
 CliInvocation buildInvocation(const CliConfig &config, const CliRequest &request);
 
 // True for ^itk_[0-9a-f]{8}$.

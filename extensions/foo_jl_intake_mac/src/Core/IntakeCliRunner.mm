@@ -63,6 +63,10 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
             spec.output = OutputTarget::Pipes;
             spec.policy = BudgetPolicy::KillAtBudget;
             break;
+        case CommandClass::DryRun:
+            spec.output = OutputTarget::Files;
+            spec.policy = BudgetPolicy::KillAtBudget;
+            break;
         case CommandClass::Mutating:
             spec.output = OutputTarget::Files;
             spec.policy = BudgetPolicy::ReportAtBudget;
