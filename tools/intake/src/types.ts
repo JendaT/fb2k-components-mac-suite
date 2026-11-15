@@ -16,6 +16,19 @@ export type Status =
   | "gc_done"
   | "rejected";
 
+/**
+ * Doc 03 "Legal source statuses": nothing has reached the library yet. The
+ * legal sources of `identify` and `assign`.
+ */
+export const PRE_LIBRARY_STATUSES: ReadonlySet<Status> = new Set<Status>(["new", "resolved", "proposed", "approved"]);
+
+/**
+ * Doc 03 "Legal source statuses": a rebuild (`resolve --force`, and `scan
+ * --force`, which resolves the same way) is refused on these, since it would
+ * drop the placement record and its journal link.
+ */
+export const NO_REBUILD_STATUSES: ReadonlySet<Status> = new Set<Status>(["placing", "placed", "gc_done"]);
+
 export type Tier = "uhq" | "hq" | "reject";
 
 export interface TagSnapshot {

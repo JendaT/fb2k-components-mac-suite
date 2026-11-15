@@ -256,10 +256,13 @@ test("no other command picks a rejected root back up", async () => {
   expect(touches((await cmdExecute([], { ...OPTS, resume: true })).data)).toBe(false);
   expect(existsSync(doc(KOAN()).proposal!.target_path!)).toBe(false);
 
-  // gc touches only placed roots: a rejected root is not eligible, named or not.
+  // gc touches only placed roots: a rejected root is not eligible, named or
+  // not. Named, it is refused with E_BAD_STATUS (doc 03 v1.2).
   expect(touches((await cmdGc([], OPTS)).data)).toBe(false);
   const gcNamed = await cmdGc([KOAN()], OPTS);
-  expect(gcNamed.data).toEqual([]);
+  expect(gcNamed.exitCode).toBe(2);
+  expect(gcNamed.data).toBeNull();
+  expect(gcNamed.errors).toEqual([{ code: "E_BAD_STATUS", msg: "cannot gc from status rejected", path: KOAN() }]);
   expect(existsSync(join(KOAN(), doc(KOAN()).files[0]!.path))).toBe(true);
 
   // Re-scan / re-resolve without --force keep the existing sidecar.

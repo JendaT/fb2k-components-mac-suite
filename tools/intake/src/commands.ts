@@ -75,18 +75,28 @@ function fail(code: string, msg: string, path: string | null = null): CommandRes
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
+/**
+ * Resolve `target` and write its sidecars (unless --dry-run). With --force, a
+ * root whose status forbids a rebuild (doc 03: placing, placed, gc_done) keeps
+ * its sidecar untouched and comes back as an E_BAD_STATUS error carrying the
+ * root dir as `path`; `verb` names the command in that message.
+ */
 async function resolveInto(
   target: string,
   income: IncomeFolder | null,
   opts: CommonOpts,
-): Promise<{ written: WrittenRoot[]; kept: string[] }> {
+  verb: string,
+): Promise<{ written: WrittenRoot[]; kept: string[]; errors: JsonError[] }> {
   const ctx: ResolveContext = {
     config: loadConfig(),
     income: income ? { name: income.name, source_type: income.source_type, root: income.path } : null,
     force: opts.force,
     now: () => new Date(),
   };
-  const { roots, kept } = await new Resolver(ctx).resolveTree(target);
+  const { roots, kept, blocked } = await new Resolver(ctx).resolveTree(target);
+  const errors: JsonError[] = blocked.map((b) => ({
+    code: "E_BAD_STATUS", msg: `cannot ${verb} --force from status ${b.status}`, path: b.dir,
+  }));
   const written: WrittenRoot[] = [];
   for (const root of roots) {
     let sidecarPath = join(root.dir, root.sidecarName);
@@ -106,7 +116,7 @@ async function resolveInto(
       album: s.cluster.album,
     });
   }
-  return { written, kept };
+  return { written, kept, errors };
 }
 
 export async function cmdResolve(args: string[], opts: CommonOpts): Promise<CommandResult<ResolveData | null>> {
@@ -116,12 +126,12 @@ export async function cmdResolve(args: string[], opts: CommonOpts): Promise<Comm
   if (!existsSync(target) || !statSync(target).isDirectory())
     return fail("E_NOT_FOUND", "not a directory", target);
   const income = incomeFor(target, loadIncome());
-  const { written, kept } = await resolveInto(target, income, opts);
-  return {
-    data: { target, dry_run: opts.dryRun, written, kept },
-    errors: [],
-    exitCode: 0,
-  };
+  const { written, kept, errors } = await resolveInto(target, income, opts, "resolve");
+  const data: ResolveData = { target, dry_run: opts.dryRun, written, kept };
+  // Doc 03 legal source statuses: refused roots are errors, the rest proceed
+  // (exit 1 when some root was written, 2 when none was).
+  if (errors.length === 0) return { data, errors, exitCode: 0 };
+  return written.length > 0 ? { data, errors, exitCode: 1 } : { data: null, errors, exitCode: 2 };
 }
 
 function findArchives(root: string): string[] {
@@ -165,7 +175,9 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
       if (r.action === "tool_missing")
         errors.push({ code: "E_ARCHIVE_TOOL", msg: r.error ?? "tool missing", path: r.archive });
     }
-    const { written, kept } = await resolveInto(inc.path, inc, opts);
+    const resolved = await resolveInto(inc.path, inc, opts, "scan");
+    errors.push(...resolved.errors);
+    const { written, kept } = resolved;
     data.push({
       income: inc.name,
       path: inc.path,

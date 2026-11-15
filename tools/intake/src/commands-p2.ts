@@ -14,7 +14,7 @@ import {
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
 import type { HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
-import { CLI_VERSION } from "./types.ts";
+import { CLI_VERSION, PRE_LIBRARY_STATUSES } from "./types.ts";
 import { isSidecarName, isVariousArtists, isoLocal, round2, walkDirs } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
@@ -142,6 +142,12 @@ export async function identifyRoots(
   const cfg = loadAssignConfig();
   const data: IdentifyRow[] = [];
   for (const root of roots) {
+    // Doc 03 legal source statuses: never on a rejected root or one that has
+    // reached the library.
+    if (!PRE_LIBRARY_STATUSES.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot identify from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
     if (root.sidecar.identification && !opts.force) {
       data.push({ id: root.sidecar.id, root_path: root.dir, kept: true, status: root.sidecar.identification.status });
       continue;
@@ -175,8 +181,7 @@ export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps
   const roots = rootsFromRefs(args, refErrors);
   if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
   const { data, errors } = await identifyRoots(roots, opts, deps);
-  const all = [...refErrors, ...errors];
-  return { data, errors: all, exitCode: all.length === 0 ? 0 : 1 };
+  return finish(data, [...refErrors, ...errors]);
 }
 
 // ---- assign -----------------------------------------------------------------
@@ -220,6 +225,11 @@ export async function assignRoots(
   const data: AssignRow[] = [];
   let genreDirty = false;
   for (const root of roots) {
+    // Doc 03 legal source statuses, as for identify.
+    if (!PRE_LIBRARY_STATUSES.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot assign from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
     const input = assignInput(root);
     if (opts.collection) {
       // User override: authoritative pick + feedback loop (doc 02).

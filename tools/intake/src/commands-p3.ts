@@ -505,9 +505,19 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
   const errors: JsonError[] = [];
-  const roots = (args.length > 0 ? rootsFromRefs(args, errors) : allRoots(errors)).filter(
-    (r) => r.sidecar.status === "placed",
-  );
+  let roots: RootRef[];
+  if (args.length > 0) {
+    // Doc 03 legal source statuses: a named root that is not `placed`
+    // (`rejected` included) is refused, not skipped.
+    roots = [];
+    for (const r of rootsFromRefs(args, errors)) {
+      if (r.sidecar.status === "placed") roots.push(r);
+      else errors.push({ code: "E_BAD_STATUS", msg: `cannot gc from status ${r.sidecar.status}`, path: r.dir });
+    }
+  } else {
+    // The all-roots form selects `placed` roots and skips the rest silently.
+    roots = allRoots(errors).filter((r) => r.sidecar.status === "placed");
+  }
   const data: GcRow[] = [];
 
   for (const root of roots) {

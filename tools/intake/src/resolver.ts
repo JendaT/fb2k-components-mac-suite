@@ -7,12 +7,13 @@ import { basename, join, relative } from "node:path";
 import { audioHash, isFlacFallbackIssue } from "./audioHash.ts";
 import { albumFromTags, parseDirName } from "./naming.ts";
 import { readSnapshot, parseFilename, type AudioSnapshot } from "./tags.ts";
+import { readSidecar } from "./sidecar.ts";
 import type {
-  Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Tier,
+  Cluster, FileRecord, ResolvedRoot, ResolverConfig, Sidecar, Signals, Status, Tier,
 } from "./types.ts";
-import { CLI_VERSION, RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
+import { CLI_VERSION, NO_REBUILD_STATUSES, RESOLVER_VERSION, SCHEMA_VERSION } from "./types.ts";
 import {
-  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, makeId, mapLimit,
+  DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, isSidecarName, makeId, mapLimit,
   normAlbum, normKey, round2, VARIOUS_ARTISTS, walkDirs, type DirEntry,
 } from "./util.ts";
 
@@ -23,9 +24,18 @@ export interface ResolveContext {
   now: () => Date;
 }
 
+/** An existing sidecar a --force rebuild refused to replace (doc 03). */
+export interface BlockedRoot {
+  dir: string;
+  sidecar_path: string;
+  id: string;
+  status: Status;
+}
+
 export interface ResolveResult {
   roots: ResolvedRoot[];
-  kept: string[]; // dirs with pre-existing sidecars, trusted (no --force)
+  kept: string[]; // dirs with pre-existing sidecars, trusted (no --force) or refused (blocked)
+  blocked: BlockedRoot[]; // --force only: sidecars kept because their status forbids a rebuild
 }
 
 /** Release position for the internal signals (completeness, shadows, VA check). */
@@ -392,11 +402,46 @@ export class Resolver {
     }
   }
 
+  /**
+   * The sidecars in `dir` whose status forbids a --force rebuild (doc 03 "Legal
+   * source statuses": placing, placed, gc_done). An unreadable sidecar is not
+   * one of them; --force replaces it as before.
+   */
+  private noRebuild(dir: string): BlockedRoot[] {
+    let names: string[];
+    try {
+      names = readdirSync(dir).filter(isSidecarName).sort();
+    } catch {
+      return [];
+    }
+    const out: BlockedRoot[] = [];
+    for (const n of names) {
+      const sc = readSidecar(join(dir, n));
+      if (sc && NO_REBUILD_STATUSES.has(sc.status)) out.push({ dir, sidecar_path: join(dir, n), id: sc.id, status: sc.status });
+    }
+    return out;
+  }
+
   async resolveTree(target: string): Promise<ResolveResult> {
     const entries = walkDirs(target);
     const byPath = new Map(entries.map((e) => [e.path, e]));
     const roots: ResolvedRoot[] = [];
     const kept: string[] = [];
+    const blocked: BlockedRoot[] = [];
+
+    // Whether a dir's existing sidecars stay as they are: always without
+    // --force; with --force only when one of them may not be rebuilt. Such a
+    // dir is kept whole, its other sidecars included: a rebuild of the rest
+    // could re-cluster files the placed root owns.
+    const keepDir = (dir: string): boolean => {
+      if (!this.hasSidecar(dir)) return false;
+      if (!this.ctx.force) return true;
+      const refused = this.noRebuild(dir);
+      for (const b of refused) {
+        if (!blocked.some((x) => x.sidecar_path === b.sidecar_path)) blocked.push(b);
+      }
+      return refused.length > 0;
+    };
 
     // Pass 1 — candidates: dirs directly containing audio. Snapshots (tag
     // headers) are needed here for the pass-2 merge decisions; audio_hash
@@ -481,7 +526,7 @@ export class Resolver {
 
     // Passes 3 + 4 per candidate.
     for (const c of candidates) {
-      if (this.hasSidecar(c.dir) && !this.ctx.force) {
+      if (keepDir(c.dir)) {
         kept.push(c.dir);
         continue;
       }
@@ -540,7 +585,7 @@ export class Resolver {
         const x = ext(name);
         const isIso = x === "iso" || (x === "bin" && e.otherFiles.some((n) => ext(n) === "cue"));
         if (!isIso) continue;
-        if (this.hasSidecar(e.path) && !this.ctx.force) {
+        if (keepDir(e.path)) {
           if (!kept.includes(e.path)) kept.push(e.path);
           continue;
         }
@@ -549,7 +594,7 @@ export class Resolver {
       }
     }
 
-    return { roots, kept };
+    return { roots, kept, blocked };
   }
 
   private buildIsoSidecar(e: DirEntry, name: string): ResolvedRoot {
