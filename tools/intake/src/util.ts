@@ -214,13 +214,13 @@ export function hasVariousArtistsPrefix(name: string | null): boolean {
 }
 
 // Matched on normKey(name); [^a-z0-9]* stands for any spaces or punctuation.
-const SELF_RELEASED_RE = /^[^a-z0-9]*self[^a-z0-9]*releas(?:e|ed)[^a-z0-9]*$/;
+const SELF_RELEASED_RE = /^[^a-z0-9]*self[^a-z0-9]*releas(?:e|ed|es)[^a-z0-9]*$/;
 const NO_LABEL_RE = /^[^a-z0-9]*no[^a-z0-9]*label[^a-z0-9]*$/;
 const NOT_ON_LABEL_RE = /^[^a-z0-9]*not[^a-z0-9]*on[^a-z0-9]*label(?![a-z0-9])/;
 
 /**
  * A label credit that names no label: a self-released spelling (Self-Released,
- * self released, Self Release, SelfReleased; the whole value, any case and
+ * self released, Self Release, Self-Releases, SelfReleased; the whole value, any case and
  * separators), "No Label" (the whole value), or anything starting with "Not On
  * Label", as Discogs writes it ("Not On Label (Some Artist Self-released)").
  * Placeholders like "none" or "unknown" are not matched.

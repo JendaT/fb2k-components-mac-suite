@@ -235,7 +235,7 @@ test("various artists prefix: a VA token followed by whitespace (scene leftovers
 test("no-label credits: self-released spellings, Not On Label prefix, No Label", () => {
   for (const n of [
     "Self-Released", "self released", "Self Release", "SelfReleased", "Self-Release", "SELF-RELEASED", "self_released",
-    "Self - Released", "Self\u2013Released", "(Self-Released)", "Not On Label", "not on label",
+    "Self - Released", "Self\u2013Released", "(Self-Released)", "Self-Releases", "self releases", "Not On Label", "not on label",
     "Not On Label (Example Artist Self-released)", "Not On Label (Example Artist)", "Not-On-Label", "No Label",
     "no label", "NO LABEL", "No-Label", "[No Label]",
   ]) {
