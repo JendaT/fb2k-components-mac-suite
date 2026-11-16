@@ -370,17 +370,35 @@ bool usableSheetHost(NSWindow *w) {
     return w != nil && w.visible && !w.miniaturized && !w.sheet && w.attachedSheet == nil && w.canBecomeKeyWindow;
 }
 
-// The main window, else the key window, when one can take a sheet now.
+// foobar2000's own main window. The SDK hands it out as a bridged object
+// that may be the window, a view or a view controller.
+NSWindow *foobarMainWindow() {
+    id object = (__bridge id)core_api::get_main_window();
+    if ([object isKindOfClass:[NSWindow class]]) return (NSWindow *)object;
+    if ([object isKindOfClass:[NSView class]]) return ((NSView *)object).window;
+    if ([object isKindOfClass:[NSViewController class]]) {
+        NSViewController *controller = (NSViewController *)object;
+        return controller.isViewLoaded ? controller.view.window : nil;
+    }
+    return nil;
+}
+
+// The main window, else the key window, else foobar2000's main window, when
+// one can take a sheet now. The last one covers an app that is running but
+// was never activated (started with `open -g`): it has no main or key window.
 NSWindow *activeSheetHost() {
     if (usableSheetHost(NSApp.mainWindow)) return NSApp.mainWindow;
     if (usableSheetHost(NSApp.keyWindow)) return NSApp.keyWindow;
+    NSWindow *foobar = foobarMainWindow();
+    if (usableSheetHost(foobar)) return foobar;
     return nil;
 }
 
 // The window for a sheet, called at the click: the one under the pointer
 // (the menu was opened there, and right-clicking a window that is not key
 // does not make it key), else activeSheetHost(); nil when none can take a
-// sheet now (the alert then runs app-modal).
+// sheet now (the alert then runs app-modal, for example while foobar2000's
+// window is minimized).
 NSWindow *sheetHostWindow() {
     const NSInteger number = [NSWindow windowNumberAtPoint:NSEvent.mouseLocation belowWindowWithWindowNumber:0];
     NSWindow *under = number > 0 ? [NSApp windowWithWindowNumber:number] : nil;  // nil: another app's

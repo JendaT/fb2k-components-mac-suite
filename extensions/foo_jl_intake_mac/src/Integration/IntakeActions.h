@@ -33,8 +33,8 @@
 //     off the main thread (read-only: E_CLI_TIMEOUT at 10 s and killed,
 //     killed on quit too; the reply is parsed there too). Only when it has
 //     answered, on the main thread, an NSAlert opens as a sheet on that
-//     window, or, when it can no longer take one, on the main or key
-//     window, else app-modal (started from a run-loop callout, never inside
+//     window, or, when it can no longer take one, on the main, key or
+//     foobar2000 main window, else app-modal (started from a run-loop callout, never inside
 //     a main-queue block, so the main queue keeps draining while it is
 //     up). It has an NSComboBox (type-ahead completion) listing the
 //     collection names in the CLI's order and the albums it applies to (up
@@ -56,7 +56,7 @@
 //     on_quit are dropped.
 //   - Reject…: with confirm_reject on (default), an NSAlert first, as a
 //     sheet on the window under the pointer (where the menu was opened),
-//     else the main window, else the key window, else app-modal; it lists
+//     else the main, key or foobar2000 main window, else app-modal; it lists
 //     up to 10 albums ("and N more") with an optional reason field; off:
 //     at once, no reason (the item then has no ellipsis). Only when the
 //     CLI has `reject`. No alert when the call could not start anyway.
@@ -74,7 +74,7 @@
 //     one Error line and no sheet. Otherwise an NSAlert lists up to 10
 //     "artist – album → target (n files, k shadows skipped)" rows, then the
 //     excluded roots with their error, as a sheet on that window (or the
-//     main or key window, else app-modal from a run-loop callout, never
+//     main, key or foobar2000 main window, else app-modal from a run-loop callout, never
 //     inside a main-queue block), buttons Execute and Cancel. Execute leaves
 //     out the roots that changed while the sheet was open (no longer
 //     approved, or another target than the sheet showed: one Error line
