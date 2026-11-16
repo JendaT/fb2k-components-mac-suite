@@ -2,9 +2,12 @@
 
 **Repo destination:** `docs/intake/intake-04-extension-spec.md`
 **Owner:** extension worker · **Depends on:** doc 3 v1.2 (contract, normative), schema 1
-**Status:** v1.2 — 2026-11-15 (Part A implemented and review-hardened; Part B in
-implementation). v1.2 aligns Part B with doc 03 v1.2 (amendment 003), the Part B
-plan and the S0 path probe (`docs/intake-mac-paths.md`); Part A is unchanged.
+**Status:** v1.3 — 2026-11-16 (Part A implemented and review-hardened; Part B in
+implementation). v1.3 applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
+Swap, Delete local copy, row colours, confirmations, cache gate, reload
+triggers, watch filter, sheet window. v1.2 (2026-11-15) aligns Part B with doc
+03 v1.2 (amendment 003), the Part B plan and the S0 path probe
+(`docs/intake-mac-paths.md`); Part A is unchanged.
 
 ## Part A — SimPlaylist row/group decorator provider (generic)
 
@@ -162,16 +165,33 @@ commands, never writes files, tags, sidecars or the journal.
 
 ### Refresh and invalidation
 - **Watch:** FSEvents on the income folders from `intake income --json` (when
-  listed), the watched-folders preference and the parent of every known root,
-  filtered to sidecar names (`.intake.json`, `.intake.<id>.json`).
+  listed), the watched-folders preference and the parent of every known
+  root. An event counts when it is a sidecar name (`.intake.json`,
+  `.intake.<id>.json`, the CLI's `isSidecarName`), a folder renamed, moved
+  or removed (its roots change without a sidecar event), or an FSEvents
+  rescan, dropped-events, mount or unmount flag (everything counts as
+  changed); other names are ignored.
 - **Reload:** an event batch (1 s debounce), the exit of a command the
-  component started, a preferences change, a mount event or Refresh triggers
-  one coalesced full `status --json` load, never a filtered one (doc 03 gives
-  `--filter` no cost guarantee). FSEvents sees only changes made through this
-  Mac (Terminal runs included); changes made on the NAS need Refresh. No polling.
-- **Invalidation:** per-root visual fingerprints are diffed; any change, the
-  first successful load or a colour/config change fires one invalidate-all,
-  never from inside `decorate()`.
+  component started, a change of the CLI path, bun path or rules folder
+  (with `version` first), a mount event, Refresh or the page's Reload now
+  triggers one coalesced full `status --json` load, never a filtered one
+  (doc 03 gives `--filter` no cost guarantee). Other preference changes
+  load nothing: watched folders rebuild the watch set, the library mapping
+  rebuilds the library index, colours rebuild from the last load (see
+  Invalidation), the log level and the confirmations apply at once.
+  FSEvents sees only changes made through this Mac (Terminal runs
+  included); changes made on the NAS need Refresh. No polling.
+- **Invalidation:** per-root fingerprints (match key, members, row visual,
+  group badge) are diffed; any change or the first successful load fires one
+  invalidate-all, never from inside `decorate()`. A colour change rebuilds
+  the visuals from the last successful load on the loader queue, with no CLI
+  call, and fires one invalidate-all only when a row or badge now renders
+  differently and the provider is not inert (none when no root uses the
+  changed colour). The page writes a colour 0.25 s after the well's last
+  change, so a drag rebuilds once.
+  A CLI, bun or rules change clears the view first (one invalidate-all when
+  rows were shown); a library mapping change never invalidates (library
+  rows decorate nothing).
 
 ### Row decorations (status → visual)
 Covers the doc 03 lifecycle (new → resolved → proposed → approved → placing
@@ -193,6 +213,14 @@ resolved or proposed and is sticky until `approve`.
 
 - **Amber** = `needs_review` on a resolved or proposed root, with or without a
   proposal; a user-assigned proposal keeps it while the flag is set.
+- **Colours** come from the `tint_*` settings; defaults blue `0x4A90D938`,
+  amber `0xE5A50A38`, teal `0x2AA19838` (proposed and approved), green
+  `0x3FB95038`, grey `0x80808028`. The icons that take a colour (⚠ and ◐ on
+  amber, ● on placed) draw it at full opacity, except on a tint whose alpha
+  is `0x99` (60%) or more, where they use the host's label colour, as every
+  other icon does. A tint of 0 draws no background and leaves its icon in
+  the label colour; a colour with alpha 0 draws no background but still
+  colours those icons.
 - A null `proposal.target_path` adds the tooltip "slot pending"; a
   per-command error adds the root's last error until its status changes.
 - `gc_done` renders nothing: the local copy is gone, and rows swapped to
@@ -205,6 +233,8 @@ belongs to one `proposed` or `approved` root:
 - Amber on the review rule or confidence below 0.6, with the first other
   `ranked` entry as a hint in the text (API v1 has no group tooltip), e.g.
   `→ [Collection A] · 0.61 (alt: [Collection B])`; no hint without `ranked`.
+  The amber badge uses the review colour at full opacity at any tint alpha
+  (the group header is not tinted); `tint_review` 0 gives the host's colour.
 - Null `target_path`: `→ [Collection A] · slot pending`, amber. From CLI
   0.3.0 compilations get a target (amendment 003), leaving the singles slot;
   tier `reject` is also null, and its wording is not specified.
@@ -237,26 +267,69 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   `intake collections --json`. Approve over a multi-selection is the batch.
 - **Execute**, describe then confirm: `execute <ids> --dry-run --json` (rows
   `{id, root_path, target_path, dry_run, files, artifacts, skipped_shadows}`,
-  fields optional; refused roots only in `errors[]`); a sheet on the key
-  window lists up to 10 "artist – album → target (n files, k shadows
-  skipped)" and the excluded roots; on confirm `execute <ids> --json` runs
-  detached, with its output and a run file (pid, start time, ids) in the
-  cache folder. Progress comes from FSEvents; at init a live leftover run is
-  adopted and a dead one finished.
+  fields optional; refused roots only in `errors[]`); a sheet on the window
+  the menu was opened in (the one under the pointer at the click; else the
+  main, key or foobar2000 main window; else app-modal) lists up to 10
+  "artist – album → target (n files, k shadows skipped)" and the excluded
+  roots; on confirm `execute <ids> --json` runs detached, with its output
+  and a run file (pid, start time, ids) in the cache folder. Progress comes
+  from FSEvents; at init a live leftover run is adopted and a dead one
+  finished.
 - **Resume** on `placing` roots runs detached like execute (never killed,
   holds the lane). A root that ends `approved` (resume reverted it) counts as
   a per-root failure.
-- **Swap to library paths** (files untouched): prefix mapping
-  (`<nas-prefix>` → `/Volumes/<share>`) on `placed.target_path` plus the
-  file's path relative to the root (doc 03 layout); only files that exist in
-  the library, shadows untouched. Paths go through
-  `filesystem::g_get_canonical_path` on the mount point whose canonical form
-  matches the playlist's items, so no duplicate metadb entries; no match:
-  skip and log.
-- **Delete local copy** → `gc <ids>`: never `rejected`, never a root that is
-  not `placed`, never `gc --all` (permanent guard). The confirmation lists the
-  local paths and offers **Swap, then delete** while rows still point at
-  income paths. A library index (library path → root) covers swapped rows.
+- **Swap to library paths** (files untouched; no CLI call and not on the
+  mutation lane, so it stays enabled while an execute runs): the selected
+  rows of the active playlist that map by income path to a qualifying root.
+  Each root's sidecar is read afresh. A row is swapped only when its file is
+  a `files[]` entry that is not a `quality_shadow` and has a library copy;
+  shadow rows and rows the sidecar does not list (a whole-folder root's
+  covers, cues, logs) are left alone. Library path = `placed.target_path` +
+  `/` + `files[].path` (doc 03 layout), then the library prefix pair
+  (`swap_prefix_from` → `swap_prefix_to`) rewrites it when it lies under
+  `swap_prefix_from`, whole components only. A `target_path` outside a
+  usable pair is used unchanged, logged at Debug (user decision 2026-11-16:
+  the CLI may already report Mac paths). The copy must exist as a regular
+  file: the sidecar's spelling, then the other Unicode form, under each
+  mount of the share. It is converted with `filesystem::g_get_canonical_path`
+  on a mount whose volume form an item of the playlist already uses, else on
+  the mount whose form foobar2000 resolves back to that mount, so no
+  duplicate metadb entries; neither: the row is skipped ("no matching
+  mount"). Main-thread conversions stop at 200 ms; later rows are skipped. A
+  playlist locked against replacing items (`playlist_lock::filter_replace`)
+  is refused whole. One undo backup, every occurrence of each handle
+  replaced, one console line with the count and the skip reasons.
+- **Delete local copy…** → `gc <ids> --json` on the mutation lane, only for
+  roots captured as `placed` with `placed.verified` true and a non-empty
+  `id`, each once: a permanent component-side guard that stays after
+  CR-004.14. No mutating call is spawned with zero ids and there is no
+  all-roots form (never `gc --all`, never a bare `gc`); never while inert. A
+  library index (library path → root) adds rows already swapped, for Delete
+  only. With `confirm_gc` on (default) the roots' sidecars are read afresh
+  (no answer in 10 s: one Error line, nothing deleted) and the confirmation
+  lists the local files from each sidecar's `files[]` as
+  `root_path/<files[].path>`, shadows included, up to 10 then "and N more",
+  notes that a whole-folder root's other files go too, and names roots whose
+  sidecar could not be read (user decision 2026-11-16: the list comes from
+  `files[]`, not `gc --dry-run`, for which doc 03 v1.2 pins no reply; a
+  `gc --dry-run` reply is proposed separately in amendment 004, and the
+  sheet may switch to it only after 004 lands). It counts the entries in
+  every playlist that still play these files; a mac-volume entry whose path
+  could not be converted counts as unchecked, never as clear. **Swap, then
+  delete** is offered only when such entries exist and every one has a
+  library copy, i.e. is a `files[]` entry that is not a shadow (rows of a
+  root whose sidecar could not be read count as movable). With shadow or
+  unlisted rows it is not offered: the sheet says Delete leaves them as dead
+  entries, and plain Delete stays available (user decision 2026-11-16).
+  Swap, then delete swaps in the playlist the menu came from, then in every
+  other playlist holding such rows, and runs gc only when afterwards no
+  entry anywhere points at an income path and none is unchecked (slow
+  volume); otherwise one Error line and nothing is deleted. On confirm the
+  roots are rechecked against the current snapshot (still `placed` and
+  verified). `confirm_gc` 0 skips the sheet: gc at once.
+
+The picker, Reject… and Delete local copy… sheets pick their window the same
+way.
 
 ### CLI invocation
 - **Executable:** the CLI path preference (a `.ts` path runs as
@@ -283,12 +356,20 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
 ### Preferences page
 CLI path (empty by default: inert; a `.ts` path runs through bun), bun path
 (auto-detected), rules folder, watched income folders (added to those from
-`intake income`), library prefix mapping (one pair, for Swap), tint colours
-(new, review, proposed, approved, placed, rejected; sRGB `0xRRGGBBAA`),
-confirmation toggles (Delete, Reject; Execute always asks), log level. A
-status line (state, CLI version, root count, last error) with Test CLI and
-Reload now, and the income folders in use. configStore (`foo_jl_intake.`),
-cached; never read on the decorate path.
+`intake income`), library prefix mapping (one pair, for Swap), log level,
+row colours: six configInts `tint_new` (new, resolved), `tint_review`
+(amber), `tint_proposed`, `tint_approved` (approved, placing), `tint_placed`
+(placed and verified) and `tint_rejected`, each a packed sRGB `0xRRGGBBAA`
+(a colour well with opacity, a "No tint" checkbox, Reset colours); 0 = no
+tint, absent = the default palette, a value outside 0..0xFFFFFFFF = the
+default and one Debug line, confirmations: "Ask before Delete local copy"
+(`confirm_gc`) and "Ask before Reject" (`confirm_reject`), configInts, on
+unless 0, default on. Off runs the command at once with no sheet (Reject
+then without a reason) and drops the item's ellipsis from the next menu.
+Execute placement always asks (dry run, then its sheet). A status line
+(state, CLI version, root count, last error) with Test CLI and Reload now,
+and the income folders in use. configStore (`foo_jl_intake.`), cached;
+never read on the decorate path.
 
 ### Failure behavior
 - **Codes:** CLI codes in `errors[]` are an open set, shown from `msg`/`path`
@@ -300,8 +381,9 @@ cached; never read on the decorate path.
   succeeded and `version` or `status` fails with `E_NO_CLI`, `E_NO_RULES` or
   `E_CLI_TIMEOUT` (doc 03 "Inert state"). Rows under last-known roots or
   watched folders get a tooltip naming the error, else a console line and the
-  preferences status line explain. Retried on Refresh, preferences change,
-  FSEvents batch or mount.
+  preferences status line explain. Retried on Refresh, Reload now, a change
+  of the CLI path, bun path or rules folder, an FSEvents batch or a mount
+  (other preference changes load nothing, see Reload).
 - **Everything else is per command:** console line + per-root tooltip; never
   modal, never inert. A failed refresh keeps the last data.
 - **Timeouts** (doc 03 v1.2), classified by command whatever its flags:
@@ -325,10 +407,21 @@ and the context menu. (v2 idea, out of scope: a dedicated intake queue panel.)
 
 ## Acceptance (P4 gate)
 - SimPlaylist with no provider: rendering benchmarks unchanged.
-- With intake provider on a 5k-row playlist incl. 200 intake rows: smooth
-  scroll (no frame drops from decoration path; cache hit ≥99% steady-state,
-  measured provider-side: a second scroll pass with no invalidation between
-  requests at most 1% of the rows).
+- With the intake provider on a 5,000-row playlist holding intake rows (the
+  synthetic corpus of
+  `extensions/foo_jl_intake_mac/Tests/e2e/make_perf_corpus.sh`: 200 roots,
+  175 rows, the rest filler): smooth scroll (no frame drops from the
+  decoration path) and a host cache hit ≥99% in steady state. Measured
+  provider-side with the hidden `decor_stats` option against SimPlaylist v2
+  as it is (no SimPlaylist change, no Debug build): two full passes over the
+  playlist with no invalidation between them (the `invalidations` figure
+  unchanged); on pass 2 `since invalidation` grows by at most 1% of the
+  rows, 50 items for 5,000. This counts host misses because v2 requests a
+  row only when its store has no entry for it.
+  Result 2026-11-16 (SimPlaylist v2 428f20c, foo_jl_intake eaaca27b): pass 1
+  requested each of the 5,000 rows once, pass 2 requested 0; batch time max
+  363 µs, average 5 µs. That run's passes were driven by a temporary sweep
+  aid, no longer in the build; a re-run scrolls them by hand.
   The playlist must use the sparse group model (the default) — decorations
   intentionally do not render in the flat fallback mode for very large
   playlists (Part A scope note).
