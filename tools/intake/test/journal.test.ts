@@ -2,7 +2,7 @@
 // so a batch execute/gc does not re-parse the whole file per root. These cover
 // the invalidation paths — including writes this process did not make.
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,8 +31,17 @@ function onDiskSeqs(path: string): number[] {
     });
 }
 
+/** The temp dirs tmpJournal made; each is removed after its test, also when the test fails. */
+const tmpDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 function tmpJournal(): string {
-  return join(mkdtempSync(join(tmpdir(), "intake-journal-")), "intake-journal.ndjson");
+  const dir = mkdtempSync(join(tmpdir(), "intake-journal-"));
+  tmpDirs.push(dir);
+  return join(dir, "intake-journal.ndjson");
 }
 
 test("missing journal reads empty and starts at seq 1", () => {
