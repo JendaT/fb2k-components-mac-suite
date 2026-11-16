@@ -104,34 +104,19 @@ end
 
 ### 2.2 Library Search Path Configuration
 
-Search paths MUST be configuration-dependent. A component's Debug config
-defines `DEBUG=1`, which sets the SDK's `PFC_DEBUG` to 1 and turns
-`PFC_ASSERT` into a call to `pfc::myassert` — absent from the Release-built
-`libpfc-Mac.a`, which compiled assertions out. Hardcoding `build/Release`
-makes every Debug build fail to link with
-`Undefined symbols: pfc::myassert`.
-
 ```ruby
 def library_search_paths
   base = "$(PROJECT_DIR)/#{SDK_PATH}/foobar2000"
-  # $(CONFIGURATION) expands to Debug or Release, so each configuration
-  # links the matching SDK build. Requires the SDK built in BOTH
-  # configurations (see the root README).
   [
     "$(inherited)",
-    "\"#{base}/SDK/build/$(CONFIGURATION)\"",
-    "\"#{base}/helpers/build/$(CONFIGURATION)\"",
-    "\"#{base}/foobar2000_component_client/build/$(CONFIGURATION)\"",
-    "\"#{base}/shared/build/$(CONFIGURATION)\"",
-    "\"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/$(CONFIGURATION)\""
+    "\"#{base}/SDK/build/Release\"",
+    "\"#{base}/helpers/build/Release\"",
+    "\"#{base}/foobar2000_component_client/build/Release\"",
+    "\"#{base}/shared/build/Release\"",
+    "\"$(PROJECT_DIR)/#{SDK_PATH}/pfc/build/Release\""
   ].join(",\n\t\t\t\t\t")
 end
 ```
-
-Note this applies to `LIBRARY_SEARCH_PATHS` only. `PBXFileReference` paths
-for the same `.a` files do not expand build settings and stay pointed at
-`build/Release`; linking happens via `-L`/`-l`, so the reference paths are
-cosmetic.
 
 ### 2.3 Library Linking Script
 
