@@ -148,8 +148,11 @@ row keeps its normal background, an icon that takes the tint's colour (the
 review warning and half circle, the placed filled circle) uses the label
 colour instead, and with `tint_review` 0 the amber group badge uses
 SimPlaylist's normal header text colour; icons and tooltips stay.
-The icons that take a colour use it at full alpha. An alpha of `00` with a
-colour (`0xRRGGBB00`) draws no background but keeps the icon colour. A
+The icons that take a colour use it at full alpha; on a tint of alpha `99`
+(60%) or more they use the label colour, the colour of the row text, so they
+stay visible. The amber group badge keeps the full-alpha colour at any alpha
+(the group header is not tinted). An alpha of `00` with a colour
+(`0xRRGGBB00`) draws no background but keeps the icon colour. A
 value that is negative or wider than 32 bits is malformed: the default is
 used, and one Debug line names it (`[intake] tint_placed: -5 is not 0 or a
 0xRRGGBBAA colour; using the default 0x3FB95038`). At `log_level` 2 the

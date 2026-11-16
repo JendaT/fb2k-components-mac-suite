@@ -524,7 +524,8 @@ static BOOL g_savedShowsAlpha = NO;
                                              action:@selector(resetColours:)
                                  accessibilityLabel:@"Reset the row colours to the defaults"];
     NSTextField *coloursHint = [self wrappingHelper:@"Row backgrounds, with opacity. Icons that take a colour use "
-                                                    @"it at full opacity. No tint: normal background, normal icon "
+                                                    @"it at full opacity; on a tint of 60% opacity or more they use "
+                                                    @"the text colour. No tint: normal background, normal icon "
                                                     @"colour."];
     [colourRows addObject:@[ [self empty], self.resetColoursButton, [self empty] ]];
     [colourRows addObject:@[ [self empty], coloursHint, [self empty] ]];

@@ -65,7 +65,7 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
             if (review) {
                 v.bgTint = palette.tintReview;
                 v.icon = IntakeIcon::Warning;
-                v.iconColor = opaqueColor(palette.tintReview);
+                v.iconColor = rowIconColor(palette.tintReview);
                 appendTooltip(v.tooltip, kTooltipNeedsReview);  // doc 04 v1.2: amber rows say why
             } else {
                 v.bgTint = palette.tintNew;
@@ -77,7 +77,7 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
             v.icon = IntakeIcon::CircleLeftHalf;
             if (review) {
                 v.bgTint = palette.tintReview;
-                v.iconColor = opaqueColor(palette.tintReview);
+                v.iconColor = rowIconColor(palette.tintReview);
                 appendTooltip(v.tooltip, kTooltipNeedsReview);
             } else {
                 v.bgTint = palette.tintProposed;
@@ -98,7 +98,7 @@ IntakeRowVisual rowVisualFor(const IntakeRecord &record, const IntakePalette &pa
             if (record.placedVerified) {
                 v.bgTint = palette.tintPlaced;
                 v.icon = IntakeIcon::CircleFilled;
-                v.iconColor = opaqueColor(palette.tintPlaced);
+                v.iconColor = rowIconColor(palette.tintPlaced);
             }
             break;
         case IntakeStatus::Rejected:

@@ -6,7 +6,8 @@
 //  0xRRGGBBAA and back (rounding at .5, clamping, alpha, 0), the stored
 //  int's meaning (absent, 0, a colour, malformed), the palette built from a
 //  settings reader with its problem lines, the change summary, and a tint
-//  of 0 reaching the row visual as no tint with the host's icon colour.
+//  of 0 reaching the row visual as no tint with the host's icon colour (as
+//  does a tint of alpha 0x99 or more, which keeps its background).
 //  Pure: no files, no configStore.
 //
 // TEST_DEPS: src/Core/IntakeDecorationMap.mm src/Core/IntakeReviewRule.mm
@@ -161,10 +162,18 @@ static void testOffReachesTheRow() {
     placed.placedVerified = true;
 
     IntakePalette custom;
-    custom.tintPlaced = 0xFF00FFFF;
+    custom.tintPlaced = 0xFF00FF98;
     IntakeRowVisual v = rowVisualFor(placed, custom);
-    CHECK(v.bgTint == 0xFF00FFFF && v.iconColor == 0xFF00FFFF && v.icon == IntakeIcon::CircleFilled,
-          "a custom placed tint: background and icon colour");
+    CHECK(v.bgTint == 0xFF00FF98 && v.iconColor == 0xFF00FFFF && v.icon == IntakeIcon::CircleFilled,
+          "a custom placed tint below 0x99: background, and the icon in its RGB at alpha FF");
+    custom.tintPlaced = 0xFF00FF99;
+    v = rowVisualFor(placed, custom);
+    CHECK(v.bgTint == 0xFF00FF99 && v.iconColor == 0 && v.icon == IntakeIcon::CircleFilled,
+          "alpha 0x99: background, the icon in the label colour");
+    custom.tintPlaced = 0xFF00FFFF;
+    v = rowVisualFor(placed, custom);
+    CHECK(v.bgTint == 0xFF00FFFF && v.iconColor == 0 && v.icon == IntakeIcon::CircleFilled,
+          "an opaque placed tint (B10a): background, the icon in the label colour so it shows");
 
     IntakePalette off;
     off.tintPlaced = 0;

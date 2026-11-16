@@ -1545,8 +1545,8 @@ static void testPalette() {
     CHECK(h->publishCount() == 1 && h->lastPublished().reason == PublishReason::Load,
           "nothing loaded yet: no publish of its own");
     const IntakeRecord *placed = h->lastPublished().view->snapshot().recordForId("itk_00000012");
-    CHECK(placed && placed->visual.bgTint == 0xFF00FFFF && placed->visual.iconColor == 0xFF00FFFF,
-          "the first load uses the palette set before it");
+    CHECK(placed && placed->visual.bgTint == 0xFF00FFFF && placed->visual.iconColor == 0,
+          "the first load uses the palette set before it (opaque: the icon in the label colour)");
 
     g_context = "palette-off";
     IntakePalette off = magenta;

@@ -27,8 +27,10 @@
 //  An unknown assigned_by or target_path (CLI before 0.3.0) gives neither
 //  "yours" nor "slot pending": the confidence is shown.
 //
-//  Colour: amber is the review tint at full alpha (opaqueColor), as the
-//  amber row icons; otherwise 0, the host's secondary colour.
+//  Colour: amber is the review tint at full alpha (opaqueColor), at any
+//  tint alpha: the group header is not tinted, so unlike a row icon
+//  (rowIconColor) it stays readable; otherwise 0, the host's secondary
+//  colour.
 //
 //  IntakeSnapshot::build stores each record's badge (IntakeRecord::badge),
 //  so decorate_group only looks it up, and the load diff (rendersAlike)

@@ -24,8 +24,10 @@
 //
 //  Amber icons (warning, and the half circle under review) and the placed
 //  filled circle take their tint's RGB at full alpha as icon colour, as in
-//  SimPlaylist's DebugDummyDecorator; the other icons use the host's label
-//  colour (0). placing uses the approved tint (it follows approve).
+//  SimPlaylist's DebugDummyDecorator, unless the tint's alpha is 60% (0x99)
+//  or more: then they use the host's label colour (rowIconColor). The other
+//  icons always use the host's label colour (0). placing uses the approved
+//  tint (it follows approve).
 //
 //  Every amber row (resolved or proposed needing review) and a new root
 //  with needs_review start their tooltip with "needs review" (doc 04 v1.2).
@@ -122,6 +124,18 @@ bool statusHasVisual(const IntakeRecord &record);
 // preference that turns the tint off) gives 0, the host's label colour.
 inline constexpr IntakeRgba opaqueColor(IntakeRgba tint) {
     return tint == 0 ? 0 : ((tint & 0xFFFFFF00u) | 0xFFu);
+}
+
+// The tint alpha from which a row icon takes the label colour: 0x99, 60%.
+inline constexpr uint32_t kRowIconLabelColourAlpha = 0x99;
+
+// The colour of a row icon that takes its tint's colour. From 60% alpha up
+// the background is nearly the tint's own RGB, so an icon in that RGB would
+// not show (B10a: tint_placed 0xFF00FFFF hid the placed dot); it gives 0,
+// the host's label colour, the colour of the row text. Below that,
+// opaqueColor. Group badges keep opaqueColor: the group header is not tinted.
+inline constexpr IntakeRgba rowIconColor(IntakeRgba tint) {
+    return (tint & 0xFFu) >= kRowIconLabelColourAlpha ? 0 : opaqueColor(tint);
 }
 
 } // namespace intake

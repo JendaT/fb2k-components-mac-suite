@@ -18,14 +18,14 @@
 //     default;
 //   - 0: no tint for that status. The row keeps its normal background, and
 //     an icon that takes the tint's colour uses the host's label colour
-//     (opaqueColor gives 0);
+//     (rowIconColor gives 0);
 //   - 1..0xFFFFFFFF: that colour;
 //   - anything else (negative, wider than 32 bits): malformed, the default,
 //     and one problem line (paletteFromSettings), which IntakeService logs
 //     at Debug.
 //  An alpha of 0 with a colour (0xRRGGBB00) is kept as it is: the row
 //  background draws nothing, and coloured icons still use the RGB at full
-//  alpha.
+//  alpha (from alpha 0x99 up they use the label colour, rowIconColor).
 //
 //  Packing (the preferences page's NSColorWell, after conversion to sRGB):
 //  each component 0..1 is scaled to 0..255, rounded half away from zero

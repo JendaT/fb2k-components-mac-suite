@@ -216,6 +216,56 @@ static void testPalette() {
     CHECK(opaqueColor(0x12345600) == 0x123456FF, "opaqueColor sets full alpha");
 }
 
+// B10a: from alpha 0x99 (60%) up, a row icon that takes its tint's colour
+// uses the label colour (0), or it vanishes into the background of the same
+// RGB. Checked through the visuals of each record that colours its icon.
+static void testIconOnOpaqueTint() {
+    g_context = "icon-opaque-tint";
+    CHECK_EQ(rowIconColor(0x12345698), 0x123456FFu, "alpha 0x98: the tint's RGB at full alpha");
+    CHECK_EQ(rowIconColor(0x12345699), 0u, "alpha 0x99: the label colour");
+    CHECK_EQ(rowIconColor(0x123456FF), 0u, "alpha 0xFF: the label colour");
+    CHECK_EQ(rowIconColor(0), 0u, "tint 0: the label colour");
+
+    struct Case {
+        IntakeRgba tint;
+        IntakeRgba icon;
+        const char *what;
+    };
+    const Case cases[] = {
+        {0xFF00FF98, 0xFF00FFFF, "alpha 0x98 keeps the RGB at alpha FF"},
+        {0xFF00FF99, 0, "alpha 0x99 gives the label colour"},
+        {0xFF00FFFF, 0, "alpha 0xFF gives the label colour"},
+        {0, 0, "tint 0 gives the label colour"},
+    };
+    for (const Case &c : cases) {
+        IntakePalette p;
+        p.tintPlaced = c.tint;
+        p.tintReview = c.tint;
+        const IntakeRowVisual green = rowVisualFor(placed(true), p);
+        CHECK(green.bgTint == c.tint && green.icon == IntakeIcon::CircleFilled && green.iconColor == c.icon,
+              (std::string("placed: ") + c.what).c_str());
+        const IntakeRowVisual warning = rowVisualFor(record(IntakeStatus::Resolved, true), p);
+        CHECK(warning.bgTint == c.tint && warning.icon == IntakeIcon::Warning && warning.iconColor == c.icon,
+              (std::string("resolved + needs_review: ") + c.what).c_str());
+        const IntakeRowVisual half = rowVisualFor(proposed(IntakeStatus::Proposed, true, AssignedBy::Engine), p);
+        CHECK(half.bgTint == c.tint && half.icon == IntakeIcon::CircleLeftHalf && half.iconColor == c.icon,
+              (std::string("proposed + needs_review: ") + c.what).c_str());
+    }
+
+    // The defaults are all below 0x99 (0x38, 0x28): their icons are as before.
+    const IntakePalette d;
+    const IntakeRgba defaults[] = {d.tintNew,    d.tintReview, d.tintProposed,
+                                   d.tintApproved, d.tintPlaced, d.tintRejected};
+    int below = 0;
+    for (IntakeRgba t : defaults) {
+        if ((t & 0xFFu) < kRowIconLabelColourAlpha && rowIconColor(t) == opaqueColor(t)) below++;
+    }
+    CHECK_EQ(below, 6, "every default alpha is below 0x99, so rowIconColor is opaqueColor");
+    CHECK(rowVisualFor(placed(true), d).iconColor == kGreenIcon, "default palette: the placed icon stays green");
+    CHECK(rowVisualFor(record(IntakeStatus::Resolved, true), d).iconColor == kAmberIcon,
+          "default palette: the review icon stays amber");
+}
+
 static void testConsistency() {
     g_context = "consistency";
     // statusHasVisual (what IntakeSidecarMembers spends I/O on) must agree
@@ -255,6 +305,7 @@ int main(void) {
         testTable();
         testTooltips();
         testPalette();
+        testIconOnOpaqueTint();
         testConsistency();
     }
     TEST_MAIN_END();
