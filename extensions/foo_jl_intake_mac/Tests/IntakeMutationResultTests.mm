@@ -8,7 +8,10 @@
 //  root's status changes from the one the menu showed). Synthetic envelopes,
 //  plus real replies of Tests/mock-cli/intake-mock (a fresh state directory
 //  under the test's temp root): a partial approve with E_BAD_STATUS, and a
-//  propose on two virtual roots sharing one folder.
+//  propose on two virtual roots sharing one folder. B9: gc results (done,
+//  E_VERIFY naming placed.target_path, E_NO_JOURNAL naming the root folder,
+//  a partial with E_BAD_STATUS), synthetic and from the mock's gc states
+//  (placed-gc_done, gc-e_verify, gc-e_no_journal).
 //
 // TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeLog.mm src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm
@@ -542,6 +545,112 @@ static void testAgainstMock() {
     CHECK(r.succeeded.size() == 1 && r.rootErrors.empty(), "mock: rejected");
 }
 
+// B9: `gc <ids> --json` results. Delete local copy… names each root with
+// placed.target_path as its target (E_VERIFY names it, commands-p3.ts
+// cmdGc) and its root folder (E_NO_JOURNAL, E_BAD_STATUS name that).
+static void testGc() {
+    g_context = "gc";
+    const std::string placedDir = kDump + "Fixture Artist - Placed Album";
+    const std::string target = "/library/music.hq/Test Collection A/Fixture Artist/Fixture Artist - 2026 - Placed Album";
+    const std::string otherDir = kDump + "Fixture Artist - Other Placed";
+    const std::string otherTarget = "/library/music.hq/Test Collection B/Other";
+    const std::vector<MutationRoot> roots = {MutationRoot{"itk_00000012", placedDir, IntakeStatus::Placed, target},
+                                             MutationRoot{"itk_00000020", otherDir, IntakeStatus::Placed, otherTarget}};
+    MutationOutcome done = summarizeMutation(CliCommand::Gc, roots, env(CliOutcome::Ok, rows({"itk_00000012", "itk_00000020"})));
+    CHECK(done.succeeded.size() == 2 && done.rootErrors.empty() && !done.isError && done.consoleLine == "gc: done for 2 roots",
+          "done: the B6 console line");
+
+    MutationOutcome verify = summarizeMutation(
+        CliCommand::Gc, roots,
+        env(CliOutcome::Partial, rows({"itk_00000020"}),
+            {err("E_VERIFY", "target re-verification failed: missing: 01 - Test Track One.wav", target)}));
+    CHECK(verify.succeeded == std::vector<std::string>({"itk_00000020"}), "partial: the other root was collected");
+    CHECK(errorFor(verify, "itk_00000012") ==
+              "gc: Verification failed: target re-verification failed: missing: 01 - Test Track One.wav (" + target + ")",
+          "E_VERIFY names the placed target: it goes to that root, the path kept");
+    CHECK(verify.isError && verify.consoleLine.rfind("gc: done for 1 of 2 roots; Verification failed", 0) == 0,
+          "partial: Error line, n of m, the first error");
+
+    MutationOutcome journal = summarizeMutation(
+        CliCommand::Gc, roots,
+        env(CliOutcome::Failed, nil, {err("E_NO_JOURNAL", "journal record missing or mismatched", otherDir)}));
+    CHECK(errorFor(journal, "itk_00000020") == "gc: Intake journal unavailable: journal record missing or mismatched",
+          "E_NO_JOURNAL names the root folder: that root, without repeating it");
+    CHECK(errorFor(journal, "itk_00000012") == "<none>",
+          "the other root has no error of its own (the call failed for it without one)");
+    CHECK(journal.isError && journal.consoleLine ==
+                                 "gc failed for 2 roots: Intake journal unavailable: journal record missing or mismatched (" +
+                                     otherDir + ")",
+          "exit 2: \"gc failed for N roots: ...\"");
+
+    MutationOutcome mismatch = summarizeMutation(
+        CliCommand::Gc, {MutationRoot{"itk_00000012", placedDir, IntakeStatus::Placed, std::string()}},
+        env(CliOutcome::Failed, nil, {err("E_VERIFY", "placed target_path is outside all configured tier roots", "/elsewhere")}));
+    CHECK(errorFor(mismatch, "itk_00000012") ==
+              "gc: Verification failed: placed target_path is outside all configured tier roots (/elsewhere)",
+          "an E_VERIFY path that is no known target: the command's own error, still on its root");
+}
+
+static void testGcAgainstMock() {
+    g_context = "gc-mock";
+    const std::string state = mock::setupState("default");
+    CHECK(!state.empty(), "mock state set up");
+    if (state.empty()) return;
+    const std::string root = state + "/root";
+    const std::string placedDir = root + "/income/dump/Fixture Artist - Placed Album";
+    const std::string target = root + "/library/music.hq/Test Collection A/Fixture Artist/Fixture Artist - 2026 - Placed Album";
+    const MutationRoot placed{"itk_00000012", placedDir, IntakeStatus::Placed, target};
+    CliOutcome outcome = CliOutcome::NoCli;
+    CliRequest gc;
+    gc.command = CliCommand::Gc;
+    gc.ids = {"itk_00000012"};
+
+    // E_VERIFY through gc.start: the root stays placed, nothing deleted.
+    CHECK(mock::writeFile(state + "/gc.start", "gc-e_verify\n"), "gc.start written");
+    EnvelopeResult verifyEnv;
+    CHECK(runMock(state, gc, outcome, verifyEnv).empty() && outcome == CliOutcome::Failed, "gc: exit 2 (E_VERIFY)");
+    MutationOutcome verify = summarizeMutation(CliCommand::Gc, {placed}, verifyEnv);
+    CHECK(errorFor(verify, "itk_00000012") ==
+              "gc: Verification failed: target re-verification failed: missing: 01 - Test Track One.wav (" + target + ")",
+          "mock: the E_VERIFY tooltip");
+    CHECK(mock::fileExists(placedDir + "/01 - Test Track One.wav"), "mock: nothing deleted");
+
+    const std::string state2 = mock::setupState("default");
+    CHECK(mock::writeFile(state2 + "/gc.start", "gc-e_no_journal\n"), "gc.start written");
+    EnvelopeResult journalEnv;
+    CHECK(runMock(state2, gc, outcome, journalEnv).empty() && outcome == CliOutcome::Failed, "gc: exit 2 (E_NO_JOURNAL)");
+    const MutationRoot placed2{"itk_00000012", state2 + "/root/income/dump/Fixture Artist - Placed Album",
+                               IntakeStatus::Placed, state2 + "/root/library/x"};
+    CHECK(errorFor(summarizeMutation(CliCommand::Gc, {placed2}, journalEnv), "itk_00000012") ==
+              "gc: Intake journal unavailable: journal record missing or mismatched",
+          "mock: the E_NO_JOURNAL tooltip");
+
+    // Done, then placed-gc_done applied (gc.next): gc_done, local audio gone,
+    // the library copy and the tombstone sidecar stay.
+    const std::string state3 = mock::setupState("default");
+    CHECK(mock::writeFile(state3 + "/gc.next", "placed-gc_done\n"), "gc.next written");
+    EnvelopeResult doneEnv;
+    CHECK(runMock(state3, gc, outcome, doneEnv).empty() && outcome == CliOutcome::Ok, "gc: exit 0");
+    CHECK(mock::lastLine(mock::callsLog(state3)) == "gc\titk_00000012\t--json", "calls.log: gc <id> --json");
+    const std::string dir3 = state3 + "/root/income/dump/Fixture Artist - Placed Album";
+    MutationOutcome done = summarizeMutation(
+        CliCommand::Gc, {MutationRoot{"itk_00000012", dir3, IntakeStatus::Placed, std::string()}}, doneEnv);
+    CHECK(done.succeeded.size() == 1 && done.consoleLine == "gc: done for 1 root", "mock: gc: done for 1 root");
+    CHECK(!mock::fileExists(dir3 + "/01 - Test Track One.wav") && !mock::fileExists(dir3 + "/02 - Test Track Two.wav") &&
+              mock::fileExists(dir3 + "/.intake.json"),
+          "mock: the local audio is gone, the sidecar stays");
+    CHECK(mock::fileExists(state3 + "/root/library/music.hq/Test Collection A/Fixture Artist/Fixture Artist - 2026 - Placed "
+                                    "Album/01 - Test Track One.wav"),
+          "mock: the library copy stays");
+    CliRequest status;
+    status.command = CliCommand::Status;
+    status.filters = {{"id", "itk_00000012"}};
+    EnvelopeResult statusEnv;
+    CHECK(runMock(state3, status, outcome, statusEnv).empty() && outcome == CliOutcome::Ok, "status ran");
+    std::vector<IntakeRecord> records = parseStatusRows(statusEnv.data).records;
+    CHECK(records.size() == 1 && records[0].status == IntakeStatus::GcDone, "mock: the root is gc_done now");
+}
+
 int main() {
     @autoreleasepool {
         // Construct the sweep's statics before registering it, so they are
@@ -560,6 +669,8 @@ int main() {
         testTargetPaths();
         testBaseline();
         testAgainstMock();
+        testGc();
+        testGcAgainstMock();
         mock::killLeftovers();
         mock::removeTempRoot();
     }

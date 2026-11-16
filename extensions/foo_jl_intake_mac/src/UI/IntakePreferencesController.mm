@@ -18,10 +18,11 @@
 //     highlighted in place and listed under the field (lexical checks
 //     only, no filesystem access: these folders are usually on a share).
 //   - Library mapping: one prefix pair, NAS path prefix -> Mac path prefix,
-//     stored lexically clean (normalizedPrefix) and validated only (Swap,
-//     B9, uses it).
+//     stored lexically clean (normalizedPrefix) and validated; Swap to
+//     library paths and the library index use it (B9).
 //   - Confirmations (B6): "Confirm before Reject" (confirm_reject, default
-//     on). Execute always asks; Delete's toggle arrives with B9.
+//     on). Execute always asks; Delete's toggle (confirm_gc, B9) arrives
+//     with B10.
 //   - Logging: the log level.
 //   - Status: state, CLI version, roots ("Releases") and last error from
 //     the loader (statusDisplay), refreshed on
@@ -888,7 +889,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     switch (check) {
         case PrefixPairCheck::BothEmpty:
             [self setHint:self.prefixHint
-                           text:@"Empty: no mapping. Swap to library paths will use it (not available yet)."
+                           text:@"Empty: no mapping. Swap to library paths uses the target paths the CLI reports."
                            tone:StatusTone::Neutral
                 neutralIsHelper:YES];
             break;

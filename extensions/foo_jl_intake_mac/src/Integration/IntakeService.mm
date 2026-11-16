@@ -125,6 +125,7 @@ public:
             providerPublish(std::move(view), invalidateAll, reason == PublishReason::Load);
         };
         ls.watchFolders = settings_.watchFolders;
+        ls.libraryPrefix = makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo);
         ls.onStatusChanged = [](const LoaderStatus &) { postStatusChanged(); };
         // B6: per-root command errors reach the records before the snapshot.
         ls.annotateRecords = [](std::vector<IntakeRecord> &records, std::chrono::steady_clock::time_point started) {
@@ -247,6 +248,8 @@ public:
         const bool cliChanged = next.cliPath != settings_.cliPath || next.bunPath != settings_.bunPath ||
                                 next.rulesDir != settings_.rulesDir;
         const bool watchChanged = next.watchFolders != settings_.watchFolders;
+        const bool prefixChanged =
+            next.swapPrefixFrom != settings_.swapPrefixFrom || next.swapPrefixTo != settings_.swapPrefixTo;
         // Hidden options (decor_stats, log_file) keep their startup values.
         next.decorStats = settings_.decorStats;
         next.logFile = settings_.logFile;
@@ -257,6 +260,7 @@ public:
             logIgnoredWatchFolders(settings_.ignoredWatchFolders);
             loader_->setWatchFolders(settings_.watchFolders);
         }
+        if (prefixChanged) loader_->setLibraryPrefix(makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo));
         if (cliChanged) loader_->reconfigure(cliConfig());
     }
 
@@ -310,6 +314,8 @@ public:
         info.running = loader_ != nullptr;
         info.cliConfigured = !settings_.cliPath.empty();
         info.confirmReject = settings_.confirmReject;
+        info.confirmGc = settings_.confirmGc;
+        info.libraryPrefix = makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo);
         if (loader_) info.cli = loader_->status().cliInfo;
         return info;
     }

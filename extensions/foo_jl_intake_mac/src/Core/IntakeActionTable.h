@@ -10,7 +10,12 @@
 //  change between the menu and the click can never retarget an item.
 //
 //  Selection -> roots: the rows' records, deduplicated by id, in selection
-//  order (selectionRoots). m is their count.
+//  order (selectionRoots). B9: rows that map to no root by their path but
+//  are a placed root's library copy (the library index, IntakeView
+//  libraryRecordFor: rows already swapped) add that root as a library root
+//  (libraryRoots of buildActionTable) unless it is already selected by an
+//  income row. m counts both kinds; library roots qualify for Delete local
+//  copy… only.
 //
 //  Enable rule (doc 03 v1.2 "Legal source statuses", narrowed by doc 04):
 //
@@ -27,8 +32,10 @@
 //    Resume placement              placing, no live run on it; only listed
 //                                  when the CLI resumes by id
 //                                  (cliSupportsCommand: 0.2.1 or later)
-//    Swap to library paths         placed with placed.verified
-//    Delete local copy…            placed with placed.verified (never
+//    Swap to library paths         placed with placed.verified (income
+//                                  rows only: a playlist operation)
+//    Delete local copy…            placed with placed.verified, by income
+//                                  path or through the library index (never
 //                                  rejected, never a root that is not placed)
 //
 //  An unknown target_path (CLI before 0.3.0) does not block Approve or
@@ -44,7 +51,9 @@
 //     when 0 < n < m. Roots go by id: no entry ever runs with zero ids, and
 //     no all-roots form exists here (IntakeCommandArgs refuses both too).
 //   - Mutating items are disabled while the mutation lane is busy, with
-//     " (execute running)" while an execute holds it.
+//     " (execute running)" while an execute holds it. Swap runs no CLI
+//     command (it edits the playlist; files untouched), so it stays enabled
+//     and unlabelled while the lane is busy, an execute included.
 //   - Title: base, " (n of m)", " (execute running)", then "…" when the
 //     action asks first (actionAsksFirst): "Reject (4 of 5)…".
 //   - Order: the fixed doc 04 order (kOrder), Refresh last, except that
@@ -58,8 +67,14 @@
 //  could not map may be other roots, so m is only a lower bound).
 //  The menu shows menuActions(): Propose, Assign to X, Assign to other
 //  collection…, Approve, Reject…, Execute placement…, Resume placement
-//  (B8) and Refresh. Swap and Delete (B9) are already decided here and stay
-//  hidden until then. b6Actions() is the B6 subset, kept for tests.
+//  (B8), Swap to library paths and Delete local copy… (B9) and Refresh.
+//  b6Actions() is the B6 subset, kept for tests.
+//
+//  The gc guard (PERMANENT, PLAN.md 3.8: stays after CR-004.14): a gc
+//  request only ever names roots whose captured status is placed, each once
+//  (gcEligibleRoots, applied by requestForEntry whatever the entry holds),
+//  and none at all is refused (as IntakeCommandArgs refuses a mutating call
+//  with no ids); there is no all-roots form (`gc --all`, a bare `gc`).
 //
 //  Thread-safety: pure functions.
 //
@@ -105,9 +120,9 @@ bool actionCommand(IntakeAction action, CliCommand &out);
 // "(n of m)" or an ellipsis.
 std::string actionBaseTitle(IntakeAction action, const std::string &collection = std::string());
 
-// The actions the context menu shows (B8: Propose, Assign to X, Assign to
+// The actions the context menu shows (Propose, Assign to X, Assign to
 // other collection…, Approve, Reject…, Execute placement…, Resume
-// placement, Refresh).
+// placement, Swap to library paths, Delete local copy…, Refresh).
 const std::vector<IntakeAction> &menuActions();
 
 // The B6 subset (Propose, Approve, Reject…, Refresh).
@@ -121,6 +136,7 @@ struct ActionContext {
     bool executeRunning = false;           // the lane holder is an execute or resume
     std::vector<std::string> liveRunIds;   // roots of a live execute or resume run (B8)
     bool confirmReject = true;             // confirm_reject: Reject asks first
+    bool confirmGc = true;                 // confirm_gc (B9): Delete local copy asks first
     // Some selected rows were left unmapped (NativePathMenuBudget): they
     // may be roots, so m is only a lower bound.
     bool selectionIncomplete = false;
@@ -128,8 +144,8 @@ struct ActionContext {
 
 // Choosing the action opens a dialog first, so its title ends in an
 // ellipsis (U+2026, the last character, after any "(n of m)"): Assign to
-// other collection (the picker), Execute placement (always asks), Delete
-// local copy, and Reject while confirm_reject is on.
+// other collection (the picker), Execute placement (always asks), Reject
+// while confirm_reject is on, and Delete local copy while confirm_gc is on.
 bool actionAsksFirst(IntakeAction action, const ActionContext &context);
 
 // The per-root half of the enable rule (selection size and lane aside).
@@ -154,6 +170,8 @@ struct ActionRoot {
     IntakeStatus status = IntakeStatus::Unknown;
     std::string targetCollection;  // proposal.target_collection; empty without one
     std::string targetPath;        // proposal.target_path when set (CLI 0.3.0+); empty otherwise
+    bool placedVerified = false;   // placed.verified (B9)
+    std::string placedTargetPath;  // placed.target_path; empty without one (B9)
 };
 
 ActionRoot actionRootFor(const IntakeRecord &record);
@@ -176,19 +194,34 @@ struct ActionTable {
 // skipped, repeats (by id) dropped, selection order kept.
 std::vector<const IntakeRecord *> selectionRoots(const std::vector<const IntakeRecord *> &rows);
 
+// The library roots of a selection (B9): the roots of `libraryRows` (rows
+// matched only through the library index), deduplicated by id, selection
+// order, minus those already in `incomeRoots`.
+std::vector<const IntakeRecord *> libraryOnlyRoots(const std::vector<const IntakeRecord *> &incomeRoots,
+                                                   const std::vector<const IntakeRecord *> &libraryRows);
+
 // The table for `roots` (see the top of this file). `exposed` lists the
 // actions to show (order does not matter; the table order is fixed).
+// `libraryRoots` (B9, libraryOnlyRoots): selected only through their
+// library copies; they count toward m and qualify for Delete local copy…
+// only.
 ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, const ActionContext &context,
-                             const std::vector<IntakeAction> &exposed = menuActions());
+                             const std::vector<IntakeAction> &exposed = menuActions(),
+                             const std::vector<const IntakeRecord *> &libraryRoots = {});
 
 // The first entry for `action`, or nullptr.
 const ActionEntry *findEntry(const ActionTable &table, IntakeAction action);
 
+// The permanent gc guard (see the top of this file): the roots whose
+// captured status is placed, each once, in order.
+std::vector<ActionRoot> gcEligibleRoots(const std::vector<ActionRoot> &roots);
+
 // The CLI request an entry runs (ids in table order, the reason for Reject,
 // the collection for Assign to X and for a picked Assign to other
-// collection…). False, with `why` set, when nothing may run: a disabled
-// entry, an empty root set, an assign without a collection, or an action
-// that is not a CLI call.
+// collection…; for Delete local copy only gcEligibleRoots). False, with
+// `why` set, when nothing may run: a disabled entry, an empty root set, a
+// gc left with no placed root, an assign without a collection, or an
+// action that is not a CLI call.
 bool requestForEntry(const ActionEntry &entry, const std::string &reason, CliRequest &out, std::string *why = nullptr);
 
 // "Artist – Album" (U+2013), or whichever of the two is known, or the

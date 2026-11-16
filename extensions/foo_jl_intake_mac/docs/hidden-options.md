@@ -31,6 +31,9 @@ change reloads with `version`; a watched-folders change rebuilds the watch
 set; the log level and `confirm_reject` apply immediately). They are described below because in-app checks set them with
 `sqlite3` while foobar2000 is quit.
 
+**Not on the page yet (B9; B10 adds its checkbox):** `confirm_gc`. It is read
+at startup and whenever the page saves a setting.
+
 **Hidden (config store only):** `decor_stats`, `log_file` and the temporary
 acceptance aids `test_playlist`, `test_playlist_dir`, `test_open_prefs` and
 `test_actions`.
@@ -110,7 +113,37 @@ prefix pair, the library's path prefix as the intake CLI reports it on the
 NAS (`swap_prefix_from`) and the same folder as this Mac mounts it
 (`swap_prefix_to`), e.g. `/share/library` and `/Volumes/library`. Both must be
 absolute paths, or both empty (the default: no mapping). The page flags a
-half-filled or relative pair. Stored and validated only until Swap exists.
+half-filled or relative pair.
+
+How it is used: a placed file's library path is `placed.target_path` + `/` +
+its sidecar `files[].path`; when that path is `swap_prefix_from` or lies under
+it (whole path components: `/share/library` does not match
+`/share/library2`), that part is replaced by `swap_prefix_to`. A pair that is
+empty or not usable maps nothing, and a target path outside a usable pair is
+used as it is (the CLI may already report Mac paths); either way only library
+files that exist are swapped. The same rule builds the library index that lets
+**Delete local copy…** find rows already swapped. A change applies at once:
+the index is rebuilt (no reload), and the next Swap uses the new pair.
+
+## foo_jl_intake.confirm_gc
+
+`configInts`, `1` (default) or `0`; not on the page yet (B10 adds the
+checkbox), so set it with `sqlite3` while foobar2000 is quit. With `1`, the
+context menu's **Delete local copy…** first shows a confirmation (a sheet on
+the window the menu was opened in) that lists the local files it deletes (the
+sidecar's `files[]` under `root_path`, shadows included: up to 10, then "and
+N more"), notes that a whole-folder root's other files go too, and offers
+**Swap, then delete** while rows of those releases in the active playlist
+still point at their income files. With `0`, the item reads **Delete local
+copy** (no ellipsis) and runs `gc <ids> --json` at once. Either way gc runs
+only on roots that are `placed` with `placed.verified`.
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.confirm_gc',0)
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
 
 ## foo_jl_intake.confirm_reject
 
@@ -238,13 +271,15 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.test_actions
 
-Temporary acceptance aid (B6, extended in B7 and B8), removed before the
+Temporary acceptance aid (B6, extended in B7, B8 and B9), removed before the
 merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
-`src/Core/IntakeTestActionScript.*` and its tests, and the
-`PickerTestHooks` and `ExecuteTestHooks` in `src/Integration/IntakeActions.*`).
-It lets an in-app check drive the intake context menu, the collection picker
-and the execute sheet included, and read the group header badges and the
-tracked execute runs, without clicking.
+`src/Core/IntakeTestActionScript.*` and its tests, the `PickerTestHooks`,
+`ExecuteTestHooks`, `SwapTestHooks` and `DeleteTestHooks` in
+`src/Integration/IntakeActions.*`, and `playlistRowsOfRoot` in
+`src/Integration/IntakeSwap.*`). It lets an in-app check drive the intake
+context menu, the collection picker, the execute sheet and the delete
+confirmation included, and read the group header badges, the tracked execute
+runs and the playlist rows of a release, without clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
 the first successful `status` load (and after the check for execute runs an
@@ -265,6 +300,11 @@ words by spaces:
 | `execute-sheet <id...> close=<seconds>` | B8. The real dry run and the real sheet (for a screenshot): the window under the pointer when the step starts, else the main, key or foobar2000 main window, else app-modal. One line when it is up: `sheet shown: "<title>"; N placeable, M excluded: <rows>; buttons Execute, Cancel; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is executed. |
 | `resume <id...>` | B8. The **Resume placement** item (placing roots; listed only for a CLI that resumes by id, 0.2.1 or later): starts the detached `execute <ids> --resume --json` at once. One line once it was spawned: `started: pid <pid>, run file execute-<stamp>.run` (or `not run: ...` / `not started: ...`). |
 | `runs` | B8. One line: the execute and resume runs the component tracks (its own and adopted ones: command, pid, state `starting`/`running`/`adopted`/`exited`, ids) and the mutation lane, e.g. `1 live: execute pid 4242 adopted (itk_00000010); lane busy (execute)` or `none; lane free`. |
+| `swap <id...>` | B9. Selects, in the active playlist, the rows that map to those roots by their income path (and nothing else), builds the context menu for that selection with the real per-row mapping, and runs its **Swap to library paths** item as a click does. One line once the swap has ended: `Swap to library paths (<ids>): selected N row(s); swap: S row(s) swapped to library paths, K skipped (<reasons>)`, or why nothing ran (`not run: ...`). Swap runs no CLI command (calls.log does not change) and works while an execute runs. |
+| `rows <id>` | B9. One line listing the rows of the active playlist that belong to that root, by income path or through the library index (rows already swapped): `N row(s) (I income, L library), H distinct handle(s) for P distinct path(s): #<index> income\|library <native path> [h<k>]; ...; menu: <the items a selection of those rows gets>`. The same tag `h<k>` on two rows means one metadb handle; a path with two tags would be a duplicate metadb entry for one file. |
+| `delete <id...>` | B9. **Delete local copy…** through the real flow: the menu item for those roots, the sidecars read afresh, the income rows counted, then, instead of the sheet, the confirmation is answered **Delete** (the roots rechecked against the current snapshot, the lane and the configuration checked again), which runs `gc <ids> --json`. One line once gc was started or could not start: `confirmation: N path(s): <first three> (+K more); Swap, then delete offered (R income row(s)); answered Delete; gc: started for 1 root` (`Swap, then delete not offered (no income row)` when no row points at an income file). With `confirm_gc` 0: `no confirmation (confirm_gc 0); gc: started for ...`. The gc result follows as its own console line (`gc: done for 1 root`, `gc failed for 1 root: ...`). |
+| `delete-swap <id...>` | B9. The same, answered **Swap, then delete**: the rows of those roots in the active playlist that still point at income paths are swapped first; gc runs only when none is left: `...; answered Swap, then delete; swap: 2 row(s) swapped to library paths, 0 skipped; gc: started for 1 root`, or `...; not run: N row(s) in the playlist still point at the income paths of these roots; nothing deleted`. With no income row it goes straight to gc (`no income row to swap; gc: ...`). |
+| `delete-sheet <id...> close=<seconds>` | B9. The real confirmation for a screenshot: the window under the pointer when the step starts, else the main, key or foobar2000 main window, else app-modal. One line when it is up: `sheet shown: "<title>"; <the paths and the swap offer, as for delete>; buttons Delete, Cancel[, Swap, then delete]; closing as Cancel in <seconds> s`. It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is deleted. With `confirm_gc` 0 there is no confirmation: `no confirmation: confirm_gc is 0; nothing deleted`. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
@@ -287,7 +327,16 @@ detached run has been spawned (not until it ends: add `wait` steps and `runs`
 to follow it), `execute-sheet` until the sheet has closed. A run then holds
 the mutation lane until it ends: every mutating item reads `(execute
 running)` and is disabled, so mutating steps in between log
-`not run: the item is disabled`.
+`not run: the item is disabled`. `swap`, `delete`, `delete-swap` and
+`delete-sheet` (B9) wait too: `swap` until its line is logged, `delete` and
+`delete-swap` until gc was started (or not run), `delete-sheet` until the
+sheet has closed. Menu listings (`menu`, the `no ... item in the menu (...)`
+lines) include **Swap to library paths** and **Delete local copy…** since B9,
+disabled unless a selected root is `placed` with `placed.verified`. The steps
+start after the first successful load, which can come before `test_playlist`
+has built its playlist (about 4 s after start): begin with `wait 8` when a
+step needs the playlist (`rows`, `swap`, `delete-swap`, and the income-row
+count of `delete` and `delete-sheet`).
 
 ```bash
 # quit foobar2000 first
@@ -321,6 +370,19 @@ holding `approved-placed`; see Tests/mock-cli/README.md):
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
      'menu itk_00000010; execute itk_00000010; runs; wait 3; menu itk_00000010; wait 8; runs; menu itk_00000010')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+B9 example (the mock's `default` scenario with `gc.next` holding
+`placed-gc_done`; the test playlist built from `$INTAKE_MOCK_STATE/root`, so
+it holds the income and the library copies of `itk_00000012`):
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'wait 8; rows itk_00000012; swap itk_00000012; rows itk_00000012; delete-sheet itk_00000012 close=8;
+      delete itk_00000012; wait 4; menu itk_00000012')
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 

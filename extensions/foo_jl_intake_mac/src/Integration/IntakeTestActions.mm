@@ -68,13 +68,47 @@
 //                                   P, run file execute-....run"
 //    runs                           B8: the tracked runs (command, pid,
 //                                   state, ids) and the lane
+//    swap <id...>                   B9: selects, in the active playlist,
+//                                   the rows that map to those roots by
+//                                   income path, builds the menu for them
+//                                   (the real per-row mapping) and runs its
+//                                   Swap to library paths item as a click
+//                                   does. One line once the swap ended:
+//                                   "selected N row(s); swap: ..."
+//    rows <id>                      B9: one line listing the active
+//                                   playlist's rows of that root, by income
+//                                   path or through the library index: the
+//                                   index, income or library, the native
+//                                   path and a handle tag (h1, h2, ...: the
+//                                   same tag is the same metadb handle),
+//                                   the counts of rows, distinct handles and
+//                                   distinct paths, then the menu a
+//                                   selection of those rows gets
+//    delete <id...>                 B9: Delete local copy… through the real
+//                                   flow (the sidecars read afresh, the
+//                                   income rows counted), the confirmation
+//                                   answered Delete without a sheet. One
+//                                   line: what the sheet would list, then
+//                                   "answered Delete; gc: started for N
+//                                   root(s)" (or why nothing ran)
+//    delete-swap <id...>            B9: the same, answered "Swap, then
+//                                   delete": the swap's line, then gc or
+//                                   "not run: N row(s) ... still point at
+//                                   the income paths"
+//    delete-sheet <id...> close=<seconds>
+//                                   B9: the real confirmation sheet; one
+//                                   line when it is up (title, paths,
+//                                   buttons), then it is ended as Cancel
+//                                   after <seconds> (at most 30): nothing is
+//                                   deleted
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
 //  hides them; log_file mirrors them). Ids that are not in the snapshot,
 //  or whose rows map to other roots than the ones named, make the step log
 //  and do nothing. Nothing runs after quit starts. assign-other, picker,
-//  execute, execute-sheet and resume wait for their flow to end (a run: to
-//  be spawned) before the next step. The steps start after the first
+//  execute, execute-sheet, resume, swap, delete, delete-swap and
+//  delete-sheet wait for their flow to end (a run: to be spawned; delete:
+//  gc started or not run) before the next step. The steps start after the first
 //  successful load and the leftover-run scan.
 //
 //  Temporary: removed with the other acceptance aids (and
@@ -86,9 +120,11 @@
 #include "IntakeActions.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
+#include "IntakeSwap.h"
 
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeSettingsParse.h"
+#include "../Core/IntakeSlowVolumeGuard.h"
 #include "../Core/IntakeTestActionScript.h"
 #include "../Core/IntakeView.h"
 
@@ -96,6 +132,8 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace intake {
@@ -188,6 +226,50 @@ std::string badgeText(const jl_group_decoration &deco) {
 
 void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index);
 
+// A report that logs once: a flow may end after its line was logged (a
+// sheet's line comes when it is up).
+std::function<void(const std::string &)> reportOnce(const std::string &prefix) {
+    auto logged = std::make_shared<bool>(false);
+    return [prefix, logged](const std::string &line) {
+        if (*logged) return;
+        *logged = true;
+        logInfo(prefix + line);
+    };
+}
+
+t_size activePlaylistIndex() {
+    auto pm = playlist_manager::get();
+    const t_size active = pm->get_active_playlist();
+    return active < pm->get_playlist_count() ? active : SIZE_MAX;
+}
+
+// The `rows` line (see the top of this file).
+std::string rowsText(const std::vector<PlaylistRootRow> &rows, const ActionTable &menu) {
+    std::unordered_map<const metadb_handle *, size_t> tags;
+    std::unordered_set<std::string> paths;
+    size_t income = 0, library = 0;
+    std::string list;
+    for (const PlaylistRootRow &r : rows) {
+        auto tag = tags.emplace(r.handle.get_ptr(), tags.size() + 1).first->second;
+        paths.insert(r.native);
+        (r.library ? library : income)++;
+        if (!list.empty()) list += "; ";
+        list += "#" + std::to_string(r.index) + " " + (r.library ? "library " : "income ") + r.native + " [h" +
+                std::to_string(tag) + "]";
+    }
+    std::string out = std::to_string(rows.size()) + " row(s) (" + std::to_string(income) + " income, " +
+                      std::to_string(library) + " library), " + std::to_string(tags.size()) +
+                      " distinct handle(s) for " + std::to_string(paths.size()) + " distinct path(s)";
+    if (!list.empty()) out += ": " + list;
+    std::string items;
+    for (const ActionEntry &e : menu.entries) {
+        if (!items.empty()) items += " | ";
+        items += e.title + (e.enabled ? " [enabled]" : " [disabled]");
+    }
+    out += "; menu: " + (items.empty() ? std::string("(no items)") : items);
+    return out;
+}
+
 void next(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index) {
     dispatch_async(dispatch_get_main_queue(), ^{
         runStep(steps, index);
@@ -244,6 +326,103 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
         case TestStepKind::Runs:
             logInfo(label + actionsRunsDescription());
             break;
+        case TestStepKind::Rows: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (view->snapshot().recordForId(step.ids[0]) == nullptr) {
+                logInfo(label + "skipped (not in the snapshot: " + step.ids[0] + ")");
+                break;
+            }
+            const t_size playlist = activePlaylistIndex();
+            if (playlist == SIZE_MAX) {
+                logInfo(label + "skipped (no active playlist)");
+                break;
+            }
+            const std::vector<PlaylistRootRow> rows = playlistRowsOfRoot(playlist, step.ids[0], *view);
+            metadb_handle_list handles;
+            for (const PlaylistRootRow &r : rows) handles.add_item(r.handle);
+            logInfo(label + rowsText(rows, actionsTableForHandles(handles)));
+            break;
+        }
+        case TestStepKind::Swap: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            std::vector<const IntakeRecord *> roots;
+            std::string error;
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (!rootsForIds(*view, step.ids, roots, error)) {
+                logInfo(label + "skipped (" + error + ")");
+                break;
+            }
+            const t_size playlist = activePlaylistIndex();
+            if (playlist == SIZE_MAX) {
+                logInfo(label + "skipped (no active playlist)");
+                break;
+            }
+            std::unordered_set<std::string> ids(step.ids.begin(), step.ids.end());
+            NativePathMenuBudget budget;
+            std::vector<t_size> indices;
+            const std::vector<SwapRow> rows = swapIncomeRows(playlist, ids, *view, &budget, &indices);
+            if (indices.empty()) {
+                logInfo(label + "skipped (no row of " + joinIds(step.ids) +
+                        " in the active playlist points at an income path)");
+                break;
+            }
+            // Select exactly those rows, as a user would before the click.
+            auto pm = playlist_manager::get();
+            pfc::bit_array_bittable mask(pm->playlist_get_item_count(playlist));
+            for (t_size i : indices) mask.set(i, true);
+            pm->playlist_set_selection(playlist, pfc::bit_array_true(), mask);
+            metadb_handle_list handles;
+            pm->playlist_get_selected_items(playlist, handles);
+            const ActionTable table = actionsTableForHandles(handles);
+            const ActionEntry *entry = findEntry(table, IntakeAction::Swap);
+            if (entry == nullptr) {
+                logInfo(label + "no swap item in the menu (" + menuText(table) + ")");
+                break;
+            }
+            auto hooks = std::make_shared<SwapTestHooks>();
+            hooks->report = reportOnce(label + entry->title + " (" + joinIds(step.ids) + "): selected " +
+                                       std::to_string(indices.size()) + " row(s); ");
+            hooks->done = [steps, index]() { next(steps, index + 1); };
+            actionsSwap(*entry, handles, hooks);
+            return;  // the hooks log the line and go on
+        }
+        case TestStepKind::Delete:
+        case TestStepKind::DeleteSwap:
+        case TestStepKind::DeleteSheet: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            std::vector<const IntakeRecord *> roots;
+            std::string error;
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (!rootsForIds(*view, step.ids, roots, error)) {
+                logInfo(label + "skipped (" + error + ")");
+                break;
+            }
+            const ActionTable table = actionsTableFor(roots, view.get());
+            const ActionEntry *entry = findEntry(table, IntakeAction::DeleteLocal);
+            if (entry == nullptr) {
+                logInfo(label + "no delete-local item in the menu (" + menuText(table) + ")");
+                break;
+            }
+            auto hooks = std::make_shared<DeleteTestHooks>();
+            hooks->mode = step.kind == TestStepKind::Delete       ? DeleteTestHooks::Mode::Delete
+                          : step.kind == TestStepKind::DeleteSwap ? DeleteTestHooks::Mode::SwapThenDelete
+                                                                  : DeleteTestHooks::Mode::AutoClose;
+            hooks->closeSeconds = step.closeSeconds;
+            hooks->report = reportOnce(label + entry->title + " (" + joinIds(step.ids) + "): ");
+            hooks->done = [steps, index]() { next(steps, index + 1); };
+            actionsDeleteLocal(*entry, hooks);
+            return;  // the hooks log the line and go on
+        }
         case TestStepKind::Execute:
         case TestStepKind::ExecuteSheet:
         case TestStepKind::Resume: {

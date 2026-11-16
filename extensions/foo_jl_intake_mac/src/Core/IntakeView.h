@@ -18,6 +18,12 @@
 //  No filesystem access, no allocation for an already-normal ASCII path that
 //  is not under an smbfs mount.
 //
+//  B9: the view also carries the library index (IntakeLibraryIndex) built
+//  with the same snapshot and alias table. Only the context menu asks it
+//  (libraryRecordFor), so a row already swapped to its library path still
+//  maps to its root for "Delete local copy…"; visualFor() and recordFor()
+//  never read it, so library rows get no decoration.
+//
 //  Inert (doc 03 v1.2 "Inert state"): a view with an inert reason gives every
 //  row under a known root a tooltip-only visual naming the reason, and
 //  nothing else. With no known roots (the first load failed) it renders
@@ -34,6 +40,7 @@
 #include <string_view>
 
 #include "IntakeDecorationMap.h"
+#include "IntakeLibraryIndex.h"
 #include "IntakeMountAliases.h"
 #include "IntakeSnapshot.h"
 
@@ -53,14 +60,18 @@ IntakeRowVisual inertVisual(const std::string &reason);
 
 class IntakeView {
 public:
-    // A null snapshot or alias table stands for the empty one.
+    // A null snapshot, alias table or library index stands for the empty one.
     static std::shared_ptr<const IntakeView> make(std::shared_ptr<const IntakeSnapshot> snapshot,
                                                   std::shared_ptr<const MountAliases> aliases,
-                                                  std::string inertReason = std::string());
+                                                  std::string inertReason = std::string(),
+                                                  std::shared_ptr<const LibraryIndex> library = nullptr);
 
     const IntakeSnapshot &snapshot() const { return *snapshot_; }
     const std::shared_ptr<const IntakeSnapshot> &snapshotPtr() const { return snapshot_; }
     const MountAliases &aliases() const { return *aliases_; }
+    const std::shared_ptr<const MountAliases> &aliasesPtr() const { return aliases_; }
+    const LibraryIndex &library() const { return *library_; }
+    const std::shared_ptr<const LibraryIndex> &libraryPtr() const { return library_; }
     bool isInert() const { return !inertReason_.empty(); }
     const std::string &inertReason() const { return inertReason_; }
     // No row can be decorated: decorate() may skip the batch.
@@ -71,6 +82,13 @@ public:
     // Its visual, or nullptr when the row gets no decoration. The pointer
     // stays valid while the caller holds this view.
     const IntakeRowVisual *_Nullable visualFor(std::string_view path, ViewScratch &scratch) const;
+    // B9, never on the decorate path: the root whose library copy `path` is
+    // (the library index), when the snapshot still has it placed with
+    // placed.verified; else nullptr.
+    const IntakeRecord *_Nullable libraryRecordFor(std::string_view path, ViewScratch &scratch) const;
+    // The match key of `path` as recordFor() builds it (normalized, then
+    // aliased), or false (another scheme, a relative path).
+    bool matchKey(std::string_view path, ViewScratch &scratch, std::string &out) const;
 
     IntakeView(const IntakeView &) = delete;
     IntakeView &operator=(const IntakeView &) = delete;
@@ -80,11 +98,12 @@ private:
 
 public:
     IntakeView(Token, std::shared_ptr<const IntakeSnapshot> snapshot, std::shared_ptr<const MountAliases> aliases,
-               std::string inertReason);
+               std::string inertReason, std::shared_ptr<const LibraryIndex> library);
 
 private:
     std::shared_ptr<const IntakeSnapshot> snapshot_;
     std::shared_ptr<const MountAliases> aliases_;
+    std::shared_ptr<const LibraryIndex> library_;
     std::string inertReason_;
     IntakeRowVisual inertVisual_;
 };

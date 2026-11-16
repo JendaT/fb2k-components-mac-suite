@@ -2,15 +2,19 @@
 //  IntakeActions.h
 //  foo_jl_intake
 //
-//  The intake context menu, the mutation lane, the collection picker and
-//  the detached execute and resume runs (PLAN.md B6, B7, B8; doc 04 v1.2
-//  "Context actions", "CLI invocation", "Failure behavior").
+//  The intake context menu, the mutation lane, the collection picker, the
+//  detached execute and resume runs, Swap to library paths and Delete local
+//  copy (PLAN.md B6, B7, B8, B9; doc 04 v1.2 "Context actions", "CLI
+//  invocation", "Failure behavior").
 //
 //  Menu (main thread, from the provider's context_actions): the selected
 //  rows go through the decorate pipeline (IntakeNativePath, IntakeView), the
 //  roots they map to and the live context (CLI path set, CLI features from
-//  the last `version`, inert view, lane busy, confirm_reject) build an
-//  ActionTable (IntakeActionTable), which is kept until the next menu. Each
+//  the last `version`, inert view, lane busy, confirm_reject, confirm_gc)
+//  build an ActionTable (IntakeActionTable), which is kept until the next
+//  menu. B9: a row that maps to no root by its path but is a placed root's
+//  library copy (the view's library index, IntakeView libraryRecordFor:
+//  a row already swapped) adds that root for Delete local copy… only. Each
 //  item's action_id encodes the menu serial and its index, so a click on an
 //  item of an older menu does nothing. The rows may include ones decorate()
 //  never saw, so mac-volume conversions run under a per-menu budget: at
@@ -20,9 +24,10 @@
 //  selectionIncomplete): the rows left out may be other roots.
 //
 //  Dispatch (main thread, from execute_context_action): the item's entry is
-//  copied out of the kept table; the host's selection is not used (v2
-//  releases it when execute_context_action returns). An entry that is
-//  disabled or has no qualifying root runs nothing.
+//  copied out of the kept table; the host's selection is used only by Swap,
+//  which copies its rows (handles) at once (v2 releases it when
+//  execute_context_action returns). An entry that is disabled or has no
+//  qualifying root runs nothing.
 //   - Refresh intake status: serviceReload(true) (the slow-volume reset
 //     and a `version` recheck included).
 //   - Propose, Approve: run at once.
@@ -84,6 +89,30 @@
 //     open): another request logs one Info line and does nothing.
 //   - Resume placement (B8): no confirmation; starts `execute <ids>
 //     --resume --json` as a detached run at once.
+//   - Swap to library paths (B9, IntakeSwap): the selected rows that map to
+//     the item's roots by income path, in the active playlist; no CLI call,
+//     no lane (enabled while an execute runs). One swap at a time.
+//   - Delete local copy… (B9): `gc <ids> --json` on the mutation lane (class
+//     Mutating: reported at 10 s, not killed before 15 minutes), only on
+//     roots captured as placed (the permanent guard, IntakeActionTable
+//     gcEligibleRoots, in requestForEntry). With confirm_gc on (default):
+//     the sheet's window is chosen at the click; the roots' sidecars are
+//     read afresh off the main thread (IntakeSwap swapReadPlacedFiles);
+//     then an NSAlert (IntakeGcPlan: up to 10 local paths, shadows
+//     included, "and N more"; the whole-folder note; unreadable roots) as a
+//     sheet on that window (or the main, key or foobar2000 main window,
+//     else app-modal from a run-loop callout), buttons Delete, Cancel and,
+//     while rows of these roots in the active playlist still point at their
+//     income paths, "Swap, then delete". Delete rechecks the captured roots
+//     against the current snapshot (placed with placed.verified; one Error
+//     line per root dropped), then the lane and the configuration, then
+//     runs gc. "Swap, then delete" swaps those rows first (IntakeSwap) and
+//     runs gc only when no row of these roots in that playlist still points
+//     at an income path afterwards; otherwise one Error line naming the
+//     count and nothing is deleted. One delete flow at a time. With
+//     confirm_gc off: gc at once (the item then has no ellipsis). Results
+//     as for every mutating call (per-root E_NO_JOURNAL, E_VERIFY,
+//     E_BAD_STATUS tooltips; "gc: done for N roots" / "gc failed for ...").
 //  A click (or a confirmed Reject or Execute) that starts nothing, because
 //  the lane is busy or the CLI path is gone, logs one Error line.
 //
@@ -170,8 +199,14 @@ class IntakeView;
 // Main thread (provider context_actions).
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out);
 
-// Main thread (provider execute_context_action).
-void actionsExecute(uint32_t actionId);
+// Main thread (provider execute_context_action). `sel` is used only by
+// Swap, which copies the rows it needs before returning.
+void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel);
+
+// Main thread: the table the menu builds for `handles` (rows matched by
+// income path or, for Delete, through the library index), with the live
+// context; for the test aid's `rows` step.
+ActionTable actionsTableForHandles(metadb_handle_list_cref handles);
 
 // Main thread: the table for `roots` (records of a view the caller holds)
 // with the live context, exactly as the menu builds it.
@@ -232,6 +267,38 @@ std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<co
 // Main thread: Resume placement for `entry`; `test` null runs it as a click
 // does. Returns what happened so far.
 std::string actionsResume(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test);
+
+// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
+// Swap and Delete local copy… for a test_actions step. Main thread, each at
+// most once and `report` first; neither runs after on_quit.
+struct SwapTestHooks {
+    std::function<void(const std::string &line)> report;  // the swap's console line, or why nothing ran
+    std::function<void()> done;
+};
+
+struct DeleteTestHooks {
+    enum class Mode {
+        Delete,          // no sheet: the confirmation answered "Delete"
+        SwapThenDelete,  // no sheet: answered "Swap, then delete"
+        AutoClose,       // the real sheet, ended as Cancel after closeSeconds
+    };
+    Mode mode = Mode::Delete;
+    double closeSeconds = 0;  // AutoClose
+    // `report` gets the step's line: what the confirmation lists and what
+    // followed (gc started, not run, the swap's line); AutoClose: when the
+    // sheet is up. `done` runs when the step may go on.
+    std::function<void(const std::string &line)> report;
+    std::function<void()> done;
+};
+
+// Main thread: Swap to library paths for `entry` on the rows of `handles`
+// (see the top of this file); `test` null runs it as a click does.
+std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles,
+                        std::shared_ptr<const SwapTestHooks> test);
+
+// Main thread: Delete local copy… for `entry`; `test` null runs it as a
+// click does. Returns what happened so far.
+std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const DeleteTestHooks> test);
 
 // Main thread: the test aid's `runs` line: the tracked runs (command, pid,
 // state, ids) and the lane, e.g. "1 live: execute pid 4242 adopted

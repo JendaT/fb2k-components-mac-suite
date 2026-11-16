@@ -116,9 +116,9 @@ std::string actionBaseTitle(IntakeAction action, const std::string &collection) 
 bool actionAsksFirst(IntakeAction action, const ActionContext &context) {
     switch (action) {
         case IntakeAction::AssignOther:
-        case IntakeAction::Execute:
-        case IntakeAction::DeleteLocal: return true;
+        case IntakeAction::Execute: return true;
         case IntakeAction::Reject: return context.confirmReject;
+        case IntakeAction::DeleteLocal: return context.confirmGc;
         default: return false;
     }
 }
@@ -126,7 +126,8 @@ bool actionAsksFirst(IntakeAction action, const ActionContext &context) {
 const std::vector<IntakeAction> &menuActions() {
     static const std::vector<IntakeAction> actions = {
         IntakeAction::Propose, IntakeAction::AssignTo, IntakeAction::AssignOther, IntakeAction::Approve,
-        IntakeAction::Reject,  IntakeAction::Execute,  IntakeAction::Resume,      IntakeAction::Refresh};
+        IntakeAction::Reject,  IntakeAction::Execute,  IntakeAction::Resume,      IntakeAction::Swap,
+        IntakeAction::DeleteLocal, IntakeAction::Refresh};
     return actions;
 }
 
@@ -190,6 +191,8 @@ ActionRoot actionRootFor(const IntakeRecord &r) {
     a.status = r.status;
     if (r.hasProposal) a.targetCollection = r.proposal.targetCollection;
     if (r.hasProposal && r.proposal.targetPathState == TargetPathState::Set) a.targetPath = r.proposal.targetPath;
+    a.placedVerified = r.hasPlaced && r.placedVerified;
+    if (r.hasPlaced) a.placedTargetPath = r.placedTargetPath;
     return a;
 }
 
@@ -204,12 +207,27 @@ std::vector<const IntakeRecord *> selectionRoots(const std::vector<const IntakeR
     return out;
 }
 
+std::vector<const IntakeRecord *> libraryOnlyRoots(const std::vector<const IntakeRecord *> &incomeRoots,
+                                                   const std::vector<const IntakeRecord *> &libraryRows) {
+    std::unordered_set<std::string> seen;
+    for (const IntakeRecord *r : incomeRoots) {
+        if (r != nullptr) seen.insert(r->id);
+    }
+    std::vector<const IntakeRecord *> out;
+    for (const IntakeRecord *r : libraryRows) {
+        if (r == nullptr || !seen.insert(r->id).second) continue;
+        out.push_back(r);
+    }
+    return out;
+}
+
 ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, const ActionContext &c,
-                             const std::vector<IntakeAction> &exposed) {
+                             const std::vector<IntakeAction> &exposed,
+                             const std::vector<const IntakeRecord *> &libraryRoots) {
     ActionTable table;
     if (!c.cliConfigured) return table;
-    table.selectedRoots = roots.size();
-    const size_t m = roots.size();
+    const size_t m = roots.size() + libraryRoots.size();
+    table.selectedRoots = m;
 
     if (!c.inert && m > 0) {
         for (IntakeAction action : kOrder) {
@@ -221,9 +239,12 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
             if (action == IntakeAction::Resume && !cliSupportsCommand(c.cli, CliCommand::Resume)) continue;
 
             if (action == IntakeAction::AssignTo) {
-                // Quick assign: one selected root, its alternates only; never
-                // when unmapped rows may have been other roots.
-                if (m != 1 || c.selectionIncomplete || !rootQualifies(action, *roots[0], c)) continue;
+                // Quick assign: one selected root (an income root: library
+                // roots count toward m), its alternates only; never when
+                // unmapped rows may have been other roots.
+                if (m != 1 || roots.size() != 1 || c.selectionIncomplete || !rootQualifies(action, *roots[0], c)) {
+                    continue;
+                }
                 for (const std::string &collection : assignAlternates(*roots[0])) {
                     ActionEntry e;
                     e.action = action;
@@ -242,6 +263,12 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
             e.title = actionBaseTitle(action);
             for (const IntakeRecord *r : roots) {
                 if (rootQualifies(action, *r, c)) e.roots.push_back(actionRootFor(*r));
+            }
+            // Rows already swapped to their library copies: Delete only.
+            if (action == IntakeAction::DeleteLocal) {
+                for (const IntakeRecord *r : libraryRoots) {
+                    if (rootQualifies(action, *r, c)) e.roots.push_back(actionRootFor(*r));
+                }
             }
             const size_t n = e.roots.size();
             e.enabled = n > 0;
@@ -273,6 +300,17 @@ const ActionEntry *findEntry(const ActionTable &table, IntakeAction action) {
     return nullptr;
 }
 
+std::vector<ActionRoot> gcEligibleRoots(const std::vector<ActionRoot> &roots) {
+    std::vector<ActionRoot> out;
+    std::unordered_set<std::string> seen;
+    for (const ActionRoot &r : roots) {
+        if (r.status != IntakeStatus::Placed || r.id.empty()) continue;
+        if (!seen.insert(r.id).second) continue;
+        out.push_back(r);
+    }
+    return out;
+}
+
 bool requestForEntry(const ActionEntry &entry, const std::string &reason, CliRequest &out, std::string *why) {
     auto refuse = [why](const char *text) {
         if (why) *why = text;
@@ -285,8 +323,14 @@ bool requestForEntry(const ActionEntry &entry, const std::string &reason, CliReq
     CliRequest r;
     r.command = command;
     std::unordered_set<std::string> seen;
-    for (const ActionRoot &root : entry.roots) {
-        if (seen.insert(root.id).second) r.ids.push_back(root.id);
+    if (command == CliCommand::Gc) {
+        // The permanent gc guard: placed roots only, whatever the entry holds.
+        for (const ActionRoot &root : gcEligibleRoots(entry.roots)) r.ids.push_back(root.id);
+        if (r.ids.empty()) return refuse("no placed root (gc never runs on another status)");
+    } else {
+        for (const ActionRoot &root : entry.roots) {
+            if (seen.insert(root.id).second) r.ids.push_back(root.id);
+        }
     }
     if (command == CliCommand::Reject) r.reason = reason;
     if (command == CliCommand::Assign) {

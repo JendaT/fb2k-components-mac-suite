@@ -115,8 +115,8 @@ TestActionStep parseStep(const std::string &raw) {
             rest.push_back(w[i]);
         }
     }
-    if (hasClose && verb != "picker" && verb != "execute-sheet") {
-        step.error = "only picker and execute-sheet take close=";
+    if (hasClose && verb != "picker" && verb != "execute-sheet" && verb != "delete-sheet") {
+        step.error = "only picker, execute-sheet and delete-sheet take close=";
         return step;
     }
 
@@ -191,6 +191,20 @@ TestActionStep parseStep(const std::string &raw) {
     } else if (verb == "resume") {
         kind = TestStepKind::Resume;
         action = IntakeAction::Resume;
+    } else if (verb == "swap") {
+        kind = TestStepKind::Swap;
+        action = IntakeAction::Swap;
+    } else if (verb == "rows") {
+        kind = TestStepKind::Rows;
+    } else if (verb == "delete") {
+        kind = TestStepKind::Delete;
+        action = IntakeAction::DeleteLocal;
+    } else if (verb == "delete-swap") {
+        kind = TestStepKind::DeleteSwap;
+        action = IntakeAction::DeleteLocal;
+    } else if (verb == "delete-sheet") {
+        kind = TestStepKind::DeleteSheet;
+        action = IntakeAction::DeleteLocal;
     } else {
         step.error = "unknown step \"" + verb + "\"";
         return step;
@@ -212,7 +226,7 @@ TestActionStep parseStep(const std::string &raw) {
         step.error = "collection= needs a name";
         return step;
     }
-    if (kind == TestStepKind::Picker || kind == TestStepKind::ExecuteSheet) {
+    if (kind == TestStepKind::Picker || kind == TestStepKind::ExecuteSheet || kind == TestStepKind::DeleteSheet) {
         if (!hasClose) {
             step.error = verb + " needs close=<seconds>";
             return step;
@@ -227,6 +241,10 @@ TestActionStep parseStep(const std::string &raw) {
         bool seen = false;
         for (const std::string &have : step.ids) seen = seen || have == id;
         if (!seen) step.ids.push_back(id);
+    }
+    if (kind == TestStepKind::Rows && step.ids.size() != 1) {
+        step.error = "rows takes exactly one id";
+        return step;
     }
     const bool refresh = kind == TestStepKind::Dispatch && action == IntakeAction::Refresh;
     if (step.ids.empty() && !refresh) {

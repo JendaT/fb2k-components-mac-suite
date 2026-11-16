@@ -11,6 +11,7 @@
 #include "IntakeLog.h"
 #include "IntakePath.h"
 #include "IntakeStatusModel.h"
+#include "IntakeSwapPlanner.h"
 #include "IntakeVersionGate.h"
 
 #include <dispatch/dispatch.h>
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace intake {
 
@@ -137,6 +139,13 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     WatchEventId statusEventId = kWatchSinceNow; // taken before the latest `status` call
     std::chrono::steady_clock::time_point statusStartedAt; // when the latest `status` call was started
     bool statusSinceRequest = false;          // a `status` call started after the latest reload()
+
+    // B9, loader queue only: the sidecar files of placed, verified roots
+    // (by id; reused while root path and target path stay the same) and the
+    // library index built from them for the views.
+    std::unordered_map<std::string, PlacedRootFiles> placedFiles;
+    std::unordered_set<std::string> placedFailures;  // ids whose last read failed
+    std::shared_ptr<const LibraryIndex> library = LibraryIndex::empty();
 
     // B5, loader queue only: reload() requests waiting for their load.
     std::vector<LoadFinishedHandler> waitersNext;     // served by the next load to start
@@ -463,13 +472,22 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
                      " sidecar reads, " + std::to_string(stats.keptPrevious) + " kept from the last load");
         }
 
+        // A member pass that stopped early (deadline, share gone) starts no
+        // new sidecar reads either.
+        updatePlacedFiles(parsed.records, limits, stats.stop != MemberLoadStop::None);
+        if (stopped) {
+            finishLoad(false);
+            return;
+        }
+
         auto snapshot = IntakeSnapshot::build(std::move(parsed.records), std::move(members), settings.palette);
         const bool first = !everLoaded;
         const bool wasInert = published && published->isInert();
         const bool changed = first || wasInert || !lastGood || !rendersAlike(*lastGood, *snapshot);
         everLoaded = true;
         lastGood = snapshot;
-        publish(IntakeView::make(snapshot, aliases), changed, PublishReason::Load);
+        rebuildLibrary();
+        publish(IntakeView::make(snapshot, aliases, std::string(), library), changed, PublishReason::Load);
 
         const double seconds = std::chrono::duration<double>(Clock::now() - loadStart).count();
         const std::string summary = std::to_string(snapshot->size()) + " roots (CLI " +
@@ -484,6 +502,90 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         }
         setStatus(LoaderState::Ready, partialText, partialErrors);
         finishLoad(true);
+    }
+
+    // --- library index (B9) ---
+
+    static bool wantsPlacedFiles(const IntakeRecord &r) {
+        return r.status == IntakeStatus::Placed && r.hasPlaced && r.placedVerified && !r.placedTargetPath.empty();
+    }
+
+    // The sidecar files of every placed, verified root (see the header):
+    // reused when the root path and target path are unchanged, else read,
+    // within the member pass's deadline and cancel flag.
+    void updatePlacedFiles(const std::vector<IntakeRecord> &records, const MemberLoadLimits &limits, bool ioStopped) {
+        std::unordered_map<std::string, PlacedRootFiles> next;
+        std::unordered_set<std::string> failed;
+        size_t reads = 0, failures = 0, notTried = 0;
+        bool shareGone = ioStopped;
+        for (const IntakeRecord &r : records) {
+            if (!wantsPlacedFiles(r)) continue;
+            auto previous = placedFiles.find(r.id);
+            if (previous != placedFiles.end() && previous->second.rootPath == r.rootPath &&
+                previous->second.targetPath == r.placedTargetPath) {
+                PlacedRootFiles kept = std::move(previous->second);
+                kept.rootKey = r.rootKey;
+                next.emplace(r.id, std::move(kept));
+                continue;
+            }
+            const bool cancelled = limits.cancel && limits.cancel->load(std::memory_order_relaxed);
+            if (cancelled || shareGone || Clock::now() >= limits.deadline) {
+                notTried++;
+                continue;
+            }
+            PlacedRootFiles placed;
+            std::string error;
+            int err = 0;
+            reads++;
+            if (readPlacedRootFiles(r, *files, placed, error, &err)) {
+                next.emplace(r.id, std::move(placed));
+            } else {
+                failures++;
+                // Info the first time, Debug while it keeps failing.
+                const std::string line = "library index: " + r.id + " left out: " + error + "; retried at the next load";
+                if (placedFailures.count(r.id)) {
+                    logDebug(line);
+                } else {
+                    logInfo(line);
+                }
+                failed.insert(r.id);
+                if (isShareUnreachableError(err)) shareGone = true;
+            }
+        }
+        placedFiles = std::move(next);
+        placedFailures = std::move(failed);
+        if (isLogEnabled(LogLevel::Debug) && (reads > 0 || notTried > 0)) {
+            logDebug("library index: " + std::to_string(reads) + " sidecar read(s), " + std::to_string(failures) +
+                     " failed, " + std::to_string(notTried) + " not tried (deadline, cancel or share gone); " +
+                     std::to_string(placedFiles.size()) + " placed root(s) known");
+        }
+    }
+
+    // The index from placedFiles, the prefix pair and the current aliases.
+    void rebuildLibrary() {
+        std::vector<PlacedRootFiles> roots;
+        roots.reserve(placedFiles.size());
+        for (const auto &entry : placedFiles) roots.push_back(entry.second);
+        // A stable order, so ties never depend on the hash map's.
+        std::sort(roots.begin(), roots.end(),
+                  [](const PlacedRootFiles &a, const PlacedRootFiles &b) { return a.id < b.id; });
+        library = LibraryIndex::build(roots, settings.libraryPrefix, *aliases);
+        if (isLogEnabled(LogLevel::Debug) && !roots.empty()) {
+            logDebug("library index: " + std::to_string(library->size()) + " library path(s) of " +
+                     std::to_string(library->rootCount()) + " root(s)" +
+                     (settings.libraryPrefix.active() ? std::string(", prefix pair in use")
+                                                      : std::string(", no prefix pair")));
+        }
+    }
+
+    void applyLibraryPrefix(LibraryPrefix prefix) {
+        if (stopped || prefix == settings.libraryPrefix) return;
+        settings.libraryPrefix = std::move(prefix);
+        rebuildLibrary();
+        if (!published) return;
+        // Library rows decorate nothing: the same rows, no invalidation.
+        publish(IntakeView::make(published->snapshotPtr(), aliases, published->inertReason(), library), false,
+                PublishReason::Library);
     }
 
     // A partial `status` met half-written sidecars: their roots kept the
@@ -546,7 +648,8 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             // The gate failed after a successful load and this load's
             // `version` passed it again: doc 03 v1.2 is inert only while the
             // gate fails, and a failed refresh keeps the last loaded data.
-            publish(IntakeView::make(lastGood, aliases), !lastGood->isEmpty(), PublishReason::GatePassed);
+            publish(IntakeView::make(lastGood, aliases, std::string(), library), !lastGood->isEmpty(),
+                    PublishReason::GatePassed);
             logError(std::string(command) + " failed; the version gate passes again, showing the last loaded data: " +
                      text);
             setStatus(LoaderState::Stale, std::string(command) + ": " + text);
@@ -574,7 +677,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         std::shared_ptr<const IntakeSnapshot> snapshot =
             everLoaded && lastGood ? lastGood : IntakeSnapshot::empty();
         const bool sameAsShown = published && published->isInert() && published->inertReason() == reason;
-        publish(IntakeView::make(snapshot, aliases, reason), !snapshot->isEmpty() && !sameAsShown,
+        publish(IntakeView::make(snapshot, aliases, reason, library), !snapshot->isEmpty() && !sameAsShown,
                 PublishReason::Inert);
         logError("inactive: " + reason);
         setStatus(LoaderState::Inert, reason);
@@ -630,6 +733,9 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         incomePaths.clear();
         incomeError.clear();
         lastGood.reset();
+        placedFiles.clear();
+        placedFailures.clear();
+        library = LibraryIndex::empty();
         pendingFull = true;
         pendingKeys.clear();
         parseRetryKeys.clear();
@@ -754,8 +860,15 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         // a share holding no root mounting or unmounting changes none.
         const bool rowsChange = remountChangesRows(*lastGood, *previous, *rebuilt, *aliases);
         lastGood = rebuilt;
+        // The library keys follow the aliases too (library rows decorate
+        // nothing, so they never decide the invalidation).
+        for (const IntakeRecord &rec : rebuilt->records()) {
+            auto found = placedFiles.find(rec.id);
+            if (found != placedFiles.end()) found->second.rootKey = rec.rootKey;
+        }
+        rebuildLibrary();
         const std::string reason = published ? published->inertReason() : std::string();
-        publish(IntakeView::make(rebuilt, aliases, reason), rowsChange, PublishReason::Remount);
+        publish(IntakeView::make(rebuilt, aliases, reason, library), rowsChange, PublishReason::Remount);
         if (!rowsChange) logDebug("mount aliases changed under no intake root: no row changes, no invalidation");
     }
 
@@ -819,6 +932,14 @@ void IntakeLoader::setWatchFolders(std::vector<std::string> folders) {
     auto list = std::make_shared<std::vector<std::string>>(std::move(folders));
     dispatch_async(impl->queue, ^{
         impl->applyWatchFolders(std::move(*list));
+    });
+}
+
+void IntakeLoader::setLibraryPrefix(LibraryPrefix prefix) {
+    std::shared_ptr<Impl> impl = impl_;
+    auto pair = std::make_shared<LibraryPrefix>(std::move(prefix));
+    dispatch_async(impl->queue, ^{
+        impl->applyLibraryPrefix(std::move(*pair));
     });
 }
 

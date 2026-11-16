@@ -409,13 +409,17 @@ static void testMenuActions() {
           "B6 actions stay");
     CHECK(has(IntakeAction::AssignTo) && has(IntakeAction::AssignOther), "B7 exposes both assign entries");
     CHECK(has(IntakeAction::Execute) && has(IntakeAction::Resume), "B8 exposes Execute and Resume");
-    CHECK(!has(IntakeAction::Swap) && !has(IntakeAction::DeleteLocal), "Swap, Delete (B9) stay hidden");
+    CHECK(has(IntakeAction::Swap) && has(IntakeAction::DeleteLocal), "B9 exposes Swap and Delete local copy");
     CHECK(b6Actions().size() == 4, "the B6 subset is unchanged");
 }
 
 // --- B8: Execute placement… and Resume placement ---
 
 const std::string kExecute = "Execute placement" + kEllipsis;
+// B9: listed for every selection (disabled unless a root is placed with
+// placed.verified); Delete asks first while confirm_gc is on.
+const std::string kSwap = "Swap to library paths";
+const std::string kDelete = "Delete local copy" + kEllipsis;
 
 static void testExecuteResume() {
     g_context = "execute-resume";
@@ -477,7 +481,8 @@ static void testExecuteResume() {
     ActionTable busy = buildActionTable({&approved, &placing, &proposed}, running);
     bool allDisabled = true, allLabelled = true;
     for (const ActionEntry &entry : busy.entries) {
-        if (entry.action == IntakeAction::Refresh) continue;
+        // Refresh, and Swap (B9: a playlist operation, no CLI call).
+        if (entry.action == IntakeAction::Refresh || entry.action == IntakeAction::Swap) continue;
         allDisabled = allDisabled && !entry.enabled;
         allLabelled = allLabelled && entry.title.find(" (execute running)") != std::string::npos;
     }
@@ -510,7 +515,7 @@ static void testQuickAssign() {
                                 {"Test Collection A", "Test Collection B", "Test Collection C"});
     ActionTable t = buildActionTable({&d}, ctx());
     CHECK(titles(t) == v({"Propose", "Assign to Test Collection B", "Assign to Test Collection C", kOther, "Approve",
-                          kReject, kExecute, "Resume placement", "Refresh intake status"}),
+                          kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "default menu: quick assign after Propose, the picker after it, kOrder");
     CHECK(!t.entries[0].enabled && t.entries[1].enabled && t.entries[2].enabled && t.entries[3].enabled,
           "Propose disabled; both quick entries and the picker enabled");
@@ -553,10 +558,10 @@ static void testQuickAssign() {
     CHECK(findEntry(buildActionTable({&onlyTarget}, ctx()), IntakeAction::AssignTo) == nullptr,
           "ranked = [target]: none");
     CHECK(titles(buildActionTable({&noProposal}, ctx())) ==
-              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
+              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "no proposal (itk_0000000b): the picker only");
     CHECK(titles(buildActionTable({&empty}, ctx())) ==
-              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
+              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "user-only proposal (itk_00000018): the picker only");
 
     // Status gating, one root with alternates.
@@ -592,7 +597,7 @@ static void testQuickAssign() {
     incomplete.selectionIncomplete = true;
     ActionTable partial = buildActionTable({&d}, incomplete);
     CHECK(findEntry(partial, IntakeAction::AssignTo) == nullptr, "incomplete selection: no quick assign");
-    CHECK(titles(partial) == v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
+    CHECK(titles(partial) == v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "incomplete selection: the picker and the rest stay");
     CHECK(findEntry(partial, IntakeAction::AssignOther)->enabled, "incomplete selection: the picker is enabled");
 }
@@ -605,7 +610,7 @@ static void testAssignOtherOrder() {
     e.needsReview = true;
     ActionTable t = buildActionTable({&e}, ctx());
     CHECK(titles(t) == v({kOther, "Propose", "Assign to Test Collection A", "Assign to Test & Ambient", "Approve",
-                          kReject, kExecute, "Resume placement", "Refresh intake status"}),
+                          kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "amber: the picker first, the rest in kOrder");
     CHECK(t.entries[0].action == IntakeAction::AssignOther && t.entries[0].enabled, "first entry is the picker");
     CHECK(t.entries.back().action == IntakeAction::Refresh, "Refresh stays last");
@@ -613,7 +618,7 @@ static void testAssignOtherOrder() {
     // itk_0000000c: resolved, needs_review, no proposal.
     IntakeRecord c = rec("itk_0000000c", IntakeStatus::Resolved);
     c.needsReview = true;
-    CHECK(titles(buildActionTable({&c}, ctx())) == v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
+    CHECK(titles(buildActionTable({&c}, ctx())) == v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "amber resolved root: the picker first");
 
     // needs_review on new (CR-004.8) or a stray one on approved: not amber.
@@ -629,7 +634,7 @@ static void testAssignOtherOrder() {
                                 {"Test Collection A", "Test Collection B"});
     CHECK(!assignOtherFirst({&d}, ctx()) && assignOtherFirst({&d, &e}, ctx()), "any amber qualifying root counts");
     CHECK(titles(buildActionTable({&d, &e}, ctx())) ==
-              v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
+              v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", kSwap, kDelete, "Refresh intake status"}),
           "mixed d + e: picker first, no quick assign, no (n of m) when both qualify");
     IntakeRecord placedFlag = rec("itk_00000012", IntakeStatus::Placed);
     placedFlag.needsReview = true;
@@ -762,6 +767,175 @@ static void testActionIds() {
           "the last index fits");
 }
 
+// --- B9: Swap to library paths and Delete local copy… ---
+
+static IntakeRecord placedRec(const char *id, bool verified = true) {
+    IntakeRecord r = rec(id, IntakeStatus::Placed);
+    r.hasPlaced = true;
+    r.placedVerified = verified;
+    r.placedTargetPath = std::string("/library/Test Collection A/") + id;
+    return r;
+}
+
+static void testSwapDelete() {
+    g_context = "swap-delete";
+    IntakeRecord placed = placedRec("itk_00000012");
+    IntakeRecord unverified = placedRec("itk_00000020", false);
+    IntakeRecord gcDone = rec("itk_00000013", IntakeStatus::GcDone);
+    gcDone.hasPlaced = gcDone.placedVerified = true;
+    IntakeRecord rejected = rec("itk_00000014", IntakeStatus::Rejected);
+    IntakeRecord approved = withProposal(rec("itk_00000010", IntakeStatus::Approved));
+
+    ActionTable one = buildActionTable({&placed}, ctx());
+    const ActionEntry *swap = findEntry(one, IntakeAction::Swap);
+    const ActionEntry *del = findEntry(one, IntakeAction::DeleteLocal);
+    CHECK(swap && swap->enabled && swap->title == kSwap && ids(*swap) == v({"itk_00000012"}),
+          "Swap on a placed, verified root: enabled, no ellipsis (no dialog)");
+    CHECK(del && del->enabled && del->title == kDelete && ids(*del) == v({"itk_00000012"}),
+          "Delete local copy… on it: enabled, the ellipsis (confirm_gc on)");
+    CHECK(del->roots[0].placedVerified && del->roots[0].placedTargetPath == "/library/Test Collection A/itk_00000012" &&
+              del->roots[0].status == IntakeStatus::Placed,
+          "the captured root carries status, placed.verified and the placed target");
+    CHECK(one.entries[one.entries.size() - 3].action == IntakeAction::Swap &&
+              one.entries[one.entries.size() - 2].action == IntakeAction::DeleteLocal,
+          "doc 04 order: Swap, Delete, then Refresh last");
+
+    for (const IntakeRecord *r : {&unverified, &gcDone, &rejected, &approved}) {
+        ActionTable t = buildActionTable({r}, ctx());
+        const ActionEntry *s = findEntry(t, IntakeAction::Swap);
+        const ActionEntry *d = findEntry(t, IntakeAction::DeleteLocal);
+        const std::string what = r->id;
+        CHECK(s && !s->enabled && s->roots.empty(), (what + ": Swap listed, disabled").c_str());
+        CHECK(d && !d->enabled && d->roots.empty(), (what + ": Delete listed, disabled").c_str());
+    }
+
+    ActionTable mixed = buildActionTable({&placed, &rejected, &approved}, ctx());
+    CHECK(findEntry(mixed, IntakeAction::Swap)->title == "Swap to library paths (1 of 3)", "Swap: (n of m)");
+    CHECK(findEntry(mixed, IntakeAction::DeleteLocal)->title == "Delete local copy (1 of 3)" + kEllipsis &&
+              ids(*findEntry(mixed, IntakeAction::DeleteLocal)) == v({"itk_00000012"}),
+          "Delete: (n of m) before the ellipsis, the placed root only (never the rejected one)");
+
+    // An execute holds the lane: Delete disabled and labelled, Swap not.
+    ActionContext running = ctx();
+    running.laneBusy = true;
+    running.executeRunning = true;
+    ActionTable busy = buildActionTable({&placed}, running);
+    const ActionEntry *busyDelete = findEntry(busy, IntakeAction::DeleteLocal);
+    const ActionEntry *busySwap = findEntry(busy, IntakeAction::Swap);
+    CHECK(!busyDelete->enabled && busyDelete->title == "Delete local copy (execute running)" + kEllipsis,
+          "Delete disabled \"(execute running)\" during a run");
+    CHECK(busySwap->enabled && busySwap->title == kSwap && ids(*busySwap) == v({"itk_00000012"}),
+          "Swap stays enabled and unlabelled: it runs no CLI command");
+    ActionContext dry = ctx();
+    dry.laneBusy = true;
+    ActionTable dryBusy = buildActionTable({&placed}, dry);
+    CHECK(!findEntry(dryBusy, IntakeAction::DeleteLocal)->enabled &&
+              findEntry(dryBusy, IntakeAction::DeleteLocal)->title == kDelete && findEntry(dryBusy, IntakeAction::Swap)->enabled,
+          "another lane holder: Delete disabled without the label, Swap enabled");
+
+    // confirm_gc off: no ellipsis.
+    ActionContext noConfirm = ctx();
+    noConfirm.confirmGc = false;
+    CHECK(findEntry(buildActionTable({&placed}, noConfirm), IntakeAction::DeleteLocal)->title == "Delete local copy",
+          "confirm_gc off: Delete runs at once, no ellipsis");
+    CHECK(actionAsksFirst(IntakeAction::DeleteLocal, ctx()) && !actionAsksFirst(IntakeAction::DeleteLocal, noConfirm) &&
+              !actionAsksFirst(IntakeAction::Swap, ctx()),
+          "actionAsksFirst follows confirm_gc; Swap never asks");
+    CHECK(findEntry(buildActionTable({&placed, &approved}, noConfirm), IntakeAction::DeleteLocal)->title ==
+              "Delete local copy (1 of 2)",
+          "confirm_gc off, mixed: no ellipsis either");
+
+    // Rows already swapped (the library index): library roots count toward
+    // m and qualify for Delete only.
+    CHECK(libraryOnlyRoots({&approved}, {&placed, nullptr, &placed}) == std::vector<const IntakeRecord *>({&placed}),
+          "library roots: deduplicated, unmapped rows skipped");
+    CHECK(libraryOnlyRoots({&placed}, {&placed}).empty(), "a root also selected by an income row is an income root");
+    ActionTable lib = buildActionTable({&approved}, ctx(), menuActions(), {&placed});
+    CHECK(lib.selectedRoots == 2, "m counts income and library roots");
+    const ActionEntry *libDelete = findEntry(lib, IntakeAction::DeleteLocal);
+    CHECK(libDelete->enabled && libDelete->title == "Delete local copy (1 of 2)" + kEllipsis &&
+              ids(*libDelete) == v({"itk_00000012"}),
+          "Delete through the library index");
+    const ActionEntry *libSwap = findEntry(lib, IntakeAction::Swap);
+    CHECK(!libSwap->enabled && libSwap->roots.empty() && libSwap->title == kSwap,
+          "Swap never runs on library rows (already swapped)");
+    CHECK(findEntry(lib, IntakeAction::Execute)->title == kExecute.substr(0, kExecute.size() - kEllipsis.size()) +
+                                                              " (1 of 2)" + kEllipsis,
+          "the income root's actions count the library root in m");
+    ActionTable libOnly = buildActionTable({}, ctx(), menuActions(), {&placed});
+    CHECK(libOnly.selectedRoots == 1 && findEntry(libOnly, IntakeAction::DeleteLocal)->enabled &&
+              findEntry(libOnly, IntakeAction::DeleteLocal)->title == kDelete &&
+              !findEntry(libOnly, IntakeAction::Swap)->enabled && !findEntry(libOnly, IntakeAction::Propose)->enabled,
+          "only swapped rows: Delete enabled (no n of m), everything else disabled");
+    CHECK(!findEntry(buildActionTable({}, ctx(), menuActions(), {&unverified}), IntakeAction::DeleteLocal)->enabled,
+          "a library root without placed.verified does not qualify");
+    ActionContext inert = ctx();
+    inert.inert = true;
+    CHECK(titles(buildActionTable({}, inert, menuActions(), {&placed})) == v({"Refresh intake status"}),
+          "inert: Refresh only, library roots too");
+}
+
+static void testGcGuard() {
+    g_context = "gc-guard";
+    ActionEntry e;
+    e.action = IntakeAction::DeleteLocal;
+    e.enabled = true;
+    // A hand-made entry, bypassing the table: whatever the caller holds,
+    // only roots captured as placed reach gc.
+    IntakeRecord placed = placedRec("itk_00000012");
+    IntakeRecord second = placedRec("itk_00000016");
+    IntakeRecord rejected = rec("itk_00000014", IntakeStatus::Rejected);
+    IntakeRecord gcDone = rec("itk_00000013", IntakeStatus::GcDone);
+    IntakeRecord approved = withProposal(rec("itk_00000010", IntakeStatus::Approved));
+    e.roots = {actionRootFor(placed), actionRootFor(rejected), actionRootFor(gcDone), actionRootFor(placed),
+               actionRootFor(approved), actionRootFor(second)};
+    std::vector<std::string> eligible;
+    for (const ActionRoot &r : gcEligibleRoots(e.roots)) eligible.push_back(r.id);
+    CHECK(eligible == v({"itk_00000012", "itk_00000016"}), "gcEligibleRoots: placed only, each once, in order");
+    CHECK(argvFor(e) == v({kCli, "gc", "itk_00000012", "itk_00000016", "--json"}),
+          "gc <placed ids> --json: rejected, gc_done and approved roots never passed");
+
+    ActionEntry none = e;
+    none.roots = {actionRootFor(rejected), actionRootFor(gcDone), actionRootFor(approved)};
+    CliRequest request;
+    std::string why;
+    CHECK(!requestForEntry(none, std::string(), request, &why) && why.find("no placed root") != std::string::npos,
+          "no placed root left: nothing runs");
+    ActionEntry empty = e;
+    empty.roots.clear();
+    CHECK(!requestForEntry(empty, std::string(), request, &why) && why == "no qualifying root", "zero ids: never run");
+    ActionEntry off = e;
+    off.enabled = false;
+    CHECK(!requestForEntry(off, std::string(), request, &why) && why == "disabled", "a disabled entry runs nothing");
+
+    CliRequest bare;
+    bare.command = CliCommand::Gc;
+    CHECK(buildInvocation(cliConfig(), bare).status == BuildStatus::Refused, "IntakeCommandArgs refuses gc with no ids");
+    bare.dryRun = true;
+    CHECK(buildInvocation(cliConfig(), bare).status == BuildStatus::Refused, "and gc --dry-run with no ids");
+    bool anyAll = false;
+    for (const std::string &arg : argvFor(e)) anyAll = anyAll || arg == "--all" || arg.rfind("--all", 0) == 0;
+    CHECK(!anyAll, "never --all");
+
+    CHECK(actionIsMutating(IntakeAction::DeleteLocal) && !actionIsMutating(IntakeAction::Swap),
+          "Delete is a mutating call, Swap is not");
+    CliCommand command = CliCommand::Version;
+    CHECK(actionCommand(IntakeAction::DeleteLocal, command) && command == CliCommand::Gc &&
+              !actionCommand(IntakeAction::Swap, command),
+          "Delete runs gc; Swap no CLI command");
+    CliRequest gcRequest;
+    gcRequest.command = CliCommand::Gc;
+    gcRequest.ids = {"itk_00000012"};
+    CHECK(commandClass(gcRequest) == CommandClass::Mutating,
+          "gc is class Mutating (reported at 10 s, not killed before 15 min)");
+    ActionEntry swapEntry;
+    swapEntry.action = IntakeAction::Swap;
+    swapEntry.enabled = true;
+    swapEntry.roots = {actionRootFor(placed)};
+    CHECK(!requestForEntry(swapEntry, std::string(), request, &why) && why == "not a CLI command",
+          "Swap never becomes a CLI request");
+}
+
 int main() {
     @autoreleasepool {
         // An empty folder as the only bun search directory: no bun found.
@@ -788,6 +962,8 @@ int main() {
         testAssignArgv();
         testLabels();
         testActionIds();
+        testSwapDelete();
+        testGcGuard();
         if (dir) rmdir(dir);
     }
     TEST_MAIN_END();

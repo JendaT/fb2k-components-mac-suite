@@ -95,6 +95,21 @@
 //  list everything as before. Directories named by a load that failed
 //  before its member pass carry over to the next load.
 //
+//  Library index (B9, IntakeLibraryIndex): after the member pass, every root
+//  that is placed with placed.verified and a target path has its sidecar
+//  files[] read (IntakeSwapPlanner readPlacedRootFiles, through
+//  LoaderSettings::files, bounded by the same deadline and cancel flag; a
+//  failure that says the share is gone ends the reads, and a member pass
+//  that stopped early starts none), unless the last
+//  read of that root, with the same root path and target path, succeeded:
+//  a placed root's files[] do not change until gc. A failed read is logged
+//  at Info and retried by the next load. The index (library path ->
+//  root id) is built from those lists with the swap prefix pair and the
+//  view's mount aliases and published in the view; library rows decorate
+//  nothing, so a change of the index alone never invalidates. A remount
+//  rebuilds it with the new aliases; setLibraryPrefix() rebuilds it with
+//  the new pair (no I/O) and publishes the view again.
+//
 //  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
 //  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
 //  so a call already on its way to the runner is never spawned. It never
@@ -121,6 +136,7 @@
 
 #include "IntakeCommandArgs.h"
 #include "IntakeDecorationMap.h"
+#include "IntakeLibraryIndex.h"
 #include "IntakeLoadPolicy.h"
 #include "IntakeMountAliases.h"
 #include "IntakeProcess.h"
@@ -138,6 +154,7 @@ enum class PublishReason {
     GatePassed, // the gate passed again after failing, then `status` failed:
                 // the last load, no longer inert (state Stale)
     Reconfigured, // reconfigure(): the last load is forgotten (an empty view)
+    Library,    // setLibraryPrefix(): the same view with the library index rebuilt
 };
 
 using PublishHandler =
@@ -192,6 +209,7 @@ struct LoaderSettings {
     LinkReader readLink;                // empty: posixLinkReader (local paths only)
     EventIdReader currentEventId;       // empty: every stream starts from now (kWatchSinceNow)
     RecordAnnotator annotateRecords;    // optional (B6)
+    LibraryPrefix libraryPrefix;        // B9: swap_prefix_from / swap_prefix_to
 };
 
 class IntakeLoader {
@@ -229,6 +247,9 @@ public:
     void reconfigure(CliConfig cli);
     // B5: the watch_folders setting (absolute paths, parseWatchFolders).
     void setWatchFolders(std::vector<std::string> folders);
+    // B9: the swap prefix pair; rebuilds the library index (see the top of
+    // this file). Nothing happens when it is the pair in use.
+    void setLibraryPrefix(LibraryPrefix prefix);
     // See the top of this file. Idempotent.
     void shutdown();
 

@@ -152,12 +152,13 @@ static void testAssignInvalid() {
           "picker takes no collection");
     CHECK(invalid("menu itk_0000000e collection=X", "only assign and assign-other"), "menu takes no collection");
     CHECK(invalid("reject itk_0000000e collection=X", "only assign and assign-other"), "reject takes no collection");
-    CHECK(invalid("menu itk_0000000e close=5", "only picker and execute-sheet take close="),
-          "close= only for picker and execute-sheet");
-    CHECK(invalid("assign-other itk_0000000e close=5 collection=X", "only picker and execute-sheet take close="),
+    CHECK(invalid("menu itk_0000000e close=5", "only picker, execute-sheet and delete-sheet take close="),
+          "close= only for picker, execute-sheet and delete-sheet");
+    CHECK(invalid("assign-other itk_0000000e close=5 collection=X",
+                  "only picker, execute-sheet and delete-sheet take close="),
           "assign-other takes no close=");
     CHECK(invalid("wait 2 collection=X", "wait takes no collection"), "wait takes no collection");
-    CHECK(invalid("wait close=2", "only picker and execute-sheet take close="), "wait takes no close=");
+    CHECK(invalid("wait close=2", "only picker, execute-sheet and delete-sheet take close="), "wait takes no close=");
     CHECK(invalid("assign-others itk_0000000e collection=X", "unknown step"), "the verb is exact");
 }
 
@@ -209,8 +210,10 @@ static void testExecuteSteps() {
     CHECK(invalid("execute-sheet itk_00000010 close=31", "at most 30"), "close over 30");
     CHECK(invalid("execute-sheet itk_00000010 close=0", "more than 0"), "close 0");
     CHECK(invalid("execute-sheet itk_00000010 close=x", "number"), "close needs a number");
-    CHECK(invalid("execute itk_00000010 close=3", "only picker and execute-sheet"), "execute takes no close=");
-    CHECK(invalid("resume itk_00000011 close=3", "only picker and execute-sheet"), "resume takes no close=");
+    CHECK(invalid("execute itk_00000010 close=3", "only picker, execute-sheet and delete-sheet"),
+          "execute takes no close=");
+    CHECK(invalid("resume itk_00000011 close=3", "only picker, execute-sheet and delete-sheet"),
+          "resume takes no close=");
     CHECK(invalid("runs itk_00000010", "no ids"), "runs takes no ids");
     CHECK(invalid("runs reason=x", "no reason"), "runs takes no reason");
     CHECK(invalid("runs collection=X", "no collection"), "runs takes no collection");
@@ -220,10 +223,51 @@ static void testExecuteSteps() {
     CHECK(parseTestActions("picker itk_0000000e close=8")[0].kind == TestStepKind::Picker, "picker keeps close=");
 }
 
+static void testLibrarySteps() {
+    g_context = "library-steps";
+    std::vector<TestActionStep> s = parseTestActions(
+        "rows itk_00000012; swap itk_00000012 itk_00000011 itk_00000012; delete itk_00000012; "
+        "delete-swap itk_00000012; delete-sheet itk_00000012 itk_00000011 close=8; delete-sheet itk_00000012 close=0.5");
+    CHECK(s.size() == 6, "six steps");
+    CHECK(s[0].kind == TestStepKind::Rows && s[0].ids == v({"itk_00000012"}) && s[0].text == "rows itk_00000012",
+          "rows <id>");
+    CHECK(s[1].kind == TestStepKind::Swap && s[1].action == IntakeAction::Swap &&
+              s[1].ids == v({"itk_00000012", "itk_00000011"}),
+          "swap <ids>: an id once");
+    CHECK(s[2].kind == TestStepKind::Delete && s[2].action == IntakeAction::DeleteLocal && s[2].ids == v({"itk_00000012"}) &&
+              s[2].closeSeconds == 0,
+          "delete <id>: answered Delete");
+    CHECK(s[3].kind == TestStepKind::DeleteSwap && s[3].action == IntakeAction::DeleteLocal,
+          "delete-swap <id>: answered Swap, then delete");
+    CHECK(s[4].kind == TestStepKind::DeleteSheet && s[4].action == IntakeAction::DeleteLocal &&
+              s[4].ids == v({"itk_00000012", "itk_00000011"}) && s[4].closeSeconds == 8,
+          "delete-sheet <ids> close=8");
+    CHECK(s[5].kind == TestStepKind::DeleteSheet && s[5].closeSeconds == 0.5, "decimals for close");
+
+    CHECK(invalid("rows", "exactly one id"), "rows needs an id");
+    CHECK(invalid("rows itk_00000012 itk_00000011", "exactly one id"), "rows takes one id");
+    CHECK(invalid("rows /income/dump/Placed", "not a sidecar id"), "rows takes an id, not a path");
+    CHECK(invalid("swap", "at least one id"), "swap needs ids");
+    CHECK(invalid("delete", "at least one id"), "delete needs ids");
+    CHECK(invalid("delete-swap", "at least one id"), "delete-swap needs ids");
+    CHECK(invalid("delete-sheet itk_00000012", "needs close="), "delete-sheet needs close=");
+    CHECK(invalid("delete-sheet itk_00000012 close=31", "at most 30"), "close over 30");
+    CHECK(invalid("delete-sheet itk_00000012 close=0", "more than 0"), "close 0");
+    CHECK(invalid("delete itk_00000012 close=3", "only picker, execute-sheet and delete-sheet"), "delete takes no close=");
+    CHECK(invalid("swap itk_00000012 close=3", "only picker, execute-sheet and delete-sheet"), "swap takes no close=");
+    CHECK(invalid("delete itk_00000012 reason=x", "only reject"), "delete takes no reason");
+    CHECK(invalid("swap itk_00000012 collection=X", "only assign"), "swap takes no collection");
+    CHECK(invalid("rows itk_00000012 reason=x", "only reject"), "rows takes no reason");
+    CHECK(invalid("delete --all", "not a sidecar id"), "no flags: never an all-roots form");
+    CHECK(invalid("gc itk_00000012", "unknown step"), "gc is not a step (delete is)");
+    CHECK(invalid("delete-local itk_00000012", "unknown step"), "the verb is exact");
+}
+
 int main() {
     @autoreleasepool {
         testSteps();
         testExecuteSteps();
+        testLibrarySteps();
         testBadge();
         testAssignSteps();
         testAssignInvalid();

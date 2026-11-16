@@ -40,11 +40,25 @@
 //                                        required); nothing is executed
 //    resume <id...>                      B8: Resume placement
 //    runs                                B8: the tracked runs and the lane
+//    swap <id...>                        B9: selects the rows of those roots
+//                                        in the active playlist (income
+//                                        paths) and runs Swap to library
+//                                        paths on them
+//    rows <id>                           B9: the active playlist's rows of
+//                                        that one root (income or library)
+//    delete <id...>                      B9: Delete local copy…, the
+//                                        confirmation answered "Delete"
+//    delete-swap <id...>                 B9: the same, answered "Swap, then
+//                                        delete"
+//    delete-sheet <id...> close=<seconds>
+//                                        B9: the real confirmation, ended as
+//                                        Cancel after <seconds> (0 < seconds
+//                                        <= 30, required); nothing deleted
 //    wait <seconds>                      0 < seconds <= 30, decimals allowed
 //  "reason=" and "collection=" count only at the start of a word; the first
 //  one in the step takes the rest of it (so a collection name may contain
 //  "reason=", and the other way round). "close=<seconds>" is one word, for
-//  picker and execute-sheet only.
+//  picker, execute-sheet and delete-sheet only.
 //  Empty steps are skipped. Ids must be sidecar ids (isSidecarId); whether
 //  they are in the snapshot is the runner's check. A step that does not
 //  parse is kept with its error, so the runner logs it and goes on.
@@ -73,6 +87,12 @@ enum class TestStepKind {
                   // as Cancel after closeSeconds (B8)
     Resume,       // resume (B8)
     Runs,         // runs (B8)
+    Swap,         // swap (B9): select the roots' income rows, then Swap
+    Rows,         // rows (B9): the active playlist's rows of one root
+    Delete,       // delete (B9): the confirmation answered "Delete"
+    DeleteSwap,   // delete-swap (B9): answered "Swap, then delete"
+    DeleteSheet,  // delete-sheet (B9): the real confirmation, closed as
+                  // Cancel after closeSeconds
     Wait,
 };
 
@@ -81,14 +101,17 @@ struct TestActionStep {
     IntakeAction action = IntakeAction::Refresh; // Dispatch; AssignOther for
                                                  // assign-other and picker;
                                                  // Execute for execute and
-                                                 // execute-sheet; Resume
+                                                 // execute-sheet; Resume;
+                                                 // Swap; DeleteLocal for
+                                                 // delete, delete-swap and
+                                                 // delete-sheet
     std::vector<std::string> ids;
     std::string reason;   // Dispatch reject
     bool hasReason = false;
     std::string collection;  // assign, assign-other
     bool hasCollection = false;
     double seconds = 0;   // Wait
-    double closeSeconds = 0;  // Picker, ExecuteSheet
+    double closeSeconds = 0;  // Picker, ExecuteSheet, DeleteSheet
     std::string text;     // the step as written, trimmed (for the log)
     std::string error;    // Invalid: why
 };

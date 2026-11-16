@@ -27,6 +27,10 @@
 //  taken just before each `status` call and handed over with the watch
 //  set; restartWatch() uses the reload's id once its `status` started, and
 //  "from now" while it has not, and never runs a `status` itself.
+//  B9: the library index in every published view (placed, verified roots
+//  only; their sidecars read once and reused while root and target stay
+//  the same), setLibraryPrefix republishing without invalidation, and the
+//  placed-unverified scenario and a gc_done root leaving it empty.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -39,6 +43,7 @@
 // TEST_DEPS: src/Core/IntakeIncome.mm src/Core/IntakeWatchSet.mm src/Core/IntakeWatchFilter.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm
 // TEST_DEPS: src/Core/IntakeGroupBadge.mm src/Core/IntakeRootErrors.mm
+// TEST_DEPS: src/Core/IntakeLibraryIndex.mm src/Core/IntakeSwapPlanner.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -1417,6 +1422,107 @@ static void testAnnotateAndBadges() {
           "the status changed: the error is gone");
 }
 
+// B9: counts readFile per path; answers through the POSIX access.
+class ReadCountingAccess : public SidecarFileAccess {
+public:
+    bool listDirectory(const std::string &directory, std::vector<std::string> &names, int &error) override {
+        return posixSidecarFileAccess().listDirectory(directory, names, error);
+    }
+    bool readFile(const std::string &path, std::string &contents, int &error) override {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            reads[path]++;
+        }
+        return posixSidecarFileAccess().readFile(path, contents, error);
+    }
+    int readsOf(const std::string &path) {
+        std::lock_guard<std::mutex> lock(m);
+        return reads[path];
+    }
+
+private:
+    std::mutex m;
+    std::map<std::string, int> reads;
+};
+
+static void testLibraryIndex() {
+    g_context = "library-index";
+    std::string state = mock::setupState("default");
+    const std::string root = state + "/root";
+    const std::string placedDir = root + "/income/dump/Fixture Artist - Placed Album";
+    const std::string library = root + "/library/music.hq/Test Collection A/Fixture Artist/Fixture Artist - 2026 - Placed Album";
+    const std::string collected =
+        root + "/library/music.hq/Test Collection C/Fixture Artist/Fixture Artist - 2026 - Collected Album/01 - Test Track One.wav";
+    auto h = std::make_shared<Harness>();
+    ReadCountingAccess files;
+    LoaderSettings settings = settingsFor(state, h);
+    settings.files = &files;
+    IntakeLoader loader(std::move(settings));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1), "first load");
+    std::shared_ptr<const IntakeView> view = h->lastPublished().view;
+    CHECK(view && view->library().rootCount() == 1 && view->library().size() == 2,
+          "the placed, verified root's two files; gc_done and other roots absent");
+    ViewScratch scratch;
+    const IntakeRecord *swapped = view ? view->libraryRecordFor(library + "/01 - Test Track One.wav", scratch) : nullptr;
+    CHECK(swapped && swapped->id == "itk_00000012", "a row on the library copy maps to itk_00000012");
+    CHECK(view && view->libraryRecordFor(collected, scratch) == nullptr, "the gc_done root's library copy maps to nothing");
+    CHECK(view && view->visualFor(library + "/01 - Test Track One.wav", scratch) == nullptr,
+          "library rows decorate nothing");
+    CHECK(files.readsOf(placedDir + "/.intake.itk_00000012.json") == 1 && files.readsOf(placedDir + "/.intake.json") == 1,
+          "the placed root's sidecar: the named one tried, then .intake.json, once");
+
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "a reload");
+    CHECK(files.readsOf(placedDir + "/.intake.json") == 1, "the files of an unchanged placed root are reused");
+    CHECK(h->lastPublished().view->library().size() == 2, "still in the new view");
+
+    // A new pair: the index is rebuilt and the same view republished,
+    // without invalidation and without I/O.
+    const size_t before = h->publishCount();
+    loader.setLibraryPrefix(makeLibraryPrefix(root + "/library", "/Volumes/fixture-lib"));
+    CHECK(mock::waitUntil([&h, before] { return h->publishCount() > before; }, 10), "the pair change publishes");
+    Published repub = h->lastPublished();
+    CHECK(repub.reason == PublishReason::Library && !repub.invalidate, "reason Library, no invalidation");
+    const IntakeRecord *mapped = repub.view ? repub.view->libraryRecordFor(
+                                                  "/Volumes/fixture-lib/music.hq/Test Collection A/Fixture Artist/"
+                                                  "Fixture Artist - 2026 - Placed Album/02 - Test Track Two.wav",
+                                                  scratch)
+                                            : nullptr;
+    CHECK(mapped && mapped->id == "itk_00000012", "the library path after the pair maps to the root");
+    CHECK(repub.view && repub.view->libraryRecordFor(library + "/01 - Test Track One.wav", scratch) == nullptr,
+          "the unmapped spelling no longer does");
+    CHECK(files.readsOf(placedDir + "/.intake.json") == 1, "no sidecar read for a pair change");
+    loader.setLibraryPrefix(makeLibraryPrefix(root + "/library", "/Volumes/fixture-lib"));
+    loader.reload(false);
+    CHECK(waitFinished(*h, 3), "a reload after the same pair again");
+    CHECK(h->publishCount() == before + 2 && h->lastPublished().reason == PublishReason::Load,
+          "the same pair again publishes nothing of its own");
+
+    // The root is gc_done now: out of the index.
+    CHECK(replaceInFile(state + "/responses/status.d/itk_00000012.json", "\"status\":\"placed\"", "\"status\":\"gc_done\""),
+          "fixture edited");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 4), "the reload after gc");
+    CHECK(h->lastPublished().view->library().isEmpty(), "a gc_done root leaves the index");
+
+    // The placed-unverified scenario: placed, but not verified.
+    std::string unverified = mock::setupState("placed-unverified");
+    auto h2 = std::make_shared<Harness>();
+    IntakeLoader loader2(settingsFor(unverified, h2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1), "first load (placed-unverified)");
+    std::shared_ptr<const IntakeView> v2 = h2->lastPublished().view;
+    const IntakeRecord *r2 = v2 ? v2->snapshot().recordForId("itk_00000012") : nullptr;
+    CHECK(r2 && r2->status == IntakeStatus::Placed && r2->hasPlaced && !r2->placedVerified,
+          "the scenario: itk_00000012 placed with placed.verified false");
+    CHECK(v2 && v2->library().isEmpty() &&
+              v2->libraryRecordFor(unverified + "/root/library/music.hq/Test Collection A/Fixture Artist/Fixture "
+                                                "Artist - 2026 - Placed Album/01 - Test Track One.wav",
+                                   scratch) == nullptr,
+          "no library index entry without placed.verified");
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -1448,6 +1554,7 @@ int main(void) {
         testReloadServed();
         testWatchEventIds();
         testAnnotateAndBadges();
+        testLibraryIndex();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

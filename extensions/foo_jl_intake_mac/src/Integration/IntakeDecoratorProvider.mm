@@ -179,9 +179,9 @@ public:
 
     void execute_context_action(uint32_t action_id, metadb_handle_list_cref sel) override {
         // The table built with the menu holds everything the action needs;
+        // Swap also copies the selected rows (handles) it works on, at once:
         // the host releases `sel` as soon as this returns.
-        (void)sel;
-        actionsExecute(action_id);
+        actionsExecute(action_id, sel);
     }
 
     void register_invalidate_callback(jl_decoration_invalidate_callback *cb) override {

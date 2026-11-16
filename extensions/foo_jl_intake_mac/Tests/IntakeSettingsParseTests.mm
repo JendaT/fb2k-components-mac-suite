@@ -246,6 +246,15 @@ static void testLexicalFolderLines() {
           "a lexical duplicate is dropped; a root line is kept (watchCandidates skips it)");
 }
 
+// B9: confirm_gc (and confirm_reject, B6) as stored ints.
+static void testConfirmSettings() {
+    g_context = "confirm";
+    CHECK(kConfirmSettingDefault == 1 && confirmSetting(kConfirmSettingDefault), "the default (missing key) is on");
+    CHECK(!confirmSetting(0), "0 is off");
+    CHECK(confirmSetting(1), "1 is on");
+    CHECK(confirmSetting(2) && confirmSetting(-1), "any other value is on, like confirm_reject");
+}
+
 int main(void) {
     @autoreleasepool {
         g_tempRoot = makeTempRoot();
@@ -261,6 +270,7 @@ int main(void) {
         testPrefixPair();
         testNormalizedPrefix();
         testLexicalFolderLines();
+        testConfirmSettings();
         removeTree(g_tempRoot);
     }
     TEST_MAIN_END();

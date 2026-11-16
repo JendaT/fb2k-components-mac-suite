@@ -16,12 +16,16 @@
 //     changes, one absolute path per line (IntakeSettingsParse
 //     parseWatchFolders); default empty.
 //   - swap_prefix_from / swap_prefix_to (strings): the library mapping, one
-//     prefix pair (NAS path prefix, Mac path prefix; PLAN.md decision 2).
-//     Stored and validated only (validatePrefixPair); Swap (B9) uses it.
+//     prefix pair (NAS path prefix, Mac path prefix; PLAN.md decision 2),
+//     validated by validatePrefixPair; Swap and the library index (B9) use
+//     it (IntakeSwapPlanner).
 //   - log_level (int 0-2): Error, Info, Debug. Default 1 (2 in DEBUG builds).
 //   - confirm_reject (int, 0 or 1, B6): Reject… asks first (the albums it
 //     affects, an optional reason); 0 rejects at once, with no reason.
 //     Default 1.
+//  Not on the page yet (B10 adds the checkbox; docs/hidden-options.md):
+//   - confirm_gc (int, 0 or 1, B9): Delete local copy… asks first (the
+//     local paths, "Swap, then delete"); 0 runs gc at once. Default 1.
 //  Hidden (docs/hidden-options.md):
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
@@ -57,6 +61,7 @@ struct IntakeSettings {
     std::string swapPrefixFrom;  // normalizedPrefix; validatePrefixPair decides if it is usable
     std::string swapPrefixTo;
     bool confirmReject = true;   // B6: Reject… shows its confirmation
+    bool confirmGc = true;       // B9: Delete local copy… shows its confirmation
 };
 
 namespace config {
@@ -72,6 +77,7 @@ inline constexpr const char *kWatchFolders = "watch_folders";
 inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
 inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
 inline constexpr const char *kConfirmReject = "confirm_reject";
+inline constexpr const char *kConfirmGc = "confirm_gc";
 
 // The preferences page (Tools > Intake), for ui_control::show_preferences.
 // {B5B6AB95-DB13-45D9-A9F1-A85E014C08C8}

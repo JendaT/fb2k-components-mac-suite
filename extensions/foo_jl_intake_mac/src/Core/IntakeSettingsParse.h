@@ -17,8 +17,10 @@
 //     IntakeCommandArgs probes them (PLAN.md 3.4).
 //   - The library mapping (swap_prefix_from / swap_prefix_to, decision 2):
 //     one prefix pair, both absolute (neither "/") or both empty, stored
-//     lexically clean (normalizedPrefix). Stored and validated only; Swap
-//     (B9) uses it.
+//     lexically clean (normalizedPrefix). Swap and the library index (B9)
+//     use it (IntakeSwapPlanner makeLibraryPrefix).
+//   - Confirmations (confirm_reject B6, confirm_gc B9): ints, 0 off,
+//     anything else on, default on (confirmSetting).
 //
 //  Thread-safety: reentrant. The path checks and findBun read the
 //  filesystem (stat, access), so never call them on the decorate path or,
@@ -28,6 +30,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -151,5 +154,16 @@ inline bool prefixPairValid(PrefixPairCheck check) {
     return check == PrefixPairCheck::Ok || check == PrefixPairCheck::BothEmpty;
 }
 const char *prefixPairCheckText(PrefixPairCheck check);
+
+// --- confirmations ---
+
+// The default of confirm_reject and confirm_gc: on.
+inline constexpr int64_t kConfirmSettingDefault = 1;
+
+// A stored confirmation switch: 0 is off, any other value on (a missing key
+// reads as kConfirmSettingDefault).
+inline bool confirmSetting(int64_t stored) {
+    return stored != 0;
+}
 
 } // namespace intake

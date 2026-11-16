@@ -49,6 +49,7 @@ exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 | `schema2` | 0.3.0 | `default` with `"schema": 2` in `version` |
 | `schema-string` | 0.3.0 | `default` with `"schema": "1"` (a string) in `version` |
 | `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
+| `placed-unverified` | 0.3.0 | `default` with the placed root `itk_00000012` at `placed.verified: false` (summary and sidecar), for B9: Swap and Delete local copy must not qualify, and the library index leaves it out. Its gc replies are kept (the CLI would re-verify; the component never asks) |
 
 The `default` ids are `itk_0000000a` to `itk_00000019`; `status --json` lists
 them with their states.
@@ -128,6 +129,9 @@ copies in their shapes; a state is taken whole from the last scenario in the
 | `approved-placed` | `itk_00000010` goes `placed` (`verified`, `journal_seq` 42) with its library copy under `root/library/music.hq/Test Collection A/`; its execute, dry-run, resume, assign and reject replies go, gc replies are added |
 | `placing-placed` | `itk_00000011` (placing) goes `placed` (`journal_seq` 45) with its library copy under `Test Collection B/`, as a completed resume leaves it; its resume reply goes, gc replies are added |
 | `placing-reverted` | `itk_00000011` goes back to `approved` (history `execute_reverted`) and its resume reply becomes `{"id", "root_path", "resumed": "reverted_to_approved"}`; execute and dry-run replies are added. Use it through `execute.start`: the resume call that applies it answers with the reverted row. The reverted reply stays until the next `--mock-setup` (assign and reject on the reverted root are not modelled) |
+| `placed-gc_done` | B9, for `gc.next`: the placed root `itk_00000012` goes `gc_done` as the real gc leaves it: its local audio (`income/dump/Fixture Artist - Placed Album/01 - Test Track One.wav`, `02 - Test Track Two.wav`) is deleted, the sidecar stays as a `gc_done` tombstone (history `gc_done`), the library copy under `library/music.hq/Test Collection A/` stays, and its gc and gc dry-run replies go (a second gc gets `E_BAD_STATUS`) |
+| `gc-e_verify` | B9, for `gc.start`: `gc itk_00000012` answers `E_VERIFY` "target re-verification failed: missing: 01 - Test Track One.wav" with `path` = its `placed.target_path` (exit 2 for that root alone, so `gc.next` is not applied); nothing is deleted. Stays until the next `--mock-setup` |
+| `gc-e_no_journal` | B9, for `gc.start`: the same with `E_NO_JOURNAL` "journal record missing or mismatched", `path` = the root folder, as the CLI reports a journal mismatch |
 
 For example, for the whole flow on one root:
 
@@ -144,6 +148,14 @@ cd "$INTAKE_MOCK_STATE"
 echo approved-placing > execute.start   # at the start of `execute itk_00000010 --json`
 echo 'slow-real 8' > execute.mode       # the real call runs 8 s; its dry run answers at once
 echo approved-placed > execute.next     # at its end, before the reply is printed
+```
+
+Delete local copy (B9), done and failing:
+
+```bash
+echo placed-gc_done > gc.next           # gc itk_00000012: done, then gc_done, local audio gone
+echo gc-e_verify > gc.start             # gc itk_00000012: E_VERIFY, still placed
+echo gc-e_no_journal > gc.start         # gc itk_00000012: E_NO_JOURNAL, still placed
 ```
 
 Resume, completed and reverted:

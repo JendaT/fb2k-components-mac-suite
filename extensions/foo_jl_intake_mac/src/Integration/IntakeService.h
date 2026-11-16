@@ -24,7 +24,9 @@
 //  configuration (a fresh environment snapshot, main thread) and hands it to
 //  IntakeLoader::reconfigure, which reloads with `version`; new watched
 //  folders go to IntakeLoader::setWatchFolders (a new watch set); a new log
-//  level applies at once. The library mapping is only stored (B9 uses it).
+//  level applies at once; a new library mapping goes to
+//  IntakeLoader::setLibraryPrefix (B9: the library index is rebuilt) and to
+//  the next Swap (serviceActionInfo).
 //  After every loader status change it posts
 //  IntakeStatusDidChangeNotification on the main thread, so the page
 //  refreshes its status block while visible (no polling).
@@ -69,6 +71,7 @@
 #include <string>
 
 #include "../Core/IntakeLoadPolicy.h"
+#include "../Core/IntakeSwapPlanner.h"
 
 // Main thread, posted by the preferences page after it wrote a setting.
 FOUNDATION_EXPORT NSNotificationName const IntakeSettingsDidChangeNotification;
@@ -110,6 +113,8 @@ struct ServiceActionInfo {
     bool cliConfigured = false;  // cli_path is set
     CliVersionInfo cli;          // the last passing `version` (LoaderStatus::cliInfo)
     bool confirmReject = true;   // confirm_reject
+    bool confirmGc = true;       // confirm_gc (B9)
+    LibraryPrefix libraryPrefix; // swap_prefix_from / swap_prefix_to (B9)
 };
 ServiceActionInfo serviceActionInfo();
 
