@@ -202,7 +202,8 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 `configInts`, `1` (default) or `0`. The page's "Ask before Reject"
 checkbox (Confirmations). With `1`, the context menu's **Reject…** first
-shows a confirmation (a sheet on the key window) that lists the albums it
+shows a confirmation (a sheet on the window under the pointer at the click,
+else the main or key window) that lists the albums it
 affects (up to 10, then "and N more") and has an optional reason field; the
 reason is passed as `--reason`. With `0`, Reject runs at once, without a
 reason. Approve, Propose and Resume never ask. Execute always asks (B8): its
