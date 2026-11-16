@@ -42,6 +42,7 @@ TREENODE_PID=$!
 clang++ -x objective-c++ -std=c++17 -fobjc-arc -O1 -Wall \
     "$PROJECT_DIR/Tests/TreeOpsTests.mm" \
     "$PROJECT_DIR/src/Core/PlorgTreeOps.mm" \
+    "$PROJECT_DIR/src/Core/PlorgPathCodec.mm" \
     "$PROJECT_DIR/src/Core/TreeNode.mm" \
     -framework Foundation \
     -o "$TEST_BUILD_DIR/treeops_tests" &

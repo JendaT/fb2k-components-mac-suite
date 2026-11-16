@@ -10,8 +10,8 @@
 #define SIMPLAYLIST_VERSION_INT 161
 
 // Playlist Organizer
-#define PLORG_VERSION "1.5.1"
-#define PLORG_VERSION_INT 151
+#define PLORG_VERSION "1.5.2"
+#define PLORG_VERSION_INT 152
 
 // Waveform Seekbar
 #define WAVEFORM_VERSION "2.1.0"
@@ -46,8 +46,8 @@
 #define EFFECTS_DSP_VERSION_INT 100
 
 // Tidal Integration
-#define TIDAL_VERSION "0.4.0"
-#define TIDAL_VERSION_INT 040
+#define TIDAL_VERSION "0.4.1"
+#define TIDAL_VERSION_INT 041
 
 // Spectrum Analyzer
 #define SPECTRUM_VERSION "1.1.1"

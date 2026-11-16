@@ -2,6 +2,15 @@
 
 All notable changes to TIDAL Integration will be documented in this file.
 
+## [0.4.1] - 2026-11-15
+
+### Added
+- **Playlist folders**: Pull places each TIDAL playlist under its TIDAL folder ("TIDAL » Folder » Title"), so Playlist Organizer shows the same folders.
+- **Moved playlists**: Playlists renamed or moved on TIDAL, and ones pulled before folders were read, are renamed in place on the next Pull (shown as "Move") and keep their tracks and order.
+
+### Fixed
+- **Pull from TIDAL**: Works again. In 0.4.0 it stopped with an error on every run, because the playlist-folder request lost its sign-in on a server redirect.
+
 ## [0.4.0] - 2026-11-06
 
 Hi-res tracks start while they download and the next track is prefetched. The browser keeps your place on Back, drags whole albums and plays playlists. Adds BPM tags and a BPM/key lookup for other components. Requests retry instead of skipping tracks, and sync and sign-in got correctness fixes from a full code review.

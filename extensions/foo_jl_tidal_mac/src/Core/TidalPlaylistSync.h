@@ -33,9 +33,16 @@ typedef NS_ENUM(NSInteger, JLTidalSyncChangeType) {
     JLTidalSyncChangeTypeUpdate,      // Track list changed
     JLTidalSyncChangeTypeDelete,      // Playlist removed
     JLTidalSyncChangeTypeUnchanged,   // No changes needed
+    JLTidalSyncChangeTypeRename,      // Moved or renamed on TIDAL: the local
+                                      // playlist previousName is renamed in place
 };
 @property (nonatomic, readonly) JLTidalSyncChangeType changeType;
+/// The playlist's name after the change (the new name for a Rename).
 @property (nonatomic, copy, readonly) NSString *playlistName;
+/// Rename only: the local name before the change.
+@property (nonatomic, copy, readonly, nullable) NSString *previousName;
+/// Track-set differences. For a Rename both are 0 when the tracks already
+/// match, which makes it a pure rename with no clear and re-add.
 @property (nonatomic, readonly) NSInteger tracksAdded;
 @property (nonatomic, readonly) NSInteger tracksRemoved;
 @property (nonatomic, copy, readonly, nullable) NSString *tidalUUID;
@@ -45,12 +52,20 @@ typedef NS_ENUM(NSInteger, JLTidalSyncChangeType) {
                  tracksAdded:(NSInteger)added
                tracksRemoved:(NSInteger)removed
                    tidalUUID:(nullable NSString *)uuid;
+
+/// A Rename from previousName to name.
+- (instancetype)initRenameFromName:(NSString *)previousName
+                            toName:(NSString *)name
+                       tracksAdded:(NSInteger)added
+                     tracksRemoved:(NSInteger)removed
+                         tidalUUID:(nullable NSString *)uuid;
 @end
 
 /// Status report for a sync operation
 @interface JLTidalSyncReport : NSObject
 @property (nonatomic, strong, readonly) NSArray<JLTidalSyncChange *> *changes;
 @property (nonatomic, readonly) NSInteger totalCreated;
+@property (nonatomic, readonly) NSInteger totalRenamed;
 @property (nonatomic, readonly) NSInteger totalUpdated;
 @property (nonatomic, readonly) NSInteger totalDeleted;
 @property (nonatomic, readonly) NSInteger totalUnchanged;

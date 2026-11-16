@@ -19,6 +19,7 @@
 #import "../Core/HTTPResponsePolicy.h"
 #import "../Core/PaginationPolicy.h"
 #import "../Core/ResponseParser.h"
+#import "../Core/FolderTreeWalker.h"
 
 #pragma mark - Pagination
 
@@ -1088,22 +1089,39 @@ static NSArray *JLTidalItemsArray(id json, NSString *key) {
     }];
 }
 
-- (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion {
-    NSString *urlStr = [NSString stringWithFormat:@"%@/my-collection/playlists/folders",
-                        kTidalAPIv2BaseURL];
-    NSURL *url = [NSURL URLWithString:urlStr];
+- (void)getPlaylistFolderTreeWithCompletion:(JLTidalFolderTreeCompletion)completion {
+    // One listing per folder level: the root with includeOnly=FOLDER (root
+    // playlists need no path), then each folder with no includeOnly, so its
+    // subfolders and playlists both come back. Cursor paging follows the
+    // response's "cursor"; sending it back as "cursor=" is unverified live,
+    // and the walker fails the fetch if the cursor does not advance.
+    // api.tidal.com, never listen.tidal.com: the latter redirects and
+    // NSURLSession drops the Authorization header on the way.
+    JLTidalFolderPageFetch fetch = ^(NSString *folderID, BOOL foldersOnly, NSString *cursor,
+                                     JLTidalFolderPageCompletion pageCompletion) {
+        NSMutableString *urlStr = [NSMutableString stringWithFormat:
+                                   @"%@/my-collection/playlists/folders?folderId=%@",
+                                   kTidalAPIv2BaseURL, JLTidalQueryValueEncode(folderID)];
+        if (foldersOnly) [urlStr appendString:@"&includeOnly=FOLDER"];
+        [urlStr appendString:@"&limit=50"];
+        if (cursor.length > 0) {
+            [urlStr appendFormat:@"&cursor=%@", JLTidalQueryValueEncode(cursor)];
+        }
+        [self requestWithURL:[NSURL URLWithString:urlStr] method:@"GET" body:nil
+                  completion:^(NSDictionary *json, NSError *error) {
+            pageCompletion(json, error);
+        }];
+    };
 
-    [self requestWithURL:url method:@"GET" body:nil completion:^(NSDictionary *json, NSError *error) {
+    [JLTidalFolderTreeWalker walkWithFetch:fetch
+                                completion:^(JLTidalFolderTree *tree, NSError *error) {
         if (error) {
             completion(nil, error);
             return;
         }
-
-        NSArray<JLTidalPlaylistFolder *> *folders =
-            [JLTidalResponseParser foldersFromItems:json[@"items"]];
-        tidal::logDebug([[NSString stringWithFormat:@"Got %lu playlist folders",
-                          (unsigned long)folders.count] UTF8String]);
-        completion(folders, nil);
+        tidal::logDebug([[NSString stringWithFormat:@"Got %lu top-level playlist folders in %ld request(s)",
+                          (unsigned long)tree.folders.count, (long)tree.requestCount] UTF8String]);
+        completion(tree, nil);
     }];
 }
 

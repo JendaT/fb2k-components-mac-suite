@@ -17,6 +17,20 @@ NSString * const TreeModelChangeTypeKey = @"changeType";
 NSString * const TreeModelChangedNodeKey = @"changedNode";
 NSString * const TreeModelChangeIndexKey = @"changeIndex";
 
+namespace {
+
+// Organizer renames in progress (main thread only, like the rest of TreeModel)
+NSUInteger g_ownRenameDepth = 0;
+
+struct OwnRenameScope {
+    OwnRenameScope() { ++g_ownRenameDepth; }
+    ~OwnRenameScope() { --g_ownRenameDepth; }
+    OwnRenameScope(const OwnRenameScope &) = delete;
+    OwnRenameScope &operator=(const OwnRenameScope &) = delete;
+};
+
+} // anonymous namespace
+
 @interface TreeModel ()
 @property (nonatomic, strong) NSMutableArray<TreeNode *> *mutableRootNodes;
 - (nullable TreeNode *)findPlaylistWithName:(NSString *)name inNodes:(NSArray<TreeNode *> *)nodes;
@@ -197,9 +211,8 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
                 continue;
             }
 
-            pfc::string8 newNameStr([newName UTF8String]);
-            pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
-            FB2K_console_formatter() << "[Plorg] Migrated: " << [oldName UTF8String] << " -> " << newNameStr.c_str();
+            [self renameFoobarPlaylistAtIndex:index toName:newName];
+            FB2K_console_formatter() << "[Plorg] Migrated: " << [oldName UTF8String] << " -> " << [newName UTF8String];
         }
     }
 }
@@ -241,9 +254,8 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
                 leafName = uniqueName;
             }
 
-            pfc::string8 newNameStr([leafName UTF8String]);
-            pm->playlist_rename(index, newNameStr.c_str(), newNameStr.get_length());
-            FB2K_console_formatter() << "[Plorg] Unmigrated: " << [encodedName UTF8String] << " -> " << newNameStr.c_str();
+            [self renameFoobarPlaylistAtIndex:index toName:leafName];
+            FB2K_console_formatter() << "[Plorg] Unmigrated: " << [encodedName UTF8String] << " -> " << [leafName UTF8String];
         }
     }
 }
@@ -334,8 +346,7 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
         if (pm->find_playlist([expected UTF8String], pfc_infinite) != pfc_infinite) continue;
 
         // Rename corrupted -> expected
-        pfc::string8 newNameStr([expected UTF8String]);
-        pm->playlist_rename(corruptedIdx, newNameStr.c_str(), newNameStr.get_length());
+        [self renameFoobarPlaylistAtIndex:corruptedIdx toName:expected];
         FB2K_console_formatter() << "[Plorg] Repaired: " << [corruptedName UTF8String]
                                   << " -> " << [expected UTF8String];
         (*count)++;
@@ -367,6 +378,20 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
             [map[node.name] addObject:node];
         }
     }
+}
+
+#pragma mark - Organizer Renames
+
+- (BOOL)ownRenameInProgress {
+    return g_ownRenameDepth > 0;
+}
+
+- (BOOL)renameFoobarPlaylistAtIndex:(NSUInteger)index toName:(NSString *)name {
+    if (name.length == 0) return NO;
+    pfc::string8 nameStr([name UTF8String]);
+    // The rename callback runs inside playlist_rename and skips while this is set
+    OwnRenameScope scope;
+    return playlist_manager::get()->playlist_rename(index, nameStr.c_str(), nameStr.get_length());
 }
 
 #pragma mark - Playlist Sync
@@ -429,12 +454,22 @@ NSString * const TreeModelChangeIndexKey = @"changeIndex";
 }
 
 - (void)handlePlaylistRenamed:(NSString *)oldName to:(NSString *)newName {
-    TreeNode *node = [self findPlaylistWithName:oldName];
-    if (node) {
-        node.name = newName;
-        [self notifyChange:TreeModelChangeTypeUpdate node:node index:-1];
-        [self saveToConfig];
-    }
+    BOOL encodingEnabled = plorg_config::getConfigBool(plorg_config::kPathEncodedNames,
+                                                        plorg_config::kDefaultPathEncodedNames);
+    // Same rule as handlePlaylistCreated: a name carrying a path is decoded even with encoding off
+    BOOL nameHasPath = [newName containsString:PlorgPathSeparator];
+
+    TreeNode *node = [PlorgTreeOps followRenameFrom:oldName
+                                                 to:newName
+                                      decodeNewPath:(encodingEnabled || nameHasPath)
+                                              roots:self.mutableRootNodes];
+    if (!node) return;
+
+    FB2K_console_formatter() << "[Plorg] Followed rename: " << [oldName UTF8String]
+                              << " -> " << [newName UTF8String];
+    // Folders may have been created and a node moved or removed
+    [self notifyChange:TreeModelChangeTypeReload node:nil index:-1];
+    [self saveToConfig];
 }
 
 - (void)handlePlaylistDeleted:(NSString *)name {

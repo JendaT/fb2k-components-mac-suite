@@ -4,6 +4,7 @@
 //
 
 #import "PlorgTreeOps.h"
+#import "PlorgPathCodec.h"
 
 @implementation PlorgTreeOps
 
@@ -156,6 +157,99 @@
         }
     }
     return count;
+}
+
++ (TreeNode *)findPlaylistForFoobarName:(NSString *)foobarName
+                                inRoots:(NSArray<TreeNode *> *)roots {
+    if (foobarName.length == 0) return nil;
+
+    NSArray<NSString *> *components = [PlorgPathCodec splitEncodedName:foobarName];
+    TreeNode *node = nil;
+    if (components.count > 1) {
+        node = [self findPlaylistForComponents:components inRoots:roots];
+    } else if (components.count == 1) {
+        // A root-level leaf is the exact match; a nested leaf is the fallback
+        node = [self findPlaylistForComponents:components inRoots:roots];
+        if (!node) node = [self findPlaylistNamed:components[0] inNodes:roots];
+    }
+    if (!node) node = [self findPlaylistNamed:foobarName inNodes:roots];
+    return node;
+}
+
+// Takes a node out of its folder, or out of roots when it sits at the top level
++ (void)detachNode:(TreeNode *)node fromRoots:(NSMutableArray<TreeNode *> *)roots {
+    if (node.parent) {
+        [node.parent removeChild:node];
+    } else {
+        [roots removeObjectIdenticalTo:node];
+    }
+}
+
++ (TreeNode *)followRenameFrom:(NSString *)oldName
+                            to:(NSString *)newName
+                 decodeNewPath:(BOOL)decodeNewPath
+                         roots:(NSMutableArray<TreeNode *> *)roots {
+    if (oldName.length == 0 || newName.length == 0 || [oldName isEqualToString:newName]) return nil;
+
+    TreeNode *node = [self findPlaylistForFoobarName:oldName inRoots:roots];
+    if (!node) return nil;
+
+    if (!decodeNewPath) {
+        // Flat names: any leaf already called newName stands for the same playlist
+        TreeNode *existing = [self findPlaylistNamed:newName inNodes:roots];
+        if (existing && existing != node) {
+            [self detachNode:node fromRoots:roots];
+            return existing;
+        }
+        node.name = newName;
+        return node;
+    }
+
+    NSArray<NSString *> *components = [PlorgPathCodec splitEncodedName:newName];
+    NSString *leafName = components.lastObject;
+    if (leafName.length == 0) return nil;
+
+    TreeNode *existing = [self findPlaylistForComponents:components inRoots:roots];
+    if (existing && existing != node) {
+        [self detachNode:node fromRoots:roots];
+        return existing;
+    }
+
+    // Walk the folder path, creating folders that are missing
+    TreeNode *parent = nil;
+    NSArray<TreeNode *> *level = roots;
+    for (NSUInteger i = 0; i + 1 < components.count; i++) {
+        NSString *folderName = components[i];
+        TreeNode *folder = nil;
+        for (TreeNode *candidate in level) {
+            if (candidate.isFolder && [candidate.name isEqualToString:folderName]) {
+                folder = candidate;
+                break;
+            }
+        }
+        if (!folder) {
+            folder = [TreeNode folderWithName:folderName];
+            if (parent) {
+                [parent addChild:folder];
+            } else {
+                [roots addObject:folder];
+            }
+        }
+        parent = folder;
+        level = folder.children;
+    }
+
+    if (node.parent != parent) {
+        [self detachNode:node fromRoots:roots];
+        if (parent) {
+            [parent addChild:node];
+        } else {
+            node.parent = nil;
+            [roots addObject:node];
+        }
+    }
+    node.name = leafName;
+    return node;
 }
 
 @end

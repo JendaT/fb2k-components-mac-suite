@@ -34,7 +34,7 @@ NS_ASSUME_NONNULL_BEGIN
 @class JLTidalAlbum;
 @class JLTidalArtist;
 @class JLTidalPlaylist;
-@class JLTidalPlaylistFolder;
+@class JLTidalFolderTree;
 
 /// Completion handlers
 typedef void (^JLTidalDeviceCodeCompletion)(JLTidalDeviceCode * _Nullable deviceCode, NSError * _Nullable error);
@@ -45,7 +45,7 @@ typedef void (^JLTidalAlbumsCompletion)(NSArray<JLTidalAlbum *> * _Nullable albu
 typedef void (^JLTidalArtistsCompletion)(NSArray<JLTidalArtist *> * _Nullable artists, NSError * _Nullable error);
 typedef void (^JLTidalPlaylistsCompletion)(NSArray<JLTidalPlaylist *> * _Nullable playlists, NSError * _Nullable error);
 typedef void (^JLTidalPlaylistCompletion)(JLTidalPlaylist * _Nullable playlist, NSError * _Nullable error);
-typedef void (^JLTidalFoldersCompletion)(NSArray<JLTidalPlaylistFolder *> * _Nullable folders, NSError * _Nullable error);
+typedef void (^JLTidalFolderTreeCompletion)(JLTidalFolderTree * _Nullable tree, NSError * _Nullable error);
 typedef void (^JLTidalBoolCompletion)(BOOL success, NSError * _Nullable error);
 typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Nullable error);
 
@@ -208,8 +208,10 @@ typedef void (^JLTidalETagCompletion)(NSString * _Nullable etag, NSError * _Null
 - (void)getPlaylistETagForID:(NSString *)playlistUUID
                   completion:(JLTidalETagCompletion)completion;
 
-/// Get playlist folders (v2 API)
-- (void)getPlaylistFoldersWithCompletion:(JLTidalFoldersCompletion)completion;
+/// The whole playlist folder tree (v2 API): every folder level, every page.
+/// Any failed or incomplete listing fails the whole fetch, never returning a
+/// partial tree (see JLTidalFolderTreeWalker).
+- (void)getPlaylistFolderTreeWithCompletion:(JLTidalFolderTreeCompletion)completion;
 
 /// Search for a track by ISRC
 - (void)getTrackByISRC:(NSString *)isrc

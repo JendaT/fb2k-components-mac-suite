@@ -158,24 +158,101 @@ static void testWrappedItemLists(void) {
     CHECK_STREQ(albums[0].title, @"FavLP", "wrapped album title");
 }
 
-static void testFolderFiltering(void) {
+// Item shapes follow the live v2 response captured on 2026-11-14
+// (docs/research/2026-11-14-v2-folders-redirect.md): itemType, trn, name,
+// parent and data{id, name, ...}; no "type" key, no nested "items".
+static NSDictionary *folderItem(NSString *dataID, NSString *dataName, NSString *trn, NSString *name) {
+    NSMutableDictionary *data = [NSMutableDictionary dictionary];
+    if (dataID) data[@"id"] = dataID;
+    if (dataName) data[@"name"] = dataName;
+    data[@"itemType"] = @"FOLDER";
+    NSMutableDictionary *item = [@{@"itemType": @"FOLDER", @"data": data,
+                                   @"addedAt": @"2026-01-01T00:00:00Z"} mutableCopy];
+    if (trn) item[@"trn"] = trn;
+    if (name) item[@"name"] = name;
+    return item;
+}
+
+static void testFolderItems(void) {
     NSArray *items = @[
-        @{@"type": @"FOLDER", @"trn": @"trn:folder:f-1", @"name": @"Rock"},
-        @{@"type": @"PLAYLIST", @"data": @{@"uuid": @"pl-9"}},
-        @{@"type": @"FOLDER", @"id": @"f-2", @"name": @"Jazz",
-          @"items": @[
-              @{@"type": @"FOLDER", @"id": @"f-2a", @"name": @"Bebop"},
-              @{@"type": @"PLAYLIST", @"data": @{@"uuid": @"pl-2"}},
-          ]},
+        folderItem(@"f-1", @"Rock", @"trn:folder:f-1", @"Rock"),
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:playlist:pl-9", @"name": @"Mix",
+          @"data": @{@"uuid": @"pl-9", @"title": @"Mix"}},
+        folderItem(nil, nil, @"trn:folder:f-2", @"Jazz"),
+        folderItem(nil, @"NoID", nil, nil),
+        // The dead shape: a "type" key and nested "items" are not folders.
+        @{@"type": @"FOLDER", @"id": @"f-old", @"name": @"Old",
+          @"items": @[@{@"type": @"PLAYLIST", @"data": @{@"uuid": @"pl-old"}}]},
+        @"not a dictionary",
     ];
     NSArray<JLTidalPlaylistFolder *> *folders = [Parser foldersFromItems:items];
-    CHECK_EQ(folders.count, (NSUInteger)2, "playlists filtered out, got %lu", (unsigned long)folders.count);
-    CHECK_STREQ(folders[0].folderID, @"f-1", "TRN uuid extracted");
-    CHECK_STREQ(folders[1].name, @"Jazz", "folder name");
-    CHECK_EQ(folders[1].subfolders.count, (NSUInteger)1, "nested subfolder parsed");
-    CHECK_STREQ(folders[1].subfolders[0].name, @"Bebop", "subfolder name");
-    CHECK_EQ(folders[1].playlistUUIDs.count, (NSUInteger)1, "nested playlist uuid collected");
-    CHECK_STREQ(folders[1].playlistUUIDs[0], @"pl-2", "nested playlist uuid");
+    CHECK_EQ(folders.count, (NSUInteger)2, "FOLDER items with an id only, got %lu", (unsigned long)folders.count);
+    CHECK_STREQ(folders[0].folderID, @"f-1", "id from data.id");
+    CHECK_STREQ(folders[0].name, @"Rock", "name from data.name");
+    CHECK_STREQ(folders[1].folderID, @"f-2", "id from the trn suffix");
+    CHECK_STREQ(folders[1].name, @"Jazz", "name falls back to the item name");
+    CHECK_EQ(folders[0].subfolders.count, (NSUInteger)0, "a listing item has no subfolders");
+    CHECK_EQ(folders[0].playlistUUIDs.count, (NSUInteger)0, "a listing item has no playlists");
+
+    JLTidalPlaylistFolder *numeric = [[JLTidalPlaylistFolder alloc] initWithDictionary:@{
+        @"itemType": @"FOLDER", @"data": @{@"id": @42}}];
+    CHECK_STREQ(numeric.folderID, @"42", "numeric data.id becomes a string");
+    CHECK_STREQ(numeric.name, @"Untitled Folder", "missing name falls back");
+
+    NSArray *playlists = @[
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:playlist:ignored", @"data": @{@"uuid": @"pl-1"}},
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:playlist:pl-2", @"data": @{@"title": @"no uuid"}},
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:playlist:pl-3"},
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:folder:not-a-playlist"},
+        @{@"itemType": @"PLAYLIST", @"trn": @"trn:playlist:"},
+        @{@"itemType": @"PLAYLIST", @"data": @{@"uuid": @""}},
+        folderItem(@"f-1", @"Rock", nil, nil),
+        @{@"itemType": @"MIX", @"data": @{@"uuid": @"mix-1"}},
+    ];
+    NSArray<NSString *> *uuids = [Parser playlistUUIDsFromFolderItems:playlists];
+    CHECK_EQ(uuids.count, (NSUInteger)3, "three playlist UUIDs, got %lu", (unsigned long)uuids.count);
+    CHECK_STREQ(uuids[0], @"pl-1", "data.uuid wins over trn");
+    CHECK_STREQ(uuids[1], @"pl-2", "trn suffix when data has no uuid");
+    CHECK_STREQ(uuids[2], @"pl-3", "trn suffix when there is no data");
+}
+
+static void testFolderListing(void) {
+    JLTidalFolderListing *listing = [Parser folderListingFromResponse:@{
+        @"cursor": @"next-1",
+        @"lastModifiedAt": @"2026-11-14T00:00:00Z",
+        @"totalNumberOfItems": @3,
+        @"items": @[
+            folderItem(@"f-1", @"Rock", nil, nil),
+            @{@"itemType": @"PLAYLIST", @"data": @{@"uuid": @"pl-1"}},
+            @{@"itemType": @"MIX", @"data": @{}},
+        ]}];
+    CHECK(listing != nil, "listing parsed");
+    CHECK_EQ(listing.folders.count, (NSUInteger)1, "one folder");
+    CHECK_EQ(listing.playlistUUIDs.count, (NSUInteger)1, "one playlist");
+    CHECK_STREQ(listing.cursor, @"next-1", "cursor carried");
+    CHECK_EQ(listing.malformedItemCount, (NSInteger)0, "unknown item types are not malformed");
+
+    listing = [Parser folderListingFromResponse:@{@"cursor": @"", @"items": @[]}];
+    CHECK(listing != nil && listing.cursor == nil, "empty cursor ends the listing");
+    listing = [Parser folderListingFromResponse:@{@"cursor": [NSNull null], @"items": @[]}];
+    CHECK(listing != nil && listing.cursor == nil, "null cursor ends the listing");
+    listing = [Parser folderListingFromResponse:@{@"items": @[]}];
+    CHECK(listing != nil && listing.cursor == nil, "absent cursor ends the listing");
+    listing = [Parser folderListingFromResponse:@{@"cursor": @7, @"items": @[]}];
+    CHECK_STREQ(listing.cursor, @"7", "numeric cursor kept as a string");
+
+    listing = [Parser folderListingFromResponse:@{@"items": @[
+        folderItem(nil, @"NoID", nil, nil),
+        @{@"itemType": @"PLAYLIST", @"data": @{@"title": @"no uuid"}},
+        @{@"itemType": @"PLAYLIST", @"data": @{@"uuid": @"pl-ok"}},
+    ]}];
+    CHECK_EQ(listing.malformedItemCount, (NSInteger)2, "folder without id and playlist without uuid are malformed");
+    CHECK_EQ(listing.playlistUUIDs.count, (NSUInteger)1, "the good playlist is still parsed");
+
+    CHECK([Parser folderListingFromResponse:@{@"error": @"bad"}] == nil, "no items array -> nil");
+    CHECK([Parser folderListingFromResponse:@{@"items": @"x"}] == nil, "non-array items -> nil");
+    CHECK([Parser folderListingFromResponse:@[]] == nil, "non-dictionary -> nil");
+    CHECK([Parser folderListingFromResponse:nil] == nil, "nil -> nil");
 }
 
 static void testISRCMatching(void) {
@@ -201,7 +278,8 @@ int main(void) {
         testPlainItemLists();
         testDisplayTitle();
         testWrappedItemLists();
-        testFolderFiltering();
+        testFolderItems();
+        testFolderListing();
         testISRCMatching();
     }
     return testHarnessFinish("ResponseParser");

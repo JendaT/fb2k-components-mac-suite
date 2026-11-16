@@ -52,7 +52,7 @@ JL_COMPONENT_ABOUT(
     "- Browse favorite tracks, albums and playlists\n"
     "- Drag tracks or whole albums into playlists\n"
     "- Pin a quality per playlist entry\n"
-    "- Playlist import and pull/push sync with Tidal\n"
+    "- Playlist import and pull/push sync with Tidal, including its folders\n"
     "- Track tags (ISRC, BPM, date, copyright, ReplayGain) and cover art\n"
     "- BPM and key lookup for other components"
 );
