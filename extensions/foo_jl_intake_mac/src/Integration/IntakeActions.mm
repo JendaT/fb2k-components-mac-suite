@@ -32,6 +32,7 @@
 #include "../Core/IntakeView.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <unordered_map>
@@ -1262,7 +1263,21 @@ GcIncomeRows countIncomeRows(const IntakeView &view, const std::unordered_set<st
                              const PlaylistRef &first,
                              const std::unordered_map<std::string, PlacedRootFiles> *files,
                              IncomeRowCensus *census = nullptr) {
+    const auto started = std::chrono::steady_clock::now();
     IncomeRowCensus c = incomeRowCensus(ids, view, first);
+    {
+        // Main thread over every playlist: its cost on a large profile is
+        // what the in-app run measures.
+        const long long micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now() - started)
+                                     .count();
+        char line[200];
+        snprintf(line, sizeof line,
+                 "delete: income-row census over %zu playlist(s): %zu income entries in %zu, %zu unchecked, %lld.%03lld ms",
+                 static_cast<size_t>(playlist_manager::get()->get_playlist_count()), c.total, c.playlists.size(),
+                 c.unchecked, micros / 1000, micros % 1000);
+        logDebug(line);
+    }
     GcIncomeRows out;
     out.rows = c.total;
     out.inFirst = c.inFirst;
