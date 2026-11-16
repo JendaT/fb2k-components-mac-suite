@@ -562,7 +562,7 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     table.allowsEmptySelection = YES;
     table.columnAutoresizingStyle = NSTableViewLastColumnOnlyAutoresizingStyle;
     table.accessibilityLabel = @"Income folders";
-    NSArray *columns = @[ @[ @"name", @"Name", @90 ], @[ @"state", @"State", @70 ], @[ @"path", @"Folder", @260 ] ];
+    NSArray *columns = @[ @[ @"name", @"Name", @90 ], @[ @"state", @"State", @92 ], @[ @"path", @"Folder", @260 ] ];
     for (NSArray *spec in columns) {
         NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:spec[0]];
         column.title = spec[1];

@@ -115,6 +115,23 @@ void buildTestPlaylist(const std::string &dir) {
     snprintf(line, sizeof(line), "test playlist \"%s\" built with %zu files (replaced %zu)", kPlaylistName,
              files.size(), removed);
     intake::logInfo(line);
+
+    // Handles made here carry no info, and SimPlaylist does not read tags
+    // for displayed rows, so %album% would stay empty and every row would
+    // fall into one group with no header (no badge to see). Read them in the
+    // background, no dialog.
+    const size_t count = files.size();
+    metadb_io_v2::get()->load_info_async(
+        items, metadb_io::load_info_default, core_api::get_main_window(),
+        metadb_io_v2::op_flag_background | metadb_io_v2::op_flag_delay_ui | metadb_io_v2::op_flag_no_errors,
+        fb2k::makeCompletionNotify([count](unsigned code) {
+            char done[160];
+            snprintf(done, sizeof(done), "test playlist: tags read for %zu files (%s)", count,
+                     code == metadb_io::load_info_success   ? "success"
+                     : code == metadb_io::load_info_aborted ? "aborted"
+                                                            : "errors");
+            intake::logInfo(done);
+        }));
 }
 
 class intake_test_playlist_initquit : public initquit {

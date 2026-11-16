@@ -191,7 +191,11 @@ through foobar2000 during those runs.
 | `2` | About 4 s after start: remove every playlist named `JL intake test`. |
 
 The component sets the value back to `0` after acting, and foobar2000 writes
-that back when it quits. One console line reports what happened.
+that back when it quits. One console line reports what happened. After a
+build it also reads the files' tags in the background (SimPlaylist does not,
+and without `%album%` every row lands in one group with no header or badge);
+a second line, `test playlist: tags read for N files (success)`, reports when
+that is done.
 
 `foo_jl_intake.test_playlist_dir` (`configStrings`): an absolute local
 folder, e.g. the mock's `$INTAKE_MOCK_STATE/root`. A path under `/Volumes` or
