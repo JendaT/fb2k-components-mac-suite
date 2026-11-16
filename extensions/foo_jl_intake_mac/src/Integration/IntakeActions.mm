@@ -18,6 +18,7 @@
 #include "IntakeService.h"
 
 #include "../Core/IntakeCliRunner.h"
+#include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeMutationLane.h"
@@ -25,8 +26,66 @@
 #include "../Core/IntakeSlowVolumeGuard.h"
 #include "../Core/IntakeView.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <memory>
 #include <unordered_map>
+
+// The picker's combo box delegate (B7): "Assign" is enabled only while the
+// text is exactly one of the listed names. ObjC classes share one namespace
+// in the process, hence the component prefix.
+@interface JLIntakeCollectionPicker : NSObject <NSComboBoxDelegate>
+@property(nonatomic, weak) NSComboBox *combo;
+@property(nonatomic, weak) NSButton *okButton;
+@property(nonatomic, weak) NSButton *cancelButton;
+@property(nonatomic) BOOL closed;  // the alert has ended
+- (instancetype)initWithNames:(const std::vector<std::string> &)names;
+- (BOOL)isListed:(NSString *)text;
+- (void)update;
+@end
+
+@implementation JLIntakeCollectionPicker {
+    std::vector<std::string> _names;
+}
+
+- (instancetype)initWithNames:(const std::vector<std::string> &)names {
+    if ((self = [super init])) _names = names;
+    return self;
+}
+
+- (BOOL)isListed:(NSString *)text {
+    const char *bytes = text.UTF8String;
+    return bytes != nullptr && intake::isListedCollection(_names, std::string(bytes));
+}
+
+- (void)update {
+    self.okButton.enabled = [self isListed:self.combo.stringValue];
+}
+
+// Again on the next main-queue turn: the text may still change after the
+// notification (the type-ahead completion, a pick from the list).
+- (void)updateSoon {
+    __weak JLIntakeCollectionPicker *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf update];
+    });
+}
+
+// Typing (the type-ahead completion is part of the value).
+- (void)controlTextDidChange:(NSNotification *)notification {
+    [self update];
+    [self updateSoon];
+}
+
+// A pick from the list. stringValue still holds the old text when this
+// arrives, so the selected item decides now and the text once it is set.
+- (void)comboBoxSelectionDidChange:(NSNotification *)notification {
+    id selected = self.combo.objectValueOfSelectedItem;
+    if ([selected isKindOfClass:[NSString class]]) self.okButton.enabled = [self isListed:selected];
+    [self updateSoon];
+}
+
+@end
 
 namespace intake {
 
@@ -52,6 +111,8 @@ std::string idList(const std::vector<std::string> &ids) {
     return out;
 }
 
+struct PickerFlow;
+
 // Leaked on purpose (like the provider's state): a CLI completion may come
 // back after on_quit, and static destructors run at exit.
 struct ActionsState {
@@ -71,6 +132,10 @@ struct ActionsState {
     // The call whose 10 s report put E_CLI_TIMEOUT on its roots (0: none);
     // its finish replaces those errors.
     uint64_t timeoutReported = 0;
+    // The picker flow in progress (`collections` running or the sheet
+    // open), or null: at most one (B7).
+    std::shared_ptr<PickerFlow> picker;
+    uint64_t pickerSerial = 0;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -78,6 +143,21 @@ struct ActionsState {
     // Mutating calls only. Never cancelled: destroying or keeping it never
     // signals a process (IntakeProcess), so calls outlive on_quit.
     ProcessRunner runner;
+    // The picker's read-only `collections` calls: killed at the 10 s budget
+    // (KillAtBudget), and its read lane is closed on quit.
+    ProcessRunner pickerRunner;
+};
+
+// One "Assign to other collection…" flow (main thread).
+struct PickerFlow {
+    uint64_t serial = 0;
+    ActionEntry entry;  // as the menu captured it
+    std::shared_ptr<const PickerTestHooks> test;
+    std::vector<std::string> names;  // the listed collections, once known
+    // While the sheet is up (released on the next main-queue turn after it
+    // ends, never inside its own completion handler).
+    NSAlert *alert = nil;
+    JLIntakeCollectionPicker *helper = nil;
 };
 
 ActionsState &actionsState() {
@@ -238,6 +318,7 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     auto roots = std::make_shared<std::vector<MutationRoot>>();
     for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status});
     logInfo(name + ": starting for " + rootCountText(request.ids.size()) + ": " + idList(request.ids) +
+            (request.collection.empty() ? std::string() : " to \"" + request.collection + "\"") +
             (request.reason.empty() ? std::string() : " (with a reason)"));
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(request);
@@ -304,7 +385,264 @@ void confirmReject(const ActionEntry &entry) {
     }
 }
 
+// --- Assign to other collection… (B7, main unless noted) ---
+
+void pickerReport(const std::shared_ptr<const PickerTestHooks> &test, const std::string &line) {
+    if (test && test->report) test->report(line);
+}
+
+void pickerDone(const std::shared_ptr<const PickerTestHooks> &test) {
+    if (test && test->done) test->done();
+}
+
+// Ends the flow `flow` if it is still the current one. Its alert and helper
+// are released on a later main-queue turn, never inside the alert's own
+// completion handler.
+void endPicker(const std::shared_ptr<PickerFlow> &flow) {
+    ActionsState &st = actionsState();
+    if (st.picker == flow) st.picker.reset();
+    std::shared_ptr<PickerFlow> keep = flow;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        keep->alert = nil;
+        keep->helper = nil;
+    });
+}
+
+// No picker: one Error line naming the cause (doc 04 "Failure behavior":
+// never modal, never inert).
+void pickerFailed(const std::shared_ptr<PickerFlow> &flow, const std::string &cause) {
+    logError("assign-other: no picker shown: " + cause);
+    endPicker(flow);
+    pickerReport(flow->test, "no picker: " + cause + "; nothing assigned");
+    pickerDone(flow->test);
+}
+
+// The sheet's OK, and the test aid's headless choice: the lane and the
+// configuration again, then the assign on the captured roots.
+std::string assignChosen(const ActionEntry &entry, const std::string &collection) {
+    const std::string why = whyNotStartable();
+    if (!why.empty()) return notRun(entry.action, why);
+    ActionEntry chosen = entry;
+    chosen.collection = collection;
+    return runMutation(chosen, std::string());
+}
+
+std::string pickerSheetDescription(const PickerFlow &flow, NSComboBox *combo, NSButton *ok, bool sheet) {
+    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
+    line += std::to_string(static_cast<long>(combo.numberOfItems)) + " collection(s), preselected \"" +
+            StdStr(combo.stringValue) + "\", OK " + (ok.enabled ? "enabled" : "disabled");
+    if (flow.test && flow.test->mode == PickerTestHooks::Mode::AutoClose) {
+        char seconds[32];
+        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
+        line += std::string("; closing as Cancel in ") + seconds + " s";
+    }
+    return line;
+}
+
+void showPicker(const std::shared_ptr<PickerFlow> &flow) {
+    const ActionEntry &entry = flow->entry;
+    const size_t n = entry.roots.size();
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleInformational;
+    alert.messageText = n == 1 ? @"Assign to another collection"
+                               : [NSString stringWithFormat:@"Assign %zu albums to another collection", n];
+    std::string info = affectedAlbumsText(entry.roots);
+    if (n == 1 && !entry.roots[0].targetCollection.empty()) {
+        info += "\n\nNow: \xE2\x86\x92 " + entry.roots[0].targetCollection;  // U+2192
+    }
+    alert.informativeText = NSStr(info);
+    NSButton *ok = [alert addButtonWithTitle:@"Assign"];
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+
+    NSMutableArray<NSString *> *items = [NSMutableArray arrayWithCapacity:flow->names.size()];
+    for (const std::string &name : flow->names) [items addObject:NSStr(name)];
+    NSComboBox *combo = [[NSComboBox alloc] initWithFrame:NSMakeRect(0, 0, 320, 26)];
+    combo.usesDataSource = NO;
+    [combo addItemsWithObjectValues:items];
+    combo.completes = YES;  // type-ahead
+    combo.numberOfVisibleItems = std::min<NSInteger>(15, std::max<NSInteger>(1, items.count));
+    combo.placeholderString = @"Collection";
+    combo.accessibilityLabel = @"Collection to assign to";
+
+    JLIntakeCollectionPicker *helper = [[JLIntakeCollectionPicker alloc] initWithNames:flow->names];
+    helper.combo = combo;
+    helper.okButton = ok;
+    helper.cancelButton = cancel;
+    combo.delegate = helper;
+    alert.accessoryView = combo;
+    [alert layout];
+    alert.window.initialFirstResponder = combo;
+    [helper update];  // empty text: Assign starts disabled
+    flow->alert = alert;
+    flow->helper = helper;
+
+    std::shared_ptr<PickerFlow> current = flow;
+    void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+        JLIntakeCollectionPicker *h = current->helper;
+        h.closed = YES;
+        const std::string text = StdStr(combo.stringValue);
+        endPicker(current);
+        if (actionsState().stopped) return;  // quit started: drop it
+        if (response != NSAlertFirstButtonReturn) {
+            logDebug("assign-other: cancelled in the picker");
+        } else if (!isListedCollection(current->names, text)) {
+            // Assign is disabled for anything else; never pass an unlisted
+            // name to --collection.
+            logDebug("assign-other: \"" + text + "\" is not a listed collection; nothing assigned");
+        } else {
+            logDebug("assign-other: " + assignChosen(current->entry, text));
+        }
+        pickerDone(current->test);
+    };
+
+    const bool autoClose = flow->test && flow->test->mode == PickerTestHooks::Mode::AutoClose;
+    auto scheduleCancel = [&]() {
+        // Common modes include the modal panel mode, so this also fires
+        // while the app-modal fallback runs.
+        __weak JLIntakeCollectionPicker *weakHelper = helper;
+        NSTimer *timer = [NSTimer timerWithTimeInterval:flow->test->closeSeconds
+                                                repeats:NO
+                                                  block:^(NSTimer *) {
+                                                      JLIntakeCollectionPicker *h = weakHelper;
+                                                      if (h != nil && !h.closed) [h.cancelButton performClick:nil];
+                                                  }];
+        [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    };
+    if (NSWindow *host = sheetHostWindow()) {
+        [alert beginSheetModalForWindow:host completionHandler:finish];
+        if (autoClose) {
+            pickerReport(flow->test, pickerSheetDescription(*flow, combo, ok, true));
+            scheduleCancel();
+        }
+    } else {
+        if (autoClose) {
+            pickerReport(flow->test, pickerSheetDescription(*flow, combo, ok, false));
+            scheduleCancel();
+        }
+        finish([alert runModal]);
+    }
+}
+
+void onCollectionsBudget(uint64_t serial) {
+    ActionsState &st = actionsState();
+    if (st.stopped || !st.picker || st.picker->serial != serial) return;
+    // doc 03 v1.2 "Timeouts": read-only, reported at 10 s and killed (the
+    // runner does that); its completion is then dropped.
+    CliError timeout;
+    timeout.code = kErrorCliTimeout;
+    timeout.msg = "no answer within 10 s; stopped";
+    pickerFailed(st.picker, "collections: " + renderError(timeout));
+}
+
+void onCollections(uint64_t serial, const CliResult &result) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    logCliResult(result);
+    if (!st.picker || st.picker->serial != serial) {
+        logDebug("assign-other: a late collections result was ignored");
+        return;
+    }
+    std::shared_ptr<PickerFlow> flow = st.picker;
+    if (result.envelope.outcome != CliOutcome::Ok) {
+        pickerFailed(flow, "collections: " + collectionsFailureText(result.envelope));
+        return;
+    }
+    const CollectionsParseResult parsed = parseCollections(result.envelope.data);
+    if (!parsed.ok) {
+        pickerFailed(flow, "collections: unusable reply (" + parsed.error + ")");
+        return;
+    }
+    if (parsed.skipped > 0 || parsed.duplicates > 0) {
+        logDebug("collections: " + std::to_string(parsed.skipped) + " entr" + (parsed.skipped == 1 ? "y" : "ies") +
+                 " without a usable name skipped, " + std::to_string(parsed.duplicates) +
+                 " repeated name(s) dropped");
+    }
+    flow->names = collectionNames(parsed.collections);
+    if (flow->names.empty()) {
+        pickerFailed(flow, parsed.skipped > 0 ? "the CLI lists no usable collection" : "the CLI lists no collections");
+        return;
+    }
+    if (flow->test && flow->test->mode == PickerTestHooks::Mode::Headless) {
+        const std::string &name = flow->test->collection;
+        const bool listed = isListedCollection(flow->names, name);
+        std::string line = "collections: " + std::to_string(flow->names.size()) + "; \"" + name + "\" " +
+                           (listed ? "listed" : "not listed");
+        endPicker(flow);
+        line += "; " + (listed ? assignChosen(flow->entry, name) : std::string("nothing assigned"));
+        pickerReport(flow->test, line);
+        pickerDone(flow->test);
+        return;
+    }
+    showPicker(flow);
+}
+
+// Queue: builds and starts `collections --json` (building stats the CLI and
+// bun paths).
+void startCollectionsOnQueue(uint64_t serial, std::shared_ptr<const CliConfig> config) {
+    ActionsState &st = actionsState();
+    CliRequest request;
+    request.command = CliCommand::Collections;
+    CliRunOptions options;  // read-only: pipes, killed at the 10 s budget
+    std::string refusal;
+    const bool started = startCliCommand(
+        st.pickerRunner, *config, request, options, st.queue,
+        [serial](CliBudgetEvent) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onCollectionsBudget(serial);
+            });
+        },
+        [serial](CliResult &&result) {
+            auto shared = std::make_shared<CliResult>(std::move(result));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onCollections(serial, *shared);
+            });
+        },
+        &refusal);
+    if (!started) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ActionsState &main = actionsState();
+            if (main.stopped || !main.picker || main.picker->serial != serial) return;
+            pickerFailed(main.picker, "collections: not started (" + refusal + ")");
+        });
+    }
+}
+
 } // anonymous namespace
+
+std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "not run: intake is not running";
+    auto endNow = [&test](const std::string &what) {
+        pickerReport(test, what);
+        pickerDone(test);
+        return what;
+    };
+    if (!entry.enabled) return endNow("not run: the item is disabled");
+    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.picker) {
+        logInfo("assign-other: the collection picker is already open or loading; this request is ignored");
+        return endNow("ignored: the collection picker is already open or loading");
+    }
+    // No collections call (and no sheet) for an assign that could not start.
+    const std::string why = whyNotStartable();
+    if (!why.empty()) return endNow(notRun(entry.action, why));
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        return endNow(notRun(entry.action, "intake is not running or has no CLI path"));
+    }
+    auto flow = std::make_shared<PickerFlow>();
+    flow->serial = ++st.pickerSerial;
+    flow->entry = entry;
+    flow->test = std::move(test);
+    st.picker = flow;
+    logDebug("assign-other: loading the collections for " + rootCountText(entry.roots.size()));
+    const uint64_t serial = flow->serial;
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    dispatch_async(st.queue, ^{
+        startCollectionsOnQueue(serial, sharedConfig);
+    });
+    return "loading the collections";
+}
 
 RootErrorStore &actionsErrorStore() {
     static RootErrorStore *store = new RootErrorStore();  // leaked: read by the loader queue
@@ -316,7 +654,7 @@ bool actionsLaneBusy() {
 }
 
 ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, const IntakeView *view) {
-    return buildActionTable(roots, liveContext(view), b6Actions());
+    return buildActionTable(roots, liveContext(view), menuActions());
 }
 
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out) {
@@ -402,6 +740,8 @@ std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std
         // confirm_reject 0: no dialog, no reason; the test aid passes one.
         return runMutation(entry, skipDialog ? reason : std::string());
     }
+    if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry, nullptr);
+    // Propose, Approve, Assign to X (its collection is in the entry).
     return runMutation(entry, std::string());
 }
 
@@ -409,6 +749,8 @@ void actionsShutdown() {
     ActionsState &st = actionsState();
     st.stopped = true;
     st.menuTable = ActionTable();
+    // A running `collections` is killed; one not yet spawned never starts.
+    st.pickerRunner.closeReadLane();
 }
 
 } // namespace intake

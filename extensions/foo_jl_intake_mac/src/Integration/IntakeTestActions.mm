@@ -30,11 +30,31 @@
 //                                   path and lane as a click; dialogs are
 //                                   skipped and reject uses reason=<text>
 //    refresh                        the Refresh item
+//    assign <id> collection=<name>  B7: dispatches the quick-assign item
+//                                   "Assign to <name>" of that one root, as
+//                                   a click does; without such an item it
+//                                   logs the menu and runs nothing
+//    assign-other <id...> collection=<name>
+//                                   B7: the "Assign to other collection…"
+//                                   flow without the sheet: runs
+//                                   `collections`, then, when <name> is
+//                                   listed, the assign through the same
+//                                   code as the sheet's OK. One line:
+//                                   "collections: N; "<name>" listed|not
+//                                   listed; <what happened>"
+//    picker <id...> close=<seconds> B7: the real flow and the real sheet;
+//                                   one line when it is up (collection
+//                                   count, preselected text, OK enabled or
+//                                   not), then it is ended as Cancel after
+//                                   <seconds> (at most 30): nothing is
+//                                   assigned. The next step runs once the
+//                                   sheet has closed
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
 //  hides them; log_file mirrors them). Ids that are not in the snapshot,
 //  or whose rows map to other roots than the ones named, make the step log
-//  and do nothing. Nothing runs after quit starts.
+//  and do nothing. Nothing runs after quit starts. assign-other and picker
+//  wait for their flow to end before the next step.
 //
 //  Temporary: removed with the other acceptance aids (and
 //  Core/IntakeTestActionScript plus its tests) before the merge to main.
@@ -200,6 +220,36 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
             }
             break;
         }
+        case TestStepKind::AssignOther:
+        case TestStepKind::Picker: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            std::vector<const IntakeRecord *> roots;
+            std::string error;
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (!rootsForIds(*view, step.ids, roots, error)) {
+                logInfo(label + "skipped (" + error + ")");
+                break;
+            }
+            const ActionTable table = actionsTableFor(roots, view.get());
+            const ActionEntry *entry = findEntry(table, IntakeAction::AssignOther);
+            if (entry == nullptr) {
+                logInfo(label + "no assign-other item in the menu (" + menuText(table) + ")");
+                break;
+            }
+            auto hooks = std::make_shared<PickerTestHooks>();
+            hooks->mode = step.kind == TestStepKind::AssignOther ? PickerTestHooks::Mode::Headless
+                                                                 : PickerTestHooks::Mode::AutoClose;
+            hooks->collection = step.collection;
+            hooks->closeSeconds = step.closeSeconds;
+            const std::string prefix = label + entry->title + " (" + joinIds(step.ids) + "): ";
+            hooks->report = [prefix](const std::string &line) { logInfo(prefix + line); };
+            hooks->done = [steps, index]() { next(steps, index + 1); };
+            actionsAssignOther(*entry, hooks);
+            return;  // the hooks log the line and go on
+        }
         case TestStepKind::Menu:
         case TestStepKind::Dispatch: {
             const std::shared_ptr<const IntakeView> view = providerCurrentView();
@@ -218,7 +268,23 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
                 logInfo(label + menuText(table));
                 break;
             }
-            const ActionEntry *entry = findEntry(table, step.action);
+            const ActionEntry *entry = nullptr;
+            if (step.action == IntakeAction::AssignTo) {
+                // The quick-assign entry for that collection (exact name).
+                for (const ActionEntry &e : table.entries) {
+                    if (e.action == IntakeAction::AssignTo && e.collection == step.collection) {
+                        entry = &e;
+                        break;
+                    }
+                }
+                if (entry == nullptr) {
+                    logInfo(label + "no \"" + actionBaseTitle(IntakeAction::AssignTo, step.collection) +
+                            "\" item in the menu (" + menuText(table) + ")");
+                    break;
+                }
+            } else {
+                entry = findEntry(table, step.action);
+            }
             if (entry == nullptr) {
                 logInfo(label + "no " + actionName(step.action) + " item in the menu (" + menuText(table) + ")");
                 break;

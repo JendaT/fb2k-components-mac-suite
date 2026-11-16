@@ -5,6 +5,8 @@
 
 #include "IntakeActionTable.h"
 
+#include "IntakeReviewRule.h"
+
 #include <algorithm>
 #include <unordered_set>
 
@@ -121,6 +123,13 @@ bool actionAsksFirst(IntakeAction action, const ActionContext &context) {
     }
 }
 
+const std::vector<IntakeAction> &menuActions() {
+    static const std::vector<IntakeAction> actions = {IntakeAction::Propose, IntakeAction::AssignTo,
+                                                      IntakeAction::AssignOther, IntakeAction::Approve,
+                                                      IntakeAction::Reject, IntakeAction::Refresh};
+    return actions;
+}
+
 const std::vector<IntakeAction> &b6Actions() {
     static const std::vector<IntakeAction> actions = {IntakeAction::Propose, IntakeAction::Approve,
                                                       IntakeAction::Reject, IntakeAction::Refresh};
@@ -165,6 +174,13 @@ std::vector<std::string> assignAlternates(const IntakeRecord &r, size_t limit) {
     return out;
 }
 
+bool assignOtherFirst(const std::vector<const IntakeRecord *> &roots, const ActionContext &c) {
+    for (const IntakeRecord *r : roots) {
+        if (r != nullptr && recordNeedsReview(*r) && rootQualifies(IntakeAction::AssignOther, *r, c)) return true;
+    }
+    return false;
+}
+
 ActionRoot actionRootFor(const IntakeRecord &r) {
     ActionRoot a;
     a.id = r.id;
@@ -172,6 +188,7 @@ ActionRoot actionRootFor(const IntakeRecord &r) {
     a.albumartist = r.albumartist;
     a.album = r.album;
     a.status = r.status;
+    if (r.hasProposal) a.targetCollection = r.proposal.targetCollection;
     return a;
 }
 
@@ -230,6 +247,13 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
             }
             if (actionAsksFirst(action, c)) e.title += kEllipsis;
             table.entries.push_back(std::move(e));
+        }
+        // "First when amber" (doc 04 v1.2): the picker moves to the top; the
+        // other items keep their order.
+        if (assignOtherFirst(roots, c)) {
+            auto other = std::find_if(table.entries.begin(), table.entries.end(),
+                                      [](const ActionEntry &e) { return e.action == IntakeAction::AssignOther; });
+            if (other != table.entries.end()) std::rotate(table.entries.begin(), other, other + 1);
         }
     }
     if (table.entries.size() >= kMaxActionEntries) table.entries.resize(kMaxActionEntries - 1);

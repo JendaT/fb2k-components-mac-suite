@@ -46,8 +46,18 @@
 //     " (execute running)" while an execute holds it.
 //   - Title: base, " (n of m)", " (execute running)", then "…" when the
 //     action asks first (actionAsksFirst): "Reject (4 of 5)…".
-//  B6 exposes Propose, Approve, Reject… and Refresh (kB6Actions); the
-//  others arrive with B7 to B9 and are already decided here.
+//   - Order: the fixed doc 04 order (kOrder), Refresh last, except that
+//     "Assign to other collection…" is the first item when the review rule
+//     (IntakeReviewRule, amber) fires on a selected root it runs on (doc 04
+//     v1.2: "first when amber"; PLAN.md B7, REQ-31).
+//  Quick assign ("Assign to X", B7): one entry per alternate (at most 4),
+//  only for exactly one selected root; the entry carries its collection,
+//  so the click runs `assign <id> --collection X --by user` with the name
+//  the menu showed.
+//  The menu shows menuActions(): Propose, Assign to X, Assign to other
+//  collection…, Approve, Reject… and Refresh (B7). Execute and Resume (B8),
+//  Swap and Delete (B9) are already decided here and stay hidden until
+//  then. b6Actions() is the B6 subset, kept for tests.
 //
 //  Thread-safety: pure functions.
 //
@@ -93,7 +103,11 @@ bool actionCommand(IntakeAction action, CliCommand &out);
 // "(n of m)" or an ellipsis.
 std::string actionBaseTitle(IntakeAction action, const std::string &collection = std::string());
 
-// The actions B6 shows.
+// The actions the context menu shows (B7: Propose, Assign to X, Assign to
+// other collection…, Approve, Reject…, Refresh).
+const std::vector<IntakeAction> &menuActions();
+
+// The B6 subset (Propose, Approve, Reject…, Refresh).
 const std::vector<IntakeAction> &b6Actions();
 
 struct ActionContext {
@@ -116,8 +130,14 @@ bool actionAsksFirst(IntakeAction action, const ActionContext &context);
 bool rootQualifies(IntakeAction action, const IntakeRecord &record, const ActionContext &context);
 
 // The alternates for "Assign to X": `ranked` minus the target, in order,
-// each once, at most `limit`.
-std::vector<std::string> assignAlternates(const IntakeRecord &record, size_t limit = 4);
+// each once, at most `limit`. None when `ranked` is absent or empty (no
+// sidecar fallback, doc 04 v1.2).
+inline constexpr size_t kMaxAssignAlternates = 4;
+std::vector<std::string> assignAlternates(const IntakeRecord &record, size_t limit = kMaxAssignAlternates);
+
+// "Assign to other collection…" goes first: the review rule fires on one of
+// `roots` that the action runs on.
+bool assignOtherFirst(const std::vector<const IntakeRecord *> &roots, const ActionContext &context);
 
 // A root as the table captured it: enough to run, label and report.
 struct ActionRoot {
@@ -126,6 +146,7 @@ struct ActionRoot {
     std::string albumartist;
     std::string album;
     IntakeStatus status = IntakeStatus::Unknown;
+    std::string targetCollection;  // proposal.target_collection; empty without one
 };
 
 ActionRoot actionRootFor(const IntakeRecord &record);
@@ -135,7 +156,8 @@ struct ActionEntry {
     std::string title;
     bool enabled = false;
     std::vector<ActionRoot> roots;  // the qualifying roots, selection order
-    std::string collection;         // Assign to X
+    std::string collection;         // Assign to X; Assign to other collection…
+                                    // gets the picker's choice in a copy
 };
 
 struct ActionTable {
@@ -150,15 +172,16 @@ std::vector<const IntakeRecord *> selectionRoots(const std::vector<const IntakeR
 // The table for `roots` (see the top of this file). `exposed` lists the
 // actions to show (order does not matter; the table order is fixed).
 ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, const ActionContext &context,
-                             const std::vector<IntakeAction> &exposed = b6Actions());
+                             const std::vector<IntakeAction> &exposed = menuActions());
 
 // The first entry for `action`, or nullptr.
 const ActionEntry *findEntry(const ActionTable &table, IntakeAction action);
 
 // The CLI request an entry runs (ids in table order, the reason for Reject,
-// the collection for Assign to X). False, with `why` set, when nothing may
-// run: a disabled entry, an empty root set, or an action that is not a CLI
-// call.
+// the collection for Assign to X and for a picked Assign to other
+// collection…). False, with `why` set, when nothing may run: a disabled
+// entry, an empty root set, an assign without a collection, or an action
+// that is not a CLI call.
 bool requestForEntry(const ActionEntry &entry, const std::string &reason, CliRequest &out, std::string *why = nullptr);
 
 // "Artist – Album" (U+2013), or whichever of the two is known, or the

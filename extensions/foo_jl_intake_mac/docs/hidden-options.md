@@ -233,11 +233,12 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.test_actions
 
-Temporary acceptance aid (B6), removed before the merge to main with the
-other aids (`src/Integration/IntakeTestActions.mm`,
-`src/Core/IntakeTestActionScript.*` and its tests). It lets an in-app check
-drive the intake context menu, and read the group header badges, without
-clicking.
+Temporary acceptance aid (B6, extended in B7), removed before the merge to
+main with the other aids (`src/Integration/IntakeTestActions.mm`,
+`src/Core/IntakeTestActionScript.*` and its tests, and the
+`PickerTestHooks` in `src/Integration/IntakeActions.*`). It lets an in-app
+check drive the intake context menu, the collection picker included, and
+read the group header badges, without clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
 the first successful `status` load; the key is reset to `""` before the first
@@ -250,6 +251,9 @@ by `;`, words by spaces:
 | `badge <id...>` | Logs the group header badge for a group made of those roots' rows (the same rows as `menu`, at most the first 64, as SimPlaylist passes): it makes metadb handles for them and runs the provider's own `decorate_group` code on them, on the main thread. The line is `test_actions: badge <ids>: "<text>" color #RRGGBBAA`, with ` (amber)` after the colour when it is the amber review colour (`#00000000` is the host's default secondary colour), or `test_actions: badge <ids>: no badge` (members of two roots, a root that is not `proposed` or `approved`, an inert view). It needs no SimPlaylist panel or grouping preset. |
 | `propose <id...>`, `approve <id...>`, `reject <id...> [reason=<text>]` | Builds that menu and dispatches its item for the action through the same path and mutation lane as a click. Dialogs are skipped: reject runs with the `reason=` text (everything after `reason=` to the end of the step, trimmed), or with none. A disabled item, or a busy lane, runs nothing and says so. |
 | `refresh` | The **Refresh intake status** item (a full reload with `version`). |
+| `assign <id> collection=<name>` | B7. Builds the menu for that one root and dispatches its quick-assign item **Assign to `<name>`** (exact name) like a click: `assign <id> --collection <name> --by user --json` through the mutation lane. `collection=` takes everything after it to the end of the step, trimmed, so names may contain spaces. Without such an item (the name is not an alternate, the root has no `ranked`, the status does not allow it) it logs the menu and runs nothing. |
+| `assign-other <id...> collection=<name>` | B7. The **Assign to other collection…** flow without the sheet: runs `collections --json` as the picker does, then logs `collections: N; "<name>" listed` (or `not listed; nothing assigned`) and, when the name is listed, runs the assign on the item's qualifying roots through the same code as the sheet's **Assign** button (lane and configuration checked again). A failed `collections` logs `no picker: <cause>; nothing assigned`. |
+| `picker <id...> close=<seconds>` | B7. The real flow and the real sheet (for a screenshot): `collections --json`, then the sheet on the window under the pointer, else the main or key window, else app-modal. One line when it is up: `sheet shown: N collection(s), preselected "", OK disabled; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required), so nothing is assigned. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
@@ -261,6 +265,12 @@ starting `test_actions:` (combine with `log_file` 1 to read them from
 `~/Library/Logs/foobar2000/jl_intake.log`); the end logs `test_actions: done`.
 A mutating step returns as soon as the call has started; add a `wait` before a
 step that should see its result (the call, then the refresh it triggers).
+`assign-other` and `picker` are different: the next step runs only once their
+flow has ended (after `collections` and the assign has started, or after the
+sheet has closed). Their one line comes when the outcome is known; for
+`picker` that is when the sheet is up. Only one picker flow runs at a time, as
+for clicks: a second one while `collections` runs or a sheet is open logs
+`ignored: the collection picker is already open or loading`.
 
 ```bash
 # quit foobar2000 first
@@ -268,6 +278,17 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
      'menu itk_0000000b; badge itk_0000000b; propose itk_0000000b; wait 4; menu itk_0000000b; badge itk_0000000b')
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+B7 example (the mock's `default` scenario, `assign.next` holding `e-assigned`
+twice):
+
+```bash
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "UPDATE configStrings SET value='badge itk_0000000e; assign itk_0000000e collection=Test & Ambient; wait 4;
+     badge itk_0000000e; assign-other itk_0000000e collection=Test Collection C; wait 4; badge itk_0000000e;
+     picker itk_0000000e itk_0000000d close=8'
+   WHERE name='foo_jl_intake.test_actions';"
 ```
 
 # Reverting everything

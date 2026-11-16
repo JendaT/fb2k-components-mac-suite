@@ -88,6 +88,78 @@ static void testBadge() {
           "an invalid badge step does not stop the others");
 }
 
+static void testAssignSteps() {
+    g_context = "assign-steps";
+    std::vector<TestActionStep> a = parseTestActions("assign itk_0000000e collection=Test & Ambient");
+    CHECK(a.size() == 1 && a[0].kind == TestStepKind::Dispatch && a[0].action == IntakeAction::AssignTo,
+          "assign is a dispatch of Assign to X");
+    CHECK(a[0].ids == v({"itk_0000000e"}) && a[0].hasCollection && a[0].collection == "Test & Ambient",
+          "assign: one id, the collection with its spaces");
+    CHECK(a[0].text == "assign itk_0000000e collection=Test & Ambient" && !a[0].hasReason, "text kept; no reason");
+    std::vector<TestActionStep> spaced = parseTestActions("  assign\titk_0000000d   collection=   Test Collection B  ");
+    CHECK(spaced[0].kind == TestStepKind::Dispatch && spaced[0].collection == "Test Collection B",
+          "collection= trimmed on both sides");
+    std::vector<TestActionStep> odd = parseTestActions("assign itk_0000000d collection=[A] reason=x; menu itk_0000000d");
+    CHECK(odd.size() == 2 && odd[0].kind == TestStepKind::Dispatch && odd[0].collection == "[A] reason=x" &&
+              !odd[0].hasReason,
+          "collection= first takes the rest, reason= included; ';' still ends the step");
+    CHECK(odd[1].kind == TestStepKind::Menu, "the next step parses");
+
+    std::vector<TestActionStep> o = parseTestActions("assign-other itk_0000000e itk_0000000d collection=Test Collection C");
+    CHECK(o.size() == 1 && o[0].kind == TestStepKind::AssignOther && o[0].action == IntakeAction::AssignOther,
+          "assign-other is its own kind");
+    CHECK(o[0].ids == v({"itk_0000000e", "itk_0000000d"}) && o[0].collection == "Test Collection C",
+          "assign-other: several ids and the collection");
+    CHECK(parseTestActions("assign-other itk_0000000e itk_0000000e collection=X")[0].ids == v({"itk_0000000e"}),
+          "a repeated id is kept once");
+
+    std::vector<TestActionStep> p = parseTestActions("picker itk_0000000e close=8");
+    CHECK(p.size() == 1 && p[0].kind == TestStepKind::Picker && p[0].action == IntakeAction::AssignOther,
+          "picker is its own kind");
+    CHECK(p[0].ids == v({"itk_0000000e"}) && p[0].closeSeconds == 8 && !p[0].hasCollection, "picker: close=8");
+    std::vector<TestActionStep> p2 = parseTestActions("picker close=2.5 itk_0000000e itk_0000000d");
+    CHECK(p2[0].kind == TestStepKind::Picker && p2[0].closeSeconds == 2.5 &&
+              p2[0].ids == v({"itk_0000000e", "itk_0000000d"}),
+          "close= may stand anywhere among the ids; decimals allowed");
+    CHECK(parseTestActions("picker itk_0000000e close=30")[0].kind == TestStepKind::Picker, "close=30 is the limit");
+    CHECK(parseTestActions("propose itk_0000000b collectionx=1")[0].kind == TestStepKind::Invalid,
+          "collection= only at the start of a word (collectionx=1 is not an id)");
+}
+
+static void testAssignInvalid() {
+    g_context = "assign-invalid";
+    CHECK(invalid("assign itk_0000000e", "assign needs collection=<name>"), "assign needs a collection");
+    CHECK(invalid("assign itk_0000000e collection=", "collection= needs a name"), "empty collection");
+    CHECK(invalid("assign itk_0000000e collection=   ", "collection= needs a name"), "blank collection");
+    CHECK(invalid("assign collection=Test Collection A", "needs at least one id"), "assign needs an id");
+    CHECK(invalid("assign itk_0000000e itk_0000000d collection=Test Collection A", "exactly one id"),
+          "quick assign is for one root");
+    CHECK(invalid("assign /income/dump/Album collection=X", "not a sidecar id"), "paths are not ids");
+    CHECK(invalid("assign itk_0000000e reason=x", "only reject"), "assign takes no reason");
+    CHECK(invalid("assign-other itk_0000000e", "assign-other needs collection=<name>"),
+          "assign-other needs a collection");
+    CHECK(invalid("assign-other collection=X", "needs at least one id"), "assign-other needs an id");
+    CHECK(invalid("assign-other --all collection=X", "not a sidecar id"), "no flags");
+    CHECK(invalid("picker itk_0000000e", "picker needs close=<seconds>"), "picker needs close=");
+    CHECK(invalid("picker itk_0000000e close=0", "more than 0"), "close=0");
+    CHECK(invalid("picker itk_0000000e close=31", "at most 30"), "close over 30");
+    CHECK(invalid("picker itk_0000000e close=abc", "close needs one number"), "close needs a number");
+    CHECK(invalid("picker itk_0000000e close=", "close needs one number"), "close= without a value");
+    CHECK(invalid("picker itk_0000000e close=-1", "close needs one number"), "no negative close");
+    CHECK(invalid("picker itk_0000000e close=1 close=2", "twice"), "close= once");
+    CHECK(invalid("picker close=5", "needs at least one id"), "picker needs an id");
+    CHECK(invalid("picker itk_0000000e close=5 collection=X", "only assign and assign-other"),
+          "picker takes no collection");
+    CHECK(invalid("menu itk_0000000e collection=X", "only assign and assign-other"), "menu takes no collection");
+    CHECK(invalid("reject itk_0000000e collection=X", "only assign and assign-other"), "reject takes no collection");
+    CHECK(invalid("menu itk_0000000e close=5", "only picker takes close="), "close= only for picker");
+    CHECK(invalid("assign-other itk_0000000e close=5 collection=X", "only picker takes close="),
+          "assign-other takes no close=");
+    CHECK(invalid("wait 2 collection=X", "wait takes no collection"), "wait takes no collection");
+    CHECK(invalid("wait close=2", "only picker takes close="), "wait takes no close=");
+    CHECK(invalid("assign-others itk_0000000e collection=X", "unknown step"), "the verb is exact");
+}
+
 static void testInvalid() {
     g_context = "invalid";
     CHECK(invalid("wait 31", "at most 30"), "wait over 30");
@@ -115,6 +187,8 @@ int main() {
     @autoreleasepool {
         testSteps();
         testBadge();
+        testAssignSteps();
+        testAssignInvalid();
         testInvalid();
     }
     TEST_MAIN_END();

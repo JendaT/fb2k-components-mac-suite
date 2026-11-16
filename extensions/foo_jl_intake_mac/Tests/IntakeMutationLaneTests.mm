@@ -9,7 +9,7 @@
 //  mutating menu items (IntakeActionTable) until it is free again.
 //
 // TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
-// TEST_DEPS: src/Core/IntakeActionTable.mm src/Core/IntakeCapabilities.mm
+// TEST_DEPS: src/Core/IntakeActionTable.mm src/Core/IntakeCapabilities.mm src/Core/IntakeReviewRule.mm
 //
 
 #import <Foundation/Foundation.h>

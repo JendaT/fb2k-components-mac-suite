@@ -50,17 +50,48 @@ bool parseSeconds(const std::string &text, double &out) {
     return true;
 }
 
+// The first position of `marker` at the start of a word, or npos.
+size_t findMarker(const std::string &body, const char *marker) {
+    size_t at = body.find(marker);
+    while (at != std::string::npos) {
+        if (at == 0 || isSpace(body[at - 1])) return at;
+        at = body.find(marker, at + 1);
+    }
+    return std::string::npos;
+}
+
+// 0 < seconds <= kTestActionMaxWait; `what` names the value in the error.
+bool parseBoundedSeconds(const std::string &text, const char *what, double &out, std::string &error) {
+    double seconds = 0;
+    if (!parseSeconds(text, seconds)) {
+        error = std::string(what) + " needs one number of seconds";
+        return false;
+    }
+    if (seconds <= 0 || seconds > kTestActionMaxWait) {
+        error = std::string(what) + " must be more than 0 and at most 30 seconds";
+        return false;
+    }
+    out = seconds;
+    return true;
+}
+
 TestActionStep parseStep(const std::string &raw) {
     TestActionStep step;
     std::string body = trim(raw);
     step.text = body;
 
-    // reason=<text> takes the rest of the step.
-    const size_t reasonAt = body.find("reason=");
-    if (reasonAt != std::string::npos && (reasonAt == 0 || isSpace(body[reasonAt - 1]))) {
+    // reason=<text> and collection=<name> take the rest of the step; the
+    // first of the two wins.
+    const size_t reasonAt = findMarker(body, "reason=");
+    const size_t collectionAt = findMarker(body, "collection=");
+    if (reasonAt != std::string::npos && (collectionAt == std::string::npos || reasonAt < collectionAt)) {
         step.reason = trim(body.substr(reasonAt + 7));
         step.hasReason = true;
         body = body.substr(0, reasonAt);
+    } else if (collectionAt != std::string::npos) {
+        step.collection = trim(body.substr(collectionAt + 11));
+        step.hasCollection = true;
+        body = body.substr(0, collectionAt);
     }
 
     std::vector<std::string> w = words(body);
@@ -69,24 +100,41 @@ TestActionStep parseStep(const std::string &raw) {
         return step;
     }
     const std::string verb = w[0];
-    std::vector<std::string> rest(w.begin() + 1, w.end());
+    std::vector<std::string> rest;
+    std::string closeText;
+    bool hasClose = false;
+    for (size_t i = 1; i < w.size(); i++) {
+        if (w[i].compare(0, 6, "close=") == 0) {
+            if (hasClose) {
+                step.error = "close= given twice";
+                return step;
+            }
+            closeText = w[i].substr(6);
+            hasClose = true;
+        } else {
+            rest.push_back(w[i]);
+        }
+    }
+    if (hasClose && verb != "picker") {
+        step.error = "only picker takes close=";
+        return step;
+    }
 
     if (verb == "wait") {
         if (step.hasReason) {
             step.error = "wait takes no reason";
             return step;
         }
-        double seconds = 0;
-        if (rest.size() != 1 || !parseSeconds(rest[0], seconds)) {
+        if (step.hasCollection) {
+            step.error = "wait takes no collection";
+            return step;
+        }
+        if (rest.size() != 1) {
             step.error = "wait needs one number of seconds";
             return step;
         }
-        if (seconds <= 0 || seconds > kTestActionMaxWait) {
-            step.error = "wait must be more than 0 and at most 30 seconds";
-            return step;
-        }
+        if (!parseBoundedSeconds(rest[0], "wait", step.seconds, step.error)) return step;
         step.kind = TestStepKind::Wait;
-        step.seconds = seconds;
         return step;
     }
 
@@ -108,6 +156,15 @@ TestActionStep parseStep(const std::string &raw) {
     } else if (verb == "refresh") {
         kind = TestStepKind::Dispatch;
         action = IntakeAction::Refresh;
+    } else if (verb == "assign") {
+        kind = TestStepKind::Dispatch;
+        action = IntakeAction::AssignTo;
+    } else if (verb == "assign-other") {
+        kind = TestStepKind::AssignOther;
+        action = IntakeAction::AssignOther;
+    } else if (verb == "picker") {
+        kind = TestStepKind::Picker;
+        action = IntakeAction::AssignOther;
     } else {
         step.error = "unknown step \"" + verb + "\"";
         return step;
@@ -115,6 +172,26 @@ TestActionStep parseStep(const std::string &raw) {
     if (step.hasReason && action != IntakeAction::Reject) {
         step.error = "only reject takes reason=";
         return step;
+    }
+    const bool takesCollection = verb == "assign" || verb == "assign-other";
+    if (step.hasCollection && !takesCollection) {
+        step.error = "only assign and assign-other take collection=";
+        return step;
+    }
+    if (takesCollection && !step.hasCollection) {
+        step.error = verb + " needs collection=<name>";
+        return step;
+    }
+    if (takesCollection && step.collection.empty()) {
+        step.error = "collection= needs a name";
+        return step;
+    }
+    if (kind == TestStepKind::Picker) {
+        if (!hasClose) {
+            step.error = "picker needs close=<seconds>";
+            return step;
+        }
+        if (!parseBoundedSeconds(closeText, "close", step.closeSeconds, step.error)) return step;
     }
     for (const std::string &id : rest) {
         if (!isSidecarId(id)) {
@@ -128,6 +205,10 @@ TestActionStep parseStep(const std::string &raw) {
     const bool refresh = kind == TestStepKind::Dispatch && action == IntakeAction::Refresh;
     if (step.ids.empty() && !refresh) {
         step.error = verb + " needs at least one id";
+        return step;
+    }
+    if (action == IntakeAction::AssignTo && step.ids.size() != 1) {
+        step.error = "assign takes exactly one id";
         return step;
     }
     step.kind = kind;

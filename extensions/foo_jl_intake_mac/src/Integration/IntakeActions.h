@@ -2,8 +2,9 @@
 //  IntakeActions.h
 //  foo_jl_intake
 //
-//  The intake context menu and the mutation lane (PLAN.md B6; doc 04 v1.2
-//  "Context actions", "CLI invocation", "Failure behavior").
+//  The intake context menu, the mutation lane and the collection picker
+//  (PLAN.md B6, B7; doc 04 v1.2 "Context actions", "CLI invocation",
+//  "Failure behavior").
 //
 //  Menu (main thread, from the provider's context_actions): the selected
 //  rows go through the decorate pipeline (IntakeNativePath, IntakeView), the
@@ -24,6 +25,27 @@
 //   - Refresh intake status: serviceReload(true) (the slow-volume reset
 //     and a `version` recheck included).
 //   - Propose, Approve: run at once.
+//   - Assign to X (B7): runs at once, `assign <id> --collection X --by
+//     user`, X being the collection the menu showed (kept in the entry).
+//   - Assign to other collection… (B7): the picker. `collections --json`
+//     runs first, off the main thread (read-only: E_CLI_TIMEOUT at 10 s and
+//     killed, killed on quit too). Only when it has answered, on the main
+//     thread, an NSAlert opens as a sheet on the same window choice as
+//     Reject's (app-modal fallback), with an NSComboBox (type-ahead
+//     completion) listing the collection names in the CLI's order and the
+//     albums it applies to (up to 10, then "and N more"; for one root also
+//     its current target). Nothing is preselected: the field starts empty,
+//     so an engine proposal is never turned into a user choice by Return.
+//     "Assign" is enabled only while the text is exactly a listed name
+//     (case-sensitive, IntakeCollections). Cancel or Escape runs nothing.
+//     Assign checks the lane and the configuration again, then runs
+//     `assign <ids> --collection <name> --by user` on the roots the menu
+//     captured. One picker flow at a time: a request while `collections`
+//     runs or the sheet is open logs one Info line and does nothing. A
+//     failed `collections` (an E_* error, a timeout, a reply that is not
+//     an envelope or whose data is not an array, a partial reply) or an
+//     empty list logs one Error line and shows no sheet; never modal,
+//     never inert. Results that arrive after on_quit are dropped.
 //   - Reject…: with confirm_reject on (default), an NSAlert first, as a
 //     sheet on the window under the pointer (where the menu was opened),
 //     else the main window, else the key window, else app-modal; it lists
@@ -55,6 +77,10 @@
 //  Nothing here is modal for an error, and no error makes the provider
 //  inert.
 //
+//  On quit (actionsShutdown) a running `collections` call is killed (the
+//  picker's read lane is closed) and an open picker does nothing when it
+//  ends.
+//
 
 #pragma once
 
@@ -65,6 +91,7 @@
 #include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeRootErrors.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -87,6 +114,30 @@ ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, cons
 // (the test aid) runs Reject without its confirmation, with `reason`.
 // Returns what happened, for a log line.
 std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std::string &reason);
+
+// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
+// how the picker flow runs for a test_actions step.
+struct PickerTestHooks {
+    enum class Mode {
+        Headless,   // no sheet: after `collections`, assign `collection` when
+                    // it is listed, through the same code as the sheet's OK
+        AutoClose,  // the real sheet, ended as Cancel after closeSeconds
+    };
+    Mode mode = Mode::Headless;
+    std::string collection;   // Headless
+    double closeSeconds = 0;  // AutoClose
+    // Main thread, each at most once and `report` first: `report` gets the
+    // step's one line (Headless: once the assign was started or skipped;
+    // AutoClose: when the sheet is up; both: when the flow ends early),
+    // `done` runs when the flow has ended. Neither runs after on_quit.
+    std::function<void(const std::string &line)> report;
+    std::function<void()> done;
+};
+
+// Main thread: the "Assign to other collection…" flow for `entry` (see the
+// top of this file); `test` null runs it as a click does. Returns what
+// happened so far, for a log line.
+std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test);
 
 // Any thread: the per-root command errors (the loader's annotator).
 RootErrorStore &actionsErrorStore();

@@ -9,10 +9,14 @@
 //  a dialog follows), quick-assign alternates, the
 //  argv each action builds (through IntakeCommandArgs, never with zero ids),
 //  album labels for the Reject confirmation, and action_id encoding.
+//  B7: the exposed set, quick assign (order, dedup, cap 4, target excluded,
+//  absent or empty ranked, status gating, one root only), "Assign to other
+//  collection…" first when amber, its "(n of m)" on mixed selections, and
+//  the assign argv of both entries.
 //  Synthetic records only.
 //
 // TEST_DEPS: src/Core/IntakeCapabilities.mm src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm
-// TEST_DEPS: src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeReviewRule.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -20,6 +24,7 @@
 #include "../src/Core/IntakeActionTable.h"
 #include "TestHarness.h"
 
+#include <algorithm>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -218,17 +223,17 @@ static void testTableRules() {
 
     ActionContext off = ctx();
     off.cliConfigured = false;
-    CHECK(buildActionTable(one, off).entries.empty(), "no CLI path: no items");
+    CHECK(buildActionTable(one, off, b6Actions()).entries.empty(), "no CLI path: no items");
 
-    ActionTable none = buildActionTable({}, ctx());
+    ActionTable none = buildActionTable({}, ctx(), b6Actions());
     CHECK(titles(none) == v({"Refresh intake status"}), "no intake root selected: Refresh only");
     CHECK(none.entries[0].enabled && none.entries[0].action == IntakeAction::Refresh, "Refresh is enabled");
 
     ActionContext inert = ctx();
     inert.inert = true;
-    CHECK(titles(buildActionTable(one, inert)) == v({"Refresh intake status"}), "inert: Refresh only");
+    CHECK(titles(buildActionTable(one, inert, b6Actions())) == v({"Refresh intake status"}), "inert: Refresh only");
 
-    ActionTable t = buildActionTable(one, ctx());
+    ActionTable t = buildActionTable(one, ctx(), b6Actions());
     CHECK(titles(t) == v({"Propose", "Approve", kReject, "Refresh intake status"}), "B6 items, fixed order");
     CHECK(t.entries[0].enabled && ids(t.entries[0]) == v({"itk_0000000b"}), "Propose enabled on resolved");
     CHECK(!t.entries[1].enabled && t.entries[1].roots.empty(), "Approve disabled, no roots");
@@ -237,21 +242,21 @@ static void testTableRules() {
 
     ActionContext noConfirm = ctx();
     noConfirm.confirmReject = false;
-    CHECK(buildActionTable(one, noConfirm).entries[2].title == "Reject",
+    CHECK(buildActionTable(one, noConfirm, b6Actions()).entries[2].title == "Reject",
           "confirm_reject off: Reject runs at once, no ellipsis");
     IntakeRecord placedMix = rec("itk_00000012", IntakeStatus::Placed);
-    CHECK(buildActionTable({&resolved, &placedMix}, noConfirm).entries[2].title == "Reject (1 of 2)",
+    CHECK(buildActionTable({&resolved, &placedMix}, noConfirm, b6Actions()).entries[2].title == "Reject (1 of 2)",
           "confirm_reject off, mixed: no ellipsis either");
     CHECK(actionAsksFirst(IntakeAction::Execute, noConfirm) && actionAsksFirst(IntakeAction::AssignOther, noConfirm) &&
               !actionAsksFirst(IntakeAction::Propose, ctx()) && !actionAsksFirst(IntakeAction::Refresh, ctx()),
           "execute and the picker always ask; propose and refresh never");
 
-    ActionTable old = buildActionTable(one, ctx(cliOld("0.1.0")));
+    ActionTable old = buildActionTable(one, ctx(cliOld("0.1.0")), b6Actions());
     CHECK(titles(old) == v({"Propose", "Approve", "Refresh intake status"}), "CLI 0.1.0: Reject is not listed");
 
     IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
     placed.hasPlaced = placed.placedVerified = true;
-    ActionTable p = buildActionTable({&placed}, ctx());
+    ActionTable p = buildActionTable({&placed}, ctx(), b6Actions());
     CHECK(titles(p) == v({"Propose", "Approve", kReject, "Refresh intake status"}), "a placed root lists the same items");
     CHECK(!p.entries[0].enabled && !p.entries[1].enabled && !p.entries[2].enabled, "all disabled on placed");
 }
@@ -264,7 +269,7 @@ static void testMixed() {
     IntakeRecord slot = withProposal(rec("itk_00000019", IntakeStatus::Proposed), TargetPathState::Null);
     IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
 
-    ActionTable t = buildActionTable({&n, &r, &p, &slot, &placed}, ctx());
+    ActionTable t = buildActionTable({&n, &r, &p, &slot, &placed}, ctx(), b6Actions());
     CHECK(t.selectedRoots == 5, "m counts every selected root");
     CHECK(titles(t) == v({"Propose (1 of 5)", "Approve (1 of 5)", "Reject (4 of 5)" + kEllipsis, "Refresh intake status"}),
           "(n of m) on a mixed selection, the ellipsis last");
@@ -274,7 +279,7 @@ static void testMixed() {
           "Reject runs on its four roots, selection order");
 
     IntakeRecord p2 = withProposal(rec("itk_0000000e", IntakeStatus::Proposed));
-    ActionTable all = buildActionTable({&p, &p2}, ctx());
+    ActionTable all = buildActionTable({&p, &p2}, ctx(), b6Actions());
     CHECK(all.entries[1].title == "Approve", "every root qualifies: no (n of m)");
     CHECK(ids(all.entries[1]) == v({"itk_0000000d", "itk_0000000e"}), "Approve over a multi-selection is the batch");
     CHECK(!all.entries[0].enabled && all.entries[0].title == "Propose", "none qualifies: disabled, no (0 of m)");
@@ -291,14 +296,14 @@ static void testLane() {
     IntakeRecord r = rec("itk_0000000b", IntakeStatus::Resolved);
     ActionContext busy = ctx();
     busy.laneBusy = true;
-    ActionTable t = buildActionTable({&r}, busy);
+    ActionTable t = buildActionTable({&r}, busy, b6Actions());
     CHECK(!t.entries[0].enabled && !t.entries[2].enabled, "busy lane: mutating items disabled");
     CHECK(t.entries[0].title == "Propose" && ids(t.entries[0]) == v({"itk_0000000b"}),
           "busy: same title, roots still captured");
     CHECK(t.entries.back().enabled, "busy lane: Refresh stays enabled");
 
     busy.executeRunning = true;
-    ActionTable e = buildActionTable({&r}, busy);
+    ActionTable e = buildActionTable({&r}, busy, b6Actions());
     CHECK(e.entries[0].title == "Propose (execute running)", "execute holds the lane: said so");
     CHECK(e.entries[2].title == "Reject (execute running)" + kEllipsis, "on every mutating item, the ellipsis last");
     CHECK(e.entries.back().title == "Refresh intake status", "not on Refresh");
@@ -370,6 +375,237 @@ static void testArgv() {
           "assign <id> --collection X --by user");
 }
 
+// --- B7: Assign to X and Assign to other collection… ---
+
+// A proposal with `ranked` in this order and `target` as the target.
+static IntakeRecord withRanked(IntakeRecord r, const char *target, std::initializer_list<const char *> ranked,
+                        bool user = false) {
+    r.hasProposal = true;
+    r.proposal.targetCollection = target;
+    r.proposal.confidence = user ? 1.0 : 0.61;
+    r.proposal.hasConfidence = true;
+    r.proposal.assignedBy = user ? AssignedBy::User : AssignedBy::Engine;
+    r.proposal.targetPathState = TargetPathState::Set;
+    r.proposal.targetPath = std::string("/library/") + target + "/x";
+    r.proposal.ranked.clear();
+    for (const char *name : ranked) {
+        RankedCandidate c;
+        c.collection = name;
+        r.proposal.ranked.push_back(c);
+    }
+    r.proposal.rankedState = r.proposal.ranked.empty() ? RankedState::Empty : RankedState::Present;
+    return r;
+}
+
+const std::string kOther = "Assign to other collection" + kEllipsis;
+
+static void testMenuActions() {
+    g_context = "menu-actions";
+    const std::vector<IntakeAction> &m = menuActions();
+    auto has = [&m](IntakeAction a) { return std::find(m.begin(), m.end(), a) != m.end(); };
+    CHECK(has(IntakeAction::Propose) && has(IntakeAction::Approve) && has(IntakeAction::Reject) &&
+              has(IntakeAction::Refresh),
+          "B6 actions stay");
+    CHECK(has(IntakeAction::AssignTo) && has(IntakeAction::AssignOther), "B7 exposes both assign entries");
+    CHECK(!has(IntakeAction::Execute) && !has(IntakeAction::Resume) && !has(IntakeAction::Swap) &&
+              !has(IntakeAction::DeleteLocal),
+          "Execute, Resume (B8), Swap, Delete (B9) stay hidden");
+    CHECK(b6Actions().size() == 4, "the B6 subset is unchanged");
+}
+
+static void testQuickAssign() {
+    g_context = "quick-assign";
+    // itk_0000000d: proposed, engine, ranked [A, B, C], target A, no review.
+    IntakeRecord d = withRanked(rec("itk_0000000d", IntakeStatus::Proposed), "Test Collection A",
+                                {"Test Collection A", "Test Collection B", "Test Collection C"});
+    ActionTable t = buildActionTable({&d}, ctx());
+    CHECK(titles(t) == v({"Propose", "Assign to Test Collection B", "Assign to Test Collection C", kOther, "Approve",
+                          kReject, "Refresh intake status"}),
+          "default menu: quick assign after Propose, the picker after it, kOrder");
+    CHECK(!t.entries[0].enabled && t.entries[1].enabled && t.entries[2].enabled && t.entries[3].enabled,
+          "Propose disabled; both quick entries and the picker enabled");
+    CHECK(t.entries[1].collection == "Test Collection B" && t.entries[2].collection == "Test Collection C",
+          "each quick entry carries its collection");
+    CHECK(ids(t.entries[1]) == v({"itk_0000000d"}) && t.entries[1].roots[0].status == IntakeStatus::Proposed,
+          "quick entry captures the root and its status");
+    CHECK(t.entries[1].title.find(kEllipsis) == std::string::npos, "quick assign runs at once: no ellipsis");
+
+    // Target in the middle of ranked (a user assignment keeps engine order).
+    IntakeRecord f = withRanked(rec("itk_0000000f", IntakeStatus::Proposed), "Test Collection B",
+                                {"Test Collection C", "Test Collection B", "Test Collection A"}, true);
+    CHECK(assignAlternates(f) == v({"Test Collection C", "Test Collection A"}),
+          "target excluded wherever it sits; engine order kept");
+    // Target absent from ranked (user's own choice): every ranked entry.
+    IntakeRecord own = withRanked(rec("itk_0000000e", IntakeStatus::Proposed), "Test & Ambient",
+                                  {"Test Collection B", "Test Collection A"}, true);
+    CHECK(assignAlternates(own) == v({"Test Collection B", "Test Collection A"}), "target not ranked: all of ranked");
+
+    // Cap 4, dedup, empty names skipped.
+    IntakeRecord many = withRanked(rec("itk_00000001", IntakeStatus::Resolved), "Test Collection A",
+                                   {"Test Collection A", "", "Test Collection B", "Test Collection B",
+                                    "Test Collection C", "Test & Ambient", "Fixture Downtempo", "Fixture Extra"});
+    CHECK(assignAlternates(many) == v({"Test Collection B", "Test Collection C", "Test & Ambient", "Fixture Downtempo"}),
+          "deduplicated, empty skipped, capped at 4");
+    ActionTable capped = buildActionTable({&many}, ctx());
+    size_t quick = 0;
+    for (const ActionEntry &e : capped.entries) quick += e.action == IntakeAction::AssignTo;
+    CHECK(quick == kMaxAssignAlternates && kMaxAssignAlternates == 4, "at most 4 quick entries");
+
+    // No ranked, empty ranked, ranked holding only the target: no quick entry.
+    IntakeRecord absent = withRanked(rec("itk_00000002", IntakeStatus::Proposed), "Test Collection A", {});
+    absent.proposal.rankedState = RankedState::Absent;
+    IntakeRecord empty = withRanked(rec("itk_00000018", IntakeStatus::Proposed), "Test Collection C", {}, true);
+    IntakeRecord onlyTarget =
+        withRanked(rec("itk_00000003", IntakeStatus::Proposed), "Test Collection A", {"Test Collection A"});
+    IntakeRecord noProposal = rec("itk_0000000b", IntakeStatus::Resolved);
+    CHECK(findEntry(buildActionTable({&absent}, ctx()), IntakeAction::AssignTo) == nullptr, "ranked absent: none");
+    CHECK(findEntry(buildActionTable({&empty}, ctx()), IntakeAction::AssignTo) == nullptr, "ranked []: none");
+    CHECK(findEntry(buildActionTable({&onlyTarget}, ctx()), IntakeAction::AssignTo) == nullptr,
+          "ranked = [target]: none");
+    CHECK(titles(buildActionTable({&noProposal}, ctx())) ==
+              v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+          "no proposal (itk_0000000b): the picker only");
+    CHECK(titles(buildActionTable({&empty}, ctx())) ==
+              v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+          "user-only proposal (itk_00000018): the picker only");
+
+    // Status gating, one root with alternates.
+    const IntakeStatus statuses[] = {IntakeStatus::New,    IntakeStatus::Resolved, IntakeStatus::Proposed,
+                                     IntakeStatus::Approved, IntakeStatus::Placing,  IntakeStatus::Placed,
+                                     IntakeStatus::GcDone, IntakeStatus::Rejected, IntakeStatus::Unknown};
+    const bool listed[] = {true, true, true, true, false, false, false, false, false};
+    const char *statusNames[] = {"new", "resolved", "proposed", "approved", "placing",
+                                 "placed", "gc_done", "rejected", "unknown"};
+    for (size_t i = 0; i < 9; i++) {
+        IntakeRecord r = withRanked(rec("itk_00000004", statuses[i]), "Test Collection A",
+                                    {"Test Collection A", "Test Collection B"});
+        ActionTable st = buildActionTable({&r}, ctx());
+        const ActionEntry *qa = findEntry(st, IntakeAction::AssignTo);
+        const ActionEntry *other = findEntry(st, IntakeAction::AssignOther);
+        const std::string what = std::string("status ") + statusNames[i];
+        CHECK((qa != nullptr) == listed[i], (what + ": quick assign listed").c_str());
+        CHECK(other != nullptr && other->enabled == listed[i], (what + ": picker listed, enabled when legal").c_str());
+    }
+
+    // Exactly one selected root.
+    IntakeRecord d2 = withRanked(rec("itk_00000010", IntakeStatus::Approved), "Test Collection A",
+                                 {"Test Collection A", "Test Collection C"});
+    ActionTable two = buildActionTable({&d, &d2}, ctx());
+    CHECK(findEntry(two, IntakeAction::AssignTo) == nullptr, "two roots: no quick assign");
+    IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
+    CHECK(findEntry(buildActionTable({&d, &placed}, ctx()), IntakeAction::AssignTo) == nullptr,
+          "two roots, one qualifying: still no quick assign (m = 2)");
+}
+
+static void testAssignOtherOrder() {
+    g_context = "assign-other-order";
+    // itk_0000000e: proposed, needs_review, target B, ranked [B, A, T&A].
+    IntakeRecord e = withRanked(rec("itk_0000000e", IntakeStatus::Proposed), "Test Collection B",
+                                {"Test Collection B", "Test Collection A", "Test & Ambient"});
+    e.needsReview = true;
+    ActionTable t = buildActionTable({&e}, ctx());
+    CHECK(titles(t) == v({kOther, "Propose", "Assign to Test Collection A", "Assign to Test & Ambient", "Approve",
+                          kReject, "Refresh intake status"}),
+          "amber: the picker first, the rest in kOrder");
+    CHECK(t.entries[0].action == IntakeAction::AssignOther && t.entries[0].enabled, "first entry is the picker");
+    CHECK(t.entries.back().action == IntakeAction::Refresh, "Refresh stays last");
+
+    // itk_0000000c: resolved, needs_review, no proposal.
+    IntakeRecord c = rec("itk_0000000c", IntakeStatus::Resolved);
+    c.needsReview = true;
+    CHECK(titles(buildActionTable({&c}, ctx())) == v({kOther, "Propose", "Approve", kReject, "Refresh intake status"}),
+          "amber resolved root: the picker first");
+
+    // needs_review on new (CR-004.8) or a stray one on approved: not amber.
+    IntakeRecord n = rec("itk_00000016", IntakeStatus::New);
+    n.needsReview = true;
+    CHECK(buildActionTable({&n}, ctx()).entries[0].action == IntakeAction::Propose, "new + needs_review: kOrder");
+    IntakeRecord a = withRanked(rec("itk_00000010", IntakeStatus::Approved), "Test Collection A",
+                                {"Test Collection A", "Test Collection C"});
+    a.needsReview = true;
+    CHECK(buildActionTable({&a}, ctx()).entries[0].action == IntakeAction::Propose, "approved + stray flag: kOrder");
+
+    IntakeRecord d = withRanked(rec("itk_0000000d", IntakeStatus::Proposed), "Test Collection A",
+                                {"Test Collection A", "Test Collection B"});
+    CHECK(!assignOtherFirst({&d}, ctx()) && assignOtherFirst({&d, &e}, ctx()), "any amber qualifying root counts");
+    CHECK(titles(buildActionTable({&d, &e}, ctx())) ==
+              v({kOther, "Propose", "Approve", kReject, "Refresh intake status"}),
+          "mixed d + e: picker first, no quick assign, no (n of m) when both qualify");
+    IntakeRecord placedFlag = rec("itk_00000012", IntakeStatus::Placed);
+    placedFlag.needsReview = true;
+    CHECK(!assignOtherFirst({&d, &placedFlag}, ctx()), "a flag on a root the picker cannot run on does not count");
+
+    // Busy lane: order kept, everything mutating disabled.
+    ActionContext busy = ctx();
+    busy.laneBusy = true;
+    ActionTable b = buildActionTable({&e}, busy);
+    CHECK(b.entries[0].action == IntakeAction::AssignOther && !b.entries[0].enabled, "busy: still first, disabled");
+    CHECK(!b.entries[2].enabled && !b.entries[3].enabled, "busy: quick entries disabled");
+    busy.executeRunning = true;
+    ActionTable x = buildActionTable({&e}, busy);
+    CHECK(x.entries[0].title == "Assign to other collection (execute running)" + kEllipsis,
+          "execute running: said so, the ellipsis last");
+    CHECK(x.entries[2].title == "Assign to Test Collection A (execute running)", "quick entry: said so, no ellipsis");
+}
+
+static void testAssignOtherMixed() {
+    g_context = "assign-other-mixed";
+    IntakeRecord d = withRanked(rec("itk_0000000d", IntakeStatus::Proposed), "Test Collection A",
+                                {"Test Collection A", "Test Collection B"});
+    IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
+    placed.hasPlaced = placed.placedVerified = true;
+    IntakeRecord rejected = rec("itk_00000014", IntakeStatus::Rejected);
+    IntakeRecord n = rec("itk_0000000a", IntakeStatus::New);
+    ActionTable t = buildActionTable({&d, &placed, &rejected, &n}, ctx());
+    const ActionEntry *other = findEntry(t, IntakeAction::AssignOther);
+    CHECK(other != nullptr && other->title == "Assign to other collection (2 of 4)" + kEllipsis,
+          "(n of m) before the ellipsis");
+    CHECK(other->enabled && ids(*other) == v({"itk_0000000d", "itk_0000000a"}), "runs on the qualifying roots only");
+    CHECK(t.selectedRoots == 4, "m = 4");
+    ActionTable none = buildActionTable({&placed, &rejected}, ctx());
+    const ActionEntry *off = findEntry(none, IntakeAction::AssignOther);
+    CHECK(off != nullptr && !off->enabled && off->roots.empty() && off->title == kOther,
+          "no qualifying root: disabled, no (0 of m)");
+    ActionContext busy = ctx();
+    busy.laneBusy = true;
+    busy.executeRunning = true;
+    CHECK(findEntry(buildActionTable({&d, &placed}, busy), IntakeAction::AssignOther)->title ==
+              "Assign to other collection (1 of 2) (execute running)" + kEllipsis,
+          "title order: base, (n of m), (execute running), ellipsis");
+    CHECK(actionRootFor(d).targetCollection == "Test Collection A" && actionRootFor(n).targetCollection.empty(),
+          "the captured root carries its current target");
+}
+
+static void testAssignArgv() {
+    g_context = "assign-argv";
+    IntakeRecord d = withRanked(rec("itk_0000000d", IntakeStatus::Proposed), "Test Collection A",
+                                {"Test Collection A", "Test & Ambient"});
+    IntakeRecord e = withRanked(rec("itk_0000000e", IntakeStatus::Proposed), "Test Collection B",
+                                {"Test Collection B"});
+    ActionTable one = buildActionTable({&d}, ctx());
+    const ActionEntry *quick = findEntry(one, IntakeAction::AssignTo);
+    CHECK(quick != nullptr &&
+              argvFor(*quick) == v({kCli, "assign", "itk_0000000d", "--collection", "Test & Ambient", "--by", "user",
+                                    "--json"}),
+          "quick assign: assign <id> --collection X --by user --json, X literal");
+
+    ActionTable two = buildActionTable({&d, &e}, ctx());
+    ActionEntry picked = *findEntry(two, IntakeAction::AssignOther);
+    CliRequest req;
+    std::string why;
+    CHECK(!requestForEntry(picked, "", req, &why) && why == "no collection",
+          "the picker entry runs nothing until a collection is chosen");
+    picked.collection = "Test Collection C";
+    CHECK(argvFor(picked) == v({kCli, "assign", "itk_0000000d", "itk_0000000e", "--collection", "Test Collection C",
+                                "--by", "user", "--json"}),
+          "picked: assign <ids> --collection <name> --by user --json");
+    CHECK(requestForEntry(picked, "ignored", req) && req.reason.empty() && req.command == CliCommand::Assign,
+          "assign takes no reason");
+    ActionEntry noRoots = picked;
+    noRoots.roots.clear();
+    CHECK(!requestForEntry(noRoots, "", req, &why) && why == "no qualifying root", "never with zero ids");
+}
+
 static void testLabels() {
     g_context = "labels";
     ActionRoot full;
@@ -436,6 +672,11 @@ int main() {
         testLane();
         testAllActionsExposed();
         testArgv();
+        testMenuActions();
+        testQuickAssign();
+        testAssignOtherOrder();
+        testAssignOtherMixed();
+        testAssignArgv();
         testLabels();
         testActionIds();
         if (dir) rmdir(dir);
