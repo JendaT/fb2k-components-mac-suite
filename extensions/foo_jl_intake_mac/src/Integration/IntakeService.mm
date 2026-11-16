@@ -380,6 +380,9 @@ public:
         if (settings.decorStats) logUnfiltered(LogLevel::Info, "decor_stats on: one line per decorate batch");
         g_service = new Service(settings);
         g_service->start();
+        // B8: adopt or finish execute runs an earlier session left behind
+        // (on the mutation queue; no mutating call starts until it is done).
+        actionsStartRunScan();
     }
 
     void on_quit() override {

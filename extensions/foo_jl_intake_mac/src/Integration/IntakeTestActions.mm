@@ -49,12 +49,33 @@
 //                                   <seconds> (at most 30): nothing is
 //                                   assigned. The next step runs once the
 //                                   sheet has closed
+//    execute <id...>                B8: Execute placement… through the real
+//                                   flow and the real dry run, without the
+//                                   sheet: one line once the run was spawned
+//                                   (or could not start): "dry run: N
+//                                   placeable, M excluded: <the rows the
+//                                   sheet would list>; confirmed; started:
+//                                   pid P, run file execute-....run"
+//    execute-sheet <id...> close=<seconds>
+//                                   B8: the real dry run and the real sheet;
+//                                   one line when it is up (title, rows,
+//                                   buttons), then it is ended as Cancel
+//                                   after <seconds> (at most 30): nothing is
+//                                   executed. The next step runs once the
+//                                   sheet has closed
+//    resume <id...>                 B8: the Resume placement item; one line
+//                                   once the run was spawned: "started: pid
+//                                   P, run file execute-....run"
+//    runs                           B8: the tracked runs (command, pid,
+//                                   state, ids) and the lane
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
 //  hides them; log_file mirrors them). Ids that are not in the snapshot,
 //  or whose rows map to other roots than the ones named, make the step log
-//  and do nothing. Nothing runs after quit starts. assign-other and picker
-//  wait for their flow to end before the next step.
+//  and do nothing. Nothing runs after quit starts. assign-other, picker,
+//  execute, execute-sheet and resume wait for their flow to end (a run: to
+//  be spawned) before the next step. The steps start after the first
+//  successful load and the leftover-run scan.
 //
 //  Temporary: removed with the other acceptance aids (and
 //  Core/IntakeTestActionScript plus its tests) before the merge to main.
@@ -220,6 +241,43 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
             }
             break;
         }
+        case TestStepKind::Runs:
+            logInfo(label + actionsRunsDescription());
+            break;
+        case TestStepKind::Execute:
+        case TestStepKind::ExecuteSheet:
+        case TestStepKind::Resume: {
+            const std::shared_ptr<const IntakeView> view = providerCurrentView();
+            std::vector<const IntakeRecord *> roots;
+            std::string error;
+            if (!view) {
+                logInfo(label + "skipped (no intake data yet)");
+                break;
+            }
+            if (!rootsForIds(*view, step.ids, roots, error)) {
+                logInfo(label + "skipped (" + error + ")");
+                break;
+            }
+            const ActionTable table = actionsTableFor(roots, view.get());
+            const ActionEntry *entry = findEntry(table, step.action);
+            if (entry == nullptr) {
+                logInfo(label + "no " + actionName(step.action) + " item in the menu (" + menuText(table) + ")");
+                break;
+            }
+            auto hooks = std::make_shared<ExecuteTestHooks>();
+            hooks->mode = step.kind == TestStepKind::ExecuteSheet ? ExecuteTestHooks::Mode::AutoClose
+                                                                  : ExecuteTestHooks::Mode::Headless;
+            hooks->closeSeconds = step.closeSeconds;
+            const std::string prefix = label + entry->title + " (" + joinIds(step.ids) + "): ";
+            hooks->report = [prefix](const std::string &line) { logInfo(prefix + line); };
+            hooks->done = [steps, index]() { next(steps, index + 1); };
+            if (step.kind == TestStepKind::Resume) {
+                actionsResume(*entry, hooks);
+            } else {
+                actionsExecutePlacement(*entry, hooks);
+            }
+            return;  // the hooks log the line and go on
+        }
         case TestStepKind::AssignOther:
         case TestStepKind::Picker: {
             const std::shared_ptr<const IntakeView> view = providerCurrentView();
@@ -297,17 +355,23 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
     next(steps, index + 1);
 }
 
-} // anonymous namespace
-
-void testActionsAfterLoad() {
-    if (g_ran || core_api::is_shutting_down()) return;
-    g_ran = true;
+void runTestActions() {
+    if (core_api::is_shutting_down()) return;
     const std::string script = trimmedSetting(config::getString(kKey, ""));
     if (script.empty()) return;
     config::setString(kKey, "");
     auto steps = std::make_shared<const std::vector<TestActionStep>>(parseTestActions(script));
     logInfo("test_actions: " + std::to_string(steps->size()) + " step(s), key reset");
     runStep(steps, 0);
+}
+
+} // anonymous namespace
+
+void testActionsAfterLoad() {
+    if (g_ran || core_api::is_shutting_down()) return;
+    g_ran = true;
+    // B8: after the leftover-run scan, so `runs` and the lane see adopted runs.
+    actionsAfterRunScan([] { runTestActions(); });
 }
 
 } // namespace intake

@@ -119,7 +119,8 @@ checkbox (Confirmations). With `1`, the context menu's **Reject…** first
 shows a confirmation (a sheet on the key window) that lists the albums it
 affects (up to 10, then "and N more") and has an optional reason field; the
 reason is passed as `--reason`. With `0`, Reject runs at once, without a
-reason. Approve and Propose never ask. Execute will always ask (B8).
+reason. Approve, Propose and Resume never ask. Execute always asks (B8): its
+dry run, then a sheet listing what it will place.
 
 # Hidden keys
 
@@ -237,17 +238,19 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.test_actions
 
-Temporary acceptance aid (B6, extended in B7), removed before the merge to
-main with the other aids (`src/Integration/IntakeTestActions.mm`,
+Temporary acceptance aid (B6, extended in B7 and B8), removed before the
+merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
 `src/Core/IntakeTestActionScript.*` and its tests, and the
-`PickerTestHooks` in `src/Integration/IntakeActions.*`). It lets an in-app
-check drive the intake context menu, the collection picker included, and
-read the group header badges, without clicking.
+`PickerTestHooks` and `ExecuteTestHooks` in `src/Integration/IntakeActions.*`).
+It lets an in-app check drive the intake context menu, the collection picker
+and the execute sheet included, and read the group header badges and the
+tracked execute runs, without clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
-the first successful `status` load; the key is reset to `""` before the first
-step runs (foobar2000 writes that back when it quits). Steps are separated
-by `;`, words by spaces:
+the first successful `status` load (and after the check for execute runs an
+earlier session left, B8); the key is reset to `""` before the first step
+runs (foobar2000 writes that back when it quits). Steps are separated by `;`,
+words by spaces:
 
 | Step | What it does |
 |---|---|
@@ -258,6 +261,10 @@ by `;`, words by spaces:
 | `assign <id> collection=<name>` | B7. Builds the menu for that one root and dispatches its quick-assign item **Assign to `<name>`** (exact name) like a click: `assign <id> --collection <name> --by user --json` through the mutation lane. `collection=` takes everything after it to the end of the step, trimmed, so names may contain spaces. Without such an item (the name is not an alternate, the root has no `ranked`, the status does not allow it) it logs the menu and runs nothing. |
 | `assign-other <id...> collection=<name>` | B7. The **Assign to other collection…** flow without the sheet: runs `collections --json` as the picker does, then logs `collections: N; "<name>" listed` (or `not listed; nothing assigned`) and, when the name is listed, runs the assign on the item's qualifying roots through the same code as the sheet's **Assign** button (lane and configuration checked again). A failed `collections` logs `no picker: <cause>; nothing assigned`. |
 | `picker <id...> close=<seconds>` | B7. The real flow and the real sheet (for a screenshot): the window under the pointer when the step starts (as at a click), else the main or key window, is chosen first; then `collections --json`, then the sheet on that window (on the main or key window if it can no longer take a sheet), else app-modal. One line when it is up: `sheet shown: N collection(s), preselected "", OK disabled; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required), so nothing is assigned. |
+| `execute <id...>` | B8. **Execute placement…** through the real flow: the menu item for those roots, the real `execute <ids> --dry-run --json` on the mutation lane, then, instead of the sheet, it confirms at once and starts the detached `execute <ids that passed> --json` (lane and configuration checked again). One line once the run was spawned: `dry run: N placeable, M excluded: <the rows the sheet would list, " \| " between them, up to 10, then "and N more", then "excluded: <album>: <why>">; confirmed; started: pid <pid>, run file execute-<stamp>.run`. With nothing placeable: `dry run: 0 placeable, M excluded: ...; no sheet, nothing executed`; a dry run still running at 10 s: `dry run: no answer within 10 s; no sheet, nothing executed`; a run that could not start: `...; confirmed; not started: <why>`. A disabled item (lane busy, no approved root) logs `not run: the item is disabled`. |
+| `execute-sheet <id...> close=<seconds>` | B8. The real dry run and the real sheet (for a screenshot): the window under the pointer when the step starts, else the main or key window, else app-modal. One line when it is up: `sheet shown: "<title>"; N placeable, M excluded: <rows>; buttons Execute, Cancel; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is executed. |
+| `resume <id...>` | B8. The **Resume placement** item (placing roots; listed only for a CLI that resumes by id, 0.2.1 or later): starts the detached `execute <ids> --resume --json` at once. One line once it was spawned: `started: pid <pid>, run file execute-<stamp>.run` (or `not run: ...` / `not started: ...`). |
+| `runs` | B8. One line: the execute and resume runs the component tracks (its own and adopted ones: command, pid, state `starting`/`running`/`adopted`/`exited`, ids) and the mutation lane, e.g. `1 live: execute pid 4242 adopted (itk_00000010); lane busy (execute)` or `none; lane free`. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
@@ -274,7 +281,13 @@ flow has ended (after `collections` and the assign has started, or after the
 sheet has closed). Their one line comes when the outcome is known; for
 `picker` that is when the sheet is up. Only one picker flow runs at a time, as
 for clicks: a second one while `collections` runs or a sheet is open logs
-`ignored: the collection picker is already open or loading`.
+`ignored: the collection picker is already open or loading`. `execute`,
+`execute-sheet` and `resume` also wait: `execute` and `resume` until the
+detached run has been spawned (not until it ends: add `wait` steps and `runs`
+to follow it), `execute-sheet` until the sheet has closed. A run then holds
+the mutation lane until it ends: every mutating item reads `(execute
+running)` and is disabled, so mutating steps in between log
+`not run: the item is disabled`.
 
 ```bash
 # quit foobar2000 first
@@ -298,6 +311,26 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 ```
 
 The line breaks inside the value are fine: steps are split at `;` and trimmed.
+
+B8 example (the mock's `default` scenario with `execute.start` holding
+`approved-placing`, `execute.mode` holding `slow-real 6` and `execute.next`
+holding `approved-placed`; see Tests/mock-cli/README.md):
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'menu itk_00000010; execute itk_00000010; runs; wait 3; menu itk_00000010; wait 8; runs; menu itk_00000010')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+Execute runs leave two files in `~/Library/Caches/foo_jl_intake/` while they
+run: `execute-<stamp>.json` (the CLI's stdout) and `execute-<stamp>.run` (pid,
+start time, ids, root paths, output name, command). Both are deleted when the
+component has read the result. A run still going when foobar2000 quits keeps
+running and keeps its files; the next start adopts it (live) or finishes it
+(ended), and deletes stray `execute-*.json`/`.tmp` files that have no run
+file, and run files that do not parse.
 
 # Reverting everything
 

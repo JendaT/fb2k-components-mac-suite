@@ -2,9 +2,9 @@
 //  IntakeActions.h
 //  foo_jl_intake
 //
-//  The intake context menu, the mutation lane and the collection picker
-//  (PLAN.md B6, B7; doc 04 v1.2 "Context actions", "CLI invocation",
-//  "Failure behavior").
+//  The intake context menu, the mutation lane, the collection picker and
+//  the detached execute and resume runs (PLAN.md B6, B7, B8; doc 04 v1.2
+//  "Context actions", "CLI invocation", "Failure behavior").
 //
 //  Menu (main thread, from the provider's context_actions): the selected
 //  rows go through the decorate pipeline (IntakeNativePath, IntakeView), the
@@ -60,8 +60,57 @@
 //     up to 10 albums ("and N more") with an optional reason field; off:
 //     at once, no reason (the item then has no ellipsis). Only when the
 //     CLI has `reject`. No alert when the call could not start anyway.
-//  A click (or a confirmed Reject) that starts nothing, because the lane
-//  is busy or the CLI path is gone, logs one Error line.
+//   - Execute placement… (B8): describe, then confirm. The sheet's window
+//     is chosen at the click, as for the picker. `execute <ids> --dry-run
+//     --json` runs on the lane (class ExecuteDryRun: no E_CLI_TIMEOUT,
+//     never killed); if it has not answered within 10 s the lane is
+//     released (one Info line) and its late result is dropped: no sheet.
+//     When it answers, on the main thread (IntakeExecutePlan): roots it
+//     refused get their error as a tooltip (baseline: the menu's status;
+//     one console line, then a refresh to show it); with no placeable root,
+//     one Error line and no sheet. Otherwise an NSAlert lists up to 10
+//     "artist – album → target (n files, k shadows skipped)" rows, then the
+//     excluded roots with their error, as a sheet on that window (or the
+//     main or key window, else app-modal from a run-loop callout, never
+//     inside a main-queue block), buttons Execute and Cancel. Execute checks
+//     the lane and the configuration again and starts the run on the roots
+//     that passed. One execute flow at a time (dry run running or sheet
+//     open): another request logs one Info line and does nothing.
+//   - Resume placement (B8): no confirmation; starts `execute <ids>
+//     --resume --json` as a detached run at once.
+//  A click (or a confirmed Reject or Execute) that starts nothing, because
+//  the lane is busy or the CLI path is gone, logs one Error line.
+//
+//  Detached runs (B8, IntakeExecuteTracker): `execute <ids> --json` and
+//  `execute <ids> --resume --json` run in their own process group with
+//  stdin /dev/null, stdout to <stem>.json in ~/Library/Caches/foo_jl_intake
+//  and stderr to /dev/null (never killed, survive quitting foobar2000). As
+//  soon as the child exists its run file <stem>.run (pid, start time, ids,
+//  root paths, output name, command) is written atomically, and one Info
+//  line names the pid and the run file. A run holds the mutation lane until
+//  it is finished: every mutating item is disabled and titled "(execute
+//  running)", Resume is disabled on its roots, Refresh stays enabled.
+//  Progress shows through the FSEvents watcher (the CLI flips the sidecars
+//  to placing, then placed); nothing polls. On exit (the runner's PROC
+//  source and waitpid for our own child; a ProcessExitWatch, whose
+//  waitpid gets ECHILD, for an adopted one) the output is parsed by the
+//  envelope rules (an adopted run's exit code is inferred from the
+//  envelope), per-root errors are set (baseline: the status the next load
+//  shows; a resume row "reverted_to_approved" is a failure with baseline
+//  approved), one console line in the B6 format ("execute: done for N
+//  roots", "resume failed for 1 root: ..."), serviceRefreshAfterCommand(),
+//  the lane is released and both files are deleted. After on_quit results
+//  are dropped and the files stay: the next session finishes the run.
+//
+//  Leftover runs (actionsStartRunScan, from on_init, once): the cache
+//  folder is scanned on the mutation queue (IntakeExecuteTracker
+//  scanLeftoverRuns). A live run is adopted (lane held, its roots marked
+//  running, its pid watched; one Info line with the pid and ids) and
+//  finished as above when it ends; a dead one is finished at once (one Info
+//  line, then its console line); orphan files are deleted (one Info line
+//  with the count). Until the scan is done no mutating call starts (the
+//  menu shows mutating items disabled), and the test_actions aid waits for
+//  it (actionsAfterRunScan).
 //
 //  Mutation lane (IntakeMutationLane, main thread): one mutating call at a
 //  time. A call that finds the lane busy is not started (one Error line).
@@ -77,7 +126,7 @@
 //  "Timeouts"): one Error line, the error on each of its roots and a
 //  refresh to show it; it keeps running, and its result replaces those
 //  errors. A dry run's 10 s report releases the lane and its late result
-//  is dropped (no dry runs in B6 yet). After on_quit (actionsShutdown)
+//  is dropped (the execute dry run, B8). After on_quit (actionsShutdown)
 //  results are dropped: no refresh, no UI; the processes keep running
 //  (doc 03: mutating calls are not killed before the 15-minute cap, the
 //  runner enforces it).
@@ -147,13 +196,54 @@ struct PickerTestHooks {
 // happened so far, for a log line.
 std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test);
 
+// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
+// how Execute placement… and Resume placement run for a test_actions step.
+struct ExecuteTestHooks {
+    enum class Mode {
+        Headless,   // execute: no sheet; after the dry run, confirm at once
+        AutoClose,  // execute: the real sheet, ended as Cancel after closeSeconds
+    };
+    Mode mode = Mode::Headless;  // ignored by resume
+    double closeSeconds = 0;     // AutoClose
+    // Main thread, each at most once and `report` first: `report` gets the
+    // step's one line (Headless and resume: once the run was spawned or
+    // could not start, the dry run's summary first for Headless; AutoClose:
+    // when the sheet is up; all: when the flow ends early), `done` runs
+    // when the step may go on (spawned, sheet closed, or ended early).
+    // Neither runs after on_quit.
+    std::function<void(const std::string &line)> report;
+    std::function<void()> done;
+};
+
+// Main thread: Execute placement… for `entry` (see the top of this file);
+// `test` null runs it as a click does. Returns what happened so far.
+std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test);
+
+// Main thread: Resume placement for `entry`; `test` null runs it as a click
+// does. Returns what happened so far.
+std::string actionsResume(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test);
+
+// Main thread: the test aid's `runs` line: the tracked runs (command, pid,
+// state, ids) and the lane, e.g. "1 live: execute pid 4242 adopted
+// (itk_00000010); lane busy (execute)" or "none; lane free".
+std::string actionsRunsDescription();
+
+// Main thread (on_init, after the service started): the leftover-run scan,
+// once per session (see the top of this file).
+void actionsStartRunScan();
+
+// Main thread: runs `fn` once the leftover-run scan is done (at once when
+// it is); never after on_quit.
+void actionsAfterRunScan(std::function<void()> fn);
+
 // Any thread: the per-root command errors (the loader's annotator).
 RootErrorStore &actionsErrorStore();
 
 // Main thread: the mutation lane holds a call.
 bool actionsLaneBusy();
 
-// Main thread (on_quit): later results are dropped; nothing is killed.
+// Main thread (on_quit): later results are dropped; nothing is killed
+// (detached runs and their files stay for the next session).
 void actionsShutdown();
 
 // Temporary acceptance aid (IntakeTestActions.mm, docs/hidden-options.md):

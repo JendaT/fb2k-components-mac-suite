@@ -43,7 +43,11 @@
 //  menu reads serviceActionInfo() and a mutating call takes its
 //  configuration from serviceMutationConfig(), both on the main thread.
 //  After every successful load the temporary test_actions aid gets a look
-//  (it runs once).
+//  (it runs once, after the leftover-run scan).
+//
+//  Execute runs (B8): right after the service starts, on_init has
+//  IntakeActions scan the cache folder for runs an earlier session left
+//  (actionsStartRunScan): a live one is adopted, a dead one finished.
 //
 //  on_quit, in PLAN.md 3.2 order: removes the observers, stops the watch
 //  stream and releases the watcher (no batch reaches the loader after

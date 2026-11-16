@@ -115,8 +115,25 @@ TestActionStep parseStep(const std::string &raw) {
             rest.push_back(w[i]);
         }
     }
-    if (hasClose && verb != "picker") {
-        step.error = "only picker takes close=";
+    if (hasClose && verb != "picker" && verb != "execute-sheet") {
+        step.error = "only picker and execute-sheet take close=";
+        return step;
+    }
+
+    if (verb == "runs") {
+        if (step.hasReason) {
+            step.error = "runs takes no reason";
+            return step;
+        }
+        if (step.hasCollection) {
+            step.error = "runs takes no collection";
+            return step;
+        }
+        if (!rest.empty()) {
+            step.error = "runs takes no ids";
+            return step;
+        }
+        step.kind = TestStepKind::Runs;
         return step;
     }
 
@@ -165,6 +182,15 @@ TestActionStep parseStep(const std::string &raw) {
     } else if (verb == "picker") {
         kind = TestStepKind::Picker;
         action = IntakeAction::AssignOther;
+    } else if (verb == "execute") {
+        kind = TestStepKind::Execute;
+        action = IntakeAction::Execute;
+    } else if (verb == "execute-sheet") {
+        kind = TestStepKind::ExecuteSheet;
+        action = IntakeAction::Execute;
+    } else if (verb == "resume") {
+        kind = TestStepKind::Resume;
+        action = IntakeAction::Resume;
     } else {
         step.error = "unknown step \"" + verb + "\"";
         return step;
@@ -186,9 +212,9 @@ TestActionStep parseStep(const std::string &raw) {
         step.error = "collection= needs a name";
         return step;
     }
-    if (kind == TestStepKind::Picker) {
+    if (kind == TestStepKind::Picker || kind == TestStepKind::ExecuteSheet) {
         if (!hasClose) {
-            step.error = "picker needs close=<seconds>";
+            step.error = verb + " needs close=<seconds>";
             return step;
         }
         if (!parseBoundedSeconds(closeText, "close", step.closeSeconds, step.error)) return step;

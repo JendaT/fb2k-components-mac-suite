@@ -24,8 +24,9 @@
 //    Reject…                       new, resolved, proposed, approved; only
 //                                  listed when the CLI has `reject`
 //    Execute placement…            approved, target_path not null
-//    Resume placement              placing, CLI with per-root resume
-//                                  (cliSupportsCommand), no live run on it
+//    Resume placement              placing, no live run on it; only listed
+//                                  when the CLI resumes by id
+//                                  (cliSupportsCommand: 0.2.1 or later)
 //    Swap to library paths         placed with placed.verified
 //    Delete local copy…            placed with placed.verified (never
 //                                  rejected, never a root that is not placed)
@@ -56,9 +57,9 @@
 //  the menu showed. None when the selection is incomplete (rows the menu
 //  could not map may be other roots, so m is only a lower bound).
 //  The menu shows menuActions(): Propose, Assign to X, Assign to other
-//  collection…, Approve, Reject… and Refresh (B7). Execute and Resume (B8),
-//  Swap and Delete (B9) are already decided here and stay hidden until
-//  then. b6Actions() is the B6 subset, kept for tests.
+//  collection…, Approve, Reject…, Execute placement…, Resume placement
+//  (B8) and Refresh. Swap and Delete (B9) are already decided here and stay
+//  hidden until then. b6Actions() is the B6 subset, kept for tests.
 //
 //  Thread-safety: pure functions.
 //
@@ -104,8 +105,9 @@ bool actionCommand(IntakeAction action, CliCommand &out);
 // "(n of m)" or an ellipsis.
 std::string actionBaseTitle(IntakeAction action, const std::string &collection = std::string());
 
-// The actions the context menu shows (B7: Propose, Assign to X, Assign to
-// other collection…, Approve, Reject…, Refresh).
+// The actions the context menu shows (B8: Propose, Assign to X, Assign to
+// other collection…, Approve, Reject…, Execute placement…, Resume
+// placement, Refresh).
 const std::vector<IntakeAction> &menuActions();
 
 // The B6 subset (Propose, Approve, Reject…, Refresh).
@@ -117,7 +119,7 @@ struct ActionContext {
     CliVersionInfo cli;         // the last passing `version` (feature detection)
     bool laneBusy = false;
     bool executeRunning = false;           // the lane holder is an execute or resume
-    std::vector<std::string> liveRunIds;   // roots with a live execute run (B8)
+    std::vector<std::string> liveRunIds;   // roots of a live execute or resume run (B8)
     bool confirmReject = true;             // confirm_reject: Reject asks first
     // Some selected rows were left unmapped (NativePathMenuBudget): they
     // may be roots, so m is only a lower bound.

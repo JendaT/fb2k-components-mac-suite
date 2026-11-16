@@ -124,9 +124,9 @@ bool actionAsksFirst(IntakeAction action, const ActionContext &context) {
 }
 
 const std::vector<IntakeAction> &menuActions() {
-    static const std::vector<IntakeAction> actions = {IntakeAction::Propose, IntakeAction::AssignTo,
-                                                      IntakeAction::AssignOther, IntakeAction::Approve,
-                                                      IntakeAction::Reject, IntakeAction::Refresh};
+    static const std::vector<IntakeAction> actions = {
+        IntakeAction::Propose, IntakeAction::AssignTo, IntakeAction::AssignOther, IntakeAction::Approve,
+        IntakeAction::Reject,  IntakeAction::Execute,  IntakeAction::Resume,      IntakeAction::Refresh};
     return actions;
 }
 
@@ -213,8 +213,11 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
     if (!c.inert && m > 0) {
         for (IntakeAction action : kOrder) {
             if (!exposes(exposed, action)) continue;
-            // Reject is listed only when the CLI has it (doc 04: "if detected").
+            // Reject is listed only when the CLI has it (doc 04: "if detected"),
+            // Resume only when the CLI resumes by id (0.2.1 or later: 0.2.0
+            // would resume every placing root).
             if (action == IntakeAction::Reject && !cliSupportsCommand(c.cli, CliCommand::Reject)) continue;
+            if (action == IntakeAction::Resume && !cliSupportsCommand(c.cli, CliCommand::Resume)) continue;
 
             if (action == IntakeAction::AssignTo) {
                 // Quick assign: one selected root, its alternates only; never

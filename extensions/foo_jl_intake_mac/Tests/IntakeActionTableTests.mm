@@ -408,10 +408,99 @@ static void testMenuActions() {
               has(IntakeAction::Refresh),
           "B6 actions stay");
     CHECK(has(IntakeAction::AssignTo) && has(IntakeAction::AssignOther), "B7 exposes both assign entries");
-    CHECK(!has(IntakeAction::Execute) && !has(IntakeAction::Resume) && !has(IntakeAction::Swap) &&
-              !has(IntakeAction::DeleteLocal),
-          "Execute, Resume (B8), Swap, Delete (B9) stay hidden");
+    CHECK(has(IntakeAction::Execute) && has(IntakeAction::Resume), "B8 exposes Execute and Resume");
+    CHECK(!has(IntakeAction::Swap) && !has(IntakeAction::DeleteLocal), "Swap, Delete (B9) stay hidden");
     CHECK(b6Actions().size() == 4, "the B6 subset is unchanged");
+}
+
+// --- B8: Execute placement… and Resume placement ---
+
+const std::string kExecute = "Execute placement" + kEllipsis;
+
+static void testExecuteResume() {
+    g_context = "execute-resume";
+    IntakeRecord approved = withProposal(rec("itk_00000010", IntakeStatus::Approved));
+    IntakeRecord placing = withProposal(rec("itk_00000011", IntakeStatus::Placing));
+    IntakeRecord slot = withProposal(rec("itk_00000019", IntakeStatus::Approved), TargetPathState::Null);
+    IntakeRecord proposed = withProposal(rec("itk_0000000d", IntakeStatus::Proposed));
+
+    ActionTable one = buildActionTable({&approved}, ctx());
+    const ActionEntry *e = findEntry(one, IntakeAction::Execute);
+    CHECK(e != nullptr && e->enabled && e->title == kExecute && ids(*e) == v({"itk_00000010"}),
+          "Execute placement… on an approved root with a target: enabled, the ellipsis (always asks)");
+    const ActionEntry *resumeOnApproved = findEntry(one, IntakeAction::Resume);
+    CHECK(resumeOnApproved != nullptr && !resumeOnApproved->enabled && resumeOnApproved->title == "Resume placement",
+          "Resume listed but disabled on an approved root; no ellipsis");
+
+    ActionTable mixed = buildActionTable({&approved, &slot, &proposed}, ctx());
+    e = findEntry(mixed, IntakeAction::Execute);
+    CHECK(e != nullptr && e->enabled && e->title == "Execute placement (1 of 3)" + kEllipsis &&
+              ids(*e) == v({"itk_00000010"}),
+          "mixed: (n of m) before the ellipsis, the slot-pending root left out");
+
+    ActionTable slotOnly = buildActionTable({&slot}, ctx());
+    CHECK(!findEntry(slotOnly, IntakeAction::Execute)->enabled, "a null target_path: Execute disabled");
+
+    ActionTable resume = buildActionTable({&placing, &approved}, ctx());
+    const ActionEntry *r = findEntry(resume, IntakeAction::Resume);
+    CHECK(r != nullptr && r->enabled && r->title == "Resume placement (1 of 2)" && ids(*r) == v({"itk_00000011"}),
+          "Resume placement on the placing root, (n of m), no ellipsis");
+    CHECK(findEntry(resume, IntakeAction::Execute)->title == "Execute placement (1 of 2)" + kEllipsis,
+          "Execute on the approved root of the same selection");
+
+    // Hidden like Reject when the CLI cannot resume by id.
+    ActionTable old = buildActionTable({&placing}, ctx(cliOld("0.2.0")));
+    CHECK(findEntry(old, IntakeAction::Resume) == nullptr, "CLI 0.2.0: Resume is not listed");
+    CHECK(findEntry(buildActionTable({&placing}, ctx(cliOld("0.1.0"))), IntakeAction::Resume) == nullptr,
+          "CLI 0.1.0: Resume is not listed");
+    CHECK(findEntry(buildActionTable({&placing}, ctx(CliVersionInfo())), IntakeAction::Resume) == nullptr,
+          "CLI version unknown: Resume is not listed");
+    const ActionTable t021 = buildActionTable({&placing}, ctx(cliOld("0.2.1")));
+    const ActionEntry *r021 = findEntry(t021, IntakeAction::Resume);
+    CHECK(r021 != nullptr && r021->enabled, "CLI 0.2.1: Resume listed and enabled");
+    CHECK(findEntry(old, IntakeAction::Execute) != nullptr, "Execute does not depend on the CLI version");
+
+    // A live run on the root (adopted, or own): Resume stays disabled.
+    ActionContext live = ctx();
+    live.liveRunIds = {"itk_00000011"};
+    const ActionTable liveTable = buildActionTable({&placing}, live);
+    const ActionEntry *liveResume = findEntry(liveTable, IntakeAction::Resume);
+    CHECK(liveResume != nullptr && !liveResume->enabled && liveResume->roots.empty(),
+          "Resume disabled for a root in a live run");
+
+    // While an execute or resume holds the lane: every mutating item
+    // disabled and titled "(execute running)"; Refresh stays enabled.
+    ActionContext running = ctx();
+    running.laneBusy = true;
+    running.executeRunning = true;
+    running.liveRunIds = {"itk_00000010"};
+    ActionTable busy = buildActionTable({&approved, &placing, &proposed}, running);
+    bool allDisabled = true, allLabelled = true;
+    for (const ActionEntry &entry : busy.entries) {
+        if (entry.action == IntakeAction::Refresh) continue;
+        allDisabled = allDisabled && !entry.enabled;
+        allLabelled = allLabelled && entry.title.find(" (execute running)") != std::string::npos;
+    }
+    CHECK(allDisabled && allLabelled, "every mutating item disabled, \"(execute running)\" in each title");
+    CHECK(findEntry(busy, IntakeAction::Execute)->title == "Execute placement (1 of 3) (execute running)" + kEllipsis,
+          "Execute: (n of m), (execute running), then the ellipsis");
+    CHECK(findEntry(busy, IntakeAction::Resume)->title == "Resume placement (1 of 3) (execute running)",
+          "Resume: (execute running), no ellipsis");
+    CHECK(busy.entries.back().action == IntakeAction::Refresh && busy.entries.back().enabled &&
+              busy.entries.back().title == "Refresh intake status",
+          "Refresh stays enabled, unlabelled");
+
+    // A dry run holds the lane: disabled, but not "(execute running)".
+    ActionContext dry = ctx();
+    dry.laneBusy = true;
+    ActionTable dryBusy = buildActionTable({&approved}, dry);
+    CHECK(!findEntry(dryBusy, IntakeAction::Execute)->enabled && findEntry(dryBusy, IntakeAction::Execute)->title == kExecute,
+          "another holder: disabled, no execute label");
+
+    // The argv: the real call, and the per-root resume.
+    CHECK(argvFor(*findEntry(one, IntakeAction::Execute)) == v({kCli, "execute", "itk_00000010", "--json"}),
+          "execute <ids> --json (the dry run adds --dry-run)");
+    CHECK(argvFor(*r) == v({kCli, "execute", "itk_00000011", "--resume", "--json"}), "execute <ids> --resume --json");
 }
 
 static void testQuickAssign() {
@@ -421,7 +510,7 @@ static void testQuickAssign() {
                                 {"Test Collection A", "Test Collection B", "Test Collection C"});
     ActionTable t = buildActionTable({&d}, ctx());
     CHECK(titles(t) == v({"Propose", "Assign to Test Collection B", "Assign to Test Collection C", kOther, "Approve",
-                          kReject, "Refresh intake status"}),
+                          kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "default menu: quick assign after Propose, the picker after it, kOrder");
     CHECK(!t.entries[0].enabled && t.entries[1].enabled && t.entries[2].enabled && t.entries[3].enabled,
           "Propose disabled; both quick entries and the picker enabled");
@@ -464,10 +553,10 @@ static void testQuickAssign() {
     CHECK(findEntry(buildActionTable({&onlyTarget}, ctx()), IntakeAction::AssignTo) == nullptr,
           "ranked = [target]: none");
     CHECK(titles(buildActionTable({&noProposal}, ctx())) ==
-              v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "no proposal (itk_0000000b): the picker only");
     CHECK(titles(buildActionTable({&empty}, ctx())) ==
-              v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+              v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "user-only proposal (itk_00000018): the picker only");
 
     // Status gating, one root with alternates.
@@ -503,7 +592,7 @@ static void testQuickAssign() {
     incomplete.selectionIncomplete = true;
     ActionTable partial = buildActionTable({&d}, incomplete);
     CHECK(findEntry(partial, IntakeAction::AssignTo) == nullptr, "incomplete selection: no quick assign");
-    CHECK(titles(partial) == v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+    CHECK(titles(partial) == v({"Propose", kOther, "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "incomplete selection: the picker and the rest stay");
     CHECK(findEntry(partial, IntakeAction::AssignOther)->enabled, "incomplete selection: the picker is enabled");
 }
@@ -516,7 +605,7 @@ static void testAssignOtherOrder() {
     e.needsReview = true;
     ActionTable t = buildActionTable({&e}, ctx());
     CHECK(titles(t) == v({kOther, "Propose", "Assign to Test Collection A", "Assign to Test & Ambient", "Approve",
-                          kReject, "Refresh intake status"}),
+                          kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "amber: the picker first, the rest in kOrder");
     CHECK(t.entries[0].action == IntakeAction::AssignOther && t.entries[0].enabled, "first entry is the picker");
     CHECK(t.entries.back().action == IntakeAction::Refresh, "Refresh stays last");
@@ -524,7 +613,7 @@ static void testAssignOtherOrder() {
     // itk_0000000c: resolved, needs_review, no proposal.
     IntakeRecord c = rec("itk_0000000c", IntakeStatus::Resolved);
     c.needsReview = true;
-    CHECK(titles(buildActionTable({&c}, ctx())) == v({kOther, "Propose", "Approve", kReject, "Refresh intake status"}),
+    CHECK(titles(buildActionTable({&c}, ctx())) == v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "amber resolved root: the picker first");
 
     // needs_review on new (CR-004.8) or a stray one on approved: not amber.
@@ -540,7 +629,7 @@ static void testAssignOtherOrder() {
                                 {"Test Collection A", "Test Collection B"});
     CHECK(!assignOtherFirst({&d}, ctx()) && assignOtherFirst({&d, &e}, ctx()), "any amber qualifying root counts");
     CHECK(titles(buildActionTable({&d, &e}, ctx())) ==
-              v({kOther, "Propose", "Approve", kReject, "Refresh intake status"}),
+              v({kOther, "Propose", "Approve", kReject, kExecute, "Resume placement", "Refresh intake status"}),
           "mixed d + e: picker first, no quick assign, no (n of m) when both qualify");
     IntakeRecord placedFlag = rec("itk_00000012", IntakeStatus::Placed);
     placedFlag.needsReview = true;
@@ -684,6 +773,7 @@ int main() {
         testAllActionsExposed();
         testArgv();
         testMenuActions();
+        testExecuteResume();
         testQuickAssign();
         testAssignOtherOrder();
         testAssignOtherMixed();

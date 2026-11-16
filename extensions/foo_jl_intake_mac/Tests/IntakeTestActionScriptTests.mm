@@ -152,11 +152,12 @@ static void testAssignInvalid() {
           "picker takes no collection");
     CHECK(invalid("menu itk_0000000e collection=X", "only assign and assign-other"), "menu takes no collection");
     CHECK(invalid("reject itk_0000000e collection=X", "only assign and assign-other"), "reject takes no collection");
-    CHECK(invalid("menu itk_0000000e close=5", "only picker takes close="), "close= only for picker");
-    CHECK(invalid("assign-other itk_0000000e close=5 collection=X", "only picker takes close="),
+    CHECK(invalid("menu itk_0000000e close=5", "only picker and execute-sheet take close="),
+          "close= only for picker and execute-sheet");
+    CHECK(invalid("assign-other itk_0000000e close=5 collection=X", "only picker and execute-sheet take close="),
           "assign-other takes no close=");
     CHECK(invalid("wait 2 collection=X", "wait takes no collection"), "wait takes no collection");
-    CHECK(invalid("wait close=2", "only picker takes close="), "wait takes no close=");
+    CHECK(invalid("wait close=2", "only picker and execute-sheet take close="), "wait takes no close=");
     CHECK(invalid("assign-others itk_0000000e collection=X", "unknown step"), "the verb is exact");
 }
 
@@ -174,7 +175,7 @@ static void testInvalid() {
     CHECK(invalid("approve ITK_0000000D", "not a sidecar id"), "ids are lowercase");
     CHECK(invalid("approve --all", "not a sidecar id"), "no flags");
     CHECK(invalid("frobnicate itk_0000000b", "unknown step"), "unknown verb");
-    CHECK(invalid("execute itk_00000010", "unknown step"), "execute is not part of B6");
+    CHECK(invalid("place itk_00000010", "unknown step"), "an unknown verb near execute");
     CHECK(invalid("approve itk_0000000d reason=x", "only reject"), "only reject takes a reason");
     CHECK(invalid("wait 2 reason=x", "no reason"), "wait takes no reason");
 
@@ -183,9 +184,46 @@ static void testInvalid() {
           "an invalid step does not stop the others");
 }
 
+static void testExecuteSteps() {
+    g_context = "execute-steps";
+    std::vector<TestActionStep> s = parseTestActions(
+        "execute itk_00000010; execute-sheet itk_00000010 itk_0000000d close=8; resume itk_00000011; runs;"
+        "execute-sheet itk_00000010 close=0.5");
+    CHECK(s.size() == 5, "five steps");
+    CHECK(s[0].kind == TestStepKind::Execute && s[0].action == IntakeAction::Execute &&
+              s[0].ids == v({"itk_00000010"}) && s[0].closeSeconds == 0,
+          "execute <id>: the headless flow");
+    CHECK(s[1].kind == TestStepKind::ExecuteSheet && s[1].action == IntakeAction::Execute &&
+              s[1].ids == v({"itk_00000010", "itk_0000000d"}) && s[1].closeSeconds == 8,
+          "execute-sheet <ids> close=8");
+    CHECK(s[2].kind == TestStepKind::Resume && s[2].action == IntakeAction::Resume && s[2].ids == v({"itk_00000011"}),
+          "resume <id>");
+    CHECK(s[3].kind == TestStepKind::Runs && s[3].ids.empty() && s[3].text == "runs", "runs");
+    CHECK(s[4].kind == TestStepKind::ExecuteSheet && s[4].closeSeconds == 0.5, "decimals for close");
+    CHECK(parseTestActions("execute itk_00000010 itk_00000010")[0].ids == v({"itk_00000010"}), "an id once");
+
+    CHECK(invalid("execute", "at least one id"), "execute needs ids");
+    CHECK(invalid("resume", "at least one id"), "resume needs ids");
+    CHECK(invalid("execute-sheet close=5", "at least one id"), "execute-sheet needs ids");
+    CHECK(invalid("execute-sheet itk_00000010", "needs close="), "execute-sheet needs close=");
+    CHECK(invalid("execute-sheet itk_00000010 close=31", "at most 30"), "close over 30");
+    CHECK(invalid("execute-sheet itk_00000010 close=0", "more than 0"), "close 0");
+    CHECK(invalid("execute-sheet itk_00000010 close=x", "number"), "close needs a number");
+    CHECK(invalid("execute itk_00000010 close=3", "only picker and execute-sheet"), "execute takes no close=");
+    CHECK(invalid("resume itk_00000011 close=3", "only picker and execute-sheet"), "resume takes no close=");
+    CHECK(invalid("runs itk_00000010", "no ids"), "runs takes no ids");
+    CHECK(invalid("runs reason=x", "no reason"), "runs takes no reason");
+    CHECK(invalid("runs collection=X", "no collection"), "runs takes no collection");
+    CHECK(invalid("execute itk_00000010 reason=x", "only reject"), "execute takes no reason");
+    CHECK(invalid("resume itk_00000011 collection=X", "only assign"), "resume takes no collection");
+    CHECK(invalid("execute /income/dump/Approved", "not a sidecar id"), "execute takes ids only");
+    CHECK(parseTestActions("picker itk_0000000e close=8")[0].kind == TestStepKind::Picker, "picker keeps close=");
+}
+
 int main() {
     @autoreleasepool {
         testSteps();
+        testExecuteSteps();
         testBadge();
         testAssignSteps();
         testAssignInvalid();

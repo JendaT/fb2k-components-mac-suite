@@ -21,6 +21,8 @@
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
+#include "../Core/IntakeExecutePlan.h"
+#include "../Core/IntakeExecuteTracker.h"
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeMutationLane.h"
 #include "../Core/IntakeMutationResult.h"
@@ -114,6 +116,13 @@ std::string idList(const std::vector<std::string> &ids) {
 }
 
 struct PickerFlow;
+struct ExecuteFlow;
+
+// A test_actions step waiting for a detached run's spawn (B8).
+struct RunTestReport {
+    std::shared_ptr<const ExecuteTestHooks> hooks;
+    std::string prefix;  // the step's text so far (execute: the dry run's summary)
+};
 
 // Leaked on purpose (like the provider's state): a CLI completion may come
 // back after on_quit, and static destructors run at exit.
@@ -138,12 +147,28 @@ struct ActionsState {
     // open), or null: at most one (B7).
     std::shared_ptr<PickerFlow> picker;
     uint64_t pickerSerial = 0;
+    // B8: the Execute placement… flow in progress (dry run running or sheet
+    // open), or null: at most one.
+    std::shared_ptr<ExecuteFlow> executeFlow;
+    uint64_t executeSerial = 0;
+    // B8: the detached runs (own and adopted) and the lane token they hold
+    // together (0: none); taken with the first run, released with the last.
+    ExecuteTracker tracker;
+    uint64_t runLaneToken = 0;
+    std::unordered_map<std::string, std::shared_ptr<ProcessExitWatch>> exitWatches;  // adopted runs, by stem
+    std::unordered_map<std::string, RunTestReport> runReports;                        // by stem
+    // B8: the leftover-run scan (actionsStartRunScan). No mutating call
+    // starts before it is done.
+    bool runScanStarted = false;
+    bool runScanDone = false;
+    std::vector<std::function<void()>> afterRunScan;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
     std::string outputDirectory;
-    // Mutating calls only. Never cancelled: destroying or keeping it never
-    // signals a process (IntakeProcess), so calls outlive on_quit.
+    // Mutating calls and detached runs. Never cancelled: destroying or
+    // keeping it never signals a process (IntakeProcess), so calls outlive
+    // on_quit.
     ProcessRunner runner;
     // The picker's read-only `collections` calls: killed at the 10 s budget
     // (KillAtBudget), and its read lane is closed on quit.
@@ -177,8 +202,11 @@ ActionContext liveContext(const IntakeView *view) {
     c.cliConfigured = info.running && info.cliConfigured && !st.stopped;
     c.inert = view != nullptr && view->isInert();
     c.cli = info.cli;
-    c.laneBusy = st.lane.busy();
+    // Until the leftover-run scan is done nothing mutating may start (a
+    // live run found there takes the lane).
+    c.laneBusy = st.lane.busy() || !st.runScanDone;
     c.executeRunning = st.lane.executeRunning();
+    c.liveRunIds = st.tracker.liveRunIds();
     c.confirmReject = info.confirmReject;
     return c;
 }
@@ -190,6 +218,7 @@ std::string whyNotStartable() {
     if (st.stopped) return "intake is not running";
     const ServiceActionInfo info = serviceActionInfo();
     if (!info.running || !info.cliConfigured) return "intake is not running or has no CLI path";
+    if (!st.runScanDone) return "intake is still checking for an execute run left by an earlier session";
     if (st.lane.busy()) {
         return st.lane.executeRunning() ? "another intake command is still running (execute)"
                                         : "another intake command is still running";
@@ -314,6 +343,9 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     if (!requestForEntry(entry, reason, request, &why)) return notRun(entry.action, why);
     CliConfig config;
     if (!serviceMutationConfig(config)) return notRun(entry.action, "intake is not running or has no CLI path");
+    if (!st.runScanDone) {
+        return notRun(entry.action, "intake is still checking for an execute run left by an earlier session");
+    }
     const std::string name = cliCommandName(request.command);
     const uint64_t token = st.lane.acquire(laneHolderFor(request));
     if (token == 0) {
@@ -652,6 +684,537 @@ void startCollectionsOnQueue(uint64_t serial, std::shared_ptr<const CliConfig> c
     }
 }
 
+// --- Execute placement… and Resume placement (B8, main unless noted) ---
+
+// One Execute placement… flow (main thread).
+struct ExecuteFlow {
+    uint64_t serial = 0;
+    ActionEntry entry;  // as the menu captured it
+    std::shared_ptr<const ExecuteTestHooks> test;
+    // The sheet's window, chosen at the click (as for the picker).
+    __weak NSWindow *hostWindow = nil;
+    uint64_t laneToken = 0;  // the dry run's
+    ExecutePlan plan;
+    // While the sheet is up (released on a later main-queue turn).
+    NSAlert *alert = nil;
+    bool closed = false;
+};
+
+void execReport(const std::shared_ptr<const ExecuteTestHooks> &test, const std::string &line) {
+    if (test && test->report) test->report(line);
+}
+
+void execDone(const std::shared_ptr<const ExecuteTestHooks> &test) {
+    if (test && test->done) test->done();
+}
+
+// Ends `flow` if it is still the current one; its alert is released on a
+// later main-queue turn. By value, as endPicker.
+void endExecuteFlow(std::shared_ptr<ExecuteFlow> flow) {
+    if (!flow) return;
+    ActionsState &st = actionsState();
+    if (st.executeFlow == flow) st.executeFlow.reset();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        flow->alert = nil;
+    });
+}
+
+// Ends `flow` early with the test aid's line.
+void endExecuteFlowWith(std::shared_ptr<ExecuteFlow> flow, const std::string &line) {
+    endExecuteFlow(flow);
+    execReport(flow->test, line);
+    execDone(flow->test);
+}
+
+// The lane token every run holds together.
+bool holdRunLane() {
+    ActionsState &st = actionsState();
+    if (st.runLaneToken != 0) return true;
+    st.runLaneToken = st.lane.acquire(LaneHolder::Execute);
+    return st.runLaneToken != 0;
+}
+
+void releaseRunLaneIfIdle() {
+    ActionsState &st = actionsState();
+    if (!st.tracker.empty() || st.runLaneToken == 0) return;
+    st.lane.finish(st.runLaneToken);
+    st.runLaneToken = 0;
+}
+
+std::string runFileText(const std::string &stem) {
+    return runFileName(stem);
+}
+
+// The roots of a run as MutationRoots: the root paths it was started with,
+// else the ones the current snapshot has; no menu status (the run took
+// minutes, so the first load after it decides the baseline).
+std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const std::vector<std::string> &rootPaths) {
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    std::vector<MutationRoot> out;
+    for (size_t i = 0; i < ids.size(); i++) {
+        MutationRoot r;
+        r.id = ids[i];
+        if (i < rootPaths.size()) r.rootPath = rootPaths[i];
+        if (r.rootPath.empty() && view) {
+            if (const IntakeRecord *record = view->snapshot().recordForId(r.id)) r.rootPath = record->rootPath;
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// A finished run's result: per-root errors, one console line, a refresh.
+// Returns the console line.
+std::string applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope) {
+    const RunSummary summary = summarizeRun(command, roots, envelope);
+    RootErrorStore &errors = actionsErrorStore();
+    for (const std::string &id : summary.outcome.succeeded) errors.clear(id);
+    for (const auto &entry : summary.outcome.rootErrors) {
+        const bool reverted =
+            std::find(summary.reverted.begin(), summary.reverted.end(), entry.first) != summary.reverted.end();
+        // Baseline: a reverted resume root ended approved; any other failed
+        // root takes the status of the next load (approved again, still
+        // placing, ...), and the tooltip stays until it leaves it.
+        errors.set(entry.first, entry.second, reverted ? IntakeStatus::Approved : IntakeStatus::Unknown);
+        logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+    }
+    if (summary.outcome.isError) {
+        logError(summary.outcome.consoleLine);
+    } else {
+        logInfo(summary.outcome.consoleLine);
+    }
+    serviceRefreshAfterCommand();
+    return summary.outcome.consoleLine;
+}
+
+// Queue: deletes a finished run's files.
+void deleteRunFilesLater(const std::string &stem) {
+    ActionsState &st = actionsState();
+    const std::string dir = st.outputDirectory;
+    const std::string name = stem;
+    dispatch_async(st.queue, ^{
+        const size_t n = deleteRunFiles(dir, name);
+        logDebug("execute: deleted " + std::to_string(n) + " file(s) of " + name);
+    });
+}
+
+RunTestReport takeRunReport(const std::string &stem) {
+    ActionsState &st = actionsState();
+    RunTestReport report;
+    auto it = st.runReports.find(stem);
+    if (it != st.runReports.end()) {
+        report = std::move(it->second);
+        st.runReports.erase(it);
+    }
+    return report;
+}
+
+// A tracked run has ended (own or adopted) with `envelope`: apply it,
+// forget the run, release the lane when it was the last, delete its files.
+void finishRun(const std::string &stem, const EnvelopeResult &envelope) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;  // the files stay: the next session finishes it
+    const TrackedRun *found = st.tracker.find(stem);
+    if (found == nullptr) return;
+    const TrackedRun run = *found;
+    st.exitWatches.erase(stem);
+    RunTestReport report = takeRunReport(stem);
+    const std::string line = applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope);
+    st.tracker.remove(stem);
+    releaseRunLaneIfIdle();
+    deleteRunFilesLater(stem);
+    if (report.hooks) {
+        // Never spawned (a configuration that cannot run, a spawn failure).
+        execReport(report.hooks, report.prefix + "not started: " + line);
+        execDone(report.hooks);
+    }
+}
+
+void onRunSpawned(const std::string &stem, pid_t pid, bool startKnown, const ProcessStartTime &start,
+                  bool runFileWritten, const std::string &runFileError) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    if (!st.tracker.spawned(stem, pid, start)) return;
+    const TrackedRun *run = st.tracker.find(stem);
+    const std::string name = cliCommandName(run->command);
+    std::string where;
+    if (runFileWritten) {
+        where = "run file " + runFileText(stem);
+    } else if (!startKnown) {
+        where = "no run file: it had already exited";
+    } else {
+        where = "no run file";
+        logError(name + ": the run file " + runFileText(stem) + " could not be written (" + runFileError +
+                 "); if foobar2000 quits before the run ends, its result is not reported");
+    }
+    logInfo(name + ": started for " + rootCountText(run->ids.size()) + ": " + idList(run->ids) + " (pid " +
+            std::to_string(pid) + ", " + where + ")");
+    RunTestReport report = takeRunReport(stem);
+    if (report.hooks) {
+        execReport(report.hooks, report.prefix + "started: pid " + std::to_string(pid) + ", " + where);
+        execDone(report.hooks);
+    }
+}
+
+void onOwnRunEnded(const std::string &stem, const CliResult &result) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    logCliResult(result);
+    st.tracker.exited(stem);
+    finishRun(stem, result.envelope);
+}
+
+void onRunRefused(const std::string &stem, const std::string &refusal) {
+    ActionsState &st = actionsState();
+    const TrackedRun *run = st.tracker.find(stem);
+    const std::string name = run != nullptr ? cliCommandName(run->command) : "execute";
+    st.tracker.remove(stem);
+    releaseRunLaneIfIdle();
+    RunTestReport report = takeRunReport(stem);
+    if (st.stopped) return;
+    // A caller bug, not a root's error: no tooltip (as onRefused).
+    logError(name + ": not started (" + refusal + ")");
+    if (report.hooks) {
+        execReport(report.hooks, report.prefix + "not started: " + refusal);
+        execDone(report.hooks);
+    }
+}
+
+// Queue: builds and spawns the detached run, writes its run file as soon as
+// the child exists.
+void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> config,
+                     std::shared_ptr<const CliRequest> request,
+                     std::shared_ptr<const std::vector<std::string>> rootPaths) {
+    ActionsState &st = actionsState();
+    const std::string dir = st.outputDirectory;
+    CliRunOptions options;
+    options.outputDirectory = dir;
+    options.stdoutFileName = runOutputName(stem);
+    options.stderrToDevNull = true;  // PLAN.md 3.7 step 3: nothing reads it, and it could grow unbounded
+    const CliCommand command = request->command;
+    const std::vector<std::string> ids = request->ids;
+    options.onSpawn = [stem, dir, command, ids, rootPaths](const ProcessSpawnInfo &info) {
+        // st.queue, before the completion.
+        std::string error;
+        bool written = false;
+        if (info.startTimeKnown) {
+            RunFile file;
+            file.command = command;
+            file.pid = info.pid;
+            file.start = info.startTime;
+            file.ids = ids;
+            file.rootPaths = *rootPaths;
+            file.output = runOutputName(stem);
+            written = writeRunFile(dir, stem, file, error);
+        }
+        const pid_t pid = info.pid;
+        const bool startKnown = info.startTimeKnown;
+        const ProcessStartTime start = info.startTime;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onRunSpawned(stem, pid, startKnown, start, written, error);
+        });
+    };
+    std::string refusal;
+    const bool started = startCliCommand(
+        st.runner, *config, *request, options, st.queue, nullptr,
+        [stem](CliResult &&result) {
+            auto shared = std::make_shared<CliResult>(std::move(result));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onOwnRunEnded(stem, *shared);
+            });
+        },
+        &refusal);
+    if (!started) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onRunRefused(stem, refusal);
+        });
+    }
+}
+
+// Starts `command` (Execute or Resume) on `roots` as a detached run: the
+// lane and the configuration first. `hooks` (the test aid) get the spawn
+// line, after `prefix`.
+std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &roots,
+                             std::shared_ptr<const ExecuteTestHooks> hooks, const std::string &prefix) {
+    ActionsState &st = actionsState();
+    const IntakeAction action = command == CliCommand::Resume ? IntakeAction::Resume : IntakeAction::Execute;
+    auto refuse = [&](const std::string &why) {
+        const std::string what = notRun(action, why);
+        execReport(hooks, prefix + what);
+        execDone(hooks);
+        return what;
+    };
+    if (st.stopped) return refuse("intake is not running");
+    const std::string why = whyNotStartable();
+    if (!why.empty()) return refuse(why);
+    auto request = std::make_shared<CliRequest>();
+    request->command = command;
+    auto rootPaths = std::make_shared<std::vector<std::string>>();
+    for (const ActionRoot &r : roots) {
+        if (std::find(request->ids.begin(), request->ids.end(), r.id) != request->ids.end()) continue;
+        request->ids.push_back(r.id);
+        rootPaths->push_back(r.rootPath);
+    }
+    if (request->ids.empty()) return refuse("no qualifying root");
+    auto config = std::make_shared<CliConfig>();
+    if (!serviceMutationConfig(*config)) return refuse("intake is not running or has no CLI path");
+    if (!holdRunLane()) return refuse("another intake command is still running");
+    const std::string stem = uniqueRunStem(st.outputDirectory, std::chrono::system_clock::now());
+    st.tracker.begin(stem, command, request->ids, *rootPaths);
+    if (hooks) st.runReports[stem] = RunTestReport{hooks, prefix};
+    logInfo(std::string(cliCommandName(command)) + ": starting for " + rootCountText(request->ids.size()) + ": " +
+            idList(request->ids));
+    std::shared_ptr<const CliConfig> sharedConfig = config;
+    std::shared_ptr<const CliRequest> sharedRequest = request;
+    std::shared_ptr<const std::vector<std::string>> sharedPaths = rootPaths;
+    dispatch_async(st.queue, ^{
+        startRunOnQueue(stem, sharedConfig, sharedRequest, sharedPaths);
+    });
+    return "starting for " + rootCountText(request->ids.size());
+}
+
+// The sheet's Execute, and the test aid's headless confirmation.
+void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow, std::shared_ptr<const ExecuteTestHooks> hooks,
+                    const std::string &prefix) {
+    const std::string what = startDetachedRun(CliCommand::Execute, flow->plan.placeable, hooks, prefix);
+    logDebug("execute: " + what);
+}
+
+std::string executeSheetDescription(const ExecuteFlow &flow, bool sheet) {
+    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
+    line += "\"" + executeSheetTitle(flow.plan) + "\"; " + executeSheetSummary(flow.plan) +
+            "; buttons Execute, Cancel";
+    if (flow.test && flow.test->mode == ExecuteTestHooks::Mode::AutoClose) {
+        char seconds[32];
+        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
+        line += std::string("; closing as Cancel in ") + seconds + " s";
+    }
+    return line;
+}
+
+// The test aid's AutoClose: Cancel after `seconds` (common modes include
+// the modal panel mode, so this also fires while the app-modal fallback
+// runs).
+void scheduleExecuteCancel(std::shared_ptr<ExecuteFlow> flow, NSButton *cancel, double seconds) {
+    __weak NSButton *weakCancel = cancel;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
+                                            repeats:NO
+                                              block:^(NSTimer *) {
+                                                  NSButton *button = weakCancel;
+                                                  if (button != nil && !flow->closed) [button performClick:nil];
+                                              }];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+}
+
+void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleInformational;
+    alert.messageText = NSStr(executeSheetTitle(flow->plan));
+    alert.informativeText = NSStr(executeSheetText(flow->plan));
+    [alert addButtonWithTitle:@"Execute"];
+    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    flow->alert = alert;
+
+    std::shared_ptr<ExecuteFlow> current = flow;
+    const bool autoClose = flow->test && flow->test->mode == ExecuteTestHooks::Mode::AutoClose;
+    void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+        current->closed = true;
+        endExecuteFlow(current);
+        if (actionsState().stopped) return;  // quit started: drop it
+        if (response != NSAlertFirstButtonReturn) {
+            logDebug("execute: cancelled in the sheet");
+        } else {
+            // The lane and the configuration again (startDetachedRun).
+            confirmExecute(current, nullptr, std::string());
+        }
+        execDone(current->test);
+    };
+    // The window chosen at the click; if it can no longer take a sheet, the
+    // main or key window as they are now.
+    NSWindow *host = flow->hostWindow;
+    if (!usableSheetHost(host)) host = activeSheetHost();
+    if (host != nil) {
+        [alert beginSheetModalForWindow:host completionHandler:finish];
+        if (autoClose) {
+            execReport(flow->test, executeSheetDescription(*flow, true));
+            scheduleExecuteCancel(flow, cancel, flow->test->closeSeconds);
+        }
+        return;
+    }
+    // App-modal from a run-loop callout, never inside this main-queue block
+    // (see showPicker: the main queue must keep draining while it is up).
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        if (actionsState().stopped) {
+            endExecuteFlow(current);
+            return;
+        }
+        if (autoClose) {
+            execReport(current->test, executeSheetDescription(*current, false));
+            scheduleExecuteCancel(current, cancel, current->test->closeSeconds);
+        }
+        finish([alert runModal]);
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+void onExecuteDryRunBudget(uint64_t serial, uint64_t token, const std::vector<MutationRoot> &roots,
+                           CliBudgetEvent event) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    // The lane release and its Info line (no E_CLI_TIMEOUT: doc 03 excepts
+    // execute); the late result is dropped, so no sheet.
+    onBudget(token, CliCommand::Execute, roots, event);
+    if (st.executeFlow && st.executeFlow->serial == serial) {
+        endExecuteFlowWith(st.executeFlow, "dry run: no answer within 10 s; no sheet, nothing executed");
+    }
+}
+
+void onExecuteDryRun(uint64_t serial, uint64_t token, const CliResult &result) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    logCliResult(result);
+    if (!st.lane.finish(token)) {
+        logInfo("execute: a late dry-run result was ignored");
+        return;
+    }
+    if (!st.executeFlow || st.executeFlow->serial != serial) return;
+    std::shared_ptr<ExecuteFlow> flow = st.executeFlow;
+    flow->plan = planExecute(flow->entry.roots, result.envelope);
+    const ExecutePlan &plan = flow->plan;
+
+    // Roots the dry run refused: their error as a tooltip (doc 04 "Failure
+    // behavior"), baseline the menu's status, and a refresh to show it.
+    if (!plan.outcome.rootErrors.empty()) {
+        std::unordered_map<std::string, IntakeStatus> menuStatus;
+        for (const ActionRoot &r : flow->entry.roots) menuStatus.emplace(r.id, r.status);
+        RootErrorStore &errors = actionsErrorStore();
+        for (const auto &entry : plan.outcome.rootErrors) {
+            auto status = menuStatus.find(entry.first);
+            errors.set(entry.first, entry.second, status == menuStatus.end() ? IntakeStatus::Unknown : status->second);
+            logDebug("tooltip " + entry.first + " until its status changes: " + entry.second);
+        }
+        serviceRefreshAfterCommand();
+    }
+    const bool reported = !plan.outcome.rootErrors.empty() || plan.outcome.isError;
+    if (reported) logError(plan.outcome.consoleLine);
+    if (plan.placeable.empty()) {
+        if (!reported) {
+            logError(std::string(kExecuteDryRunName) + ": no root can be placed (the dry run listed none of them)");
+        }
+        endExecuteFlowWith(flow, "dry run: " + executeSheetSummary(plan) + "; no sheet, nothing executed");
+        return;
+    }
+    logDebug(std::string(kExecuteDryRunName) + ": " + executeSheetSummary(plan));
+    if (flow->test && flow->test->mode == ExecuteTestHooks::Mode::Headless) {
+        // The test aid: what the sheet would list, then Execute.
+        endExecuteFlow(flow);
+        confirmExecute(flow, flow->test, "dry run: " + executeSheetSummary(plan) + "; confirmed; ");
+        return;
+    }
+    showExecuteSheet(flow);
+}
+
+// Queue: builds and starts `execute <ids> --dry-run --json`.
+void startExecuteDryRunOnQueue(uint64_t serial, uint64_t token, std::shared_ptr<const CliConfig> config,
+                               std::shared_ptr<const CliRequest> request,
+                               std::shared_ptr<const std::vector<MutationRoot>> roots) {
+    ActionsState &st = actionsState();
+    CliRunOptions options;  // ExecuteDryRun: output files, a lane release at the budget, never killed
+    options.outputDirectory = st.outputDirectory;
+    std::string refusal;
+    const bool started = startCliCommand(
+        st.runner, *config, *request, options, st.queue,
+        [serial, token, roots](CliBudgetEvent event) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onExecuteDryRunBudget(serial, token, *roots, event);
+            });
+        },
+        [serial, token](CliResult &&result) {
+            auto shared = std::make_shared<CliResult>(std::move(result));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                onExecuteDryRun(serial, token, *shared);
+            });
+        },
+        &refusal);
+    if (!started) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onRefused(token, CliCommand::Execute, refusal);
+            ActionsState &main = actionsState();
+            if (!main.stopped && main.executeFlow && main.executeFlow->serial == serial) {
+                endExecuteFlowWith(main.executeFlow, "not started: " + refusal);
+            }
+        });
+    }
+}
+
+// --- leftover runs (B8) ---
+
+// Queue -> main: an adopted run's process has ended.
+void onAdoptedRunEnded(const std::string &stem, const EnvelopeResult &envelope) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    const TrackedRun *run = st.tracker.find(stem);
+    if (run == nullptr) return;
+    logInfo(std::string(cliCommandName(run->command)) + ": the run adopted from an earlier session (pid " +
+            std::to_string(run->pid) + ") has ended");
+    st.tracker.exited(stem);
+    finishRun(stem, envelope);
+}
+
+void watchAdoptedRun(const TrackedRun &run) {
+    ActionsState &st = actionsState();
+    const std::string stem = run.stem;
+    const std::string dir = st.outputDirectory;
+    st.exitWatches[stem] = std::make_shared<ProcessExitWatch>(run.pid, run.start, st.queue, [stem, dir]() {
+        // st.queue: the output is complete now.
+        std::string text, error;
+        if (!readRunOutput(dir, runOutputName(stem), text, error)) text.clear();
+        auto envelope = std::make_shared<EnvelopeResult>(parseDetachedOutput(text, error));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onAdoptedRunEnded(stem, *envelope);
+        });
+    });
+}
+
+struct RunScanResult {
+    LeftoverScan scan;
+    std::vector<EnvelopeResult> finished;  // aligned with scan.finish
+};
+
+void onRunScan(const std::shared_ptr<RunScanResult> &result) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    const LeftoverScan &scan = result->scan;
+    if (!scan.error.empty()) logError("execute: cannot check for leftover runs: " + scan.error);
+    for (const std::string &note : scan.notes) logDebug("execute: removed " + note);
+    if (!scan.swept.empty()) {
+        logInfo("execute: removed " + std::to_string(scan.swept.size()) + " leftover file(s) from " +
+                st.outputDirectory + " that belonged to no run");
+    }
+    for (const LeftoverRun &run : scan.adopt) {
+        if (!st.tracker.adopt(run.stem, run.file)) continue;
+        if (!holdRunLane()) logDebug("execute: the lane was busy while adopting " + run.stem);
+        const std::string name = cliCommandName(run.file.command);
+        logInfo(name + ": adopted a run from an earlier session: pid " + std::to_string(run.file.pid) + ", " +
+                rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + " (run file " +
+                runFileText(run.stem) + "); intake commands wait until it ends");
+        watchAdoptedRun(*st.tracker.find(run.stem));
+    }
+    for (size_t i = 0; i < scan.finish.size(); i++) {
+        const LeftoverRun &run = scan.finish[i];
+        const std::string name = cliCommandName(run.file.command);
+        logInfo(name + ": a run from an earlier session has ended (pid " + std::to_string(run.file.pid) + ", " +
+                rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + ", run file " +
+                runFileText(run.stem) + "); applying its result");
+        applyRunResult(run.file.command, runRoots(run.file.ids, run.file.rootPaths), result->finished[i]);
+        deleteRunFilesLater(run.stem);
+    }
+    st.runScanDone = true;
+    std::vector<std::function<void()>> waiting = std::move(st.afterRunScan);
+    st.afterRunScan.clear();
+    for (std::function<void()> &fn : waiting) fn();
+}
+
 } // anonymous namespace
 
 std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test) {
@@ -688,6 +1251,107 @@ std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const P
         startCollectionsOnQueue(serial, sharedConfig);
     });
     return "loading the collections";
+}
+
+std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "not run: intake is not running";
+    auto endNow = [&test](const std::string &what) {
+        execReport(test, what);
+        execDone(test);
+        return what;
+    };
+    if (!entry.enabled) return endNow("not run: the item is disabled");
+    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.executeFlow) {
+        logInfo("execute: the execute sheet is already open or its dry run is running; this request is ignored");
+        return endNow("ignored: the execute sheet is already open or its dry run is running");
+    }
+    // No dry run (and no sheet) for a run that could not start.
+    const std::string why = whyNotStartable();
+    if (!why.empty()) return endNow(notRun(entry.action, why));
+    CliRequest request;
+    std::string refusal;
+    if (!requestForEntry(entry, std::string(), request, &refusal)) return endNow(notRun(entry.action, refusal));
+    request.dryRun = true;
+    CliConfig config;
+    if (!serviceMutationConfig(config)) {
+        return endNow(notRun(entry.action, "intake is not running or has no CLI path"));
+    }
+    const uint64_t token = st.lane.acquire(laneHolderFor(request));
+    if (token == 0) return endNow(notRun(entry.action, "another intake command is still running"));
+    auto flow = std::make_shared<ExecuteFlow>();
+    flow->serial = ++st.executeSerial;
+    flow->entry = entry;
+    flow->test = std::move(test);
+    flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
+    flow->laneToken = token;
+    st.executeFlow = flow;
+    logInfo(std::string(kExecuteDryRunName) + ": starting for " + rootCountText(request.ids.size()) + ": " +
+            idList(request.ids));
+    auto roots = std::make_shared<std::vector<MutationRoot>>();
+    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status});
+    const uint64_t serial = flow->serial;
+    auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
+    auto sharedRequest = std::make_shared<const CliRequest>(request);
+    std::shared_ptr<const std::vector<MutationRoot>> sharedRoots = roots;
+    dispatch_async(st.queue, ^{
+        startExecuteDryRunOnQueue(serial, token, sharedConfig, sharedRequest, sharedRoots);
+    });
+    return "checking " + rootCountText(request.ids.size()) + " with a dry run";
+}
+
+std::string actionsResume(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "not run: intake is not running";
+    if (!entry.enabled || entry.roots.empty()) {
+        const std::string what = !entry.enabled ? "not run: the item is disabled" : "not run: no qualifying root";
+        execReport(test, what);
+        execDone(test);
+        return what;
+    }
+    return startDetachedRun(CliCommand::Resume, entry.roots, std::move(test), std::string());
+}
+
+std::string actionsRunsDescription() {
+    ActionsState &st = actionsState();
+    std::string lane = st.lane.busy() ? std::string("busy (") + laneHolderName(st.lane.holder()) + ")" : "free";
+    if (!st.runScanDone) return "the check for leftover runs has not finished; lane " + lane;
+    std::string runs = st.tracker.empty() ? std::string("none")
+                                          : std::to_string(st.tracker.size()) + " live: " + st.tracker.describe();
+    return runs + "; lane " + lane;
+}
+
+void actionsStartRunScan() {
+    ActionsState &st = actionsState();
+    if (st.stopped || st.runScanStarted) return;
+    st.runScanStarted = true;
+    const std::string dir = st.outputDirectory;
+    if (dir.empty()) {
+        st.runScanDone = true;
+        return;
+    }
+    dispatch_async(st.queue, ^{
+        auto result = std::make_shared<RunScanResult>();
+        result->scan = scanLeftoverRuns(dir, processIsLive);
+        for (const LeftoverRun &run : result->scan.finish) {
+            result->finished.push_back(parseDetachedOutput(run.output, run.outputError));
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onRunScan(result);
+        });
+    });
+}
+
+void actionsAfterRunScan(std::function<void()> fn) {
+    if (!fn) return;
+    ActionsState &st = actionsState();
+    if (st.stopped) return;
+    if (st.runScanDone) {
+        fn();
+        return;
+    }
+    st.afterRunScan.push_back(std::move(fn));
 }
 
 RootErrorStore &actionsErrorStore() {
@@ -790,6 +1454,8 @@ std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std
         return runMutation(entry, skipDialog ? reason : std::string());
     }
     if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry, nullptr);
+    if (entry.action == IntakeAction::Execute) return actionsExecutePlacement(entry, nullptr);
+    if (entry.action == IntakeAction::Resume) return actionsResume(entry, nullptr);
     // Propose, Approve, Assign to X (its collection is in the entry).
     return runMutation(entry, std::string());
 }
@@ -800,6 +1466,11 @@ void actionsShutdown() {
     st.menuTable = ActionTable();
     // A running `collections` is killed; one not yet spawned never starts.
     st.pickerRunner.closeReadLane();
+    // Detached runs keep running and keep their files (the next session
+    // adopts or finishes them); only the watching stops.
+    for (auto &watch : st.exitWatches) watch.second->cancel();
+    st.exitWatches.clear();
+    st.afterRunScan.clear();
 }
 
 } // namespace intake
