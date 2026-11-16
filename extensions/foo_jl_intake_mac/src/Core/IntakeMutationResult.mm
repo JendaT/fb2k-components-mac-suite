@@ -52,9 +52,9 @@ bool namesId(const std::string &msg, const std::string &id) {
 } // anonymous namespace
 
 MutationOutcome summarizeMutation(CliCommand command, const std::vector<MutationRoot> &roots,
-                                  const EnvelopeResult &envelope) {
+                                  const EnvelopeResult &envelope, const std::string &displayName) {
     MutationOutcome out;
-    const std::string name = cliCommandName(command);
+    const std::string name = displayName.empty() ? std::string(cliCommandName(command)) : displayName;
     const CliOutcome outcome = envelope.outcome;
 
     if (outcome == CliOutcome::Cancelled) {

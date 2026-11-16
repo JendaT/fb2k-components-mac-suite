@@ -72,7 +72,9 @@ struct MutationOutcome {
     bool isError = false;  // log the line at Error level
 };
 
+// `displayName` replaces cliCommandName(command) in the texts and the
+// console line when given ("execute dry run", B8).
 MutationOutcome summarizeMutation(CliCommand command, const std::vector<MutationRoot> &roots,
-                                  const EnvelopeResult &envelope);
+                                  const EnvelopeResult &envelope, const std::string &displayName = std::string());
 
 } // namespace intake
