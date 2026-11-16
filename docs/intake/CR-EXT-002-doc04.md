@@ -9,7 +9,7 @@
 numbered amendments: the overseer folds this CR into amendment 004. Doc 04 is
 not edited on this branch. Filed as its own file, like CR-EXT-001, because
 `CHANGE-REQUESTS.md` registers requests against the guarded doc 03.
-**Status:** open
+**Status:** applied in 900bbba1 (doc 04 v1.3)
 
 Eight items. B9 (Swap to library paths, Delete local copy), B10 (row colours,
 confirmations) and the P4 cache gate were built and accepted in-app after doc
