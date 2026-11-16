@@ -14,6 +14,7 @@ import {
   type P2Deps, type RootRef,
 } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
+import { clearImmutableTree, immutablePaths, setImmutable } from "./fflags.ts";
 import { CLI_VERSION, type JsonError, type Status, type StructureSlot, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
@@ -116,6 +117,7 @@ export interface GcRow {
   files?: number;
   skipped?: "too_young";
   dry_run?: true;
+  issues?: string[]; // on a delete/relocate row: `cleared_readonly_flag: <n> file(s)`
 }
 
 // ---- propose ------------------------------------------------------------------
@@ -478,21 +480,28 @@ export async function cmdExecute(
     let committed = false;
     try {
       // 1+2. Copy into a temp dir on the target volume, tag the copies, fsync.
-      rmSync(tmp, { recursive: true, force: true });
+      removeTemp(tmp);
       mkdirSync(tmp, { recursive: true });
       const tags: ProvenanceTags = {
         INTAKE_DATE: isoLocal().slice(0, 10),
         INTAKE_SOURCE: sc.source.source_type,
         INTAKE_BATCH: batch,
       };
-      for (const item of [...plan.audio, ...plan.artifacts]) {
-        const dest = join(tmp, item.to);
-        mkdirSync(dirname(dest), { recursive: true });
-        copyFileSync(item.from, dest);
+      const copies = [...plan.audio, ...plan.artifacts].map((item) => ({ from: item.from, dest: join(tmp, item.to) }));
+      for (const c of copies) {
+        mkdirSync(dirname(c.dest), { recursive: true });
+        copyFileSync(c.from, c.dest);
+      }
+      // copyFileSync clones a file over 128 KiB on APFS, flags included, so a
+      // uchg original (an SMB share's read-only attribute) gives a uchg copy,
+      // which cannot be chmodded or tagged. uchg off on the copies, one spawn
+      // for the temp dir; the income original is never changed.
+      clearImmutableTree(tmp);
+      for (const c of copies) {
         // copyFileSync keeps the original's mode, and a 0444 copy cannot be
         // tagged (metaflac: "ERROR: writing FLAC file"). u+w on the copy
         // only; the income original is never changed.
-        chmodSync(dest, (statSync(dest).mode & 0o7777) | 0o200);
+        chmodSync(c.dest, (statSync(c.dest).mode & 0o7777) | 0o200);
       }
       for (const a of plan.audio) {
         const r = await writeProvenance(join(tmp, a.to), tags, a.hash);
@@ -552,7 +561,7 @@ export async function cmdExecute(
           path: root.dir,
         });
       } else {
-        rmSync(tmp, { recursive: true, force: true });
+        removeTemp(tmp);
         sc.status = "approved";
         writeSidecarWithEvent(root, "execute_failed", false);
         errors.push({ code: "E_VERIFY", msg, path: root.dir });
@@ -560,6 +569,23 @@ export async function cmdExecute(
     }
   }
   return finish(data, errors);
+}
+
+/**
+ * Remove execute's temp dir. A copy that still carries uchg from its original
+ * (a copy loop that failed, or a run that died, before the flags were cleared)
+ * makes the removal fail with EPERM: then uchg is cleared on the temp dir's
+ * tree and the removal runs again.
+ */
+function removeTemp(tmp: string): void {
+  try {
+    rmSync(tmp, { recursive: true, force: true });
+    return;
+  } catch (e) {
+    if (errCode(e) !== "EPERM") throw e;
+  }
+  clearImmutableTree(tmp);
+  rmSync(tmp, { recursive: true, force: true });
 }
 
 /** Crash recovery: placing -> placed (target verifies) or back to approved. */
@@ -582,7 +608,7 @@ async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts):
     writeSidecarWithEvent(root, "placed", opts.dryRun);
     return { id: sc.id, root_path: root.dir, resumed: "completed", target_path: target };
   }
-  if (target) rmSync(join(dirname(target), `.intake-tmp-${sc.id}`), { recursive: true, force: true });
+  if (target) removeTemp(join(dirname(target), `.intake-tmp-${sc.id}`));
   sc.status = "approved";
   writeSidecarWithEvent(root, "execute_reverted", opts.dryRun);
   return { id: sc.id, root_path: root.dir, resumed: "reverted_to_approved" };
@@ -638,12 +664,23 @@ function insideDir(p: string, rootReal: string): boolean {
  * an archive) gets u+w while gc works, and its mode back afterwards if it
  * still exists. Nothing outside the root's dir is chmodded.
  *
+ * The user-immutable flag (uchg: an SMB share's DOS read-only attribute,
+ * src/fflags.ts) is cleared first on the files gc renames and on the dirs
+ * inside the root's dir that a rename or the cleanup goes through (the root's
+ * dir, the files' dirs, a whole-dir root's disc dirs): one stat spawn reads
+ * them all, one chflags spawn clears the flagged ones. When gc fails, every
+ * one still there gets uchg back (after the modes), so the root is left as it
+ * was; when it succeeds, the dirs still there do. The row's `issues` counts
+ * the files cleared (`cleared_readonly_flag: <n> file(s)`). No other flag is
+ * changed (uappnd, schg and sappnd still fail the rename), and nothing
+ * outside the root's dir: a relocated file arrives in the dj zone unflagged.
+ *
  * Then, for a whole-dir root, the now-empty disc dirs (junk files included)
  * go; that is cleanup after the files are gone and does not fail the root.
  * The archive and the `.unpacked` dir of an archive-sourced root are not
  * touched: only the root's own files are.
  */
-function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): JsonError | null {
+function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): { error: JsonError } | { issues: string[] } {
   const sc = root.sidecar;
   const stage = join(root.dir, `${GC_STAGE_PREFIX}${sc.id}`); // never walked (walkDirs)
   const moves: { from: string; to: string; rel: string; relocated: boolean }[] = [];
@@ -664,7 +701,28 @@ function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): J
   try {
     rootReal = realpathSync(root.dir);
   } catch (e) {
-    return { code: "E_VERIFY", msg: `cannot read the root dir (${errCode(e)}); nothing of the root was changed`, path: root.dir };
+    return { error: { code: "E_VERIFY", msg: `cannot read the root dir (${errCode(e)}); nothing of the root was changed`, path: root.dir } };
+  }
+  const isKind = (p: string, dir: boolean): boolean => {
+    try {
+      const st = lstatSync(p);
+      return dir ? st.isDirectory() : st.isFile();
+    } catch {
+      return false;
+    }
+  };
+  let flaggedFiles: string[] = [];
+  let flaggedDirs: string[] = [];
+  if (moves.length > 0) {
+    const files = moves.map((m) => m.from).filter((p) => isKind(p, false) && insideDir(dirname(p), rootReal));
+    const dirs = [...new Set([
+      root.dir, ...moves.map((m) => dirname(m.from)), ...(sc.virtual ? [] : walkDirs(root.dir).map((e) => e.path)),
+    ])].filter((d) => isKind(d, true) && insideDir(d, rootReal));
+    const flagged = new Set(immutablePaths([...files, ...dirs]));
+    flaggedFiles = files.filter((p) => flagged.has(p));
+    flaggedDirs = dirs.filter((d) => flagged.has(d));
+    // A clear that fails shows as the rename's EPERM below.
+    setImmutable([...flaggedFiles, ...flaggedDirs], false);
   }
   const chmodded: { dir: string; mode: number }[] = [];
   const ensureWritable = (dir: string): void => {
@@ -706,15 +764,16 @@ function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): J
     }
     return stuck;
   };
-  const failure = (verb: string, m: { from: string; rel: string }, why: string, code = "E_VERIFY", deleted = 0): JsonError => {
+  const failure = (verb: string, m: { from: string; rel: string }, why: string, code = "E_VERIFY", deleted = 0) => {
     const stuck = rollback();
     const state = deleted === 0
       ? `nothing of the root was ${destDir ? "moved or deleted" : "deleted"}`
       : `${deleted} staged file(s) were already deleted, the rest renamed back`;
     const left = stuck.length > 0 ? `; renaming back failed for ${stuck.map((p) => `"${p}"`).join(", ")}` : "";
-    return { code, msg: `cannot ${verb} "${m.rel}" (${why}); ${state}${left}`, path: m.from };
+    return { error: { code, msg: `cannot ${verb} "${m.rel}" (${why}); ${state}${left}`, path: m.from } };
   };
 
+  let disposed = false;
   try {
     if (moves.some((m) => !m.relocated)) ensureWritable(root.dir);
     for (const m of moves) ensureWritable(dirname(m.from));
@@ -760,7 +819,9 @@ function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): J
         }
       }
     }
-    return null;
+    disposed = true;
+    const n = flaggedFiles.length;
+    return { issues: n > 0 ? [`cleared_readonly_flag: ${n} file(s)`] : [] };
   } finally {
     for (const c of chmodded.reverse()) {
       try {
@@ -769,6 +830,10 @@ function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): J
         // left owner-writable
       }
     }
+    // After the modes: a uchg dir cannot be chmodded. The tombstone write
+    // that follows a success is unaffected: it rewrites the existing sidecar
+    // in place, which neither the root dir's mode nor its uchg blocks.
+    setImmutable((disposed ? flaggedDirs : [...flaggedFiles, ...flaggedDirs]).filter(present), true);
   }
 }
 
@@ -843,9 +908,9 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
       continue;
     }
     const destDir = relocate ? join(cfg.gc.dj_zone!, basename(placed.target_path)) : null;
-    const problem = disposeLocal(root, plan, destDir);
-    if (problem) {
-      errors.push(problem);
+    const disposal = disposeLocal(root, plan, destDir);
+    if ("error" in disposal) {
+      errors.push(disposal.error);
       continue;
     }
     const event = relocate ? "gc_relocated" : "gc_done";
@@ -855,7 +920,10 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
     });
     sc.status = "gc_done";
     writeSidecarWithEvent(root, event, false);
-    data.push({ id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir });
+    data.push({
+      id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir,
+      issues: disposal.issues,
+    });
   }
   return finish(data, errors);
 }

@@ -154,17 +154,28 @@ sidecar behind as a `gc_done` tombstone. gc deletes a root's local files (or
 with `--relocate-dj` moves its audio to the dj zone) all or none: it first
 renames every file into `.intake-gc-<id>/` inside the root's dir (or to its
 dj destination) and deletes the staged files only once every rename worked.
-If one fails (an immutable flag, an existing dj file, ...) the renames are
+If one fails (an append-only flag, an existing dj file, ...) the renames are
 reversed, the root stays `placed` with no journal line, and a per-root
 `E_VERIFY` (`E_TARGET_EXISTS` for an existing dj file) names the file. A
 read-only dir inside the root's dir gets u+w while gc works and its mode
-back afterwards; nothing outside the root's dir is chmodded. A stage dir
-left by a gc that died is never walked or resolved; a gc rerun deletes
-it. For an
+back afterwards; nothing outside the root's dir is chmodded. The
+user-immutable flag `uchg` (how macOS shows the DOS read-only attribute on
+an SMB share, where chmod has no effect) is cleared first on the files gc
+renames and on the dirs inside the root's dir it goes through (the root's
+dir, the files' dirs, a whole-dir root's disc dirs), with
+`/usr/bin/chflags` on those paths only: one `stat` spawn per root reads the
+flags, one `chflags` spawn clears them. The row's `issues` reports the files
+(`cleared_readonly_flag: <n> file(s)`). A failed gc sets uchg back on all of
+them; a successful one on the dirs that remain. Other files in the root's
+dir (a virtual root's neighbours), anything outside it, and the flags
+`uappnd`, `schg` and `sappnd` are never touched; a relocated file arrives in
+the dj zone without the flag. A stage dir left by a gc that died is never
+walked or resolved; a gc rerun deletes it. For an
 archive-sourced root gc removes the root's files inside `<name>.unpacked/`;
 the archive and the `.unpacked` dir stay. Each copy gets u+w (a 0444
-original copies as 0444 and could not be tagged); the original is never
-changed. Provenance tags are part of the placement: a failed tag write
+original copies as 0444 and could not be tagged) and loses uchg
+(`copyFileSync` clones a file over 128 KiB on APFS, flags included); the
+original is never changed. Provenance tags are part of the placement: a failed tag write
 (`metaflac_missing`, `metaflac_failed`, `provenance_write_failed`) fails the
 root before the rename, so nothing is placed or journaled, the temp dir is
 removed and the root goes back to `approved` with a per-root `E_VERIFY`. A
@@ -239,7 +250,8 @@ archive reported `failed`; SIGTERM, SIGINT or SIGHUP during a run kill the
 tool and remove the partial dir before intake exits. The tools restore an
 archive's read-only modes (a 0555 dir blocks removing the files in it, a
 0444 file cannot be tagged), so after every tool run, and before a partial
-dir is removed, the extracted tree gets u+rwx on dirs and u+rw on files
+dir is removed, the extracted tree loses uchg (one `chflags -R` spawn, no
+symlink followed) and gets u+rwx on dirs and u+rw on files
 (`test/archive-readonly.test.ts`).
 
 One fixture (`todo/Bluetech [2011] Cosmic Dubwise`) carries a zeroed FLAC

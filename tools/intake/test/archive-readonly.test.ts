@@ -5,10 +5,13 @@
 // to leave its `.partial` behind and every later scan failed removing it; a
 // good unpack left a tree whose files could not be tagged after a copy.
 // unpackArchive makes the extracted tree owner-writable after every tool run
-// and before removing a partial dir.
+// and before removing a partial dir, clearing the user-immutable flag (uchg,
+// an SMB share's DOS read-only attribute) as well: a uchg file in a leftover
+// partial dir made every later unpack of that archive fail.
 //
 // Archives are built in the test (test/rarbuild.ts, test/zipbuild.ts). Every
-// temp tree is made writable again before it is removed.
+// temp tree has its flags cleared and is made writable again before it is
+// removed.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -51,12 +54,16 @@ beforeEach(() => {
   mkdirSync(income, { recursive: true });
 });
 
+const clearFlags = (dir: string) => Bun.spawnSync(["/usr/bin/chflags", "-R", "nouchg,nouappnd", dir]);
+
 afterEach(() => {
+  clearFlags(income);
   makeTreeWritable(income);
   rmSync(income, { recursive: true, force: true });
 });
 
 afterAll(() => {
+  clearFlags(work);
   makeTreeWritable(work);
   rmSync(work, { recursive: true, force: true });
 });
@@ -121,4 +128,25 @@ test("a Unix-host zip with a 0555 dir and a 0444 file, through unzip, ends owner
   const target = join(income, `${ALBUM}.unpacked`);
   expect(readFileSync(join(target, ALBUM, "01 - Track.txt"))).toEqual(Buffer.from(TRACK));
   expect(notOwnerWritable(target)).toEqual([]);
+});
+
+test("a .partial holding a uchg file, left by an earlier run, is removed and the unpack succeeds", async () => {
+  const zip = join(income, `${ALBUM}.zip`);
+  writeFileSync(zip, buildZip([{ name: `${ALBUM}/01 - Track.txt`, data: TRACK }]));
+  const leftover = join(income, `${ALBUM}.unpacked.partial`, ALBUM);
+  mkdirSync(leftover, { recursive: true });
+  const stale = join(leftover, "stale.txt");
+  writeFileSync(stale, "half written\n");
+  try {
+    const flag = Bun.spawnSync(["/usr/bin/chflags", "uchg", stale]);
+    expect(flag.exitCode).toBe(0);
+
+    const r = await unpackArchive(zip, false);
+    expect(r.error).toBeUndefined();
+    expect(r.action).toBe("unpacked");
+    expect(readdirSync(income).sort()).toEqual([`${ALBUM}.unpacked`, `${ALBUM}.zip`]);
+    expect(readdirSync(join(income, `${ALBUM}.unpacked`, ALBUM))).toEqual(["01 - Track.txt"]);
+  } finally {
+    clearFlags(income);
+  }
 });

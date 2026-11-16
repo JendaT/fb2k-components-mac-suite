@@ -27,11 +27,12 @@
 // unzip maps the DOS read-only bit to 0444. A 0555 dir holding a file cannot
 // be removed by its owner, and a 0444 copy cannot be tagged. So after every
 // tool run, and before any partial dir is removed, the tree is made
-// owner-writable (makeOwnerWritable).
+// owner-writable (makeOwnerWritable), user-immutable flags (uchg) included.
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { clearImmutableTree } from "./fflags.ts";
 import { readRarHeaders, verifyRarExtraction, type RarHeaders } from "./rarheaders.ts";
 import { ext, PARTIAL_UNPACK_SUFFIX } from "./util.ts";
 import {
@@ -73,13 +74,29 @@ function stripSymlinks(dir: string): number {
 }
 
 /**
- * Add u+rwx to `dir` and every dir under it, and u+rw to every regular file.
- * Each entry is lstat'ed and a symlink is never followed or chmodded. Best
- * effort: an entry that cannot be read or changed is left as it is (a later
- * removal or write then reports it). A dir is changed before it is listed, so
- * a dir without u+r or u+x can still be walked.
+ * Clear uchg on `dir` and everything under it (one chflags spawn, no symlink
+ * followed; an immutable entry cannot be chmodded, renamed or removed), then
+ * add u+rwx to every dir and u+rw to every regular file. Best effort: an
+ * entry that cannot be read or changed is left as it is (a later removal or
+ * write then reports it). Only uchg is cleared, never uappnd, schg or sappnd.
  */
 function makeOwnerWritable(dir: string): void {
+  try {
+    if (!lstatSync(dir).isDirectory()) return;
+  } catch {
+    return;
+  }
+  clearImmutableTree(dir);
+  addOwnerModes(dir);
+}
+
+/**
+ * Add u+rwx to `dir` and every dir under it, and u+rw to every regular file.
+ * Each entry is lstat'ed and a symlink is never followed or chmodded. A dir is
+ * changed before it is listed, so a dir without u+r or u+x can still be
+ * walked.
+ */
+function addOwnerModes(dir: string): void {
   let st;
   try {
     st = lstatSync(dir);
@@ -107,7 +124,7 @@ function makeOwnerWritable(dir: string): void {
       continue;
     }
     if (s.isDirectory()) {
-      makeOwnerWritable(p);
+      addOwnerModes(p);
     } else if (s.isFile() && (s.mode & 0o600) !== 0o600) {
       try {
         chmodSync(p, (s.mode & 0o7777) | 0o600);

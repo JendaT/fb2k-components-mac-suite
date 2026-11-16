@@ -4,11 +4,13 @@
 // batch aborted. gc now stages every file by a rename inside the root's dir
 // (or, with --relocate-dj, renames it to the dj zone) and reverses the renames
 // when one fails; a read-only dir inside the root's dir gets u+w while gc
-// works. The forced failure is `chflags uchg` on one file, which makes
-// rename and unlink fail even for the owner.
+// works. The forced failure is `chflags uappnd` on one file, which makes
+// rename and unlink fail even for the owner (on APFS too); gc clears uchg
+// (test/gc-uchg.test.ts) but never uappnd.
 //
 // Each test places its own copy of the two-disc fixture, then makes it
-// read-only. Cleanup always runs `chflags -R nouchg` first. An
+// read-only. A test that sets a flag clears it in `finally`, and cleanup
+// runs `chflags -R nouchg,nouappnd` before removing the tree. An
 // archive-sourced root shows what gc removes there: the root's own files
 // only, never the archive or its `.unpacked` dir.
 
@@ -63,10 +65,12 @@ function snapshot(dir: string): Record<string, string> {
 
 const gcRecords = () => readJournal(journalPath).filter((r) => r.event !== "placed");
 
-function uchg(path: string, on: boolean): void {
-  const proc = Bun.spawnSync(["/usr/bin/chflags", on ? "uchg" : "nouchg", path]);
+function uappnd(path: string, on: boolean): void {
+  const proc = Bun.spawnSync(["/usr/bin/chflags", on ? "uappnd" : "nouappnd", path]);
   if (proc.exitCode !== 0) throw new Error(`chflags failed: ${proc.stderr.toString()}`);
 }
+
+const clearFlags = () => Bun.spawnSync(["/usr/bin/chflags", "-R", "nouchg,nouappnd", corpus.dir]);
 
 beforeEach(async () => {
   corpus = setupCorpus();
@@ -113,7 +117,7 @@ const placeAsura = () => placeReadOnly(join(corpus.income, "todo", ASURA));
 
 afterEach(() => {
   delete process.env.INTAKE_BEETS_SHIM;
-  Bun.spawnSync(["/usr/bin/chflags", "-R", "nouchg", corpus.dir]);
+  clearFlags();
   makeTreeWritable(corpus.dir);
   rmSync(corpus.dir, { recursive: true, force: true });
 });
@@ -130,27 +134,31 @@ test("gc deletes a read-only layout fully", async () => {
 
 test("a file gc cannot delete leaves the whole root in place", async () => {
   await placeAsura();
-  uchg(join(release, BLOCKED), true);
-  const before = snapshot(release);
-  const history = sc().history.length;
+  try {
+    uappnd(join(release, BLOCKED), true);
+    const before = snapshot(release);
+    const history = sc().history.length;
 
-  const result = await cmdGc([release], OPTS);
-  expect(result.exitCode).toBe(2);
-  expect(result.errors).toEqual([{
-    code: "E_VERIFY",
-    msg: `cannot delete "${BLOCKED}" (EPERM); nothing of the root was deleted`,
-    path: join(release, BLOCKED),
-  }]);
-  expect(snapshot(release)).toEqual(before); // files, bytes, file and dir modes; no stage dir
-  expect(sc().status).toBe("placed");
-  expect(sc().history.length).toBe(history);
-  expect(gcRecords()).toEqual([]);
+    const result = await cmdGc([release], OPTS);
+    expect(result.exitCode).toBe(2);
+    expect(result.errors).toEqual([{
+      code: "E_VERIFY",
+      msg: `cannot delete "${BLOCKED}" (EPERM); nothing of the root was deleted`,
+      path: join(release, BLOCKED),
+    }]);
+    expect(snapshot(release)).toEqual(before); // files, bytes, file and dir modes; no stage dir
+    expect(sc().status).toBe("placed");
+    expect(sc().history.length).toBe(history);
+    expect(gcRecords()).toEqual([]);
 
-  // Once the file can go, the same gc completes.
-  uchg(join(release, BLOCKED), false);
-  expect((await cmdGc([release], OPTS)).errors).toEqual([]);
-  expect(readdirSync(release)).toEqual([".intake.json"]);
-  expect(sc().status).toBe("gc_done");
+    // Once the file can go, the same gc completes.
+    uappnd(join(release, BLOCKED), false);
+    expect((await cmdGc([release], OPTS)).errors).toEqual([]);
+    expect(readdirSync(release)).toEqual([".intake.json"]);
+    expect(sc().status).toBe("gc_done");
+  } finally {
+    clearFlags();
+  }
 });
 
 test("--relocate-dj moves a read-only layout fully", async () => {
@@ -169,19 +177,23 @@ test("--relocate-dj moves a read-only layout fully", async () => {
 
 test("--relocate-dj with a file it cannot move leaves the root in place and nothing in the dj zone", async () => {
   await placeAsura();
-  uchg(join(release, BLOCKED), true);
-  const before = snapshot(release);
+  try {
+    uappnd(join(release, BLOCKED), true);
+    const before = snapshot(release);
 
-  const result = await cmdGc([release], { ...OPTS, relocateDj: true });
-  expect(result.errors).toEqual([{
-    code: "E_VERIFY",
-    msg: `cannot relocate "${BLOCKED}" (EPERM); nothing of the root was moved or deleted`,
-    path: join(release, BLOCKED),
-  }]);
-  expect(snapshot(release)).toEqual(before);
-  expect(existsSync(djZone)).toBe(false); // the dirs gc created there are gone again
-  expect(sc().status).toBe("placed");
-  expect(gcRecords()).toEqual([]);
+    const result = await cmdGc([release], { ...OPTS, relocateDj: true });
+    expect(result.errors).toEqual([{
+      code: "E_VERIFY",
+      msg: `cannot relocate "${BLOCKED}" (EPERM); nothing of the root was moved or deleted`,
+      path: join(release, BLOCKED),
+    }]);
+    expect(snapshot(release)).toEqual(before);
+    expect(existsSync(djZone)).toBe(false); // the dirs gc created there are gone again
+    expect(sc().status).toBe("placed");
+    expect(gcRecords()).toEqual([]);
+  } finally {
+    clearFlags();
+  }
 });
 
 test("--relocate-dj onto an existing dj file: E_TARGET_EXISTS, nothing moved or replaced", async () => {
