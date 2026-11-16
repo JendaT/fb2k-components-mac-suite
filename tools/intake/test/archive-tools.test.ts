@@ -1,24 +1,27 @@
 // Archive tool choice and non-interactive runs. The CLI runs as a subprocess
 // with a controlled PATH (Bun.which reads PATH at process start):
-// - fake 7zz / 7z / unzip shell scripts on a temp PATH show which tool is
-//   chosen and with which arguments, and that a non-zero exit publishes
-//   nothing;
+// - fake bsdtar / 7zz / 7z / unzip shell scripts on a temp PATH show which
+//   tool is chosen and with which arguments, that a non-zero exit publishes
+//   nothing, that a refused rar never reaches the tool, and that a rar's
+//   extracted tree is checked against its headers whichever tool wrote it;
 // - the real tools show why 7zz is preferred (a RAR 7 archive p7zip rejects)
 //   and that an encrypted archive fails instead of prompting. The prompt only
 //   blocks when there is a terminal, so those runs go through `script`, which
 //   gives the CLI a pseudo-terminal.
 // The real-tool tests need 7zz, 7z (p7zip) and unzip on PATH and fail, not
-// skip, without them.
+// skip, without them. The base PATH (SYS_PATH) is /bin plus a dir linking
+// unzip: /usr/bin also holds bsdtar, which would take every rar.
+// test/archive-rar.test.ts runs the real bsdtar.
 
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setupCorpus, type Corpus } from "./helpers.ts";
-import { buildRar5Stored } from "./rarbuild.ts";
+import { buildRar4, buildRar5, buildRar5Stored } from "./rarbuild.ts";
 import { buildZip } from "./zipbuild.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
-const SYS_PATH = "/usr/bin:/bin"; // has unzip, sh, mkdir; no 7-Zip
+let SYS_PATH: string; // sh, mkdir and unzip; no bsdtar, no 7-Zip
 
 let corpus: Corpus;
 let income: string;
@@ -34,7 +37,11 @@ beforeAll(() => {
     join(corpus.rules, "income.yaml"),
     ["income:", "  - name: arc", `    path: ${income}`, "    source_type: web", ""].join("\n"),
   );
-  for (const t of ["7z", "7zz"]) {
+  const sys = join(bins, "sys");
+  mkdirSync(sys, { recursive: true });
+  symlinkSync("/usr/bin/unzip", join(sys, "unzip"));
+  SYS_PATH = `${sys}:/bin`;
+  for (const t of ["7z", "7zz", "bsdtar"]) {
     if (Bun.which(t, { PATH: SYS_PATH }) !== null) throw new Error(`${t} found on ${SYS_PATH}: the PATH isolation below would not hold`);
   }
 });
@@ -51,8 +58,10 @@ afterAll(() => {
 
 /**
  * A fake archive tool: logs its name and each argument in brackets, writes
- * Album/fake.txt into its output dir (7-Zip's `-o<dir>`, unzip's `-d <dir>`),
- * exits $FAKE_EXIT (default 0).
+ * $FAKE_NAME (default Album/fake.txt) holding $FAKE_DATA (default "x") into
+ * its output dir (7-Zip's `-o<dir>`, unzip's `-d <dir>`, bsdtar's `-C <dir>`),
+ * plus Album/extra.txt when $FAKE_EXTRA is set, and exits $FAKE_EXIT
+ * (default 0).
  */
 const FAKE = `#!/bin/sh
 { printf '%s ' "\${0##*/}"; for a in "$@"; do printf '[%s]' "$a"; done; echo; } >> "$FAKE_LOG"
@@ -61,11 +70,17 @@ prev=
 for a in "$@"; do
   case "$a" in -o?*) out="\${a#-o}";; esac
   [ "$prev" = "-d" ] && out="$a"
+  [ "$prev" = "-C" ] && out="$a"
   prev="$a"
 done
-mkdir -p "$out/Album" && printf x > "$out/Album/fake.txt"
+name="\${FAKE_NAME:-Album/fake.txt}"
+mkdir -p "$out/\${name%/*}" && printf '%s' "\${FAKE_DATA:-x}" > "$out/$name"
+[ -n "$FAKE_EXTRA" ] && printf y > "$out/Album/extra.txt"
 exit "\${FAKE_EXIT:-0}"
 `;
+
+/** A valid rar listing exactly what FAKE writes by default: Album/fake.txt holding "x". */
+const FAKE_RAR = buildRar5([{ name: "Album/fake.txt", data: new TextEncoder().encode("x") }]);
 
 /** A bin dir holding fake tools (`fake`) and symlinks to real ones (`real`). */
 function binDir(name: string, fake: string[], real: string[] = []): string {
@@ -125,9 +140,9 @@ function fakeCalls(): string[] {
 
 // ---- fake tools: which tool, which arguments, failure publishes nothing ----
 
-test("7zz is preferred over 7z for .rar and .7z, run with -y, -bd and an empty -p", () => {
+test("without bsdtar, 7zz is preferred over 7z for .rar and .7z, run with -y, -bd and an empty -p", () => {
   const dir = binDir("both", ["7zz", "7z"]);
-  const rar = placeArchive("Synthetic - Tools Rar (2021).rar");
+  const rar = placeArchive("Synthetic - Tools Rar (2021).rar", FAKE_RAR);
   const sz = placeArchive("Synthetic - Tools 7z (2021).7z");
 
   const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
@@ -143,7 +158,7 @@ test("7zz is preferred over 7z for .rar and .7z, run with -y, -bd and an empty -
 
 test("with only 7z on PATH, 7z is used", () => {
   const dir = binDir("only7z", ["7z"]);
-  const rar = placeArchive("Synthetic - Tools Rar (2021).rar");
+  const rar = placeArchive("Synthetic - Tools Rar (2021).rar", FAKE_RAR);
   const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
   expect(envelope.errors).toEqual([]);
   expect(code).toBe(0);
@@ -151,8 +166,8 @@ test("with only 7z on PATH, 7z is used", () => {
   expect(existsSync(join(`${rar.stem}.unpacked`, "Album", "fake.txt"))).toBe(true);
 });
 
-test("with neither 7zz nor 7z on PATH: tool_missing, E_ARCHIVE_TOOL, nothing created", () => {
-  const rar = placeArchive("Synthetic - Tools Rar (2021).rar");
+test("with no bsdtar, 7zz or 7z on PATH: tool_missing, E_ARCHIVE_TOOL, nothing created", () => {
+  const rar = placeArchive("Synthetic - Tools Rar (2021).rar", FAKE_RAR);
   const { code, envelope } = scan(SYS_PATH);
   expect(envelope.errors.map((e) => [e.code, e.path])).toEqual([["E_ARCHIVE_TOOL", rar.path]]);
   expect(code).toBe(1);
@@ -162,7 +177,7 @@ test("with neither 7zz nor 7z on PATH: tool_missing, E_ARCHIVE_TOOL, nothing cre
 
 test("a tool that writes files and exits 2: failed, E_ARCHIVE, nothing published", () => {
   const dir = binDir("fails", ["7zz"]);
-  const rar = placeArchive("Synthetic - Tools Rar (2021).rar");
+  const rar = placeArchive("Synthetic - Tools Rar (2021).rar", FAKE_RAR);
   const { code, envelope } = scan(`${dir}:${SYS_PATH}`, { FAKE_EXIT: "2" });
   expect(fakeCalls()).toHaveLength(1); // it ran, and wrote Album/fake.txt
   expect(envelope.errors.map((e) => [e.code, e.path])).toEqual([["E_ARCHIVE", rar.path]]);
@@ -170,6 +185,77 @@ test("a tool that writes files and exits 2: failed, E_ARCHIVE, nothing published
   expect(envelope.data[0].archives[0].action).toBe("failed");
   expect(readdirSync(income)).toEqual(["Synthetic - Tools Rar (2021).rar"]);
 });
+
+const BSDTAR_FLAGS = "[--no-same-owner][--no-same-permissions][--no-acls][--no-xattrs][--no-fflags][--no-mac-metadata]";
+
+test("rar goes to bsdtar when it is on PATH, before 7zz and 7z, with flags for untrusted input", () => {
+  const dir = binDir("rar-bsdtar", ["bsdtar", "7zz", "7z"]);
+  const rar = placeArchive("Synthetic - Tools Rar (2021).rar", FAKE_RAR);
+  const sz = placeArchive("Synthetic - Tools 7z (2021).7z");
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([
+    `7zz [x][-y][-bd][-p][-o${sz.stem}.unpacked.partial][${sz.path}]`,
+    `bsdtar [-x][-f][${rar.path}][-C][${rar.stem}.unpacked.partial]${BSDTAR_FLAGS}`,
+  ]);
+  expect(readFileSync(join(`${rar.stem}.unpacked`, "Album", "fake.txt"), "utf8")).toBe("x");
+});
+
+test("plain OEM RAR4 names: bsdtar gets the chosen code page as rar:hdrcharset, the names are checked decoded", () => {
+  const dir = binDir("rar-oem", ["bsdtar"]);
+  const name = "Café Ñandú/fake.txt"; // cp437 bytes 0x82, 0xA5, 0xA3: not all Latin-1 letters, so cp437
+  const rar = placeArchive("Synthetic - Oem Names (2009).rar", buildRar4([{ name, data: new TextEncoder().encode("x") }]));
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`, { FAKE_NAME: name });
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([
+    `bsdtar [-x][-f][${rar.path}][-C][${rar.stem}.unpacked.partial]${BSDTAR_FLAGS}[--options][rar:hdrcharset=CP437]`,
+  ]);
+});
+
+test("a refused rar never reaches the tool: failed, E_ARCHIVE with the reason, nothing created", () => {
+  const dir = binDir("rar-refused", ["bsdtar", "7zz"]);
+  const data = new TextEncoder().encode("x");
+  const cases = [
+    { file: "A Encrypted.rar", bytes: buildRar5([{ name: "Album/01.flac", data, encrypted: true }]), msg: 'rar entry "Album/01.flac": encrypted' },
+    { file: "B Blake.rar", bytes: buildRar5([{ name: "Album/01.flac", data, blake2: new Uint8Array(32) }]), msg: 'rar entry "Album/01.flac": BLAKE2 hash only, cannot verify' },
+    { file: "C Locked Headers.rar", bytes: buildRar5([], { encryptedHeaders: true }), msg: "header-encrypted rar is not supported" },
+    { file: "D Volume.rar", bytes: buildRar4([{ name: "Album/01.flac", data, splitAfter: true }], { volume: true }), msg: "multi-volume rar is not supported" },
+    { file: "E Junk.rar", bytes: new Uint8Array([0x52, 0x61, 0x72, 0x21]), msg: "not a rar archive: no RAR signature at the start" },
+  ];
+  for (const c of cases) placeArchive(c.file, c.bytes);
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
+  expect(fakeCalls()).toEqual([]);
+  expect(envelope.errors.map((e) => [e.code, e.msg, e.path])).toEqual(cases.map((c) => ["E_ARCHIVE", c.msg, join(income, c.file)]));
+  expect(code).toBe(1);
+  expect(readdirSync(income).sort()).toEqual(cases.map((c) => c.file));
+});
+
+for (const c of [
+  { label: "wrong data", env: { FAKE_DATA: "y" }, msg: 'rar entry "Album/fake.txt": CRC32 mismatch' },
+  { label: "wrong size", env: { FAKE_DATA: "xx" }, msg: 'rar entry "Album/fake.txt": size mismatch (header 1, extracted 2)' },
+  {
+    label: "an extra file",
+    env: { FAKE_EXTRA: "1" },
+    msg: 'rar extraction wrote "Album/extra.txt", which is not in the archive headers',
+  },
+  {
+    label: "a missing entry",
+    env: { FAKE_NAME: "Album/other.txt" },
+    msg: 'rar entry "Album/fake.txt": missing after extraction (+1 more)',
+  },
+] as { label: string; env: Record<string, string>; msg: string }[]) {
+  test(`7zz exits 0 but writes ${c.label}: the header check fails the rar, nothing published`, () => {
+    const dir = binDir("rar-verify", ["7zz"]);
+    const rar = placeArchive("Synthetic - Verify (2021).rar", FAKE_RAR);
+    const { code, envelope } = scan(`${dir}:${SYS_PATH}`, c.env);
+    expect(fakeCalls()).toHaveLength(1);
+    expect(envelope.errors.map((e) => [e.code, e.msg, e.path])).toEqual([["E_ARCHIVE", c.msg, rar.path]]);
+    expect(code).toBe(1);
+    expect(readdirSync(income)).toEqual(["Synthetic - Verify (2021).rar"]);
+  });
+}
 
 test("zip routing: ASCII names go to unzip, non-ASCII UTF-8 names to 7zz on the zip itself", () => {
   const dir = binDir("zip-route", ["7zz", "unzip"]);

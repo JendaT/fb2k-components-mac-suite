@@ -7,7 +7,8 @@ JSON envelope, exit codes, status lifecycle, audio_hash).
 
 Self-contained Bun package; no fb2k SDK or Xcode dependency. External tools:
 `flac` (resolve: decodes FLACs whose STREAMINFO MD5 is unset), `metaflac`
-(execute: provenance tags), `unzip`, optionally `7zz` or `7z` (archives).
+(execute: provenance tags), `unzip` and `bsdtar` (archives; both ship with
+macOS), optionally `7zz` or `7z` (7z, non-ASCII zip names, rar without bsdtar).
 
 ## Usage
 
@@ -149,9 +150,22 @@ public artist/label names as test literals only, no personal data. Tests copy
 it to a temp dir; the committed tree never receives sidecars. Junk files
 (`.DS_Store`, `._*`, `Thumbs.db`) are injected by the test helper because the
 repo `.gitignore` excludes those names. Archive fixtures cover zip only
-(`unzip` ships with macOS). rar/7z, and zips with any non-ASCII name (macOS's
-`unzip` mangles those from Windows tools), go through `7zz`, else `7z`; with
-neither on PATH a rar/7z reports `E_ARCHIVE_TOOL` and such a zip `E_ARCHIVE`.
+(`unzip` ships with macOS); the tests build zips and RAR4/RAR5 archives at
+test time (`test/zipbuild.ts`, `test/rarbuild.ts`). 7z, and zips with any
+non-ASCII name (macOS's `unzip` mangles those from Windows tools), go through
+`7zz`, else `7z`. rar goes to `bsdtar` (libarchive, `/usr/bin/bsdtar` on
+macOS), else `7zz`/`7z`, which extract stored rar members only. bsdtar can
+exit 0 after writing a member with a wrong CRC32, or the ciphertext of an
+encrypted one, so intake checks rar itself (`src/rarheaders.ts`): before
+anything is written it reads the headers and refuses multi-volume sets,
+header- or file-encrypted archives, entries with no CRC32 (RAR5 BLAKE2-only),
+RAR5 hard link, file copy and junction entries, unsafe or duplicate paths and
+damaged headers; after extraction it checks each data entry's size and CRC32
+and fails the archive on a mismatch, a missing entry or a file the headers do
+not list. Plain OEM RAR4 names are decoded with the code page rule used for
+zips, passed to bsdtar as `rar:hdrcharset`. libarchive 3.7.4 does not extract
+solid RAR4 archives. With no tool on PATH a rar/7z reports `E_ARCHIVE_TOOL`
+and such a zip `E_ARCHIVE`.
 The `E_ARCHIVE_TOOL` surface is covered in `test/archive.test.ts` by
 re-running the CLI with `PATH` stripped, since `Bun.which()` reads the
 environment at process start. An unpack tool run is

@@ -11,10 +11,20 @@
 // A tool run has a hard time limit (UNPACK_TIMEOUT_MS): a hung tool is killed
 // and the archive fails. While a tool runs, SIGTERM, SIGINT and SIGHUP kill
 // it and remove the partial dir before intake ends (see runTool).
+//
+// rar is checked by intake itself, because bsdtar's exit code cannot be
+// trusted for it (src/rarheaders.ts): the headers are read before anything
+// is written, and a refused archive (multi-volume, encrypted, BLAKE2-only,
+// damaged, ...) fails with nothing created. After the tool exits 0, every
+// data entry of the extracted tree is checked against its header size and
+// CRC32, and a missing entry, a mismatch or a file the headers do not list
+// fails the archive into the usual partial-dir cleanup. The check runs after
+// whichever tool extracted.
 
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { readRarHeaders, verifyRarExtraction, type RarHeaders } from "./rarheaders.ts";
 import { ext, PARTIAL_UNPACK_SUFFIX } from "./util.ts";
 import {
   chooseCodePage, needsCodePage, readCentralDirectory, writeUtf8NamedCopy, type CentralDirectory, type CodePage,
@@ -68,20 +78,33 @@ export interface UnpackResult {
  * hang a scan run from a terminal, and 7zz reads the password from stdin.
  * - zip: Info-ZIP unzip; `-P ""` gives it an (empty) password. (A zip
  *   with any non-ASCII name goes to 7-Zip instead, see zipSevenZipPlan.)
- * - rar, 7z: 7-Zip. `7zz` (current 7-Zip) is preferred over `7z` (p7zip,
- *   frozen at 16.02/17.x), which lacks newer format revisions, e.g. RAR 7's
+ * - 7z: 7-Zip. `7zz` (current 7-Zip) is preferred over `7z` (p7zip, frozen
+ *   at 16.02/17.x), which lacks newer format revisions, e.g. RAR 7's
  *   compression algorithm version 1 ("Unsupported Method"). For both, `-p`
  *   with an empty value is a defined (empty) password and never prompts.
+ * - rar: bsdtar (libarchive; /usr/bin/bsdtar ships with macOS), else 7-Zip
+ *   as for 7z. Homebrew's 7zz and p7zip have no RAR decompression: they
+ *   extract stored members only. bsdtar decompresses RAR4 and RAR5 but has
+ *   no RAR encryption support, so it never asks for a password (and the
+ *   header check refuses encrypted archives before it runs). rarCodePage is
+ *   the code page of plain non-ASCII RAR4 names (see rarheaders.ts); 7-Zip
+ *   cannot be given it and writes such names as private-use chars, so that
+ *   archive fails the check after 7-Zip.
  *   unrar is not used: in a real-data run it hung past 60 s with stdin closed.
  */
-function extractArgv(archiveExt: string, archive: string, outDir: string): string[] | null {
+function extractArgv(archiveExt: string, archive: string, outDir: string, rarCodePage: CodePage | null): string[] | null {
   switch (archiveExt) {
     case "zip": {
       const unzip = Bun.which("unzip");
       return unzip === null ? null : [unzip, "-qq", "-o", "-P", "", archive, "-d", outDir];
     }
-    case "7z":
     case "rar": {
+      const bsdtar = Bun.which("bsdtar");
+      if (bsdtar !== null) return bsdtarArgv(bsdtar, archive, outDir, rarCodePage);
+      const sevenZip = findSevenZip();
+      return sevenZip === null ? null : sevenZipArgv(sevenZip, archive, outDir);
+    }
+    case "7z": {
       const sevenZip = findSevenZip();
       return sevenZip === null ? null : sevenZipArgv(sevenZip, archive, outDir);
     }
@@ -94,6 +117,21 @@ const findSevenZip = (): string | null => Bun.which("7zz") ?? Bun.which("7z");
 
 const sevenZipArgv = (bin: string, archive: string, outDir: string): string[] => [
   bin, "x", "-y", "-bd", "-p", `-o${outDir}`, archive,
+];
+
+/**
+ * bsdtar for untrusted input. Without `-P` it already strips a leading `/`
+ * and refuses `..` paths and writes through symlinks. The `--no-*` flags
+ * keep owner, permission extras, ACLs, extended attributes, file flags
+ * (libarchive maps RAR5 Windows attributes to fflags such as `hidden`) and
+ * AppleDouble metadata from being restored, also when run as root.
+ * `rar:hdrcharset` decodes plain OEM RAR4 names with the code page the
+ * header check chose.
+ */
+const bsdtarArgv = (bin: string, archive: string, outDir: string, rarCodePage: CodePage | null): string[] => [
+  bin, "-x", "-f", archive, "-C", outDir,
+  "--no-same-owner", "--no-same-permissions", "--no-acls", "--no-xattrs", "--no-fflags", "--no-mac-metadata",
+  ...(rarCodePage === null ? [] : ["--options", `rar:hdrcharset=CP${rarCodePage}`]),
 ];
 
 interface SevenZipZipPlan {
@@ -248,7 +286,14 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
   if (existsSync(target)) return { archive: archivePath, target, action: "already_unpacked" };
   const sevenZipZip = x === "zip" ? zipSevenZipPlan(archivePath) : null;
   if (typeof sevenZipZip === "string") return { archive: archivePath, target, action: "failed", error: sevenZipZip };
-  const args = sevenZipZip === null ? extractArgv(x, archivePath, partial) : null;
+  // rar: headers read and checked before anything is written.
+  let rar: RarHeaders | null = null;
+  if (x === "rar") {
+    const r = readRarHeaders(archivePath);
+    if ("error" in r) return { archive: archivePath, target, action: "failed", error: r.error };
+    rar = r;
+  }
+  const args = sevenZipZip === null ? extractArgv(x, archivePath, partial, rar?.codePage ?? null) : null;
   if (sevenZipZip === null && args === null)
     return { archive: archivePath, target, action: "tool_missing", error: `no tool for .${x}` };
   if (dryRun) return { archive: archivePath, target, action: "unpacked" };
@@ -291,6 +336,10 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
     // or 2 after writing the members it could): the partial dir goes.
     if (run.code !== 0) return failed(run.stderr.trim().slice(0, 200) || `${argv[0]} exited ${run.code}`);
     stripSymlinks(partial);
+    if (rar !== null) {
+      const problem = await verifyRarExtraction(partial, rar);
+      if (problem !== null) return failed(problem);
+    }
     renameSync(partial, target);
   } catch (e) {
     return failed(e instanceof Error ? e.message : String(e));

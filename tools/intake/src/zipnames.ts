@@ -24,6 +24,14 @@ export interface CdEntry {
   record: Uint8Array; // the whole central directory record
 }
 
+/**
+ * Entry names with their zip flags: a central directory, or any list of raw
+ * names (src/rarheaders.ts passes plain RAR4 names with flags 0).
+ */
+export interface NameList {
+  entries: readonly Pick<CdEntry, "flags" | "name">[];
+}
+
 export interface CentralDirectory {
   entries: CdEntry[];
   cdOffset: number;
@@ -153,7 +161,7 @@ export function decodeCodePage(bytes: Uint8Array, cp: CodePage): string {
  * entry name starts with that segment followed by "/". Null otherwise
  * (loose files, or several top-level dirs).
  */
-function topLevelDir(cd: CentralDirectory): Uint8Array | null {
+function topLevelDir(cd: NameList): Uint8Array | null {
   const first = cd.entries[0]?.name;
   if (!first) return null;
   const slash = first.indexOf(0x2f);
@@ -175,7 +183,7 @@ function topLevelDir(cd: CentralDirectory): Uint8Array | null {
  *    0xC0-0xFF (the Latin letters of cp1252).
  * 3. Else cp437, the zip specification's default.
  */
-export function chooseCodePage(cd: CentralDirectory, archivePath: string): { cp: CodePage; rule: 1 | 2 | 3 } {
+export function chooseCodePage(cd: NameList, archivePath: string): { cp: CodePage; rule: 1 | 2 | 3 } {
   const top = topLevelDir(cd);
   if (top && top.some((b) => b >= 0x80)) {
     const own = basename(archivePath).replace(/\.[^.]*$/, "").normalize("NFC");
