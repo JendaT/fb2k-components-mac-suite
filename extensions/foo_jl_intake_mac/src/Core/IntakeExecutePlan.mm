@@ -5,6 +5,8 @@
 
 #include "IntakeExecutePlan.h"
 
+#include "IntakePath.h"
+
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -84,7 +86,7 @@ DryRunParse parseDryRunRows(id data) {
 ExecutePlan planExecute(const std::vector<ActionRoot> &roots, const EnvelopeResult &dryRun) {
     ExecutePlan plan;
     std::vector<MutationRoot> mroots;
-    for (const ActionRoot &r : roots) mroots.push_back({r.id, r.rootPath, r.status});
+    for (const ActionRoot &r : roots) mroots.push_back({r.id, r.rootPath, r.status, r.targetPath});
     plan.outcome = summarizeMutation(CliCommand::Execute, mroots, dryRun, kExecuteDryRunName);
 
     std::unordered_map<std::string, DryRunRow> byId;
@@ -112,6 +114,63 @@ ExecutePlan planExecute(const std::vector<ActionRoot> &roots, const EnvelopeResu
         plan.excludedWhy.push_back(w != why.end() ? w->second : std::string("not listed by the dry run"));
     }
     return plan;
+}
+
+ExecutePlan planUnchecked(const std::vector<ActionRoot> &roots) {
+    ExecutePlan plan;
+    plan.unchecked = true;
+    std::unordered_set<std::string> done;
+    for (const ActionRoot &r : roots) {
+        if (!done.insert(r.id).second) continue;
+        plan.placeable.push_back(r);
+        DryRunRow row;
+        row.id = r.id;
+        plan.rows.push_back(std::move(row));
+    }
+    return plan;
+}
+
+namespace {
+
+std::string pathKeyOf(const std::string &path) {
+    std::string normalized;
+    if (normalizePath(path, normalized) == PathStatus::Ok) return normalized;
+    return path;
+}
+
+} // anonymous namespace
+
+ExecuteRecheck recheckPlaceable(const ExecutePlan &plan, const ExecuteRecordLookup &lookup) {
+    ExecuteRecheck out;
+    for (size_t i = 0; i < plan.placeable.size(); i++) {
+        const ActionRoot &root = plan.placeable[i];
+        const IntakeRecord *now = lookup ? lookup(root.id) : nullptr;
+        if (now == nullptr) {
+            out.keep.push_back(root);
+            continue;
+        }
+        if (now->status != IntakeStatus::Approved) {
+            out.dropped.emplace_back(root.id, now->statusText.empty()
+                                                  ? std::string("it is no longer approved")
+                                                  : "it is " + now->statusText + " now, no longer approved");
+            continue;
+        }
+        const std::string checked = i < plan.rows.size() ? plan.rows[i].targetPath : std::string();
+        if (!checked.empty() && now->hasProposal) {
+            const IntakeProposal &p = now->proposal;
+            if (p.targetPathState == TargetPathState::Null) {
+                out.dropped.emplace_back(root.id, "it has no target any more (slot pending)");
+                continue;
+            }
+            if (p.targetPathState == TargetPathState::Set && p.targetPath != checked &&
+                pathKeyOf(p.targetPath) != pathKeyOf(checked)) {
+                out.dropped.emplace_back(root.id, "its target changed since the check (now " + p.targetPath + ")");
+                continue;
+            }
+        }
+        out.keep.push_back(root);
+    }
+    return out;
 }
 
 std::vector<std::string> placeableIds(const ExecutePlan &plan) {
@@ -174,13 +233,19 @@ std::string executeSheetText(const ExecutePlan &plan, size_t maxListed) {
         out += "\n\nExcluded:";
         for (const std::string &line : excluded) out += "\n" + line;
     }
+    if (plan.unchecked) {
+        out += "\n\nThe check (execute --dry-run) did not finish in 10 s, so targets and file counts are not "
+               "shown. Execute checks each album again and places only those that pass; the others are reported.";
+    }
     out += "\n\nThe placement runs in the background and keeps running if foobar2000 quits.";
     return out;
 }
 
 std::string executeSheetSummary(const ExecutePlan &plan, size_t maxListed) {
-    std::string out = std::to_string(plan.placeable.size()) + " placeable, " + std::to_string(plan.excluded.size()) +
-                      " excluded";
+    std::string out = plan.unchecked ? std::to_string(plan.placeable.size()) +
+                                           " unchecked (the check did not finish in 10 s)"
+                                     : std::to_string(plan.placeable.size()) + " placeable, " +
+                                           std::to_string(plan.excluded.size()) + " excluded";
     const std::vector<std::string> rows = placeableLines(plan, maxListed);
     const std::vector<std::string> excluded = excludedLines(plan, maxListed);
     std::string body;

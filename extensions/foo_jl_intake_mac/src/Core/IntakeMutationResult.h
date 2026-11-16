@@ -25,6 +25,13 @@
 //      folder that has no error yet: the CLI walks the roots in argument
 //      order, so the k-th error for a folder belongs to the k-th failed
 //      root there. Surplus errors for a folder join the last root's text;
+//  1c. an error whose `path` is a named root's target folder
+//      (proposal.target_path, compared as IntakePath keys, else byte for
+//      byte: the CLI's E_TARGET_EXISTS and the out-of-tier E_NO_TARGET name
+//      the target, commands-p3.ts) goes to the first failed root with that
+//      target that has no error yet, else the last one; the path stays in
+//      the text. Never broadcast (a target only succeeded roots have places
+//      it nowhere); placed in pass 1 like the id rules;
 //   3. an error matching no root (no path and no id in its msg, a path
 //      outside them) is the command's own: it goes to every failed root
 //      left without one.
@@ -62,6 +69,8 @@ struct MutationRoot {
     // The status the menu showed when the action was chosen: the baseline
     // of the root's error (RootErrorStore::set). Unknown: none.
     IntakeStatus status = IntakeStatus::Unknown;
+    // proposal.target_path when known (rule 1c); empty otherwise.
+    std::string targetPath;
 };
 
 struct MutationOutcome {

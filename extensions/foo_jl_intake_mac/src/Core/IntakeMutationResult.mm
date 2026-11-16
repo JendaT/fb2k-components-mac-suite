@@ -97,6 +97,13 @@ MutationOutcome summarizeMutation(CliCommand command, const std::vector<Mutation
         // Pass 1: errors that name a root by id, so they never take another
         // root's place in pass 2's folder order.
         std::vector<bool> placed(envelope.errors.size(), false);
+        std::vector<std::string> targetKeys;
+        targetKeys.reserve(roots.size());
+        for (const MutationRoot &r : roots) targetKeys.push_back(r.targetPath.empty() ? std::string() : pathKey(r.targetPath));
+        auto hasTarget = [&roots, &targetKeys](size_t index, const std::string &path, const std::string &key) {
+            const MutationRoot &r = roots[index];
+            return !r.targetPath.empty() && (targetKeys[index] == key || r.targetPath == path);
+        };
         for (size_t i = 0; i < envelope.errors.size(); i++) {
             const CliError &e = envelope.errors[i];
             if (e.hasPath && !e.path.empty()) {
@@ -105,14 +112,34 @@ MutationOutcome summarizeMutation(CliCommand command, const std::vector<Mutation
                 for (const MutationRoot &r : roots) {
                     if (r.id == e.path) placed[i] = true;
                 }
-                if (!placed[i]) continue;
-                for (FailedRoot &f : failed) {
-                    if (roots[f.index].id != e.path) continue;
-                    CliError shown = e;
-                    shown.hasPath = false;
-                    addText(f.text, renderError(shown));
-                    break;
+                if (placed[i]) {
+                    for (FailedRoot &f : failed) {
+                        if (roots[f.index].id != e.path) continue;
+                        CliError shown = e;
+                        shown.hasPath = false;
+                        addText(f.text, renderError(shown));
+                        break;
+                    }
+                    continue;
                 }
+                // 1c. a path that is a named root's target folder: the first
+                // failed root with that target and no error yet, else the
+                // last one; never broadcast. The path stays in the text.
+                const std::string key = pathKey(e.path);
+                for (size_t r = 0; r < roots.size() && !placed[i]; r++) placed[i] = hasTarget(r, e.path, key);
+                if (!placed[i]) continue;
+                FailedRoot *target = nullptr;
+                FailedRoot *last = nullptr;
+                for (FailedRoot &f : failed) {
+                    if (!hasTarget(f.index, e.path, key)) continue;
+                    last = &f;
+                    if (f.text.empty()) {
+                        target = &f;
+                        break;
+                    }
+                }
+                if (target == nullptr) target = last;
+                if (target != nullptr) addText(target->text, renderError(e));
                 continue;
             }
             // 1b. no path, but the msg names roots of the call ("no sidecar

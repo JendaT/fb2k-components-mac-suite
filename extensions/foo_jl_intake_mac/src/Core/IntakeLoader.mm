@@ -135,6 +135,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     bool inFlightParseRetry = false;          // the running load is
     CliVersionInfo cliInfo;                   // the last passing `version` (B6), for the status
     WatchEventId statusEventId = kWatchSinceNow; // taken before the latest `status` call
+    std::chrono::steady_clock::time_point statusStartedAt; // when the latest `status` call was started
     bool statusSinceRequest = false;          // a `status` call started after the latest reload()
 
     // B5, loader queue only: reload() requests waiting for their load.
@@ -265,6 +266,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
             // change `status` may not have seen (see the header).
             statusEventId = settings.currentEventId ? settings.currentEventId() : kWatchSinceNow;
             statusSinceRequest = true;
+            statusStartedAt = std::chrono::steady_clock::now();
         }
         CliRunOptions options;
         options.limits = settings.limits;
@@ -423,7 +425,7 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
         applyMountAliases(parsed.records, *aliases);
         if (!unreadable.directories.empty()) noteUnreadable(unreadable);
-        if (settings.annotateRecords) settings.annotateRecords(parsed.records);
+        if (settings.annotateRecords) settings.annotateRecords(parsed.records, statusStartedAt);
 
         MemberLoadLimits limits;
         limits.cancel = &stopped;

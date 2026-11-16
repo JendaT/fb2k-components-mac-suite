@@ -113,6 +113,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -167,7 +168,10 @@ using EventIdReader = std::function<WatchEventId()>;
 // `status` load, after the mount aliases and before the snapshot is built,
 // so per-root state the loader does not own (IntakeRecord::lastError, from
 // IntakeRootErrors) reaches the visuals and the load diff.
-using RecordAnnotator = std::function<void(std::vector<IntakeRecord> &records)>;
+// `statusStarted`: when the `status` call these records came from was
+// started (IntakeRootErrors: errors set later are not judged by it).
+using RecordAnnotator =
+    std::function<void(std::vector<IntakeRecord> &records, std::chrono::steady_clock::time_point statusStarted)>;
 
 struct LoaderSettings {
     // cliPath, bunPath, rulesDir and baseEnvironment (a main-thread

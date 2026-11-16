@@ -674,6 +674,14 @@ static void testAssignOtherMixed() {
           "title order: base, (n of m), (execute running), ellipsis");
     CHECK(actionRootFor(d).targetCollection == "Test Collection A" && actionRootFor(n).targetCollection.empty(),
           "the captured root carries its current target");
+    IntakeRecord withPath = withProposal(rec("itk_00000010", IntakeStatus::Approved));
+    IntakeRecord pending = withProposal(rec("itk_00000011", IntakeStatus::Approved), TargetPathState::Null);
+    IntakeRecord older = withProposal(rec("itk_00000012", IntakeStatus::Approved), TargetPathState::Unknown);
+    older.proposal.targetPath = "/ignored";
+    CHECK(actionRootFor(withPath).targetPath == "/library/Test Collection A/x" &&
+              actionRootFor(pending).targetPath.empty() && actionRootFor(older).targetPath.empty() &&
+              actionRootFor(n).targetPath.empty(),
+          "and its target_path only when set (errors naming the target go to it)");
 }
 
 static void testAssignArgv() {

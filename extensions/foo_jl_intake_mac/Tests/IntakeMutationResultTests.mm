@@ -253,6 +253,63 @@ static void testErrorStore() {
     CHECK(store.size() == 0, "clearAll");
 }
 
+// A load whose `status` call started before the error was set may have
+// read an older status: it shows the error but decides nothing about it
+// (finding: a run ending while an FSEvents reload was in flight).
+static void testErrorStoreInFlight() {
+    g_context = "error-store-in-flight";
+    using Clock = RootErrorStore::Clock;
+    const Clock::time_point t0 = Clock::now();
+    const Clock::time_point t1 = t0 + std::chrono::milliseconds(10);
+    const Clock::time_point t2 = t0 + std::chrono::milliseconds(20);
+
+    // Execute failed (no baseline): the in-flight load read placing, the
+    // CLI then wrote approved. The next load shows approved.
+    RootErrorStore store;
+    store.set("itk_00000010", "execute: Verification failed: verify failed: hash", IntakeStatus::Unknown, t1);
+    std::vector<IntakeRecord> inFlight = {record("itk_00000010", IntakeStatus::Placing)};
+    store.apply(inFlight, t0);
+    CHECK(inFlight[0].lastError == "execute: Verification failed: verify failed: hash",
+          "a load started before the error shows it");
+    std::vector<IntakeRecord> next = {record("itk_00000010", IntakeStatus::Approved)};
+    store.apply(next, t2);
+    CHECK(!next[0].lastError.empty() && store.size() == 1,
+          "it did not take the stale status as the baseline: the next load keeps it");
+    std::vector<IntakeRecord> later = {record("itk_00000010", IntakeStatus::Approved)};
+    store.apply(later, t2 + std::chrono::milliseconds(10));
+    CHECK(!later[0].lastError.empty(), "and it stays while the root stays approved");
+    std::vector<IntakeRecord> moved = {record("itk_00000010", IntakeStatus::Placing)};
+    store.apply(moved, t2 + std::chrono::milliseconds(20));
+    CHECK(moved[0].lastError.empty() && store.size() == 0, "until the status changes");
+
+    // A reverted resume (baseline approved): the in-flight load still saw
+    // placing and must not drop it.
+    RootErrorStore reverted;
+    reverted.set("itk_00000011", "resume: reverted to approved", IntakeStatus::Approved, t1);
+    std::vector<IntakeRecord> stale = {record("itk_00000011", IntakeStatus::Placing)};
+    reverted.apply(stale, t0);
+    CHECK(!stale[0].lastError.empty() && reverted.size() == 1, "an older read never drops a newer error");
+    std::vector<IntakeRecord> fresh = {record("itk_00000011", IntakeStatus::Approved)};
+    reverted.apply(fresh, t2);
+    CHECK(!fresh[0].lastError.empty(), "the next load (approved) keeps it");
+
+    // Missing from an in-flight load: kept too.
+    RootErrorStore missing;
+    missing.set("itk_00000012", "execute: x", IntakeStatus::Unknown, t1);
+    std::vector<IntakeRecord> none = {record("itk_0000000b", IntakeStatus::Resolved)};
+    missing.apply(none, t0);
+    CHECK(missing.size() == 1, "a root missing from an older read is not dropped");
+    missing.apply(none, t2);
+    CHECK(missing.size() == 0, "a newer read drops it");
+
+    // The same instant counts as possibly older.
+    RootErrorStore same;
+    same.set("itk_00000013", "execute: y", IntakeStatus::Approved, t1);
+    std::vector<IntakeRecord> other = {record("itk_00000013", IntakeStatus::Placing)};
+    same.apply(other, t1);
+    CHECK(same.size() == 1, "an error set at the call's start is not judged by it");
+}
+
 static void testPathlessIds() {
     g_context = "pathless-ids";
     const std::vector<MutationRoot> roots = {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B"),
@@ -300,6 +357,70 @@ static void testPathlessIds() {
     MutationOutcome general = summarizeMutation(CliCommand::Approve, roots,
                                                 env(CliOutcome::Failed, nil, {err("E_INTERNAL", "boom")}));
     CHECK(general.rootErrors.size() == 3, "an error naming no root still goes to every failed root");
+}
+
+// E_TARGET_EXISTS and the out-of-tier E_NO_TARGET name the target folder,
+// not the root's (commands-p3.ts): each goes to the root with that target
+// only, never to every root (rule 1c).
+static void testTargetPaths() {
+    g_context = "target-paths";
+    std::vector<MutationRoot> roots = {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B"),
+                                       root("itk_0000000c", kDump + "C")};
+    roots[0].targetPath = "/lib/A";
+    roots[1].targetPath = "/lib/B";
+    roots[2].targetPath = "/lib/C";
+    MutationOutcome o = summarizeMutation(
+        CliCommand::Execute, roots,
+        env(CliOutcome::Partial, rows({"itk_0000000c"}),
+            {err("E_TARGET_EXISTS", "target path already exists", "/lib/A"),
+             err("E_NO_TARGET", "target_path is outside all configured tier roots", "/lib/B")}),
+        "execute dry run");
+    CHECK(o.succeeded == std::vector<std::string>({"itk_0000000c"}) && o.rootErrors.size() == 2, "two refused roots");
+    CHECK(errorFor(o, "itk_0000000a") == "execute dry run: Target folder already exists: target path already exists (/lib/A)",
+          "A gets its own target's error only, with the path");
+    CHECK(contains(errorFor(o, "itk_0000000b"), "outside all configured tier roots (/lib/B)") &&
+              !contains(errorFor(o, "itk_0000000b"), "/lib/A"),
+          "B gets its own target's error only");
+
+    // A target error next to a folder error for another root in the same
+    // folder (virtual roots): neither takes the other's slot.
+    std::vector<MutationRoot> shared = {root("itk_00000017", kDump + "mixed"), root("itk_00000018", kDump + "mixed")};
+    shared[0].targetPath = "/lib/17";
+    shared[1].targetPath = "/lib/18";
+    MutationOutcome s = summarizeMutation(
+        CliCommand::Execute, shared,
+        env(CliOutcome::Failed, nil,
+            {err("E_BAD_STATUS", "cannot execute from status proposed", kDump + "mixed"),
+             err("E_TARGET_EXISTS", "target path already exists", "/lib/17")}));
+    CHECK(contains(errorFor(s, "itk_00000017"), "(/lib/17)") && !contains(errorFor(s, "itk_00000017"), "proposed"),
+          "the target error goes to its root, though it came second");
+    CHECK(contains(errorFor(s, "itk_00000018"), "cannot execute from status proposed") &&
+              !contains(errorFor(s, "itk_00000018"), "/lib/17"),
+          "the folder error goes to the other root in the folder");
+
+    // Two roots with one target: the first failed root without an error.
+    std::vector<MutationRoot> same = {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B")};
+    same[0].targetPath = same[1].targetPath = "/lib/Same";
+    MutationOutcome t = summarizeMutation(
+        CliCommand::Execute, same,
+        env(CliOutcome::Partial, rows({"itk_0000000a"}), {err("E_TARGET_EXISTS", "target path already exists", "/lib/Same")}));
+    CHECK(t.rootErrors.size() == 1 && contains(errorFor(t, "itk_0000000b"), "(/lib/Same)"),
+          "the root that failed gets it, the one placed there does not");
+
+    // A target only a succeeded root has: placed nowhere, never broadcast.
+    std::vector<MutationRoot> other = {root("itk_0000000a", kDump + "A"), root("itk_0000000b", kDump + "B")};
+    other[0].targetPath = "/lib/A";
+    MutationOutcome u = summarizeMutation(
+        CliCommand::Execute, other,
+        env(CliOutcome::Partial, rows({"itk_0000000a"}), {err("E_TARGET_EXISTS", "target path already exists", "/lib/A")}));
+    CHECK(u.rootErrors.empty() && u.failedWithoutError == std::vector<std::string>({"itk_0000000b"}),
+          "not copied to the other failed root");
+
+    // Without target paths (CLI before 0.3.0) it stays the command's own.
+    MutationOutcome old = summarizeMutation(
+        CliCommand::Execute, {root("itk_0000000a", kDump + "A")},
+        env(CliOutcome::Failed, nil, {err("E_TARGET_EXISTS", "target path already exists", "/lib/A")}));
+    CHECK(contains(errorFor(old, "itk_0000000a"), "(/lib/A)"), "no target known: rule 3 as before");
 }
 
 static void testBaseline() {
@@ -434,7 +555,9 @@ int main() {
         testSharedFolder();
         testHostAndNfd();
         testErrorStore();
+        testErrorStoreInFlight();
         testPathlessIds();
+        testTargetPaths();
         testBaseline();
         testAgainstMock();
         mock::killLeftovers();

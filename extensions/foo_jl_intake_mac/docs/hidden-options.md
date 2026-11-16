@@ -261,7 +261,7 @@ words by spaces:
 | `assign <id> collection=<name>` | B7. Builds the menu for that one root and dispatches its quick-assign item **Assign to `<name>`** (exact name) like a click: `assign <id> --collection <name> --by user --json` through the mutation lane. `collection=` takes everything after it to the end of the step, trimmed, so names may contain spaces. Without such an item (the name is not an alternate, the root has no `ranked`, the status does not allow it) it logs the menu and runs nothing. |
 | `assign-other <id...> collection=<name>` | B7. The **Assign to other collection…** flow without the sheet: runs `collections --json` as the picker does, then logs `collections: N; "<name>" listed` (or `not listed; nothing assigned`) and, when the name is listed, runs the assign on the item's qualifying roots through the same code as the sheet's **Assign** button (lane and configuration checked again). A failed `collections` logs `no picker: <cause>; nothing assigned`. |
 | `picker <id...> close=<seconds>` | B7. The real flow and the real sheet (for a screenshot): the window under the pointer when the step starts (as at a click), else the main or key window, is chosen first; then `collections --json`, then the sheet on that window (on the main or key window if it can no longer take a sheet), else app-modal. One line when it is up: `sheet shown: N collection(s), preselected "", OK disabled; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required), so nothing is assigned. |
-| `execute <id...>` | B8. **Execute placement…** through the real flow: the menu item for those roots, the real `execute <ids> --dry-run --json` on the mutation lane, then, instead of the sheet, it confirms at once and starts the detached `execute <ids that passed> --json` (lane and configuration checked again). One line once the run was spawned: `dry run: N placeable, M excluded: <the rows the sheet would list, " \| " between them, up to 10, then "and N more", then "excluded: <album>: <why>">; confirmed; started: pid <pid>, run file execute-<stamp>.run`. With nothing placeable: `dry run: 0 placeable, M excluded: ...; no sheet, nothing executed`; a dry run still running at 10 s: `dry run: no answer within 10 s; no sheet, nothing executed`; a run that could not start: `...; confirmed; not started: <why>`. A disabled item (lane busy, no approved root) logs `not run: the item is disabled`. |
+| `execute <id...>` | B8. **Execute placement…** through the real flow: the menu item for those roots, the real `execute <ids> --dry-run --json` on the mutation lane, then, instead of the sheet, it confirms at once and starts the detached `execute <ids that passed> --json` (lane and configuration checked again). One line once the run was spawned: `dry run: N placeable, M excluded: <the rows the sheet would list, " \| " between them, up to 10, then "and N more", then "excluded: <album>: <why>">; confirmed; started: pid <pid>, run file execute-<stamp>.run`. With nothing placeable: `dry run: 0 placeable, M excluded: ...; no sheet, nothing executed`; a dry run still running at 10 s (the sheet would then say the check did not finish): `dry run: N unchecked (the check did not finish in 10 s): <album> \| ...; confirmed; started: ...` on every captured root; a root that changed after the dry run (no longer approved, another target): `...; confirmed; <id> left out: <why>; started: ...`; a run that could not start: `...; confirmed; not started: <why>`. A disabled item (lane busy, no approved root) logs `not run: the item is disabled`. |
 | `execute-sheet <id...> close=<seconds>` | B8. The real dry run and the real sheet (for a screenshot): the window under the pointer when the step starts, else the main or key window, else app-modal. One line when it is up: `sheet shown: "<title>"; N placeable, M excluded: <rows>; buttons Execute, Cancel; closing as Cancel in <seconds> s` (or `shown app-modal ...`). It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is executed. |
 | `resume <id...>` | B8. The **Resume placement** item (placing roots; listed only for a CLI that resumes by id, 0.2.1 or later): starts the detached `execute <ids> --resume --json` at once. One line once it was spawned: `started: pid <pid>, run file execute-<stamp>.run` (or `not run: ...` / `not started: ...`). |
 | `runs` | B8. One line: the execute and resume runs the component tracks (its own and adopted ones: command, pid, state `starting`/`running`/`adopted`/`exited`, ids) and the mutation lane, e.g. `1 live: execute pid 4242 adopted (itk_00000010); lane busy (execute)` or `none; lane free`. |
@@ -326,11 +326,17 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 Execute runs leave two files in `~/Library/Caches/foo_jl_intake/` while they
 run: `execute-<stamp>.json` (the CLI's stdout) and `execute-<stamp>.run` (pid,
-start time, ids, root paths, output name, command). Both are deleted when the
-component has read the result. A run still going when foobar2000 quits keeps
-running and keeps its files; the next start adopts it (live) or finishes it
-(ended), and deletes stray `execute-*.json`/`.tmp` files that have no run
-file, and run files that do not parse.
+start time, ids, root paths, output name, command). The run file is written
+before the CLI starts, without the pid and start time, and rewritten with
+them as soon as the child exists. Both are deleted when the component has
+read the result. A run still going when foobar2000 quits keeps running and
+keeps its files; the next start adopts it (live) or finishes it (ended). A
+run file still without a pid (foobar2000 was gone before it was rewritten)
+is adopted when one of this user's processes still has the output open (that
+process is then watched), finished when the output exists and nobody has it
+open, and deleted when there is no output (the CLI never started). Stray
+`execute-*.json`/`.tmp` files that have no run file, and run files that do
+not parse, are deleted.
 
 # Reverting everything
 

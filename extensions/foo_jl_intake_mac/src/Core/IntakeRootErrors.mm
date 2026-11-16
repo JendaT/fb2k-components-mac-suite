@@ -9,7 +9,7 @@
 
 namespace intake {
 
-void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus baseline) {
+void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus baseline, Clock::time_point at) {
     if (text.empty()) {
         clear(id);
         return;
@@ -19,6 +19,7 @@ void RootErrorStore::set(const std::string &id, std::string text, IntakeStatus b
     e.text = std::move(text);
     e.hasBaseline = baseline != IntakeStatus::Unknown;
     e.baseline = baseline;
+    e.setAt = at;
 }
 
 void RootErrorStore::clear(const std::string &id) {
@@ -31,7 +32,7 @@ void RootErrorStore::clearAll() {
     entries_.clear();
 }
 
-void RootErrorStore::apply(std::vector<IntakeRecord> &records) {
+void RootErrorStore::apply(std::vector<IntakeRecord> &records, Clock::time_point statusStarted) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (entries_.empty()) {
         for (IntakeRecord &r : records) r.lastError.clear();
@@ -47,6 +48,12 @@ void RootErrorStore::apply(std::vector<IntakeRecord> &records) {
             continue;
         }
         Entry &e = it->second;
+        if (e.setAt >= statusStarted) {
+            // The call may have read the status from before the error:
+            // shown, but this load decides nothing about it.
+            r.lastError = e.text;
+            continue;
+        }
         if (!e.hasBaseline) {
             e.hasBaseline = true;
             e.baseline = r.status;
@@ -58,7 +65,7 @@ void RootErrorStore::apply(std::vector<IntakeRecord> &records) {
         r.lastError = e.text;
     }
     for (auto it = entries_.begin(); it != entries_.end();) {
-        if (present.count(it->first)) {
+        if (present.count(it->first) || it->second.setAt >= statusStarted) {
             ++it;
         } else {
             it = entries_.erase(it);

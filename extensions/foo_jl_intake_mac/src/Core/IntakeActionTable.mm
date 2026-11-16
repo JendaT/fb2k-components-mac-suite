@@ -189,6 +189,7 @@ ActionRoot actionRootFor(const IntakeRecord &r) {
     a.album = r.album;
     a.status = r.status;
     if (r.hasProposal) a.targetCollection = r.proposal.targetCollection;
+    if (r.hasProposal && r.proposal.targetPathState == TargetPathState::Set) a.targetPath = r.proposal.targetPath;
     return a;
 }
 

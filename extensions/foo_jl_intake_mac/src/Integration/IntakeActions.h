@@ -64,17 +64,23 @@
 //     is chosen at the click, as for the picker. `execute <ids> --dry-run
 //     --json` runs on the lane (class ExecuteDryRun: no E_CLI_TIMEOUT,
 //     never killed); if it has not answered within 10 s the lane is
-//     released (one Info line) and its late result is dropped: no sheet.
-//     When it answers, on the main thread (IntakeExecutePlan): roots it
+//     released (one Info line) and its late result is dropped, and the
+//     sheet comes anyway: it lists every captured root without a target
+//     and says the check did not finish in 10 s (IntakeExecutePlan
+//     planUnchecked); Execute then runs on all of them (the CLI checks each
+//     again). When it answers, on the main thread (IntakeExecutePlan): roots it
 //     refused get their error as a tooltip (baseline: the menu's status;
 //     one console line, then a refresh to show it); with no placeable root,
 //     one Error line and no sheet. Otherwise an NSAlert lists up to 10
 //     "artist – album → target (n files, k shadows skipped)" rows, then the
 //     excluded roots with their error, as a sheet on that window (or the
 //     main or key window, else app-modal from a run-loop callout, never
-//     inside a main-queue block), buttons Execute and Cancel. Execute checks
-//     the lane and the configuration again and starts the run on the roots
-//     that passed. One execute flow at a time (dry run running or sheet
+//     inside a main-queue block), buttons Execute and Cancel. Execute leaves
+//     out the roots that changed while the sheet was open (no longer
+//     approved, or another target than the sheet showed: one Error line
+//     each, IntakeExecutePlan recheckPlaceable), checks the lane and the
+//     configuration again and starts the run on the roots that remain. One
+//     execute flow at a time (dry run running or sheet
 //     open): another request logs one Info line and does nothing.
 //   - Resume placement (B8): no confirmation; starts `execute <ids>
 //     --resume --json` as a detached run at once.
@@ -84,10 +90,14 @@
 //  Detached runs (B8, IntakeExecuteTracker): `execute <ids> --json` and
 //  `execute <ids> --resume --json` run in their own process group with
 //  stdin /dev/null, stdout to <stem>.json in ~/Library/Caches/foo_jl_intake
-//  and stderr to /dev/null (never killed, survive quitting foobar2000). As
-//  soon as the child exists its run file <stem>.run (pid, start time, ids,
-//  root paths, output name, command) is written atomically, and one Info
-//  line names the pid and the run file. A run holds the mutation lane until
+//  and stderr to /dev/null (never killed, survive quitting foobar2000). Its
+//  run file <stem>.run (ids, root paths, output name, command) is written
+//  before the spawn, without a pid (nothing is spawned when it cannot be
+//  written: one Error line), and rewritten atomically with the pid and
+//  start time as soon as the child exists; one Info line names the pid and
+//  the run file. So a run whose foobar2000 is gone before the pid is known
+//  is still found by the next session (IntakeExecuteTracker: by the process
+//  that has its output open). A run holds the mutation lane until
 //  it is finished: every mutating item is disabled and titled "(execute
 //  running)", Resume is disabled on its roots, Refresh stays enabled.
 //  Progress shows through the FSEvents watcher (the CLI flips the sidecars

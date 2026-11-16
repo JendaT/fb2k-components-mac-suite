@@ -245,7 +245,144 @@ static void testRunFileWrite() {
               back.start.micros == 5,
           "the run file on disk parses");
     CHECK(!writeRunFile(dir, "notes", f, error) && !error.empty(), "only run stems");
-    CHECK(!writeRunFile(dir + "/missing", stem, f, error), "a missing directory fails");
+    struct stat st;
+    CHECK(writeRunFile(dir + "/missing/deeper", stem, f, error) &&
+              mock::fileExists(dir + "/missing/deeper/" + runFileName(stem)) &&
+              stat((dir + "/missing/deeper").c_str(), &st) == 0 && (st.st_mode & 0777) == 0700,
+          "a missing directory is created (0700), as the runner does for the output");
+    mock::writeFile(dir + "/plain", "a file");
+    CHECK(!writeRunFile(dir + "/plain/sub", stem, f, error) && !error.empty(), "a directory that cannot exist fails");
+    f.provisional = true;
+    CHECK(writeRunFile(dir, stem, f, error), "a provisional run file replaces nothing it should not");
+    RunFile again = sampleRun(4343, ProcessStartTime{1794791491, 6}, stem);
+    CHECK(writeRunFile(dir, stem, again, error) &&
+              parseRunFile(mock::readFile(dir + "/" + runFileName(stem)), back, error) && !back.provisional &&
+              back.pid == 4343,
+          "the full run file replaces the provisional one");
+}
+
+// A child of ours whose stdout is `path`, in its own process group (as the
+// runner spawns the CLI): /bin/sleep <seconds>.
+pid_t spawnSleepWritingTo(const std::string &path, const char *seconds) {
+    posix_spawn_file_actions_t actions;
+    posix_spawnattr_t attr;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawnattr_init(&attr);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, path.c_str(), O_WRONLY | O_APPEND, 0);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+    posix_spawnattr_setpgroup(&attr, 0);
+    pid_t pid = 0;
+    char arg0[] = "/bin/sleep";
+    std::string s = seconds;
+    char *argv[] = {arg0, &s[0], nullptr};
+    char *envp[] = {nullptr};
+    const int rc = posix_spawn(&pid, arg0, &actions, &attr, argv, envp);
+    posix_spawn_file_actions_destroy(&actions);
+    posix_spawnattr_destroy(&attr);
+    return rc == 0 ? pid : 0;
+}
+
+// A run file written before the spawn (no pid): its liveness is a process
+// that still has the output open.
+static void testProvisional() {
+    g_context = "provisional";
+    RunFile p;
+    p.command = CliCommand::Execute;
+    p.provisional = true;
+    p.ids = {"itk_00000010"};
+    p.rootPaths = {"/income/dump/Fixture Artist - Approved Album"};
+    p.output = runOutputName("execute-p");
+    const std::string text = formatRunFile(p);
+    CHECK(text.find("\"pid\"") == std::string::npos && text.find("start_sec") == std::string::npos &&
+              text.find("start_usec") == std::string::npos,
+          "no pid and no start time on disk");
+    RunFile back;
+    std::string error;
+    CHECK(parseRunFile(text, back, error) && back.provisional && back.pid == 0 && back.ids == p.ids &&
+              back.rootPaths == p.rootPaths,
+          "it parses back as provisional, with ids and root paths");
+    CHECK(parseRunFile(kGoodRun, back, error) && !back.provisional, "a full run file is not provisional");
+    CHECK(parseFails(R"({"format":1,"command":"execute","start_sec":1794791491,"start_usec":1,"ids":["itk_00000010"],"output":"execute-x.json"})",
+                     "pid"),
+          "a start time without a pid is malformed");
+    CHECK(parseFails(R"({"format":1,"command":"execute","pid":4242,"ids":["itk_00000010"],"output":"execute-x.json"})",
+                     "start_sec"),
+          "a pid without a start time is malformed");
+    CHECK(parseFails(R"({"format":1,"command":"execute","pid":null,"start_sec":null,"start_usec":null,"ids":["itk_00000010"],"output":"execute-x.json"})",
+                     "pid"),
+          "null is not absent");
+
+    // The scan, with a stand-in for the writer lookup.
+    std::string dir = mock::newDir("provisional");
+    auto put = [&dir](const std::string &name, const std::string &content) { mock::writeFile(dir + "/" + name, content); };
+    auto provisionalFor = [&p](const std::string &stem) {
+        RunFile f = p;
+        f.output = runOutputName(stem);
+        return formatRunFile(f);
+    };
+    put("execute-gone.run", provisionalFor("execute-gone"));  // the CLI never started: no output
+    put("execute-held.run", provisionalFor("execute-held"));
+    put("execute-held.json", "");
+    put("execute-ended.run", provisionalFor("execute-ended"));
+    put("execute-ended.json", "{\"ok\":true,\"data\":[{\"id\":\"itk_00000010\"}],\"errors\":[]}\n");
+    auto livenessAsked = std::make_shared<int>(0);
+    LivenessCheck live = [livenessAsked](pid_t, const ProcessStartTime &) {
+        (*livenessAsked)++;
+        return true;
+    };
+    OutputWriterLookup writer = [](const std::string &path, pid_t &pid, ProcessStartTime &start) {
+        if (path.size() < 18 || path.compare(path.size() - 18, 18, "/execute-held.json") != 0) return false;
+        pid = 4242;
+        start = ProcessStartTime{7, 8};
+        return true;
+    };
+    LeftoverScan scan = scanLeftoverRuns(dir, live, writer);
+    CHECK(*livenessAsked == 0, "a provisional run has no pid to check");
+    CHECK(scan.adopt.size() == 1 && scan.adopt[0].stem == "execute-held" && scan.adopt[0].byOutput &&
+              scan.adopt[0].file.pid == 4242 && scan.adopt[0].file.start == (ProcessStartTime{7, 8}) &&
+              scan.adopt[0].file.ids == v({"itk_00000010"}),
+          "one with a live writer is adopted with the writer's pid and start time");
+    CHECK(scan.finish.size() == 1 && scan.finish[0].stem == "execute-ended" &&
+              scan.finish[0].output.find("itk_00000010") != std::string::npos,
+          "one with an output nobody writes is finished from its output");
+    CHECK(scan.swept == v({"execute-gone.run"}) && !mock::fileExists(dir + "/execute-gone.run"),
+          "one without an output never started: swept");
+    CHECK(mock::fileExists(dir + "/execute-held.run") && mock::fileExists(dir + "/execute-held.json") &&
+              mock::fileExists(dir + "/execute-ended.run"),
+          "the others' files stay");
+
+    // The real lookup: a child with the output as its stdout.
+    std::string real = mock::newDir("provisional-real");
+    const std::string out = real + "/execute-real.json";
+    mock::writeFile(out, "");
+    mock::writeFile(real + "/" + runFileName("execute-real"), provisionalFor("execute-real"));
+    pid_t found = 0;
+    ProcessStartTime foundStart;
+    int mine = ::open(out.c_str(), O_RDONLY);
+    CHECK(mine >= 0 && !findOutputWriter(out, found, foundStart), "this process is never its own run's writer");
+    pid_t child = spawnSleepWritingTo(out, "10");
+    ProcessStartTime childStart;
+    CHECK(child > 0 && readProcessStartTime(child, childStart), "a child writing the output");
+    if (child > 0) mock::trackGroup(child, child);
+    CHECK(findOutputWriter(out, found, foundStart) && found == child && foundStart == childStart,
+          "findOutputWriter: the child, with its start time");
+    LeftoverScan held = scanLeftoverRuns(real, processIsLive);
+    CHECK(held.adopt.size() == 1 && held.adopt[0].file.pid == child && held.adopt[0].file.start == childStart &&
+              held.finish.empty() && held.swept.empty(),
+          "the default lookup adopts it (a live run whose pid was never written)");
+    if (child > 0) {
+        ::kill(child, SIGKILL);
+        int status = 0;
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+        }
+    }
+    CHECK(!findOutputWriter(out, found, foundStart), "no writer once it has exited (a reader is not this process)");
+    LeftoverScan ended = scanLeftoverRuns(real, processIsLive);
+    CHECK(ended.adopt.empty() && ended.finish.size() == 1 &&
+              parseDetachedOutput(ended.finish[0].output, ended.finish[0].outputError).outcome == CliOutcome::NoCli,
+          "then it is finished: an empty output is E_NO_CLI");
+    CHECK(!findOutputWriter(real + "/missing.json", found, foundStart), "no writer for a missing file");
+    if (mine >= 0) ::close(mine);
 }
 
 // --- liveness ---
@@ -372,6 +509,13 @@ static void testDetachedOutput() {
         "{\"ok\":false,\"data\":null,\"errors\":[{\"code\":\"E_VERIFY\",\"msg\":\"verify failed\",\"path\":\"/x\"}]}");
     CHECK(failed.outcome == CliOutcome::Failed && failed.errors.size() == 1 && failed.errors[0].code == "E_VERIFY",
           "ok false, data null: exit 2, Failed");
+    EnvelopeResult emptyFailed = parseDetachedOutput(
+        "{\"ok\":false,\"data\":[],\"errors\":[{\"code\":\"E_VERIFY\",\"msg\":\"verify failed\",\"path\":\"/x\"}]}");
+    CHECK(emptyFailed.outcome == CliOutcome::Failed,
+          "ok false, data []: exit 2, Failed (as parseEnvelope accepts for our own child)");
+    CHECK(parseEnvelope("{\"ok\":false,\"data\":[],\"errors\":[{\"code\":\"E_VERIFY\",\"msg\":\"m\",\"path\":\"/x\"}]}", 2)
+                  .outcome == emptyFailed.outcome,
+          "the same outcome as our own child's exit 2");
     EnvelopeResult partial = parseDetachedOutput(
         "{\"ok\":false,\"data\":[{\"id\":\"itk_00000010\"}],\"errors\":[{\"code\":\"E_VERIFY\",\"msg\":\"m\",\"path\":null}]}");
     CHECK(partial.outcome == CliOutcome::Partial && idsInData(partial.data) == v({"itk_00000010"}),
@@ -647,6 +791,7 @@ int main() {
         testRunFileRoundTrip();
         testRunFileMalformed();
         testRunFileWrite();
+        testProvisional();
         testLiveness();
         testScan();
         testDetachedOutput();

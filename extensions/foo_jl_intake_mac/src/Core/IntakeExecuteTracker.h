@@ -25,7 +25,11 @@
 //     keys are ignored. Everything else is required: format 1, a pid of 2
 //     or more, start_sec 1 or more, start_usec 0 to 999999, at least one
 //     sidecar id (repeats dropped), and an output name of this module's
-//     form.
+//     form. Except: a provisional run file has none of pid, start_sec and
+//     start_usec (all three absent; some but not all is malformed). It is
+//     written before the spawn, so a run whose foobar2000 is gone before
+//     the pid is known (a crash, a quit, a failed rewrite) is never an
+//     orphan output; once the child exists the full run file replaces it.
 //  Nothing else in the directory is ever touched: the runner's
 //  intake-<pid>-... files, names of other forms, and anything that is not a
 //  regular file (directories, symlinks) are left alone.
@@ -42,6 +46,14 @@
 //     marks the roots running and watches the pid with ProcessExitWatch);
 //   - a run file that parses, dead: Finish (its output is read here; the
 //     caller applies it, then deleteRunFiles);
+//   - a provisional run file: its liveness is whether a process of this
+//     user still has the output open (OutputWriterLookup; production:
+//     findOutputWriter, proc_listpidspath). One does: Adopt, with that
+//     process's pid and start time in the file (the CLI writes it as its
+//     stdout and leads its own process group, so such a process is
+//     preferred).
+//     None: Finish when the output exists; with no output the CLI never
+//     started (the runner creates the output before the spawn): Sweep;
 //   - a run file that does not parse, or names another output: Sweep (the
 //     run file, its output and its temp file are deleted);
 //   - an output or temp file with no run file: Sweep.
@@ -49,7 +61,8 @@
 //
 //  A detached run's output has no exit code when the run was not our child
 //  (adopted, or finished by a later session): parseDetachedOutput infers it
-//  from the envelope (ok true: 0; ok false with data null: 2; else 1) and
+//  from the envelope (ok true: 0; ok false with data null or an empty array:
+//  2, as parseEnvelope accepts both for exit 2; else 1) and
 //  then applies the usual envelope rules (IntakeEnvelope), so a truncated
 //  or empty output is E_NO_CLI.
 //
@@ -119,6 +132,8 @@ std::string uniqueRunStem(const std::string &dir, std::chrono::system_clock::tim
 
 struct RunFile {
     CliCommand command = CliCommand::Execute;  // Execute or Resume
+    // Written before the spawn: no pid or start time (both left 0).
+    bool provisional = false;
     pid_t pid = 0;
     ProcessStartTime start;
     std::vector<std::string> ids;
@@ -130,7 +145,8 @@ struct RunFile {
 std::string formatRunFile(const RunFile &file);
 // False, with `error`, when `text` is not a valid run file.
 bool parseRunFile(std::string_view text, RunFile &out, std::string &error);
-// Atomically writes <dir>/<stem>.run (through <stem>.tmp, fsync, rename).
+// Atomically writes <dir>/<stem>.run (through <stem>.tmp, fsync, rename),
+// replacing one that is there; creates `dir` (0700) when it is missing.
 // False, with `error`, when it could not.
 bool writeRunFile(const std::string &dir, const std::string &stem, const RunFile &file, std::string &error);
 
@@ -140,11 +156,20 @@ using LivenessCheck = std::function<bool(pid_t pid, const ProcessStartTime &star
 // readProcessStartTime(pid) succeeds and equals `start`.
 bool processIsLive(pid_t pid, const ProcessStartTime &start);
 
+// A live process that has `path` open (a provisional run's output): its pid
+// and start time. False when there is none.
+using OutputWriterLookup = std::function<bool(const std::string &path, pid_t &pid, ProcessStartTime &start)>;
+// proc_listpidspath over this user's processes (not this one) whose start
+// time can be read; ranked: stdout is the file, then a process group
+// leader, then the lowest pid.
+bool findOutputWriter(const std::string &path, pid_t &pid, ProcessStartTime &start);
+
 // --- leftovers ---
 
 struct LeftoverRun {
     std::string stem;
-    RunFile file;
+    RunFile file;  // a provisional one adopted: pid and start of the output's writer
+    bool byOutput = false;  // adopted through its output's writer (a provisional run file)
     // Finish only: the output's text, or why it could not be read.
     std::string output;
     std::string outputError;
@@ -159,7 +184,8 @@ struct LeftoverScan {
 };
 
 // See the top of this file. Stems are visited in name order.
-LeftoverScan scanLeftoverRuns(const std::string &dir, const LivenessCheck &live);
+LeftoverScan scanLeftoverRuns(const std::string &dir, const LivenessCheck &live,
+                              const OutputWriterLookup &writer = findOutputWriter);
 
 // Reads <dir>/<name> (a regular file, at most 32 MB). False, with `error`.
 bool readRunOutput(const std::string &dir, const std::string &name, std::string &text, std::string &error);

@@ -34,6 +34,20 @@
 //     any root was excluded;
 //   - a last line saying the run continues in the background.
 //
+//  Unchecked plan (planUnchecked): the dry run did not answer within its
+//  10 s report (doc 04 v1.2 "Mutation lane": the lane is released, the late
+//  result discarded, and the confirmation says the check did not finish in
+//  10 s). Every captured root is listed as placeable with its label only (no
+//  target, no counts), nothing is excluded, and a line before the last one
+//  says the check did not finish and that execute checks each album again.
+//
+//  Re-check at Execute (recheckPlaceable): the lane is free while the sheet
+//  is up, so a root may change meanwhile. A placeable root whose current
+//  record is no longer `approved`, has no target any more, or whose
+//  target_path differs from the dry run's row (both known; compared as
+//  IntakePath keys, else byte for byte) is left out with why; a root the
+//  lookup does not find is kept (the CLI checks it again).
+//
 //  Thread-safety: pure functions (Foundation objects are only read).
 //
 
@@ -42,7 +56,9 @@
 #import <Foundation/Foundation.h>
 
 #include <cstddef>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "IntakeActionTable.h"
@@ -82,9 +98,20 @@ struct ExecutePlan {
     // summarizeMutation(Execute, roots, dryRun, "execute dry run"): the
     // excluded roots' tooltips (rootErrors) and the console line.
     MutationOutcome outcome;
+    // planUnchecked: the dry run did not answer within 10 s.
+    bool unchecked = false;
 };
 
 ExecutePlan planExecute(const std::vector<ActionRoot> &roots, const EnvelopeResult &dryRun);
+ExecutePlan planUnchecked(const std::vector<ActionRoot> &roots);
+
+// The sheet's Execute against the records as they are now (see the top).
+struct ExecuteRecheck {
+    std::vector<ActionRoot> keep;                              // plan order
+    std::vector<std::pair<std::string, std::string>> dropped;  // id, why
+};
+using ExecuteRecordLookup = std::function<const IntakeRecord *(const std::string &id)>;
+ExecuteRecheck recheckPlaceable(const ExecutePlan &plan, const ExecuteRecordLookup &lookup);
 
 // The ids of plan.placeable, in order.
 std::vector<std::string> placeableIds(const ExecutePlan &plan);
@@ -93,7 +120,8 @@ std::string executeSheetRow(const ActionRoot &root, const DryRunRow &row);
 std::string executeSheetTitle(const ExecutePlan &plan);
 std::string executeSheetText(const ExecutePlan &plan, size_t maxListed = 10);
 // One line for logs and the test aid: "N placeable, M excluded: <row> |
-// <row> | excluded: <label>: <why>" with the sheet's caps.
+// <row> | excluded: <label>: <why>" with the sheet's caps; for an unchecked
+// plan "N unchecked (the check did not finish in 10 s): <label> | ...".
 std::string executeSheetSummary(const ExecutePlan &plan, size_t maxListed = 10);
 
 } // namespace intake

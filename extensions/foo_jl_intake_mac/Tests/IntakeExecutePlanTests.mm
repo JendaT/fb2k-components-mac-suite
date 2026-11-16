@@ -150,6 +150,120 @@ static void testPlan() {
     CHECK(placeableIds(stray) == v({"itk_00000010"}) && stray.excluded.empty(), "a stray row is ignored, a root counted once");
 }
 
+// Refusals that name the target (E_TARGET_EXISTS, the out-of-tier
+// E_NO_TARGET) stay on their own roots in the plan and the sheet.
+static void testPlanTargets() {
+    g_context = "plan-targets";
+    std::vector<ActionRoot> roots = {root("itk_0000000a", "Fixture Artist", "Album A", "/income/dump/A"),
+                                     root("itk_0000000b", "Fixture Artist", "Album B", "/income/dump/B"),
+                                     root("itk_0000000c", "Fixture Artist", "Album C", "/income/dump/C")};
+    roots[0].targetPath = "/lib/A";
+    roots[1].targetPath = "/lib/B";
+    roots[2].targetPath = "/lib/C";
+    EnvelopeResult reply = parseEnvelope(
+        R"({"ok":false,"data":[{"id":"itk_0000000c","target_path":"/lib/C","files":1}],"errors":[)"
+        R"({"code":"E_TARGET_EXISTS","msg":"target path already exists","path":"/lib/A"},)"
+        R"({"code":"E_TARGET_EXISTS","msg":"target path already exists","path":"/lib/B"}]})",
+        1);
+    ExecutePlan p = planExecute(roots, reply);
+    CHECK(placeableIds(p) == v({"itk_0000000c"}) && p.excluded.size() == 2, "C placeable, A and B excluded");
+    CHECK(p.excludedWhy.size() == 2 &&
+              p.excludedWhy[0] == "Target folder already exists: target path already exists (/lib/A)" &&
+              p.excludedWhy[1] == "Target folder already exists: target path already exists (/lib/B)",
+          "each excluded root shows its own target's error only");
+    CHECK(p.outcome.rootErrors.size() == 2 && p.outcome.rootErrors[0].second.find("/lib/B") == std::string::npos &&
+              p.outcome.rootErrors[1].second.find("/lib/A") == std::string::npos,
+          "and so do the tooltips");
+}
+
+// The dry run did not answer within 10 s: the captured roots, unchecked.
+static void testUnchecked() {
+    g_context = "unchecked";
+    std::vector<ActionRoot> roots = {root("itk_00000010", "Fixture Artist", "Approved Album", "/income/dump/A"),
+                                     root("itk_00000010", "Fixture Artist", "Approved Album", "/income/dump/A"),
+                                     root("itk_00000012", "Fixture Artist", "Second Album", "/income/dump/B")};
+    roots[0].targetPath = roots[1].targetPath = "/lib/A";
+    ExecutePlan p = planUnchecked(roots);
+    CHECK(p.unchecked && placeableIds(p) == v({"itk_00000010", "itk_00000012"}) && p.rows.size() == 2 &&
+              p.excluded.empty(),
+          "every captured root, once, in selection order; nothing excluded");
+    CHECK(p.rows[0].id == "itk_00000010" && p.rows[0].targetPath.empty() && !p.rows[0].hasFiles,
+          "rows carry the id only");
+    CHECK(executeSheetTitle(p) == "Place 2 albums in the library?", "the usual title");
+    const std::string text = executeSheetText(p);
+    CHECK(text.rfind("Fixture Artist" + kDash + "Approved Album\nFixture Artist" + kDash + "Second Album\n", 0) == 0,
+          "labels only: no arrow, no counts");
+    CHECK(text.find("did not finish in 10 s") != std::string::npos &&
+              text.find("Execute checks each album again") != std::string::npos,
+          "the sheet says the check did not finish in 10 s");
+    CHECK(text.find("keeps running if foobar2000 quits") != std::string::npos, "and keeps the background note");
+    CHECK(executeSheetSummary(p) == "2 unchecked (the check did not finish in 10 s): Fixture Artist" + kDash +
+                                        "Approved Album | Fixture Artist" + kDash + "Second Album",
+          "the summary for logs and the test aid");
+    ExecutePlan checked = planExecute({roots[0]}, parseEnvelope(R"({"ok":true,"data":[{"id":"itk_00000010"}],"errors":[]})", 0));
+    CHECK(!checked.unchecked && executeSheetText(checked).find("did not finish") == std::string::npos,
+          "a plan from a reply is checked");
+}
+
+// Execute re-checks the placeable roots against the records as they are now.
+static void testRecheck() {
+    g_context = "recheck";
+    std::vector<ActionRoot> roots = {root("itk_0000000a", "Fixture Artist", "Album A"),
+                                     root("itk_0000000b", "Fixture Artist", "Album B"),
+                                     root("itk_0000000c", "Fixture Artist", "Album C"),
+                                     root("itk_0000000d", "Fixture Artist", "Album D"),
+                                     root("itk_0000000e", "Fixture Artist", "Album E"),
+                                     root("itk_0000000f", "Fixture Artist", "Album F")};
+    ExecutePlan plan;
+    for (const ActionRoot &r : roots) {
+        plan.placeable.push_back(r);
+        plan.rows.push_back(row(r.id.c_str(), ("/lib/" + r.id).c_str(), 1, 0));
+    }
+    std::vector<IntakeRecord> records(5);
+    auto rec = [&records](size_t i, const char *id, IntakeStatus status, const char *statusText, TargetPathState state,
+                          const std::string &target) {
+        IntakeRecord &r = records[i];
+        r.id = id;
+        r.status = status;
+        r.statusText = statusText;
+        r.hasProposal = true;
+        r.proposal.targetPathState = state;
+        r.proposal.targetPath = target;
+    };
+    rec(0, "itk_0000000a", IntakeStatus::Approved, "approved", TargetPathState::Set, "/lib/itk_0000000a");
+    rec(1, "itk_0000000b", IntakeStatus::Placing, "placing", TargetPathState::Set, "/lib/itk_0000000b");
+    rec(2, "itk_0000000c", IntakeStatus::Approved, "approved", TargetPathState::Set, "/lib/elsewhere");
+    rec(3, "itk_0000000d", IntakeStatus::Approved, "approved", TargetPathState::Null, "");
+    rec(4, "itk_0000000e", IntakeStatus::Approved, "approved", TargetPathState::Unknown, "");
+    // itk_0000000f: not in the records (kept: the CLI checks it again).
+    ExecuteRecheck re = recheckPlaceable(plan, [&records](const std::string &id) -> const IntakeRecord * {
+        for (const IntakeRecord &r : records) {
+            if (r.id == id) return &r;
+        }
+        return nullptr;
+    });
+    std::vector<std::string> kept;
+    for (const ActionRoot &r : re.keep) kept.push_back(r.id);
+    CHECK(kept == v({"itk_0000000a", "itk_0000000e", "itk_0000000f"}),
+          "kept: unchanged, target unknown (CLI 0.2), not in the snapshot");
+    CHECK(re.dropped.size() == 3, "three left out");
+    CHECK(re.dropped.size() == 3 && re.dropped[0].first == "itk_0000000b" &&
+              re.dropped[0].second == "it is placing now, no longer approved",
+          "a root no longer approved");
+    CHECK(re.dropped.size() == 3 && re.dropped[1].first == "itk_0000000c" &&
+              re.dropped[1].second == "its target changed since the check (now /lib/elsewhere)",
+          "a root re-assigned while the sheet was open");
+    CHECK(re.dropped.size() == 3 && re.dropped[2].first == "itk_0000000d" &&
+              re.dropped[2].second == "it has no target any more (slot pending)",
+          "a root whose target went away");
+
+    ExecuteRecheck none = recheckPlaceable(plan, nullptr);
+    CHECK(none.keep.size() == roots.size() && none.dropped.empty(), "no lookup: everything kept");
+    ExecutePlan unchecked = planUnchecked({roots[2]});
+    ExecuteRecheck u = recheckPlaceable(unchecked, [&records](const std::string &) { return &records[2]; });
+    CHECK(u.keep.size() == 1 && u.dropped.empty(), "unchecked rows have no target to compare: status only");
+}
+
 static void testSheetRows() {
     g_context = "sheet-rows";
     ActionRoot full = root("itk_00000010", "Fixture Artist", "Approved Album", "/income/dump/Fixture Artist - Approved Album");
@@ -291,6 +405,9 @@ int main() {
         atexit([] { mock::killLeftovers(); });
         testParseRows();
         testPlan();
+        testPlanTargets();
+        testUnchecked();
+        testRecheck();
         testSheetRows();
         testSheetText();
         testAgainstMock();

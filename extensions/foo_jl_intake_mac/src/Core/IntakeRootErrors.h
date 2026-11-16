@@ -26,6 +26,13 @@
 //  from a successful load is dropped too (the store stays bounded by the
 //  roots that exist).
 //
+//  Loads already running: apply() takes the time the load's `status` call
+//  started. An error set at or after that time may be newer than what the
+//  call read (a run that ended while an FSEvents reload was in flight), so
+//  that load shows it but neither takes its baseline nor drops it; the next
+//  load (serviceRefreshAfterCommand queues one) decides. apply(records)
+//  alone treats every load as started after every error.
+//
 //  Thread-safety: every method may be called from any thread (set/clear on
 //  the main thread, apply on the loader queue); one mutex, held only while
 //  copying strings.
@@ -33,6 +40,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <mutex>
 #include <string>
@@ -45,16 +53,22 @@ namespace intake {
 
 class RootErrorStore {
 public:
+    using Clock = std::chrono::steady_clock;
+
     // A new error for `id` (an empty text clears instead), kept while the
-    // root stays in `baseline` (see above; Unknown: the first load's).
-    void set(const std::string &id, std::string text, IntakeStatus baseline = IntakeStatus::Unknown);
+    // root stays in `baseline` (see above; Unknown: the first load's). `at`
+    // is when it was set (tests pass their own).
+    void set(const std::string &id, std::string text, IntakeStatus baseline = IntakeStatus::Unknown,
+             Clock::time_point at = Clock::now());
     void clear(const std::string &id);
     void clearAll();
 
     // The loader's annotator: every record gets its root's error in
     // lastError (or an empty one), and errors whose root changed status
-    // since they were first shown, or is missing, are dropped (see above).
-    void apply(std::vector<IntakeRecord> &records);
+    // since they were first shown, or is missing, are dropped (see above),
+    // unless they were set at or after `statusStarted`.
+    void apply(std::vector<IntakeRecord> &records, Clock::time_point statusStarted);
+    void apply(std::vector<IntakeRecord> &records) { apply(records, Clock::time_point::max()); }
 
     // For tests and logs.
     size_t size() const;
@@ -65,6 +79,7 @@ private:
         std::string text;
         bool hasBaseline = false;
         IntakeStatus baseline = IntakeStatus::Unknown;
+        Clock::time_point setAt;
     };
     mutable std::mutex mutex_;
     std::unordered_map<std::string, Entry> entries_;

@@ -153,6 +153,7 @@ struct ActionRoot {
     std::string album;
     IntakeStatus status = IntakeStatus::Unknown;
     std::string targetCollection;  // proposal.target_collection; empty without one
+    std::string targetPath;        // proposal.target_path when set (CLI 0.3.0+); empty otherwise
 };
 
 ActionRoot actionRootFor(const IntakeRecord &record);

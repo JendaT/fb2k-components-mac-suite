@@ -1370,7 +1370,8 @@ static void testAnnotateAndBadges() {
     auto h = std::make_shared<Harness>();
     auto store = std::make_shared<RootErrorStore>();
     LoaderSettings settings = settingsFor(state, h);
-    settings.annotateRecords = [store](std::vector<IntakeRecord> &records) { store->apply(records); };
+    settings.annotateRecords = [store](std::vector<IntakeRecord> &records,
+                                       std::chrono::steady_clock::time_point started) { store->apply(records, started); };
     IntakeLoader loader(std::move(settings));
     loader.reload(true);
     CHECK(waitFinished(*h, 1), "first load");

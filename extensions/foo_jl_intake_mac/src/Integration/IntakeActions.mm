@@ -353,7 +353,7 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
                                                              : "another intake command is still running");
     }
     auto roots = std::make_shared<std::vector<MutationRoot>>();
-    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status});
+    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status, r.targetPath});
     logInfo(name + ": starting for " + rootCountText(request.ids.size()) + ": " + idList(request.ids) +
             (request.collection.empty() ? std::string() : " to \"" + request.collection + "\"") +
             (request.reason.empty() ? std::string() : " (with a reason)"));
@@ -746,8 +746,10 @@ std::string runFileText(const std::string &stem) {
 }
 
 // The roots of a run as MutationRoots: the root paths it was started with,
-// else the ones the current snapshot has; no menu status (the run took
-// minutes, so the first load after it decides the baseline).
+// else the ones the current snapshot has, and the target paths the
+// snapshot has (errors that name the target, IntakeMutationResult rule 1c);
+// no menu status (the run took minutes, so the first load after it decides
+// the baseline).
 std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const std::vector<std::string> &rootPaths) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     std::vector<MutationRoot> out;
@@ -755,8 +757,11 @@ std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const st
         MutationRoot r;
         r.id = ids[i];
         if (i < rootPaths.size()) r.rootPath = rootPaths[i];
-        if (r.rootPath.empty() && view) {
-            if (const IntakeRecord *record = view->snapshot().recordForId(r.id)) r.rootPath = record->rootPath;
+        if (const IntakeRecord *record = view ? view->snapshot().recordForId(r.id) : nullptr) {
+            if (r.rootPath.empty()) r.rootPath = record->rootPath;
+            if (record->hasProposal && record->proposal.targetPathState == TargetPathState::Set) {
+                r.targetPath = record->proposal.targetPath;
+            }
         }
         out.push_back(std::move(r));
     }
@@ -841,11 +846,11 @@ void onRunSpawned(const std::string &stem, pid_t pid, bool startKnown, const Pro
     if (runFileWritten) {
         where = "run file " + runFileText(stem);
     } else if (!startKnown) {
-        where = "no run file: it had already exited";
+        where = "run file " + runFileText(stem) + " without its pid: it had already exited";
     } else {
-        where = "no run file";
-        logError(name + ": the run file " + runFileText(stem) + " could not be written (" + runFileError +
-                 "); if foobar2000 quits before the run ends, its result is not reported");
+        where = "run file " + runFileText(stem) + " without its pid";
+        logError(name + ": the pid could not be added to the run file " + runFileText(stem) + " (" + runFileError +
+                 "); if foobar2000 quits before the run ends, the next start finds it by its output file");
     }
     logInfo(name + ": started for " + rootCountText(run->ids.size()) + ": " + idList(run->ids) + " (pid " +
             std::to_string(pid) + ", " + where + ")");
@@ -880,8 +885,10 @@ void onRunRefused(const std::string &stem, const std::string &refusal) {
     }
 }
 
-// Queue: builds and spawns the detached run, writes its run file as soon as
-// the child exists.
+// Queue: writes the provisional run file (no pid yet), builds and spawns the
+// detached run, and rewrites the run file with the pid and start time as
+// soon as the child exists. Nothing is spawned when the run file cannot be
+// written: a run the next session could not find must not start.
 void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> config,
                      std::shared_ptr<const CliRequest> request,
                      std::shared_ptr<const std::vector<std::string>> rootPaths) {
@@ -893,18 +900,29 @@ void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> c
     options.stderrToDevNull = true;  // PLAN.md 3.7 step 3: nothing reads it, and it could grow unbounded
     const CliCommand command = request->command;
     const std::vector<std::string> ids = request->ids;
-    options.onSpawn = [stem, dir, command, ids, rootPaths](const ProcessSpawnInfo &info) {
+    RunFile provisional;
+    provisional.command = command;
+    provisional.provisional = true;
+    provisional.ids = ids;
+    provisional.rootPaths = *rootPaths;
+    provisional.output = runOutputName(stem);
+    std::string provisionalError;
+    if (!writeRunFile(dir, stem, provisional, provisionalError)) {
+        const std::string refusal = "the run file could not be written: " + provisionalError;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            onRunRefused(stem, refusal);
+        });
+        return;
+    }
+    options.onSpawn = [stem, dir, provisional](const ProcessSpawnInfo &info) {
         // st.queue, before the completion.
         std::string error;
         bool written = false;
         if (info.startTimeKnown) {
-            RunFile file;
-            file.command = command;
+            RunFile file = provisional;
+            file.provisional = false;
             file.pid = info.pid;
             file.start = info.startTime;
-            file.ids = ids;
-            file.rootPaths = *rootPaths;
-            file.output = runOutputName(stem);
             written = writeRunFile(dir, stem, file, error);
         }
         const pid_t pid = info.pid;
@@ -925,6 +943,7 @@ void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> c
         },
         &refusal);
     if (!started) {
+        deleteRunFiles(dir, stem);  // the provisional run file; nothing ran
         dispatch_async(dispatch_get_main_queue(), ^{
             onRunRefused(stem, refusal);
         });
@@ -973,10 +992,31 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     return "starting for " + rootCountText(request->ids.size());
 }
 
-// The sheet's Execute, and the test aid's headless confirmation.
+// The sheet's Execute, and the test aid's headless confirmation. The lane
+// was free while the sheet was up, so roots that changed meanwhile (no
+// longer approved, another target) are left out first, one Error line each
+// (IntakeExecutePlan recheckPlaceable); then the lane and the configuration
+// again (startDetachedRun).
 void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow, std::shared_ptr<const ExecuteTestHooks> hooks,
                     const std::string &prefix) {
-    const std::string what = startDetachedRun(CliCommand::Execute, flow->plan.placeable, hooks, prefix);
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    const ExecuteRecheck recheck =
+        recheckPlaceable(flow->plan, [&view](const std::string &id) -> const IntakeRecord * {
+            return view ? view->snapshot().recordForId(id) : nullptr;
+        });
+    std::string pre = prefix;
+    for (const auto &dropped : recheck.dropped) {
+        logError("execute: " + dropped.first + " left out: " + dropped.second);
+        pre += dropped.first + " left out: " + dropped.second + "; ";
+    }
+    if (recheck.keep.empty()) {
+        const std::string what = notRun(IntakeAction::Execute, "every root changed while the sheet was open");
+        execReport(hooks, pre + what);
+        execDone(hooks);
+        logDebug("execute: " + what);
+        return;
+    }
+    const std::string what = startDetachedRun(CliCommand::Execute, recheck.keep, hooks, pre);
     logDebug("execute: " + what);
 }
 
@@ -1062,11 +1102,20 @@ void onExecuteDryRunBudget(uint64_t serial, uint64_t token, const std::vector<Mu
     ActionsState &st = actionsState();
     if (st.stopped) return;
     // The lane release and its Info line (no E_CLI_TIMEOUT: doc 03 excepts
-    // execute); the late result is dropped, so no sheet.
+    // execute); the late result is dropped. The confirmation still comes and
+    // says the check did not finish in 10 s (doc 04 v1.2 "Mutation lane"):
+    // every captured root, unchecked; execute checks each again.
     onBudget(token, CliCommand::Execute, roots, event);
-    if (st.executeFlow && st.executeFlow->serial == serial) {
-        endExecuteFlowWith(st.executeFlow, "dry run: no answer within 10 s; no sheet, nothing executed");
+    if (!st.executeFlow || st.executeFlow->serial != serial) return;
+    std::shared_ptr<ExecuteFlow> flow = st.executeFlow;
+    flow->plan = planUnchecked(flow->entry.roots);
+    logDebug(std::string(kExecuteDryRunName) + ": " + executeSheetSummary(flow->plan));
+    if (flow->test && flow->test->mode == ExecuteTestHooks::Mode::Headless) {
+        endExecuteFlow(flow);
+        confirmExecute(flow, flow->test, "dry run: " + executeSheetSummary(flow->plan) + "; confirmed; ");
+        return;
     }
+    showExecuteSheet(flow);
 }
 
 void onExecuteDryRun(uint64_t serial, uint64_t token, const CliResult &result) {
@@ -1195,6 +1244,11 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
         if (!st.tracker.adopt(run.stem, run.file)) continue;
         if (!holdRunLane()) logDebug("execute: the lane was busy while adopting " + run.stem);
         const std::string name = cliCommandName(run.file.command);
+        if (run.byOutput) {
+            logDebug(name + ": the run file " + runFileText(run.stem) +
+                     " has no pid (written before its start); pid " + std::to_string(run.file.pid) +
+                     " still has its output open");
+        }
         logInfo(name + ": adopted a run from an earlier session: pid " + std::to_string(run.file.pid) + ", " +
                 rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + " (run file " +
                 runFileText(run.stem) + "); intake commands wait until it ends");
@@ -1203,7 +1257,9 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
     for (size_t i = 0; i < scan.finish.size(); i++) {
         const LeftoverRun &run = scan.finish[i];
         const std::string name = cliCommandName(run.file.command);
-        logInfo(name + ": a run from an earlier session has ended (pid " + std::to_string(run.file.pid) + ", " +
+        const std::string pid = run.file.provisional ? std::string("no pid recorded")
+                                                     : "pid " + std::to_string(run.file.pid);
+        logInfo(name + ": a run from an earlier session has ended (" + pid + ", " +
                 rootCountText(run.file.ids.size()) + ": " + idList(run.file.ids) + ", run file " +
                 runFileText(run.stem) + "); applying its result");
         applyRunResult(run.file.command, runRoots(run.file.ids, run.file.rootPaths), result->finished[i]);
@@ -1290,7 +1346,7 @@ std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<co
     logInfo(std::string(kExecuteDryRunName) + ": starting for " + rootCountText(request.ids.size()) + ": " +
             idList(request.ids));
     auto roots = std::make_shared<std::vector<MutationRoot>>();
-    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status});
+    for (const ActionRoot &r : entry.roots) roots->push_back({r.id, r.rootPath, r.status, r.targetPath});
     const uint64_t serial = flow->serial;
     auto sharedConfig = std::make_shared<const CliConfig>(std::move(config));
     auto sharedRequest = std::make_shared<const CliRequest>(request);

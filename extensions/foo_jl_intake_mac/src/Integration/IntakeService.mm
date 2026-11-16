@@ -127,7 +127,9 @@ public:
         ls.watchFolders = settings_.watchFolders;
         ls.onStatusChanged = [](const LoaderStatus &) { postStatusChanged(); };
         // B6: per-root command errors reach the records before the snapshot.
-        ls.annotateRecords = [](std::vector<IntakeRecord> &records) { actionsErrorStore().apply(records); };
+        ls.annotateRecords = [](std::vector<IntakeRecord> &records, std::chrono::steady_clock::time_point started) {
+            actionsErrorStore().apply(records, started);
+        };
         // The temporary test_actions aid runs after the first successful load.
         ls.onLoadFinished = [](const LoaderStatus &st) {
             if (st.state != LoaderState::Ready) return;

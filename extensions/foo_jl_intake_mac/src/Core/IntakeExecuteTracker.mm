@@ -16,6 +16,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fcntl.h>
+#include <libproc.h>
 #include <map>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -204,9 +205,11 @@ std::string formatRunFile(const RunFile &file) {
         NSMutableDictionary *dict = [NSMutableDictionary dictionary];
         dict[@"format"] = @1;
         dict[@"command"] = file.command == CliCommand::Resume ? @"resume" : @"execute";
-        dict[@"pid"] = @((long long)file.pid);
-        dict[@"start_sec"] = @((unsigned long long)file.start.seconds);
-        dict[@"start_usec"] = @((unsigned long long)file.start.micros);
+        if (!file.provisional) {
+            dict[@"pid"] = @((long long)file.pid);
+            dict[@"start_sec"] = @((unsigned long long)file.start.seconds);
+            dict[@"start_usec"] = @((unsigned long long)file.start.micros);
+        }
         dict[@"ids"] = ids;
         if (!file.rootPaths.empty() && file.rootPaths.size() == file.ids.size()) {
             NSMutableArray *paths = [NSMutableArray array];
@@ -249,15 +252,16 @@ bool parseRunFile(std::string_view text, RunFile &out, std::string &error) {
             return false;
         }
         long long pid = 0, sec = 0, usec = 0;
-        if (!jsonInteger(d[@"pid"], 2, INT32_MAX, pid)) {
+        const int present = (d[@"pid"] != nil) + (d[@"start_sec"] != nil) + (d[@"start_usec"] != nil);
+        if (present == 0) {
+            f.provisional = true;  // written before the spawn
+        } else if (!jsonInteger(d[@"pid"], 2, INT32_MAX, pid)) {
             error = "pid is not an integer of 2 or more";
             return false;
-        }
-        if (!jsonInteger(d[@"start_sec"], 1, LLONG_MAX, sec)) {
+        } else if (!jsonInteger(d[@"start_sec"], 1, LLONG_MAX, sec)) {
             error = "start_sec is not a positive integer";
             return false;
-        }
-        if (!jsonInteger(d[@"start_usec"], 0, 999999, usec)) {
+        } else if (!jsonInteger(d[@"start_usec"], 0, 999999, usec)) {
             error = "start_usec is not an integer from 0 to 999999";
             return false;
         }
@@ -312,6 +316,19 @@ bool writeRunFile(const std::string &dir, const std::string &stem, const RunFile
     }
     const std::string tmp = joinPath(dir, runTempName(stem));
     const std::string final = joinPath(dir, runFileName(stem));
+    struct stat dirStat;
+    if (!dir.empty() && lstat(dir.c_str(), &dirStat) != 0 && errno == ENOENT) {
+        @autoreleasepool {
+            NSError *mkdirError = nil;
+            if (![[NSFileManager defaultManager] createDirectoryAtPath:toNS(dir)
+                                           withIntermediateDirectories:YES
+                                                            attributes:@{NSFilePosixPermissions : @0700}
+                                                                 error:&mkdirError]) {
+                error = "cannot create " + dir + ": " + fromNS(mkdirError.localizedDescription);
+                return false;
+            }
+        }
+    }
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0 && errno == EEXIST && removeIfRegular(tmp)) {
         fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -354,6 +371,45 @@ bool processIsLive(pid_t pid, const ProcessStartTime &start) {
     return readProcessStartTime(pid, now) && now == start;
 }
 
+namespace {
+
+// `pid`'s stdout is the file `target` (same device and inode).
+bool stdoutIs(pid_t pid, const struct stat &target) {
+    struct vnode_fdinfowithpath info;
+    const int n = proc_pidfdinfo(pid, STDOUT_FILENO, PROC_PIDFDVNODEPATHINFO, &info, sizeof info);
+    if (n < (int)sizeof info) return false;
+    return (dev_t)info.pvip.vip_vi.vi_stat.vst_dev == target.st_dev &&
+           (ino_t)info.pvip.vip_vi.vi_stat.vst_ino == target.st_ino;
+}
+
+} // anonymous namespace
+
+bool findOutputWriter(const std::string &path, pid_t &pidOut, ProcessStartTime &startOut) {
+    struct stat target;
+    if (stat(path.c_str(), &target) != 0) return false;
+    std::vector<int> pids(1024);
+    const int bytes = proc_listpidspath(PROC_UID_ONLY, getuid(), path.c_str(), PROC_LISTPIDSPATH_EXCLUDE_EVTONLY,
+                                        pids.data(), (int)(pids.size() * sizeof(int)));
+    if (bytes <= 0) return false;
+    pids.resize(std::min(pids.size(), (size_t)bytes / sizeof(int)));
+    std::sort(pids.begin(), pids.end());
+    // The spawned CLI has the output as its stdout and leads its own
+    // process group (IntakeProcess): rank those first, then any process
+    // that has it open (a reader keeps the lane held, the safe side).
+    int bestRank = 4;
+    for (int pid : pids) {
+        if (pid <= 1 || pid == getpid()) continue;
+        ProcessStartTime start;
+        if (!readProcessStartTime(pid, start)) continue;
+        const int rank = (stdoutIs(pid, target) ? 0 : 2) + (getpgid(pid) == pid ? 0 : 1);
+        if (rank >= bestRank) continue;
+        bestRank = rank;
+        pidOut = pid;
+        startOut = start;
+    }
+    return bestRank < 4;
+}
+
 // --- leftovers ---
 
 bool readRunOutput(const std::string &dir, const std::string &name, std::string &text, std::string &error) {
@@ -369,7 +425,7 @@ size_t deleteRunFiles(const std::string &dir, const std::string &stem) {
     return n;
 }
 
-LeftoverScan scanLeftoverRuns(const std::string &dir, const LivenessCheck &live) {
+LeftoverScan scanLeftoverRuns(const std::string &dir, const LivenessCheck &live, const OutputWriterLookup &writer) {
     LeftoverScan scan;
     DIR *d = opendir(dir.c_str());
     if (!d) {
@@ -428,7 +484,23 @@ LeftoverScan scanLeftoverRuns(const std::string &dir, const LivenessCheck &live)
         LeftoverRun run;
         run.stem = stem;
         run.file = file;
-        if (live && live(file.pid, file.start)) {
+        if (file.provisional) {
+            // Written before the spawn: live while a process has the output
+            // open; no output means the CLI never started.
+            if (!f.output) {
+                sweep(runFileName(stem), "a run file written before a start that never happened (no output)");
+                continue;
+            }
+            pid_t pid = 0;
+            ProcessStartTime start;
+            if (writer && writer(joinPath(dir, runOutputName(stem)), pid, start)) {
+                run.file.pid = pid;
+                run.file.start = start;
+                run.byOutput = true;
+                scan.adopt.push_back(std::move(run));
+                continue;
+            }
+        } else if (live && live(file.pid, file.start)) {
             scan.adopt.push_back(std::move(run));
             continue;
         }
@@ -464,7 +536,10 @@ EnvelopeResult parseDetachedOutput(std::string_view text, const std::string &rea
                 if ([ok boolValue]) {
                     exitCode = 0;
                 } else {
-                    exitCode = (data == nil || data == [NSNull null]) ? 2 : 1;
+                    // As parseEnvelope's exit 2: data null, or an empty array.
+                    const bool noData = data == nil || data == [NSNull null] ||
+                                        ([data isKindOfClass:[NSArray class]] && [(NSArray *)data count] == 0);
+                    exitCode = noData ? 2 : 1;
                 }
             }
         }
