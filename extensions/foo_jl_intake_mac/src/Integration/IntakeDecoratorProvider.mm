@@ -252,7 +252,7 @@ std::shared_ptr<const IntakeView> providerCurrentView() {
     return currentView(providerState());
 }
 
-bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out) {
+bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out, bool *amber) {
     const std::shared_ptr<const IntakeView> view = currentView(providerState());
     if (!view || view->rendersNothing() || view->isInert()) return false;
     const t_size count = members.get_count();
@@ -278,6 +278,7 @@ bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration 
     out.badge_text.set_string(badge->text.data(), badge->text.size());
     out.badge_color = badge->color;
     out.icon = jl_icon_none;
+    if (amber != nullptr) *amber = badge->amber;
     return true;
 }
 

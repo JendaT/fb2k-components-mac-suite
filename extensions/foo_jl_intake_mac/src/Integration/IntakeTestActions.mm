@@ -23,8 +23,9 @@
 //                                   the provider's own decorate_group code,
 //                                   on the main thread. One line: the text
 //                                   in quotes and "color #RRGGBBAA", plus
-//                                   " (amber)" for the amber colour; or
-//                                   "no badge"
+//                                   " (amber)" when the badge is amber
+//                                   (whatever colour tint_review gives
+//                                   it); or "no badge"
 //    propose|approve|reject <id...> builds that table and dispatches the
 //                                   item for the action through the same
 //                                   path and lane as a click; dialogs are
@@ -213,14 +214,14 @@ std::string menuText(const ActionTable &table) {
 }
 
 // The badge line: "\"<text>\" color #RRGGBBAA", plus " (amber)" when the
-// colour is IntakeGroupBadge's amber (the review tint at full alpha; the
-// snapshot is built with the default palette, LoaderSettings::palette).
-std::string badgeText(const jl_group_decoration &deco) {
+// badge is amber (IntakeBadge::amber, from providerDecorateGroup). Not
+// decided by the colour: that is the configured tint_review at full alpha,
+// any colour, or 0 (#00000000, the host's colour) with tint_review 0.
+std::string badgeText(const jl_group_decoration &deco, bool amber) {
     char color[16];
     snprintf(color, sizeof(color), "#%08X", static_cast<unsigned>(deco.badge_color));
     std::string out = "\"" + std::string(deco.badge_text.c_str()) + "\" color " + color;
-    const IntakeRgba amber = opaqueColor(IntakePalette().tintReview);
-    if (amber != 0 && deco.badge_color == amber) out += " (amber)";
+    if (amber) out += " (amber)";
     return out;
 }
 
@@ -316,8 +317,9 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
                 members.add_item(db->handle_create(("file://" + paths[i]).c_str(), 0));
             }
             jl_group_decoration deco;
-            if (providerDecorateGroup(members, deco)) {
-                logInfo(label + badgeText(deco));
+            bool amber = false;
+            if (providerDecorateGroup(members, deco, &amber)) {
+                logInfo(label + badgeText(deco, amber));
             } else {
                 logInfo(label + "no badge");
             }

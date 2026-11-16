@@ -45,6 +45,8 @@ std::shared_ptr<const IntakeView> providerCurrentView();
 // for `members` from the current view. False, with `out` untouched, when
 // there is no badge: no view, an inert view, members of two roots, or a
 // root that is not proposed or approved. No I/O beyond IntakeNativePath.
-bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out);
+// `amber`, when given, receives the badge's amber state (IntakeBadge::amber)
+// on true: the colour alone cannot tell, as tint_review sets it (0 when off).
+bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out, bool *amber = nullptr);
 
 } // namespace intake
