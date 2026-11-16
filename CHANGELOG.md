@@ -969,10 +969,16 @@ First release, contributed by @Scannou (#45).
 ### [Unreleased]
 
 #### Added
-- Component scaffold: builds, registers, installs as `foo_jl_intake.component` (0.1.0)
-- `IntakeDecoratorProvider` — the intake system's `jl_row_decorator_provider` (doc 04 Part B), first real consumer of the Part A extension point; thread-safe, non-blocking, multi-callback
-- `IntakeRootIndex` — playlist path to sidecar root matching (longest-match, path-boundary-safe, no filesystem access)
+- **Row tints**: SimPlaylist rows of intake releases get a tint and icon by status: new, resolved, proposed, approved, placing, placed, rejected.
+- **Review marker**: Releases that need review show amber, with a warning icon and a "needs review" tooltip.
+- **Group badge**: A group of one proposed or approved release shows the target collection and confidence; amber when it needs review or is below 0.6.
+- **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
+- **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
+- **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
+- **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.
+- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
 
 #### Notes
-- Renders nothing yet: no state source. Installing adds only an empty gutter to SimPlaylist
-- State acquisition and context menu are blocked on doc 03 change requests CR-002.1/.2/.3
+- **Changes only through the CLI**: Reads sidecars and CLI output; music files and sidecars change only through the intake command-line tool.
+- **Requirements**: A SimPlaylist build with the row decorator API, and an intake CLI that reports schema 1.
+- **Changes made on the NAS**: Need Refresh; FSEvents sees only changes made through this Mac.

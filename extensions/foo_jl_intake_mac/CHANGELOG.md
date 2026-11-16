@@ -10,24 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Component scaffold: builds, registers, and installs as
-  `foo_jl_intake.component` (version 0.1.0, registered in `shared/version.h`).
-- `IntakeDecoratorProvider` — the intake system's `jl_row_decorator_provider`
-  (intake doc 04, Part B), the first real consumer of the Part A extension
-  point. Honours the full API contract: thread-safe under concurrent
-  off-main-thread `decorate()` calls, non-blocking, supports multiple
-  invalidate callbacks and tolerates unregistering an unknown one.
-- `IntakeRootIndex` — maps playlist file paths to intake sidecar roots
-  (doc 03, "Component read patterns"). Longest-match so a nested root wins
-  over its parent, prefix matching constrained to path boundaries so
-  `/a/bc` is not treated as a child of `/a/b`, lexical normalization only
-  (no filesystem access on the decorate path). 27 checks under ASan+UBSan.
+- **Row tints**: SimPlaylist rows of intake releases get a tint and icon by status: new, resolved, proposed, approved, placing, placed, rejected.
+- **Review marker**: Releases that need review show amber, with a warning icon and a "needs review" tooltip.
+- **Group badge**: A group of one proposed or approved release shows the target collection and confidence; amber when it needs review or is below 0.6.
+- **Context actions**: Propose, Assign (to a candidate or any collection), Approve, Reject, Execute placement, Resume placement, Swap to library paths, Delete local copy, Refresh.
+- **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
+- **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
+- **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.
+- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
 
 ### Notes
-- The provider renders nothing yet: it has no state source. Installing this
-  build adds an empty 16 pt gutter to SimPlaylist and nothing else, because
-  the gutter keys off provider presence rather than activity (doc 04 Part A).
-- State acquisition (`intake version` gate, `intake status --json` load,
-  FSEvents watch) is deliberately not implemented: it depends on doc 03
-  change requests CR-002.1 and CR-002.3, and the context menu additionally
-  depends on CR-002.2. See `docs/intake/CHANGE-REQUESTS.md`.
+- **Changes only through the CLI**: Reads sidecars and CLI output; music files and sidecars change only through the intake command-line tool.
+- **Requirements**: A SimPlaylist build with the row decorator API, and an intake CLI that reports schema 1.
+- **Changes made on the NAS**: Need Refresh; FSEvents sees only changes made through this Mac.
