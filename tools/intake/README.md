@@ -143,10 +143,12 @@ public artist/label names as test literals only, no personal data. Tests copy
 it to a temp dir; the committed tree never receives sidecars. Junk files
 (`.DS_Store`, `._*`, `Thumbs.db`) are injected by the test helper because the
 repo `.gitignore` excludes those names. Archive fixtures cover zip only
-(`unzip` ships with macOS); rar/7z go through `7zz`, else `7z`, when
-available, else the scan reports `E_ARCHIVE_TOOL` — that surface is covered in
-`test/archive.test.ts` by re-running the CLI with `PATH` stripped, since
-`Bun.which()` reads the environment at process start. An unpack tool run is
+(`unzip` ships with macOS). rar/7z, and zips with any non-ASCII name (macOS's
+`unzip` mangles those from Windows tools), go through `7zz`, else `7z`; with
+neither on PATH a rar/7z reports `E_ARCHIVE_TOOL` and such a zip `E_ARCHIVE`.
+The `E_ARCHIVE_TOOL` surface is covered in `test/archive.test.ts` by
+re-running the CLI with `PATH` stripped, since `Bun.which()` reads the
+environment at process start. An unpack tool run is
 killed after 30 minutes (`UNPACK_TIMEOUT_MS` in `src/archive.ts`) and the
 archive reported `failed`; SIGTERM, SIGINT or SIGHUP during a run kill the
 tool and remove the partial dir before intake exits.

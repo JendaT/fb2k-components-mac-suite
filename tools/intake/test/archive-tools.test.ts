@@ -1,7 +1,8 @@
 // Archive tool choice and non-interactive runs. The CLI runs as a subprocess
 // with a controlled PATH (Bun.which reads PATH at process start):
-// - fake 7zz / 7z shell scripts on a temp PATH show which tool is chosen and
-//   with which arguments, and that a non-zero exit publishes nothing;
+// - fake 7zz / 7z / unzip shell scripts on a temp PATH show which tool is
+//   chosen and with which arguments, and that a non-zero exit publishes
+//   nothing;
 // - the real tools show why 7zz is preferred (a RAR 7 archive p7zip rejects)
 //   and that an encrypted archive fails instead of prompting. The prompt only
 //   blocks when there is a terminal, so those runs go through `script`, which
@@ -14,6 +15,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, sy
 import { join } from "node:path";
 import { setupCorpus, type Corpus } from "./helpers.ts";
 import { buildRar5Stored } from "./rarbuild.ts";
+import { buildZip } from "./zipbuild.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const SYS_PATH = "/usr/bin:/bin"; // has unzip, sh, mkdir; no 7-Zip
@@ -49,12 +51,18 @@ afterAll(() => {
 
 /**
  * A fake archive tool: logs its name and each argument in brackets, writes
- * Album/fake.txt into its `-o` dir, exits $FAKE_EXIT (default 0).
+ * Album/fake.txt into its output dir (7-Zip's `-o<dir>`, unzip's `-d <dir>`),
+ * exits $FAKE_EXIT (default 0).
  */
 const FAKE = `#!/bin/sh
 { printf '%s ' "\${0##*/}"; for a in "$@"; do printf '[%s]' "$a"; done; echo; } >> "$FAKE_LOG"
 out=
-for a in "$@"; do case "$a" in -o*) out="\${a#-o}";; esac; done
+prev=
+for a in "$@"; do
+  case "$a" in -o?*) out="\${a#-o}";; esac
+  [ "$prev" = "-d" ] && out="$a"
+  prev="$a"
+done
 mkdir -p "$out/Album" && printf x > "$out/Album/fake.txt"
 exit "\${FAKE_EXIT:-0}"
 `;
@@ -161,6 +169,37 @@ test("a tool that writes files and exits 2: failed, E_ARCHIVE, nothing published
   expect(code).toBe(1);
   expect(envelope.data[0].archives[0].action).toBe("failed");
   expect(readdirSync(income)).toEqual(["Synthetic - Tools Rar (2021).rar"]);
+});
+
+test("zip routing: ASCII names go to unzip, non-ASCII UTF-8 names to 7zz on the zip itself", () => {
+  const dir = binDir("zip-route", ["7zz", "unzip"]);
+  const data = new TextEncoder().encode("x");
+  const ascii = placeArchive("Synthetic - Ascii Names (2020).zip", buildZip([{ name: "Plain Album/01 Track.flac", data }]));
+  const utf8 = placeArchive(
+    "Synthetic - Utf8 Names (2020).zip",
+    buildZip([{ name: "Café Album/01 Track.flac", data, utf8Flag: true }]),
+  );
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([
+    `unzip [-qq][-o][-P][][${ascii.path}][-d][${ascii.stem}.unpacked.partial]`,
+    `7zz [x][-y][-bd][-p][-o${utf8.stem}.unpacked.partial][${utf8.path}]`,
+  ]);
+  expect(existsSync(join(`${ascii.stem}.unpacked`, "Album", "fake.txt"))).toBe(true);
+  expect(existsSync(join(`${utf8.stem}.unpacked`, "Album", "fake.txt"))).toBe(true);
+});
+
+test("zip routing: with only 7z on PATH, non-ASCII names go to 7z", () => {
+  const dir = binDir("zip-route-7z", ["7z", "unzip"]);
+  const utf8 = placeArchive(
+    "Synthetic - Utf8 Names (2020).zip",
+    buildZip([{ name: "Café Album/01 Track.flac", data: new TextEncoder().encode("x"), utf8Flag: true }]),
+  );
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([`7z [x][-y][-bd][-p][-o${utf8.stem}.unpacked.partial][${utf8.path}]`]);
 });
 
 // ---- real tools ----

@@ -2,9 +2,11 @@
 // not valid UTF-8): the names are decoded with cp1252 or cp437 and land as
 // UTF-8. Real-world shape (names here are synthetic):
 //   "El B\xfaho [2021] Natura sonora [FLAC]/01  Sierra Nevada de Santa Marta.flac"
-// where 0xFA is "u acute" in cp1252. Zips are built in the test with exact
-// name bytes (test/zipbuild.ts); member data are fixture FLACs, so the
-// result also resolves.
+// where 0xFA is "u acute" in cp1252. Also UTF-8 names from Windows tools,
+// which macOS's unzip cannot write: every zip with a non-ASCII name goes to
+// 7-Zip. Zips are built in the test with exact name bytes
+// (test/zipbuild.ts); member data are fixture FLACs, so the result also
+// resolves.
 
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -191,18 +193,45 @@ function scanWithPath(path = "/usr/bin:/bin"): { code: number | null; envelope: 
   return { code: proc.exitCode, envelope: JSON.parse(out) };
 }
 
-test("a UTF-8-flagged zip takes the normal unzip path (works with no 7-Zip on PATH)", () => {
+// A zip as Windows tools write it: UTF-8 names with bit 11 set, "version
+// made by" host 0 (MS-DOS/FAT) and the archive attribute (0x20) as external
+// attributes (buildZip's defaults). The host byte is what breaks macOS's
+// unzip: for FAT-host entries it translates the name bytes as OEM text,
+// flag or not, and APFS refuses the result. Some tools leave valid UTF-8
+// names unflagged; those break the same way.
+const UTF8_ENTRIES = ["Sinfonía Ñ/01 Café.flac", "Sinfonía Ñ/02 Ærø — “Grüße”.flac"];
+
+test("a Windows-made zip with non-ASCII UTF-8 names (flagged or not) goes to 7-Zip, names land as UTF-8", async () => {
+  const flagged = join(income, "Synthetic - Flagged (2023).zip");
+  writeFileSync(flagged, buildZip(UTF8_ENTRIES.map((name, i) => ({ name, data: FLACS[i]!, utf8Flag: true }))));
+  const unflagged = join(income, "Synthetic - Unflagged (2023).zip");
+  writeFileSync(unflagged, buildZip(UTF8_ENTRIES.map((name, i) => ({ name, data: FLACS[i]! }))));
+
+  const r = await cmdScan(["arc"], opts);
+  expect(r.errors).toEqual([]);
+  const block = (r.data as { archives: { action: string }[]; written: { root_path: string }[] }[])[0]!;
+  expect(block.archives.map((a) => a.action)).toEqual(["unpacked", "unpacked"]);
+  for (const zip of [flagged, unflagged]) {
+    const unpacked = zip.replace(/\.zip$/, ".unpacked");
+    expect(utf8Tree(unpacked)).toEqual(["Sinfonía Ñ", "Sinfonía Ñ/.intake.json", ...UTF8_ENTRIES].sort());
+    const album = join(unpacked, readdirSync(unpacked)[0]!);
+    const tracks = readdirSync(album).filter((n) => n.endsWith(".flac")).sort();
+    expect(tracks.map((t) => new Uint8Array(readFileSync(join(album, t))))).toEqual(FLACS.slice(0, 2));
+  }
+  expect(block.written).toHaveLength(2);
+});
+
+test("non-ASCII UTF-8 names with no 7-Zip on PATH: failed with a clear message, nothing written", () => {
   for (const t of ["7zz", "7z"]) expect(Bun.which(t, { PATH: "/usr/bin:/bin" })).toBeNull();
-  // Host byte Unix: macOS unzip leaves UTF-8 names of Unix-made entries alone.
   const zip = join(income, "Synthetic - Flagged (2023).zip");
-  writeFileSync(zip, buildZip([{ name: "Sinfonía Ñ/01 Café.flac", data: FLACS[0]!, utf8Flag: true, host: 3 }]));
+  writeFileSync(zip, buildZip(UTF8_ENTRIES.map((name, i) => ({ name, data: FLACS[i]!, utf8Flag: true }))));
   const { code, envelope } = scanWithPath();
-  expect(envelope.errors).toEqual([]);
-  expect(code).toBe(0);
-  expect(envelope.data[0].archives[0].action).toBe("unpacked");
-  expect(utf8Tree(join(income, "Synthetic - Flagged (2023).unpacked"))).toEqual(
-    ["Sinfonía Ñ", "Sinfonía Ñ/.intake.json", "Sinfonía Ñ/01 Café.flac"],
-  );
+  expect(envelope.errors.map((e) => [e.code, e.path, e.msg])).toEqual([
+    ["E_ARCHIVE", zip, "zip names are non-ASCII UTF-8: extracting them needs 7zz or 7z on PATH"],
+  ]);
+  expect(code).toBe(1);
+  expect(envelope.data[0].archives[0].action).toBe("failed");
+  expect(readdirSync(income)).toEqual(["Synthetic - Flagged (2023).zip"]);
 });
 
 test("code-page names with no 7-Zip on PATH: failed with a clear message, raw bytes never written", () => {

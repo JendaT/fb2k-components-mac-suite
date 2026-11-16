@@ -67,7 +67,7 @@ export interface UnpackResult {
  * instead of prompting: without one, p7zip and unzip ask on /dev/tty and
  * hang a scan run from a terminal, and 7zz reads the password from stdin.
  * - zip: Info-ZIP unzip; `-P ""` gives it an (empty) password. (A zip
- *   with code-page names goes to 7-Zip instead, see zipCodePagePlan.)
+ *   with any non-ASCII name goes to 7-Zip instead, see zipSevenZipPlan.)
  * - rar, 7z: 7-Zip. `7zz` (current 7-Zip) is preferred over `7z` (p7zip,
  *   frozen at 16.02/17.x), which lacks newer format revisions, e.g. RAR 7's
  *   compression algorithm version 1 ("Unsupported Method"). For both, `-p`
@@ -96,30 +96,40 @@ const sevenZipArgv = (bin: string, archive: string, outDir: string): string[] =>
   bin, "x", "-y", "-bd", "-p", `-o${outDir}`, archive,
 ];
 
-interface CodePagePlan {
-  cd: CentralDirectory;
-  cp: CodePage;
+interface SevenZipZipPlan {
   sevenZip: string;
+  /** Code-page names: 7-Zip extracts a copy with them decoded to UTF-8. */
+  codePage: { cd: CentralDirectory; cp: CodePage } | null;
 }
 
 /**
- * A zip whose names are not all UTF-8-flagged or valid UTF-8 holds raw
- * Windows code-page bytes, which unzip does not decode (SMB and APFS refuse
- * what it writes) and 7-Zip on macOS does not either (it ignores `-mcp`).
- * So the names are decoded here with the code page chooseCodePage picks,
- * into a copy of the zip that carries them as flagged UTF-8, and 7-Zip
- * extracts that copy. Returns null for a zip that extracts as before: names
- * already UTF-8, or a central directory zipnames.ts does not read (ZIP64, a
- * split or damaged archive), which goes to unzip unchanged. Returns a
- * string (the error) when the names need a code page and no 7-Zip is on PATH.
+ * A zip with any non-ASCII name byte goes to 7-Zip; pure-ASCII names stay
+ * with unzip. macOS's unzip ignores the UTF-8 flag: for entries made on
+ * MS-DOS/FAT hosts (what Windows tools write) it translates the name bytes
+ * as OEM text, and APFS and SMB refuse the result ("Illegal byte sequence").
+ * - Names all UTF-8 (flagged, or unflagged and valid UTF-8): 7-Zip extracts
+ *   the zip itself.
+ * - Some name neither flagged nor valid UTF-8: raw Windows code-page bytes,
+ *   which 7-Zip on macOS does not decode either (it ignores `-mcp`). The
+ *   names are decoded here with the code page chooseCodePage picks, into a
+ *   copy of the zip that carries them as flagged UTF-8, and 7-Zip extracts
+ *   that copy.
+ * Returns null for a zip that goes to unzip: names all ASCII, or a central
+ * directory zipnames.ts does not read (ZIP64, a split or damaged archive),
+ * whose names are unknown. Returns a string (the error) when 7-Zip is needed
+ * and none is on PATH.
  */
-function zipCodePagePlan(archivePath: string): CodePagePlan | string | null {
+function zipSevenZipPlan(archivePath: string): SevenZipZipPlan | string | null {
   const cd = readCentralDirectory(archivePath);
-  if (cd === null || !needsCodePage(cd)) return null;
-  const { cp } = chooseCodePage(cd, archivePath);
+  if (cd === null || !cd.entries.some((e) => e.name.some((b) => b >= 0x80))) return null;
   const sevenZip = findSevenZip();
-  if (sevenZip === null) return `zip names are cp${cp}, not UTF-8: extracting them needs 7zz or 7z on PATH`;
-  return { cd, cp, sevenZip };
+  if (needsCodePage(cd)) {
+    const { cp } = chooseCodePage(cd, archivePath);
+    if (sevenZip === null) return `zip names are cp${cp}, not UTF-8: extracting them needs 7zz or 7z on PATH`;
+    return { sevenZip, codePage: { cd, cp } };
+  }
+  if (sevenZip === null) return "zip names are non-ASCII UTF-8: extracting them needs 7zz or 7z on PATH";
+  return { sevenZip, codePage: null };
 }
 
 /** Hard limit on one unpack tool run. */
@@ -236,10 +246,10 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
   const target = stem + ".unpacked";
   const partial = stem + PARTIAL_UNPACK_SUFFIX;
   if (existsSync(target)) return { archive: archivePath, target, action: "already_unpacked" };
-  const codePage = x === "zip" ? zipCodePagePlan(archivePath) : null;
-  if (typeof codePage === "string") return { archive: archivePath, target, action: "failed", error: codePage };
-  const args = codePage === null ? extractArgv(x, archivePath, partial) : null;
-  if (codePage === null && args === null)
+  const sevenZipZip = x === "zip" ? zipSevenZipPlan(archivePath) : null;
+  if (typeof sevenZipZip === "string") return { archive: archivePath, target, action: "failed", error: sevenZipZip };
+  const args = sevenZipZip === null ? extractArgv(x, archivePath, partial) : null;
+  if (sevenZipZip === null && args === null)
     return { archive: archivePath, target, action: "tool_missing", error: `no tool for .${x}` };
   if (dryRun) return { archive: archivePath, target, action: "unpacked" };
 
@@ -263,12 +273,15 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
     rmSync(partial, { recursive: true, force: true });
     mkdirSync(partial, { recursive: true });
     let argv: string[];
-    if (codePage !== null) {
+    if (sevenZipZip?.codePage) {
+      const { cd, cp } = sevenZipZip.codePage;
       // Local temp dir, not the income volume: the copy is as large as the zip.
       copyDir = mkdtempSync(join(tmpdir(), "intake-zip-"));
       const copy = join(copyDir, "utf8-names.zip");
-      writeUtf8NamedCopy(archivePath, copy, codePage.cd, codePage.cp);
-      argv = sevenZipArgv(codePage.sevenZip, copy, partial);
+      writeUtf8NamedCopy(archivePath, copy, cd, cp);
+      argv = sevenZipArgv(sevenZipZip.sevenZip, copy, partial);
+    } else if (sevenZipZip) {
+      argv = sevenZipArgv(sevenZipZip.sevenZip, archivePath, partial);
     } else {
       argv = args!;
     }
