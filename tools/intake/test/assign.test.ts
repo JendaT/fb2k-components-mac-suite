@@ -297,10 +297,14 @@ test("target path: tier routing + naming template (doc 02 example shape)", () =>
   );
   expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/[Releases]/Sync24 [2024] Omnimotion Remixed");
 
-  expect(buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg).target_path).toBeNull();
+  // No target, no structure slot: a reject tier, singles (slot pending), no artist or album name.
+  const reject = buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg);
+  expect(reject).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
   const single = buildTargetPath(input({ artist: "X", album: null, singles: true }), AMB, cfg);
-  expect(single.target_path).toBeNull();
-  expect(single.structure_slot).toBe("singles");
+  expect(single).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
+  for (const names of [{ artist: null, album: null }, { artist: "X", album: null }, { artist: null, album: "Y" }]) {
+    expect(buildTargetPath(input(names), AMB, cfg)).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
+  }
 
   const noYear = buildTargetPath(input({ artist: "X", album: "Y", year: null }), AMB, cfg);
   expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/[Releases]/X Y`);
@@ -401,11 +405,13 @@ test("target path: Various Artists get [Compilations] (existing [compilations] r
   expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]); // no artist lookup, so no [Releases] read
 
   expect(buildTargetPath(input({ ...EXAMPLE, singles: true }), COLL_X, cfg, lib.probe)).toEqual({
-    target_path: null, structure_slot: "singles", restructure_candidates: [],
+    target_path: null, structure_slot: null, restructure_candidates: [],
   });
-  expect(buildTargetPath(input({ ...EXAMPLE, tier_eligible: "reject" }), COLL_X, cfg, lib.probe).target_path).toBeNull();
+  expect(buildTargetPath(input({ ...EXAMPLE, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: null, restructure_candidates: [],
+  });
   expect(buildTargetPath(input({ ...va, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
-    target_path: null, structure_slot: "compilations", restructure_candidates: [],
+    target_path: null, structure_slot: null, restructure_candidates: [],
   });
 });
 

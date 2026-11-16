@@ -76,7 +76,7 @@ export interface ProposeRow {
   status?: "proposed";
   target_path?: string;
   /** The proposal's structure_slot (doc 02 layout), alongside target_path. */
-  structure_slot?: StructureSlot;
+  structure_slot?: StructureSlot | null;
   confidence?: number;
   /** Proposal's restructure_candidates (existing releases now due an artist folder); only when non-empty. */
   restructure_candidates?: string[];

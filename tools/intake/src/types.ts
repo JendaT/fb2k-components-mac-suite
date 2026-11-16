@@ -138,8 +138,8 @@ export interface Proposal {
   target_collection: string;
   confidence: number;
   margin: number;
-  target_path: string | null; // null when tier is reject (no legal target)
-  structure_slot: StructureSlot;
+  target_path: string | null; // null when no target can be built (assign.noTargetReason)
+  structure_slot: StructureSlot | null; // null exactly when target_path is null
   assigned_by: "engine" | "user";
   alternates_shown: boolean;
   /**

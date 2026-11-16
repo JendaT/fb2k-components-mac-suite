@@ -2,7 +2,7 @@
 
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assign, buildTargetPath, type AssignInput, type AssignProviders } from "./assign.ts";
+import { assign, buildTargetPath, noTargetReason, type AssignInput, type AssignProviders } from "./assign.ts";
 import { bootstrapTrees, type TreeSpec } from "./bootstrap.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
@@ -111,8 +111,8 @@ export interface AssignRow {
   confidence?: number;
   margin?: number;
   target_path?: string | null;
-  /** The proposal's structure_slot (doc 02 layout), alongside target_path. */
-  structure_slot?: StructureSlot;
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path; null when it is. */
+  structure_slot?: StructureSlot | null;
   assigned_by?: "user" | "engine";
   short_circuited?: boolean;
   needs_review?: boolean;
@@ -286,16 +286,22 @@ export function refreshTarget(root: RootRef, library: LibraryProbe, cfg: AssignC
   else delete p.restructure_candidates;
 }
 
-/** Assign an already-resolved RootRef list in place (see identifyRoots). */
+/**
+ * Assign an already-resolved RootRef list in place (see identifyRoots).
+ * `notices` says, for a person at the terminal, why a root got no target.
+ */
 export async function assignRoots(
   roots: RootRef[],
   opts: AssignOpts,
   rdir: string,
   deps: P2Deps = {},
-): Promise<{ data: AssignRow[]; errors: JsonError[] }> {
+): Promise<{ data: AssignRow[]; errors: JsonError[]; notices: string[] }> {
   const errors: JsonError[] = [];
+  const notices: string[] = [];
   const genre = loadGenreMap(rdir);
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
+  const noTarget = (root: RootRef, input: AssignInput) =>
+    notices.push(`no target path for ${root.dir}: ${noTargetReason(input, rules.config) ?? "unknown reason"}`);
   const providers = deps.providers ?? buildProviders();
   const library = deps.library ?? diskLibraryProbe();
   const assignProviders: AssignProviders = {
@@ -355,6 +361,7 @@ export async function assignRoots(
         id: root.sidecar.id, root_path: root.dir, target_collection: opts.collection,
         confidence: 1, margin: 1, target_path, structure_slot, assigned_by: "user", kept: false,
       });
+      if (target_path === null) noTarget(root, input);
       continue;
     }
 
@@ -390,9 +397,10 @@ export async function assignRoots(
       needs_review: root.sidecar.cluster.needs_review,
       kept: false,
     });
+    if (outcome.proposal.target_path === null) noTarget(root, input);
   }
   if (genreDirty && !opts.dryRun) saveGenreMap(rdir, genre);
-  return { data, errors };
+  return { data, errors, notices };
 }
 
 export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps = {}): Promise<CommandResult<AssignRow[] | null>> {
@@ -406,8 +414,10 @@ export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps =
   const roots = rootsFromRefs(args, refErrors);
   if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
 
-  const { data, errors } = await assignRoots(roots, opts, rdir, deps);
-  return finish(data, [...refErrors, ...errors]);
+  const { data, errors, notices } = await assignRoots(roots, opts, rdir, deps);
+  const result: CommandResult<AssignRow[] | null> = finish(data, [...refErrors, ...errors]);
+  if (notices.length > 0) result.notices = notices;
+  return result;
 }
 
 // ---- collections -------------------------------------------------------------

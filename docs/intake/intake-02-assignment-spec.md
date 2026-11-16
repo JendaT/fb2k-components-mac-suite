@@ -303,10 +303,13 @@ Decisions made during implementation; normative for schema v1 consumers.
   computation). Programmatic writes (feedback, learned `aliases:`) rewrite the
   file via YAML serializer — hand comments are not preserved; keep curated
   notes in the rules repo's git history instead.
-- **Singles**: `structure_slot: "singles"`, `target_path: null` — the singles
-  slot is still pending ("Library layout and credit rules (amendment 003)",
-  Still pending); propose reports it as pending. Tier `reject` likewise gets
-  `target_path: null`.
+- **Singles**: `target_path: null` — the singles slot is still pending
+  ("Library layout and credit rules (amendment 003)", Still pending);
+  propose reports it as pending. Tier `reject`, a tier missing from
+  `structure.yaml`, and a release with no artist or album name likewise get
+  `target_path: null`. Without a target there is no slot: `structure_slot`
+  is `null` in the proposal and the assign row (singles included), and
+  `assign` says why on stderr in human mode.
 - **Library layout** (implements "Library layout for new placements"): the
   target collection dir in the target tier is listed once per command run
   (symlinks not followed; a missing dir reads as empty, any other read error

@@ -194,16 +194,27 @@ function fillTemplate(tpl: string, fields: Record<string, string | null>): strin
 
 export interface TargetPlan {
   target_path: string | null;
-  structure_slot: StructureSlot;
+  /** null exactly when target_path is null: no target, no slot. */
+  structure_slot: StructureSlot | null;
   /** Existing releases that now belong in the artist folder, relative to the tier root (see Layout). */
   restructure_candidates: string[];
+}
+
+/** Why buildTargetPath builds no target for `input`, or null when it builds one. */
+export function noTargetReason(input: AssignInput, cfg: AssignConfig): string | null {
+  if (input.singles) return "the singles slot is still pending"; // doc 02, Still pending
+  if (input.tier_eligible === "reject") return "the release's quality tier is reject";
+  if (!cfg.tiers[`music.${input.tier_eligible}`]) return `tier music.${input.tier_eligible} is not configured`;
+  if (!input.artist || !input.album) return "the release has no artist or album name";
+  return null;
 }
 
 /**
  * Tier routing + naming + library layout: compute target_path within the
  * eligible tier. The layout (artist folder, `[Releases]`, `[Compilations]`)
  * depends on what the collection dir already holds, read through `library`;
- * the default reads nothing (every collection dir is absent).
+ * the default reads nothing (every collection dir is absent). With no target
+ * (noTargetReason) there is no structure slot either.
  */
 export function buildTargetPath(
   input: AssignInput,
@@ -211,23 +222,22 @@ export function buildTargetPath(
   cfg: AssignConfig,
   library: LibraryProbe = NO_LIBRARY,
 ): TargetPlan {
-  const va = isVariousArtists(input.artist);
-  const none = (structure_slot: StructureSlot): TargetPlan => ({ target_path: null, structure_slot, restructure_candidates: [] });
-  if (input.singles) return none("singles"); // slot layout is still pending (doc 02)
-  if (input.tier_eligible === "reject") return none(va ? "compilations" : "artist");
-  const tier = cfg.tiers[`music.${input.tier_eligible}`];
-  if (!tier || !input.artist || !input.album) return none(va ? "compilations" : "artist");
+  if (noTargetReason(input, cfg) !== null) return { target_path: null, structure_slot: null, restructure_candidates: [] };
+  // Past noTargetReason the tier is configured and artist and album are set.
+  const artist = input.artist!;
+  const tier = cfg.tiers[`music.${input.tier_eligible}`]!;
+  const va = isVariousArtists(artist);
   const tpl = input.label && input.catno ? cfg.naming.release : cfg.naming.release_no_label;
   // For a Various Artists release the {artist} field is the VA credit.
   const folder = sanitizeComponent(fillTemplate(tpl, {
-    artist: input.artist,
+    artist,
     year: input.year,
     album: input.album,
     label: input.label,
     catno: input.catno,
   }));
   const coll = sanitizeComponent(collection);
-  const layout = libraryLayout(input.artist, readCollection(library, `${tier.root}/${coll}`, va));
+  const layout = libraryLayout(artist, readCollection(library, `${tier.root}/${coll}`, va));
   return {
     target_path: `${tier.root}/${coll}/${layout.parent}/${folder}`,
     structure_slot: layout.structure_slot,
