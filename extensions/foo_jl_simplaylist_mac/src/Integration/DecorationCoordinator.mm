@@ -13,7 +13,6 @@
 
 #import "../../../../shared/jl_decorator_api.h"
 
-#include <cstdlib>
 #include <exception>
 #include <unordered_map>
 #include <unordered_set>
@@ -92,19 +91,6 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
 
     // Selection retained while a provider context menu is open.
     metadb_handle_list _menuHandles;
-
-#if DEBUG
-    // Cache-hit instrumentation for the doc 04 acceptance criterion
-    // ("cache hit >=99% steady-state"). Opt-in via SIMPLAYLIST_DECOR_STATS=1
-    // so an ordinary debug session is not spammed; compiled out of Release
-    // entirely, so the zero-provider benchmark gate is untouched.
-    BOOL _statsEnabled;
-    uint64_t _statPrepared;      // rows examined, cumulative
-    uint64_t _statHits;          // already in the store on arrival, cumulative
-    uint64_t _statWindowPrepared;
-    uint64_t _statWindowHits;
-    NSTimeInterval _statLastLog;
-#endif
 }
 
 + (instancetype)coordinatorWithInvalidationHandler:(void (^)(void))invalidationHandler {
@@ -128,14 +114,6 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
         }
         FB2K_console_formatter() << "[SimPlaylist] " << (unsigned)coordinator->_providers.size()
                                  << " row decorator provider(s) registered";
-#if DEBUG
-        const char *stats = std::getenv("SIMPLAYLIST_DECOR_STATS");
-        coordinator->_statsEnabled = (stats && stats[0] == '1' && stats[1] == '\0');
-        coordinator->_statLastLog = [NSDate timeIntervalSinceReferenceDate];
-        if (coordinator->_statsEnabled) {
-            FB2K_console_formatter() << "[SimPlaylist] decoration cache stats enabled";
-        }
-#endif
     }
     return coordinator;
 }
@@ -165,32 +143,6 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
 }
 
 #pragma mark - Prepare (visible range + overscan)
-
-#if DEBUG
-// Rate-limited to one line per second so scrolling stays readable. Reports the
-// window rate (what the last second of scrolling did) and the cumulative rate;
-// the acceptance criterion is about the steady state, so read the cumulative
-// figure after the first screenful has warmed the cache.
-- (void)logCacheStatsIfDue {
-    if (!_statsEnabled || _statWindowPrepared == 0) return;
-
-    const NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (now - _statLastLog < 1.0) return;
-
-    const double windowRate = 100.0 * (double)_statWindowHits / (double)_statWindowPrepared;
-    const double totalRate = _statPrepared ? 100.0 * (double)_statHits / (double)_statPrepared : 0.0;
-    FB2K_console_formatter()
-        << "[SimPlaylist] decoration cache: window "
-        << pfc::format_float(windowRate, 0, 1) << "% ("
-        << (unsigned)_statWindowHits << "/" << (unsigned)_statWindowPrepared
-        << "), cumulative " << pfc::format_float(totalRate, 0, 1) << "% ("
-        << (unsigned)_statHits << "/" << (unsigned)_statPrepared << ")";
-
-    _statLastLog = now;
-    _statWindowPrepared = 0;
-    _statWindowHits = 0;
-}
-#endif
 
 - (void)prepareTrackIndices:(NSIndexSet *)indices inPlaylist:(t_size)playlist {
     if (_providers.empty() || indices.count == 0) return;
@@ -224,16 +176,7 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
             [self->_store bindIndex:(NSInteger)idx toHandleKey:key];
         }
 
-        const BOOL cached = [self->_store hasEntryForHandleKey:key];
-#if DEBUG
-        if (self->_statsEnabled) {
-            self->_statPrepared++;
-            self->_statWindowPrepared++;
-            if (cached) { self->_statHits++; self->_statWindowHits++; }
-        }
-#endif
-
-        if (!cached && !self->_inflightHandles.count(key)) {
+        if (![self->_store hasEntryForHandleKey:key] && !self->_inflightHandles.count(key)) {
             auto retained = self->_retainedHandles.find(key);
             if (retained == self->_retainedHandles.end()) return;
             self->_inflightHandles.insert(key);
@@ -241,10 +184,6 @@ bool apiDecorationIsEmpty(const jl_row_decoration &d) {
             batchKeys.push_back(key);
         }
     }];
-
-#if DEBUG
-    [self logCacheStatsIfDue];
-#endif
 
     if (batchKeys.empty()) return;
 
