@@ -1,0 +1,161 @@
+{
+  "schema": 1,
+  "id": "itk_00000011",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "dump",
+    "source_type": "fixture-dump",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:e30d738e7d2a6258f885331d1b103cf81cea413b",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Placing Album",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:5d0a0ac9e73f10af8d89952945a4543ffc2b3775",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "Fixture Artist",
+        "artist": "Fixture Artist",
+        "album": "Placing Album",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "Fixture Artist",
+    "album": "Placing Album",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "Fixture Artist",
+    "album": "Placing Album",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection B",
+        "score": 0.84,
+        "evidence": {
+          "artist_prior": 0.84,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection A",
+        "score": 0.54,
+        "evidence": {
+          "artist_prior": 0.54,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection B",
+    "confidence": 0.84,
+    "margin": 0.3,
+    "target_path": "@ROOT@/library/music.hq/Test Collection B/Fixture Artist/Fixture Artist - 2026 - Placing Album",
+    "structure_slot": "artist",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "placed": {
+    "target_path": "@ROOT@/library/music.hq/Test Collection B/Fixture Artist/Fixture Artist - 2026 - Placing Album",
+    "verified": true,
+    "journal_seq": 45
+  },
+  "status": "placed",
+  "history": [
+    {
+      "ts": "2026-11-01T12:00:22+01:00",
+      "event": "resolved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:23+01:00",
+      "event": "identified",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:24+01:00",
+      "event": "assigned",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:25+01:00",
+      "event": "proposed",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:26+01:00",
+      "event": "approved",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:27+01:00",
+      "event": "placing",
+      "by": "intake@0.2.1"
+    },
+    {
+      "ts": "2026-11-01T12:00:42+01:00",
+      "event": "placed",
+      "by": "intake@0.2.1"
+    }
+  ]
+}

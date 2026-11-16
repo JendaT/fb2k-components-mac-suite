@@ -1,0 +1,7 @@
+# Placed: no more execute or resume; CLI 0.3.0 refuses assign and reject.
+responses/execute.d/itk_00000010.json
+responses/execute.dry-run.d/itk_00000010.json
+responses/execute.resume.d/itk_00000010.json
+responses/assign.d/itk_00000010.json
+responses/assign.user.d/itk_00000010.json
+responses/reject.d/itk_00000010.json

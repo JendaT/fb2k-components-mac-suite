@@ -1,0 +1,6 @@
+# CLI 0.3.0 refuses assign, reject and a fresh execute (dry run) on a placing root.
+# execute.d stays: the running execute that applied this state answers from it.
+responses/assign.d/itk_00000010.json
+responses/assign.user.d/itk_00000010.json
+responses/reject.d/itk_00000010.json
+responses/execute.dry-run.d/itk_00000010.json

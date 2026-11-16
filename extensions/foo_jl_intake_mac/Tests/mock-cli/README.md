@@ -34,9 +34,9 @@ foobar2000 does not pass this variable on. To point the component at the
 mock, write a small wrapper in your scratch folder (never in the repo) that
 exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 
-`--mock-setup <scenario>` throws away `root/`, `responses/`, every `*.mode`
-and `*.next` file and `hang.pid`, then copies the scenario in. `calls.log` and
-the marker are kept.
+`--mock-setup <scenario>` throws away `root/`, `responses/`, every `*.mode`,
+`*.next` and `*.start` file and `hang.pid`, then copies the scenario in.
+`calls.log` and the marker are kept.
 
 ## Scenarios (`scenarios/<name>/`)
 
@@ -72,10 +72,10 @@ summaries in `status.d/` and the reply files carry the rest.
 
 ## Modes: `$INTAKE_MOCK_STATE/<command>.mode`
 
-The file holds a mode name (`exit2` takes an error code, `slow` a number of
-seconds) and applies to every call of that command until you delete it.
-Modes never apply `.next` states, except `slow`, which ends as a normal
-call.
+The file holds a mode name (`exit2` takes an error code, `slow` and
+`slow-real` a number of seconds) and applies to every call of that command
+until you delete it. Modes never apply `.start` or `.next` states, except
+`slow` and `slow-real`, which end as a normal call.
 
 | Mode | Output |
 |---|---|
@@ -86,12 +86,25 @@ call.
 | `bare-array` | the data array alone (`[]` for object data), exit 0 |
 | `noise` | about 140 KB of warnings on stderr, then the normal envelope wrapped in blank lines |
 | `hang` | starts `sleep` as a child (not exec) and waits for it. Writes `<shell pid> <child pid>` to `hang.pid`. Killing only the shell leaves the child holding stdout open, so the caller has to kill the process group. If the child returns, the call ends with empty stdout and exit 0 without running the command |
-| `slow [SECONDS]` | sleeps in a child (2 s unless SECONDS or `INTAKE_MOCK_SLOW_SECONDS` is given), then runs the command normally: applies `.next` and prints the usual envelope and exit code. For a call that outlives the caller's budget and still completes |
+| `slow [SECONDS]` | applies `.start` (not for `--dry-run`), sleeps in a child (2 s unless SECONDS or `INTAKE_MOCK_SLOW_SECONDS` is given), then runs the command normally: applies `.next` and prints the usual envelope and exit code. For a call that outlives the caller's budget and still completes |
+| `slow-real [SECONDS]` | `slow` for a call without `--dry-run` (a real `execute`, `execute --resume`); a `--dry-run` call answers at once, as with no mode file. For a detached execute that runs long while its dry run answers in time (B8) |
 | `big` | about 1 MB of valid status-shaped rows, written row by row, exit 0 |
 | `unknown-code` | exit 2 with the error code `E_MOCK_UNKNOWN_CODE` |
 | `fds` | `{"ok":true,"data":{"fds":[0,1,2]},"errors":[]}`: the descriptors open in the spawned process, read from `/dev/fd` after an exec, so bash's own script descriptor is not listed |
 
 An unknown mode word makes the mock exit 64.
+
+## State changes at the start: `$INTAKE_MOCK_STATE/<command>.start`
+
+The same format as `.next` (one state name per line, the first is
+consumed), for `propose`, `assign`, `approve`, `reject`, `execute` and `gc`
+without `--dry-run`: the state is applied at the START of the call, before a
+`slow`/`slow-real` sleep and before the reply is computed, whatever the
+call's outcome. The real `execute` writes `placing` to each sidecar before it
+copies anything (commands-p3.ts), so `execute.start` lets a file watcher see
+the root go `placing` while the call runs. Because the reply is read after
+it, a `.start` state can also change the reply of its own call
+(`placing-reverted`). Other modes ignore it.
 
 ## State changes: `$INTAKE_MOCK_STATE/<command>.next`
 
@@ -111,6 +124,10 @@ copies in their shapes; a state is taken whole from the last scenario in the
 | `b-proposed`, `b-approved`, `b-placed`, `b-gc_done` | walk `itk_0000000b` through the lifecycle; `b-placed` adds the library copy (and, under the 0.3.0 rules, drops b's assign replies) and `b-gc_done` deletes the local audio |
 | `e-rejected` | rejects `itk_0000000e` (0.3.0: drops its assign replies) |
 | `e-assigned` | user-assigns `itk_0000000e` to the `--collection` of the call that applied it: `assigned_by` `"user"`, confidence 1, the engine's `ranked` kept, `needs_review` still set, as with the real CLI |
+| `approved-placing` | `itk_00000010` (approved) goes `placing`, as execute writes it first (for `execute.start`); its execute reply stays (the running call answers from it), its dry-run, assign and reject replies go (0.3.0 refuses them), and a `resumed: "completed"` resume reply is added |
+| `approved-placed` | `itk_00000010` goes `placed` (`verified`, `journal_seq` 42) with its library copy under `root/library/music.hq/Test Collection A/`; its execute, dry-run, resume, assign and reject replies go, gc replies are added |
+| `placing-placed` | `itk_00000011` (placing) goes `placed` (`journal_seq` 45) with its library copy under `Test Collection B/`, as a completed resume leaves it; its resume reply goes, gc replies are added |
+| `placing-reverted` | `itk_00000011` goes back to `approved` (history `execute_reverted`) and its resume reply becomes `{"id", "root_path", "resumed": "reverted_to_approved"}`; execute and dry-run replies are added. Use it through `execute.start`: the resume call that applies it answers with the reverted row. The reverted reply stays until the next `--mock-setup` (assign and reject on the reverted root are not modelled) |
 
 For example, for the whole flow on one root:
 
@@ -118,6 +135,22 @@ For example, for the whole flow on one root:
 cd "$INTAKE_MOCK_STATE"
 echo b-proposed > propose.next; echo b-approved > approve.next
 echo b-placed > execute.next;   echo b-gc_done > gc.next
+```
+
+A detached execute that a watcher sees go `placing`, then `placed` (B8):
+
+```bash
+cd "$INTAKE_MOCK_STATE"
+echo approved-placing > execute.start   # at the start of `execute itk_00000010 --json`
+echo 'slow-real 8' > execute.mode       # the real call runs 8 s; its dry run answers at once
+echo approved-placed > execute.next     # at its end, before the reply is printed
+```
+
+Resume, completed and reverted:
+
+```bash
+echo placing-placed > execute.next      # resume itk_00000011: completed, then placed
+echo placing-reverted > execute.start   # resume itk_00000011: answers reverted_to_approved
 ```
 
 ## calls.log

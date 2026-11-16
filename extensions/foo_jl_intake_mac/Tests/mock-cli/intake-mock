@@ -378,7 +378,7 @@ mock_setup() {
     local name="$1" s
     scenario_chain "$name"
     rm -rf "${STATE:?}/root" "${STATE:?}/responses"
-    rm -f "$STATE"/*.mode "$STATE"/*.next "$STATE/hang.pid"
+    rm -f "$STATE"/*.mode "$STATE"/*.next "$STATE"/*.start "$STATE/hang.pid"
     mkdir -p "$ROOT" "$RESP"
     ROOT_JSON="$ROOT"
     COLLECTION_JSON=""
@@ -941,13 +941,10 @@ cmd_rows() {
     finish_rows
 }
 
-# After a successful mutating call (exit 0 or 1, not --dry-run): consume the
-# first line of $STATE/<cmd>.next and apply that state of the scenario.
-apply_next() {
-    local f="$STATE/$CMD.next" first="" rest="" line n=0 s dir=""
-    [ $SIDE_EFFECTS -eq 1 ] && [ $DRY -eq 0 ] || return 0
-    [ "$EXIT" -eq 0 ] || [ "$EXIT" -eq 1 ] || return 0
-    case "$CMD" in propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
+# Consumes the first line of state list file $1 and applies that state of the
+# scenario (see README.md "State changes").
+consume_state() {
+    local f="$1" first="" rest="" line n=0 s dir=""
     [ -f "$f" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         if [ $n -eq 0 ]; then first="$line"; else rest="$rest$line"$'\n'; fi
@@ -970,6 +967,28 @@ apply_next() {
     SUBST_COLLECTION=1
     overlay "$dir"
     SUBST_COLLECTION=0
+}
+
+# After a successful mutating call (exit 0 or 1, not --dry-run): consume the
+# first line of $STATE/<cmd>.next and apply that state of the scenario.
+apply_next() {
+    [ $SIDE_EFFECTS -eq 1 ] && [ $DRY -eq 0 ] || return 0
+    [ "$EXIT" -eq 0 ] || [ "$EXIT" -eq 1 ] || return 0
+    case "$CMD" in propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
+    consume_state "$STATE/$CMD.next"
+}
+
+# At the START of a mutating call without --dry-run (before a slow mode's
+# sleep and before the reply is computed): consume the first line of
+# $STATE/<cmd>.start and apply that state, whatever the call's outcome. The
+# real execute writes `placing` to the sidecar first (commands-p3.ts), so
+# with execute.start a watcher sees the root go placing while the call runs.
+apply_start() {
+    [ $DRY -eq 0 ] || return 0
+    case "$CMD" in propose | assign | approve | reject | execute | gc) ;; *) return 0 ;; esac
+    cmd_known "$CMD" || return 0
+    [ ${#ARG_ERRS[@]} -eq 0 ] || return 0
+    consume_state "$STATE/$CMD.start"
 }
 
 run_command() {
@@ -1005,8 +1024,8 @@ run_command() {
 
 # ---------------------------------------------------------------------------
 # Modes: $STATE/<cmd>.mode holds one word (plus an optional argument) and
-# stays in force until removed. Modes never apply .next states, except slow,
-# which ends as a normal call.
+# stays in force until removed. Modes never apply .start or .next states,
+# except slow and slow-real, which end as a normal call.
 # ---------------------------------------------------------------------------
 
 mode_hang() {
@@ -1027,6 +1046,7 @@ mode_slow() {
     # mutating call's timeout is reported, and the call still completes).
     local secs="${MODE_ARG:-${INTAKE_MOCK_SLOW_SECONDS:-2}}" child
     case "$secs" in '' | . | *[!0-9.]* | *.*.*) die "slow takes seconds like 2 or 0.5: $secs" ;; esac
+    apply_start
     sleep "$secs" &
     child=$!
     wait "$child"
@@ -1076,9 +1096,14 @@ case "$CMD" in
 esac
 
 case "$MODE" in
-    "") run_command; emit; exit "$EXIT" ;;
+    "") apply_start; run_command; emit; exit "$EXIT" ;;
     hang) mode_hang ;;
     slow) mode_slow ;;
+    slow-real)
+        # slow for a call without --dry-run (a real execute, a resume); a
+        # dry run answers at once, as with no mode file.
+        if [ $DRY -eq 1 ]; then run_command; emit; exit "$EXIT"; fi
+        mode_slow ;;
     fds) mode_fds ;;
     big) mode_big ;;
     garbage)
