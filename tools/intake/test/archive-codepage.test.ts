@@ -1,18 +1,25 @@
 // Zips whose entry names are raw Windows code-page bytes (UTF-8 flag unset,
-// not valid UTF-8): the names are decoded with cp1252 or cp437 and land as
-// UTF-8. Real-world shape (names here are synthetic):
+// not valid UTF-8): the names are decoded with the code page that scores best
+// of cp437, cp852, cp1252 and cp1250 and land as UTF-8. Real-world shapes
+// (names here are synthetic):
 //   "El B\xfaho [2021] Natura sonora [FLAC]/01  Sierra Nevada de Santa Marta.flac"
-// where 0xFA is "u acute" in cp1252. Also UTF-8 names from Windows tools,
-// which macOS's unzip cannot write: every zip with a non-ASCII name goes to
-// 7-Zip. Zips are built in the test with exact name bytes
-// (test/zipbuild.ts); member data are fixture FLACs, so the result also
-// resolves.
+// where 0xFA is "u acute" in cp1252, and an OEM one whose track
+// "Bia\x88owie\xBEa" is "Białowieża" in cp852 ("Biaêowie╛a" in cp437). Also
+// UTF-8 names from Windows tools, which macOS's unzip cannot write: every zip
+// with a non-ASCII name goes to 7-Zip. Zips are built in the test with exact
+// name bytes (test/zipbuild.ts); member data are fixture FLACs, so the result
+// also resolves.
 
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { cmdScan } from "../src/commands.ts";
-import { chooseCodePage, decodeCodePage, needsCodePage, readCentralDirectory } from "../src/zipnames.ts";
+import { cmdScan, type ScanBlock } from "../src/commands.ts";
+import { loadIncomeConfig } from "../src/config.ts";
+import { readSidecar } from "../src/sidecar.ts";
+import { isSidecarName } from "../src/util.ts";
+import {
+  chooseCodePage, codePagePenalties, decodeCodePage, needsCodePage, readCentralDirectory, tieOrder,
+} from "../src/zipnames.ts";
 import { FIXTURES, setupCorpus, type Corpus } from "./helpers.ts";
 import { buildZip, rawName, type ZipEntry } from "./zipbuild.ts";
 
@@ -26,16 +33,21 @@ let corpus: Corpus;
 let income: string;
 const opts = { json: true, dryRun: false, force: false, all: false, filters: {} };
 
+/** income.yaml with the one income folder `arc`, plus any top-level lines (e.g. `archive_code_pages`). */
+function writeIncome(...topLevel: string[]): void {
+  writeFileSync(
+    join(corpus.rules, "income.yaml"),
+    [...topLevel, "income:", "  - name: arc", `    path: ${income}`, "    source_type: web", ""].join("\n"),
+  );
+}
+
 beforeAll(() => {
   corpus = setupCorpus();
   income = join(corpus.dir, "arc");
-  writeFileSync(
-    join(corpus.rules, "income.yaml"),
-    ["income:", "  - name: arc", `    path: ${income}`, "    source_type: web", ""].join("\n"),
-  );
 });
 
 beforeEach(() => {
+  writeIncome();
   rmSync(income, { recursive: true, force: true });
   mkdirSync(income, { recursive: true });
 });
@@ -70,8 +82,10 @@ function cd(entries: ZipEntry[], comment?: Uint8Array) {
   return parsed;
 }
 
-// cp1252 bytes: e9 = é, f3 = ó, 93/94 = curly double quotes. The quotes are
-// outside 0xC0-0xFF, so only the archive-name rule picks cp1252 here.
+// cp1252 bytes: e9 = é, f3 = ó, 93/94 = curly double quotes, f1 = ñ. Every
+// one is also a letter or punctuation in cp1250, where f1 is ń: the two tie,
+// and the dir name (é only) decodes the same in both, so the tie order
+// (cp1252 before cp1250) decides. cp437 and cp852 score worse (Θ, ┴, ˇ, ...).
 const CP1252_TOP = rawName("Caf", [0xe9], " Sonor", [0xe9], " [2021] Tonos sint", [0xe9], "ticos [FLAC]");
 const CP1252_TOP_TEXT = "Café Sonoré [2021] Tonos sintéticos [FLAC]";
 const CP1252_ENTRIES: [Uint8Array, string][] = [
@@ -89,17 +103,28 @@ function cp1252Zip(): Uint8Array {
   );
 }
 
-test("archive-name rule: a cp1252 top-level dir equal to the zip's own name picks cp1252, names land as UTF-8", async () => {
+/** quality.issues and needs_review of every sidecar in a root dir. */
+function sidecarFlags(dir: string): { issues: string[]; needs_review: boolean }[] {
+  return readdirSync(dir)
+    .filter(isSidecarName)
+    .map((n) => readSidecar(join(dir, n))!)
+    .map((s) => ({ issues: s.quality.issues, needs_review: s.cluster.needs_review }));
+}
+
+test("cp1252 names: cp1252 and cp1250 tie (ñ / ń), the order picks cp1252, names land as UTF-8", async () => {
   const zip = join(income, `${CP1252_TOP_TEXT}.zip`);
   writeFileSync(zip, cp1252Zip());
   const parsed = readCentralDirectory(zip)!;
   expect(needsCodePage(parsed)).toBe(true);
-  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 1252, rule: 1 });
+  expect(codePagePenalties(parsed)).toEqual([
+    { cp: 437, penalty: 7 }, { cp: 852, penalty: 6 }, { cp: 1252, penalty: 0 }, { cp: 1250, penalty: 0 },
+  ]);
+  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 1252, by: "order" });
 
   const r = await cmdScan(["arc"], opts);
   expect(r.errors).toEqual([]);
-  const block = (r.data as { archives: { action: string }[]; written: { root_path: string }[] }[])[0]!;
-  expect(block.archives.map((a) => a.action)).toEqual(["unpacked"]);
+  const block = (r.data as ScanBlock[])[0]!;
+  expect(block.archives.map((a) => [a.action, a.code_page])).toEqual([["unpacked", { cp: "cp1252", by: "order" }]]);
   const unpacked = join(income, `${CP1252_TOP_TEXT}.unpacked`);
   expect(utf8Tree(unpacked)).toEqual(
     [CP1252_TOP_TEXT, ...CP1252_ENTRIES.map(([, text]) => `${CP1252_TOP_TEXT}/${text}`), `${CP1252_TOP_TEXT}/.intake.json`].sort(),
@@ -109,17 +134,30 @@ test("archive-name rule: a cp1252 top-level dir equal to the zip's own name pick
   const tracks = readdirSync(join(unpacked, albumDir)).filter((n) => n.endsWith(".flac")).sort();
   expect(tracks.map((t) => new Uint8Array(readFileSync(join(unpacked, albumDir, t))))).toEqual(FLACS);
   expect(block.written.map((w) => w.root_path)).toEqual([join(unpacked, albumDir)]);
+  // A tie broken by order is a guess: the root says so and needs review.
+  expect(sidecarFlags(join(unpacked, albumDir))).toEqual([
+    { issues: expect.arrayContaining(["archive_name_code_page_guessed:cp1252"]), needs_review: true },
+  ]);
+  expect(block.written.map((w) => w.needs_review)).toEqual([true]);
 });
 
-test("archive-name rule compares NFC: an NFD archive name still matches", () => {
-  const parsed = cd(CP1252_ENTRIES.map(([raw], i) => ({ name: new Uint8Array([...CP1252_TOP, 0x2f, ...raw]), data: FLACS[i]! })));
-  expect(chooseCodePage(parsed, `/x/${CP1252_TOP_TEXT.normalize("NFD")}.zip`)).toEqual({ cp: 1252, rule: 1 });
-  // Without the name match the quotes (0x93/0x94) rule cp1252 out.
-  expect(chooseCodePage(parsed, "/x/unrelated.zip")).toEqual({ cp: 437, rule: 3 });
+test("archive-name rule breaks a tie when exactly one tied page gives the archive's own name (NFC compared)", () => {
+  // f1 is ñ in cp1252 and ń in cp1250: both letters, a tie only the name breaks.
+  const parsed = cd([{ name: rawName("Synthetic Ma", [0xf1], "ana/01 Sol.flac"), data: FLACS[0]! }]);
+  expect(chooseCodePage(parsed, `/x/${"Synthetic Mañana".normalize("NFD")}.zip`)).toEqual({ cp: 1252, by: "name_match" });
+  expect(chooseCodePage(parsed, "/x/Synthetic Mańana.zip")).toEqual({ cp: 1250, by: "name_match" });
+  expect(chooseCodePage(parsed, "/x/unrelated.zip")).toEqual({ cp: 1252, by: "order" });
+  // The name only breaks ties: the cp1252 fixture's dir decodes the same in
+  // cp1252 and cp1250, so both match and the order decides; with no name
+  // match the curly quotes no longer rule cp1252 out (they did before scoring).
+  const fixture = cd(CP1252_ENTRIES.map(([raw], i) => ({ name: new Uint8Array([...CP1252_TOP, 0x2f, ...raw]), data: FLACS[i]! })));
+  expect(chooseCodePage(fixture, `/x/${CP1252_TOP_TEXT}.zip`)).toEqual({ cp: 1252, by: "order" });
+  expect(chooseCodePage(fixture, "/x/unrelated.zip")).toEqual({ cp: 1252, by: "order" });
 });
 
-// cp437 bytes: 81 = ü, 8e = Ä, e1 = ß, c9 cd bb = box drawing ╔═╗. 0x81 and
-// 0x8E are outside 0xC0-0xFF (and 0x81 is undefined in cp1252).
+// cp437 bytes: 81 = ü, 8e = Ä, e1 = ß, c9 cd bb = box drawing ╔═╗. cp852
+// decodes every one of them the same, so the two are one choice; 0x81 is
+// undefined in cp1252 and cp1250, which are out.
 const CP437_TOP = rawName("M", [0x81], "ller ", [0x8e], "rger ", [0xc9, 0xcd, 0xbb]);
 const CP437_TOP_TEXT = "Müller Ärger ╔═╗";
 const CP437_ENTRIES: [Uint8Array, string][] = [
@@ -127,14 +165,17 @@ const CP437_ENTRIES: [Uint8Array, string][] = [
   [rawName("02 ", [0x8e], "ra.flac"), "02 Ära.flac"],
 ];
 
-test("cp437 fallback: bytes that are not cp1252 letters pick cp437, names land as UTF-8", async () => {
+test("cp437 names: cp437 and cp852 decode them the same, cp1252 and cp1250 are out (0x81), names land as UTF-8", async () => {
   const zip = join(income, "Synthetic - Box Tones (1994).zip");
   writeFileSync(
     zip,
     buildZip(CP437_ENTRIES.map(([raw], i) => ({ name: new Uint8Array([...CP437_TOP, 0x2f, ...raw]), data: FLACS[i]! }))),
   );
   const parsed = readCentralDirectory(zip)!;
-  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 437, rule: 3 });
+  expect(codePagePenalties(parsed)).toEqual([
+    { cp: 437, penalty: 3 }, { cp: 852, penalty: 3 }, { cp: 1252, penalty: null }, { cp: 1250, penalty: null },
+  ]);
+  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 437, by: "score" });
 
   const r = await cmdScan(["arc"], opts);
   expect(r.errors).toEqual([]);
@@ -142,15 +183,151 @@ test("cp437 fallback: bytes that are not cp1252 letters pick cp437, names land a
   expect(utf8Tree(unpacked)).toEqual(
     [CP437_TOP_TEXT, ...CP437_ENTRIES.map(([, text]) => `${CP437_TOP_TEXT}/${text}`), `${CP437_TOP_TEXT}/.intake.json`].sort(),
   );
+  // Not a guess: the root carries no code page issue.
+  expect(sidecarFlags(join(unpacked, CP437_TOP_TEXT))[0]!.issues.filter((i) => i.startsWith("archive_name"))).toEqual([]);
 });
 
-test("Latin rule: only 0xC0-0xFF non-ASCII bytes and no name match pick cp1252", () => {
+test("pages that decode every name the same are one choice: é in cp1252/cp1250, ü in cp437/cp852", () => {
+  // cp852 reads e9 as Ú (an uppercase letter after "f" breaks the word's
+  // case), cp437 as Θ (its Greek run): both cost 1.
   const parsed = cd([{ name: rawName("Synthetic/01 Caf", [0xe9], ".flac"), data: FLACS[0]! }]);
-  expect(chooseCodePage(parsed, "/x/Other Name.zip")).toEqual({ cp: 1252, rule: 2 });
-  // An ASCII top-level dir equal to the archive name decodes the same in both
-  // code pages, so it decides nothing: 0x81 still picks cp437.
+  expect(chooseCodePage(parsed, "/x/Other Name.zip")).toEqual({ cp: 1252, by: "score" });
+  // An ASCII top-level dir equal to the archive name decodes the same in
+  // every code page, so it decides nothing.
   const ascii = cd([{ name: rawName("Synthetic/01 M", [0x81], "ller.flac"), data: FLACS[0]! }]);
-  expect(chooseCodePage(ascii, "/x/Synthetic.zip")).toEqual({ cp: 437, rule: 3 });
+  expect(chooseCodePage(ascii, "/x/Synthetic.zip")).toEqual({ cp: 437, by: "score" });
+});
+
+/** Utf8 tree of an unpacked zip without the sidecars. */
+const namesOnly = (dir: string) => utf8Tree(dir).filter((p) => !p.split("/").pop()!.startsWith(".intake"));
+
+// The real-world OEM case: "Búho" is the same in cp437 and cp852 (ú = a3),
+// the track is "Białowieża" only in cp852 (88 = ł, be = ż); cp437 gives
+// "Biaêowie╛a", cp1252 "Biaˆowie¾a", cp1250 has no 0x88.
+const BUHO_TOP = rawName("Synthetic B", [0xa3], "ho");
+const BUHO_ENTRIES = [rawName("06 Bia", [0x88], "owie", [0xbe], "a.flac"), rawName("07 Sierra Nevada.flac")];
+
+test("cp852 names: the Białowieża track picks cp852 by score, names land as UTF-8, no issue", async () => {
+  const zip = join(income, "Synthetic Búho.zip");
+  writeFileSync(zip, buildZip(BUHO_ENTRIES.map((e, i) => ({ name: new Uint8Array([...BUHO_TOP, 0x2f, ...e]), data: FLACS[i]! }))));
+  const parsed = readCentralDirectory(zip)!;
+  expect(codePagePenalties(parsed)).toEqual([
+    { cp: 437, penalty: 1 }, { cp: 852, penalty: 0 }, { cp: 1252, penalty: 3 }, { cp: 1250, penalty: null },
+  ]);
+  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 852, by: "score" });
+
+  const r = await cmdScan(["arc"], opts);
+  expect(r.errors).toEqual([]);
+  const block = (r.data as ScanBlock[])[0]!;
+  expect(block.archives.map((a) => [a.action, a.code_page])).toEqual([["unpacked", { cp: "cp852", by: "score" }]]);
+  const unpacked = join(income, "Synthetic Búho.unpacked");
+  expect(namesOnly(unpacked)).toEqual(["Synthetic Búho", "Synthetic Búho/06 Białowieża.flac", "Synthetic Búho/07 Sierra Nevada.flac"]);
+  for (const f of sidecarFlags(join(unpacked, "Synthetic Búho")))
+    expect(f.issues.filter((i) => i.startsWith("archive_name"))).toEqual([]);
+});
+
+test("cp1250 names: Czech ANSI ě/ů/ň with ł (³ in cp1252) pick cp1250 by score", async () => {
+  // ec = ě, ed = í, f9 = ů, f2 = ň, b3 = ł in cp1250. cp1252 reads them as
+  // ì í ù ò (letters, a tie) but b3 as ³, a superscript; cp852 and cp437 as
+  // ý Ý ¨ ˛ │ and ∞ φ ∙ ≥ │.
+  const top = rawName("Synthetic M", [0xec], "s", [0xed], "c");
+  const entries = [rawName("01 K", [0xf9, 0xf2], ".flac"), rawName("02 Bia", [0xb3], "y.flac")];
+  const zip = join(income, "Synthetic - Czech ANSI (2003).zip");
+  writeFileSync(zip, buildZip(entries.map((e, i) => ({ name: new Uint8Array([...top, 0x2f, ...e]), data: FLACS[i]! }))));
+  const parsed = readCentralDirectory(zip)!;
+  expect(codePagePenalties(parsed)).toEqual([
+    { cp: 437, penalty: 5 }, { cp: 852, penalty: 4 }, { cp: 1252, penalty: 1 }, { cp: 1250, penalty: 0 },
+  ]);
+  expect(chooseCodePage(parsed, zip)).toEqual({ cp: 1250, by: "score" });
+
+  const r = await cmdScan(["arc"], opts);
+  expect(r.errors).toEqual([]);
+  expect(namesOnly(join(income, "Synthetic - Czech ANSI (2003).unpacked"))).toEqual([
+    "Synthetic Měsíc", "Synthetic Měsíc/01 Kůň.flac", "Synthetic Měsíc/02 Biały.flac",
+  ]);
+});
+
+// A real tie: 88 is ê in cp437 and ł in cp852, both letters; cp1252 reads ˆ
+// (a modifier letter), cp1250 has no 0x88. The archive's name matches neither.
+const TIE_TOP = rawName("Synthetic Bia", [0x88], "a");
+const TIE_ENTRIES = [rawName("01 Bia", [0x88], "y.flac"), rawName("02 Bia", [0x88], "e.flac")];
+const TIE_ZIP = "Synthetic - Tie (2001).zip";
+
+async function scanTie(): Promise<{ block: ScanBlock; root: string }> {
+  writeFileSync(join(income, TIE_ZIP), buildZip(TIE_ENTRIES.map((e, i) => ({ name: new Uint8Array([...TIE_TOP, 0x2f, ...e]), data: FLACS[i]! }))));
+  const r = await cmdScan(["arc"], opts);
+  expect(r.errors).toEqual([]);
+  const unpacked = join(income, "Synthetic - Tie (2001).unpacked");
+  return { block: (r.data as ScanBlock[])[0]!, root: join(unpacked, readdirSync(unpacked)[0]!) };
+}
+
+test("a tie with no archive_code_pages: the default order picks cp437, the root gets the guessed issue and needs_review", async () => {
+  const { block, root } = await scanTie();
+  expect(block.archives.map((a) => a.code_page)).toEqual([{ cp: "cp437", by: "order" }]);
+  expect(namesOnly(join(income, "Synthetic - Tie (2001).unpacked"))).toEqual([
+    "Synthetic Biaêa", "Synthetic Biaêa/01 Biaêy.flac", "Synthetic Biaêa/02 Biaêe.flac",
+  ]);
+  expect(sidecarFlags(root)).toEqual([
+    { issues: expect.arrayContaining(["archive_name_code_page_guessed:cp437"]), needs_review: true },
+  ]);
+  expect(block.written.map((w) => [w.root_path, w.needs_review])).toEqual([[root, true]]);
+});
+
+test("a tie with archive_code_pages: [cp852]: cp852 is picked, and the resolver flags it as cp852 (same preference)", async () => {
+  writeIncome("archive_code_pages: [cp852]");
+  const { block, root } = await scanTie();
+  expect(block.archives.map((a) => a.code_page)).toEqual([{ cp: "cp852", by: "order" }]);
+  expect(namesOnly(join(income, "Synthetic - Tie (2001).unpacked"))).toEqual([
+    "Synthetic Biała", "Synthetic Biała/01 Biały.flac", "Synthetic Biała/02 Białe.flac",
+  ]);
+  expect(sidecarFlags(root)).toEqual([
+    { issues: expect.arrayContaining(["archive_name_code_page_guessed:cp852"]), needs_review: true },
+  ]);
+  // The list only orders ties: the Białowieża zip still picks cp852 by score
+  // with cp437 first, and the cp437 zip stays cp437 with cp852 first.
+  const buho = cd(BUHO_ENTRIES.map((e, i) => ({ name: new Uint8Array([...BUHO_TOP, 0x2f, ...e]), data: FLACS[i]! })));
+  expect(chooseCodePage(buho, "/x/a.zip", [437])).toEqual({ cp: 852, by: "score" });
+  const box = cd(CP437_ENTRIES.map(([raw], i) => ({ name: new Uint8Array([...CP437_TOP, 0x2f, ...raw]), data: FLACS[i]! })));
+  expect(chooseCodePage(box, "/x/a.zip", [852])).toEqual({ cp: 852, by: "score" }); // same names either way
+  expect(decodeCodePage(box.entries[0]!.name, 852)).toBe(decodeCodePage(box.entries[0]!.name, 437));
+});
+
+test("names that are not text in any candidate (a control char): the unpack fails naming the archive, nothing written", async () => {
+  const zip = join(income, "Synthetic - Control (2001).zip");
+  writeFileSync(zip, buildZip([{ name: rawName("Synthetic", [0x01], " B", [0x88], "d/01.flac"), data: FLACS[0]! }]));
+  const parsed = readCentralDirectory(zip)!;
+  expect(codePagePenalties(parsed).map((p) => p.penalty)).toEqual([null, null, null, null]);
+  const r = await cmdScan(["arc"], opts);
+  expect(r.errors).toEqual([{
+    code: "E_ARCHIVE",
+    msg: 'entry names of "Synthetic - Control (2001).zip" are not text in any code page tried (cp437, cp852, cp1252, cp1250): each gives a control character or an undefined byte',
+    path: zip,
+  }]);
+  expect((r.data as ScanBlock[])[0]!.archives.map((a) => [a.action, a.code_page])).toEqual([["failed", null]]);
+  expect(readdirSync(income)).toEqual(["Synthetic - Control (2001).zip"]);
+});
+
+test("archive_code_pages: listed pages first in list order, the rest in the default order; anything else is a config error", () => {
+  expect(tieOrder()).toEqual([437, 852, 1252, 1250]);
+  expect(tieOrder([852])).toEqual([852, 437, 1252, 1250]);
+  expect(tieOrder([1250, 852])).toEqual([1250, 852, 437, 1252]);
+  const rules = join(corpus.dir, "rules-cp");
+  mkdirSync(rules, { recursive: true });
+  const load = (...lines: string[]) => {
+    writeFileSync(join(rules, "income.yaml"), [...lines, "income:", "  - name: arc", `    path: ${income}`, ""].join("\n"));
+    return loadIncomeConfig(rules);
+  };
+  expect(load().archiveCodePages).toEqual([]);
+  expect(load("archive_code_pages: []").archiveCodePages).toEqual([]);
+  expect(load("archive_code_pages: [cp1250, cp852]").archiveCodePages).toEqual([1250, 852]);
+  const file = join(rules, "income.yaml");
+  const allowed = "(allowed: cp437, cp852, cp1252, cp1250)";
+  expect(() => load("archive_code_pages: [cp852, cp999]")).toThrow(`${file}: archive_code_pages: unknown code page "cp999" ${allowed}`);
+  expect(() => load("archive_code_pages: [CP852]")).toThrow(`unknown code page "CP852"`);
+  expect(() => load("archive_code_pages: [852]")).toThrow("unknown code page 852");
+  expect(() => load("archive_code_pages: cp852")).toThrow(`${file}: archive_code_pages: must be a list of code page names ${allowed}`);
+  expect(() => load("archive_code_pages:")).toThrow("must be a list");
+  expect(() => load("archive_code_pages: [cp852, cp437, cp852]")).toThrow(`${file}: archive_code_pages: cp852 listed twice ${allowed}`);
 });
 
 test("needsCodePage: false for UTF-8-flagged names and for unflagged valid UTF-8, true for raw cp bytes", () => {
@@ -181,11 +358,15 @@ test("decodeCodePage: exact table entries at the edges", () => {
   const hi = new Uint8Array([0x80, 0x81, 0x9f, 0xa0, 0xff]);
   expect([...decodeCodePage(hi, 1252)].map((c) => c.codePointAt(0))).toEqual([0x20ac, 0x81, 0x178, 0xa0, 0xff]);
   expect([...decodeCodePage(hi, 437)].map((c) => c.codePointAt(0))).toEqual([0xc7, 0xfc, 0x192, 0xe1, 0xa0]);
+  expect([...decodeCodePage(hi, 852)].map((c) => c.codePointAt(0))).toEqual([0xc7, 0xfc, 0x10d, 0xe1, 0xa0]);
+  expect([...decodeCodePage(hi, 1250)].map((c) => c.codePointAt(0))).toEqual([0x20ac, 0x81, 0x17a, 0xa0, 0x2d9]);
+  // cp1250's undefined bytes are their C1 controls, so a name with one rules cp1250 out.
+  expect([...decodeCodePage(new Uint8Array([0x83, 0x88, 0x90, 0x98]), 1250)].map((c) => c.codePointAt(0))).toEqual([0x83, 0x88, 0x90, 0x98]);
   expect(decodeCodePage(rawName("plain ascii/"), 437)).toBe("plain ascii/");
 });
 
 /** scan as a subprocess; PATH defaults to /usr/bin:/bin (unzip, no 7-Zip). */
-function scanWithPath(path = "/usr/bin:/bin"): { code: number | null; envelope: { errors: { code: string; msg: string; path: string }[]; data: any[] } } {
+function scanWithPath(path = "/usr/bin:/bin"): { code: number | null; envelope: { errors: { code: string; msg: string; path: string | null }[]; data: any } } {
   const env = { PATH: path, INTAKE_RULES_DIR: corpus.rules, HOME: process.env.HOME ?? "/tmp" };
   const proc = Bun.spawnSync([process.execPath, "run", CLI, "scan", "arc", "--json"], { env, timeout: 60_000 });
   const out = proc.stdout.toString();
@@ -232,6 +413,21 @@ test("non-ASCII UTF-8 names with no 7-Zip on PATH: failed with a clear message, 
   expect(code).toBe(1);
   expect(envelope.data[0].archives[0].action).toBe("failed");
   expect(readdirSync(income)).toEqual(["Synthetic - Flagged (2023).zip"]);
+});
+
+test("archive_code_pages: [cp999] fails scan as a malformed income.yaml does (E_INTERNAL, exit 2), nothing unpacked", () => {
+  writeIncome("archive_code_pages: [cp999]");
+  const zip = join(income, TIE_ZIP);
+  writeFileSync(zip, buildZip(TIE_ENTRIES.map((e, i) => ({ name: new Uint8Array([...TIE_TOP, 0x2f, ...e]), data: FLACS[i]! }))));
+  const { code, envelope } = scanWithPath();
+  expect(envelope.errors).toEqual([{
+    code: "E_INTERNAL",
+    msg: `${join(corpus.rules, "income.yaml")}: archive_code_pages: unknown code page "cp999" (allowed: cp437, cp852, cp1252, cp1250)`,
+    path: null,
+  }]);
+  expect(envelope.data).toBeNull();
+  expect(code).toBe(2);
+  expect(readdirSync(income)).toEqual([TIE_ZIP]);
 });
 
 test("code-page names with no 7-Zip on PATH: failed with a clear message, raw bytes never written", () => {

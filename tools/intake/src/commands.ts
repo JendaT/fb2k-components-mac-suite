@@ -2,11 +2,12 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { unpackArchive, type UnpackResult } from "./archive.ts";
 import { ENGINE_VERSION } from "./assign.ts";
-import { incomeFor, loadConfig, loadIncome, rulesDir } from "./config.ts";
+import { incomeFor, loadConfig, loadIncome, loadIncomeConfig, rulesDir } from "./config.ts";
 import { Resolver, type ResolveContext } from "./resolver.ts";
 import { readSidecar, summarize, writeRoot, type SidecarSummary } from "./sidecar.ts";
 import { CLI_VERSION, type IncomeFolder, type JsonError, type Sidecar } from "./types.ts";
 import { ARCHIVE_EXTS, ext, isSidecarName, walkDirs } from "./util.ts";
+import { codePageName, type CodePage, type CodePageBy } from "./zipnames.ts";
 
 /**
  * `data` is the JSON envelope's payload (doc 03). It is generic so each command
@@ -49,11 +50,25 @@ export interface ResolveData {
   kept: string[];
 }
 
+/**
+ * One archive of a scan. `code_page` is the code page the entry names were
+ * decoded with (zip names that are not UTF-8, plain RAR4 names) and how it
+ * was chosen: `score` (lowest penalty), `name_match` (a tie broken by the
+ * archive's own name) or `order` (a tie broken by the tie order, a guess the
+ * resolver flags); null when the names needed none or nothing was decided.
+ */
+export interface ScanArchive {
+  archive: string;
+  target: string;
+  action: UnpackResult["action"];
+  code_page: { cp: string; by: CodePageBy } | null;
+}
+
 export interface ScanBlock {
   income: string | null;
   path: string;
   dry_run: boolean;
-  archives: { archive: string; target: string; action: UnpackResult["action"] }[];
+  archives: ScanArchive[];
   written: WrittenRoot[];
   kept: string[];
 }
@@ -90,12 +105,14 @@ function fail(code: string, msg: string, path: string | null = null): CommandRes
 async function resolveInto(
   target: string,
   income: IncomeFolder | null,
+  archiveCodePages: readonly CodePage[],
   opts: CommonOpts,
   verb: string,
 ): Promise<{ written: WrittenRoot[]; kept: string[]; errors: JsonError[] }> {
   const ctx: ResolveContext = {
     config: loadConfig(),
     income: income ? { name: income.name, source_type: income.source_type, root: income.path } : null,
+    archiveCodePages,
     force: opts.force,
     now: () => new Date(),
   };
@@ -131,8 +148,9 @@ export async function cmdResolve(args: string[], opts: CommonOpts): Promise<Comm
   const target = resolve(targetArg);
   if (!existsSync(target) || !statSync(target).isDirectory())
     return fail("E_NOT_FOUND", "not a directory", target);
-  const income = incomeFor(target, loadIncome());
-  const { written, kept, errors } = await resolveInto(target, income, opts, "resolve");
+  const config = loadIncomeConfig();
+  const income = incomeFor(target, config.income);
+  const { written, kept, errors } = await resolveInto(target, income, config.archiveCodePages, opts, "resolve");
   const data: ResolveData = { target, dry_run: opts.dryRun, written, kept };
   // Doc 03 legal source statuses: refused roots are errors, the rest proceed
   // (exit 1 when some root was written, 2 when none was).
@@ -150,7 +168,7 @@ function findArchives(root: string): string[] {
 }
 
 export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean }): Promise<CommandResult<ScanBlock[] | null>> {
-  const income = loadIncome();
+  const { income, archiveCodePages } = loadIncomeConfig();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
 
@@ -174,21 +192,26 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
     }
     const archives: UnpackResult[] = [];
     for (const arc of findArchives(inc.path)) {
-      const r = await unpackArchive(arc, opts.dryRun);
+      const r = await unpackArchive(arc, opts.dryRun, { codePages: archiveCodePages });
       archives.push(r);
       if (r.action === "failed")
         errors.push({ code: "E_ARCHIVE", msg: r.error ?? "unpack failed", path: r.archive });
       if (r.action === "tool_missing")
         errors.push({ code: "E_ARCHIVE_TOOL", msg: r.error ?? "tool missing", path: r.archive });
     }
-    const resolved = await resolveInto(inc.path, inc, opts, "scan");
+    const resolved = await resolveInto(inc.path, inc, archiveCodePages, opts, "scan");
     errors.push(...resolved.errors);
     const { written, kept } = resolved;
     data.push({
       income: inc.name,
       path: inc.path,
       dry_run: opts.dryRun,
-      archives: archives.map((a) => ({ archive: a.archive, target: a.target, action: a.action })),
+      archives: archives.map((a) => ({
+        archive: a.archive,
+        target: a.target,
+        action: a.action,
+        code_page: a.codePage ? { cp: codePageName(a.codePage.cp), by: a.codePage.by } : null,
+      })),
       written,
       kept,
     });

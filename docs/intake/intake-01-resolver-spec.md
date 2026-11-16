@@ -110,7 +110,13 @@ from a disc dir that has no disc tag gets the dir's disc number as `disc`.
 - Archives (`zip,rar,7z`): `scan` unpacks to `<name>.unpacked/`; resolver
   treats unpacked dir; original archive referenced in sidecar `source.archive`.
   rar entries are verified against their header CRC32; encrypted,
-  BLAKE2-only, multi-volume and solid RAR4 archives are refused.
+  BLAKE2-only, multi-volume and solid RAR4 archives are refused. Entry names
+  in no recorded encoding (zip names without the UTF-8 flag, plain RAR4
+  names) are decoded with the best-scoring of cp437, cp852, cp1252 and
+  cp1250 (tools/intake README); when a tie between them was broken by the
+  fixed order, every root from that archive gets
+  `archive_name_code_page_guessed:<cp>` in `quality.issues` and
+  `needs_review: true`.
 - `iso/bin+cue`: flag `needs_review`, never auto-unpack.
 - Mixed-quality duplicates in one dir (mp3 + flac of same tracks): cluster by
   (album, tracknumber); prefer lossless set as primary, mark each file of the

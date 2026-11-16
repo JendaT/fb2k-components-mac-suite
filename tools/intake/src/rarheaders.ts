@@ -23,17 +23,21 @@
 // UTF-8 (Unicode flag, no zero byte), RAR's compressed Unicode encoding
 // (Unicode flag, OEM name + zero + encoding; decoded as libarchive does), or
 // plain OEM bytes. Plain non-ASCII OEM names are decoded with the code page
-// zipnames.ts chooses, and bsdtar gets the same one (`rar:hdrcharset`): on
-// its own it writes the raw bytes, which APFS refuses ("Illegal byte
-// sequence"). libarchive turns `\` into `/` in every RAR4 name. On macOS it
-// writes names as UTF-8 NFD whatever the locale (checked with C, UTF-8 and
-// ISO8859-2 locales), so names are matched NFC-normalized; SMB shares also
-// hand back NFD.
+// zipnames.ts chooses by scoring cp437, cp852, cp1252 and cp1250 (RAR4 does
+// not record which), and bsdtar gets the same one
+// (`rar:hdrcharset`): on its own it writes the raw bytes, which APFS refuses
+// ("Illegal byte sequence"). bsdtar decodes through iconv, whose tables the
+// TS ones match byte for byte; libarchive 3.7.4 on macOS takes all four
+// (checked with every defined byte of each). Names that are not text in any
+// of the four (a control char) are refused. libarchive turns `\` into `/` in
+// every RAR4 name. On macOS it writes names as UTF-8 NFD whatever the locale
+// (checked with C, UTF-8 and ISO8859-2 locales), so names are matched
+// NFC-normalized; SMB shares also hand back NFD.
 
 import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { basename, join } from "node:path";
 import { crc32 } from "node:zlib";
-import { chooseCodePage, decodeCodePage, isValidUtf8, type CodePage } from "./zipnames.ts";
+import { chooseCodePage, decodeCodePage, isValidUtf8, undecodableNames, type CodePage, type CodePageChoice } from "./zipnames.ts";
 
 export interface RarEntry {
   /** "/"-separated relative path as extracted, NFC: the match key. */
@@ -48,8 +52,8 @@ export interface RarEntry {
 export interface RarHeaders {
   format: 4 | 5;
   entries: RarEntry[];
-  /** Code page of plain non-ASCII RAR4 names, for bsdtar's `rar:hdrcharset`; null when there are none. */
-  codePage: CodePage | null;
+  /** Code page of plain non-ASCII RAR4 names (for bsdtar's `rar:hdrcharset`) and how it was chosen; null when there are none. */
+  codePage: CodePageChoice | null;
 }
 
 /** A refusal: the archive is not extracted. */
@@ -147,9 +151,10 @@ interface RawEntry {
 /**
  * Read and check the headers of a rar archive. Returns the entries, or an
  * error (the reason the archive is refused). Reads only headers: data areas
- * are skipped by their size.
+ * are skipped by their size. `prefer` orders code page ties (income.yaml
+ * `archive_code_pages`).
  */
-export function readRarHeaders(path: string): RarHeaders | { error: string } {
+export function readRarHeaders(path: string, prefer: readonly CodePage[] = []): RarHeaders | { error: string } {
   if (/\.part\d+\.rar$/i.test(basename(path))) return { error: MULTI_VOLUME };
   let fd: number;
   try {
@@ -173,13 +178,15 @@ export function readRarHeaders(path: string): RarHeaders | { error: string } {
       return { error: "not a rar archive: no RAR signature at the start" };
     }
     const plain = raw.filter((e): e is RawEntry & { name: Uint8Array } => e.name instanceof Uint8Array);
-    const codePage = plain.some((e) => e.name.some((b) => b >= 0x80))
-      ? chooseCodePage({ entries: plain.map((e) => ({ flags: 0, name: e.name })) }, path).cp
-      : null;
+    let codePage: CodePageChoice | null = null;
+    if (plain.some((e) => e.name.some((b) => b >= 0x80))) {
+      codePage = chooseCodePage({ entries: plain.map((e) => ({ flags: 0, name: e.name })) }, path, prefer);
+      if (codePage === null) throw new Refusal(undecodableNames(path));
+    }
     const entries: RarEntry[] = [];
     const seen = new Set<string>();
     for (const e of raw) {
-      const name = typeof e.name === "string" ? e.name : decodeCodePage(e.name, codePage ?? 437);
+      const name = typeof e.name === "string" ? e.name : decodeCodePage(e.name, codePage?.cp ?? 437);
       const p = checkedPath(name);
       if (e.kind === "file") {
         if (seen.has(p)) throw entryRefusal(p, "duplicate path");

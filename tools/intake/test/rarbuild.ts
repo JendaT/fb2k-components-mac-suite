@@ -300,6 +300,8 @@ export interface Rar4Entry {
    */
   names?: "oem" | "unicode" | "utf8";
   codePage?: CodePage; // OEM code page of the name bytes (default 437)
+  /** Exact OEM name bytes, "/"-separated (stored with backslashes); replaces `name` in the "oem" form. */
+  oemName?: Uint8Array;
   compressed?: boolean; // method 0x33 literal-only stream instead of stored (0x30)
   badCrc?: boolean; // store a wrong file CRC32
   encrypted?: boolean; // password flag + salt; the data area is filler bytes
@@ -326,7 +328,7 @@ function fileBlock4(e: Rar4Entry): number[] {
   const cp = e.codePage ?? 437;
   const form = e.names ?? "oem";
   let name: number[];
-  if (form === "oem") name = oemBytes(stored, cp, true);
+  if (form === "oem") name = e.oemName ? [...e.oemName].map((b) => (b === 0x2f ? 0x5c : b)) : oemBytes(stored, cp, true);
   else if (form === "utf8") name = utf8(stored);
   else {
     const oem = oemBytes(stored, cp, false);

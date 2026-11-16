@@ -143,7 +143,10 @@ function printBlocks(blocks: (ScanBlock | ResolveData)[]): void {
   for (const b of blocks) {
     if ("income" in b && b.income) console.log(`income: ${b.income} (${b.path})`);
     if ("archives" in b) {
-      for (const a of b.archives) console.log(`  archive ${a.action}: ${a.archive}`);
+      for (const a of b.archives) {
+        const cp = a.code_page ? ` (names ${a.code_page.cp}, by ${a.code_page.by})` : "";
+        console.log(`  archive ${a.action}: ${a.archive}${cp}`);
+      }
     }
     for (const w of b.written) {
       const marks = [

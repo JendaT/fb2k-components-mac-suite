@@ -3,7 +3,8 @@
 // caller's job so --dry-run stays trivial).
 
 import { existsSync, readdirSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
+import { archiveNameCodePage } from "./archive.ts";
 import { audioHash, isFlacFallbackIssue } from "./audioHash.ts";
 import { albumFromTags, parseDirName } from "./naming.ts";
 import { readSnapshot, parseFilename, type AudioSnapshot } from "./tags.ts";
@@ -16,13 +17,19 @@ import {
   DISC_DIR_RE, decodeDiscInTrack, discNumberFromDirName, ext, IO_CONCURRENCY, isoLocal, isSidecarName, makeId, mapLimit,
   normAlbum, normKey, round2, VARIOUS_ARTISTS, walkDirs, type DirEntry,
 } from "./util.ts";
+import { codePageName, type CodePage } from "./zipnames.ts";
 
 export interface ResolveContext {
   config: ResolverConfig;
   income: { name: string | null; source_type: string; root: string } | null;
+  /** income.yaml `archive_code_pages`, as scan used it: the code page choice is made again with it. */
+  archiveCodePages: readonly CodePage[];
   force: boolean;
   now: () => Date;
 }
+
+/** quality.issues prefix: the archive's entry names were decoded with a code page picked by the tie order. */
+const CODE_PAGE_GUESSED_ISSUE = "archive_name_code_page_guessed";
 
 /** An existing sidecar a --force rebuild refused to replace (doc 03). */
 export interface BlockedRoot {
@@ -245,6 +252,9 @@ function toFileRecord(f: CandFile): FileRecord {
 export class Resolver {
   constructor(private ctx: ResolveContext) {}
 
+  /** Archive path -> the guessed-code-page issue for its roots, or null. */
+  private codePageIssues = new Map<string, string | null>();
+
   private relFromIncome(dir: string): string {
     const base = this.ctx.income?.root;
     return base ? relative(base, dir) || "." : basename(dir);
@@ -265,6 +275,25 @@ export class Resolver {
       }
     }
     return null;
+  }
+
+  /**
+   * `archive_name_code_page_guessed:cpN` for a root unpacked from an archive
+   * whose entry names had no code page better than another: scan broke the
+   * tie by order (zipnames.ts chooseCodePage). The choice is made again from
+   * the archive with the same `archive_code_pages`, so it is the one scan
+   * made; it is read once per archive. Null otherwise.
+   */
+  private codePageIssue(dir: string, archive: string | null): string | null {
+    if (archive === null) return null;
+    const abs = resolve(dir, archive);
+    let issue = this.codePageIssues.get(abs);
+    if (issue === undefined) {
+      const choice = archiveNameCodePage(abs, this.ctx.archiveCodePages);
+      issue = choice?.by === "order" ? `${CODE_PAGE_GUESSED_ISSUE}:${codePageName(choice.cp)}` : null;
+      this.codePageIssues.set(abs, issue);
+    }
+    return issue;
   }
 
   private buildSidecar(opts: {
@@ -346,12 +375,16 @@ export class Resolver {
       issues.push(`quality_shadow_set:${codecs.join(",")}`);
     }
     for (const iss of opts.extraIssues ?? []) issues.push(iss);
+    const archive = this.archiveFor(opts.dir);
+    const codePageIssue = this.codePageIssue(opts.dir, archive);
+    if (codePageIssue !== null) issues.push(codePageIssue);
 
     // An unset-MD5 FLAC that would not decode is keyed by the fsha1 fallback;
     // a decode failure often means a corrupt file, so it must be seen (doc 03).
+    // File names decoded with a guessed code page may be garbled.
     const needsReview =
       review || tier === "reject" || opts.singles || confidence < config.thresholds.review ||
-      issues.some(isFlacFallbackIssue);
+      issues.some(isFlacFallbackIssue) || codePageIssue !== null;
     const status = resolved || review ? "resolved" : "new";
 
     const cluster: Cluster = {
@@ -374,7 +407,7 @@ export class Resolver {
       source: {
         income_folder: this.ctx.income?.name ?? null,
         source_type: this.ctx.income?.source_type ?? "unknown",
-        archive: this.archiveFor(opts.dir),
+        archive,
       },
       virtual: opts.virtual,
       files: opts.files.sort((a, b) => a.rel.localeCompare(b.rel)).map(toFileRecord),

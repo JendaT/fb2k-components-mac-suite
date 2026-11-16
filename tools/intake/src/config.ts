@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type { AssignConfig, IncomeFolder, P3Config, ResolverConfig, TierDef } from "./types.ts";
+import { codePageName, DEFAULT_CODE_PAGE_ORDER, parseCodePageName, type CodePage } from "./zipnames.ts";
 
 export const DEFAULT_CONFIG: ResolverConfig = {
   weights: { purity: 0.35, seq: 0.25, artifacts: 0.15, name_parse: 0.15, quality_homog: 0.1 },
@@ -116,12 +117,47 @@ export function loadP3Config(dir: string | null = rulesDir()): P3Config {
   return cfg;
 }
 
-/** Load income folders from income.yaml. Relative paths resolve against the rules dir. */
-export function loadIncome(dir: string | null = rulesDir()): IncomeFolder[] {
-  if (!dir) return [];
-  const doc = readYaml(join(dir, "income.yaml"));
+export interface IncomeConfig {
+  income: IncomeFolder[];
+  /**
+   * Top-level `archive_code_pages`: code pages ("cp852", ...) that come
+   * first, in this order, when the code page of archive entry names is a tie
+   * (zipnames.ts chooseCodePage). Empty when the key is absent.
+   */
+  archiveCodePages: CodePage[];
+}
+
+/**
+ * `archive_code_pages` checked: a list of distinct names from cp437, cp852,
+ * cp1252, cp1250. Anything else throws, the path a malformed income.yaml
+ * takes (cli.ts reports it as E_INTERNAL, exit 2), so a typo is never ignored.
+ */
+function archiveCodePages(value: unknown, file: string): CodePage[] {
+  if (value === undefined) return [];
+  const allowed = DEFAULT_CODE_PAGE_ORDER.map(codePageName).join(", ");
+  const bad = (what: string) => new Error(`${file}: archive_code_pages: ${what} (allowed: ${allowed})`);
+  if (!Array.isArray(value)) throw bad("must be a list of code page names");
+  const out: CodePage[] = [];
+  for (const item of value) {
+    const cp = typeof item === "string" ? parseCodePageName(item) : null;
+    if (cp === null) throw bad(`unknown code page ${JSON.stringify(item)}`);
+    if (out.includes(cp)) throw bad(`${item} listed twice`);
+    out.push(cp);
+  }
+  return out;
+}
+
+/**
+ * Load income.yaml: the income folders (relative paths resolve against the
+ * rules dir) and the top-level settings beside them.
+ */
+export function loadIncomeConfig(dir: string | null = rulesDir()): IncomeConfig {
+  if (!dir) return { income: [], archiveCodePages: [] };
+  const file = join(dir, "income.yaml");
+  const doc = readYaml(file);
+  const codePages = archiveCodePages(doc?.["archive_code_pages"], file);
   const list = doc?.["income"];
-  if (!Array.isArray(list)) return [];
+  if (!Array.isArray(list)) return { income: [], archiveCodePages: codePages };
   const out: IncomeFolder[] = [];
   for (const item of list) {
     if (typeof item !== "object" || item === null) continue;
@@ -134,7 +170,12 @@ export function loadIncome(dir: string | null = rulesDir()): IncomeFolder[] {
       source_type: typeof source_type === "string" ? source_type : "unknown",
     });
   }
-  return out;
+  return { income: out, archiveCodePages: codePages };
+}
+
+/** Load income folders from income.yaml. Relative paths resolve against the rules dir. */
+export function loadIncome(dir: string | null = rulesDir()): IncomeFolder[] {
+  return loadIncomeConfig(dir).income;
 }
 
 /** Find the income folder containing the given absolute path, if any. */

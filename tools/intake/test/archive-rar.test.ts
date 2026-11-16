@@ -17,6 +17,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { join, relative } from "node:path";
 import { setupCorpus, type Corpus } from "./helpers.ts";
 import { buildRar4, buildRar5 } from "./rarbuild.ts";
+import { rawName } from "./zipbuild.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
 const BSDTAR = "/usr/bin/bsdtar";
@@ -318,8 +319,11 @@ describe.skipIf(!existsSync(BSDTAR))("rar with bsdtar", () => {
 
   test("RAR4 non-ASCII names: Unicode-flagged, UTF-8 and plain OEM (cp437, cp1252) extract under their names", () => {
     const uni = "Dvořák – ŘŘ Ünïcode/01 Česká píseň ☃.txt"; // every op of RAR's Unicode name encoding
-    const oem437 = "Café Ñandú/01 Über ½.txt"; // cp437 bytes, not all Latin-1 letters: cp437
-    const oem1252 = "Café Ñandú/01 Über.txt"; // cp1252 bytes, all 0xC0-0xFF: cp1252
+    // cp437 bytes; cp852 reads Ñ as ą and ½ as ź (a letter standing alone):
+    // cp437 and cp852 tie, and the order picks cp437.
+    const oem437 = "Café Ñandú/01 Über ½.txt";
+    // cp1252 bytes; cp1250 reads Ñ as Ń: a tie, and the order picks cp1252.
+    const oem1252 = "Café Ñandú/01 Über.txt";
     place("A Unicode (2008).rar", buildRar4([{ name: uni, data: TRACK, names: "unicode", compressed: true }]));
     place("B Utf8 (2008).rar", buildRar4([{ name: "Sinfonía Ñ/01 Über.txt", data: TRACK, names: "utf8" }]));
     place("C Oem437 (2008).rar", buildRar4([{ name: oem437, data: TRACK }]));
@@ -332,6 +336,23 @@ describe.skipIf(!existsSync(BSDTAR))("rar with bsdtar", () => {
       { file: "B Utf8 (2008).rar", files: { "Sinfonía Ñ/01 Über.txt": TRACK } },
       { file: "C Oem437 (2008).rar", files: { [oem437]: TRACK } },
       { file: "D Oem1252 (2008).rar", files: { [oem1252]: TRACK } },
+    ]);
+  });
+
+  test("RAR4 plain OEM names in cp852 (Białowieża) and cp1250 go to bsdtar as CP852 / CP1250 and pass the name and CRC check", () => {
+    // Raw name bytes, as in the zip tests (.txt, so no root resolves): a3 = ú
+    // (cp437 and cp852), 88 = ł and be = ż (cp852 only); ec = ě, f9 = ů,
+    // f2 = ň, b3 = ł (cp1250).
+    const buho = rawName("Synthetic B", [0xa3], "ho/06 Bia", [0x88], "owie", [0xbe], "a.txt");
+    const czech = rawName("Synthetic M", [0xec], "s", [0xed], "c/02 Bia", [0xb3], "y K", [0xf9, 0xf2], ".txt");
+    place("Synthetic Búho.rar", buildRar4([{ name: "", oemName: buho, data: TRACK }]));
+    place("Synthetic - Czech ANSI (2003).rar", buildRar4([{ name: "", oemName: czech, data: BIG, compressed: true }]));
+    const run = scan();
+    const options = calls().map((c) => c.match(/\[--options\] \[([^\]]*)\]/)?.[1] ?? null);
+    expect(options).toEqual(["rar:hdrcharset=CP1250", "rar:hdrcharset=CP852"]);
+    expectUnpacked(run, [
+      { file: "Synthetic Búho.rar", files: { "Synthetic Búho/06 Białowieża.txt": TRACK } },
+      { file: "Synthetic - Czech ANSI (2003).rar", files: { "Synthetic Měsíc/02 Biały Kůň.txt": BIG } },
     ]);
   });
 

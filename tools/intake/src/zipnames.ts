@@ -3,9 +3,19 @@
 // decode them (it writes the bytes raw or OEM-translated, which SMB and APFS
 // refuse), and 7-Zip on macOS ignores `-mcp` (7zz 26.03 turns such bytes
 // into private-use chars, p7zip 17.05 decodes Latin-1). So the code page is
-// applied here: names are decoded with a TS table (cp1252 or cp437) and
-// written into a copy of the zip as UTF-8 with bit 11 set, which 7-Zip
-// extracts (src/archive.ts).
+// applied here: names are decoded with a TS table and written into a copy of
+// the zip as UTF-8 with bit 11 set, which 7-Zip extracts (src/archive.ts).
+// Plain RAR4 names use the same choice (src/rarheaders.ts).
+//
+// Candidates: cp437 and cp852 (DOS/OEM: US and Central European), cp1252 and
+// cp1250 (Windows/ANSI: Western and Central European). Neither zip nor RAR4
+// says which family a name is in, so all four are scored for every archive
+// (chooseCodePage): every name is decoded with each, a candidate that yields
+// a control char (or an undefined byte) is out, the lowest penalty wins, and
+// a real tie is broken by the archive's own name or else by a fixed order
+// (DEFAULT_CODE_PAGE_ORDER, reordered by income.yaml `archive_code_pages`).
+// The tables match macOS iconv (CP437, CP852, CP1252, CP1250) byte for byte,
+// as bsdtar's `rar:hdrcharset` decodes through iconv.
 
 import { closeSync, fstatSync, openSync, readSync, writeSync } from "node:fs";
 import { basename } from "node:path";
@@ -134,23 +144,57 @@ export function needsCodePage(cd: CentralDirectory): boolean {
   return cd.entries.some((e) => !(e.flags & UTF8_FLAG) && !isValidUtf8(e.name));
 }
 
-// Bytes 0x80-0xFF. cp1252 leaves 0x81, 0x8D, 0x8F, 0x90 and 0x9D undefined;
-// they map to the C1 controls of the same value, as in the WHATWG
-// windows-1252 decoder. 0xA0-0xFF of cp1252 equal Latin-1.
+// Bytes 0x80-0xFF. The bytes a Windows code page leaves undefined (cp1252:
+// 0x81, 0x8D, 0x8F, 0x90, 0x9D; cp1250: 0x81, 0x83, 0x88, 0x90, 0x98) map to
+// the C1 control of the same value, as in the WHATWG decoders, so a
+// candidate that meets one is out like one that yields any other control.
+// 0xA0-0xFF of cp1252 equal Latin-1.
 const CP1252_HIGH =
   "€\u0081‚ƒ„…†‡ˆ‰Š‹Œ\u008dŽ\u008f" +
   "\u0090‘’“”•–—˜™š›œ\u009džŸ" +
   Array.from({ length: 0x60 }, (_, i) => String.fromCharCode(0xa0 + i)).join("");
+const CP1250_HIGH =
+  "€\u0081‚\u0083„…†‡\u0088‰Š‹ŚŤŽŹ" +
+  "\u0090‘’“”•–—\u0098™š›śťžź" +
+  "\u00a0ˇ˘Ł¤Ą¦§¨©Ş«¬\u00ad®Ż°±˛ł´µ¶·¸ąş»Ľ˝ľż" +
+  "ŔÁÂĂÄĹĆÇČÉĘËĚÍÎĎĐŃŇÓÔŐÖ×ŘŮÚŰÜÝŢßŕáâăäĺćçčéęëěíîďđńňóôőö÷řůúűüýţ˙";
 const CP437_HIGH =
   "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»" +
   "░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀" +
-  "αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ";
+  "αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0";
+const CP852_HIGH =
+  "ÇüéâäůćçłëŐőîŹÄĆÉĹĺôöĽľŚśÖÜŤťŁ×čáíóúĄąŽžĘę¬źČş«»" +
+  "░▒▓│┤ÁÂĚŞ╣║╗╝Żż┐└┴┬├─┼Ăă╚╔╩╦╠═╬¤đĐĎËďŇÍÎě┘┌█▄ŢŮ▀" +
+  "ÓßÔŃńňŠšŔÚŕŰýÝţ´\u00ad˝˛ˇ˘§÷¸°¨˙űŘř■\u00a0";
+const HIGH: Record<CodePage, string> = { 437: CP437_HIGH, 852: CP852_HIGH, 1252: CP1252_HIGH, 1250: CP1250_HIGH };
 
-export type CodePage = 1252 | 437;
+export type CodePage = 437 | 852 | 1252 | 1250;
+
+/**
+ * The order that breaks a tie the scores and the archive name leave open:
+ * the OEM pages first (cp437, then cp852: Windows zip tools and RAR4 write
+ * names in the OEM code page), then the ANSI pages (cp1252, then cp1250).
+ * income.yaml `archive_code_pages` moves the pages it lists to the front
+ * (tieOrder).
+ */
+export const DEFAULT_CODE_PAGE_ORDER: readonly CodePage[] = [437, 852, 1252, 1250];
+
+/** "cp852" for 852: the name income.yaml and the scan output use. */
+export const codePageName = (cp: CodePage): string => `cp${cp}`;
+
+/** The code page a name like "cp852" stands for; null for any other string. */
+export function parseCodePageName(name: string): CodePage | null {
+  return DEFAULT_CODE_PAGE_ORDER.find((cp) => codePageName(cp) === name) ?? null;
+}
+
+/** The tie order: the preferred pages in their order, then the rest in DEFAULT_CODE_PAGE_ORDER. */
+export function tieOrder(prefer: readonly CodePage[] = []): CodePage[] {
+  return [...new Set([...prefer, ...DEFAULT_CODE_PAGE_ORDER])];
+}
 
 /** Decode raw name bytes with a code page; ASCII bytes map to themselves. */
 export function decodeCodePage(bytes: Uint8Array, cp: CodePage): string {
-  const high = cp === 1252 ? CP1252_HIGH : CP437_HIGH;
+  const high = HIGH[cp];
   let s = "";
   for (const b of bytes) s += b < 0x80 ? String.fromCharCode(b) : high[b - 0x80]!;
   return s;
@@ -173,26 +217,139 @@ function topLevelDir(cd: NameList): Uint8Array | null {
   return ok ? seg : null;
 }
 
+// cp437's Greek and math run (0xE0-0xFE) except ß and µ, which are real
+// Latin text: its Greek letters count as symbols, not letters.
+const CP437_GREEK_MATH = new Set([...CP437_HIGH.slice(0x60, 0x7f)].filter((c) => c !== "ß" && c !== "µ"));
+const CONTROL = /\p{Cc}/u;
+const LETTER = /^[\p{Ll}\p{Lu}]$/u;
+const PUNCT = /^\p{P}$/u;
+const WORD = /^[\p{L}\p{N}]$/u;
+const LOWER = /^\p{Ll}$/u;
+const UPPER = /^\p{Lu}$/u;
+const is = (re: RegExp, c: string | undefined) => c !== undefined && re.test(c);
+
 /**
- * Code page for the non-UTF-8 names of a zip, by a fixed rule:
- * 1. If the top-level dir name has non-ASCII bytes and decodes, with cp1252
- *    or else cp437, to the archive's own file name without extension (both
- *    sides NFC-normalized), that code page. An ASCII top-level name decodes
- *    the same in both and says nothing, so this rule needs non-ASCII bytes.
- * 2. Else cp1252, if every non-ASCII byte of the unflagged names is in
- *    0xC0-0xFF (the Latin letters of cp1252).
- * 3. Else cp437, the zip specification's default.
+ * Penalty of one decoded char of a name segment, 0 or 1. ASCII costs
+ * nothing. A non-ASCII char costs 1 unless it is a letter (\p{Ll}, \p{Lu};
+ * not cp437's Greek/math run) or punctuation (\p{P}): box drawing, block
+ * elements, the other symbols (\p{So}, \p{Sm}, \p{Sk}, \p{Sc}), modifier
+ * letters (\p{Lm}, e.g. cp1252's ˆ), ª/º (\p{Lo}), fractions and
+ * superscripts (\p{No}), a no-break space or a soft hyphen. A letter or
+ * punctuation mark still costs 1 when it stands alone (no letter or digit on
+ * either side: a stray "ź" where cp437 meant "½"), and a letter when it
+ * breaks its word's case (an uppercase letter right after a lowercase one,
+ * or a lowercase letter between two uppercase ones: "EspaĄa" for "España").
  */
-export function chooseCodePage(cd: NameList, archivePath: string): { cp: CodePage; rule: 1 | 2 | 3 } {
+function charPenalty(chars: string[], i: number): number {
+  const c = chars[i]!;
+  if (c.charCodeAt(0) < 0x80) return 0;
+  const letter = LETTER.test(c) && !CP437_GREEK_MATH.has(c);
+  if (!letter && !PUNCT.test(c)) return 1;
+  const prev = chars[i - 1];
+  const next = chars[i + 1];
+  if (!is(WORD, prev) && !is(WORD, next)) return 1;
+  if (letter && UPPER.test(c) && is(LOWER, prev)) return 1;
+  if (letter && LOWER.test(c) && is(UPPER, prev) && is(UPPER, next)) return 1;
+  return 0;
+}
+
+/** Penalty of a name segment decoded with `cp`; null when it holds a control char (or an undefined byte). */
+function segmentPenalty(seg: Uint8Array, cp: CodePage): number | null {
+  const chars = [...decodeCodePage(seg, cp)];
+  if (chars.some((c) => CONTROL.test(c))) return null;
+  let p = 0;
+  for (let i = 0; i < chars.length; i++) p += charPenalty(chars, i);
+  return p;
+}
+
+/** The distinct "/"-separated segments of the names that are not UTF-8-flagged. */
+function codePageSegments(cd: NameList): Uint8Array[] {
+  const seen = new Map<string, Uint8Array>();
+  for (const e of cd.entries) {
+    if (e.flags & UTF8_FLAG) continue;
+    let from = 0;
+    for (let i = 0; i <= e.name.length; i++) {
+      if (i < e.name.length && e.name[i] !== 0x2f) continue;
+      const seg = e.name.subarray(from, i);
+      from = i + 1;
+      if (seg.length > 0) seen.set(String.fromCharCode(...seg), seg);
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
+ * The penalty of every candidate for the names that are not UTF-8-flagged:
+ * the sum over their distinct path segments, each scored once (a top-level
+ * dir repeated in every name counts once). Null for a candidate that is out.
+ * In tie order.
+ */
+export function codePagePenalties(cd: NameList, prefer: readonly CodePage[] = []): { cp: CodePage; penalty: number | null }[] {
+  return penalties(codePageSegments(cd), tieOrder(prefer));
+}
+
+function penalties(segs: Uint8Array[], order: CodePage[]): { cp: CodePage; penalty: number | null }[] {
+  return order.map((cp) => {
+    let penalty: number | null = 0;
+    for (const seg of segs) {
+      const p = segmentPenalty(seg, cp);
+      if (p === null) {
+        penalty = null;
+        break;
+      }
+      penalty += p;
+    }
+    return { cp, penalty };
+  });
+}
+
+/** How chooseCodePage decided: the lowest penalty, the archive's own name, or the tie order. */
+export type CodePageBy = "score" | "name_match" | "order";
+
+export interface CodePageChoice {
+  cp: CodePage;
+  by: CodePageBy;
+}
+
+/**
+ * Code page for the names of a zip (or plain RAR4 names) that are not
+ * UTF-8-flagged. Every candidate is scored (codePagePenalties) and the
+ * lowest penalty wins. Candidates that decode every name to the same text
+ * are one choice, so a tie needs candidates with the lowest penalty that
+ * give different names. Such a tie is broken:
+ * 1. by the archive's own name, when the top-level dir has non-ASCII bytes
+ *    and decodes to the archive's file name without extension (both sides
+ *    NFC) with exactly one of the tied choices (`name_match`);
+ * 2. else by the tie order, the preferred pages first (`order`): a guess,
+ *    which the resolver flags on every root from the archive.
+ * Null when every candidate is out: the names are not text in any of them.
+ */
+export function chooseCodePage(cd: NameList, archivePath: string, prefer: readonly CodePage[] = []): CodePageChoice | null {
+  const segs = codePageSegments(cd);
+  const scored = penalties(segs, tieOrder(prefer)).filter((s): s is { cp: CodePage; penalty: number } => s.penalty !== null);
+  if (scored.length === 0) return null;
+  const best = Math.min(...scored.map((s) => s.penalty));
+  const tied = scored.filter((s) => s.penalty === best).map((s) => s.cp);
+  const groups = new Map<string, CodePage[]>(); // decoded text -> candidates, in tie order
+  for (const cp of tied) {
+    const text = segs.map((seg) => decodeCodePage(seg, cp)).join("\u0000");
+    groups.set(text, [...(groups.get(text) ?? []), cp]);
+  }
+  const choices = [...groups.values()].map((g) => g[0]!);
+  if (choices.length === 1) return { cp: choices[0]!, by: "score" };
   const top = topLevelDir(cd);
   if (top && top.some((b) => b >= 0x80)) {
     const own = basename(archivePath).replace(/\.[^.]*$/, "").normalize("NFC");
-    for (const cp of [1252, 437] as const) {
-      if (decodeCodePage(top, cp).normalize("NFC") === own) return { cp, rule: 1 };
-    }
+    const matches = choices.filter((cp) => decodeCodePage(top, cp).normalize("NFC") === own);
+    if (matches.length === 1) return { cp: matches[0]!, by: "name_match" };
   }
-  const latin = cd.entries.every((e) => (e.flags & UTF8_FLAG) !== 0 || e.name.every((b) => b < 0x80 || b >= 0xc0));
-  return latin ? { cp: 1252, rule: 2 } : { cp: 437, rule: 3 };
+  return { cp: choices[0]!, by: "order" };
+}
+
+/** The error for an archive whose names chooseCodePage cannot decode. */
+export function undecodableNames(archivePath: string): string {
+  const pages = DEFAULT_CODE_PAGE_ORDER.map(codePageName).join(", ");
+  return `entry names of "${basename(archivePath)}" are not text in any code page tried (${pages}): each gives a control character or an undefined byte`;
 }
 
 /** Copy [from, to) of fdIn to the current end of fdOut; returns the bytes written. */

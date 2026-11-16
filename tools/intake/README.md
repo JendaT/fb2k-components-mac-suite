@@ -54,6 +54,48 @@ Identify/assign run fully offline by default; network evidence is opt-in via
 hard path below: once the shim finds beets, it queries MusicBrainz. Without
 beets, identification degrades to `unconfirmed` and flags review.
 
+### Archive entry names
+
+`scan` unpacks zip, rar and 7z archives next to themselves. Zip entry names
+that carry no UTF-8 flag and are not valid UTF-8, and plain (non-Unicode)
+RAR4 names, are raw Windows code-page bytes, and neither format records the
+code page. Intake decodes every such name with cp437 and cp852 (DOS/OEM),
+cp1252 and cp1250 (Windows/ANSI), and scores each result
+(`src/zipnames.ts`):
+
+- A page that gives a control character or an undefined byte is out.
+- Each non-ASCII char costs 1 unless it is a letter or punctuation; box
+  drawing, symbols, superscripts, fractions and cp437's Greek letters cost 1.
+- A letter or punctuation mark also costs 1 when it stands alone (no letter
+  or digit beside it), and a letter when it breaks its word's case
+  ("EspaĄa").
+- The lowest total wins. Pages that decode every name the same count as one.
+
+A tie between pages that give different names goes to the page whose
+decoding of the top-level dir equals the archive's own file name, if exactly
+one does, else to the first in the tie order: cp437, cp852, cp1252, cp1250.
+A tie broken by that order is a guess, so every root resolved from the
+archive gets `archive_name_code_page_guessed:<page>` in `quality.issues` and
+`needs_review: true` (the resolver makes the choice again from the archive).
+Names no page can decode fail the archive (`E_ARCHIVE`). Each archive row of
+the scan output carries `code_page: {cp, by}`, `by` being `score`,
+`name_match` or `order`; it is `null` when the names needed no code page.
+
+One optional top-level key in income.yaml changes the tie order:
+
+```yaml
+archive_code_pages: [cp852, cp1250]   # these first, in this order, then the rest in the default order
+income:
+  - name: downloads
+    path: /path/to/income/downloads
+```
+
+It only orders ties: all four pages are always scored. Allowed names are
+`cp437`, `cp852`, `cp1252` and `cp1250`. An unknown name, a duplicate or a
+value that is not a list fails every command that reads income.yaml, the way
+a malformed income.yaml does (`E_INTERNAL`, exit 2). There is no setting per
+income folder.
+
 ### beets hard path
 
 `identify` runs `shim/beets_identify.py` when the fast path has no single
@@ -185,7 +227,9 @@ BLAKE2-only), RAR5 hard link, file copy and junction entries, unsafe or
 duplicate paths and damaged headers; after extraction it checks each data
 entry's size and CRC32 and fails the archive on a mismatch, a missing entry
 or a file the headers do not list. Plain OEM RAR4 names are decoded with the
-code page rule used for zips, passed to bsdtar as `rar:hdrcharset`. With no
+code page chosen as for zips ("Archive entry names" above), passed to bsdtar
+as `rar:hdrcharset` (libarchive 3.7.4 on macOS takes CP437, CP852, CP1252 and
+CP1250, each checked against iconv for every defined byte). With no
 tool on PATH a rar/7z reports `E_ARCHIVE_TOOL` and such a zip `E_ARCHIVE`.
 The `E_ARCHIVE_TOOL` surface is covered in `test/archive.test.ts` by
 re-running the CLI with `PATH` stripped, since `Bun.which()` reads the
