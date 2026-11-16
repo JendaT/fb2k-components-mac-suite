@@ -194,7 +194,11 @@ function fillTemplate(tpl: string, fields: Record<string, string | null>): strin
 
 export interface TargetPlan {
   target_path: string | null;
-  /** null exactly when target_path is null: no target, no slot. */
+  /**
+   * null when target_path is null (no target, no slot), except for a singles
+   * root, which keeps the pending "singles" slot (doc 02, amendment 003,
+   * Still pending).
+   */
   structure_slot: StructureSlot | null;
   /** Existing releases that now belong in the artist folder, relative to the tier root (see Layout). */
   restructure_candidates: string[];
@@ -214,7 +218,8 @@ export function noTargetReason(input: AssignInput, cfg: AssignConfig): string | 
  * eligible tier. The layout (artist folder, `[Releases]`, `[Compilations]`)
  * depends on what the collection dir already holds, read through `library`;
  * the default reads nothing (every collection dir is absent). With no target
- * (noTargetReason) there is no structure slot either.
+ * (noTargetReason) there is no structure slot either, except the pending
+ * "singles" slot of a singles root.
  */
 export function buildTargetPath(
   input: AssignInput,
@@ -222,6 +227,9 @@ export function buildTargetPath(
   cfg: AssignConfig,
   library: LibraryProbe = NO_LIBRARY,
 ): TargetPlan {
+  // Doc 02 (amendment 003, Still pending): a singles root keeps
+  // `structure_slot: "singles"` with `target_path: null` until the slot is decided.
+  if (input.singles) return { target_path: null, structure_slot: "singles", restructure_candidates: [] };
   if (noTargetReason(input, cfg) !== null) return { target_path: null, structure_slot: null, restructure_candidates: [] };
   // Past noTargetReason the tier is configured and artist and album are set.
   const artist = input.artist!;

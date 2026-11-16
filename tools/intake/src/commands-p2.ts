@@ -111,7 +111,7 @@ export interface AssignRow {
   confidence?: number;
   margin?: number;
   target_path?: string | null;
-  /** The proposal's structure_slot (doc 02 layout), alongside target_path; null when it is. */
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path; null when it is (a singles root keeps "singles"). */
   structure_slot?: StructureSlot | null;
   assigned_by?: "user" | "engine";
   short_circuited?: boolean;

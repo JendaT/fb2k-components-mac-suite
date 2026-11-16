@@ -139,7 +139,7 @@ export interface Proposal {
   confidence: number;
   margin: number;
   target_path: string | null; // null when no target can be built (assign.noTargetReason)
-  structure_slot: StructureSlot | null; // null exactly when target_path is null
+  structure_slot: StructureSlot | null; // null when target_path is null, except "singles" (pending slot, doc 02)
   assigned_by: "engine" | "user";
   alternates_shown: boolean;
   /**

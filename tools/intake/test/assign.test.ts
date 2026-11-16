@@ -297,11 +297,12 @@ test("target path: tier routing + naming template (doc 02 example shape)", () =>
   );
   expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/[Releases]/Sync24 [2024] Omnimotion Remixed");
 
-  // No target, no structure slot: a reject tier, singles (slot pending), no artist or album name.
+  // No target, no structure slot: a reject tier, no artist or album name. A
+  // singles root keeps the pending "singles" slot (doc 02, amendment 003).
   const reject = buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg);
   expect(reject).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
   const single = buildTargetPath(input({ artist: "X", album: null, singles: true }), AMB, cfg);
-  expect(single).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
+  expect(single).toEqual({ target_path: null, structure_slot: "singles", restructure_candidates: [] });
   for (const names of [{ artist: null, album: null }, { artist: "X", album: null }, { artist: null, album: "Y" }]) {
     expect(buildTargetPath(input(names), AMB, cfg)).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
   }
@@ -405,7 +406,7 @@ test("target path: Various Artists get [Compilations] (existing [compilations] r
   expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]); // no artist lookup, so no [Releases] read
 
   expect(buildTargetPath(input({ ...EXAMPLE, singles: true }), COLL_X, cfg, lib.probe)).toEqual({
-    target_path: null, structure_slot: null, restructure_candidates: [],
+    target_path: null, structure_slot: "singles", restructure_candidates: [],
   });
   expect(buildTargetPath(input({ ...EXAMPLE, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
     target_path: null, structure_slot: null, restructure_candidates: [],

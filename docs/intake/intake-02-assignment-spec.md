@@ -308,8 +308,9 @@ Decisions made during implementation; normative for schema v1 consumers.
   propose reports it as pending. Tier `reject`, a tier missing from
   `structure.yaml`, and a release with no artist or album name likewise get
   `target_path: null`. Without a target there is no slot: `structure_slot`
-  is `null` in the proposal and the assign row (singles included), and
-  `assign` says why on stderr in human mode.
+  is `null` in the proposal and the assign row, except that a singles root
+  keeps `structure_slot: "singles"` as "Still pending" specifies; `assign`
+  says why there is no target on stderr in human mode.
 - **Library layout** (implements "Library layout for new placements"): the
   target collection dir in the target tier is listed once per command run
   (symlinks not followed; a missing dir reads as empty, any other read error
