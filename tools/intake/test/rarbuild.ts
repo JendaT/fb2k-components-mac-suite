@@ -119,6 +119,7 @@ export interface Rar5Entry {
   dir?: boolean; // a directory entry
   redirect?: { type: Rar5RedirType; target: string }; // redirection record, no data
   splitAfter?: boolean; // data area continues in the next volume
+  mode?: number; // Unix mode attribute (default 0o40755 dir, 0o120777 symlink, 0o100644 file)
 }
 
 function fileHeader(e: Rar5Entry): number[] {
@@ -144,7 +145,7 @@ function fileHeader(e: Rar5Entry): number[] {
   const compression = (e.algoVersion ?? 0) | (method << 7) | (dictBits << 10);
   const withCrc = e.blake2 === undefined && !e.dir;
   const crc = (crc32(data) ^ (e.badCrc ? 0xffffffff : 0)) >>> 0;
-  const mode = e.dir ? 0o40755 : e.redirect?.type === 1 ? 0o120777 : 0o100644;
+  const mode = e.mode ?? (e.dir ? 0o40755 : e.redirect?.type === 1 ? 0o120777 : 0o100644);
   const body = [
     ...vint(2), // type: file header
     ...vint((extra.length > 0 ? 0x0001 : 0) | 0x0002 | (e.splitAfter ? 0x0010 : 0)), // extra area, data area, split after

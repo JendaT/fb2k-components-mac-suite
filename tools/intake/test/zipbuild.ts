@@ -9,6 +9,7 @@ export interface ZipEntry {
   utf8Flag?: boolean; // set general purpose bit 11
   host?: number; // "version made by" host: 0 = MS-DOS (default), 3 = Unix
   badCrc?: boolean; // store a wrong CRC-32 (the member fails its check)
+  mode?: number; // Unix mode in the external attributes when host is 3 (default 0o100644)
 }
 
 const u16 = (n: number) => [n & 0xff, (n >>> 8) & 0xff];
@@ -22,7 +23,7 @@ export function buildZip(entries: ZipEntry[], comment: Uint8Array = new Uint8Arr
     const name = typeof e.name === "string" ? new TextEncoder().encode(e.name) : e.name;
     const crc = ((Bun.hash.crc32(e.data) >>> 0) ^ (e.badCrc ? 0xffffffff : 0)) >>> 0;
     const host = e.host ?? 0;
-    const extAttr = host === 3 ? (0o100644 << 16) >>> 0 : 0x20;
+    const extAttr = host === 3 ? ((e.mode ?? 0o100644) << 16) >>> 0 : 0x20;
     // version needed, flags, method 0 (stored), time, date, crc, sizes, name len, extra len
     const common = [
       ...u16(20), ...u16(e.utf8Flag ? 0x0800 : 0), ...u16(0), ...u16(0), ...u16(0x21),

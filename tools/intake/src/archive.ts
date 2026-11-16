@@ -20,8 +20,16 @@
 // CRC32, and a missing entry, a mismatch or a file the headers do not list
 // fails the archive into the usual partial-dir cleanup. The check runs after
 // whichever tool extracted.
+//
+// The tools restore an archive's read-only modes: bsdtar keeps a RAR entry's
+// 0555 / 0444 even with `--no-same-permissions` (and maps RAR's Windows
+// read-only attribute the same way), unzip and 7-Zip restore Unix modes and
+// unzip maps the DOS read-only bit to 0444. A 0555 dir holding a file cannot
+// be removed by its owner, and a 0444 copy cannot be tagged. So after every
+// tool run, and before any partial dir is removed, the tree is made
+// owner-writable (makeOwnerWritable).
 
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { readRarHeaders, verifyRarExtraction, type RarHeaders } from "./rarheaders.ts";
@@ -61,6 +69,58 @@ function stripSymlinks(dir: string): number {
     }
   }
   return removed;
+}
+
+/**
+ * Add u+rwx to `dir` and every dir under it, and u+rw to every regular file.
+ * Each entry is lstat'ed and a symlink is never followed or chmodded. Best
+ * effort: an entry that cannot be read or changed is left as it is (a later
+ * removal or write then reports it). A dir is changed before it is listed, so
+ * a dir without u+r or u+x can still be walked.
+ */
+function makeOwnerWritable(dir: string): void {
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return;
+  }
+  if (!st.isDirectory()) return;
+  try {
+    if ((st.mode & 0o700) !== 0o700) chmodSync(dir, (st.mode & 0o7777) | 0o700);
+  } catch {
+    // left as it is
+  }
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const n of names) {
+    const p = join(dir, n);
+    let s;
+    try {
+      s = lstatSync(p);
+    } catch {
+      continue;
+    }
+    if (s.isDirectory()) {
+      makeOwnerWritable(p);
+    } else if (s.isFile() && (s.mode & 0o600) !== 0o600) {
+      try {
+        chmodSync(p, (s.mode & 0o7777) | 0o600);
+      } catch {
+        // left as it is
+      }
+    }
+  }
+}
+
+/** Remove a partial dir, read-only entries included. Throws when it cannot. */
+function removePartial(partial: string): void {
+  makeOwnerWritable(partial);
+  rmSync(partial, { recursive: true, force: true });
 }
 
 export interface UnpackResult {
@@ -300,7 +360,7 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
 
   const failed = (error: string): UnpackResult => {
     try {
-      rmSync(partial, { recursive: true, force: true });
+      removePartial(partial);
     } catch {
       // left for the next scan, which removes it before retrying
     }
@@ -310,12 +370,12 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
   const timeoutMs = opts.timeoutMs ?? UNPACK_TIMEOUT_MS;
   // On a stop signal: the partial dir and the zip copy, as on any failure.
   const cleanupOnSignal = () => {
-    rmSync(partial, { recursive: true, force: true });
+    removePartial(partial);
     if (copyDir !== null) rmSync(copyDir, { recursive: true, force: true });
   };
   try {
-    // A leftover from a run that died mid-extraction.
-    rmSync(partial, { recursive: true, force: true });
+    // A leftover from a run that died mid-extraction (possibly read-only).
+    removePartial(partial);
     mkdirSync(partial, { recursive: true });
     let argv: string[];
     if (sevenZipZip?.codePage) {
@@ -331,6 +391,9 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
       argv = args!;
     }
     const run = await runTool(argv, timeoutMs, cleanupOnSignal);
+    // Whatever the outcome: read-only modes from the archive would block the
+    // removal of a failed tree and the tag writes on copies of a good one.
+    makeOwnerWritable(partial);
     if (run.timedOut) return failed(`${basename(argv[0]!)} timed out after ${formatDuration(timeoutMs)}`);
     // Any non-zero exit is a failure, even when files appeared (7-Zip exits 1
     // or 2 after writing the members it could): the partial dir goes.

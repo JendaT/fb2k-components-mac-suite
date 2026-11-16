@@ -171,7 +171,11 @@ re-running the CLI with `PATH` stripped, since `Bun.which()` reads the
 environment at process start. An unpack tool run is
 killed after 30 minutes (`UNPACK_TIMEOUT_MS` in `src/archive.ts`) and the
 archive reported `failed`; SIGTERM, SIGINT or SIGHUP during a run kill the
-tool and remove the partial dir before intake exits.
+tool and remove the partial dir before intake exits. The tools restore an
+archive's read-only modes (a 0555 dir blocks removing the files in it, a
+0444 file cannot be tagged), so after every tool run, and before a partial
+dir is removed, the extracted tree gets u+rwx on dirs and u+rw on files
+(`test/archive-readonly.test.ts`).
 
 One fixture (`todo/Bluetech [2011] Cosmic Dubwise`) carries a zeroed FLAC
 STREAMINFO MD5 on two of three files, so the decoded-audio key (`flacmd5:`
