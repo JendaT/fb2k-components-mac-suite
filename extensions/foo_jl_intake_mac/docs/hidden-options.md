@@ -238,6 +238,8 @@ With it on, every decorate batch writes one console line, whatever
 it from top to bottom twice, with no invalidation in between (the
 `invalidations` figure must not change). On the second pass, `since
 invalidation` may grow by at most 1% of the rows, so 50 items for 5,000 rows.
+Without mouse or keyboard input, the `test_actions` step `sweep` (B10,
+temporary) does the scrolling.
 
 With it off, a batch costs one relaxed atomic load and nothing is logged.
 
@@ -334,8 +336,9 @@ merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
 `playlistRowsOfRoot` in `src/Integration/IntakeSwap.*`). It lets an in-app check drive the intake
 context menu, the collection picker, the execute sheet and the delete
 confirmation included, and read the group header badges, the tracked execute
-runs and the playlist rows of a release, bring a release's rows on screen and
-set the row colours (B10), without clicking.
+runs and the playlist rows of a release, bring a release's rows on screen,
+set the row colours and step the focus through the whole active playlist
+(B10), without clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
 the first successful `status` load (and after the check for execute runs an
@@ -363,6 +366,7 @@ words by spaces:
 | `delete-sheet <id...> close=<seconds>` | B9. The real confirmation for a screenshot: the window under the pointer when the step starts, else the main, key or foobar2000 main window, else app-modal. One line when it is up: `sheet shown: "<title>"; <the paths and the swap offer, as for delete>; buttons Delete, Cancel[, Swap, then delete]; closing as Cancel in <seconds> s`. It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is deleted. With `confirm_gc` 0 there is no confirmation: `no confirmation: confirm_gc is 0; nothing deleted`. |
 | `show <id>` | B10, for screenshots. In the active playlist: clears the selection (so its highlight does not cover the tints), sets the focus on the last row of that root (by income path or through the library index, as for `rows`), then on its first row, then calls `playlist_ensure_visible` on the first. SimPlaylist scrolls a row into view when the focus moves from outside, so the whole root ends up on screen when it fits. One line: `N row(s), #<first> to #<last>; selection cleared, focus on #<first>`, or `skipped (no row of <id> in the active playlist)` (also `skipped (no intake data yet)`, `skipped (not in the snapshot: <id>)`, `skipped (no active playlist)`, as for `rows`). |
 | `tint <slot> <value>` | B10. Writes the row colour `tint_<slot>` as the preferences page does, then posts the page's settings-change notification, so the service re-reads the keys and re-tints from the last load (no CLI call). `<slot>`: `new`, `review`, `proposed`, `approved`, `placed` or `rejected`. `<value>`: `0xRRGGBBAA` (1 to 8 hex digits, any case, not 0) is written as it is; `off` writes 0 (no tint); `default` deletes the key. One line: `written; settings change posted`, `wrote 0; settings change posted` or `key deleted; settings change posted`. The step returns at once; the re-tint runs on the loader queue and logs its own lines (at `log_level` 2: `row colours: ...` while a colour differs from its default, then `row colours changed: ...`), so put a `wait` after it before a screenshot or a `badge`. `0x0` is refused (use `off`), as are an unknown slot, a missing or extra word, more than 8 digits and a value that is not hex. |
+| `sweep <rows> [delay=<ms>]` | B10, temporary. Stands in for scrolling in the `decor_stats` cache-hit gate, for a session with no mouse or keyboard input. In the active playlist: clears the selection, then moves the focus to row 0, `<rows>`, 2×`<rows>`, … and the last row (once), then straight back to row 0, one move every `<ms>` (`dispatch_after` on the main queue: the main thread never blocks). SimPlaylist scrolls each focus change from outside into view, minimally, so with `<rows>` no larger than the rows the panel shows, every row is drawn on the way down. A focus already on row 0 is first set to row 1 (setting the focus to the index it already has does nothing), so the view starts at the top. `<rows>`: a whole number from 1 to 1000. `<ms>`: a whole number from 20 to 1000, default 100. Lines: `<N> moves over <C> rows, 0 to <C-1>, then back to 0` at the start, `done in <T> s` one delay after the last move; `stopped at move <M> of <N>: the playlist changed` when the active playlist or its row count changes during the sweep; `skipped (no active playlist)`, `skipped (the active playlist is empty)`. A rows or delay value out of range or not a whole number, a missing rows value, an extra word and an id are refused. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
@@ -395,7 +399,7 @@ start after the first successful load, which can come before `test_playlist`
 has built its playlist (about 4 s after start): begin with `wait 8` when a
 step needs the playlist (`rows`, `show`, `swap`, `delete-swap`, and the
 income-row count of `delete` and `delete-sheet`). `show` and `tint` (B10) run
-synchronously.
+synchronously; `sweep` (B10) waits until it is done or stopped.
 
 ```bash
 # quit foobar2000 first
@@ -455,6 +459,20 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
      'wait 8; show itk_00000012; wait 6; tint placed 0xFF00FFFF; wait 6; tint placed off; wait 6;
       tint placed default')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+B10 cache-hit gate (`decor_stats` 1, a playlist of about 5,000 rows active, a
+SimPlaylist panel showing at least 20 rows): two passes with no invalidation
+in between. The `since invalidation` figure of the last `decor_stats` line
+before the second sweep's start line, and of the last one before its `done`
+line, may differ by at most 50, and `invalidations` must not change:
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'wait 8; sweep 20 delay=60; wait 2; sweep 20 delay=60')
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 

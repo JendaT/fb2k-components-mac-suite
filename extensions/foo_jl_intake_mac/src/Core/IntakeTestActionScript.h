@@ -67,20 +67,30 @@
 //                                        0xRRGGBBAA (1 to 8 hex digits,
 //                                        any case, not 0), off (writes 0)
 //                                        or default (deletes the key)
+//    sweep <rows> [delay=<ms>]           B10, temporary: the active
+//                                        playlist's focus moved to 0, <rows>,
+//                                        2*<rows>, ..., the last row, then
+//                                        back to 0, one move every <ms>
+//                                        (sweepPositions). <rows>: a whole
+//                                        number, 1 to 1000. <ms>: a whole
+//                                        number, 20 to 1000, default 100.
+//                                        No ids
 //    wait <seconds>                      0 < seconds <= 30, decimals allowed
 //  "reason=" and "collection=" count only at the start of a word; the first
 //  one in the step takes the rest of it (so a collection name may contain
 //  "reason=", and the other way round). "close=<seconds>" is one word, for
-//  picker, execute-sheet and delete-sheet only.
+//  picker, execute-sheet and delete-sheet only; "delay=<ms>" is one word,
+//  for sweep only.
 //  Empty steps are skipped. Ids must be sidecar ids (isSidecarId); whether
 //  they are in the snapshot is the runner's check. A step that does not
 //  parse is kept with its error, so the runner logs it and goes on.
 //
-//  Thread-safety: pure function.
+//  Thread-safety: pure functions.
 //
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -109,6 +119,8 @@ enum class TestStepKind {
                   // Cancel after closeSeconds
     Show,         // show (B10): one root's rows on screen, no selection
     Tint,         // tint (B10): write one tint_* key, then notify
+    Sweep,        // sweep (B10, temporary): the focus stepped through the
+                  // active playlist and back to row 0
     Wait,
 };
 
@@ -138,12 +150,26 @@ struct TestActionStep {
     TintSlot tintSlot = TintSlot::New;               // Tint
     TestTintValue tintValue = TestTintValue::Colour; // Tint
     IntakeRgba tintRgba = 0;  // Tint with Colour: 1..kTintSettingMax
+    int sweepRows = 0;        // Sweep: 1..kTestSweepMaxRows
+    int sweepDelayMs = 0;     // Sweep: kTestSweepMinDelayMs..kTestSweepMaxDelayMs
     std::string text;     // the step as written, trimmed (for the log)
     std::string error;    // Invalid: why
 };
 
 inline constexpr double kTestActionMaxWait = 30.0;
 
+inline constexpr int kTestSweepMaxRows = 1000;
+inline constexpr int kTestSweepMinDelayMs = 20;
+inline constexpr int kTestSweepMaxDelayMs = 1000;
+inline constexpr int kTestSweepDefaultDelayMs = 100;
+
 std::vector<TestActionStep> parseTestActions(const std::string &script);
+
+// The focus positions of a sweep over `count` rows: 0, step, 2*step, ...
+// below count, then count - 1 unless it is already the last one, then 0 as
+// the final move. Two consecutive positions are never equal (a focus set to
+// the index it already has does nothing), so 1 row gives {0}. Empty for
+// count 0 or step 0.
+std::vector<size_t> sweepPositions(size_t count, size_t step);
 
 } // namespace intake

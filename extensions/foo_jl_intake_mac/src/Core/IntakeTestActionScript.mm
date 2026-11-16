@@ -7,6 +7,7 @@
 
 #include "IntakeCommandArgs.h"
 
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 
@@ -47,6 +48,19 @@ bool parseSeconds(const std::string &text, double &out) {
     const double v = std::strtod(text.c_str(), &end);
     if (end == nullptr || *end != '\0' || !std::isfinite(v)) return false;
     out = v;
+    return true;
+}
+
+// Digits only (no sign, no decimals). A long number saturates at INT_MAX, so
+// it reads as out of range rather than wrapping.
+bool parseWholeNumber(const std::string &text, int &out) {
+    if (text.empty()) return false;
+    long long v = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+        if (v < 1000000000LL) v = v * 10 + (c - '0');
+    }
+    out = v > INT_MAX ? INT_MAX : static_cast<int>(v);
     return true;
 }
 
@@ -167,6 +181,8 @@ TestActionStep parseStep(const std::string &raw) {
     std::vector<std::string> rest;
     std::string closeText;
     bool hasClose = false;
+    std::string delayText;
+    bool hasDelay = false;
     for (size_t i = 1; i < w.size(); i++) {
         if (w[i].compare(0, 6, "close=") == 0) {
             if (hasClose) {
@@ -175,12 +191,72 @@ TestActionStep parseStep(const std::string &raw) {
             }
             closeText = w[i].substr(6);
             hasClose = true;
+        } else if (w[i].compare(0, 6, "delay=") == 0) {
+            if (hasDelay) {
+                step.error = "delay= given twice";
+                return step;
+            }
+            delayText = w[i].substr(6);
+            hasDelay = true;
         } else {
             rest.push_back(w[i]);
         }
     }
     if (hasClose && verb != "picker" && verb != "execute-sheet" && verb != "delete-sheet") {
         step.error = "only picker, execute-sheet and delete-sheet take close=";
+        return step;
+    }
+    if (hasDelay && verb != "sweep") {
+        step.error = "only sweep takes delay=";
+        return step;
+    }
+
+    if (verb == "sweep") {
+        if (step.hasReason) {
+            step.error = "sweep takes no reason";
+            return step;
+        }
+        if (step.hasCollection) {
+            step.error = "sweep takes no collection";
+            return step;
+        }
+        for (const std::string &word : rest) {
+            if (isSidecarId(word)) {
+                step.error = "sweep takes no ids";
+                return step;
+            }
+        }
+        if (rest.empty()) {
+            step.error = "sweep needs a number of rows: sweep <rows> [delay=<ms>]";
+            return step;
+        }
+        if (rest.size() > 1) {
+            step.error = "sweep takes only a number of rows and delay=<ms>";
+            return step;
+        }
+        int rows = 0;
+        if (!parseWholeNumber(rest[0], rows) || rows < 1 || rows > kTestSweepMaxRows) {
+            step.error = "sweep rows must be a whole number from 1 to " + std::to_string(kTestSweepMaxRows) +
+                         ", not \"" + rest[0] + "\"";
+            return step;
+        }
+        int delay = kTestSweepDefaultDelayMs;
+        if (hasDelay) {
+            const std::string range =
+                std::to_string(kTestSweepMinDelayMs) + " to " + std::to_string(kTestSweepMaxDelayMs);
+            if (delayText.empty()) {
+                step.error = "delay= needs a whole number of ms from " + range;
+                return step;
+            }
+            if (!parseWholeNumber(delayText, delay) || delay < kTestSweepMinDelayMs ||
+                delay > kTestSweepMaxDelayMs) {
+                step.error = "delay must be a whole number of ms from " + range + ", not \"" + delayText + "\"";
+                return step;
+            }
+        }
+        step.sweepRows = rows;
+        step.sweepDelayMs = delay;
+        step.kind = TestStepKind::Sweep;
         return step;
     }
 
@@ -365,6 +441,20 @@ std::vector<TestActionStep> parseTestActions(const std::string &script) {
         start = semi + 1;
     }
     return steps;
+}
+
+std::vector<size_t> sweepPositions(size_t count, size_t step) {
+    std::vector<size_t> out;
+    if (count == 0 || step == 0) return out;
+    out.reserve(count / step + 3);
+    // p + step <= count - 1 written so it cannot overflow.
+    for (size_t p = 0;; p += step) {
+        out.push_back(p);
+        if (count - 1 - p < step) break;
+    }
+    if (out.back() != count - 1) out.push_back(count - 1);
+    if (out.back() != 0) out.push_back(0);
+    return out;
 }
 
 } // namespace intake

@@ -339,6 +339,86 @@ static void testTintInvalid() {
           "an invalid tint step does not stop the others");
 }
 
+static void testSweepSteps() {
+    g_context = "sweep-steps";
+    std::vector<TestActionStep> s =
+        parseTestActions("sweep 3; sweep 3 delay=60; sweep 1; sweep 1000 delay=20; sweep\tdelay=1000  25 ; sweep 007");
+    CHECK(s.size() == 6, "six steps");
+    CHECK(s[0].kind == TestStepKind::Sweep && s[0].sweepRows == 3 && s[0].sweepDelayMs == kTestSweepDefaultDelayMs,
+          "sweep 3: the default delay");
+    CHECK(kTestSweepDefaultDelayMs == 100, "the default delay is 100 ms");
+    CHECK(s[0].text == "sweep 3" && s[0].ids.empty(), "the step text; no ids");
+    CHECK(s[1].kind == TestStepKind::Sweep && s[1].sweepRows == 3 && s[1].sweepDelayMs == 60, "sweep 3 delay=60");
+    CHECK(s[1].text == "sweep 3 delay=60", "the step text with the delay");
+    CHECK(s[2].kind == TestStepKind::Sweep && s[2].sweepRows == 1, "rows 1 is the lower limit");
+    CHECK(s[3].kind == TestStepKind::Sweep && s[3].sweepRows == 1000 && s[3].sweepDelayMs == 20,
+          "rows 1000 and delay 20 are limits");
+    CHECK(s[4].kind == TestStepKind::Sweep && s[4].sweepRows == 25 && s[4].sweepDelayMs == 1000,
+          "delay= may come first; delay 1000 is the upper limit; tabs");
+    CHECK(s[5].kind == TestStepKind::Sweep && s[5].sweepRows == 7, "leading zeros");
+}
+
+static void testSweepInvalid() {
+    g_context = "sweep-invalid";
+    CHECK(invalid("sweep", "sweep needs a number of rows"), "missing rows");
+    CHECK(invalid("sweep delay=50", "sweep needs a number of rows"), "only a delay");
+    CHECK(invalid("sweep 0", "from 1 to 1000, not \"0\""), "rows 0");
+    CHECK(invalid("sweep 1001", "from 1 to 1000, not \"1001\""), "rows 1001");
+    CHECK(invalid("sweep 99999999999999999999", "from 1 to 1000"), "a huge number does not wrap");
+    CHECK(invalid("sweep abc", "whole number from 1 to 1000, not \"abc\""), "rows not a number");
+    CHECK(invalid("sweep 2.5", "whole number"), "no decimal rows");
+    CHECK(invalid("sweep -3", "whole number"), "no negative rows");
+    CHECK(invalid("sweep 3 delay=19", "delay must be a whole number of ms from 20 to 1000, not \"19\""),
+          "delay below 20");
+    CHECK(invalid("sweep 3 delay=1001", "from 20 to 1000, not \"1001\""), "delay above 1000");
+    CHECK(invalid("sweep 3 delay=", "delay= needs a whole number of ms"), "delay= without a value");
+    CHECK(invalid("sweep 3 delay=fast", "delay must be a whole number"), "delay not a number");
+    CHECK(invalid("sweep 3 delay=60.5", "delay must be a whole number"), "no decimal delay");
+    CHECK(invalid("sweep 3 delay=60ms", "delay must be a whole number"), "no unit");
+    CHECK(invalid("sweep 3 delay=60 delay=80", "delay= given twice"), "delay= once");
+    CHECK(invalid("sweep 3 4", "sweep takes only a number of rows and delay=<ms>"), "an extra word");
+    CHECK(invalid("sweep 3 Delay=60", "sweep takes only a number of rows"), "Delay= is not delay=");
+    CHECK(invalid("sweep 3 itk_00000012", "sweep takes no ids"), "an id after the rows");
+    CHECK(invalid("sweep itk_00000012", "sweep takes no ids"), "an id instead of the rows");
+    CHECK(invalid("sweep 3 reason=x", "sweep takes no reason"), "sweep takes no reason");
+    CHECK(invalid("sweep 3 collection=X", "sweep takes no collection"), "sweep takes no collection");
+    CHECK(invalid("sweep 3 close=5", "only picker, execute-sheet and delete-sheet"), "sweep takes no close=");
+    CHECK(invalid("show itk_00000012 delay=50", "only sweep takes delay="), "delay= only for sweep");
+    CHECK(invalid("wait 2 delay=50", "only sweep takes delay="), "wait takes no delay=");
+    CHECK(invalid("sweeps 3", "unknown step"), "the verb is exact");
+
+    std::vector<TestActionStep> mixed = parseTestActions("sweep 0; sweep 50");
+    CHECK(mixed.size() == 2 && mixed[0].kind == TestStepKind::Invalid && mixed[1].kind == TestStepKind::Sweep,
+          "an invalid sweep step does not stop the others");
+}
+
+static void testSweepPositions() {
+    g_context = "sweep-positions";
+    CHECK(sweepPositions(1, 3) == std::vector<size_t>({0}), "one row: only 0 (no repeated position)");
+    CHECK(sweepPositions(2, 1) == std::vector<size_t>({0, 1, 0}), "two rows, step 1");
+    CHECK(sweepPositions(10, 3) == std::vector<size_t>({0, 3, 6, 9, 0}), "the last row reached by a step is kept once");
+    CHECK(sweepPositions(11, 3) == std::vector<size_t>({0, 3, 6, 9, 10, 0}), "the last row added after the steps");
+    CHECK(sweepPositions(10, 20) == std::vector<size_t>({0, 9, 0}), "a step bigger than the count");
+    CHECK(sweepPositions(10, 10) == std::vector<size_t>({0, 9, 0}), "a step equal to the count");
+    CHECK(sweepPositions(0, 3).empty(), "no rows: no positions");
+    CHECK(sweepPositions(10, 0).empty(), "step 0: no positions");
+
+    const std::vector<size_t> p = sweepPositions(5000, 3);
+    // 0, 3, ..., 4998 (1667 positions), then 4999, then 0.
+    CHECK_EQ(p.size(), 1669, "5000 rows, step 3: the move count");
+    CHECK(p.front() == 0 && p[1] == 3 && p[1666] == 4998, "steps of 3 from 0");
+    CHECK(p[p.size() - 2] == 4999, "the last row is visited");
+    CHECK(p.back() == 0, "the final move goes back to 0");
+    bool increasing = true;
+    for (size_t i = 1; i + 1 < p.size(); i++) increasing = increasing && p[i] > p[i - 1];
+    CHECK(increasing, "strictly increasing until the final 0");
+    size_t lastCount = 0;
+    for (size_t pos : p) lastCount += pos == 4999 ? 1 : 0;
+    CHECK(lastCount == 1, "the last row once");
+    const std::vector<size_t> big = sweepPositions(5000, 1000);
+    CHECK(big == std::vector<size_t>({0, 1000, 2000, 3000, 4000, 4999, 0}), "5000 rows, step 1000");
+}
+
 int main() {
     @autoreleasepool {
         testSteps();
@@ -347,6 +427,9 @@ int main() {
         testShowSteps();
         testTintSteps();
         testTintInvalid();
+        testSweepSteps();
+        testSweepInvalid();
+        testSweepPositions();
         testBadge();
         testAssignSteps();
         testAssignInvalid();

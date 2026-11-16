@@ -118,6 +118,24 @@
 //                                   the page. Returns at once: the re-tint
 //                                   runs on the loader queue and logs its own
 //                                   lines, so put a wait after it
+//    sweep <rows> [delay=<ms>]      B10, temporary, for the provider-side
+//                                   cache-hit gate (decor_stats): stands in
+//                                   for scrolling the whole active playlist.
+//                                   Clears the selection, then moves the
+//                                   focus to 0, <rows>, 2*<rows>, ..., the
+//                                   last row, then back to 0
+//                                   (sweepPositions), one move every <ms>
+//                                   (default 100) with dispatch_after on the
+//                                   main queue; SimPlaylist scrolls each
+//                                   focus change from outside into view. A
+//                                   focus already on row 0 is first set to
+//                                   row 1, so the move to 0 really moves.
+//                                   Lines: "N moves over C rows, 0 to C-1,
+//                                   then back to 0" at the start, "done in
+//                                   T s" at the end, or "stopped at move M
+//                                   of N: the playlist changed" when the
+//                                   active playlist or its row count
+//                                   changes. The next step runs after it
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
 //  hides them; log_file mirrors them). Ids that are not in the snapshot,
@@ -125,8 +143,9 @@
 //  and do nothing. Nothing runs after quit starts. assign-other, picker,
 //  execute, execute-sheet, resume, swap, delete, delete-swap and
 //  delete-sheet wait for their flow to end (a run: to be spawned; delete:
-//  gc started or not run) before the next step. The steps start after the first
-//  successful load and the leftover-run scan.
+//  gc started or not run) before the next step; sweep for its last move.
+//  The steps start after the first successful load and the leftover-run
+//  scan.
 //
 //  Temporary: removed with the other acceptance aids (and
 //  Core/IntakeTestActionScript plus its tests) before the merge to main.
@@ -147,6 +166,7 @@
 #include "../Core/IntakeView.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -294,6 +314,54 @@ void next(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index
     });
 }
 
+// A sweep in progress (main thread only).
+struct SweepRun {
+    std::string label;
+    t_size playlist = 0;
+    t_size count = 0;
+    std::vector<size_t> positions;
+    size_t move = 0;  // the next move, an index into positions
+    int delayMs = 0;
+    std::chrono::steady_clock::time_point start;
+};
+
+void sweepAfterDelay(std::shared_ptr<SweepRun> run, std::shared_ptr<const std::vector<TestActionStep>> steps,
+                     size_t index);
+
+// One tick: stop when the playlist changed, end after the last move, else
+// make the next move and schedule the next tick.
+void sweepTick(std::shared_ptr<SweepRun> run, std::shared_ptr<const std::vector<TestActionStep>> steps,
+               size_t index) {
+    if (core_api::is_shutting_down()) return;
+    if (run->move >= run->positions.size()) {
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - run->start).count();
+        char done[48];
+        snprintf(done, sizeof(done), "done in %.1f s", seconds);
+        logInfo(run->label + done);
+        next(steps, index + 1);
+        return;
+    }
+    auto pm = playlist_manager::get();
+    if (activePlaylistIndex() != run->playlist || pm->playlist_get_item_count(run->playlist) != run->count) {
+        logInfo(run->label + "stopped at move " + std::to_string(run->move + 1) + " of " +
+                std::to_string(run->positions.size()) + ": the playlist changed");
+        next(steps, index + 1);
+        return;
+    }
+    pm->playlist_set_focus_item(run->playlist, run->positions[run->move]);
+    run->move++;
+    sweepAfterDelay(run, steps, index);
+}
+
+void sweepAfterDelay(std::shared_ptr<SweepRun> run, std::shared_ptr<const std::vector<TestActionStep>> steps,
+                     size_t index) {
+    const int64_t delay = static_cast<int64_t>(run->delayMs) * static_cast<int64_t>(NSEC_PER_MSEC);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay), dispatch_get_main_queue(), ^{
+        sweepTick(run, steps, index);
+    });
+}
+
 void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t index) {
     if (core_api::is_shutting_down()) return;
     if (index >= steps->size()) {
@@ -408,6 +476,40 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
             [[NSNotificationCenter defaultCenter] postNotificationName:IntakeSettingsDidChangeNotification object:nil];
             logInfo(label + what + "; settings change posted");
             break;
+        }
+        case TestStepKind::Sweep: {
+            const t_size playlist = activePlaylistIndex();
+            if (playlist == SIZE_MAX) {
+                logInfo(label + "skipped (no active playlist)");
+                break;
+            }
+            auto pm = playlist_manager::get();
+            const t_size count = pm->playlist_get_item_count(playlist);
+            if (count == 0) {
+                logInfo(label + "skipped (the active playlist is empty)");
+                break;
+            }
+            auto run = std::make_shared<SweepRun>();
+            run->label = label;
+            run->playlist = playlist;
+            run->count = count;
+            run->positions = sweepPositions(count, static_cast<size_t>(step.sweepRows));
+            run->delayMs = step.sweepDelayMs;
+            pm->playlist_clear_selection(playlist);
+            // Setting the focus to the index it already has does nothing, so
+            // from a focus on row 0 the first move would not scroll the view
+            // to the top.
+            const bool premove = count > 1 && pm->playlist_get_focus_item(playlist) == 0;
+            if (premove) pm->playlist_set_focus_item(playlist, 1);
+            logInfo(label + std::to_string(run->positions.size()) + " moves over " + std::to_string(count) +
+                    " rows, 0 to " + std::to_string(count - 1) + ", then back to 0");
+            run->start = std::chrono::steady_clock::now();
+            if (premove) {
+                sweepAfterDelay(run, steps, index);  // row 1 first, then row 0
+            } else {
+                sweepTick(run, steps, index);
+            }
+            return;  // the ticks log the end and go on
         }
         case TestStepKind::Swap: {
             const std::shared_ptr<const IntakeView> view = providerCurrentView();
