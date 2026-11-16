@@ -5,10 +5,9 @@
 **Against:** `docs/intake/intake-04-extension-spec.md` v1.2 (2026-11-15,
 `4d17519b` on this branch; main still carries v1.1)
 **Spec basis:** main@ee7aee15 + amendment 003 (merged here as `1dcd3859`)
-**Route:** doc 04 is worker-owned, but spec changes reach main only as
-numbered amendments: the overseer folds this CR into amendment 004. Doc 04 is
-not edited on this branch. Filed as its own file, like CR-EXT-001, because
-`CHANGE-REQUESTS.md` registers requests against the guarded doc 03.
+**Route:** doc 04 is worker-owned and was edited directly on this branch
+(the coordinator corrected the earlier amendment route on 2026-11-16). Only
+doc 03 changes through amendments; nothing here touches it.
 **Status:** applied in 900bbba1 (doc 04 v1.3)
 
 Eight items. B9 (Swap to library paths, Delete local copy), B10 (row colours,

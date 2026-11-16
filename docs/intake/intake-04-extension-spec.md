@@ -2,8 +2,8 @@
 
 **Repo destination:** `docs/intake/intake-04-extension-spec.md`
 **Owner:** extension worker · **Depends on:** doc 3 v1.2 (contract, normative), schema 1
-**Status:** v1.3 — 2026-11-16 (Part A implemented and review-hardened; Part B in
-implementation). v1.3 applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
+**Status:** v1.3 — 2026-11-16 (Part A implemented and review-hardened; Part B
+built and accepted in-app on the mock, user acceptance pending). v1.3 applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
 Swap, Delete local copy, row colours, confirmations, cache gate, reload
 triggers, watch filter, sheet window. v1.2 (2026-11-15) aligns Part B with doc
 03 v1.2 (amendment 003), the Part B plan and the S0 path probe
