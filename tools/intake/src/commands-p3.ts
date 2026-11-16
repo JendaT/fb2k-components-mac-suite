@@ -3,7 +3,7 @@
 // income files — deletion is gc's job, after journal re-verification.
 
 import {
-  chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
+  chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
   readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -840,13 +840,85 @@ function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): {
     }
     // After the modes: a uchg dir cannot be chmodded. The tombstone write
     // that follows a success is unaffected: it rewrites the existing sidecar
-    // in place, which neither the root dir's mode nor its uchg blocks.
+    // in place, which neither the root dir's mode nor its uchg blocks (the
+    // sidecar's own uchg and mode: prepareGcBookkeeping).
     setImmutable((disposed ? flaggedDirs : [...flaggedFiles, ...flaggedDirs]).filter(present), true);
   }
 }
 
 const errCode = (e: unknown): string =>
   (e as NodeJS.ErrnoException)?.code ?? (e instanceof Error ? e.message : String(e));
+
+/**
+ * Check, before disposeLocal moves anything, that gc can write what follows
+ * a disposal: the journal line and the gc_done tombstone, which rewrites the
+ * sidecar in place. Either failing after the files are gone would leave a
+ * disposal with no journal line, or a journal and a sidecar that disagree.
+ *
+ * The sidecar is inside the root's dir, so gc's scope rules apply: a regular
+ * file (lstat; a symlink is left alone) gets uchg cleared (an SMB share's DOS
+ * read-only attribute, src/fflags.ts) and u+w added if it lacks them. Then it
+ * must open read-write. The journal is outside the root: it is never
+ * chmodded or unflagged, only opened for append (not created). Neither check
+ * writes anything. On failure the sidecar's mode and flag are restored and
+ * the root's error is returned: `E_VERIFY` for the sidecar, `E_NO_JOURNAL`
+ * for the journal. On success `restore` does that; cmdGc calls it after the
+ * tombstone write, or when the disposal fails.
+ */
+function prepareGcBookkeeping(
+  root: RootRef,
+  journalPath: string,
+  relocating: boolean,
+): { error: JsonError } | { restore: () => void } {
+  const path = root.sidecarPath;
+  let flagged = false;
+  let mode: number | null = null;
+  const restore = (): void => {
+    try {
+      if (mode !== null) chmodSync(path, mode);
+    } catch {
+      // left owner-writable
+    }
+    // After the mode: a uchg file cannot be chmodded.
+    if (flagged) setImmutable([path], true);
+  };
+  let isFile = false;
+  try {
+    isFile = lstatSync(path).isFile();
+  } catch {
+    // the open below reports it
+  }
+  if (isFile) {
+    flagged = immutablePaths([path]).length > 0;
+    // A clear that fails shows as the open's EPERM below.
+    if (flagged) setImmutable([path], false);
+    try {
+      const m = lstatSync(path).mode & 0o7777;
+      if (!(m & 0o200)) {
+        chmodSync(path, m | 0o200);
+        mode = m;
+      }
+    } catch {
+      // the open below reports it
+    }
+  }
+  const opens = (p: string, flags: number): string | null => {
+    try {
+      closeSync(openSync(p, flags));
+      return null;
+    } catch (e) {
+      return errCode(e);
+    }
+  };
+  const nothing = `nothing of the root was ${relocating ? "moved or deleted" : "deleted"}`;
+  const sidecarWhy = opens(path, constants.O_RDWR);
+  const journalWhy = sidecarWhy === null ? opens(journalPath, constants.O_WRONLY | constants.O_APPEND) : null;
+  if (sidecarWhy === null && journalWhy === null) return { restore };
+  restore();
+  return sidecarWhy !== null
+    ? { error: { code: "E_VERIFY", msg: `cannot write the sidecar (${sidecarWhy}); ${nothing}`, path } }
+    : { error: { code: "E_NO_JOURNAL", msg: `cannot append to the journal (${journalWhy}); ${nothing}`, path: journalPath } };
+}
 
 export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult<GcRow[] | null>> {
   // Doc 03 `gc` semantics: roots or --all; an empty ref list never means
@@ -916,22 +988,33 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
       continue;
     }
     const destDir = relocate ? join(cfg.gc.dj_zone!, basename(placed.target_path)) : null;
-    const disposal = disposeLocal(root, plan, destDir);
-    if ("error" in disposal) {
-      errors.push(disposal.error);
+    // The journal line and the tombstone must be writable before any file goes.
+    const bookkeeping = prepareGcBookkeeping(root, cfg.journal_path, relocate);
+    if ("error" in bookkeeping) {
+      errors.push(bookkeeping.error);
       continue;
     }
-    const event = relocate ? "gc_relocated" : "gc_done";
-    appendJournal(cfg.journal_path, {
-      seq: nextSeq(cfg.journal_path), ts: isoLocal(), event, sidecar_id: sc.id,
-      audio_hashes: plan.audio.map((a) => a.hash), target_path: placed.target_path, cli_version: CLI_VERSION,
-    });
-    sc.status = "gc_done";
-    writeSidecarWithEvent(root, event, false);
-    data.push({
-      id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir,
-      issues: disposal.issues,
-    });
+    try {
+      const disposal = disposeLocal(root, plan, destDir);
+      if ("error" in disposal) {
+        errors.push(disposal.error);
+        continue;
+      }
+      const event = relocate ? "gc_relocated" : "gc_done";
+      appendJournal(cfg.journal_path, {
+        seq: nextSeq(cfg.journal_path), ts: isoLocal(), event, sidecar_id: sc.id,
+        audio_hashes: plan.audio.map((a) => a.hash), target_path: placed.target_path, cli_version: CLI_VERSION,
+      });
+      sc.status = "gc_done";
+      writeSidecarWithEvent(root, event, false);
+      data.push({
+        id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir,
+        issues: disposal.issues,
+      });
+    } finally {
+      // The sidecar's flag and mode back: after the tombstone, or at once on failure.
+      bookkeeping.restore();
+    }
   }
   return finish(data, errors);
 }

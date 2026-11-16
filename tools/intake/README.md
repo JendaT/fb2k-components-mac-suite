@@ -186,7 +186,13 @@ flags, one `chflags` spawn clears them. The row's `issues` reports the files
 them; a successful one on the dirs that remain. Other files in the root's
 dir (a virtual root's neighbours), anything outside it, and the flags
 `uappnd`, `schg` and `sappnd` are never touched; a relocated file arrives in
-the dj zone without the flag. A stage dir left by a gc that died is never
+the dj zone without the flag. Before it disposes anything, gc makes sure it
+can write the bookkeeping that follows: the sidecar (uchg cleared and u+w
+added if needed, both put back after the tombstone write) must open
+read-write and the journal must open for append (never chmodded or
+unflagged). If either fails nothing is disposed, the root stays `placed`
+with no journal line, and the root gets `E_VERIFY` (sidecar) or
+`E_NO_JOURNAL` (journal). A stage dir left by a gc that died is never
 walked or resolved; a gc rerun deletes it. For an
 archive-sourced root gc removes the root's files inside `<name>.unpacked/`;
 the archive and the `.unpacked` dir stay. Each copy gets u+w (a 0444

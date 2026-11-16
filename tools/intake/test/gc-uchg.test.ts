@@ -212,6 +212,101 @@ test("a failed gc sets back the uchg it cleared, after the modes", async () => {
   }
 });
 
+// The bookkeeping after a disposal (the journal line, then the gc_done
+// tombstone rewriting the sidecar in place) used to fail only after the
+// files were gone: a uchg, 0444 or uappnd sidecar, or a journal that cannot
+// be appended to, left a disposal with no journal line or a journal and a
+// sidecar that disagree. gc now clears the sidecar's uchg and adds u+w
+// before disposing (and puts them back after the tombstone), and checks that
+// the sidecar opens read-write and the journal for append.
+
+test("gc of a root whose sidecar has uchg writes the tombstone and the journal line, then sets uchg back", async () => {
+  await placeAsura();
+  const side = join(asura, ".intake.json");
+  try {
+    setFlag(side, "uchg");
+    const id = sc(side).id;
+
+    const result = await cmdGc([asura], OPTS);
+    expect(result.errors).toEqual([]);
+    // The sidecar keeps its flag, so it is not counted as cleared.
+    expect(result.data).toEqual([{ id, root_path: asura, action: "delete", dj_dest: null, issues: [] }]);
+    expect(readdirSync(asura)).toEqual([".intake.json"]);
+    expect(sc(side).status).toBe("gc_done");
+    expect(sc(side).history.at(-1)!.event).toBe("gc_done");
+    expect(gcRecords().map((r) => [r.event, r.sidecar_id])).toEqual([["gc_done", id]]);
+    expect(flags(side)).toBe(UCHG);
+  } finally {
+    clearFlags();
+  }
+});
+
+test("gc of a root whose sidecar is 0444 writes the tombstone, then puts the mode back", async () => {
+  await placeAsura();
+  const side = join(asura, ".intake.json");
+  try {
+    chmodSync(side, 0o444);
+    const result = await cmdGc([asura], OPTS);
+    expect(result.errors).toEqual([]);
+    expect(sc(side).status).toBe("gc_done");
+    expect(gcRecords().map((r) => r.event)).toEqual(["gc_done"]);
+    expect(statSync(side).mode & 0o777).toBe(0o444);
+  } finally {
+    chmodSync(side, 0o644);
+  }
+});
+
+test("a journal that cannot be appended to: gc disposes nothing, the root stays placed, the sidecar keeps its flag", async () => {
+  await placeAsura();
+  const side = join(asura, ".intake.json");
+  try {
+    setFlag(side, "uchg");
+    setFlag(join(asura, FIRST), "uchg");
+    chmodSync(journalPath, 0o444);
+    const before = snapshot(asura);
+    const journalBefore = readFileSync(journalPath, "utf8");
+
+    const result = await cmdGc([asura], OPTS);
+    expect(result.exitCode).toBe(2);
+    expect(result.errors).toEqual([{
+      code: "E_NO_JOURNAL",
+      msg: "cannot append to the journal (EACCES); nothing of the root was deleted",
+      path: journalPath,
+    }]);
+    expect(snapshot(asura)).toEqual(before); // files, bytes, modes; no stage dir
+    expect(flags(side)).toBe(UCHG); // restored at once
+    expect(flags(join(asura, FIRST))).toBe(UCHG); // never cleared: disposal did not start
+    expect(sc(side).status).toBe("placed");
+    expect(readFileSync(journalPath, "utf8")).toBe(journalBefore);
+  } finally {
+    clearFlags();
+    chmodSync(journalPath, 0o644);
+  }
+});
+
+test("an append-only (uappnd) sidecar: gc refuses the root before anything is deleted", async () => {
+  await placeAsura();
+  const side = join(asura, ".intake.json");
+  try {
+    setFlag(side, "uappnd"); // gc never clears it
+    const before = snapshot(asura);
+
+    const result = await cmdGc([asura], OPTS);
+    expect(result.exitCode).toBe(2);
+    expect(result.errors).toEqual([{
+      code: "E_VERIFY",
+      msg: "cannot write the sidecar (EPERM); nothing of the root was deleted",
+      path: side,
+    }]);
+    expect(snapshot(asura)).toEqual(before);
+    expect(flags(side)).toBe(UAPPND);
+    expect(sc(side).status).toBe("placed");
+    expect(gcRecords()).toEqual([]);
+  } finally {
+    clearFlags();
+  }
+});
+
 test("execute of a root with a uchg original places it with tags written; the original keeps its flag and bytes", async () => {
   const original = join(asura, FIRST);
   // Over 128 KiB, so copyFileSync clones it on APFS and the clone carries the flag.
