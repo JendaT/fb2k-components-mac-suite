@@ -15,7 +15,7 @@ import {
   saveGenreMap, saveLabelMap,
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
-import type { AssignConfig, HistoryEvent, JsonError, Proposal, Sidecar } from "./types.ts";
+import type { AssignConfig, HistoryEvent, JsonError, Proposal, Sidecar, StructureSlot } from "./types.ts";
 import { CLI_VERSION, PRE_LIBRARY_STATUSES } from "./types.ts";
 import { isSidecarName, isVariousArtists, isoLocal, round2, walkDirs } from "./util.ts";
 
@@ -111,6 +111,8 @@ export interface AssignRow {
   confidence?: number;
   margin?: number;
   target_path?: string | null;
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path. */
+  structure_slot?: StructureSlot;
   assigned_by?: "user" | "engine";
   short_circuited?: boolean;
   needs_review?: boolean;
@@ -338,7 +340,7 @@ export async function assignRoots(
       }
       data.push({
         id: root.sidecar.id, root_path: root.dir, target_collection: opts.collection,
-        confidence: 1, margin: 1, target_path, assigned_by: "user", kept: false,
+        confidence: 1, margin: 1, target_path, structure_slot, assigned_by: "user", kept: false,
       });
       continue;
     }
@@ -369,6 +371,7 @@ export async function assignRoots(
       confidence: outcome.proposal.confidence,
       margin: outcome.proposal.margin,
       target_path: outcome.proposal.target_path,
+      structure_slot: outcome.proposal.structure_slot,
       assigned_by: "engine",
       short_circuited: outcome.short_circuited,
       needs_review: root.sidecar.cluster.needs_review,

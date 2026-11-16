@@ -14,7 +14,7 @@ import {
   type P2Deps, type RootRef,
 } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
-import { CLI_VERSION, type JsonError, type Status, type TierDef } from "./types.ts";
+import { CLI_VERSION, type JsonError, type Status, type StructureSlot, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
 import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
@@ -74,6 +74,8 @@ export interface ProposeRow {
   root_path: string;
   status?: "proposed";
   target_path?: string;
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path. */
+  structure_slot?: StructureSlot;
   confidence?: number;
   /** Proposal's restructure_candidates (existing releases now due an artist folder); only when non-empty. */
   restructure_candidates?: string[];
@@ -122,19 +124,42 @@ export interface ProposeOpts extends CommonOpts {
   allResolved: boolean;
 }
 
+/**
+ * Human-mode notices for a propose run: the beets shim failures (shimNotice),
+ * and in auto mode the resolved roots skipped for review. `reviewSkipped`
+ * counts both kinds: roots flagged before the run (never picked up) and roots
+ * whose identify/assign raised the flag during it (`skipped` rows). Only clean
+ * resolved roots are auto-eligible (doc 01 "Thresholds"), so these wait for an
+ * explicit `propose <id>`.
+ */
+function proposeNotices(shimErrors: string[], reviewSkipped: number): string[] | undefined {
+  const notices: string[] = [];
+  const shim = shimNotice(shimErrors);
+  if (shim) notices.push(shim);
+  if (reviewSkipped > 0) notices.push(`skipped ${reviewSkipped} resolved root(s) that need review; propose them by id`);
+  return notices.length > 0 ? notices : undefined;
+}
+
 export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps = {}): Promise<CommandResult<ProposeRow[] | null>> {
   const errors: JsonError[] = [];
   let roots: RootRef[];
+  let flaggedBefore = 0; // auto mode: resolved roots already needs_review, never picked up
   if (opts.allResolved) {
     // Auto mode: only clean resolved roots (never needs_review, never reject).
-    roots = allRoots(errors).filter(
-      (r) => r.sidecar.status === "resolved" && !r.sidecar.cluster.needs_review,
-    );
+    const resolved = allRoots(errors).filter((r) => r.sidecar.status === "resolved");
+    roots = resolved.filter((r) => !r.sidecar.cluster.needs_review);
+    flaggedBefore = resolved.length - roots.length;
   } else {
     if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake propose <root...>|--all-resolved");
     roots = rootsFromRefs(args, errors);
   }
-  if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
+  if (roots.length === 0) {
+    const result: CommandResult<ProposeRow[] | null> =
+      { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
+    const notices = proposeNotices([], flaggedBefore);
+    if (notices) result.notices = notices;
+    return result;
+  }
 
   const data: ProposeRow[] = [];
   const shimErrors: string[] = [];
@@ -185,15 +210,17 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     writeSidecarWithEvent(root, "proposed", opts.dryRun);
     const row: ProposeRow = {
       id: root.sidecar.id, root_path: root.dir, status: "proposed",
-      target_path: target, confidence: root.sidecar.proposal!.confidence,
+      target_path: target, structure_slot: root.sidecar.proposal!.structure_slot,
+      confidence: root.sidecar.proposal!.confidence,
     };
     const restructure = root.sidecar.proposal!.restructure_candidates;
     if (restructure && restructure.length > 0) row.restructure_candidates = restructure;
     data.push(row);
   }
   const result: CommandResult<ProposeRow[] | null> = finish(data, errors);
-  const notice = shimNotice(shimErrors);
-  if (notice) result.notices = [notice];
+  const skippedRows = data.filter((r) => r.skipped === "needs_review").length;
+  const notices = proposeNotices(shimErrors, flaggedBefore + skippedRows);
+  if (notices) result.notices = notices;
   return result;
 }
 

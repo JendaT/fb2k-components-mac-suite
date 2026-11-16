@@ -88,6 +88,7 @@ test("propose: the artist's release in [releases] makes an artist folder and is 
     root_path: NAME_ROOT(),
     status: "proposed",
     target_path: hq(DTE, "Artist Name", "Artist Name [2011] Album"),
+    structure_slot: "artist",
     confidence: 0.95,
     restructure_candidates: [`${DTE}/[releases]/Artist Name [2009] Older Album`],
   }]);
@@ -102,7 +103,8 @@ test("propose: an existing artist dir is the target, with its on-disk spelling",
   expect(result.errors).toEqual([]);
   const target = hq(DTE, "ARTIST NAME", "Artist Name [2011] Album");
   expect(result.data).toEqual([{
-    id: doc(NAME_ROOT()).id, root_path: NAME_ROOT(), status: "proposed", target_path: target, confidence: 0.95,
+    id: doc(NAME_ROOT()).id, root_path: NAME_ROOT(), status: "proposed", target_path: target,
+    structure_slot: "artist", confidence: 0.95,
   }]);
   const proposal = doc(NAME_ROOT()).proposal!;
   expect(proposal).toMatchObject({ target_collection: DTE, target_path: target, structure_slot: "artist" });
