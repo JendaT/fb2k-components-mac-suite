@@ -284,12 +284,16 @@ B7 example (the mock's `default` scenario, `assign.next` holding `e-assigned`
 twice):
 
 ```bash
+# quit foobar2000 first
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
-  "UPDATE configStrings SET value='badge itk_0000000e; assign itk_0000000e collection=Test & Ambient; wait 4;
-     badge itk_0000000e; assign-other itk_0000000e collection=Test Collection C; wait 4; badge itk_0000000e;
-     picker itk_0000000e itk_0000000d close=8'
-   WHERE name='foo_jl_intake.test_actions';"
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'badge itk_0000000e; assign itk_0000000e collection=Test & Ambient; wait 4; badge itk_0000000e;
+      assign-other itk_0000000e collection=Test Collection C; wait 4; badge itk_0000000e;
+      picker itk_0000000e itk_0000000d close=8')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
+
+The line breaks inside the value are fine: steps are split at `;` and trimmed.
 
 # Reverting everything
 
