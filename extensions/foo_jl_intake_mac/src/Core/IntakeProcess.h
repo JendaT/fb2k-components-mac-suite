@@ -35,6 +35,22 @@
 //     first Files call of a runner into a directory deletes the output files
 //     there whose creating process no longer exists (a call that outlived
 //     an earlier foobar2000 is never reaped, so nothing else would).
+//   - Caller-named files (B8, detached execute runs): stdoutFileName and
+//     stderrFileName replace the generated names, and stderrToDevNull sends
+//     stderr to /dev/null with no file at all. A caller-named file is
+//     created new (O_EXCL), read back at exit like any output, and never
+//     unlinked or swept by the runner: the caller owns it. The sweep above
+//     only matches the generated intake-<pid>-... names, so it can never
+//     delete the output of a detached run that outlives its foobar2000 (a
+//     detached call with generated names would lose them to the next
+//     session's sweep while its child still writes: name them).
+//
+//  Spawn report (B8): start() can take a spawn handler, which runs on the
+//  caller's queue as soon as the child exists, before its budget report
+//  and its completion (on a serial callback queue), with the pid, the
+//  child's start time (proc_pidinfo, read before the child can be reaped,
+//  so the pid cannot have been reused) and the output paths. A spawn that
+//  fails never calls it.
 //
 //  Completion: the process has exited and both pipes reached EOF, or at most
 //  `drainGraceSeconds` after exit when an orphaned grandchild still holds a
@@ -77,7 +93,8 @@
 //
 //  Lifetime: the runner's state stays alive while any of its processes is
 //  running, even if the ProcessRunner object is destroyed first; destroying
-//  it never signals anything.
+//  it never signals anything, and such a process is still reaped (and its
+//  completion delivered) when it exits.
 //
 
 #pragma once
@@ -122,8 +139,41 @@ struct ProcessSpec {
     OutputTarget output = OutputTarget::Pipes;
     std::string outputDirectory;           // Files only: absolute, created (0700) when missing
     bool keepOutputFiles = false;          // Files only: leave the files (diagnostics, tests)
+    // Files only: a plain file name in outputDirectory (no '/', not "." or
+    // "..") for stdout instead of the generated name; created new, never
+    // unlinked or swept by the runner (see the top of this file).
+    std::string stdoutFileName;
+    std::string stderrFileName;            // the same for stderr; ignored with stderrToDevNull
+    bool stderrToDevNull = false;          // Files only: stderr to /dev/null, no stderr file
     BudgetPolicy policy = BudgetPolicy::KillAtBudget;
     ProcessLimits limits;
+};
+
+// When a process started (proc_pidinfo PROC_PIDTBSDINFO pbi_start_tvsec and
+// pbi_start_tvusec). With the pid it names one process for good: a reused
+// pid has another start time.
+struct ProcessStartTime {
+    uint64_t seconds = 0;
+    uint32_t micros = 0;
+    bool operator==(const ProcessStartTime &other) const {
+        return seconds == other.seconds && micros == other.micros;
+    }
+    bool operator!=(const ProcessStartTime &other) const { return !(*this == other); }
+};
+
+// The start time of `pid`. False for a pid that does not exist, a zombie
+// (exited and not yet reaped: the kernel no longer reports it), or a process
+// this user may not inspect (EPERM: another user's).
+bool readProcessStartTime(pid_t pid, ProcessStartTime &out);
+
+// What start() reports once the child exists (see the top of this file).
+struct ProcessSpawnInfo {
+    uint64_t token = 0;
+    pid_t pid = 0;                // also the process group id
+    bool startTimeKnown = false;  // false when the child had already exited
+    ProcessStartTime startTime;
+    std::string stdoutPath;       // Files: where stdout goes
+    std::string stderrPath;       // Files: where stderr goes; empty for /dev/null
 };
 
 enum class ProcessEnd {
@@ -154,11 +204,14 @@ struct ProcessResult {
     bool stdoutEOF = false;       // Pipes: false when the drain grace ended the wait
     std::string outputError;      // Files: why the output could not be read back
 
-    std::string stdoutPath;       // Files with keepOutputFiles: where the output is
-    std::string stderrPath;
+    std::string stdoutPath;       // Files with keepOutputFiles, or caller-named: where the output is
+    std::string stderrPath;       // the same; empty for /dev/null
     double elapsedSeconds = 0;
 };
 
+// Runs once on the caller's queue when the child has been spawned, before
+// its budget report and completion (on a serial callback queue).
+using ProcessSpawnHandler = std::function<void(const ProcessSpawnInfo &info)>;
 // Runs on the caller's queue when the budget elapses (not for Unbounded).
 // On a serial callback queue it always runs before the completion.
 using ProcessBudgetHandler = std::function<void(pid_t pid)>;
@@ -180,6 +233,9 @@ public:
     // Spawn failures arrive through `onComplete` like any other result.
     // `callbackQueue` nil means the main queue. `onBudget` may be empty.
     uint64_t start(ProcessSpec spec, dispatch_queue_t callbackQueue,
+                   ProcessBudgetHandler onBudget, ProcessCompletion onComplete);
+    // The same, with a spawn report (`onSpawn` may be empty).
+    uint64_t start(ProcessSpec spec, dispatch_queue_t callbackQueue, ProcessSpawnHandler onSpawn,
                    ProcessBudgetHandler onBudget, ProcessCompletion onComplete);
 
     // Synchronously sends SIGKILL to the group of every KillAtBudget process

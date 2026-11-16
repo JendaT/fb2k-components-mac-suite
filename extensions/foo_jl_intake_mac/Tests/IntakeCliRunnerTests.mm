@@ -554,6 +554,57 @@ void testLegalSourceStatuses(intake::ProcessRunner &runner) {
           "CLI 0.2.1: gc skips a root that is not placed, without an error");
 }
 
+// B8: a detached execute through startCliCommand with a caller-named
+// stdout file, stderr to /dev/null and a spawn report: the report comes
+// before the completion with the paths, and the named file is kept.
+void testDetachedNamedOutput(intake::ProcessRunner &runner) {
+    g_context = "detached-named";
+    std::string state = mock::setupState();
+    intake::CliRunOptions options = testOptions();
+    options.stdoutFileName = "execute-20261116-101500-123.json";
+    options.stderrToDevNull = true;
+    auto spawned = std::make_shared<std::atomic<int>>(0);
+    auto spawnInfo = std::make_shared<intake::ProcessSpawnInfo>();
+    auto completedFirst = std::make_shared<std::atomic<bool>>(false);
+    options.onSpawn = [spawned, spawnInfo](const intake::ProcessSpawnInfo &info) {
+        *spawnInfo = info;
+        (*spawned)++;
+    };
+    auto run = std::make_shared<CliRun>();
+    run->started = intake::startCliCommand(
+        runner, mockConfig(state), request(CliCommand::Execute, {"itk_00000010"}), options, g_callbacks, nullptr,
+        [run, spawned, completedFirst](CliResult &&r) {
+            if (spawned->load() == 0) *completedFirst = true;
+            run->result = std::move(r);
+            run->completions++;
+            dispatch_semaphore_signal(run->done);
+        },
+        &run->refusal);
+    CHECK(run->started && dispatch_semaphore_wait(run->done, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC)) == 0,
+          "execute ran");
+    const std::string named = options.outputDirectory + "/execute-20261116-101500-123.json";
+    CHECK(spawned->load() == 1 && !completedFirst->load(), "one spawn report, before the completion");
+    CHECK(spawnInfo->pid == run->result.process.pid && spawnInfo->startTimeKnown && spawnInfo->stdoutPath == named &&
+              spawnInfo->stderrPath.empty(),
+          "the report: pid, start time, the named stdout, no stderr file");
+    CHECK(run->result.commandClass == CommandClass::Detached && run->result.envelope.outcome == CliOutcome::Ok &&
+              ids(run->result) == std::vector<std::string>{"itk_00000010"},
+          "the result is read from the named file");
+    CHECK(run->result.process.stdoutPath == named && mock::fileExists(named) &&
+              mock::listDir(options.outputDirectory) == std::vector<std::string>{"execute-20261116-101500-123.json"},
+          "the named file is kept; no stderr file, no generated name");
+    CHECK(mock::lastLine(mock::callsLog(state)) == "execute\titk_00000010\t--json", "argv: execute <id> --json");
+
+    // The resume argv, for completeness (B8 Resume placement).
+    intake::CliRunOptions resumeOptions = testOptions();
+    resumeOptions.stdoutFileName = "execute-20261116-101500-124.json";
+    resumeOptions.stderrToDevNull = true;
+    auto resumed = runCli(runner, mockConfig(state), request(CliCommand::Resume, {"itk_00000011"}), resumeOptions);
+    CHECK(resumed->result.envelope.outcome == CliOutcome::Ok &&
+              mock::lastLine(mock::callsLog(state)) == "execute\titk_00000011\t--resume\t--json",
+          "argv: execute <id> --resume --json");
+}
+
 void testResumeNeedsScopedCli(intake::ProcessRunner &runner) {
     g_context = "resume-version";
     std::string state = mock::setupState();
@@ -716,6 +767,7 @@ int main(void) {
         testFeatureDetection(runner);
         testLegalSourceStatuses(runner);
         testResumeNeedsScopedCli(runner);
+        testDetachedNamedOutput(runner);
         testZeroIdsRefused(runner);
         testZeroIdsGcRefused(runner);
         testNoCliConfigurations(runner);

@@ -18,6 +18,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <fcntl.h>
+#include <libproc.h>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -193,6 +194,16 @@ bool hasNul(const std::string &s) {
     return s.find('\0') != std::string::npos;
 }
 
+// A plain file name for a caller-named output file: no '/', not "." or
+// "..", no NUL, not empty.
+bool isPlainFileName(const std::string &name) {
+    return !name.empty() && name != "." && name != ".." && name.find('/') == std::string::npos && !hasNul(name);
+}
+
+void unlinkIfSet(const std::string &path) {
+    if (!path.empty()) ::unlink(path.c_str());
+}
+
 std::vector<char *> cStringArray(std::vector<std::string> &strings) {
     std::vector<char *> out;
     out.reserve(strings.size() + 1);
@@ -205,6 +216,7 @@ struct Proc {
     uint64_t token = 0;
     ProcessSpec spec;
     dispatch_queue_t callbackQueue = nil;
+    ProcessSpawnHandler onSpawn;
     ProcessBudgetHandler onBudget;
     ProcessCompletion onComplete;
 
@@ -212,7 +224,9 @@ struct Proc {
     int outFd = -1; // Pipes: read ends, owned by the read sources once they exist
     int errFd = -1;
     std::string outPath; // Files: the output files, unlinked after reading
-    std::string errPath; // unless keepOutputFiles
+    std::string errPath; // unless keepOutputFiles; errPath empty: /dev/null
+    bool outCallerNamed = false; // never unlinked by the runner
+    bool errCallerNamed = false;
     dispatch_source_t procSource = nil;
     dispatch_source_t outSource = nil;
     dispatch_source_t errSource = nil;
@@ -263,6 +277,7 @@ struct ProcessRunner::Impl : std::enable_shared_from_this<ProcessRunner::Impl> {
 using Impl = ProcessRunner::Impl;
 
 void Impl::failSpawn(ProcPtr p, const char *stage, int err) {
+    p->onSpawn = nullptr;  // nothing was spawned: no report
     p->result.spawnErrno = err;
     p->result.spawnStage = stage;
     p->reaped = true; // nothing to reap
@@ -323,12 +338,21 @@ void Impl::spawn(ProcPtr p) {
         }
         long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch()).count();
-        std::string base = spec.outputDirectory;
-        if (base.back() != '/') base += '/';
-        base += "intake-" + std::to_string(getpid()) + "-" + std::to_string(++g_outputFileSeq) + "-" +
-                std::to_string(ms);
-        std::string outPath = base + ".out";
-        std::string errPath = base + ".err";
+        std::string dir = spec.outputDirectory;
+        if (dir.back() != '/') dir += '/';
+        std::string base = dir + "intake-" + std::to_string(getpid()) + "-" + std::to_string(++g_outputFileSeq) +
+                           "-" + std::to_string(ms);
+        const bool outCallerNamed = !spec.stdoutFileName.empty();
+        const bool errToNull = spec.stderrToDevNull;
+        const bool errCallerNamed = !errToNull && !spec.stderrFileName.empty();
+        if ((outCallerNamed && !isPlainFileName(spec.stdoutFileName)) ||
+            (errCallerNamed && !isPlainFileName(spec.stderrFileName)) ||
+            (outCallerNamed && errCallerNamed && spec.stdoutFileName == spec.stderrFileName)) {
+            failSpawn(p, "output file", EINVAL);
+            return;
+        }
+        std::string outPath = outCallerNamed ? dir + spec.stdoutFileName : base + ".out";
+        std::string errPath = errToNull ? std::string() : errCallerNamed ? dir + spec.stderrFileName : base + ".err";
         // O_EXCL: a name that exists is never reused, and never unlinked here.
         childOut = ::open(outPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (childOut < 0) {
@@ -341,7 +365,11 @@ void Impl::spawn(ProcPtr p) {
             failSpawn(p, "output file", err);
             return;
         }
-        childErr = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (errToNull) {
+            childErr = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+        } else {
+            childErr = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        }
         if (childErr < 0) {
             int err = errno;
             ::close(childOut);
@@ -353,12 +381,14 @@ void Impl::spawn(ProcPtr p) {
             int err = errno;
             ::close(childOut);
             ::unlink(outPath.c_str());
-            ::unlink(errPath.c_str());
+            unlinkIfSet(errPath);
             failSpawn(p, "output file", err);
             return;
         }
         p->outPath = outPath;
         p->errPath = errPath;
+        p->outCallerNamed = outCallerNamed;
+        p->errCallerNamed = errCallerNamed;
     } else {
         int outPipe[2] = {-1, -1}, errPipe[2] = {-1, -1};
         bool ok = ::pipe(outPipe) == 0;
@@ -426,10 +456,9 @@ void Impl::spawn(ProcPtr p) {
     if (rc != 0) {
         closeIfOpen(outRead);
         closeIfOpen(errRead);
-        if (!p->outPath.empty()) {
-            ::unlink(p->outPath.c_str());
-            ::unlink(p->errPath.c_str());
-        }
+        // Created above with O_EXCL, caller-named ones included: ours.
+        unlinkIfSet(p->outPath);
+        unlinkIfSet(p->errPath);
         failSpawn(p, "spawn", rc);
         return;
     }
@@ -441,6 +470,22 @@ void Impl::spawn(ProcPtr p) {
     p->outClosed = outRead < 0;
     p->errClosed = errRead < 0;
     procs[p->token] = p;
+    if (p->onSpawn) {
+        // Before startSources, so the report is queued ahead of any budget
+        // report or completion. The child is not reaped before tryFinish on
+        // this queue, so its pid cannot have been reused yet.
+        auto info = std::make_shared<ProcessSpawnInfo>();
+        info->token = p->token;
+        info->pid = pid;
+        info->startTimeKnown = readProcessStartTime(pid, info->startTime);
+        info->stdoutPath = p->outPath;
+        info->stderrPath = p->errPath;
+        ProcessSpawnHandler handler = std::move(p->onSpawn);
+        p->onSpawn = nullptr;
+        dispatch_async(p->callbackQueue, ^{
+            handler(*info);
+        });
+    }
     startSources(p);
 }
 
@@ -641,13 +686,15 @@ void Impl::tryFinish(ProcPtr p) {
     ProcessResult &res = p->result;
     bool files = p->spec.output == OutputTarget::Files;
     bool unlinkFiles = files && !p->spec.keepOutputFiles;
+    // Caller-named files belong to the caller; /dev/null has no path.
+    auto unlinkOwnFiles = [p]() {
+        if (!p->outCallerNamed) unlinkIfSet(p->outPath);
+        if (!p->errCallerNamed) unlinkIfSet(p->errPath);
+    };
 
     if (p->delivered) {
         // Abandoned earlier; only the cleanup is left.
-        if (unlinkFiles) {
-            ::unlink(p->outPath.c_str());
-            ::unlink(p->errPath.c_str());
-        }
+        if (unlinkFiles) unlinkOwnFiles();
         return;
     }
 
@@ -671,12 +718,10 @@ void Impl::tryFinish(ProcPtr p) {
             res.outputError = error;
         }
         std::string ignored; // stderr is diagnostics only
-        readCapped(p->errPath, p->spec.limits.stderrCap, res.stderrData, res.stderrTruncated,
-                   ignored);
-        if (unlinkFiles) {
-            ::unlink(p->outPath.c_str());
-            ::unlink(p->errPath.c_str());
+        if (!p->errPath.empty()) {
+            readCapped(p->errPath, p->spec.limits.stderrCap, res.stderrData, res.stderrTruncated, ignored);
         }
+        if (unlinkFiles) unlinkOwnFiles();
     }
     deliver(p, end);
 }
@@ -686,17 +731,30 @@ void Impl::deliver(ProcPtr p, ProcessEnd end) {
     p->delivered = true;
     p->result.end = end;
     p->result.elapsedSeconds = secondsSince(p->start);
-    if (p->spec.output == OutputTarget::Files && p->spec.keepOutputFiles) {
-        p->result.stdoutPath = p->outPath;
-        p->result.stderrPath = p->errPath;
+    if (p->spec.output == OutputTarget::Files) {
+        const bool keep = p->spec.keepOutputFiles;
+        if (keep || p->outCallerNamed) p->result.stdoutPath = p->outPath;
+        if (keep || p->errCallerNamed) p->result.stderrPath = p->errPath;
     }
     auto result = std::make_shared<ProcessResult>(std::move(p->result));
     ProcessCompletion completion = std::move(p->onComplete);
     p->onComplete = nullptr;
     p->onBudget = nullptr;
+    p->onSpawn = nullptr;
     dispatch_async(p->callbackQueue, ^{
         if (completion) completion(std::move(*result));
     });
+}
+
+bool readProcessStartTime(pid_t pid, ProcessStartTime &out) {
+    if (pid <= 0) return false;
+    struct proc_bsdinfo info;
+    memset(&info, 0, sizeof info);
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, (int)sizeof info) != (int)sizeof info) return false;
+    if ((pid_t)info.pbi_pid != pid) return false;
+    out.seconds = info.pbi_start_tvsec;
+    out.micros = (uint32_t)info.pbi_start_tvusec;
+    return true;
 }
 
 ProcessRunner::ProcessRunner(ProcessSignalSender signalSender) : impl_(std::make_shared<Impl>()) {
@@ -710,10 +768,16 @@ ProcessRunner::~ProcessRunner() = default;
 
 uint64_t ProcessRunner::start(ProcessSpec spec, dispatch_queue_t callbackQueue,
                               ProcessBudgetHandler onBudget, ProcessCompletion onComplete) {
+    return start(std::move(spec), callbackQueue, nullptr, std::move(onBudget), std::move(onComplete));
+}
+
+uint64_t ProcessRunner::start(ProcessSpec spec, dispatch_queue_t callbackQueue, ProcessSpawnHandler onSpawn,
+                              ProcessBudgetHandler onBudget, ProcessCompletion onComplete) {
     auto p = std::make_shared<Proc>();
     p->token = ++impl_->lastToken;
     p->spec = std::move(spec);
     p->callbackQueue = callbackQueue ? callbackQueue : dispatch_get_main_queue();
+    p->onSpawn = std::move(onSpawn);
     p->onBudget = std::move(onBudget);
     p->onComplete = std::move(onComplete);
     auto impl = impl_;

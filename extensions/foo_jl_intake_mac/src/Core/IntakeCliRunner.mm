@@ -119,6 +119,8 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
     if (spec.output == OutputTarget::Files) {
         spec.outputDirectory = options.outputDirectory;
         spec.keepOutputFiles = options.keepOutputFiles;
+        spec.stdoutFileName = options.stdoutFileName;
+        spec.stderrToDevNull = options.stderrToDevNull;
     }
 
     if (isLogEnabled(LogLevel::Debug)) {
@@ -138,7 +140,7 @@ bool startCliCommand(ProcessRunner &runner, const CliConfig &config, const CliRe
         }
         if (onBudget) onBudget(event);
     };
-    runner.start(std::move(spec), queue, std::move(budget),
+    runner.start(std::move(spec), queue, options.onSpawn, std::move(budget),
                  [completion, command, cls](ProcessResult &&process) {
                      CliResult result;
                      result.command = command;

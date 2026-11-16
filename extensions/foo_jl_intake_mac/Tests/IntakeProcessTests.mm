@@ -724,6 +724,126 @@ void testStaleOutputSwept(ProcessRunner &runner) {
     CHECK(othersKept && mock::fileExists(dirNamedLikeOne), "everything else is kept");
 }
 
+// B8: a detached call (execute runs) with a caller-named stdout file and
+// stderr to /dev/null. The spawn report comes first, with the pid, the
+// child's start time and the paths; the child outlives the ProcessRunner
+// object, is never signalled (closeReadLane, cancelReadLane), is reaped
+// when it exits (no zombie), and its named file is read but kept.
+void testDetachedSurvivesRunner(const std::string &scripts) {
+    g_context = "detached";
+    std::string out = mock::newDir("out");
+    std::string script = writeScript(scripts, "detached.sh",
+                                     "echo noise-on-stderr >&2\n"
+                                     "sleep 1\n"
+                                     "echo '{\"ok\":true,\"data\":[],\"errors\":[]}'\n");
+    ProcessSpec spec = scriptSpec(script, BudgetPolicy::Unbounded);
+    spec.output = OutputTarget::Files;
+    spec.outputDirectory = out;
+    spec.stdoutFileName = "execute-20261116-101500-123.json";
+    spec.stderrToDevNull = true;
+    spec.limits.budgetSeconds = 0.1;  // never applies to Unbounded
+    spec.limits.hardCapSeconds = 0.1;
+
+    struct Detached {
+        dispatch_semaphore_t spawned = dispatch_semaphore_create(0);
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        std::atomic<int> order{0};
+        int spawnOrder = 0, completionOrder = 0;
+        intake::ProcessSpawnInfo info;
+        ProcessResult result;
+    };
+    auto d = std::make_shared<Detached>();
+    auto runner = std::make_unique<ProcessRunner>();
+    runner->start(
+        spec, g_callbacks,
+        [d](const intake::ProcessSpawnInfo &info) {
+            d->info = info;
+            d->spawnOrder = ++d->order;
+            dispatch_semaphore_signal(d->spawned);
+        },
+        nullptr,
+        [d](ProcessResult &&r) {
+            d->result = std::move(r);
+            d->completionOrder = ++d->order;
+            dispatch_semaphore_signal(d->done);
+        });
+    CHECK(dispatch_semaphore_wait(d->spawned, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0,
+          "the spawn is reported");
+    const pid_t pid = d->info.pid;
+    intake::ProcessStartTime now;
+    CHECK(pid > 0 && d->info.startTimeKnown && intake::readProcessStartTime(pid, now) && now == d->info.startTime,
+          "with the pid and its start time");
+    CHECK(d->info.stdoutPath == out + "/execute-20261116-101500-123.json" && d->info.stderrPath.empty(),
+          "stdout to the named file, stderr to /dev/null (no path)");
+    CHECK_EQ(runner->cancelReadLane(), 0, "cancelReadLane signals nothing");
+    CHECK_EQ(runner->closeReadLane(), 0, "closeReadLane signals nothing");
+    runner.reset();
+    CHECK(::kill(pid, 0) == 0, "the child outlives the runner object");
+    CHECK(dispatch_semaphore_wait(d->done, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) == 0,
+          "its completion still arrives");
+    const ProcessResult &r = d->result;
+    CHECK(d->spawnOrder == 1 && d->completionOrder == 2, "the spawn report came before the completion");
+    CHECK(r.end == ProcessEnd::Exited && r.exitCode == 0 && !r.budgetExceeded && !r.killedForTimeout &&
+              !r.cancelled && r.elapsedSeconds >= 0.9,
+          "it ran to the end, never signalled, no budget");
+    CHECK(r.stdoutData.find("\"ok\":true") != std::string::npos && r.stderrData.empty(),
+          "stdout read from the named file; stderr went nowhere");
+    CHECK(r.stdoutPath == d->info.stdoutPath && r.stderrPath.empty(), "the result names the kept file");
+    int status = 0;
+    CHECK(waitpid(pid, &status, WNOHANG) == -1 && errno == ECHILD, "reaped: no zombie");
+    CHECK(mock::listDir(out) == std::vector<std::string>{"execute-20261116-101500-123.json"},
+          "the named file is kept, nothing else was made");
+    if (::kill(pid, 0) == 0) ::kill(pid, SIGKILL);  // never needed when the checks pass
+}
+
+// Caller-named files: never overwritten, and plain names only.
+void testCallerNamedRefusals(ProcessRunner &runner) {
+    g_context = "caller-named";
+    std::string out = mock::newDir("out");
+    mock::writeFile(out + "/execute-taken.json", "someone else's");
+    ProcessSpec spec = scriptSpec("/bin/echo", BudgetPolicy::Unbounded);
+    spec.output = OutputTarget::Files;
+    spec.outputDirectory = out;
+    spec.stdoutFileName = "execute-taken.json";
+    auto run = runToEnd(runner, spec);
+    CHECK(run->result.end == ProcessEnd::SpawnFailed && run->result.spawnStage == "output file" &&
+              run->result.spawnErrno == EEXIST,
+          "an existing name: not spawned (EEXIST)");
+    CHECK(mock::readFile(out + "/execute-taken.json") == "someone else's", "and the file is untouched");
+    for (const char *bad : {"../escape.json", "a/b.json", ".", ".."}) {
+        spec.stdoutFileName = bad;
+        run = runToEnd(runner, spec);
+        CHECK(run->result.end == ProcessEnd::SpawnFailed && run->result.spawnErrno == EINVAL,
+              (std::string("not a plain file name: ") + bad).c_str());
+    }
+    CHECK(mock::listDir(out) == std::vector<std::string>{"execute-taken.json"}, "nothing was created");
+}
+
+// The runner's dead-creator sweep matches only its own generated names: a
+// live detached run's output and run file (execute-*) are never deleted.
+void testSweepKeepsRunFiles() {
+    g_context = "sweep-keeps-runs";
+    std::string out = mock::newDir("out");
+    pid_t dead = deadPid();
+    const std::string staleName = "intake-" + std::to_string(dead) + "-1-1700000000000.out";
+    mock::writeFile(out + "/" + staleName, "x");
+    for (const char *name : {"execute-20261116-101500-123.json", "execute-20261116-101500-123.run",
+                             "execute-20261116-101500-123.tmp"}) {
+        mock::writeFile(out + "/" + name, "run");
+    }
+    ProcessRunner fresh;  // its first Files call into `out` sweeps
+    ProcessSpec spec = scriptSpec("/bin/echo", BudgetPolicy::ReportAtBudget);
+    spec.output = OutputTarget::Files;
+    spec.outputDirectory = out;
+    auto run = runToEnd(fresh, spec);
+    CHECK(run->result.end == ProcessEnd::Exited, "the call ran");
+    CHECK(!mock::fileExists(out + "/" + staleName), "a dead creator's generated output is swept");
+    CHECK(mock::fileExists(out + "/execute-20261116-101500-123.json") &&
+              mock::fileExists(out + "/execute-20261116-101500-123.run") &&
+              mock::fileExists(out + "/execute-20261116-101500-123.tmp"),
+          "execute run files are never swept by the runner");
+}
+
 void testFdsMode(ProcessRunner &runner) {
     g_context = "fds";
     // Descriptors this process leaves inheritable on purpose.
@@ -809,6 +929,9 @@ int main(void) {
         testTimerRacingExit(scripts);
         testTwoRunnersOneDirectory();
         testStaleOutputSwept(runner);
+        testDetachedSurvivesRunner(scripts);
+        testCallerNamedRefusals(runner);
+        testSweepKeepsRunFiles();
         testFdsMode(runner);
         testConcurrent(runner);
 

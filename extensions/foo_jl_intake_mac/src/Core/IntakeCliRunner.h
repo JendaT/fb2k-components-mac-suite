@@ -51,6 +51,16 @@ struct CliRunOptions {
     ProcessLimits limits;        // budgets and caps; the defaults are production's
     std::string outputDirectory; // required for every class but ReadOnly
     bool keepOutputFiles = false;
+    // Every class but ReadOnly (B8, detached execute runs): a caller-named
+    // stdout file in outputDirectory and stderr to /dev/null
+    // (ProcessSpec::stdoutFileName, stderrToDevNull): the runner never
+    // unlinks or sweeps a caller-named file.
+    std::string stdoutFileName;
+    bool stderrToDevNull = false;
+    // Optional: runs once on `queue` when the child has been spawned, before
+    // its completion, with the pid, start time and output paths (never for a
+    // refused request, a NoCli configuration or a failed spawn).
+    ProcessSpawnHandler onSpawn;
 };
 
 struct CliResult {
