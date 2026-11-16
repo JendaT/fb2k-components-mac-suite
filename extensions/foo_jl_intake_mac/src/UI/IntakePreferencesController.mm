@@ -57,8 +57,11 @@
 //  control has an accessibility label.
 //
 //  Wrapping labels (status values, the Test CLI result, the folder
-//  problems) wrap at their own width (IntakePrefsWrappingLabel), so they fit
-//  the column at any page width.
+//  problems, the hints under the path and mapping fields) wrap at their own
+//  width (IntakePrefsWrappingLabel), so they fit the column at any page
+//  width. A hint is a sentence, often with paths in it: cut in the middle it
+//  loses its point, so only the fields and table cells that hold a bare path
+//  truncate in the middle.
 //
 
 #import "IntakePreferencesController.h"
@@ -322,14 +325,6 @@ static BOOL g_savedShowsAlpha = NO;
     return button;
 }
 
-- (NSTextField *)hintLabel {
-    NSTextField *hint = JLCreateHelperText(@"");
-    hint.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    [hint setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
-                                   forOrientation:NSLayoutConstraintOrientationHorizontal];
-    return hint;
-}
-
 - (NSTextField *)wrappingLabel {
     NSTextField *label = [IntakePrefsWrappingLabel wrappingLabelWithString:@""];
     label.font = [NSFont systemFontOfSize:11];
@@ -438,17 +433,17 @@ static BOOL g_savedShowsAlpha = NO;
     self.cliBrowseButton = [self buttonWithTitle:@"Browse…"
                                           action:@selector(browseCli:)
                               accessibilityLabel:@"Choose the intake CLI"];
-    self.cliHint = [self hintLabel];
+    self.cliHint = [self wrappingHelper:@""];
     self.bunField = [self fieldWithPlaceholder:@"Automatic" accessibilityLabel:@"bun path"];
     self.bunBrowseButton = [self buttonWithTitle:@"Browse…"
                                           action:@selector(browseBun:)
                               accessibilityLabel:@"Choose bun"];
-    self.bunHint = [self hintLabel];
+    self.bunHint = [self wrappingHelper:@""];
     self.rulesField = [self fieldWithPlaceholder:@"The CLI's own configuration" accessibilityLabel:@"Rules folder"];
     self.rulesBrowseButton = [self buttonWithTitle:@"Browse…"
                                             action:@selector(browseRules:)
                                 accessibilityLabel:@"Choose the rules folder"];
-    self.rulesHint = [self hintLabel];
+    self.rulesHint = [self wrappingHelper:@""];
     NSGridView *cliGrid = [self gridWithRows:@[
         @[ JLCreateLabel(@"CLI path:"), self.cliField, self.cliBrowseButton ],
         @[ [self empty], self.cliHint, [self empty] ],
@@ -482,7 +477,7 @@ static BOOL g_savedShowsAlpha = NO;
     [stack addArrangedSubview:JLCreateSectionHeader(@"Library mapping (for Swap to library paths)")];
     self.prefixFromField = [self fieldWithPlaceholder:@"e.g. /share/library" accessibilityLabel:@"NAS path prefix"];
     self.prefixToField = [self fieldWithPlaceholder:@"e.g. /Volumes/library" accessibilityLabel:@"Mac path prefix"];
-    self.prefixHint = [self hintLabel];
+    self.prefixHint = [self wrappingHelper:@""];
     NSGridView *prefixGrid = [self gridWithRows:@[
         @[ JLCreateLabel(@"NAS path prefix:"), self.prefixFromField, [self empty] ],
         @[ JLCreateLabel(@"Mac path prefix:"), self.prefixToField, [self empty] ],
