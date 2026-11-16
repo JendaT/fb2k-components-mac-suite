@@ -977,6 +977,7 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     const IntakeAction action = command == CliCommand::Resume ? IntakeAction::Resume : IntakeAction::Execute;
     auto refuse = [&](const std::string &why) {
         const std::string what = notRun(action, why);
+        logDebug(std::string(cliCommandName(command)) + ": " + what);
         execReport(hooks, prefix + what);
         execDone(hooks);
         return what;
@@ -1034,8 +1035,7 @@ void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow, std::shared_ptr<co
         logDebug("execute: " + what);
         return;
     }
-    const std::string what = startDetachedRun(CliCommand::Execute, recheck.keep, hooks, pre);
-    logDebug("execute: " + what);
+    startDetachedRun(CliCommand::Execute, recheck.keep, hooks, pre);  // logs its start or refusal
 }
 
 std::string executeSheetDescription(const ExecuteFlow &flow, bool sheet) {
