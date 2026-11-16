@@ -19,6 +19,11 @@
 // with the literals at 8 bits and no match codes. Valid compressed data, and
 // enough to show that a tool really decompresses (Homebrew's 7-Zip builds
 // lack the RAR codec and fail it with "Unsupported Method").
+//
+// A solid RAR4 (main header solid flag, `solid` on the second and later
+// entries) is one stream of these blocks: each ends with "new file, new
+// table", so the next file reads fresh tables and no back-reference crosses
+// files. unar extracts it; libarchive 3.7.4 cannot extract solid RAR4.
 
 import { decodeCodePage, type CodePage } from "../src/zipnames.ts";
 

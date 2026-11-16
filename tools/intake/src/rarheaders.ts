@@ -6,13 +6,16 @@
 // 1. readRarHeaders reads every header of a RAR4 (format 2.9) or RAR5
 //    archive and refuses, before anything is written: multi-volume (volume
 //    flag, split entry, `.partN.rar` name), header encryption, an encrypted
-//    entry, solid RAR4 (main header solid flag or an entry's LHD_SOLID:
-//    libarchive 3.7.4 writes the first member and then fails with "RAR solid
-//    archive support unavailable"; its RAR5 reader handles solid archives,
-//    so RAR5 solid is allowed), a data entry without a CRC32 (RAR5
-//    BLAKE2-only), RAR5 hard link, file copy and junction entries, Unix
-//    special files, unsafe paths (absolute or `..`), duplicate paths, and
-//    unreadable or damaged headers.
+//    entry, a data entry without a CRC32 (RAR5 BLAKE2-only), RAR5 hard
+//    link, file copy and junction entries, Unix special files, unsafe paths
+//    (absolute or `..`), duplicate paths, and unreadable or damaged headers.
+//    Solid RAR4 (main header solid flag or an entry's LHD_SOLID) is refused
+//    too unless the caller allows it (`solidRar4`): libarchive 3.7.4 writes
+//    the first member and then fails with "RAR solid archive support
+//    unavailable", so archive.ts allows it only when unar is on PATH and
+//    sends it there (RarHeaders.solidRar4). Every other refusal applies to
+//    it as to any rar. libarchive's RAR5 reader handles solid archives, so
+//    RAR5 solid is allowed and stays with bsdtar.
 // 2. verifyRarExtraction checks the extracted tree against the headers:
 //    each data entry present, with its size and CRC32 (streamed), and no
 //    file that the headers do not list.
@@ -28,11 +31,15 @@
 // (`rar:hdrcharset`): on its own it writes the raw bytes, which APFS refuses
 // ("Illegal byte sequence"). bsdtar decodes through iconv, whose tables the
 // TS ones match byte for byte; libarchive 3.7.4 on macOS takes all four
-// (checked with every defined byte of each). Names that are not text in any
-// of the four (a control char) are refused. libarchive turns `\` into `/` in
-// every RAR4 name. On macOS it writes names as UTF-8 NFD whatever the locale
-// (checked with C, UTF-8 and ISO8859-2 locales), so names are matched
-// NFC-normalized; SMB shares also hand back NFD.
+// (checked with every defined byte of each). unar (solid RAR4) gets it as
+// `-e` and matches the TS tables the same way (unar 1.10.7, every defined
+// byte of each page; see archive.ts). Names that are not text in any of the
+// four (a control char) are refused. libarchive turns `\` into `/` in every
+// RAR4 name; unar splits on `\` only and writes a `/` inside a name as `:`,
+// so such a name fails the check after unar. On macOS libarchive writes
+// names as UTF-8 NFD whatever the locale (checked with C, UTF-8 and
+// ISO8859-2 locales), so names are matched NFC-normalized; SMB shares also
+// hand back NFD.
 
 import { closeSync, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { basename, join } from "node:path";
@@ -52,8 +59,15 @@ export interface RarEntry {
 export interface RarHeaders {
   format: 4 | 5;
   entries: RarEntry[];
-  /** Code page of plain non-ASCII RAR4 names (for bsdtar's `rar:hdrcharset`) and how it was chosen; null when there are none. */
+  /** Code page of plain non-ASCII RAR4 names (for bsdtar's `rar:hdrcharset`, unar's `-e`) and how it was chosen; null when there are none. */
   codePage: CodePageChoice | null;
+  /** A solid RAR4 (main header solid flag or an entry's LHD_SOLID), read with `solidRar4` allowed; false for RAR5. */
+  solidRar4: boolean;
+}
+
+export interface RarHeaderOptions {
+  /** Accept a solid RAR4 instead of refusing it (archive.ts: unar is on PATH). */
+  solidRar4?: boolean;
 }
 
 /** A refusal: the archive is not extracted. */
@@ -62,7 +76,7 @@ class Refusal extends Error {}
 const damaged = (detail: string) => new Refusal(`damaged rar headers: ${detail}`);
 const entryRefusal = (name: string, reason: string) => new Refusal(`rar entry "${name}": ${reason}`);
 const MULTI_VOLUME = "multi-volume rar is not supported";
-const SOLID_RAR4 = "solid RAR4 is not supported";
+const SOLID_RAR4 = "solid RAR4 is not supported without unar on PATH";
 
 const RAR5_SIG = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00];
 const RAR4_SIG = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00];
@@ -152,9 +166,11 @@ interface RawEntry {
  * Read and check the headers of a rar archive. Returns the entries, or an
  * error (the reason the archive is refused). Reads only headers: data areas
  * are skipped by their size. `prefer` orders code page ties (income.yaml
- * `archive_code_pages`).
+ * `archive_code_pages`). A solid RAR4 is refused unless `opts.solidRar4`.
  */
-export function readRarHeaders(path: string, prefer: readonly CodePage[] = []): RarHeaders | { error: string } {
+export function readRarHeaders(
+  path: string, prefer: readonly CodePage[] = [], opts: RarHeaderOptions = {},
+): RarHeaders | { error: string } {
   if (/\.part\d+\.rar$/i.test(basename(path))) return { error: MULTI_VOLUME };
   let fd: number;
   try {
@@ -168,12 +184,13 @@ export function readRarHeaders(path: string, prefer: readonly CodePage[] = []): 
     const starts = (s: number[]) => sig.length >= s.length && s.every((b, i) => sig[i] === b);
     let raw: RawEntry[];
     let format: 4 | 5;
+    let solidRar4 = false;
     if (starts(RAR5_SIG)) {
       format = 5;
       raw = readRar5(src);
     } else if (starts(RAR4_SIG)) {
       format = 4;
-      raw = readRar4(src);
+      ({ entries: raw, solid: solidRar4 } = readRar4(src, opts.solidRar4 ?? false));
     } else {
       return { error: "not a rar archive: no RAR signature at the start" };
     }
@@ -194,7 +211,7 @@ export function readRarHeaders(path: string, prefer: readonly CodePage[] = []): 
       }
       entries.push({ path: p, kind: e.kind, crc32: e.crc32, size: e.size });
     }
-    return { format, entries, codePage };
+    return { format, entries, codePage, solidRar4 };
   } catch (e) {
     if (e instanceof Refusal) return { error: e.message };
     return { error: `cannot read rar: ${e instanceof Error ? e.message : String(e)}` };
@@ -348,8 +365,10 @@ const LHD_LARGE = 0x0100;
 const LHD_UNICODE = 0x0200;
 const EARC_NEXT_VOLUME = 0x0001;
 
-function readRar4(src: Source): RawEntry[] {
+/** The entries of a RAR4, and whether it is solid; a solid one is refused unless `allowSolid`. */
+function readRar4(src: Source, allowSolid: boolean): { entries: RawEntry[]; solid: boolean } {
   const entries: RawEntry[] = [];
+  let solid = false;
   let pos = RAR4_SIG.length;
   for (;;) {
     if (pos >= src.size) throw damaged("no end of archive block");
@@ -368,7 +387,10 @@ function readRar4(src: Source): RawEntry[] {
     if (type === R4_MAIN) {
       if (flags & MHD_PASSWORD) throw new Refusal("header-encrypted rar is not supported");
       if (flags & MHD_VOLUME) throw new Refusal(MULTI_VOLUME);
-      if (flags & MHD_SOLID) throw new Refusal(SOLID_RAR4);
+      if (flags & MHD_SOLID) {
+        if (!allowSolid) throw new Refusal(SOLID_RAR4);
+        solid = true;
+      }
     } else if (type === R4_NEWSUB) {
       // A service block (comment, recovery record, NTFS stream...) has the
       // file header layout; only its data size and volume flags matter.
@@ -379,13 +401,16 @@ function readRar4(src: Source): RawEntry[] {
       const f = rar4File(h, flags);
       dataSize = f.packed;
       if (flags & LHD_SPLIT) throw new Refusal(MULTI_VOLUME);
-      if (flags & LHD_SOLID) throw new Refusal(`${SOLID_RAR4} (entry "${f.display}" continues a solid stream)`);
+      if (flags & LHD_SOLID) {
+        if (!allowSolid) throw new Refusal(`${SOLID_RAR4} (entry "${f.display}" continues a solid stream)`);
+        solid = true;
+      }
       if (flags & LHD_PASSWORD && f.entry.kind !== "dir") throw entryRefusal(f.display, "encrypted");
       if (f.unixMode !== null && f.entry.kind === "file") checkUnixMode(f.display, f.unixMode);
       entries.push(f.entry);
     } else if (type === R4_END) {
       if (flags & EARC_NEXT_VOLUME) throw new Refusal(MULTI_VOLUME);
-      return entries;
+      return { entries, solid };
     } else if (R4_OTHER.has(type)) {
       if (flags & R4_LONG_BLOCK) dataSize = h.u32();
     } else {

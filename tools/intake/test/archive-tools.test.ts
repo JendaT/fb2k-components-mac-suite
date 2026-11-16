@@ -1,9 +1,10 @@
 // Archive tool choice and non-interactive runs. The CLI runs as a subprocess
 // with a controlled PATH (Bun.which reads PATH at process start):
-// - fake bsdtar / 7zz / 7z / unzip shell scripts on a temp PATH show which
-//   tool is chosen and with which arguments, that a non-zero exit publishes
-//   nothing, that a refused rar never reaches the tool, and that a rar's
-//   extracted tree is checked against its headers whichever tool wrote it;
+// - fake bsdtar / 7zz / 7z / unzip / unar shell scripts on a temp PATH show
+//   which tool is chosen and with which arguments, that a non-zero exit
+//   publishes nothing, that a refused rar never reaches the tool, and that a
+//   rar's extracted tree is checked against its headers whichever tool wrote
+//   it;
 // - the real tools show why 7zz is preferred (a RAR 7 archive p7zip rejects)
 //   and that an encrypted archive fails instead of prompting. The prompt only
 //   blocks when there is a terminal, so those runs go through `script`, which
@@ -11,7 +12,8 @@
 // The real-tool tests need 7zz, 7z (p7zip) and unzip on PATH and fail, not
 // skip, without them. The base PATH (SYS_PATH) is /bin plus a dir linking
 // unzip: /usr/bin also holds bsdtar, which would take every rar.
-// test/archive-rar.test.ts runs the real bsdtar.
+// test/archive-rar.test.ts runs the real bsdtar, test/archive-unar.test.ts
+// the real unar.
 
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -21,7 +23,7 @@ import { buildRar4, buildRar5, buildRar5Stored } from "./rarbuild.ts";
 import { buildZip } from "./zipbuild.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli.ts");
-let SYS_PATH: string; // sh, mkdir and unzip; no bsdtar, no 7-Zip
+let SYS_PATH: string; // sh, mkdir and unzip; no bsdtar, no 7-Zip, no unar
 
 let corpus: Corpus;
 let income: string;
@@ -41,7 +43,7 @@ beforeAll(() => {
   mkdirSync(sys, { recursive: true });
   symlinkSync("/usr/bin/unzip", join(sys, "unzip"));
   SYS_PATH = `${sys}:/bin`;
-  for (const t of ["7z", "7zz", "bsdtar"]) {
+  for (const t of ["7z", "7zz", "bsdtar", "unar"]) {
     if (Bun.which(t, { PATH: SYS_PATH }) !== null) throw new Error(`${t} found on ${SYS_PATH}: the PATH isolation below would not hold`);
   }
 });
@@ -59,7 +61,8 @@ afterAll(() => {
 /**
  * A fake archive tool: logs its name and each argument in brackets, writes
  * $FAKE_NAME (default Album/fake.txt) holding $FAKE_DATA (default "x") into
- * its output dir (7-Zip's `-o<dir>`, unzip's `-d <dir>`, bsdtar's `-C <dir>`),
+ * its output dir (7-Zip's `-o<dir>`, unzip's `-d <dir>`, bsdtar's `-C <dir>`,
+ * unar's `-o <dir>`),
  * plus Album/extra.txt when $FAKE_EXTRA is set, and exits $FAKE_EXIT
  * (default 0).
  */
@@ -71,6 +74,7 @@ for a in "$@"; do
   case "$a" in -o?*) out="\${a#-o}";; esac
   [ "$prev" = "-d" ] && out="$a"
   [ "$prev" = "-C" ] && out="$a"
+  [ "$prev" = "-o" ] && out="$a"
   prev="$a"
 done
 name="\${FAKE_NAME:-Album/fake.txt}"
@@ -212,6 +216,70 @@ test("plain OEM RAR4 names: bsdtar gets the chosen code page as rar:hdrcharset, 
   expect(fakeCalls()).toEqual([
     `bsdtar [-x][-f][${rar.path}][-C][${rar.stem}.unpacked.partial]${BSDTAR_FLAGS}[--options][rar:hdrcharset=CP437]`,
   ]);
+});
+
+const UNAR_FLAGS = "[-D][-nr][-k][skip][-nq][-s][-q]";
+
+test("with unar on PATH: a solid RAR4 goes to unar with its flags, a non-solid RAR4 and a RAR5 still go to bsdtar", () => {
+  const dir = binDir("rar-unar", ["unar", "bsdtar", "7zz"]);
+  // Every archive lists what FAKE writes with FAKE_EXTRA set: fake.txt "x" and extra.txt "y".
+  const two = [{ name: "Album/fake.txt", data: new TextEncoder().encode("x") }, { name: "Album/extra.txt", data: new TextEncoder().encode("y") }];
+  const solid = placeArchive("A Solid Four (2008).rar", buildRar4(two.map((e, i) => ({ ...e, compressed: true, solid: i > 0 })), { solid: true }));
+  const entrySolid = placeArchive("B Solid Entry (2008).rar", buildRar4(two.map((e, i) => ({ ...e, compressed: true, solid: i > 0 }))));
+  const plain = placeArchive("C Plain Four (2008).rar", buildRar4(two.map((e) => ({ ...e, compressed: true }))));
+  const five = placeArchive("D Five (2020).rar", buildRar5(two.map((e) => ({ ...e, compressed: true }))));
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`, { FAKE_EXTRA: "1" });
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([
+    `unar [-o][${solid.stem}.unpacked.partial]${UNAR_FLAGS}[--][${solid.path}]`,
+    `unar [-o][${entrySolid.stem}.unpacked.partial]${UNAR_FLAGS}[--][${entrySolid.path}]`,
+    `bsdtar [-x][-f][${plain.path}][-C][${plain.stem}.unpacked.partial]${BSDTAR_FLAGS}`,
+    `bsdtar [-x][-f][${five.path}][-C][${five.stem}.unpacked.partial]${BSDTAR_FLAGS}`,
+  ]);
+  for (const a of [solid, entrySolid, plain, five]) expect(readFileSync(join(`${a.stem}.unpacked`, "Album", "fake.txt"), "utf8")).toBe("x");
+});
+
+test("plain OEM solid RAR4 names: unar gets the chosen code page as -e", () => {
+  const dir = binDir("rar-unar-oem", ["unar", "bsdtar"]);
+  const name = "Café Ñandú/fake.txt"; // cp437, as for bsdtar above
+  const rar = placeArchive("Synthetic - Oem Solid (2009).rar", buildRar4([{ name, data: new TextEncoder().encode("x"), compressed: true }], { solid: true }));
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`, { FAKE_NAME: name });
+  expect(envelope.errors).toEqual([]);
+  expect(code).toBe(0);
+  expect(fakeCalls()).toEqual([`unar [-o][${rar.stem}.unpacked.partial]${UNAR_FLAGS}[-e][cp437][--][${rar.path}]`]);
+});
+
+test("a solid RAR4 with no unar on PATH: refused before any tool runs, failed, E_ARCHIVE, nothing created", () => {
+  const dir = binDir("rar-no-unar", ["bsdtar", "7zz", "7z"]);
+  const data = new TextEncoder().encode("x");
+  const solid = placeArchive("A Solid (2008).rar", buildRar4([{ name: "Album/fake.txt", data, compressed: true }], { solid: true }));
+  const entry = placeArchive("B Solid Entry (2008).rar", buildRar4([
+    { name: "Album/fake.txt", data, compressed: true },
+    { name: "Album/extra.txt", data, compressed: true, solid: true },
+  ]));
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`);
+  expect(fakeCalls()).toEqual([]);
+  const msg = "solid RAR4 is not supported without unar on PATH";
+  expect(envelope.errors.map((e) => [e.code, e.msg, e.path])).toEqual([
+    ["E_ARCHIVE", msg, solid.path],
+    ["E_ARCHIVE", `${msg} (entry "Album/extra.txt" continues a solid stream)`, entry.path],
+  ]);
+  expect(code).toBe(1);
+  expect(envelope.data[0].archives.map((a: { action: string }) => a.action)).toEqual(["failed", "failed"]);
+  expect(readdirSync(income).sort()).toEqual(["A Solid (2008).rar", "B Solid Entry (2008).rar"]);
+});
+
+test("unar exits 0 but writes a file the headers do not list: the header check fails the solid RAR4, nothing published", () => {
+  const dir = binDir("rar-unar-extra", ["unar"]);
+  const rar = placeArchive("Synthetic - Solid Extra (2008).rar", buildRar4([{ name: "Album/fake.txt", data: new TextEncoder().encode("x"), compressed: true }], { solid: true }));
+  const { code, envelope } = scan(`${dir}:${SYS_PATH}`, { FAKE_EXTRA: "1" });
+  expect(fakeCalls()).toHaveLength(1);
+  expect(envelope.errors.map((e) => [e.code, e.msg, e.path])).toEqual([
+    ["E_ARCHIVE", 'rar extraction wrote "Album/extra.txt", which is not in the archive headers', rar.path],
+  ]);
+  expect(code).toBe(1);
+  expect(readdirSync(income)).toEqual(["Synthetic - Solid Extra (2008).rar"]);
 });
 
 test("a refused rar never reaches the tool: failed, E_ARCHIVE with the reason, nothing created", () => {

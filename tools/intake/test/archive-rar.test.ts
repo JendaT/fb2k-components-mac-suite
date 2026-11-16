@@ -5,7 +5,8 @@
 // test (test/rarbuild.ts); no `rar` binary.
 //
 // The CLI runs as a subprocess with PATH = a wrapper dir, /usr/bin and /bin:
-// no 7-Zip, so every rar goes to bsdtar. The wrapper logs each call and execs
+// no 7-Zip and no unar, so every rar goes to bsdtar (and a solid RAR4 is
+// refused; test/archive-unar.test.ts runs the real unar). The wrapper logs each call and execs
 // /usr/bin/bsdtar, so a test can show that a refused archive never reached
 // it. Every run is killed after 20 s (a password prompt would block until
 // then); the encrypted cases run under a pseudo-terminal (`script`), where a
@@ -47,7 +48,7 @@ beforeAll(() => {
   );
   chmodSync(join(wrap, "bsdtar"), 0o755);
   PATH = `${wrap}:/usr/bin:/bin`;
-  for (const t of ["7z", "7zz"]) {
+  for (const t of ["7z", "7zz", "unar"]) {
     if (Bun.which(t, { PATH }) !== null) throw new Error(`${t} found on ${PATH}: rar would not be bsdtar's alone`);
   }
 });
@@ -248,7 +249,7 @@ describe.skipIf(!existsSync(BSDTAR))("rar with bsdtar", () => {
     ]);
   });
 
-  test("solid RAR4: refused before extraction (libarchive 3.7.4 writes the first member, then fails)", () => {
+  test("solid RAR4 without unar on PATH: refused before extraction (libarchive 3.7.4 writes the first member, then fails)", () => {
     const entries = [
       { name: "Album/01.txt", data: TRACK, compressed: true },
       { name: "Album/02.txt", data: TRACK, compressed: true, solid: true },
@@ -258,10 +259,11 @@ describe.skipIf(!existsSync(BSDTAR))("rar with bsdtar", () => {
     place("C Solid Entry (2008).rar", buildRar4(entries)); // LHD_SOLID on a non-solid main header
     const run = scan();
     expect(calls()).toEqual([]);
+    const msg = "solid RAR4 is not supported without unar on PATH";
     expectFailed(run, [
-      { file: "A Solid (2008).rar", msg: "solid RAR4 is not supported" },
-      { file: "B Solid Locked (2008).rar", msg: "solid RAR4 is not supported" },
-      { file: "C Solid Entry (2008).rar", msg: 'solid RAR4 is not supported (entry "Album/02.txt" continues a solid stream)' },
+      { file: "A Solid (2008).rar", msg },
+      { file: "B Solid Locked (2008).rar", msg },
+      { file: "C Solid Entry (2008).rar", msg: `${msg} (entry "Album/02.txt" continues a solid stream)` },
     ]);
   });
 

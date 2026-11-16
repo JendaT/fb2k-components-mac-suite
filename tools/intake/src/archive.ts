@@ -21,10 +21,19 @@
 // fails the archive into the usual partial-dir cleanup. The check runs after
 // whichever tool extracted.
 //
+// A solid RAR4 goes to unar (The Unarchiver's CLI) when it is on PATH:
+// libarchive 3.7.4 cannot extract one (it writes the first member, then
+// fails). Without unar it is refused before anything is written. Every other
+// rar goes to bsdtar, else 7-Zip (extractArgv). unar runs like the other
+// tools (runTool, partial dir, owner-writable, symlinks stripped, header
+// check).
+//
 // The tools restore an archive's read-only modes: bsdtar keeps a RAR entry's
 // 0555 / 0444 even with `--no-same-permissions` (and maps RAR's Windows
 // read-only attribute the same way), unzip and 7-Zip restore Unix modes and
-// unzip maps the DOS read-only bit to 0444. A 0555 dir holding a file cannot
+// unzip maps the DOS read-only bit to 0444. (unar 1.10.7 does not: it adds
+// u+rw, applies the umask and drops setuid/setgid, and ignores the Windows
+// read-only, hidden and system attributes.) A 0555 dir holding a file cannot
 // be removed by its owner, and a 0444 copy cannot be tagged. So after every
 // tool run, and before any partial dir is removed, the tree is made
 // owner-writable (makeOwnerWritable), user-immutable flags (uchg) included.
@@ -156,29 +165,36 @@ export interface UnpackResult {
  * password switch, so an encrypted archive fails at once ("Wrong password")
  * instead of prompting: without one, p7zip and unzip ask on /dev/tty and
  * hang a scan run from a terminal, and 7zz reads the password from stdin.
+ * (unar needs none: it never prompts, see unarArgv.)
  * - zip: Info-ZIP unzip; `-P ""` gives it an (empty) password. (A zip
  *   with any non-ASCII name goes to 7-Zip instead, see zipSevenZipPlan.)
  * - 7z: 7-Zip. `7zz` (current 7-Zip) is preferred over `7z` (p7zip, frozen
  *   at 16.02/17.x), which lacks newer format revisions, e.g. RAR 7's
  *   compression algorithm version 1 ("Unsupported Method"). For both, `-p`
  *   with an empty value is a defined (empty) password and never prompts.
- * - rar: bsdtar (libarchive; /usr/bin/bsdtar ships with macOS), else 7-Zip
- *   as for 7z. Homebrew's 7zz and p7zip have no RAR decompression: they
- *   extract stored members only. bsdtar decompresses RAR4 and RAR5 but has
- *   no RAR encryption support, so it never asks for a password (and the
- *   header check refuses encrypted archives before it runs). rarCodePage is
- *   the code page of plain non-ASCII RAR4 names (see rarheaders.ts); 7-Zip
- *   cannot be given it and writes such names as private-use chars, so that
- *   archive fails the check after 7-Zip.
+ * - rar: a solid RAR4 (`rar.solidRar4`, read only when unar is on PATH)
+ *   goes to unar (`unar`, its path). Any other rar goes to bsdtar
+ *   (libarchive; /usr/bin/bsdtar ships with macOS), else 7-Zip as for 7z.
+ *   Homebrew's 7zz and p7zip have no RAR decompression: they extract stored
+ *   members only. bsdtar decompresses RAR4 and RAR5 but has no RAR
+ *   encryption support, so it never asks for a password (and the header
+ *   check refuses encrypted archives before it runs). `rar.codePage` is the
+ *   code page of plain non-ASCII RAR4 names (see rarheaders.ts), given to
+ *   bsdtar and unar; 7-Zip cannot be given it and writes such names as
+ *   private-use chars, so that archive fails the check after 7-Zip.
  *   unrar is not used: in a real-data run it hung past 60 s with stdin closed.
  */
-function extractArgv(archiveExt: string, archive: string, outDir: string, rarCodePage: CodePage | null): string[] | null {
+function extractArgv(
+  archiveExt: string, archive: string, outDir: string, rar: RarHeaders | null, unar: string | null,
+): string[] | null {
   switch (archiveExt) {
     case "zip": {
       const unzip = Bun.which("unzip");
       return unzip === null ? null : [unzip, "-qq", "-o", "-P", "", archive, "-d", outDir];
     }
     case "rar": {
+      const rarCodePage = rar?.codePage?.cp ?? null;
+      if (rar?.solidRar4) return unar === null ? null : unarArgv(unar, archive, outDir, rarCodePage);
       const bsdtar = Bun.which("bsdtar");
       if (bsdtar !== null) return bsdtarArgv(bsdtar, archive, outDir, rarCodePage);
       const sevenZip = findSevenZip();
@@ -213,6 +229,43 @@ const bsdtarArgv = (bin: string, archive: string, outDir: string, rarCodePage: C
   bin, "-x", "-f", archive, "-C", outDir,
   "--no-same-owner", "--no-same-permissions", "--no-acls", "--no-xattrs", "--no-fflags", "--no-mac-metadata",
   ...(rarCodePage === null ? [] : ["--options", `rar:hdrcharset=CP${rarCodePage}`]),
+];
+
+/** unar's `-e` name of each code page (unar 1.10.7 also takes cp1252 and cp1250). */
+const UNAR_ENCODING: Record<CodePage, string> = { 437: "cp437", 852: "cp852", 1252: "windows-1252", 1250: "windows-1250" };
+
+/**
+ * unar (The Unarchiver's CLI, XADMaster) for a solid RAR4, which libarchive
+ * cannot extract. Checked with unar 1.10.7:
+ * - `-o <dir> -D`: into the partial dir, never inside an enclosing dir of
+ *   its own, so the tree matches the header names;
+ * - `-nr`: no recursion into an archive inside the archive (for rar it
+ *   changes nothing: a member that is an archive is written as a file);
+ * - `-k skip`: no resource forks, no `._` or `.rsrc` AppleDouble files;
+ * - `-nq`: the archive's com.apple.quarantine xattr is not copied to every
+ *   extracted file and dir, which it is by default;
+ * - `-s`: a file that already exists is skipped, never renamed or asked
+ *   about (without it, a case-only name clash was written as `NAME-1.txt`);
+ *   the header check then reports the entry missing;
+ * - `-q`: only failures are printed, and on stderr (without it everything,
+ *   failures included, goes to stdout, which runTool discards), so the
+ *   failure message names the file, e.g. "Failed! (Wrong checksum)";
+ * - `-e <encoding>`: plain non-ASCII RAR4 names are decoded with the code
+ *   page the header check chose; on its own unar guesses (cp1252 for
+ *   Białowieża's cp852 bytes). What it writes for every defined byte of
+ *   cp437, cp852, cp1252 and cp1250 equals the TS decode after NFC.
+ *   Unicode-flagged names ignore `-e`.
+ * - `--`: ends the options, so an archive path cannot be read as one.
+ * unar exits 1 when a member fails its CRC32 (after writing it) and 2 for
+ * an encrypted archive with no password ("This archive requires a password
+ * to unpack"); it never prompts, under a terminal either. It does not write
+ * through a symlink it extracted: a later entry under one fails ("Could not
+ * create directory"), one at the same path is skipped.
+ */
+const unarArgv = (bin: string, archive: string, outDir: string, rarCodePage: CodePage | null): string[] => [
+  bin, "-o", outDir, "-D", "-nr", "-k", "skip", "-nq", "-s", "-q",
+  ...(rarCodePage === null ? [] : ["-e", UNAR_ENCODING[rarCodePage]]),
+  "--", archive,
 ];
 
 interface SevenZipZipPlan {
@@ -268,7 +321,8 @@ export function archiveNameCodePage(archivePath: string, prefer: readonly CodePa
     return cd !== null && needsCodePage(cd) ? chooseCodePage(cd, archivePath, prefer) : null;
   }
   if (x === "rar") {
-    const r = readRarHeaders(archivePath, prefer);
+    // Solid RAR4 allowed: one that was unpacked went to unar.
+    const r = readRarHeaders(archivePath, prefer, { solidRar4: true });
     return "error" in r ? null : r.codePage;
   }
   return null;
@@ -396,16 +450,18 @@ export async function unpackArchive(archivePath: string, dryRun: boolean, opts: 
     const { error, codePage } = sevenZipZip;
     return { archive: archivePath, target, action: "failed", error, ...(codePage && { codePage }) };
   }
-  // rar: headers read and checked before anything is written.
+  // rar: headers read and checked before anything is written. A solid RAR4
+  // is refused here unless unar is on PATH to extract it.
   let rar: RarHeaders | null = null;
+  const unar = x === "rar" ? Bun.which("unar") : null;
   if (x === "rar") {
-    const r = readRarHeaders(archivePath, prefer);
+    const r = readRarHeaders(archivePath, prefer, { solidRar4: unar !== null });
     if ("error" in r) return { archive: archivePath, target, action: "failed", error: r.error };
     rar = r;
   }
   const choice = sevenZipZip?.codePage?.choice ?? rar?.codePage ?? null;
   const cpField = choice === null ? {} : { codePage: choice };
-  const args = sevenZipZip === null ? extractArgv(x, archivePath, partial, rar?.codePage?.cp ?? null) : null;
+  const args = sevenZipZip === null ? extractArgv(x, archivePath, partial, rar, unar) : null;
   if (sevenZipZip === null && args === null)
     return { archive: archivePath, target, action: "tool_missing", error: `no tool for .${x}`, ...cpField };
   if (dryRun) return { archive: archivePath, target, action: "unpacked", ...cpField };
