@@ -72,7 +72,7 @@
 #include "../Core/IntakeTint.h"
 
 #import "../../../../shared/PreferencesCommon.h"
-#include "../../../../shared/version.h"
+#include "../Integration/ComponentInfo.h"
 
 #include <string>
 #include <vector>
@@ -1350,10 +1350,10 @@ static BOOL g_savedShowsAlpha = NO;
 
 - (void)showComponentInfo:(NSButton *)sender {
     JLShowComponentInfo(sender, @[
-        @[ @"Component", @"foo_jl_intake" ],
-        @[ @"Version", @INTAKE_VERSION ],
-        @[ @"Layout element", @"none (decorates SimPlaylist rows)" ],
-        @[ @"Preferences", @"Tools > Intake" ],
+        @[ @"Component", @JL_COMPONENT_FILE ],
+        @[ @"Version", @JL_COMPONENT_VERSION ],
+        @[ @"Layout element", @JL_LAYOUT_ELEMENT_NOTE ],
+        @[ @"Preferences", @JL_PREFERENCES_PATH ],
     ]);
 }
 

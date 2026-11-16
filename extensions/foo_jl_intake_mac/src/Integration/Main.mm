@@ -8,26 +8,33 @@
 //  This component has no layout element of its own in v1: it exists entirely
 //  through SimPlaylist decorations (IntakeDecoratorProvider.mm), fed by the
 //  loader that IntakeService.mm starts in on_init. Its settings live on the
-//  Tools > Intake preferences page (IntakePreferencesController, B5).
+//  Tools > Intake preferences page (IntakePreferencesController, B5). The
+//  About text uses the suite's JL_COMPONENT_ABOUT with the names in
+//  ComponentInfo.h.
 //
 
 #import "../fb2k_sdk.h"
-#include "../../../../shared/version.h"
+#include "../../../../shared/common_about.h"
 
 #import "../UI/IntakePreferencesController.h"
+#include "ComponentInfo.h"
 #include "IntakeConfig.h"
 
-DECLARE_COMPONENT_VERSION(
+JL_COMPONENT_ABOUT(
     "Intake",
-    INTAKE_VERSION,
-    "Music intake pipeline: review and approve incoming releases from within "
-    "SimPlaylist.\n\n"
-    "Registers a row decorator provider that tints playlist rows by intake "
-    "status and contributes intake actions to the context menu. All state is "
-    "read from the intake CLI; this component mutates nothing directly.\n\n"
-    "The CLI is set on the Tools > Intake preferences page. While its path is "
-    "empty nothing runs and no row is decorated.\n\n"
-    "MIT License - https://github.com/JendaT/fb2k-components-mac-suite"
+    JL_COMPONENT_VERSION,
+    "Shows music intake status on SimPlaylist rows and runs intake steps from the context menu.\n\n"
+    "Layout element: " JL_LAYOUT_ELEMENT_NOTE "\n"
+    "Preferences: " JL_PREFERENCES_PATH "\n\n"
+    "Features:\n"
+    "- Row tints and icons by intake status, with a marker on releases that need review\n"
+    "- Group header badge with the target collection and confidence\n"
+    "- Context actions: Propose, Assign, Approve, Reject, Execute, Resume, Swap to library paths "
+    "and Delete local copy\n"
+    "- All changes to music files and sidecars go through the intake command-line tool\n"
+    "- Watches the income folders and reloads when a sidecar changes\n"
+    "- Row colours and confirmations set in the preferences\n\n"
+    "Requires SimPlaylist with the row decorator API and the intake command-line tool."
 );
 
 VALIDATE_COMPONENT_FILENAME("foo_jl_intake.component");
