@@ -174,6 +174,8 @@ function printHuman(cmd: string, result: CommandResult): void {
   } else if (data != null) {
     console.log(JSON.stringify(data, null, 2));
   }
+  // Human mode only: the --json envelope never carries notices.
+  for (const n of result.notices ?? []) console.error(`notice: ${n}`);
   for (const e of errors) console.error(`error ${e.code}: ${e.msg}${e.path ? ` (${e.path})` : ""}`);
 }
 

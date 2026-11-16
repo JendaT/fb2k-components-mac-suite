@@ -108,6 +108,13 @@ export interface Identification {
   grammar: string | null; // which folder-name grammar matched (fast path)
   candidates: IdentCandidate[] | null; // top 3 when ambiguous
   identified_at: string;
+  /**
+   * Each evidence source that failed, e.g. `discogs_unreachable` or the beets
+   * shim's error text (`beets_unavailable`, `shim_unavailable`), so an
+   * `unconfirmed` status is not read as checked and not found. Present only
+   * when non-empty.
+   */
+  issues?: string[];
 }
 
 // ---- proposal (doc 02, assign stage) ---------------------------------------

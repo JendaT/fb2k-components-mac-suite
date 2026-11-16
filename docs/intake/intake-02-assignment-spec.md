@@ -268,7 +268,11 @@ Decisions made during implementation; normative for schema v1 consumers.
 
 - **`identification` object** (sidecar): `{ status, source, release_id,
   artist, album, year, label, catno, styles[], genres[], distance, grammar,
-  candidates, identified_at }`. `status` ∈ `fast_path` (Discogs-confirmed) |
+  candidates, identified_at, issues? }`. `issues` (optional, present only
+  when non-empty) names each evidence source that failed, e.g.
+  `shim_unavailable`, `beets_unavailable` (the beets shim's error text) or
+  `discogs_unreachable`, so `unconfirmed` is not read as checked and not
+  found. `status` ∈ `fast_path` (Discogs-confirmed) |
   `shim` (beets candidate accepted, distance ≤ threshold) | `unconfirmed`
   (parse+tags merged, no external confirmation — offline or ambiguous;
   ambiguous Discogs hits and rejected shim candidates land in `candidates`,

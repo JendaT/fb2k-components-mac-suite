@@ -156,18 +156,32 @@ export function diskLibraryProbe(): LibraryProbe {
 }
 
 /**
+ * The human-mode notice for a run in which the beets shim failed on some
+ * roots (`shimErrors`: one error per such root, in run order), or null when
+ * it never failed. Those roots were identified without MusicBrainz, which
+ * their `unconfirmed` status alone does not say.
+ */
+export function shimNotice(shimErrors: string[]): string | null {
+  if (shimErrors.length === 0) return null;
+  const first = shimErrors[0]!.split("\n")[0]!.trim();
+  return `beets shim failed for ${shimErrors.length} root(s): ${first}; see INTAKE_BEETS_SHIM`;
+}
+
+/**
  * Identify an already-resolved RootRef list in place. Split out of cmdIdentify
  * so `propose` can drive it on the RootRef it already holds instead of
  * re-resolving by id and re-reading the sidecar from disk — a round-trip that
  * silently made `propose --dry-run` a no-op, since the sub-command had written
- * nothing for it to read back.
+ * nothing for it to read back. `shimErrors` holds the beets shim's error for
+ * each root it failed on (see shimNotice).
  */
 export async function identifyRoots(
   roots: RootRef[],
   opts: CommonOpts,
   deps: P2Deps = {},
-): Promise<{ data: IdentifyRow[]; errors: JsonError[] }> {
+): Promise<{ data: IdentifyRow[]; errors: JsonError[]; shimErrors: string[] }> {
   const errors: JsonError[] = [];
+  const shimErrors: string[] = [];
   const providers = deps.providers ?? buildProviders();
   const cfg = loadAssignConfig();
   const data: IdentifyRow[] = [];
@@ -188,6 +202,7 @@ export async function identifyRoots(
       acceptDistance: cfg.shim_accept_distance,
       now: () => new Date(),
     });
+    if (outcome.shim_error !== null) shimErrors.push(outcome.shim_error);
     root.sidecar.identification = outcome.identification;
     root.sidecar.cluster.needs_review = root.sidecar.cluster.needs_review || outcome.needs_review;
     writeSidecarWithEvent(root, "identified", opts.dryRun);
@@ -202,7 +217,7 @@ export async function identifyRoots(
       issues: outcome.issues,
     });
   }
-  return { data, errors };
+  return { data, errors, shimErrors };
 }
 
 export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps = {}): Promise<CommandResult<IdentifyRow[] | null>> {
@@ -210,8 +225,11 @@ export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
   if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
-  const { data, errors } = await identifyRoots(roots, opts, deps);
-  return finish(data, [...refErrors, ...errors]);
+  const { data, errors, shimErrors } = await identifyRoots(roots, opts, deps);
+  const result: CommandResult<IdentifyRow[] | null> = finish(data, [...refErrors, ...errors]);
+  const notice = shimNotice(shimErrors);
+  if (notice) result.notices = [notice];
+  return result;
 }
 
 // ---- assign -----------------------------------------------------------------

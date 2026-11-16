@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHashAs } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import {
-  assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, writeSidecarWithEvent,
+  assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, shimNotice, writeSidecarWithEvent,
   type P2Deps, type RootRef,
 } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
@@ -137,6 +137,7 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
   if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
   const data: ProposeRow[] = [];
+  const shimErrors: string[] = [];
   // One library probe for the run: its listings are shared by every root.
   const library = deps.library ?? diskLibraryProbe();
   const p2deps: P2Deps = { ...deps, library };
@@ -152,7 +153,7 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     // the outcome is reported as E_NO_TARGET below, as before.
     if (!root.sidecar.identification || !root.sidecar.proposal) {
       const rdir = rulesDir();
-      if (!root.sidecar.identification) await identifyRoots([root], opts, p2deps);
+      if (!root.sidecar.identification) shimErrors.push(...(await identifyRoots([root], opts, p2deps)).shimErrors);
       if (!root.sidecar.proposal && rdir) {
         await assignRoots([root], { ...opts, collection: null, by: null }, rdir, p2deps);
       }
@@ -190,7 +191,10 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     if (restructure && restructure.length > 0) row.restructure_candidates = restructure;
     data.push(row);
   }
-  return finish(data, errors);
+  const result: CommandResult<ProposeRow[] | null> = finish(data, errors);
+  const notice = shimNotice(shimErrors);
+  if (notice) result.notices = [notice];
+  return result;
 }
 
 // ---- approve ------------------------------------------------------------------

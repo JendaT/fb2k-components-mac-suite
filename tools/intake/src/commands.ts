@@ -19,6 +19,12 @@ export interface CommandResult<T = unknown> {
   data: T;
   errors: JsonError[];
   exitCode: 0 | 1 | 2;
+  /**
+   * One-line hints for a person at the terminal (e.g. the beets shim failed).
+   * Human mode prints them to stderr; they are never part of the `--json`
+   * envelope, whose shape doc 03 fixes.
+   */
+  notices?: string[];
 }
 
 /** One release resolved and (unless --dry-run) written during scan/resolve. */
