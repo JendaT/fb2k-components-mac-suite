@@ -219,8 +219,6 @@ enum class RunState {
     Exited,
 };
 
-const char *runStateName(RunState state);
-
 struct TrackedRun {
     std::string stem;
     CliCommand command = CliCommand::Execute;
@@ -249,12 +247,8 @@ public:
     const TrackedRun *find(const std::string &stem) const;
     const std::vector<TrackedRun> &runs() const { return runs_; }
     bool empty() const { return runs_.empty(); }
-    size_t size() const { return runs_.size(); }
     // The roots of every tracked run, each once, in run order.
     std::vector<std::string> liveRunIds() const;
-    // "none", or one entry per run joined by "; ":
-    // "execute pid 4242 adopted (itk_00000010)".
-    std::string describe() const;
 
 private:
     TrackedRun *findMutable(const std::string &stem);

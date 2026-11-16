@@ -190,17 +190,9 @@
 
 #include "../../../../shared/jl_decorator_api.h"
 
-#include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeRootErrors.h"
 
-#include <functional>
-#include <memory>
-#include <string>
-#include <vector>
-
 namespace intake {
-
-class IntakeView;
 
 // Main thread (provider context_actions).
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out);
@@ -208,28 +200,6 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
 // Main thread (provider execute_context_action). `sel` is used only by
 // Swap, which copies the rows it needs before returning.
 void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel);
-
-// Main thread: runs `entry` as a click on its menu item does. Returns what
-// happened, for a log line.
-std::string actionsDispatch(const ActionEntry &entry);
-
-// Main thread: the "Assign to other collection…" flow for `entry` (see the
-// top of this file). Returns what happened so far, for a log line.
-std::string actionsAssignOther(const ActionEntry &entry);
-
-// Main thread: Execute placement… for `entry` (see the top of this file).
-// Returns what happened so far.
-std::string actionsExecutePlacement(const ActionEntry &entry);
-
-// Main thread: Resume placement for `entry`. Returns what happened so far.
-std::string actionsResume(const ActionEntry &entry);
-
-// Main thread: Swap to library paths for `entry` on the rows of `handles`
-// (see the top of this file).
-std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles);
-
-// Main thread: Delete local copy… for `entry`. Returns what happened so far.
-std::string actionsDeleteLocal(const ActionEntry &entry);
 
 // Main thread (on_init, after the service started): the leftover-run scan,
 // once per session (see the top of this file).

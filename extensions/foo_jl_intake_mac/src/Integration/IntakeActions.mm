@@ -19,6 +19,7 @@
 #include "IntakeService.h"
 #include "IntakeSwap.h"
 
+#include "../Core/IntakeActionTable.h"
 #include "../Core/IntakeCliRunner.h"
 #include "../Core/IntakeCollections.h"
 #include "../Core/IntakeErrorMap.h"
@@ -720,8 +721,7 @@ std::vector<MutationRoot> runRoots(const std::vector<std::string> &ids, const st
 }
 
 // A finished run's result: per-root errors, one console line, a refresh.
-// Returns the console line.
-std::string applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope) {
+void applyRunResult(CliCommand command, const std::vector<MutationRoot> &roots, const EnvelopeResult &envelope) {
     const RunSummary summary = summarizeRun(command, roots, envelope);
     RootErrorStore &errors = actionsErrorStore();
     for (const std::string &id : summary.outcome.succeeded) errors.clear(id);
@@ -740,7 +740,6 @@ std::string applyRunResult(CliCommand command, const std::vector<MutationRoot> &
         logInfo(summary.outcome.consoleLine);
     }
     serviceRefreshAfterCommand();
-    return summary.outcome.consoleLine;
 }
 
 // Queue: deletes a finished run's files.
@@ -1416,8 +1415,8 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
     st.runScanDone = true;
 }
 
-} // anonymous namespace
-
+// Main thread: the "Assign to other collection…" flow for `entry` (see the
+// top of IntakeActions.h). Returns what happened so far, for a log line.
 std::string actionsAssignOther(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
@@ -1448,6 +1447,8 @@ std::string actionsAssignOther(const ActionEntry &entry) {
     return "loading the collections";
 }
 
+// Main thread: Execute placement… for `entry` (see the top of
+// IntakeActions.h). Returns what happened so far.
 std::string actionsExecutePlacement(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
@@ -1490,6 +1491,7 @@ std::string actionsExecutePlacement(const ActionEntry &entry) {
     return "checking " + rootCountText(request.ids.size()) + " with a dry run";
 }
 
+// Main thread: Resume placement for `entry`. Returns what happened so far.
 std::string actionsResume(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
@@ -1500,6 +1502,8 @@ std::string actionsResume(const ActionEntry &entry) {
     return startDetachedRun(CliCommand::Resume, entry.roots);
 }
 
+// Main thread: Swap to library paths for `entry` on the rows of `handles`
+// (see the top of IntakeActions.h). Returns what happened so far.
 std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
@@ -1528,6 +1532,7 @@ std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handle
     return "swapping " + std::to_string(count) + " row(s)";
 }
 
+// Main thread: Delete local copy… for `entry`. Returns what happened so far.
 std::string actionsDeleteLocal(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
@@ -1584,6 +1589,40 @@ std::string actionsDeleteLocal(const ActionEntry &entry) {
     return "reading the file lists of " + rootCountText(eligible.roots.size());
 }
 
+// Main thread: runs `entry` as a click on its menu item does. Returns what
+// happened, for a log line.
+std::string actionsDispatch(const ActionEntry &entry) {
+    ActionsState &st = actionsState();
+    if (st.stopped) return "not run: intake is not running";
+    if (entry.action == IntakeAction::Refresh) {
+        logInfo("refresh requested");
+        serviceReload(true);
+        return "refresh requested";
+    }
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
+    if (entry.action == IntakeAction::Reject) {
+        if (serviceActionInfo().confirmReject) {
+            // No confirmation for a call that could not start anyway.
+            const std::string why = whyNotStartable();
+            if (!why.empty()) return notRun(entry.action, why);
+            confirmReject(entry);
+            return "asking for confirmation";
+        }
+        // confirm_reject 0: no dialog, no reason.
+        return runMutation(entry, std::string());
+    }
+    if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry);
+    if (entry.action == IntakeAction::Execute) return actionsExecutePlacement(entry);
+    if (entry.action == IntakeAction::Resume) return actionsResume(entry);
+    if (entry.action == IntakeAction::DeleteLocal) return actionsDeleteLocal(entry);
+    if (entry.action == IntakeAction::Swap) return "not run: Swap needs the selected rows (actionsSwap)";
+    // Propose, Approve, Assign to X (its collection is in the entry).
+    return runMutation(entry, std::string());
+}
+
+} // anonymous namespace
+
 void actionsStartRunScan() {
     ActionsState &st = actionsState();
     if (st.stopped || st.runScanStarted) return;
@@ -1615,8 +1654,8 @@ bool actionsLaneBusy() {
 }
 
 // The menu's table for `sel` (main thread): each row by its income path,
-// else (B9) through the library index; `roots` gets the number of roots.
-static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t *rootCount) {
+// else (B9) through the library index; `rootCount` gets the number of roots.
+static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t &rootCount) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     std::vector<const IntakeRecord *> rows;
     std::vector<const IntakeRecord *> libraryRows;
@@ -1650,7 +1689,7 @@ static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t *rootCount) 
     ActionContext context = liveContext(view.get());
     // Rows left out may be other roots: no one-root quick assign.
     context.selectionIncomplete = budget.skipped() > 0;
-    if (rootCount) *rootCount = roots.size() + libraryRoots.size();
+    rootCount = roots.size() + libraryRoots.size();
     return buildActionTable(roots, context, menuActions(), libraryRoots);
 }
 
@@ -1661,7 +1700,7 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
     if (st.stopped) return;
 
     size_t rootCount = 0;
-    st.menuTable = menuTableFor(sel, &rootCount);
+    st.menuTable = menuTableFor(sel, rootCount);
     st.menuSerial = nextMenuSerial(st.menuSerial);
     for (size_t i = 0; i < st.menuTable.entries.size(); i++) {
         const ActionEntry &e = st.menuTable.entries[i];
@@ -1692,36 +1731,6 @@ void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel) {
     // host frees `sel` when this returns).
     const std::string what = entry.action == IntakeAction::Swap ? actionsSwap(entry, sel) : actionsDispatch(entry);
     logDebug("menu: " + entry.title + ": " + what);
-}
-
-std::string actionsDispatch(const ActionEntry &entry) {
-    ActionsState &st = actionsState();
-    if (st.stopped) return "not run: intake is not running";
-    if (entry.action == IntakeAction::Refresh) {
-        logInfo("refresh requested");
-        serviceReload(true);
-        return "refresh requested";
-    }
-    if (!entry.enabled) return "not run: the item is disabled";
-    if (entry.roots.empty()) return "not run: no qualifying root";
-    if (entry.action == IntakeAction::Reject) {
-        if (serviceActionInfo().confirmReject) {
-            // No confirmation for a call that could not start anyway.
-            const std::string why = whyNotStartable();
-            if (!why.empty()) return notRun(entry.action, why);
-            confirmReject(entry);
-            return "asking for confirmation";
-        }
-        // confirm_reject 0: no dialog, no reason.
-        return runMutation(entry, std::string());
-    }
-    if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry);
-    if (entry.action == IntakeAction::Execute) return actionsExecutePlacement(entry);
-    if (entry.action == IntakeAction::Resume) return actionsResume(entry);
-    if (entry.action == IntakeAction::DeleteLocal) return actionsDeleteLocal(entry);
-    if (entry.action == IntakeAction::Swap) return "not run: Swap needs the selected rows (actionsSwap)";
-    // Propose, Approve, Assign to X (its collection is in the entry).
-    return runMutation(entry, std::string());
 }
 
 void actionsShutdown() {

@@ -42,8 +42,6 @@ enum class LaneHolder {
     Execute,  // execute or resume (detached)
 };
 
-const char *laneHolderName(LaneHolder holder);
-
 // The holder kind a request takes: DryRun for any dry run, Execute for a
 // real execute or resume, Mutating for the other mutating commands, None
 // for read-only commands (they never take the lane).

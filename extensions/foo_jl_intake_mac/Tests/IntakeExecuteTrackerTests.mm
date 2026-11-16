@@ -590,18 +590,16 @@ static void testSummarizeRun() {
 static void testTracker() {
     g_context = "tracker";
     ExecuteTracker t;
-    CHECK(t.empty() && t.describe() == "none" && t.liveRunIds().empty(), "empty");
+    CHECK(t.empty() && t.liveRunIds().empty(), "empty");
     CHECK(!t.begin("execute-a", CliCommand::Execute, {}), "no run without ids");
     CHECK(t.begin("execute-a", CliCommand::Execute, {"itk_00000010", "itk_0000000b"}, {"/a", "/b"}), "begin");
     CHECK(!t.begin("execute-a", CliCommand::Execute, {"itk_00000010"}), "a stem once");
     const TrackedRun *a = t.find("execute-a");
     CHECK(a != nullptr && a->state == RunState::Starting && a->pid == 0 && a->rootPaths == v({"/a", "/b"}), "Starting");
-    CHECK(t.describe() == "execute starting (itk_00000010 itk_0000000b)", "describe: starting, no pid yet");
     CHECK(!t.exited("execute-a"), "Starting cannot exit (it never ran)");
     CHECK(t.spawned("execute-a", 4242, ProcessStartTime{1, 2}), "spawned");
     CHECK(t.find("execute-a")->state == RunState::Running && t.find("execute-a")->pid == 4242, "Running with a pid");
     CHECK(!t.spawned("execute-a", 4243, ProcessStartTime{}), "spawned once");
-    CHECK(t.describe() == "execute pid 4242 running (itk_00000010 itk_0000000b)", "describe: running");
 
     RunFile adopted;
     adopted.command = CliCommand::Resume;
@@ -614,9 +612,6 @@ static void testTracker() {
     CHECK(t.find("execute-b")->state == RunState::Adopted && t.find("execute-b")->command == CliCommand::Resume,
           "Adopted, its command kept");
     CHECK(t.liveRunIds() == v({"itk_00000010", "itk_0000000b", "itk_00000011"}), "live roots: every run's, once");
-    CHECK(t.describe() == "execute pid 4242 running (itk_00000010 itk_0000000b); resume pid 5151 adopted "
-                          "(itk_00000011 itk_00000010)",
-          "describe: both");
     CHECK(t.exited("execute-b") && t.find("execute-b")->state == RunState::Exited, "Adopted -> Exited");
     CHECK(!t.exited("execute-b"), "exits once");
     CHECK(t.liveRunIds().size() == 3, "an exited run's roots stay live until its result is applied");

@@ -125,12 +125,6 @@ bool jsonInteger(id value, long long min, long long max, long long &out) {
     return true;
 }
 
-std::string joinIds(const std::vector<std::string> &ids) {
-    std::string out;
-    for (const std::string &id : ids) out += (out.empty() ? "" : " ") + id;
-    return out;
-}
-
 } // anonymous namespace
 
 // --- names ---
@@ -591,16 +585,6 @@ RunSummary summarizeRun(CliCommand command, const std::vector<MutationRoot> &roo
 
 // --- the tracker ---
 
-const char *runStateName(RunState state) {
-    switch (state) {
-        case RunState::Starting: return "starting";
-        case RunState::Running: return "running";
-        case RunState::Adopted: return "adopted";
-        case RunState::Exited: return "exited";
-    }
-    return "unknown";
-}
-
 TrackedRun *ExecuteTracker::findMutable(const std::string &stem) {
     for (TrackedRun &r : runs_) {
         if (r.stem == stem) return &r;
@@ -671,18 +655,6 @@ std::vector<std::string> ExecuteTracker::liveRunIds() const {
         for (const std::string &id : r.ids) {
             if (std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
         }
-    }
-    return out;
-}
-
-std::string ExecuteTracker::describe() const {
-    if (runs_.empty()) return "none";
-    std::string out;
-    for (const TrackedRun &r : runs_) {
-        if (!out.empty()) out += "; ";
-        out += cliCommandName(r.command);
-        if (r.pid > 0) out += " pid " + std::to_string(r.pid);
-        out += std::string(" ") + runStateName(r.state) + " (" + joinIds(r.ids) + ")";
     }
     return out;
 }

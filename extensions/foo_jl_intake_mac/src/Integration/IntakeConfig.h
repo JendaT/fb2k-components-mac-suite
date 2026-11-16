@@ -88,7 +88,7 @@ inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
 inline constexpr const char *kConfirmReject = "confirm_reject";
 inline constexpr const char *kConfirmGc = "confirm_gc";
 
-// The preferences page (Tools > Intake), for ui_control::show_preferences.
+// The preferences page's GUID (Tools > Intake, Main.mm get_guid).
 // {B5B6AB95-DB13-45D9-A9F1-A85E014C08C8}
 inline constexpr GUID kPreferencesPageGuid = {
     0xb5b6ab95, 0xdb13, 0x45d9, {0xa9, 0xf1, 0xa8, 0x5e, 0x01, 0x4c, 0x08, 0xc8}};

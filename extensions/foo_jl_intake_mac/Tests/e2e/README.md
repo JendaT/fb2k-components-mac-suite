@@ -222,7 +222,7 @@ What it builds in `<dest>`:
 | `mock-cli/` | A frozen copy of `Tests/mock-cli`: later edits in the worktree do not change a running check. |
 | `state/` | The mock's `INTAKE_MOCK_STATE`, set up with the `perf-200` scenario. It has the same layout as the `default` scenario (`root/`, `responses/`, the marker). |
 | `state/root/income/perf/` | 200 roots, statuses cycling new, resolved, proposed, approved, placing, placed, gc_done, rejected (25 each; `needs_review` on 5 of the proposed ones, so amber rows with the half-circle icon, and none on a resolved one). Each root has one 0.1 s silent `.wav`, except the gc_done roots, which keep only their sidecar as the real gc leaves them: 175 intake rows. |
-| `state/root/archive/`, `state/root/shelf/` | 4,825 filler `.wav` files (193 albums of up to 25 tracks, "Perf Artist 001" and so on) in no intake root. `archive` sorts before `income` and `shelf` after it, so the intake rows sit in the middle of the sorted playlist. |
+| `state/root/archive/`, `state/root/shelf/` | 4,825 filler `.wav` files (193 albums of up to 25 tracks, "Perf Artist 001" and so on) in no intake root. `archive` sorts before `income` and `shelf` after it, so the intake rows sit in the middle of a playlist of `state/root` sorted by path. |
 | `bin/intake-perf` | The wrapper for `cli_path`: exports `INTAKE_MOCK_STATE=<realpath of dest>/state` and runs the frozen mock. |
 | `.intake-perf-corpus` | A marker with the destination (its realpath, `dest=`) and the counts. |
 

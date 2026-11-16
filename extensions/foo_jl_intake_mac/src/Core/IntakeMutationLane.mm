@@ -7,16 +7,6 @@
 
 namespace intake {
 
-const char *laneHolderName(LaneHolder holder) {
-    switch (holder) {
-        case LaneHolder::None: return "none";
-        case LaneHolder::Mutating: return "mutating";
-        case LaneHolder::DryRun: return "dry run";
-        case LaneHolder::Execute: return "execute";
-    }
-    return "unknown";
-}
-
 LaneHolder laneHolderFor(const CliRequest &request) {
     if (!isMutatingCommand(request.command)) return LaneHolder::None;
     if (request.dryRun) return LaneHolder::DryRun;

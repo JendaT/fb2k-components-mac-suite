@@ -10,10 +10,6 @@
 
 #pragma once
 
-#import "../fb2k_sdk.h"
-
-#include "../../../../shared/jl_decorator_api.h"
-
 #include <memory>
 
 namespace intake {
@@ -39,12 +35,5 @@ void providerSetStatsEnabled(bool enabled);
 // Any thread: the view decorate() reads now (null before the first
 // publish). B6: the context menu maps its selection through it.
 std::shared_ptr<const IntakeView> providerCurrentView();
-
-// Any thread (the host's decorate queues): the provider's whole
-// decorate_group answer for `members` from the current view. False, with
-// `out` untouched, when there is no badge: no view, an inert view, members
-// of two roots, or a root that is not proposed or approved. No I/O beyond
-// IntakeNativePath.
-bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out);
 
 } // namespace intake
