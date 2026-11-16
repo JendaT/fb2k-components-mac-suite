@@ -1,0 +1,5 @@
+# Rejected: CLI 0.3.0 refuses reject, assign and propose on it.
+responses/reject.d/itk_000a0003.json
+responses/assign.d/itk_000a0003.json
+responses/assign.user.d/itk_000a0003.json
+responses/propose.d/itk_000a0003.json

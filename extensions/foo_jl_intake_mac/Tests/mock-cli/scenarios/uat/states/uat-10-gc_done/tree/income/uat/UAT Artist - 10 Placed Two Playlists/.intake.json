@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "id": "itk_000a000a",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "uat",
+    "source_type": "fixture-uat",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:5dfeb69ef62b24e5a09bedccd25da2264a64ca67",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "10 Placed Two Playlists",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:d5bc5919e8910e99b95743da5bd473b42b4ac1ee",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "10 Placed Two Playlists",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "UAT Artist",
+    "album": "10 Placed Two Playlists",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "UAT Artist",
+    "album": "10 Placed Two Playlists",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection A",
+        "score": 0.93,
+        "evidence": {
+          "artist_prior": 0.93,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection C",
+        "score": 0.4,
+        "evidence": {
+          "artist_prior": 0.4,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection A",
+    "confidence": 0.93,
+    "margin": 0.53,
+    "target_path": "@ROOT@/library/music.hq/Test Collection A/UAT Artist/UAT Artist - 2026 - 10 Placed Two Playlists",
+    "structure_slot": "artist",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "placed": {
+    "target_path": "@ROOT@/library/music.hq/Test Collection A/UAT Artist/UAT Artist - 2026 - 10 Placed Two Playlists",
+    "verified": true,
+    "journal_seq": 43
+  },
+  "status": "gc_done",
+  "history": [
+    {
+      "ts": "2026-11-01T12:10:00+01:00",
+      "event": "resolved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:01+01:00",
+      "event": "identified",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:02+01:00",
+      "event": "assigned",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:03+01:00",
+      "event": "proposed",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:04+01:00",
+      "event": "approved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:05+01:00",
+      "event": "placing",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:06+01:00",
+      "event": "placed",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:10:07+01:00",
+      "event": "gc_done",
+      "by": "intake@0.3.0"
+    }
+  ]
+}

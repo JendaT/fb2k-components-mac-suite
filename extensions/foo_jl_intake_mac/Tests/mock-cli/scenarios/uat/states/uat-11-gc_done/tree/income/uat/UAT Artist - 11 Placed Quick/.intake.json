@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "id": "itk_000a000b",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "uat",
+    "source_type": "fixture-uat",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:028f0e9961103cfb3c22cdae143323d435a6679c",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "11 Placed Quick",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:8db50e2fc17b1a1c80b23b1237a2a80f1ae2dee1",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "11 Placed Quick",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "UAT Artist",
+    "album": "11 Placed Quick",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": {
+    "status": "fast_path",
+    "source": null,
+    "release_id": null,
+    "artist": "UAT Artist",
+    "album": "11 Placed Quick",
+    "year": "2026",
+    "label": null,
+    "catno": null,
+    "styles": [],
+    "genres": [],
+    "distance": null,
+    "grammar": "artist - album",
+    "candidates": null,
+    "identified_at": "2026-11-01T11:00:00+01:00"
+  },
+  "proposal": {
+    "engine_version": "0.2.0",
+    "ranked": [
+      {
+        "collection": "Test Collection B",
+        "score": 0.9,
+        "evidence": {
+          "artist_prior": 0.9,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      },
+      {
+        "collection": "Test Collection A",
+        "score": 0.5,
+        "evidence": {
+          "artist_prior": 0.5,
+          "label_prior": 0.0,
+          "similar_vote": 0.0,
+          "style_hint": 0.0
+        }
+      }
+    ],
+    "target_collection": "Test Collection B",
+    "confidence": 0.9,
+    "margin": 0.4,
+    "target_path": "@ROOT@/library/music.hq/Test Collection B/UAT Artist/UAT Artist - 2026 - 11 Placed Quick",
+    "structure_slot": "artist",
+    "assigned_by": "engine",
+    "alternates_shown": false
+  },
+  "placed": {
+    "target_path": "@ROOT@/library/music.hq/Test Collection B/UAT Artist/UAT Artist - 2026 - 11 Placed Quick",
+    "verified": true,
+    "journal_seq": 44
+  },
+  "status": "gc_done",
+  "history": [
+    {
+      "ts": "2026-11-01T12:11:00+01:00",
+      "event": "resolved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:01+01:00",
+      "event": "identified",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:02+01:00",
+      "event": "assigned",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:03+01:00",
+      "event": "proposed",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:04+01:00",
+      "event": "approved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:05+01:00",
+      "event": "placing",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:06+01:00",
+      "event": "placed",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:11:07+01:00",
+      "event": "gc_done",
+      "by": "intake@0.3.0"
+    }
+  ]
+}

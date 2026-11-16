@@ -1,0 +1,6 @@
+# gc deleted the local audio (the shadow too); the sidecar stays as a gc_done tombstone, the library copy stays.
+root/income/uat/UAT Artist - 12 Placed Shadow/01 - Test Track One.wav
+root/income/uat/UAT Artist - 12 Placed Shadow/02 - Test Track Two.wav
+root/income/uat/UAT Artist - 12 Placed Shadow/02 - Test Track Two (shadow).wav
+responses/gc.d/itk_000a000c.json
+responses/gc.dry-run.d/itk_000a000c.json

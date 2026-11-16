@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "id": "itk_000a0003",
+  "resolver_version": "0.2.0",
+  "resolved_at": "2026-11-01T10:00:00+01:00",
+  "source": {
+    "income_folder": "uat",
+    "source_type": "fixture-uat",
+    "archive": null
+  },
+  "virtual": false,
+  "files": [
+    {
+      "path": "01 - Test Track One.wav",
+      "audio_hash": "pcmsha1:8c4f3b000b6ddae28438f2dcc7900a57fa3552ff",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "03 Resolved",
+        "title": "Test Track One",
+        "tracknumber": 1,
+        "disc": null,
+        "date": "2026"
+      }
+    },
+    {
+      "path": "02 - Test Track Two.wav",
+      "audio_hash": "pcmsha1:bf84fe065d93135329952d80da7bc3cf6094f1e2",
+      "codec": "pcm",
+      "lossless": true,
+      "sample_rate": 8000,
+      "bit_depth": 8,
+      "bitrate": null,
+      "duration": 0.1,
+      "tags": {
+        "albumartist": "UAT Artist",
+        "artist": "UAT Artist",
+        "album": "03 Resolved",
+        "title": "Test Track Two",
+        "tracknumber": 2,
+        "disc": null,
+        "date": "2026"
+      }
+    }
+  ],
+  "discs": null,
+  "cluster": {
+    "albumartist": "UAT Artist",
+    "album": "03 Resolved",
+    "confidence": 0.9,
+    "needs_review": false,
+    "signals": {
+      "purity": 1,
+      "seq": 1,
+      "artifacts": 1,
+      "name_parse": 0.9,
+      "quality_homog": 1
+    }
+  },
+  "quality": {
+    "tier_eligible": "hq",
+    "issues": []
+  },
+  "identification": null,
+  "proposal": null,
+  "status": "rejected",
+  "history": [
+    {
+      "ts": "2026-11-01T12:03:00+01:00",
+      "event": "resolved",
+      "by": "intake@0.3.0"
+    },
+    {
+      "ts": "2026-11-01T12:03:01+01:00",
+      "event": "rejected",
+      "by": "intake@0.3.0",
+      "reason": "Fixture reason: rejected in the uat flow"
+    }
+  ]
+}

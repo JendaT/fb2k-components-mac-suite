@@ -50,9 +50,30 @@ exports `INTAKE_MOCK_STATE` and runs `exec .../intake-mock "$@"`.
 | `schema-string` | 0.3.0 | `default` with `"schema": "1"` (a string) in `version` |
 | `perf-200` | 0.3.0 | 200 generated roots in `income/perf`, statuses cycling through the lifecycle. Status and income only: it has no reply files, so a mutating command on a root in a status the CLI accepts exits 64 (see below) |
 | `placed-unverified` | 0.3.0 | `default` with the placed root `itk_00000012` at `placed.verified: false` (summary and sidecar), for B9: Swap and Delete local copy must not qualify, and the library index leaves it out. Its gc replies are kept (the CLI would re-verify; the component never asks) |
+| `uat` | 0.3.0 | The user acceptance checklist (PLAN.md): 15 whole-folder roots in `income/uat`, one per row below, standalone (no `base`). Each income folder holds its sidecar and two tracks (the shadow album three; the gc_done root none); the placed, verified roots and the gc_done root have their library copies under `root/library/music.hq/`. Reply files for every command and status the CLI accepts, so a stray click never exits 64; no state changes without a `.next` file (see "States in `uat`") |
 
 The `default` ids are `itk_0000000a` to `itk_00000019`; `status --json` lists
 them with their states.
+
+The `uat` roots (folder `income/uat/UAT Artist - <album>`, album artist `UAT Artist`):
+
+| Id | Album | Status | For |
+|---|---|---|---|
+| `itk_000a0001` | 01 New | `new` | Reject without confirmation (`uat-01-rejected`) |
+| `itk_000a0002` | 02 New Flagged | `new`, `needs_review` | the "needs review" tooltip on a new root (not amber) |
+| `itk_000a0003` | 03 Resolved | `resolved` | Reject… with a reason (`uat-03-rejected`) |
+| `itk_000a0004` | 04 Resolved Review | `resolved`, `needs_review` | amber; the picker first in the menu |
+| `itk_000a0005` | 05 Proposed | `proposed` → Test Collection A 0.91 | two "Assign to X" alternates |
+| `itk_000a0006` | 06 Proposed Review | `proposed`, `needs_review` → Test Collection B 0.61 | amber badge with an alt; Assign to other collection… (`uat-06-assigned`) |
+| `itk_000a0007` | 07 Approved | `approved` → Test Collection A | Execute placement… (`uat-07-placed`) |
+| `itk_000a0008` | 08 Placing | `placing` | Resume placement enabled |
+| `itk_000a0009` | 09 Placed | `placed`, verified | Delete local copy… (`uat-09-gc_done`) |
+| `itk_000a000a` | 10 Placed Two Playlists | `placed`, verified | an album in two playlists: Swap, then delete (`uat-10-gc_done`) |
+| `itk_000a000b` | 11 Placed Quick | `placed`, verified | Swap to library paths, then Delete without confirmation (`uat-11-gc_done`) |
+| `itk_000a000c` | 12 Placed Shadow | `placed`, verified | a third file, `02 - Test Track Two (shadow).wav`, with `quality_shadow: true` and no library copy: Swap, then delete is not offered (`uat-12-gc_done`) |
+| `itk_000a000d` | 13 Placed Unverified | `placed`, `verified: false` | no visual; Swap and Delete do not qualify |
+| `itk_000a000e` | 14 Rejected | `rejected` | grey, struck through |
+| `itk_000a000f` | 15 Collected | `gc_done` | no local audio (tombstone sidecar only); library copy under `Test Collection C` |
 
 ### CLI 0.3.0 and 0.2.1 differences
 
@@ -163,6 +184,30 @@ Resume, completed and reverted:
 ```bash
 echo placing-placed > execute.next      # resume itk_00000011: completed, then placed
 echo placing-reverted > execute.start   # resume itk_00000011: answers reverted_to_approved
+```
+
+### States in `uat`
+
+One state per root it changes, so each checklist step writes its own line
+just before the click that needs it (a `.next` file is a queue: a line
+written early is taken by the next successful call of that command,
+whichever root it names):
+
+| State | For | Change |
+|---|---|---|
+| `uat-03-rejected` | `reject.next` | `itk_000a0003` goes `rejected` (history `rejected` with a fixed fixture reason, not the one typed); its reject, assign and propose replies go |
+| `uat-01-rejected` | `reject.next` | the same for `itk_000a0001` |
+| `uat-06-assigned` | `assign.next` | `itk_000a0006` user-assigned to the call's `--collection` (`assigned_by` `"user"`, confidence 1, the engine's `ranked` kept, `needs_review` still set) |
+| `uat-07-placed` | `execute.next` | `itk_000a0007` goes `placed` (verified, `journal_seq` 42) with its library copy under `Test Collection A/`; its execute, dry-run, assign and reject replies go, gc replies are added |
+| `uat-09-gc_done`, `uat-10-gc_done`, `uat-11-gc_done` | `gc.next` | that root goes `gc_done` as gc leaves it: its two local tracks are deleted, the sidecar stays as a tombstone, the library copy stays, its gc replies go |
+| `uat-12-gc_done` | `gc.next` | the same for `itk_000a000c`, its shadow file included (gc deletes every local copy) |
+
+```bash
+cd "$INTAKE_MOCK_STATE"
+echo uat-03-rejected > reject.next   # Reject… on itk_000a0003
+echo uat-06-assigned > assign.next   # Assign to other collection… on itk_000a0006
+echo uat-07-placed > execute.next    # Execute placement… on itk_000a0007 (the dry run leaves it)
+echo uat-09-gc_done > gc.next        # Delete local copy… on itk_000a0009
 ```
 
 ## calls.log
