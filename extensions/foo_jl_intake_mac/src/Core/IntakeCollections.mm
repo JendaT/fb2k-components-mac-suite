@@ -53,13 +53,23 @@ bool utf8Name(id value, std::string &out) {
     return true;
 }
 
+// The NFC form of UTF-8 `s`, or nil when it is not valid UTF-8.
+NSString *precomposed(const std::string &s) {
+    NSString *text = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
+    return text.precomposedStringWithCanonicalMapping;
+}
+
 } // anonymous namespace
 
-CollectionsParseResult parseCollections(id data) {
+CollectionsParseResult parseCollections(id data, size_t maxEntries) {
     CollectionsParseResult result;
     @autoreleasepool {
         if (![data isKindOfClass:[NSArray class]]) {
             result.error = data == nil || data == [NSNull null] ? "data is null" : "data is not an array";
+            return result;
+        }
+        if ([(NSArray *)data count] > maxEntries) {
+            result.error = "more than " + std::to_string(maxEntries) + " entries";
             return result;
         }
         result.ok = true;
@@ -94,9 +104,26 @@ std::vector<std::string> collectionNames(const std::vector<CollectionInfo> &coll
     return out;
 }
 
+const std::string *listedCollectionFor(const std::vector<std::string> &names, const std::string &text) {
+    if (text.empty()) return nullptr;
+    auto exact = std::find(names.begin(), names.end(), text);
+    if (exact != names.end()) return &*exact;
+    const std::string *found = nullptr;
+    @autoreleasepool {
+        NSString *wanted = precomposed(text);
+        if (wanted == nil) return nullptr;
+        for (const std::string &name : names) {
+            NSString *candidate = precomposed(name);
+            if (candidate == nil || ![candidate isEqualToString:wanted]) continue;
+            if (found != nullptr) return nullptr;  // ambiguous
+            found = &name;
+        }
+    }
+    return found;
+}
+
 bool isListedCollection(const std::vector<std::string> &names, const std::string &text) {
-    if (text.empty()) return false;
-    return std::find(names.begin(), names.end(), text) != names.end();
+    return listedCollectionFor(names, text) != nullptr;
 }
 
 std::string collectionsFailureText(const EnvelopeResult &result) {

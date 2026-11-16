@@ -10,7 +10,8 @@
 //  argv each action builds (through IntakeCommandArgs, never with zero ids),
 //  album labels for the Reject confirmation, and action_id encoding.
 //  B7: the exposed set, quick assign (order, dedup, cap 4, target excluded,
-//  absent or empty ranked, status gating, one root only), "Assign to other
+//  absent or empty ranked, status gating, one root only, none for an
+//  incomplete selection), "Assign to other
 //  collection…" first when amber, its "(n of m)" on mixed selections, and
 //  the assign argv of both entries.
 //  Synthetic records only.
@@ -495,6 +496,16 @@ static void testQuickAssign() {
     IntakeRecord placed = rec("itk_00000012", IntakeStatus::Placed);
     CHECK(findEntry(buildActionTable({&d, &placed}, ctx()), IntakeAction::AssignTo) == nullptr,
           "two roots, one qualifying: still no quick assign (m = 2)");
+
+    // Rows left out by the menu's path budget may be other roots: one
+    // mapped root is not a one-root selection.
+    ActionContext incomplete = ctx();
+    incomplete.selectionIncomplete = true;
+    ActionTable partial = buildActionTable({&d}, incomplete);
+    CHECK(findEntry(partial, IntakeAction::AssignTo) == nullptr, "incomplete selection: no quick assign");
+    CHECK(titles(partial) == v({"Propose", kOther, "Approve", kReject, "Refresh intake status"}),
+          "incomplete selection: the picker and the rest stay");
+    CHECK(findEntry(partial, IntakeAction::AssignOther)->enabled, "incomplete selection: the picker is enabled");
 }
 
 static void testAssignOtherOrder() {

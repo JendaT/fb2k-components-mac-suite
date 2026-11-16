@@ -4,7 +4,8 @@
 //
 //  See IntakeActions.h. Threading: everything in ActionsState marked "main"
 //  is touched on the main thread only; the private queue only builds and
-//  starts CLI calls and hands every result back to main with dispatch_async.
+//  starts CLI calls (and parses a `collections` reply) and hands every
+//  result back to main with dispatch_async.
 //
 
 #import "../fb2k_sdk.h"
@@ -32,8 +33,9 @@
 #include <unordered_map>
 
 // The picker's combo box delegate (B7): "Assign" is enabled only while the
-// text is exactly one of the listed names. ObjC classes share one namespace
-// in the process, hence the component prefix.
+// text stands for one of the listed names (IntakeCollections
+// listedCollectionFor). ObjC classes share one namespace in the process,
+// hence the component prefix.
 @interface JLIntakeCollectionPicker : NSObject <NSComboBoxDelegate>
 @property(nonatomic, weak) NSComboBox *combo;
 @property(nonatomic, weak) NSButton *okButton;
@@ -55,7 +57,7 @@
 
 - (BOOL)isListed:(NSString *)text {
     const char *bytes = text.UTF8String;
-    return bytes != nullptr && intake::isListedCollection(_names, std::string(bytes));
+    return bytes != nullptr && intake::listedCollectionFor(_names, std::string(bytes)) != nullptr;
 }
 
 - (void)update {
@@ -153,6 +155,9 @@ struct PickerFlow {
     uint64_t serial = 0;
     ActionEntry entry;  // as the menu captured it
     std::shared_ptr<const PickerTestHooks> test;
+    // The sheet's window, chosen at the click (sheetHostWindow): the sheet
+    // comes up to 10 s later, when the pointer may be elsewhere.
+    __weak NSWindow *hostWindow = nil;
     std::vector<std::string> names;  // the listed collections, once known
     // While the sheet is up (released on the next main-queue turn after it
     // ends, never inside its own completion handler).
@@ -329,21 +334,26 @@ std::string runMutation(const ActionEntry &entry, const std::string &reason) {
     return "started for " + rootCountText(request.ids.size());
 }
 
-// The window for the confirmation sheet: the one under the pointer (the
-// menu was opened there, and right-clicking a window that is not key does
-// not make it key), else the main window, else the key window; nil when
-// none can take a sheet now (the alert then runs app-modal).
+bool usableSheetHost(NSWindow *w) {
+    return w != nil && w.visible && !w.miniaturized && !w.sheet && w.attachedSheet == nil && w.canBecomeKeyWindow;
+}
+
+// The main window, else the key window, when one can take a sheet now.
+NSWindow *activeSheetHost() {
+    if (usableSheetHost(NSApp.mainWindow)) return NSApp.mainWindow;
+    if (usableSheetHost(NSApp.keyWindow)) return NSApp.keyWindow;
+    return nil;
+}
+
+// The window for a sheet, called at the click: the one under the pointer
+// (the menu was opened there, and right-clicking a window that is not key
+// does not make it key), else activeSheetHost(); nil when none can take a
+// sheet now (the alert then runs app-modal).
 NSWindow *sheetHostWindow() {
-    auto usable = [](NSWindow *w) {
-        return w != nil && w.visible && !w.miniaturized && !w.sheet && w.attachedSheet == nil &&
-               w.canBecomeKeyWindow;
-    };
     const NSInteger number = [NSWindow windowNumberAtPoint:NSEvent.mouseLocation belowWindowWithWindowNumber:0];
     NSWindow *under = number > 0 ? [NSApp windowWithWindowNumber:number] : nil;  // nil: another app's
-    if (usable(under)) return under;
-    if (usable(NSApp.mainWindow)) return NSApp.mainWindow;
-    if (usable(NSApp.keyWindow)) return NSApp.keyWindow;
-    return nil;
+    if (usableSheetHost(under)) return under;
+    return activeSheetHost();
 }
 
 // Reject…: the confirmation (doc 04 v1.2, confirm_reject).
@@ -397,20 +407,21 @@ void pickerDone(const std::shared_ptr<const PickerTestHooks> &test) {
 
 // Ends the flow `flow` if it is still the current one. Its alert and helper
 // are released on a later main-queue turn, never inside the alert's own
-// completion handler.
-void endPicker(const std::shared_ptr<PickerFlow> &flow) {
+// completion handler. By value: callers pass st.picker itself, which the
+// reset below empties, and the flow must outlive this call.
+void endPicker(std::shared_ptr<PickerFlow> flow) {
+    if (!flow) return;
     ActionsState &st = actionsState();
     if (st.picker == flow) st.picker.reset();
-    std::shared_ptr<PickerFlow> keep = flow;
     dispatch_async(dispatch_get_main_queue(), ^{
-        keep->alert = nil;
-        keep->helper = nil;
+        flow->alert = nil;
+        flow->helper = nil;
     });
 }
 
 // No picker: one Error line naming the cause (doc 04 "Failure behavior":
-// never modal, never inert).
-void pickerFailed(const std::shared_ptr<PickerFlow> &flow, const std::string &cause) {
+// never modal, never inert). By value, as endPicker.
+void pickerFailed(std::shared_ptr<PickerFlow> flow, const std::string &cause) {
     logError("assign-other: no picker shown: " + cause);
     endPicker(flow);
     pickerReport(flow->test, "no picker: " + cause + "; nothing assigned");
@@ -437,6 +448,20 @@ std::string pickerSheetDescription(const PickerFlow &flow, NSComboBox *combo, NS
         line += std::string("; closing as Cancel in ") + seconds + " s";
     }
     return line;
+}
+
+// The test aid's AutoClose: Cancel after `seconds`. Common modes include
+// the modal panel mode, so this also fires while the app-modal fallback
+// runs.
+void scheduleAutoCancel(JLIntakeCollectionPicker *helper, double seconds) {
+    __weak JLIntakeCollectionPicker *weakHelper = helper;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
+                                            repeats:NO
+                                              block:^(NSTimer *) {
+                                                  JLIntakeCollectionPicker *h = weakHelper;
+                                                  if (h != nil && !h.closed) [h.cancelButton performClick:nil];
+                                              }];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
 }
 
 void showPicker(const std::shared_ptr<PickerFlow> &flow) {
@@ -485,42 +510,48 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
         if (actionsState().stopped) return;  // quit started: drop it
         if (response != NSAlertFirstButtonReturn) {
             logDebug("assign-other: cancelled in the picker");
-        } else if (!isListedCollection(current->names, text)) {
+        } else if (const std::string *listed = listedCollectionFor(current->names, text)) {
+            // The listed name's own bytes, never the typed text.
+            logDebug("assign-other: " + assignChosen(current->entry, *listed));
+        } else {
             // Assign is disabled for anything else; never pass an unlisted
             // name to --collection.
-            logDebug("assign-other: \"" + text + "\" is not a listed collection; nothing assigned");
-        } else {
-            logDebug("assign-other: " + assignChosen(current->entry, text));
+            notRun(current->entry.action, "\"" + text + "\" is not a listed collection");
         }
         pickerDone(current->test);
     };
 
     const bool autoClose = flow->test && flow->test->mode == PickerTestHooks::Mode::AutoClose;
-    auto scheduleCancel = [&]() {
-        // Common modes include the modal panel mode, so this also fires
-        // while the app-modal fallback runs.
-        __weak JLIntakeCollectionPicker *weakHelper = helper;
-        NSTimer *timer = [NSTimer timerWithTimeInterval:flow->test->closeSeconds
-                                                repeats:NO
-                                                  block:^(NSTimer *) {
-                                                      JLIntakeCollectionPicker *h = weakHelper;
-                                                      if (h != nil && !h.closed) [h.cancelButton performClick:nil];
-                                                  }];
-        [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
-    };
-    if (NSWindow *host = sheetHostWindow()) {
+    // The window chosen at the click; if it can no longer take a sheet, the
+    // main or key window as they are now.
+    NSWindow *host = flow->hostWindow;
+    if (!usableSheetHost(host)) host = activeSheetHost();
+    if (host != nil) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
         if (autoClose) {
             pickerReport(flow->test, pickerSheetDescription(*flow, combo, ok, true));
-            scheduleCancel();
+            scheduleAutoCancel(helper, flow->test->closeSeconds);
         }
-    } else {
+        return;
+    }
+    // App-modal, but not from here: this runs inside a main-queue block,
+    // and libdispatch does not drain the main queue from a run loop nested
+    // in one of its blocks, so every dispatch_async(main) in the process
+    // (this component's results, the helper's updateSoon, the host's work)
+    // would wait until the alert closes. From a run-loop callout the modal
+    // loop drains it as usual.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
+        if (actionsState().stopped) {  // quit started meanwhile: no alert
+            endPicker(current);
+            return;
+        }
         if (autoClose) {
-            pickerReport(flow->test, pickerSheetDescription(*flow, combo, ok, false));
-            scheduleCancel();
+            pickerReport(current->test, pickerSheetDescription(*current, combo, ok, false));
+            scheduleAutoCancel(helper, current->test->closeSeconds);
         }
         finish([alert runModal]);
-    }
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
 }
 
 void onCollectionsBudget(uint64_t serial) {
@@ -534,9 +565,18 @@ void onCollectionsBudget(uint64_t serial) {
     pickerFailed(st.picker, "collections: " + renderError(timeout));
 }
 
-void onCollections(uint64_t serial, const CliResult &result) {
+// A finished `collections` call; an Ok reply is parsed on the queue, so
+// the main thread never walks it.
+struct CollectionsReply {
+    CliResult result;
+    CollectionsParseResult parsed;   // Ok results only
+    std::vector<std::string> names;  // collectionNames(parsed.collections)
+};
+
+void onCollections(uint64_t serial, CollectionsReply &reply) {
     ActionsState &st = actionsState();
     if (st.stopped) return;
+    const CliResult &result = reply.result;
     logCliResult(result);
     if (!st.picker || st.picker->serial != serial) {
         logDebug("assign-other: a late collections result was ignored");
@@ -547,7 +587,7 @@ void onCollections(uint64_t serial, const CliResult &result) {
         pickerFailed(flow, "collections: " + collectionsFailureText(result.envelope));
         return;
     }
-    const CollectionsParseResult parsed = parseCollections(result.envelope.data);
+    const CollectionsParseResult &parsed = reply.parsed;
     if (!parsed.ok) {
         pickerFailed(flow, "collections: unusable reply (" + parsed.error + ")");
         return;
@@ -557,18 +597,18 @@ void onCollections(uint64_t serial, const CliResult &result) {
                  " without a usable name skipped, " + std::to_string(parsed.duplicates) +
                  " repeated name(s) dropped");
     }
-    flow->names = collectionNames(parsed.collections);
+    flow->names = std::move(reply.names);
     if (flow->names.empty()) {
         pickerFailed(flow, parsed.skipped > 0 ? "the CLI lists no usable collection" : "the CLI lists no collections");
         return;
     }
     if (flow->test && flow->test->mode == PickerTestHooks::Mode::Headless) {
         const std::string &name = flow->test->collection;
-        const bool listed = isListedCollection(flow->names, name);
+        const std::string *listed = listedCollectionFor(flow->names, name);
         std::string line = "collections: " + std::to_string(flow->names.size()) + "; \"" + name + "\" " +
                            (listed ? "listed" : "not listed");
         endPicker(flow);
-        line += "; " + (listed ? assignChosen(flow->entry, name) : std::string("nothing assigned"));
+        line += "; " + (listed ? assignChosen(flow->entry, *listed) : std::string("nothing assigned"));
         pickerReport(flow->test, line);
         pickerDone(flow->test);
         return;
@@ -592,9 +632,14 @@ void startCollectionsOnQueue(uint64_t serial, std::shared_ptr<const CliConfig> c
             });
         },
         [serial](CliResult &&result) {
-            auto shared = std::make_shared<CliResult>(std::move(result));
+            auto reply = std::make_shared<CollectionsReply>();
+            reply->result = std::move(result);
+            if (reply->result.envelope.outcome == CliOutcome::Ok) {
+                reply->parsed = parseCollections(reply->result.envelope.data);
+                reply->names = collectionNames(reply->parsed.collections);
+            }
             dispatch_async(dispatch_get_main_queue(), ^{
-                onCollections(serial, *shared);
+                onCollections(serial, *reply);
             });
         },
         &refusal);
@@ -634,6 +679,7 @@ std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const P
     flow->serial = ++st.pickerSerial;
     flow->entry = entry;
     flow->test = std::move(test);
+    flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
     st.picker = flow;
     logDebug("assign-other: loading the collections for " + rootCountText(entry.roots.size()));
     const uint64_t serial = flow->serial;
@@ -688,7 +734,10 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
                 " row(s) on volumes not yet converted in this menu were left out");
     }
     const std::vector<const IntakeRecord *> roots = selectionRoots(rows);
-    st.menuTable = actionsTableFor(roots, view.get());
+    ActionContext context = liveContext(view.get());
+    // Rows left out may be other roots: no one-root quick assign.
+    context.selectionIncomplete = budget.skipped() > 0;
+    st.menuTable = buildActionTable(roots, context, menuActions());
     st.menuSerial = nextMenuSerial(st.menuSerial);
     for (size_t i = 0; i < st.menuTable.entries.size(); i++) {
         const ActionEntry &e = st.menuTable.entries[i];

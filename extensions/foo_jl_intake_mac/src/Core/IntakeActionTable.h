@@ -53,7 +53,8 @@
 //  Quick assign ("Assign to X", B7): one entry per alternate (at most 4),
 //  only for exactly one selected root; the entry carries its collection,
 //  so the click runs `assign <id> --collection X --by user` with the name
-//  the menu showed.
+//  the menu showed. None when the selection is incomplete (rows the menu
+//  could not map may be other roots, so m is only a lower bound).
 //  The menu shows menuActions(): Propose, Assign to X, Assign to other
 //  collection…, Approve, Reject… and Refresh (B7). Execute and Resume (B8),
 //  Swap and Delete (B9) are already decided here and stay hidden until
@@ -118,6 +119,9 @@ struct ActionContext {
     bool executeRunning = false;           // the lane holder is an execute or resume
     std::vector<std::string> liveRunIds;   // roots with a live execute run (B8)
     bool confirmReject = true;             // confirm_reject: Reject asks first
+    // Some selected rows were left unmapped (NativePathMenuBudget): they
+    // may be roots, so m is only a lower bound.
+    bool selectionIncomplete = false;
 };
 
 // Choosing the action opens a dialog first, so its title ends in an

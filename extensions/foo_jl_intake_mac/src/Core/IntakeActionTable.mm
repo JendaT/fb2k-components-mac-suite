@@ -217,8 +217,9 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
             if (action == IntakeAction::Reject && !cliSupportsCommand(c.cli, CliCommand::Reject)) continue;
 
             if (action == IntakeAction::AssignTo) {
-                // Quick assign: one selected root, its alternates only.
-                if (m != 1 || !rootQualifies(action, *roots[0], c)) continue;
+                // Quick assign: one selected root, its alternates only; never
+                // when unmapped rows may have been other roots.
+                if (m != 1 || c.selectionIncomplete || !rootQualifies(action, *roots[0], c)) continue;
                 for (const std::string &collection : assignAlternates(*roots[0])) {
                     ActionEntry e;
                     e.action = action;

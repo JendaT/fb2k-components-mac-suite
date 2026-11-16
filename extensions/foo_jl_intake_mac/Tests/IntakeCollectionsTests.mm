@@ -4,8 +4,10 @@
 //
 //  Unit tests for IntakeCollections: tolerant parsing of the
 //  `collections --json` data (doc 03 v1.2: [{collection, artists,
-//  releases}], releases may be fractional), the exact-name check behind the
-//  picker's OK button, and the one-line failure text. Synthetic names only.
+//  releases}], releases may be fractional; at most kMaxCollectionEntries
+//  entries), the name check behind the picker's OK button (exact bytes
+//  first, else one canonically equivalent name), and the one-line failure
+//  text. Synthetic names only.
 //
 // TEST_DEPS: src/Core/IntakeEnvelope.mm src/Core/IntakeErrorMap.mm
 //
@@ -154,9 +156,63 @@ static void testNames() {
     CHECK(!isListedCollection(names, "[Test & Ambient] "), "no trimming");
     CHECK(!isListedCollection(names, "[Test &"), "a prefix is not listed");
     CHECK(!isListedCollection(names, "Cafe Fixture"), "no folding");
-    CHECK(isListedCollection(names, "Cafe\xCC\x81 Fixture"), "the NFD spelling matches only itself");
+    CHECK(isListedCollection(names, "Cafe\xCC\x81 Fixture"), "the NFD spelling is listed as itself");
     CHECK(!isListedCollection(names, ""), "empty text is never listed");
     CHECK(!isListedCollection({}, "x"), "nothing is listed in an empty list");
+}
+
+static void testEquivalent() {
+    g_context = "equivalent";
+    const std::string nfc = "Caf\xC3\xA9 Fixture";    // U+00E9, as typed
+    const std::string nfd = "Cafe\xCC\x81 Fixture";   // e + U+0301, as a folder name over SMB
+    const std::vector<std::string> onlyNfd = {"Test Collection A", nfd};
+    const std::string *hit = listedCollectionFor(onlyNfd, nfc);
+    CHECK(hit != nullptr && *hit == nfd, "typed NFC finds the NFD name and returns its own bytes");
+    CHECK(hit == &onlyNfd[1], "the pointer is into the list");
+    const std::vector<std::string> onlyNfc = {nfc};
+    hit = listedCollectionFor(onlyNfc, nfd);
+    CHECK(hit != nullptr && *hit == nfc, "NFD text finds the NFC name");
+    CHECK(listedCollectionFor(onlyNfd, "caf\xC3\xA9 fixture") == nullptr, "still case-sensitive");
+    CHECK(listedCollectionFor(onlyNfd, nfc + " ") == nullptr, "still no trimming");
+    CHECK(listedCollectionFor(onlyNfd, "Cafe Fixture") == nullptr, "no accent folding");
+
+    // Both spellings listed: the exact bytes win.
+    const std::vector<std::string> both = {nfc, nfd};
+    CHECK(listedCollectionFor(both, nfc) == &both[0], "both listed, NFC text: the NFC name");
+    CHECK(listedCollectionFor(both, nfd) == &both[1], "both listed, NFD text: the NFD name");
+
+    // d + dot below + dot above has several equivalent spellings: two of
+    // them listed, a third typed (NFC: U+1E0D U+0307) is ambiguous.
+    const std::vector<std::string> twoOthers = {"d\xCC\x87\xCC\xA3 Fixture", "\xE1\xB8\x8B\xCC\xA3 Fixture"};
+    CHECK(listedCollectionFor(twoOthers, "\xE1\xB8\x8D\xCC\x87 Fixture") == nullptr,
+          "two equivalent names, neither exact: none");
+    CHECK(listedCollectionFor(twoOthers, twoOthers[1]) == &twoOthers[1], "an exact one still wins");
+    const std::vector<std::string> oneOther = {twoOthers[0]};
+    CHECK(listedCollectionFor(oneOther, "\xE1\xB8\x8D\xCC\x87 Fixture") == &oneOther[0],
+          "mark order differs, same NFC: found");
+
+    CHECK(listedCollectionFor(onlyNfd, "") == nullptr, "empty text: none");
+    CHECK(listedCollectionFor(onlyNfd, "\xFF\xFE") == nullptr, "invalid UTF-8 text: none, no crash");
+    CHECK(isListedCollection(onlyNfd, nfc), "isListedCollection follows listedCollectionFor");
+}
+
+static void testEntryCap() {
+    g_context = "entry-cap";
+    CHECK(kMaxCollectionEntries == 10000, "default cap");
+    const char *three = "[{\"collection\":\"A\"},{\"collection\":\"B\"},7]";
+    CollectionsParseResult atCap = parseCollections(json(three), 3);
+    CHECK(atCap.ok && atCap.collections.size() == 2 && atCap.skipped == 1, "exactly the cap: parsed");
+    CollectionsParseResult over = parseCollections(json(three), 2);
+    CHECK(!over.ok && over.error == "more than 2 entries" && over.collections.empty(),
+          "one entry over the cap: not usable");
+    NSMutableArray *big = [NSMutableArray arrayWithCapacity:kMaxCollectionEntries + 1];
+    for (size_t i = 0; i <= kMaxCollectionEntries; i++) [big addObject:@{@"collection" : @"Same Name"}];
+    CollectionsParseResult huge = parseCollections(big);
+    CHECK(!huge.ok && huge.error == "more than 10000 entries", "10001 entries: not usable by default");
+    [big removeLastObject];
+    CollectionsParseResult full = parseCollections(big);
+    CHECK(full.ok && full.collections.size() == 1 && full.duplicates == kMaxCollectionEntries - 1,
+          "10000 entries: parsed");
 }
 
 static void testFailureText() {
@@ -198,6 +254,8 @@ int main() {
         testNotArray();
         testDuplicates();
         testNames();
+        testEquivalent();
+        testEntryCap();
         testFailureText();
     }
     TEST_MAIN_END();

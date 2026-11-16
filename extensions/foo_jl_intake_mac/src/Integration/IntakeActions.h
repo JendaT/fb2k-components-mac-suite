@@ -16,7 +16,8 @@
 //  never saw, so mac-volume conversions run under a per-menu budget: at
 //  most one slow conversion per menu (NativePathMenuBudget), after which
 //  rows on volumes not yet converted in that menu map to nothing (one Info
-//  line).
+//  line). Such a menu has no quick assign (ActionContext
+//  selectionIncomplete): the rows left out may be other roots.
 //
 //  Dispatch (main thread, from execute_context_action): the item's entry is
 //  copied out of the kept table; the host's selection is not used (v2
@@ -27,25 +28,32 @@
 //   - Propose, Approve: run at once.
 //   - Assign to X (B7): runs at once, `assign <id> --collection X --by
 //     user`, X being the collection the menu showed (kept in the entry).
-//   - Assign to other collection… (B7): the picker. `collections --json`
-//     runs first, off the main thread (read-only: E_CLI_TIMEOUT at 10 s and
-//     killed, killed on quit too). Only when it has answered, on the main
-//     thread, an NSAlert opens as a sheet on the same window choice as
-//     Reject's (app-modal fallback), with an NSComboBox (type-ahead
-//     completion) listing the collection names in the CLI's order and the
-//     albums it applies to (up to 10, then "and N more"; for one root also
-//     its current target). Nothing is preselected: the field starts empty,
-//     so an engine proposal is never turned into a user choice by Return.
-//     "Assign" is enabled only while the text is exactly a listed name
-//     (case-sensitive, IntakeCollections). Cancel or Escape runs nothing.
+//   - Assign to other collection… (B7): the picker. The sheet's window is
+//     chosen at the click, as for Reject. `collections --json` runs first,
+//     off the main thread (read-only: E_CLI_TIMEOUT at 10 s and killed,
+//     killed on quit too; the reply is parsed there too). Only when it has
+//     answered, on the main thread, an NSAlert opens as a sheet on that
+//     window, or, when it can no longer take one, on the main or key
+//     window, else app-modal (started from a run-loop callout, never inside
+//     a main-queue block, so the main queue keeps draining while it is
+//     up). It has an NSComboBox (type-ahead completion) listing the
+//     collection names in the CLI's order and the albums it applies to (up
+//     to 10, then "and N more"; for one root also its current target).
+//     Nothing is preselected: the field starts empty, so an engine proposal
+//     is never turned into a user choice by Return. "Assign" is enabled
+//     only while the text stands for a listed name (case-sensitive; a
+//     spelling that differs only in Unicode normalisation counts, and the
+//     listed name's own bytes go to the CLI: IntakeCollections
+//     listedCollectionFor). Cancel or Escape runs nothing.
 //     Assign checks the lane and the configuration again, then runs
 //     `assign <ids> --collection <name> --by user` on the roots the menu
 //     captured. One picker flow at a time: a request while `collections`
 //     runs or the sheet is open logs one Info line and does nothing. A
 //     failed `collections` (an E_* error, a timeout, a reply that is not
-//     an envelope or whose data is not an array, a partial reply) or an
-//     empty list logs one Error line and shows no sheet; never modal,
-//     never inert. Results that arrive after on_quit are dropped.
+//     an envelope or whose data is not an array or has more than 10000
+//     entries, a partial reply) or an empty list logs one Error line and
+//     shows no sheet; never modal, never inert. Results that arrive after
+//     on_quit are dropped.
 //   - Reject…: with confirm_reject on (default), an NSAlert first, as a
 //     sheet on the window under the pointer (where the menu was opened),
 //     else the main window, else the key window, else app-modal; it lists
