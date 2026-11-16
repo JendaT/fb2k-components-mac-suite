@@ -60,6 +60,21 @@ export function isPartialUnpackDir(name: string): boolean {
   return name.endsWith(PARTIAL_UNPACK_SUFFIX);
 }
 
+/**
+ * Prefix of the dir gc stages a root's files in before deleting them
+ * (`.intake-gc-<id>/`, src/commands-p3.ts). One left behind by a gc that
+ * died holds already-placed audio, which a gc rerun deletes: never walked,
+ * never resolved.
+ */
+export const GC_STAGE_PREFIX = ".intake-gc-";
+
+export function isGcStageDir(name: string): boolean {
+  return name.startsWith(GC_STAGE_PREFIX);
+}
+
+/** A dir intake itself left mid-operation: a partial unpack or a gc stage dir. */
+const isTransientDir = (name: string): boolean => isPartialUnpackDir(name) || isGcStageDir(name);
+
 export function isSidecarName(name: string): boolean {
   return name === ".intake.json" || /^\.intake\.[a-z0-9_]+\.json$/i.test(name);
 }
@@ -95,12 +110,12 @@ export interface DirEntry {
 
 /**
  * Depth-first walk; returns entries bottom-up (children before parents).
- * A half-extracted archive (`*.unpacked.partial`) is skipped, and a root
- * inside one yields nothing.
+ * A half-extracted archive (`*.unpacked.partial`) and a gc stage dir
+ * (`.intake-gc-<id>`) are skipped, and a root inside one yields nothing.
  */
 export function walkDirs(root: string): DirEntry[] {
   const out: DirEntry[] = [];
-  if (root.split("/").some(isPartialUnpackDir)) return out;
+  if (root.split("/").some(isTransientDir)) return out;
   const visit = (dir: string, name: string) => {
     let names: string[];
     try {
@@ -119,7 +134,7 @@ export function walkDirs(root: string): DirEntry[] {
       }
       if (st.isSymbolicLink()) continue; // never follow symlinks (traversal / recursion-cycle guard)
       if (st.isDirectory()) {
-        if (isJunkDir(n) || isPartialUnpackDir(n)) continue;
+        if (isJunkDir(n) || isTransientDir(n)) continue;
         entry.subdirs.push(n);
         visit(p, n);
       } else {

@@ -21,7 +21,7 @@ import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./ru
 import { readSidecar } from "./sidecar.ts";
 import { targetTierProblem, type MountFs } from "./tierroot.ts";
 import {
-  IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, isVariousArtists, mapLimit, sha1Hex, walkDirs,
+  GC_STAGE_PREFIX, IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, isVariousArtists, mapLimit, sha1Hex, walkDirs,
 } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
@@ -645,7 +645,7 @@ function insideDir(p: string, rootReal: string): boolean {
  */
 function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): JsonError | null {
   const sc = root.sidecar;
-  const stage = join(root.dir, `.intake-gc-${sc.id}`);
+  const stage = join(root.dir, `${GC_STAGE_PREFIX}${sc.id}`); // never walked (walkDirs)
   const moves: { from: string; to: string; rel: string; relocated: boolean }[] = [];
   // Shadows included: all local copies go.
   for (const f of sc.files) {

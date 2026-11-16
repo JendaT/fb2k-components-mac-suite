@@ -116,7 +116,9 @@ If one fails (an immutable flag, an existing dj file, ...) the renames are
 reversed, the root stays `placed` with no journal line, and a per-root
 `E_VERIFY` (`E_TARGET_EXISTS` for an existing dj file) names the file. A
 read-only dir inside the root's dir gets u+w while gc works and its mode
-back afterwards; nothing outside the root's dir is chmodded. For an
+back afterwards; nothing outside the root's dir is chmodded. A stage dir
+left by a gc that died is never walked or resolved; a gc rerun deletes
+it. For an
 archive-sourced root gc removes the root's files inside `<name>.unpacked/`;
 the archive and the `.unpacked` dir stay. Each copy gets u+w (a 0444
 original copies as 0444 and could not be tagged); the original is never
