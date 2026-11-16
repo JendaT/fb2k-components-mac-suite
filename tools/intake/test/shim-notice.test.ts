@@ -7,7 +7,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { cmdScan } from "../src/commands.ts";
-import { cmdIdentify } from "../src/commands-p2.ts";
+import { cmdIdentify, shimNotice } from "../src/commands-p2.ts";
 import { cmdPropose } from "../src/commands-p3.ts";
 import type { Providers, ShimResult } from "../src/providers.ts";
 import { readSidecar } from "../src/sidecar.ts";
@@ -88,9 +88,41 @@ test("identify: notice counts the failed roots only, shows the first error's fir
   expect("issues" in doc(LEAVING()).identification!).toBe(false);
   expect(doc(OTT()).identification!.issues).toEqual([crash]);
   expect(doc(BLUETECH()).identification!.issues).toEqual(["shim_exit_1"]);
+  // A beets error is not fixed by another shim command: no INTAKE_BEETS_SHIM hint.
   expect(r.notices).toEqual([
-    "beets shim failed for 2 root(s): beets_error: HTTPSConnectionPool(host='musicbrainz.org'); see INTAKE_BEETS_SHIM",
+    "beets shim failed for 2 root(s): beets_error: HTTPSConnectionPool(host='musicbrainz.org')",
   ]);
+});
+
+// ---- the INTAKE_BEETS_SHIM hint ----------------------------------------------
+
+const HINT = "; see INTAKE_BEETS_SHIM";
+
+test("notice: no INTAKE_BEETS_SHIM hint when the shim ran and failed on the release or in beets", () => {
+  for (const error of [
+    "no_audio_files",
+    "beets_error: x",
+    "file_not_found: cd1/01 - Intro.mp3",
+    "file_outside_release_dir: ../01 - Intro.mp3",
+  ]) {
+    expect(shimNotice([error])).toBe(`beets shim failed for 1 root(s): ${error}`);
+  }
+  // The hint follows the error shown, the first.
+  expect(shimNotice(["beets_error: x", "beets_unavailable"])).toBe("beets shim failed for 2 root(s): beets_error: x");
+});
+
+test("notice: the INTAKE_BEETS_SHIM hint stays for launch, interpreter and invocation failures", () => {
+  for (const error of [
+    "shim_unavailable",
+    "beets_unavailable",
+    "shim_exit_1",
+    "shim_exit_127",
+    "shim_bad_output",
+    "usage: beets_identify.py <release_dir> <file>... --json",
+  ]) {
+    expect(shimNotice([error])).toBe(`beets shim failed for 1 root(s): ${error}${HINT}`);
+  }
+  expect(shimNotice(["beets_unavailable", "beets_error: x"])).toBe(`beets shim failed for 2 root(s): beets_unavailable${HINT}`);
 });
 
 test("identify: a Discogs outage is recorded too, but is not a shim notice", async () => {

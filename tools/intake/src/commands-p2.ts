@@ -158,15 +158,28 @@ export function diskLibraryProbe(): LibraryProbe {
 }
 
 /**
+ * Shim errors that INTAKE_BEETS_SHIM can fix: the shim did not start
+ * (`shim_unavailable`), ran under a Python without beets
+ * (`beets_unavailable`), died without a JSON error (`shim_exit_<n>`),
+ * printed no usable JSON (`shim_bad_output`) or was invoked wrongly (its
+ * `usage: ...`). Errors from a shim that ran (`beets_error: ...`,
+ * `no_audio_files`, `file_not_found: ...`, `file_outside_release_dir: ...`)
+ * are about beets or the release, and a different command does not help.
+ */
+const SHIM_LAUNCH_ERROR = /^(shim_unavailable|beets_unavailable|shim_bad_output)$|^shim_exit_|^usage: /;
+
+/**
  * The human-mode notice for a run in which the beets shim failed on some
  * roots (`shimErrors`: one error per such root, in run order), or null when
  * it never failed. Those roots were identified without MusicBrainz, which
- * their `unconfirmed` status alone does not say.
+ * their `unconfirmed` status alone does not say. It shows the first error,
+ * and points at INTAKE_BEETS_SHIM only when that error is a launch failure.
  */
 export function shimNotice(shimErrors: string[]): string | null {
   if (shimErrors.length === 0) return null;
   const first = shimErrors[0]!.split("\n")[0]!.trim();
-  return `beets shim failed for ${shimErrors.length} root(s): ${first}; see INTAKE_BEETS_SHIM`;
+  const hint = SHIM_LAUNCH_ERROR.test(first) ? "; see INTAKE_BEETS_SHIM" : "";
+  return `beets shim failed for ${shimErrors.length} root(s): ${first}${hint}`;
 }
 
 /**
