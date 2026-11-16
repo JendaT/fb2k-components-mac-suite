@@ -22,18 +22,21 @@ and `run_tests.sh` never call them. Agents check them statically only
 
 ## Safety rules
 
-- **Synthetic data only.** The scripts generate 1 s sine tones with ffmpeg.
-  All artists, albums and labels are invented ("Fixture Artist E2E" and so
-  on). No real music, no real collection names, no NAS paths.
-- **Where `<dest>` may be.** Both scripts refuse (exit 64, before doing
+- **Synthetic data only.** `make_corpus.sh` generates 1 s sine tones with
+  ffmpeg; `make_perf_corpus.sh` writes 0.1 s silent WAVs in bash, without
+  ffmpeg. All artists, albums and labels are invented ("Fixture Artist E2E",
+  "Perf Artist 001" and so on). No real music, no real collection names, no
+  NAS paths.
+- **Where `<dest>` may be.** All three scripts refuse (exit 64, before doing
   anything) unless the realpath of `<dest>` is:
   - below `$TMPDIR`, or
   - below a Claude Code session scratchpad
     (`/private/tmp/claude-<uid>/<project>/<session>/scratchpad/`).
-- **Other refusals.** Both scripts also refuse:
+- **Other refusals.** All three scripts also refuse:
   - anything under or naming `/Volumes` or `/volume1` (case-insensitive);
   - a `..` component, a symlinked `<dest>`, or characters outside `[A-Za-z0-9._/-]`.
-- **make_corpus.sh** also refuses a `<dest>` that already has files in it.
+- **make_corpus.sh and make_perf_corpus.sh** also refuse a `<dest>` that
+  already has files in it.
 - **run_flow.sh and the wrapper** also refuse:
   - a corpus whose `.intake-e2e-corpus` marker names another location;
   - a rules dir that resolves outside `<dest>`;
@@ -218,10 +221,10 @@ What it builds in `<dest>`:
 |---|---|
 | `mock-cli/` | A frozen copy of `Tests/mock-cli`: later edits in the worktree do not change a running check. |
 | `state/` | The mock's `INTAKE_MOCK_STATE`, set up with the `perf-200` scenario. It has the same layout as the `default` scenario (`root/`, `responses/`, the marker). |
-| `state/root/income/perf/` | 200 roots, statuses cycling new, resolved, proposed, approved, placing, placed, gc_done, rejected (25 each; `needs_review` on some resolved and proposed ones). Each root has one 0.1 s silent `.wav`, except the gc_done roots, which keep only their sidecar as the real gc leaves them: 175 intake rows. |
+| `state/root/income/perf/` | 200 roots, statuses cycling new, resolved, proposed, approved, placing, placed, gc_done, rejected (25 each; `needs_review` on 5 of the proposed ones, so amber rows with the half-circle icon, and none on a resolved one). Each root has one 0.1 s silent `.wav`, except the gc_done roots, which keep only their sidecar as the real gc leaves them: 175 intake rows. |
 | `state/root/archive/`, `state/root/shelf/` | 4,825 filler `.wav` files (193 albums of up to 25 tracks, "Perf Artist 001" and so on) in no intake root. `archive` sorts before `income` and `shelf` after it, so the intake rows sit in the middle of the sorted playlist. |
-| `bin/intake-perf` | The wrapper for `cli_path`: exports `INTAKE_MOCK_STATE=<dest>/state` and runs the frozen mock. |
-| `.intake-perf-corpus` | A marker with the destination and the counts. |
+| `bin/intake-perf` | The wrapper for `cli_path`: exports `INTAKE_MOCK_STATE=<realpath of dest>/state` and runs the frozen mock. |
+| `.intake-perf-corpus` | A marker with the destination (its realpath, `dest=`) and the counts. |
 
 The WAVs are tagged like the mock's (album = folder name, title = file name),
 so SimPlaylist groups them by album once their tags are read.
@@ -238,7 +241,15 @@ How to run it and point foobar2000 at it:
 E2E=extensions/foo_jl_intake_mac/Tests/e2e
 DEST=$TMPDIR/intake-perf-$(date +%s)        # or a dir under the session scratchpad
 $E2E/make_perf_corpus.sh "$DEST"            # a few seconds; prints the settings below
+REAL=$(sed -n 's/^dest=//p' "$DEST/.intake-perf-corpus")   # the resolved destination
 ```
+
+Use `$REAL`, the resolved path the script prints, never `$DEST` itself, in
+the settings. `$TMPDIR` is under `/var`, a symlink to `/private/var`: the
+script builds the corpus at the realpath, so the mock reports root paths
+under `/private/var/...`. A `test_playlist_dir` spelled `/var/...` gives
+rows whose paths match no root (paths are matched byte for byte, nothing
+resolves symlinks), and the playlist shows no tints and no badges.
 
 Then, with foobar2000 quit (ask the user first, as for every in-app run),
 save the current values of the keys below so they can be put back, and
@@ -246,9 +257,9 @@ write:
 
 ```bash
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
-  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.cli_path','$DEST/bin/intake-perf')
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.cli_path','$REAL/bin/intake-perf')
      ON CONFLICT(name) DO UPDATE SET value=excluded.value;
-   INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_playlist_dir','$DEST/state/root')
+   INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_playlist_dir','$REAL/state/root')
      ON CONFLICT(name) DO UPDATE SET value=excluded.value;
    INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_playlist',1)
      ON CONFLICT(name) DO UPDATE SET value=1;
