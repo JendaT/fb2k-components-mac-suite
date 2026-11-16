@@ -6,9 +6,13 @@
 // 1. readRarHeaders reads every header of a RAR4 (format 2.9) or RAR5
 //    archive and refuses, before anything is written: multi-volume (volume
 //    flag, split entry, `.partN.rar` name), header encryption, an encrypted
-//    entry, a data entry without a CRC32 (RAR5 BLAKE2-only), RAR5 hard link,
-//    file copy and junction entries, Unix special files, unsafe paths
-//    (absolute or `..`), duplicate paths, and unreadable or damaged headers.
+//    entry, solid RAR4 (main header solid flag or an entry's LHD_SOLID:
+//    libarchive 3.7.4 writes the first member and then fails with "RAR solid
+//    archive support unavailable"; its RAR5 reader handles solid archives,
+//    so RAR5 solid is allowed), a data entry without a CRC32 (RAR5
+//    BLAKE2-only), RAR5 hard link, file copy and junction entries, Unix
+//    special files, unsafe paths (absolute or `..`), duplicate paths, and
+//    unreadable or damaged headers.
 // 2. verifyRarExtraction checks the extracted tree against the headers:
 //    each data entry present, with its size and CRC32 (streamed), and no
 //    file that the headers do not list.
@@ -54,6 +58,7 @@ class Refusal extends Error {}
 const damaged = (detail: string) => new Refusal(`damaged rar headers: ${detail}`);
 const entryRefusal = (name: string, reason: string) => new Refusal(`rar entry "${name}": ${reason}`);
 const MULTI_VOLUME = "multi-volume rar is not supported";
+const SOLID_RAR4 = "solid RAR4 is not supported";
 
 const RAR5_SIG = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00];
 const RAR4_SIG = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00];
@@ -326,9 +331,11 @@ const R4_END = 0x7b;
 const R4_OTHER = new Set([0x75, 0x76, 0x77, 0x78, 0x79]); // comment, AV, sub, recovery, sign
 const R4_LONG_BLOCK = 0x8000; // ADD_SIZE (data size) follows the fixed fields
 const MHD_VOLUME = 0x0001;
+const MHD_SOLID = 0x0008;
 const MHD_PASSWORD = 0x0080;
 const LHD_SPLIT = 0x0001 | 0x0002; // continued from previous / in next volume
 const LHD_PASSWORD = 0x0004;
+const LHD_SOLID = 0x0010; // continues the previous entry's solid stream
 const LHD_DIRECTORY = 0x00e0; // all dictionary bits set
 const LHD_LARGE = 0x0100;
 const LHD_UNICODE = 0x0200;
@@ -354,6 +361,7 @@ function readRar4(src: Source): RawEntry[] {
     if (type === R4_MAIN) {
       if (flags & MHD_PASSWORD) throw new Refusal("header-encrypted rar is not supported");
       if (flags & MHD_VOLUME) throw new Refusal(MULTI_VOLUME);
+      if (flags & MHD_SOLID) throw new Refusal(SOLID_RAR4);
     } else if (type === R4_NEWSUB) {
       // A service block (comment, recovery record, NTFS stream...) has the
       // file header layout; only its data size and volume flags matter.
@@ -364,6 +372,7 @@ function readRar4(src: Source): RawEntry[] {
       const f = rar4File(h, flags);
       dataSize = f.packed;
       if (flags & LHD_SPLIT) throw new Refusal(MULTI_VOLUME);
+      if (flags & LHD_SOLID) throw new Refusal(`${SOLID_RAR4} (entry "${f.display}" continues a solid stream)`);
       if (flags & LHD_PASSWORD && f.entry.kind !== "dir") throw entryRefusal(f.display, "encrypted");
       if (f.unixMode !== null && f.entry.kind === "file") checkUnixMode(f.display, f.unixMode);
       entries.push(f.entry);

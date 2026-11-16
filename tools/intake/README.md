@@ -158,14 +158,14 @@ macOS), else `7zz`/`7z`, which extract stored rar members only. bsdtar can
 exit 0 after writing a member with a wrong CRC32, or the ciphertext of an
 encrypted one, so intake checks rar itself (`src/rarheaders.ts`): before
 anything is written it reads the headers and refuses multi-volume sets,
-header- or file-encrypted archives, entries with no CRC32 (RAR5 BLAKE2-only),
-RAR5 hard link, file copy and junction entries, unsafe or duplicate paths and
-damaged headers; after extraction it checks each data entry's size and CRC32
-and fails the archive on a mismatch, a missing entry or a file the headers do
-not list. Plain OEM RAR4 names are decoded with the code page rule used for
-zips, passed to bsdtar as `rar:hdrcharset`. libarchive 3.7.4 does not extract
-solid RAR4 archives. With no tool on PATH a rar/7z reports `E_ARCHIVE_TOOL`
-and such a zip `E_ARCHIVE`.
+header- or file-encrypted archives, solid RAR4 archives (libarchive 3.7.4
+cannot extract them; solid RAR5 is fine), entries with no CRC32 (RAR5
+BLAKE2-only), RAR5 hard link, file copy and junction entries, unsafe or
+duplicate paths and damaged headers; after extraction it checks each data
+entry's size and CRC32 and fails the archive on a mismatch, a missing entry
+or a file the headers do not list. Plain OEM RAR4 names are decoded with the
+code page rule used for zips, passed to bsdtar as `rar:hdrcharset`. With no
+tool on PATH a rar/7z reports `E_ARCHIVE_TOOL` and such a zip `E_ARCHIVE`.
 The `E_ARCHIVE_TOOL` surface is covered in `test/archive.test.ts` by
 re-running the CLI with `PATH` stripped, since `Bun.which()` reads the
 environment at process start. An unpack tool run is

@@ -313,6 +313,7 @@ export interface Rar4Options {
   encryptedHeaders?: boolean; // main header password flag; filler bytes stand in for the rest
   volume?: boolean; // first volume of a set: volume flags, end block "next volume"
   solid?: boolean; // main header solid flag
+  locked?: boolean; // main header lock flag (archive may not be modified)
 }
 
 const RAR4_SIGNATURE = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00];
@@ -362,6 +363,7 @@ export function buildRar4(entries: Rar4Entry[], opts: Rar4Options = {}): Uint8Ar
   const out: number[] = [...RAR4_SIGNATURE];
   const mainFlags =
     (opts.volume ? 0x0001 | 0x0010 | 0x0100 : 0) | // volume, new numbering, first volume
+    (opts.locked ? 0x0004 : 0) |
     (opts.solid ? 0x0008 : 0) |
     (opts.encryptedHeaders ? 0x0080 : 0);
   out.push(...block4(0x73, mainFlags, [0, 0, 0, 0, 0, 0])); // reserved fields

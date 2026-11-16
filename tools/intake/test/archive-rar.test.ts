@@ -247,17 +247,27 @@ describe.skipIf(!existsSync(BSDTAR))("rar with bsdtar", () => {
     ]);
   });
 
-  test("solid RAR4: bsdtar fails it (libarchive 3.7.4 has no solid RAR4 support)", () => {
-    place("Synthetic - Solid (2008).rar", buildRar4(
-      [
-        { name: "Album/01.txt", data: TRACK, compressed: true },
-        { name: "Album/02.txt", data: TRACK, compressed: true, solid: true },
-      ],
-      { solid: true },
-    ));
+  test("solid RAR4: refused before extraction (libarchive 3.7.4 writes the first member, then fails)", () => {
+    const entries = [
+      { name: "Album/01.txt", data: TRACK, compressed: true },
+      { name: "Album/02.txt", data: TRACK, compressed: true, solid: true },
+    ];
+    place("A Solid (2008).rar", buildRar4(entries, { solid: true })); // main flags 0x0008
+    place("B Solid Locked (2008).rar", buildRar4(entries, { solid: true, locked: true })); // 0x000c
+    place("C Solid Entry (2008).rar", buildRar4(entries)); // LHD_SOLID on a non-solid main header
     const run = scan();
-    expect(calls()).toHaveLength(1);
-    expectFailed(run, [{ file: "Synthetic - Solid (2008).rar", msg: /RAR solid archive support unavailable/ }]);
+    expect(calls()).toEqual([]);
+    expectFailed(run, [
+      { file: "A Solid (2008).rar", msg: "solid RAR4 is not supported" },
+      { file: "B Solid Locked (2008).rar", msg: "solid RAR4 is not supported" },
+      { file: "C Solid Entry (2008).rar", msg: 'solid RAR4 is not supported (entry "Album/02.txt" continues a solid stream)' },
+    ]);
+  });
+
+  test("locked, non-solid RAR4 still extracts", () => {
+    const file = "Synthetic - Locked Four (2008).rar";
+    place(file, buildRar4([{ name: "Album/01.txt", data: TRACK, compressed: true }], { locked: true }));
+    expectUnpacked(scan(), [{ file, files: { "Album/01.txt": TRACK } }]);
   });
 
   // ---- extracted and verified ----
