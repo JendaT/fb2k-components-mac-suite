@@ -33,7 +33,8 @@
 //  placed-unverified scenario and a gc_done root leaving it empty.
 //  B10: setPalette() rebuilding the last load in the new colours (rows,
 //  icons and badges; invalidate-all only when something changes and the
-//  view is not inert; no CLI call) and reaching later loads.
+//  view is not inert: an inert view and a colour no root renders publish
+//  without one; no CLI call) and reaching later loads.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -1528,7 +1529,8 @@ static void testLibraryIndex() {
 
 // B10: setPalette() rebuilds the last load in the new colours: one publish,
 // invalidate-all only when a row or badge changes and the view is not
-// inert, no CLI call; a palette set earlier reaches the first load.
+// inert (checked both ways: a colour no root renders publishes without
+// one), no CLI call; a palette set earlier reaches the first load.
 static void testPalette() {
     g_context = "palette-before-load";
     clearLog();
@@ -1618,6 +1620,39 @@ static void testPalette() {
     placed = all.back().view->snapshot().recordForId("itk_00000012");
     CHECK(placed && placed->visual.bgTint == IntakePalette().tintPlaced, "the next load uses it");
     loader.shutdown();
+
+    // A colour no root renders: placed-unverified has no verified placed
+    // root (its one placed root is unverified, the gc_done root shows
+    // nothing), so tint_placed changes no row and no badge. The view is
+    // republished in the new palette without an invalidate-all.
+    g_context = "palette-unused";
+    clearLog();
+    std::string unverified = mock::setupState("placed-unverified");
+    auto h2 = std::make_shared<Harness>();
+    IntakeLoader loader2(settingsFor(unverified, h2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1) && h2->lastFinished().state == LoaderState::Ready, "first load (placed-unverified)");
+    const IntakeRecord *unverifiedPlaced = h2->lastPublished().view->snapshot().recordForId("itk_00000012");
+    CHECK(unverifiedPlaced && unverifiedPlaced->status == IntakeStatus::Placed && !unverifiedPlaced->placedVerified &&
+              unverifiedPlaced->visual.bgTint == 0,
+          "the scenario: the placed root is unverified and untinted");
+    before = h2->publishCount();
+    IntakePalette unused;
+    unused.tintPlaced = 0xFF00FFFF;
+    loader2.setPalette(unused);
+    CHECK(mock::waitUntil([&h2, before] { return h2->publishCount() > before; }, 10), "an unused colour publishes");
+    // Let a stray second publish show up before counting.
+    CHECK(!mock::waitUntil([&h2, before] { return h2->publishCount() > before + 1; }, 0.5), "exactly one publish");
+    p = h2->lastPublished();
+    CHECK(h2->publishCount() == before + 1 && p.reason == PublishReason::Palette && !p.invalidate && p.view &&
+              !p.view->isInert(),
+          "reason Palette, not inert, no invalidate-all: no root uses the colour");
+    unverifiedPlaced = p.view ? p.view->snapshot().recordForId("itk_00000012") : nullptr;
+    CHECK(unverifiedPlaced && unverifiedPlaced->visual.bgTint == 0 && unverifiedPlaced->visual.iconColor == 0,
+          "the unverified placed root stays untinted");
+    CHECK(callsAre(unverified, {kVersion, kIncome, kStatus}), "no CLI call for an unused colour");
+    CHECK(logCount("row colours changed: no root uses them, no invalidation") == 1, "one Debug line");
+    loader2.shutdown();
     mock::killLeftovers();
 }
 
