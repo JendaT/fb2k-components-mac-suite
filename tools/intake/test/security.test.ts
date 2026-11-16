@@ -6,7 +6,11 @@ import { isSafeRelPath, walkDirs } from "../src/util.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import { cmdScan } from "../src/commands.ts";
 import { cmdApprove, cmdExecute, cmdPropose } from "../src/commands-p3.ts";
+import type { Providers } from "../src/providers.ts";
 import { makeTierRoots, setupCorpus } from "./helpers.ts";
+
+// No network and no beets: the default shim would run the beets on PATH.
+const OFFLINE: { providers: Providers } = { providers: { discogs: null, similar: null, shim: null } };
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {}, all: false,
@@ -66,7 +70,6 @@ test("execute: refuses a target_path outside the configured tier roots", async (
   const journalPath = join(corpus.dir, "journal", "intake-journal.ndjson");
   delete process.env.DISCOGS_TOKEN;
   delete process.env.LASTFM_API_KEY;
-  delete process.env.INTAKE_BEETS_SHIM;
   writeFileSync(
     join(corpus.rules, "structure.yaml"),
     [
@@ -80,7 +83,7 @@ test("execute: refuses a target_path outside the configured tier roots", async (
   makeTierRoots(corpus.rules);
   const pollen = join(corpus.income, "downloads", "Aes Dana [2012] Pollen (Ultimae Records; inre042)");
   await cmdScan([], { ...OPTS, all: true });
-  await cmdPropose([pollen], OPTS);
+  await cmdPropose([pollen], OPTS, OFFLINE);
   await cmdApprove([pollen], OPTS);
 
   // Tamper: point the approved target outside every tier root (as a crafted or

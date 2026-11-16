@@ -57,10 +57,15 @@ beets, identification degrades to `unconfirmed` and flags review.
 
 `identify` runs `shim/beets_identify.py` when the fast path has no single
 Discogs confirmation. The shim must run on the Python interpreter beets is
-installed in. The default command is `python3 shim/beets_identify.py`, so if
-that `python3` has no beets, the shim reports `beets_unavailable` even though
-beets is installed. In that case set the full command
-(`head -1 "$(which beet)"` shows beets' interpreter):
+installed in. By default it follows `beet`'s interpreter: the CLI finds `beet`
+on PATH and reads its shebang (`head -1 "$(which beet)"`). An absolute
+`#!/path/to/python3.10` runs the shim under that path; `#!/usr/bin/env
+[-S] python3.10` runs it under that name, looked up on PATH. With no `beet`
+on PATH, an unreadable or binary `beet`, or a non-Python shebang (such as a
+shell wrapper), the default is `python3 shim/beets_identify.py`, and if that
+`python3` has no beets the shim reports `beets_unavailable`.
+
+`INTAKE_BEETS_SHIM` overrides the default with the full command:
 
 ```bash
 # Homebrew python@3.10 with beets 1.6:

@@ -3,9 +3,9 @@
 // never requires it. Tests inject fakes; nothing in the test suite touches
 // the network.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import type { IdentCandidate } from "./types.ts";
 import type { SimilarArtist } from "./assign.ts";
 import { sha1Hex } from "./util.ts";
@@ -162,10 +162,66 @@ export function httpLastfm(apiKey: string): SimilarProvider {
 
 // ---- beets shim ------------------------------------------------------------
 
-export function shimCommand(): string[] {
-  const env = process.env.INTAKE_BEETS_SHIM;
-  if (env) return env.split(" ").filter(Boolean);
-  return ["python3", join(import.meta.dir, "..", "shim", "beets_identify.py")];
+const SHIM_SCRIPT = join(import.meta.dir, "..", "shim", "beets_identify.py");
+const PYTHON_NAME = /^python(\d+(\.\d+)?)?$/; // python, python3, python3.10
+const SHEBANG_MAX = 512; // macOS reads at most this much of a #! line
+
+/**
+ * A file's first line, or null when it cannot be read or has no line break
+ * within SHEBANG_MAX bytes (a binary, or a #! line too long to trust).
+ */
+export function readFirstLine(file: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const buf = Buffer.alloc(SHEBANG_MAX);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    const nl = buf.subarray(0, n).indexOf(0x0a);
+    if (nl < 0 && n === buf.length) return null;
+    return buf.subarray(0, nl < 0 ? n : nl).toString("utf8").replace(/\r$/, "");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+/**
+ * The Python interpreter a `#!` line names, or null when it names none:
+ * `#!/abs/path/python3.10` gives that path, `#!/usr/bin/env [-S] python3`
+ * gives the bare name (resolved on PATH at spawn). Interpreter flags after
+ * the name are dropped.
+ */
+export function shebangPython(line: string | null): string | null {
+  if (!line?.startsWith("#!")) return null;
+  const words = line.slice(2).trim().split(/[ \t]+/);
+  const first = words[0] ?? "";
+  if (!isAbsolute(first)) return null;
+  if (basename(first) === "env") {
+    const name = words[words[1] === "-S" ? 2 : 1] ?? "";
+    return PYTHON_NAME.test(name) ? name : null;
+  }
+  return PYTHON_NAME.test(basename(first)) ? first : null;
+}
+
+/**
+ * The shim command line. INTAKE_BEETS_SHIM (split on spaces) wins. Otherwise
+ * the shim runs under the interpreter of the `beet` found on PATH, read from
+ * its shebang, because beets is importable there and often not under the
+ * first `python3` (Homebrew: beets on python@3.10, `python3` a newer one).
+ * No `beet`, an unreadable one, a binary or a non-Python shebang: `python3`.
+ * `env` and `readLine` are parameters so tests can use a temp PATH with fake
+ * `beet` scripts (Bun.which does not see later changes to process.env.PATH
+ * unless the PATH is passed to it).
+ */
+export function shimCommand(
+  env: Record<string, string | undefined> = process.env,
+  readLine: (file: string) => string | null = readFirstLine,
+): string[] {
+  const override = env.INTAKE_BEETS_SHIM;
+  if (override) return override.split(" ").filter(Boolean);
+  const beet = env.PATH ? Bun.which("beet", { PATH: env.PATH }) : null;
+  return [(beet ? shebangPython(readLine(beet)) : null) ?? "python3", SHIM_SCRIPT];
 }
 
 export function subprocessShim(cmd: string[] = shimCommand()): ShimProvider {
