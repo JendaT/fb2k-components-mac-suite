@@ -52,13 +52,30 @@ export interface UnpackResult {
   error?: string;
 }
 
-function toolFor(archiveExt: string): { cmd: string[]; probe: string } | null {
+/**
+ * Extraction argv for an archive, or null when no tool for it is on PATH.
+ * Every tool runs non-interactively (stdin ignored, `-y` / `-o`) and gets a
+ * password switch, so an encrypted archive fails at once ("Wrong password")
+ * instead of prompting: without one, p7zip and unzip ask on /dev/tty and
+ * hang a scan run from a terminal, and 7zz reads the password from stdin.
+ * - zip: Info-ZIP unzip; `-P ""` gives it an (empty) password.
+ * - rar, 7z: 7-Zip. `7zz` (current 7-Zip) is preferred over `7z` (p7zip,
+ *   frozen at 16.02/17.x), which lacks newer format revisions, e.g. RAR 7's
+ *   compression algorithm version 1 ("Unsupported Method"). For both, `-p`
+ *   with an empty value is a defined (empty) password and never prompts.
+ *   unrar is not used: in a real-data run it hung past 60 s with stdin closed.
+ */
+function extractArgv(archiveExt: string, archive: string, outDir: string): string[] | null {
   switch (archiveExt) {
-    case "zip":
-      return { cmd: ["unzip", "-qq", "-o"], probe: "unzip" };
+    case "zip": {
+      const unzip = Bun.which("unzip");
+      return unzip === null ? null : [unzip, "-qq", "-o", "-P", "", archive, "-d", outDir];
+    }
     case "7z":
-    case "rar":
-      return { cmd: ["7z", "x", "-y"], probe: "7z" };
+    case "rar": {
+      const sevenZip = Bun.which("7zz") ?? Bun.which("7z");
+      return sevenZip === null ? null : [sevenZip, "x", "-y", "-bd", "-p", `-o${outDir}`, archive];
+    }
     default:
       return null;
   }
@@ -70,9 +87,8 @@ export async function unpackArchive(archivePath: string, dryRun: boolean): Promi
   const target = stem + ".unpacked";
   const partial = stem + PARTIAL_UNPACK_SUFFIX;
   if (existsSync(target)) return { archive: archivePath, target, action: "already_unpacked" };
-  const tool = toolFor(x);
-  if (!tool || Bun.which(tool.probe) === null)
-    return { archive: archivePath, target, action: "tool_missing", error: `no tool for .${x}` };
+  const args = extractArgv(x, archivePath, partial);
+  if (args === null) return { archive: archivePath, target, action: "tool_missing", error: `no tool for .${x}` };
   if (dryRun) return { archive: archivePath, target, action: "unpacked" };
 
   const failed = (error: string): UnpackResult => {
@@ -87,13 +103,11 @@ export async function unpackArchive(archivePath: string, dryRun: boolean): Promi
     // A leftover from a run that died mid-extraction.
     rmSync(partial, { recursive: true, force: true });
     mkdirSync(partial, { recursive: true });
-    const args =
-      x === "zip"
-        ? [...tool.cmd, archivePath, "-d", partial]
-        : [...tool.cmd, `-o${partial}`, archivePath];
-    const proc = Bun.spawn(args, { stdout: "ignore", stderr: "pipe" });
+    const proc = Bun.spawn(args, { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
     // Drain stderr while waiting: a tool that fills the pipe would block forever.
     const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+    // Any non-zero exit is a failure, even when files appeared (7-Zip exits 1
+    // or 2 after writing the members it could): the partial dir goes.
     if (code !== 0) return failed(err.trim().slice(0, 200) || `${args[0]} exited ${code}`);
     stripSymlinks(partial);
     renameSync(partial, target);
