@@ -25,14 +25,16 @@ The component reads every key at startup.
 
 **On the preferences page (Tools > Intake, B5):** `cli_path`, `bun_path`,
 `rules_dir`, `watch_folders`, `swap_prefix_from`, `swap_prefix_to`,
-`confirm_reject` (B6) and `log_level`. These are no longer hidden: the page
-writes them and they apply at once, with no restart (a CLI, bun or rules
+the row colours `tint_new`, `tint_review`, `tint_proposed`, `tint_approved`,
+`tint_placed` and `tint_rejected` (B10), `confirm_gc` (B9, on the page since
+B10), `confirm_reject` (B6) and `log_level`. These are no longer hidden: the
+page writes them and they apply at once, with no restart (a CLI, bun or rules
 change reloads with `version`; a watched-folders change rebuilds the watch
-set; the log level and `confirm_reject` apply immediately). They are described below because in-app checks set them with
-`sqlite3` while foobar2000 is quit.
-
-**Not on the page yet (B9; B10 adds its checkbox):** `confirm_gc`. It is read
-at startup and whenever the page saves a setting.
+set; a colour change rebuilds the rows' decorations from the last load, with
+at most one invalidate-all and no CLI call; the log level and the two
+confirmations apply immediately, from the next context menu). They are
+described below because in-app checks set them with `sqlite3` while
+foobar2000 is quit.
 
 **Hidden (config store only):** `decor_stats`, `log_file` and the temporary
 acceptance aids `test_playlist`, `test_playlist_dir`, `test_open_prefs` and
@@ -125,10 +127,54 @@ files that exist are swapped. The same rule builds the library index that lets
 **Delete local copy…** find rows already swapped. A change applies at once:
 the index is rebuilt (no reload), and the next Swap uses the new pair.
 
+## foo_jl_intake.tint_new, tint_review, tint_proposed, tint_approved, tint_placed, tint_rejected
+
+`configInts`. The row colours, each a packed sRGB `0xRRGGBBAA` (red, green,
+blue, alpha; the format SimPlaylist draws decoration colours in). The page's
+Row colours section: one colour well per status, a "No tint" checkbox
+beside each, and Reset colours (which deletes the six rows).
+
+| Key | Rows | Default |
+|---|---|---|
+| `tint_new` | new and resolved roots (intake blue) | `0x4A90D938` |
+| `tint_review` | resolved or proposed roots that need review (amber), and the amber group badge | `0xE5A50A38` |
+| `tint_proposed` | proposed (teal) | `0x2AA19838` |
+| `tint_approved` | approved and placing (teal) | `0x2AA19838` |
+| `tint_placed` | placed with `placed.verified` (green) | `0x3FB95038` |
+| `tint_rejected` | rejected (grey) | `0x80808028` |
+
+A key with no row uses its default. `0` means no tint for that status: the
+row keeps its normal background, an icon that takes the tint's colour (the
+review warning and half circle, the placed filled circle) uses the label
+colour instead, and with `tint_review` 0 the amber group badge uses
+SimPlaylist's normal header text colour; icons and tooltips stay.
+The icons that take a colour use it at full alpha. An alpha of `00` with a
+colour (`0xRRGGBB00`) draws no background but keeps the icon colour. A
+value that is negative or wider than 32 bits is malformed: the default is
+used, and one Debug line names it (`[intake] tint_placed: -5 is not 0 or a
+0xRRGGBBAA colour; using the default 0x3FB95038`). At `log_level` 2 the
+component also logs the colours that differ from the defaults when it
+starts and after each change (nothing when all are default):
+`[intake] row colours: placed 0xFF00FFFF; the rest default`.
+
+The values are read at startup and whenever the page saves a setting, and
+kept in memory; the decorate path never reads them. SQLite takes a hex
+literal for the integer:
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configInts(name,value) VALUES('foo_jl_intake.tint_placed',0xFF00FFFF)
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+# read them back as hex
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "SELECT name, printf('0x%08X', value) FROM configInts WHERE name LIKE 'foo_jl_intake.tint_%';"
+```
+
 ## foo_jl_intake.confirm_gc
 
-`configInts`, `1` (default) or `0`; not on the page yet (B10 adds the
-checkbox), so set it with `sqlite3` while foobar2000 is quit. With `1`, the
+`configInts`, `1` (default) or `0`. The page's "Ask before Delete local
+copy" checkbox (Confirmations). With `1`, the
 context menu's **Delete local copy…** first shows a confirmation (a sheet on
 the window the menu was opened in) that lists the local files it deletes (the
 sidecar's `files[]` under `root_path`, shadows included: up to 10, then "and
@@ -153,7 +199,7 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.confirm_reject
 
-`configInts`, `1` (default) or `0`. The page's "Confirm before Reject"
+`configInts`, `1` (default) or `0`. The page's "Ask before Reject"
 checkbox (Confirmations). With `1`, the context menu's **Reject…** first
 shows a confirmation (a sheet on the key window) that lists the albums it
 affects (up to 10, then "and N more") and has an optional reason field; the

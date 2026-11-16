@@ -20,9 +20,19 @@
 //   - Library mapping: one prefix pair, NAS path prefix -> Mac path prefix,
 //     stored lexically clean (normalizedPrefix) and validated; Swap to
 //     library paths and the library index use it (B9).
-//   - Confirmations (B6): "Confirm before Reject" (confirm_reject, default
-//     on). Execute always asks; Delete's toggle (confirm_gc, B9) arrives
-//     with B10.
+//   - Row colours (B10): one NSColorWell per tint_* key (New, Needs
+//     review, Proposed, Approved / placing, Placed, Rejected), a "No tint"
+//     checkbox beside each (stores 0) and Reset colours (removes the six
+//     keys, so the defaults apply). A well's colour is converted to sRGB
+//     (a colour that cannot be converted keeps the stored value) and packed
+//     to 0xRRGGBBAA (IntakeTint packRgba); while a well is active the shared
+//     colour panel shows its opacity slider (IntakePrefsColorWell). Changes
+//     while the panel is dragged are written 0.25 s after the last one, so
+//     the rows are rebuilt once, not per mouse move.
+//   - Confirmations (B6, B10): "Ask before Delete local copy" (confirm_gc)
+//     and "Ask before Reject" (confirm_reject), both default on, with the
+//     note that Execute always asks. The menu titles' ellipsis follows them
+//     at the next menu (serviceActionInfo), no restart.
 //   - Logging: the log level.
 //   - Status: state, CLI version, roots ("Releases") and last error from
 //     the loader (statusDisplay), refreshed on
@@ -36,8 +46,9 @@
 //
 //  Applying changes: a text field is written to configStore when editing
 //  ends (Return, Tab, focus loss, and when the page goes away), the popup
-//  and the checkbox at once; then IntakeSettingsDidChangeNotification is posted and
-//  IntakeService applies it without a restart.
+//  and the checkboxes at once, a colour well 0.25 s after its last change
+//  (or when the page goes away); then IntakeSettingsDidChangeNotification
+//  is posted and IntakeService applies it without a restart.
 //
 //  Keyboard: the key view order runs top to bottom through every control
 //  (Tab in the watched folders field moves on instead of inserting a tab);
@@ -58,6 +69,7 @@
 #include "../Core/IntakeCommandArgs.h"
 #include "../Core/IntakeLoadPolicy.h"
 #include "../Core/IntakeSettingsParse.h"
+#include "../Core/IntakeTint.h"
 
 #import "../../../../shared/PreferencesCommon.h"
 #include "../../../../shared/version.h"
@@ -77,6 +89,14 @@ constexpr CGFloat kMinimumPageWidth = 540;
 // width (IntakePrefsWrappingLabel).
 constexpr CGFloat kInitialWrapWidth = 200;
 constexpr size_t kMaxListedProblems = 6;
+// A colour well's change is written this long after the last one.
+constexpr NSTimeInterval kTintWriteDelay = 0.25;
+
+// A stored tint (0xRRGGBBAA, sRGB) as a colour for a well.
+NSColor *ColourForTint(IntakeRgba rgba) {
+    const RgbaUnits u = unpackRgba(rgba);
+    return [NSColor colorWithSRGBRed:u.red green:u.green blue:u.blue alpha:u.alpha];
+}
 
 NSString *NSStr(const std::string &s) {
     NSString *out = [[NSString alloc] initWithBytes:s.data() length:s.size() encoding:NSUTF8StringEncoding];
@@ -172,6 +192,36 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 }
 @end
 
+// A colour well that shows the shared colour panel's opacity slider while
+// one of the page's wells is active, and puts the panel's own setting back
+// when the last one deactivates (the panel is shared with foobar2000 and
+// other components). The count covers a switch from one well to another:
+// the new one activates (exclusive) and the old one deactivates inside it.
+// The classic style: the macOS 13 minimal style's popover has no opacity
+// control.
+static NSInteger g_activeTintWells = 0;
+static BOOL g_savedShowsAlpha = NO;
+
+@interface IntakePrefsColorWell : NSColorWell
+@end
+@implementation IntakePrefsColorWell
+- (void)activate:(BOOL)exclusive {
+    NSColorPanel *panel = [NSColorPanel sharedColorPanel];
+    if (!self.isActive) {
+        if (g_activeTintWells == 0) g_savedShowsAlpha = panel.showsAlpha;
+        g_activeTintWells++;
+    }
+    [super activate:exclusive];
+    panel.showsAlpha = YES;
+}
+- (void)deactivate {
+    const BOOL wasActive = self.isActive;
+    [super deactivate];
+    if (!wasActive || g_activeTintWells == 0) return;
+    if (--g_activeTintWells == 0) [NSColorPanel sharedColorPanel].showsAlpha = g_savedShowsAlpha;
+}
+@end
+
 @interface IntakePreferencesController () <NSTextFieldDelegate, NSTextViewDelegate, NSTableViewDataSource,
                                            NSTableViewDelegate>
 @property (nonatomic, strong) NSButton *infoButton;
@@ -193,6 +243,11 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 @property (nonatomic, strong) NSTextField *prefixToField;
 @property (nonatomic, strong) NSTextField *prefixHint;
 
+@property (nonatomic, copy) NSArray<NSColorWell *> *tintWells;     // in kTintSlots order
+@property (nonatomic, copy) NSArray<NSButton *> *tintOffCheckboxes; // in kTintSlots order
+@property (nonatomic, strong) NSButton *resetColoursButton;
+
+@property (nonatomic, strong) NSButton *confirmGcCheckbox;
 @property (nonatomic, strong) NSButton *confirmRejectCheckbox;
 
 @property (nonatomic, strong) NSPopUpButton *logLevelPopup;
@@ -226,6 +281,9 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 
 @implementation IntakePreferencesController {
     dispatch_queue_t _checkQueue;  // path checks (stat), off the main thread
+    IntakePalette _savedTints;     // the tint_* values last written (or read)
+    IntakePalette _pendingTints;   // well colours not written yet
+    uint32_t _pendingTintMask;     // bit i: kTintSlots[i] is pending
 }
 
 - (instancetype)init {
@@ -281,6 +339,16 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     [label setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
                                     forOrientation:NSLayoutConstraintOrientationHorizontal];
     label.selectable = YES;
+    return label;
+}
+
+// Helper text (10 pt, tertiary) that wraps at the column's width.
+- (NSTextField *)wrappingHelper:(NSString *)text {
+    NSTextField *label = [self wrappingLabel];
+    label.stringValue = text;
+    label.font = [NSFont systemFontOfSize:10];
+    label.textColor = [NSColor tertiaryLabelColor];
+    label.selectable = NO;
     return label;
 }
 
@@ -423,20 +491,85 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     addFullWidth(prefixGrid);
     [stack setCustomSpacing:JLPrefsSectionGap afterView:prefixGrid];
 
+    // ===== Row colours =====
+    [stack addArrangedSubview:JLCreateSectionHeader(@"Row colours")];
+    NSMutableArray<NSColorWell *> *wells = [NSMutableArray array];
+    NSMutableArray<NSButton *> *offBoxes = [NSMutableArray array];
+    NSMutableArray<NSArray<NSView *> *> *colourRows = [NSMutableArray array];
+    NSMutableArray<NSStackView *> *colourStacks = [NSMutableArray array];
+    for (TintSlot slot : kTintSlots) {
+        NSString *label = @(tintLabel(slot));
+        IntakePrefsColorWell *well = [[IntakePrefsColorWell alloc] initWithFrame:NSMakeRect(0, 0, 44, 22)];
+        well.target = self;
+        well.action = @selector(tintWellChanged:);
+        well.accessibilityLabel = [NSString stringWithFormat:@"%@ row colour", label];
+        well.translatesAutoresizingMaskIntoConstraints = NO;
+        [well.widthAnchor constraintEqualToConstant:44].active = YES;
+        [well.heightAnchor constraintEqualToConstant:22].active = YES;
+        NSButton *off = [NSButton checkboxWithTitle:@"No tint" target:self action:@selector(tintOffChanged:)];
+        off.font = [NSFont systemFontOfSize:11];
+        off.accessibilityLabel = [NSString stringWithFormat:@"No tint for %@ rows", label];
+        NSStackView *pair = [NSStackView stackViewWithViews:@[ well, off ]];
+        pair.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+        pair.alignment = NSLayoutAttributeCenterY;
+        pair.spacing = 10;
+        [wells addObject:well];
+        [offBoxes addObject:off];
+        [colourStacks addObject:pair];
+        [colourRows addObject:@[ JLCreateLabel([label stringByAppendingString:@":"]), pair, [self empty] ]];
+    }
+    self.tintWells = wells;
+    self.tintOffCheckboxes = offBoxes;
+    self.resetColoursButton = [self buttonWithTitle:@"Reset colours"
+                                             action:@selector(resetColours:)
+                                 accessibilityLabel:@"Reset the row colours to the defaults"];
+    NSTextField *coloursHint = [self wrappingHelper:@"Row backgrounds, with opacity. Icons that take a colour use "
+                                                    @"it at full opacity. No tint: normal background, normal icon "
+                                                    @"colour."];
+    [colourRows addObject:@[ [self empty], self.resetColoursButton, [self empty] ]];
+    [colourRows addObject:@[ [self empty], coloursHint, [self empty] ]];
+    NSGridView *coloursGrid = [self gridWithRows:colourRows];
+    for (NSStackView *pair in colourStacks) {
+        [coloursGrid cellForView:pair].xPlacement = NSGridCellPlacementLeading;
+        // The well has no baseline: centre the row instead.
+        NSGridRow *row = [coloursGrid cellForView:pair].row;
+        row.rowAlignment = NSGridRowAlignmentNone;
+        row.yPlacement = NSGridCellPlacementCenter;
+    }
+    [coloursGrid cellForView:self.resetColoursButton].xPlacement = NSGridCellPlacementLeading;
+    [coloursGrid cellForView:self.resetColoursButton].row.topPadding = 4;
+    addFullWidth(coloursGrid);
+    [stack setCustomSpacing:JLPrefsSectionGap afterView:coloursGrid];
+
     // ===== Confirmations =====
     [stack addArrangedSubview:JLCreateSectionHeader(@"Confirmations")];
-    self.confirmRejectCheckbox = [NSButton checkboxWithTitle:@"Confirm before Reject"
+    self.confirmGcCheckbox = [NSButton checkboxWithTitle:@"Ask before Delete local copy"
+                                                  target:self
+                                                  action:@selector(confirmGcChanged:)];
+    self.confirmGcCheckbox.font = [NSFont systemFontOfSize:11];
+    self.confirmGcCheckbox.accessibilityLabel = @"Ask before Delete local copy";
+    NSTextField *gcHint =
+        [self wrappingHelper:@"Lists the local files and offers Swap, then delete. Off: the local copy is deleted at "
+                             @"once."];
+    self.confirmRejectCheckbox = [NSButton checkboxWithTitle:@"Ask before Reject"
                                                       target:self
                                                       action:@selector(confirmRejectChanged:)];
     self.confirmRejectCheckbox.font = [NSFont systemFontOfSize:11];
-    self.confirmRejectCheckbox.accessibilityLabel = @"Confirm before Reject";
-    NSTextField *confirmHint = JLCreateHelperText(
-        @"Lists the albums and asks for an optional reason. Off: Reject runs at once, without a reason.");
+    self.confirmRejectCheckbox.accessibilityLabel = @"Ask before Reject";
+    NSTextField *rejectHint = [self wrappingHelper:@"Lists the albums and asks for an optional reason. Off: Reject "
+                                                   @"runs at once, without a reason."];
+    NSTextField *executeNote = [self wrappingHelper:@"Execute placement always asks: it lists what it will place."];
     NSGridView *confirmGrid = [self gridWithRows:@[
+        @[ [self empty], self.confirmGcCheckbox, [self empty] ],
+        @[ [self empty], gcHint, [self empty] ],
         @[ [self empty], self.confirmRejectCheckbox, [self empty] ],
-        @[ [self empty], confirmHint, [self empty] ],
+        @[ [self empty], rejectHint, [self empty] ],
+        @[ [self empty], executeNote, [self empty] ],
     ]];
+    [confirmGrid cellForView:self.confirmGcCheckbox].xPlacement = NSGridCellPlacementLeading;
     [confirmGrid cellForView:self.confirmRejectCheckbox].xPlacement = NSGridCellPlacementLeading;
+    [confirmGrid rowAtIndex:2].topPadding = 4;
+    [confirmGrid rowAtIndex:4].topPadding = 4;
     addFullWidth(confirmGrid);
     [stack setCustomSpacing:JLPrefsSectionGap afterView:confirmGrid];
 
@@ -595,12 +728,19 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 }
 
 - (void)buildKeyViewLoop {
-    NSArray<NSView *> *order = @[
+    NSMutableArray<NSView *> *order = [NSMutableArray arrayWithArray:@[
         self.infoButton,      self.cliField,      self.cliBrowseButton, self.bunField,
         self.bunBrowseButton, self.rulesField,    self.rulesBrowseButton, self.foldersTextView,
-        self.prefixFromField, self.prefixToField, self.confirmRejectCheckbox, self.logLevelPopup,
-        self.testButton,      self.reloadButton,  self.incomeTable,
-    ];
+        self.prefixFromField, self.prefixToField,
+    ]];
+    for (NSUInteger i = 0; i < self.tintWells.count; i++) {
+        [order addObject:self.tintWells[i]];
+        [order addObject:self.tintOffCheckboxes[i]];
+    }
+    [order addObjectsFromArray:@[
+        self.resetColoursButton, self.confirmGcCheckbox, self.confirmRejectCheckbox, self.logLevelPopup,
+        self.testButton, self.reloadButton, self.incomeTable,
+    ]];
     for (NSUInteger i = 0; i < order.count; i++) {
         order[i].nextKeyView = order[(i + 1) % order.count];
     }
@@ -647,6 +787,8 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     // An edit in progress is kept: the page may go away without the field
     // ending its editing first.
     [self saveAllFields];
+    // The colour panel must not keep editing a well that is going away.
+    for (NSColorWell *well in self.tintWells) [well deactivate];
     [super viewWillDisappear];
 }
 
@@ -681,7 +823,29 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     [self.logLevelPopup selectItemAtIndex:static_cast<NSInteger>(level)];
 
     self.confirmRejectCheckbox.state =
-        config::getInt(config::kConfirmReject, 1) != 0 ? NSControlStateValueOn : NSControlStateValueOff;
+        confirmSetting(config::getInt(config::kConfirmReject, kConfirmSettingDefault)) ? NSControlStateValueOn
+                                                                                       : NSControlStateValueOff;
+    self.confirmGcCheckbox.state =
+        confirmSetting(config::getInt(config::kConfirmGc, kConfirmSettingDefault)) ? NSControlStateValueOn
+                                                                                   : NSControlStateValueOff;
+    [self loadTints];
+}
+
+// The wells and checkboxes from the stored tint_* values. A tint of 0 shows
+// the default colour in a disabled well, so unticking No tint brings it
+// back.
+- (void)loadTints {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(flushTints) object:nil];
+    _pendingTintMask = 0;
+    _savedTints = config::loadPalette();
+    const IntakePalette defaults;
+    for (size_t i = 0; i < kTintSlotCount && i < self.tintWells.count; i++) {
+        const IntakeRgba value = tintOf(_savedTints, kTintSlots[i]);
+        const BOOL off = value == 0;
+        self.tintWells[i].color = ColourForTint(off ? tintOf(defaults, kTintSlots[i]) : value);
+        self.tintWells[i].enabled = !off;
+        self.tintOffCheckboxes[i].state = off ? NSControlStateValueOn : NSControlStateValueOff;
+    }
 }
 
 - (void)notifySettingsChanged {
@@ -696,10 +860,11 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     return YES;
 }
 
-// Every text control, written when changed; one notification for all.
+// Every text control and the pending well colours, written when changed;
+// one notification for all.
 - (void)saveAllFields {
     if (!self.isViewLoaded) return;
-    BOOL changed = NO;
+    BOOL changed = [self writePendingTints];
     BOOL pathsChanged = NO;
 
     NSString *cli = Trimmed(self.cliField.stringValue);
@@ -1047,6 +1212,106 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
 - (void)confirmRejectChanged:(id)sender {
     config::setInt(config::kConfirmReject, self.confirmRejectCheckbox.state == NSControlStateValueOn ? 1 : 0);
     [self notifySettingsChanged];
+}
+
+- (void)confirmGcChanged:(id)sender {
+    config::setInt(config::kConfirmGc, self.confirmGcCheckbox.state == NSControlStateValueOn ? 1 : 0);
+    [self notifySettingsChanged];
+}
+
+#pragma mark - Row colours
+
+// The well's colour in sRGB, packed; false when it cannot be converted (a
+// pattern colour, for one).
+- (BOOL)packedColourOf:(NSColorWell *)well into:(IntakeRgba *)out {
+    NSColor *srgb = [well.color colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    if (srgb == nil) return NO;
+    *out = packRgba(srgb.redComponent, srgb.greenComponent, srgb.blueComponent, srgb.alphaComponent);
+    return YES;
+}
+
+- (void)tintWellChanged:(NSColorWell *)well {
+    const NSUInteger index = [self.tintWells indexOfObjectIdenticalTo:well];
+    if (index == NSNotFound || index >= kTintSlotCount) return;
+    const TintSlot slot = kTintSlots[index];
+    IntakeRgba packed = 0;
+    if (![self packedColourOf:well into:&packed]) {
+        // Not convertible to sRGB: the stored value stays, and so does the
+        // colour shown for it.
+        const IntakeRgba kept = (_pendingTintMask & (1u << index)) ? tintOf(_pendingTints, slot) : tintOf(_savedTints, slot);
+        well.color = ColourForTint(kept != 0 ? kept : tintOf(IntakePalette(), slot));
+        return;
+    }
+    setTint(_pendingTints, slot, packed);
+    _pendingTintMask |= 1u << index;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(flushTints) object:nil];
+    [self performSelector:@selector(flushTints) withObject:nil afterDelay:kTintWriteDelay];
+}
+
+- (void)flushTints {
+    if ([self writePendingTints]) [self notifySettingsChanged];
+}
+
+// Writes the pending well colours that differ from the stored ones. A well
+// that came out fully transparent black packs to 0, which means no tint:
+// the page shows it as such. Returns whether it wrote.
+- (BOOL)writePendingTints {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(flushTints) object:nil];
+    if (_pendingTintMask == 0) return NO;
+    BOOL wrote = NO;
+    for (size_t i = 0; i < kTintSlotCount; i++) {
+        if (!(_pendingTintMask & (1u << i))) continue;
+        const TintSlot slot = kTintSlots[i];
+        const IntakeRgba value = tintOf(_pendingTints, slot);
+        if (value == 0 && i < self.tintWells.count) {
+            self.tintOffCheckboxes[i].state = NSControlStateValueOn;
+            [self.tintWells[i] deactivate];
+            self.tintWells[i].color = ColourForTint(tintOf(IntakePalette(), slot));
+            self.tintWells[i].enabled = NO;
+        }
+        if (value == tintOf(_savedTints, slot)) continue;
+        config::setInt(tintKey(slot), static_cast<int64_t>(value));
+        setTint(_savedTints, slot, value);
+        wrote = YES;
+    }
+    _pendingTintMask = 0;
+    return wrote;
+}
+
+- (void)tintOffChanged:(NSButton *)sender {
+    const NSUInteger index = [self.tintOffCheckboxes indexOfObjectIdenticalTo:sender];
+    if (index == NSNotFound || index >= kTintSlotCount || index >= self.tintWells.count) return;
+    const TintSlot slot = kTintSlots[index];
+    // Other wells' pending colours go first; this slot's is replaced.
+    _pendingTintMask &= ~(1u << index);
+    BOOL changed = [self writePendingTints];
+    NSColorWell *well = self.tintWells[index];
+    IntakeRgba value = 0;
+    if (sender.state == NSControlStateValueOn) {
+        [well deactivate];
+        well.enabled = NO;
+    } else {
+        well.enabled = YES;
+        if (![self packedColourOf:well into:&value] || value == 0) value = tintOf(IntakePalette(), slot);
+        well.color = ColourForTint(value);
+    }
+    if (value != tintOf(_savedTints, slot)) {
+        config::setInt(tintKey(slot), static_cast<int64_t>(value));
+        setTint(_savedTints, slot, value);
+        changed = YES;
+    }
+    if (changed) [self notifySettingsChanged];
+}
+
+// Removes the six keys: the defaults apply again.
+- (void)resetColours:(id)sender {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(flushTints) object:nil];
+    _pendingTintMask = 0;
+    for (NSColorWell *well in self.tintWells) [well deactivate];
+    for (TintSlot slot : kTintSlots) config::deleteInt(tintKey(slot));
+    const BOOL changed = !(_savedTints == IntakePalette());
+    [self loadTints];
+    if (changed) [self notifySettingsChanged];
 }
 
 - (void)testCli:(id)sender {
