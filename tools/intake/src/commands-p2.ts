@@ -254,7 +254,8 @@ export interface AssignOpts extends CommonOpts {
   by: string | null;
 }
 
-function assignInput(root: RootRef): AssignInput {
+/** The assign engine's input for a root: its identification, else its cluster. */
+export function assignInput(root: RootRef): AssignInput {
   const ident = root.sidecar.identification;
   return {
     artist: ident?.artist ?? root.sidecar.cluster.albumartist,

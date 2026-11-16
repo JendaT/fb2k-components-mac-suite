@@ -7,11 +7,12 @@ import {
   readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { noTargetReason } from "./assign.ts";
 import { audioHashAs } from "./audioHash.ts";
 import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import {
-  assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, shimNotice, writeSidecarWithEvent,
-  type P2Deps, type RootRef,
+  assignInput, assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, shimNotice,
+  writeSidecarWithEvent, type P2Deps, type RootRef,
 } from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
 import { clearImmutableTree, immutablePaths, setImmutable } from "./fflags.ts";
@@ -198,9 +199,12 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     refreshTarget(root, library, assignCfg);
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
-      const why = root.sidecar.singles ? "singles slot pending"
-        : !root.sidecar.proposal ? "no assignment evidence"
-        : "no target path (tier reject?)";
+      // The reason assign gives in its notice (no artist or album name, tier
+      // reject, tier not configured, singles slot pending); a singles root
+      // says so even without a proposal.
+      const why = root.sidecar.proposal || root.sidecar.singles
+        ? noTargetReason(assignInput(root), assignCfg) ?? "no target path"
+        : "no assignment evidence";
       errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${why}`, path: root.dir });
       continue;
     }
