@@ -9,7 +9,9 @@
 //  outside the pair), row planning for whole-folder and virtual roots
 //  (NFC/NFD, smbfs alias keys, shadows, files not in files[]), the mount
 //  alias paths for I/O, the Unicode form switch, the canonical volume
-//  prefix and the console line. Synthetic paths only.
+//  prefix, the choice of the mount foobar2000 gets (the playlist's volume
+//  forms first, then the round trip) and the console line. Synthetic paths
+//  only.
 //
 // TEST_DEPS: src/Core/IntakeSidecarMembers.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeMountAliases.mm src/Core/IntakeLog.mm
@@ -351,8 +353,74 @@ static void testForms() {
           "raw paths and other schemes have none");
     CHECK(sameVolumePrefix("mac-volume://0a1b-uuid/", "MAC-VOLUME://0A1B-UUID/"), "compared ignoring ASCII case");
     CHECK(!sameVolumePrefix("mac-volume://A/", "mac-volume://B/"), "another volume id");
-    CHECK(!sameVolumePrefix("file://", "mac-volume://A/"), "a local row never matches a share");
+    CHECK(!sameVolumePrefix("file://", "mac-volume://A/"), "a local form is not a share's form");
     CHECK(!sameVolumePrefix("", ""), "empty never matches");
+}
+
+static CanonicalCandidate candidate(const std::string &path, const std::string &form, bool roundTrips) {
+    CanonicalCandidate c;
+    c.path = path;
+    c.form = form;
+    c.roundTrips = roundTrips;
+    return c;
+}
+
+static void testChooseMount() {
+    g_context = "choose-mount";
+    std::vector<MountEntry> mounts = {{"/", "/dev/disk1", "apfs", true},
+                                      {"/Volumes/music", "//user@lan-host/music", "smbfs", false},
+                                      {"/Volumes/music-1", "//user@vpn-host/music", "smbfs", false},
+                                      {"/Volumes/Music/Sub", "/dev/disk7", "apfs", true}};
+    CHECK(owningMountPoint(mounts, "/Volumes/music/hq/A/x.wav") == "/Volumes/music", "the share's mount");
+    CHECK(owningMountPoint(mounts, "/Volumes/music-1/hq/x.wav") == "/Volumes/music-1",
+          "the second mount, at a component boundary");
+    CHECK(owningMountPoint(mounts, "/Volumes/MUSIC/Sub/x.wav") == "/Volumes/Music/Sub",
+          "the longest mount point, ignoring ASCII case");
+    CHECK(owningMountPoint(mounts, "/Users/test/x.wav") == "/", "the boot volume");
+    CHECK(owningMountPoint({}, "/Volumes/music/x.wav").empty() && owningMountPoint(mounts, "relative").empty(),
+          "no table or no absolute path: none");
+
+    CHECK(pathUnderMountPoint("/Volumes/music-1/hq/x.wav", "/Volumes/music-1"), "under its mount");
+    CHECK(pathUnderMountPoint("file:///Volumes/music/hq/x.wav", "/volumes/MUSIC"), "file:// stripped, case ignored");
+    CHECK(!pathUnderMountPoint("/Volumes/music-1/hq/x.wav", "/Volumes/music"),
+          "the other mount of the share is not this one");
+    CHECK(pathUnderMountPoint("/Users/test/x.wav", "/") && !pathUnderMountPoint("mac-volume://U/x", "/") &&
+              !pathUnderMountPoint("/x", ""),
+          "\"/\" holds every absolute path; a scheme or an empty mount never matches");
+
+    std::vector<std::string> forms;
+    noteVolumeForm(forms, "mac-volume://U2/income/x.wav");
+    noteVolumeForm(forms, "MAC-VOLUME://u2/other.wav");
+    noteVolumeForm(forms, "file:///Users/test/a.wav");
+    noteVolumeForm(forms, "tidal://track/1");
+    CHECK(forms == std::vector<std::string>({"mac-volume://U2/", "file://"}),
+          "each volume form once, ASCII case ignored; other schemes have none");
+    CHECK(hasVolumeForm(forms, "mac-volume://u2/hq/x.wav") && !hasVolumeForm(forms, "mac-volume://U1/hq/x.wav") &&
+              !hasVolumeForm(forms, "/Volumes/music/x.wav"),
+          "membership by volume form");
+
+    // The share mounted twice: U1 at /Volumes/music, U2 at /Volumes/music-1.
+    const std::vector<CanonicalCandidate> both = {
+        candidate("/Volumes/music/hq/A/x.wav", "mac-volume://U1/", false),
+        candidate("/Volumes/music-1/hq/A/x.wav", "mac-volume://U2/", true)};
+    CHECK(chooseCanonicalCandidate(both, {"mac-volume://U2/"}) == 1,
+          "the mount whose volume id the playlist's items already use, even when it is not the first");
+    CHECK(chooseCanonicalCandidate(both, {"mac-volume://U1/", "mac-volume://U2/"}) == 0,
+          "both in use: the first, in stat order");
+    CHECK(chooseCanonicalCandidate(both, {"file://"}) == 1,
+          "a local income row and no item on the share: the mount foobar2000 resolves its own form to");
+    CHECK(chooseCanonicalCandidate({candidate("/Volumes/music/hq/x.wav", "mac-volume://U1/", false)},
+                                   {"file://"}) == -1,
+          "no item uses it and it does not round-trip: no matching mount");
+    CHECK(chooseCanonicalCandidate({candidate("/Volumes/music/hq/x.wav", "", true)}, {"mac-volume://U1/"}) == -1,
+          "a failed conversion (no form) never counts");
+    CHECK(chooseCanonicalCandidate({candidate("/Volumes/music/hq/x.wav", "mac-volume://U1/hq/x.wav", false)},
+                                   {"mac-volume://u1/"}) == 0,
+          "a whole canonical path in `form` is read by its volume part");
+    CHECK(chooseCanonicalCandidate({candidate("/Users/test/lib/x.wav", "file://", true)},
+                                   {"mac-volume://U2/"}) == 0,
+          "a local library file: its own form (it round-trips)");
+    CHECK(chooseCanonicalCandidate({}, {"file://"}) == -1, "no candidate: none");
 }
 
 static void testLine() {
@@ -370,7 +438,8 @@ static void testLine() {
               "swap: 2 row(s) swapped to library paths, 4 skipped (1 shadow, 2 library file missing, 1 no matching mount)",
           "the reasons with counts, in a fixed order");
     CHECK(std::string(swapSkipText(SwapSkip::NotInSidecar)) == "not in the sidecar" &&
-              std::string(swapSkipText(SwapSkip::PlaylistLocked)) == "playlist locked",
+              std::string(swapSkipText(SwapSkip::PlaylistLocked)) == "playlist locked" &&
+              std::string(swapSkipText(SwapSkip::SlowConversion)) == "path conversion too slow",
           "reason texts");
 }
 
@@ -383,6 +452,7 @@ int main() {
         testPlanVirtualAndKeys();
         testAliasPaths();
         testForms();
+        testChooseMount();
         testLine();
     }
     TEST_MAIN_END();

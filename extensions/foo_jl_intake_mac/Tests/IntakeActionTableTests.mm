@@ -895,6 +895,23 @@ static void testGcGuard() {
     CHECK(argvFor(e) == v({kCli, "gc", "itk_00000012", "itk_00000016", "--json"}),
           "gc <placed ids> --json: rejected, gc_done and approved roots never passed");
 
+    // Placed without placed.verified (doc 04 v1.2 enables Delete only with
+    // it): never passed, even from a hand-made entry (confirm_gc 0 has no
+    // recheck before the guard).
+    IntakeRecord unverified = placedRec("itk_00000020", false);
+    ActionEntry mixed = e;
+    mixed.roots = {actionRootFor(unverified), actionRootFor(placed)};
+    CHECK(gcEligibleRoots(mixed.roots).size() == 1 && gcEligibleRoots(mixed.roots)[0].id == "itk_00000012",
+          "gcEligibleRoots: a placed root without placed.verified is left out");
+    CHECK(argvFor(mixed) == v({kCli, "gc", "itk_00000012", "--json"}), "gc never names an unverified root");
+    ActionEntry onlyUnverified = e;
+    onlyUnverified.roots = {actionRootFor(unverified)};
+    CliRequest unverifiedRequest;
+    std::string unverifiedWhy;
+    CHECK(!requestForEntry(onlyUnverified, std::string(), unverifiedRequest, &unverifiedWhy) &&
+              unverifiedWhy.find("no placed root") != std::string::npos,
+          "only unverified placed roots: nothing runs");
+
     ActionEntry none = e;
     none.roots = {actionRootFor(rejected), actionRootFor(gcDone), actionRootFor(approved)};
     CliRequest request;

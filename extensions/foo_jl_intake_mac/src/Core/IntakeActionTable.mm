@@ -304,7 +304,7 @@ std::vector<ActionRoot> gcEligibleRoots(const std::vector<ActionRoot> &roots) {
     std::vector<ActionRoot> out;
     std::unordered_set<std::string> seen;
     for (const ActionRoot &r : roots) {
-        if (r.status != IntakeStatus::Placed || r.id.empty()) continue;
+        if (r.status != IntakeStatus::Placed || !r.placedVerified || r.id.empty()) continue;
         if (!seen.insert(r.id).second) continue;
         out.push_back(r);
     }
@@ -324,7 +324,8 @@ bool requestForEntry(const ActionEntry &entry, const std::string &reason, CliReq
     r.command = command;
     std::unordered_set<std::string> seen;
     if (command == CliCommand::Gc) {
-        // The permanent gc guard: placed roots only, whatever the entry holds.
+        // The permanent gc guard: placed, verified roots only, whatever the
+        // entry holds.
         for (const ActionRoot &root : gcEligibleRoots(entry.roots)) r.ids.push_back(root.id);
         if (r.ids.empty()) return refuse("no placed root (gc never runs on another status)");
     } else {

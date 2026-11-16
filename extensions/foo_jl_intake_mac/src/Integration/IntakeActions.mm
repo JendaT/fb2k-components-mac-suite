@@ -1248,14 +1248,42 @@ t_size activePlaylist() {
     return active < pm->get_playlist_count() ? active : SIZE_MAX;
 }
 
-// The rows of `ids` in `playlist` that still point at an income path.
-size_t incomeRowCount(t_size playlist, const std::unordered_set<std::string> &ids) {
-    const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    if (!view || playlist == SIZE_MAX) return 0;
-    NativePathMenuBudget budget;
-    std::vector<t_size> indices;
-    swapIncomeRows(playlist, ids, *view, &budget, &indices);
-    return indices.size();
+// How long the Delete confirmation waits for the sidecar reads (as the
+// execute dry run's 10 s report).
+constexpr double kDeleteReadSeconds = 10.0;
+
+// The entries of every playlist that still point at an income path of
+// `ids` (IntakeSwap incomeRowCensus: fail closed, `first` first), and of
+// them the entries Swap never moves, judged by each root's files[] in
+// `files` (a shadow, a file files[] does not list, no target; a root
+// missing from `files` counts as movable: Swap decides). `census`
+// (optional) gets the census itself.
+GcIncomeRows countIncomeRows(const IntakeView &view, const std::unordered_set<std::string> &ids,
+                             const PlaylistRef &first,
+                             const std::unordered_map<std::string, PlacedRootFiles> *files,
+                             IncomeRowCensus *census = nullptr) {
+    IncomeRowCensus c = incomeRowCensus(ids, view, first);
+    GcIncomeRows out;
+    out.rows = c.total;
+    out.inFirst = c.inFirst;
+    out.playlists = c.playlists.size();
+    out.unchecked = c.unchecked;
+    if (files != nullptr && !c.rows.empty()) {
+        const LibraryPrefix prefix = serviceActionInfo().libraryPrefix;
+        ViewScratch scratch;
+        std::string key;
+        for (size_t i = 0; i < c.rows.size(); i++) {
+            auto f = files->find(c.rows[i].rootId);
+            if (f == files->end()) continue;
+            SwapSkip skip = SwapSkip::NotInSidecar;
+            if (view.matchKey(c.rows[i].native, scratch, key)) skip = planSwap(f->second, key, prefix).skip;
+            if (skip == SwapSkip::Shadow || skip == SwapSkip::NotInSidecar || skip == SwapSkip::NoTarget) {
+                out.noLibraryCopy += c.entries[i];
+            }
+        }
+    }
+    if (census != nullptr) *census = std::move(c);
+    return out;
 }
 
 // One Delete local copy… flow (main thread).
@@ -1265,8 +1293,13 @@ struct DeleteFlow {
     std::shared_ptr<const DeleteTestHooks> test;
     // The sheet's window, chosen at the click (as for the picker).
     __weak NSWindow *hostWindow = nil;
+    // The playlist the click came from (the active one then): counted first
+    // and swapped first; every other playlist is counted and swapped too.
+    PlaylistRef playlist;
+    bool filesRead = false;  // the sidecar reads came back (the 10 s limit no longer applies)
+    std::unordered_map<std::string, PlacedRootFiles> files;  // by root id, the roots that were read
     std::vector<GcConfirmRoot> confirm;
-    size_t incomeRows = 0;
+    GcIncomeRows income;
     // While the sheet is up (released on a later main-queue turn).
     NSAlert *alert = nil;
     bool closed = false;
@@ -1302,6 +1335,12 @@ void endDeleteFlowWith(std::shared_ptr<DeleteFlow> flow, const std::string &line
 // root dropped), then the lane and the configuration, then gc.
 void deleteConfirmed(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    // An inert view keeps the last snapshot: nothing goes to a CLI the
+    // version gate (or a failed load) has set aside.
+    if (view && view->isInert()) {
+        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "intake is inert: " + view->inertReason()));
+        return;
+    }
     const GcRecheck recheck = recheckGcRoots(flow->entry.roots, [&view](const std::string &id) -> const IntakeRecord * {
         return view ? view->snapshot().recordForId(id) : nullptr;
     });
@@ -1327,51 +1366,87 @@ void deleteConfirmed(std::shared_ptr<DeleteFlow> flow, const std::string &prefix
     endDeleteFlowWith(flow, pre + "gc: " + what);
 }
 
-// "Swap, then delete": the rows of these roots in the active playlist that
-// still point at income paths are swapped first; gc runs only when none is
-// left afterwards (deleting files that rows still point at would leave dead
-// entries).
-void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
+// "Swap, then delete", the end: gc only when no entry of any playlist still
+// points at an income path of these roots and none was left unchecked
+// (deleting files that rows still point at would leave dead entries).
+void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    const t_size playlist = activePlaylist();
-    const std::unordered_set<std::string> ids = rootIdSet(flow->entry.roots);
-    NativePathMenuBudget budget;
-    std::vector<SwapRow> rows;
-    if (view && playlist != SIZE_MAX) rows = swapIncomeRows(playlist, ids, *view, &budget);
-    if (rows.empty()) {
-        deleteConfirmed(flow, prefix + "no income row to swap; ");
+    if (!view) {
+        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "no intake data to check the playlists; "
+                                                                           "nothing deleted"));
         return;
     }
-    const size_t total = rows.size();
-    std::string why;
-    const bool started = swapStart(
-        playlist, std::move(rows), view, serviceActionInfo().libraryPrefix,
-        [flow, prefix, ids, total](const SwapResult &result) {
-            if (actionsState().stopped) return;
-            // The playlist gone or locked counts as rows left: nothing was
-            // swapped there, and no playlist is checked instead.
-            const size_t left = result.playlist == SIZE_MAX || result.playlistLocked
-                                    ? total
-                                    : incomeRowCount(result.playlist, ids);
-            const std::string pre = prefix + result.line + "; ";
-            if (left > 0) {
-                const std::string what = notRun(
-                    IntakeAction::DeleteLocal,
-                    std::to_string(left) + " row(s) in the playlist still point at the income paths of these roots; "
-                                           "nothing deleted");
-                endDeleteFlowWith(flow, pre + what);
-                return;
-            }
-            deleteConfirmed(flow, pre);
-        },
-        why);
-    if (!started) endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why));
+    const GcIncomeRows left = countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, nullptr);
+    if (!left.clear()) {
+        std::string why;
+        if (left.rows > 0) {
+            why = std::to_string(left.rows) + " row(s) in " + std::to_string(left.playlists) +
+                  " playlist(s) still point at the income paths of these roots";
+        }
+        if (left.unchecked > 0) {
+            why += (why.empty() ? "" : "; ") + std::to_string(left.unchecked) +
+                   " playlist row(s) on a slow volume could not be checked";
+        }
+        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, why + "; nothing deleted"));
+        return;
+    }
+    deleteConfirmed(flow, prefix);
+}
+
+// "Swap, then delete", one step: swaps the income rows of the next playlist
+// in `pending` (found again; gone or without such rows: skipped), then the
+// next; at the end, deleteAfterSwapCheck.
+void deleteSwapNext(std::shared_ptr<DeleteFlow> flow, std::shared_ptr<std::vector<PlaylistRef>> pending,
+                    size_t next, const std::string &prefix) {
+    if (actionsState().stopped) return;
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    const std::unordered_set<std::string> ids = rootIdSet(flow->entry.roots);
+    while (view && next < pending->size()) {
+        const t_size playlist = findPlaylist((*pending)[next++]);
+        if (playlist == SIZE_MAX) continue;
+        NativePathMenuBudget budget;
+        std::vector<SwapRow> rows = swapIncomeRows(playlist, ids, *view, &budget);
+        if (rows.empty()) continue;
+        std::string why;
+        const bool started = swapStart(
+            playlist, std::move(rows), view, serviceActionInfo().libraryPrefix,
+            [flow, pending, next, prefix](const SwapResult &result) {
+                if (actionsState().stopped) return;
+                deleteSwapNext(flow, pending, next, prefix + result.line + "; ");
+            },
+            why);
+        if (!started) {
+            endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why));
+        }
+        return;
+    }
+    deleteAfterSwapCheck(flow, prefix);
+}
+
+// "Swap, then delete": the rows of these roots that still point at income
+// paths are swapped, in the playlist the click came from first, then in
+// every other playlist that holds such rows (a locked one keeps them); gc
+// runs only when none is left anywhere afterwards and none was unchecked.
+void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
+    if (!flow->income.offerSwap()) {
+        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal,
+                                                "\"Swap, then delete\" was not offered; nothing deleted"));
+        return;
+    }
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    auto pending = std::make_shared<std::vector<PlaylistRef>>();
+    if (view) {
+        IncomeRowCensus census;
+        countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, nullptr, &census);
+        *pending = std::move(census.playlists);
+    }
+    deleteSwapNext(flow, pending, 0, pending->empty() ? prefix + "no income row to swap; " : prefix);
 }
 
 std::string deleteSheetDescription(const DeleteFlow &flow, bool sheet) {
     std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
-    line += "\"" + gcConfirmTitle(flow.entry.roots.size()) + "\"; " + gcConfirmSummary(flow.confirm, flow.incomeRows) +
-            "; buttons Delete, Cancel" + (flow.incomeRows > 0 ? ", Swap, then delete" : "");
+    line += "\"" + gcConfirmTitle(flow.entry.roots.size()) + "\"; " + gcConfirmSummary(flow.confirm, flow.income) +
+            "; buttons Delete, Cancel" + (flow.income.offerSwap() ? ", Swap, then delete" : "");
     if (flow.test && flow.test->mode == DeleteTestHooks::Mode::AutoClose) {
         char seconds[32];
         snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
@@ -1396,11 +1471,11 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     NSAlert *alert = [[NSAlert alloc] init];
     alert.alertStyle = NSAlertStyleWarning;
     alert.messageText = NSStr(gcConfirmTitle(flow->entry.roots.size()));
-    alert.informativeText = NSStr(gcConfirmText(flow->confirm, flow->incomeRows));
+    alert.informativeText = NSStr(gcConfirmText(flow->confirm, flow->income));
     NSButton *deleteButton = [alert addButtonWithTitle:@"Delete"];
     if ([deleteButton respondsToSelector:@selector(setHasDestructiveAction:)]) deleteButton.hasDestructiveAction = YES;
     NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
-    if (flow->incomeRows > 0) [alert addButtonWithTitle:@"Swap, then delete"];
+    if (flow->income.offerSwap()) [alert addButtonWithTitle:@"Swap, then delete"];
     flow->alert = alert;
 
     std::shared_ptr<DeleteFlow> current = flow;
@@ -1413,7 +1488,7 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
         }
         if (response == NSAlertFirstButtonReturn) {
             deleteConfirmed(current, std::string());
-        } else if (response == NSAlertThirdButtonReturn && current->incomeRows > 0) {
+        } else if (response == NSAlertThirdButtonReturn && current->income.offerSwap()) {
             deleteAfterSwap(current, std::string());
         } else {
             logDebug("delete-local: cancelled in the confirmation");
@@ -1453,7 +1528,9 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
     ActionsState &st = actionsState();
     if (st.stopped || !st.deleteFlow || st.deleteFlow->serial != serial) return;
     std::shared_ptr<DeleteFlow> flow = st.deleteFlow;
+    flow->filesRead = true;
     flow->confirm.clear();
+    flow->files.clear();
     for (const ActionRoot &root : flow->entry.roots) {
         const PlacedFilesReply *reply = nullptr;
         for (const PlacedFilesReply &r : replies) {
@@ -1461,16 +1538,19 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
         }
         if (reply != nullptr && reply->ok) {
             flow->confirm.push_back(gcConfirmRoot(root, &reply->files, std::string()));
+            flow->files[root.id] = reply->files;
         } else {
             const std::string error = reply != nullptr ? reply->error : std::string("no longer listed by intake status");
             logDebug("delete-local: no file list for " + root.id + ": " + error);
             flow->confirm.push_back(gcConfirmRoot(root, nullptr, error));
         }
     }
-    flow->incomeRows = incomeRowCount(activePlaylist(), rootIdSet(flow->entry.roots));
-    logDebug("delete-local: confirmation: " + gcConfirmSummary(flow->confirm, flow->incomeRows));
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    flow->income = view ? countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, &flow->files)
+                        : GcIncomeRows();
+    logDebug("delete-local: confirmation: " + gcConfirmSummary(flow->confirm, flow->income));
     if (flow->test && flow->test->mode != DeleteTestHooks::Mode::AutoClose) {
-        const std::string prefix = "confirmation: " + gcConfirmSummary(flow->confirm, flow->incomeRows) + "; ";
+        const std::string prefix = "confirmation: " + gcConfirmSummary(flow->confirm, flow->income) + "; ";
         if (flow->test->mode == DeleteTestHooks::Mode::Delete) {
             deleteConfirmed(flow, prefix + "answered Delete; ");
         } else {
@@ -1669,7 +1749,12 @@ std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handle
     if (!view) return endNow(notRun(entry.action, "no intake data yet"));
     // The host frees `handles` when this returns: the rows are copied now.
     NativePathMenuBudget budget;
-    std::vector<SwapRow> rows = swapRowsFromHandles(handles, rootIdSet(entry.roots), *view, &budget);
+    size_t unchecked = 0;
+    std::vector<SwapRow> rows = swapRowsFromHandles(handles, rootIdSet(entry.roots), *view, &budget, &unchecked);
+    if (unchecked > 0) {
+        logInfo("swap: " + std::to_string(unchecked) +
+                " selected row(s) on a slow volume could not be checked and are left as they are");
+    }
     if (rows.empty()) {
         return endNow(notRun(entry.action, "none of the selected rows points at an income path of these roots"));
     }
@@ -1696,11 +1781,11 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
     if (st.stopped) return endNow("not run: intake is not running");
     if (!entry.enabled) return endNow("not run: the item is disabled");
     if (entry.roots.empty()) return endNow("not run: no qualifying root");
-    // The permanent guard first: placed roots only (requestForEntry applies
-    // it again to whatever finally runs).
+    // The permanent guard first: placed, verified roots only
+    // (requestForEntry applies it again to whatever finally runs).
     ActionEntry eligible = entry;
     eligible.roots = gcEligibleRoots(entry.roots);
-    if (eligible.roots.empty()) return endNow(notRun(entry.action, "no placed root"));
+    if (eligible.roots.empty()) return endNow(notRun(entry.action, "no placed root with placed.verified"));
     if (st.deleteFlow) {
         logInfo("delete-local: the confirmation is already open or being prepared; this request is ignored");
         return endNow("ignored: the delete confirmation is already open or being prepared");
@@ -1708,14 +1793,19 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
     // No confirmation for a call that could not start anyway.
     const std::string why = whyNotStartable();
     if (!why.empty()) return endNow(notRun(entry.action, why));
+    const std::shared_ptr<const IntakeView> view = providerCurrentView();
+    if (view && view->isInert()) return endNow(notRun(entry.action, "intake is inert: " + view->inertReason()));
     if (!serviceActionInfo().confirmGc) {
         if (test && test->mode == DeleteTestHooks::Mode::AutoClose) {
             return endNow("no confirmation: confirm_gc is 0; nothing deleted");
         }
+        if (test && test->mode == DeleteTestHooks::Mode::SwapThenDelete) {
+            // "Swap, then delete" exists only in the confirmation.
+            return endNow("no confirmation: confirm_gc is 0, so \"Swap, then delete\" is not offered; nothing deleted");
+        }
         const std::string what = runMutation(eligible, std::string());
         return endNow("no confirmation (confirm_gc 0); gc: " + what);
     }
-    const std::shared_ptr<const IntakeView> view = providerCurrentView();
     std::vector<IntakeRecord> records;
     for (const ActionRoot &r : eligible.roots) {
         if (const IntakeRecord *record = view ? view->snapshot().recordForId(r.id) : nullptr) {
@@ -1727,11 +1817,25 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
     flow->entry = eligible;
     flow->test = std::move(test);
     flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
+    flow->playlist = playlistRefFor(activePlaylist());
     st.deleteFlow = flow;
     const uint64_t serial = flow->serial;
     swapReadPlacedFiles(std::move(records), [serial](std::vector<PlacedFilesReply> replies) {
         onDeleteFilesRead(serial, replies);
     });
+    // A share that stops answering must not hold the flow (and every later
+    // click) forever: after 10 s the flow ends, and the late reply finds no
+    // flow with its serial.
+    std::weak_ptr<DeleteFlow> weakFlow = flow;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(kDeleteReadSeconds * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       std::shared_ptr<DeleteFlow> late = weakFlow.lock();
+                       ActionsState &now = actionsState();
+                       if (!late || now.stopped || now.deleteFlow != late || late->filesRead) return;
+                       endDeleteFlowWith(late, notRun(IntakeAction::DeleteLocal,
+                                                      "the sidecars could not be read within 10 s (the share is "
+                                                      "not answering); no confirmation, nothing deleted"));
+                   });
     return "reading the file lists of " + rootCountText(eligible.roots.size());
 }
 

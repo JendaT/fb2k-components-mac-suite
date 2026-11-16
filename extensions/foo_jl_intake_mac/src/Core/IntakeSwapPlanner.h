@@ -41,8 +41,11 @@
 //  mount is also tried under every other mount of the same share
 //  (IntakeMountAliases' share key: user and host ignored, the share name
 //  ignoring ASCII case, a mounted subfolder kept), the given spelling first.
-//  Swap stats them in order and converts the one that exists on the mount
-//  point whose canonical form matches the row's (canonicalVolumePrefix).
+//  Swap stats them in order and converts one that exists, on the mount whose
+//  canonical volume form the playlist's items already use, else the one
+//  foobar2000 resolves its own form to (chooseCanonicalCandidate). The
+//  income row's volume does not decide: local income and a library on a
+//  share are the usual case.
 //
 //  Thread-safety: pure functions, except readPlacedRootFiles, which calls
 //  `fs` (any thread; Swap's queue and the loader queue).
@@ -137,7 +140,8 @@ enum class SwapSkip {
     Shadow,            // a quality_shadow file: not placed in the library
     LibraryMissing,    // no library file at that path (either Unicode form, any mount of the share)
     ShareUnreachable,  // the library share stopped answering
-    NoMatchingMount,   // no mount point of the share has the row's canonical volume form
+    NoMatchingMount,   // no mount of the share has a volume form the playlist uses or foobar2000 resolves to it
+    SlowConversion,    // the swap's path conversions on the main thread ran over their budget
     PlaylistGone,      // the playlist was closed meanwhile
     PlaylistLocked,    // the playlist does not allow replacing items
     RowGone,           // the row is no longer in the playlist
@@ -190,6 +194,46 @@ std::string canonicalVolumePrefix(std::string_view path);
 
 // Both are the same volume form: equal ignoring ASCII case, and not empty.
 bool sameVolumePrefix(std::string_view a, std::string_view b);
+
+// --- which mount foobar2000 gets (doc 04 v1.2: "the mount point whose
+// canonical form matches the playlist's items") ---
+
+// The mount point in `mounts` that owns `path` (raw, lexically cleaned
+// here): the longest mount point containing it, ignoring ASCII case, at
+// component boundaries (a later row for the same point wins); "" when none
+// does.
+std::string owningMountPoint(const std::vector<MountEntry> &mounts, std::string_view path);
+
+// `path` (raw or file://) is `mountPoint` or lies under it, as above; "/"
+// holds every absolute path. False when either is not an absolute path.
+bool pathUnderMountPoint(std::string_view path, std::string_view mountPoint);
+
+// Adds the volume form of `path` (canonicalVolumePrefix) to `forms` once,
+// ASCII case ignored; nothing for a path without one.
+void noteVolumeForm(std::vector<std::string> &forms, std::string_view path);
+
+// The volume form of `path` is one of `forms`.
+bool hasVolumeForm(const std::vector<std::string> &forms, std::string_view path);
+
+// One library file that exists under one mount of the share, as foobar2000
+// sees it (Swap fills these in on the main thread, once per mount).
+struct CanonicalCandidate {
+    std::string path;         // the raw path that exists
+    std::string form;         // the volume form (canonicalVolumePrefix) of its g_get_canonical_path; "" when that failed
+    bool roundTrips = false;  // g_get_native_path of that canonical path lies under this path's own mount point
+};
+
+// The candidate Swap converts to, or -1 ("no matching mount"): the first
+// whose volume form an item of the playlist already uses
+// (`playlistForms`, the swapped row's own included): handle_create then
+// meets the volume id foobar2000 already uses for that share, so no
+// duplicate metadb entry (docs/VOLUME_UUID_ISSUE.md). When no item uses any
+// of them (a local income row and a library on a share no playlist item is
+// on yet), the first whose canonical form round-trips to its own mount:
+// the form foobar2000 itself resolves to that mount. Candidates without a
+// volume form never count.
+long chooseCanonicalCandidate(const std::vector<CanonicalCandidate> &candidates,
+                              const std::vector<std::string> &playlistForms);
 
 // --- the console line ---
 

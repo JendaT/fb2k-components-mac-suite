@@ -133,10 +133,16 @@ context menu's **Delete local copy…** first shows a confirmation (a sheet on
 the window the menu was opened in) that lists the local files it deletes (the
 sidecar's `files[]` under `root_path`, shadows included: up to 10, then "and
 N more"), notes that a whole-folder root's other files go too, and offers
-**Swap, then delete** while rows of those releases in the active playlist
-still point at their income files. With `0`, the item reads **Delete local
-copy** (no ellipsis) and runs `gc <ids> --json` at once. Either way gc runs
-only on roots that are `placed` with `placed.verified`.
+**Swap, then delete** while rows of those releases in any playlist still
+point at their income files and Swap can move every one of them (rows that
+play a quality shadow or a file the sidecar does not list have no library
+copy: they are named instead, and the button is not offered). "Swap, then
+delete" swaps them in the playlist the menu was opened in, then in every
+other playlist, and runs gc only when no row anywhere still points at an
+income file (a row on a slow volume that could not be checked also stops
+it). With `0`, the item reads **Delete local copy** (no ellipsis) and runs
+`gc <ids> --json` at once. Either way gc runs only on roots that are
+`placed` with `placed.verified`, and never while intake is inert.
 
 ```bash
 # quit foobar2000 first
@@ -274,9 +280,9 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 Temporary acceptance aid (B6, extended in B7, B8 and B9), removed before the
 merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
 `src/Core/IntakeTestActionScript.*` and its tests, the `PickerTestHooks`,
-`ExecuteTestHooks`, `SwapTestHooks` and `DeleteTestHooks` in
-`src/Integration/IntakeActions.*`, and `playlistRowsOfRoot` in
-`src/Integration/IntakeSwap.*`). It lets an in-app check drive the intake
+`ExecuteTestHooks`, `SwapTestHooks`, `DeleteTestHooks` and
+`actionsTableForHandles` in `src/Integration/IntakeActions.*`, and
+`playlistRowsOfRoot` in `src/Integration/IntakeSwap.*`). It lets an in-app check drive the intake
 context menu, the collection picker, the execute sheet and the delete
 confirmation included, and read the group header badges, the tracked execute
 runs and the playlist rows of a release, without clicking.
@@ -302,8 +308,8 @@ words by spaces:
 | `runs` | B8. One line: the execute and resume runs the component tracks (its own and adopted ones: command, pid, state `starting`/`running`/`adopted`/`exited`, ids) and the mutation lane, e.g. `1 live: execute pid 4242 adopted (itk_00000010); lane busy (execute)` or `none; lane free`. |
 | `swap <id...>` | B9. Selects, in the active playlist, the rows that map to those roots by their income path (and nothing else), builds the context menu for that selection with the real per-row mapping, and runs its **Swap to library paths** item as a click does. One line once the swap has ended: `Swap to library paths (<ids>): selected N row(s); swap: S row(s) swapped to library paths, K skipped (<reasons>)`, or why nothing ran (`not run: ...`). Swap runs no CLI command (calls.log does not change) and works while an execute runs. |
 | `rows <id>` | B9. One line listing the rows of the active playlist that belong to that root, by income path or through the library index (rows already swapped): `N row(s) (I income, L library), H distinct handle(s) for P distinct path(s): #<index> income\|library <native path> [h<k>]; ...; menu: <the items a selection of those rows gets>`. The same tag `h<k>` on two rows means one metadb handle; a path with two tags would be a duplicate metadb entry for one file. |
-| `delete <id...>` | B9. **Delete local copy…** through the real flow: the menu item for those roots, the sidecars read afresh, the income rows counted, then, instead of the sheet, the confirmation is answered **Delete** (the roots rechecked against the current snapshot, the lane and the configuration checked again), which runs `gc <ids> --json`. One line once gc was started or could not start: `confirmation: N path(s): <first three> (+K more); Swap, then delete offered (R income row(s)); answered Delete; gc: started for 1 root` (`Swap, then delete not offered (no income row)` when no row points at an income file). With `confirm_gc` 0: `no confirmation (confirm_gc 0); gc: started for ...`. The gc result follows as its own console line (`gc: done for 1 root`, `gc failed for 1 root: ...`). |
-| `delete-swap <id...>` | B9. The same, answered **Swap, then delete**: the rows of those roots in the active playlist that still point at income paths are swapped first; gc runs only when none is left: `...; answered Swap, then delete; swap: 2 row(s) swapped to library paths, 0 skipped; gc: started for 1 root`, or `...; not run: N row(s) in the playlist still point at the income paths of these roots; nothing deleted`. With no income row it goes straight to gc (`no income row to swap; gc: ...`). |
+| `delete <id...>` | B9. **Delete local copy…** through the real flow: the menu item for those roots, the sidecars read afresh, the income rows counted, then, instead of the sheet, the confirmation is answered **Delete** (the roots rechecked against the current snapshot, the lane and the configuration checked again), which runs `gc <ids> --json`. One line once gc was started or could not start: `confirmation: N path(s): <first three> (+K more); Swap, then delete offered (R income row(s)); answered Delete; gc: started for 1 root` (the income rows of every playlist: `(R income row(s) in P playlist(s))` when some are outside the active one; `Swap, then delete not offered (no income row)` when no row points at an income file, `not offered (R income row(s), K without a library copy)` when Swap could not move them all; then `; U row(s) not checked (slow volume)` when some rows could not be checked). No answer from the sidecar reads within 10 s: `not run: the sidecars could not be read within 10 s ...`. With `confirm_gc` 0: `no confirmation (confirm_gc 0); gc: started for ...`. The gc result follows as its own console line (`gc: done for 1 root`, `gc failed for 1 root: ...`). |
+| `delete-swap <id...>` | B9. The same, answered **Swap, then delete**: the rows of those roots that still point at income paths are swapped first, in the active playlist, then in every other playlist that has such rows (one `swap: ...` part per playlist); gc runs only when none is left in any playlist: `...; answered Swap, then delete; swap: 2 row(s) swapped to library paths, 0 skipped; gc: started for 1 root`, or `...; not run: N row(s) in P playlist(s) still point at the income paths of these roots; nothing deleted` (also `K playlist row(s) on a slow volume could not be checked`). When the confirmation did not offer it (no income row, or a row without a library copy): `...; not run: "Swap, then delete" was not offered; nothing deleted`. With `confirm_gc` 0: `no confirmation: confirm_gc is 0, so "Swap, then delete" is not offered; nothing deleted`. |
 | `delete-sheet <id...> close=<seconds>` | B9. The real confirmation for a screenshot: the window under the pointer when the step starts, else the main, key or foobar2000 main window, else app-modal. One line when it is up: `sheet shown: "<title>"; <the paths and the swap offer, as for delete>; buttons Delete, Cancel[, Swap, then delete]; closing as Cancel in <seconds> s`. It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is deleted. With `confirm_gc` 0 there is no confirmation: `no confirmation: confirm_gc is 0; nothing deleted`. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 

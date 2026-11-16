@@ -32,7 +32,9 @@ SlowVolumeGuard &slowVolumes() {
 
 } // anonymous namespace
 
-const char *intakeNativePath(const char *path, pfc::string_base &scratch, NativePathMenuBudget *menuBudget) {
+const char *intakeNativePath(const char *path, pfc::string_base &scratch, NativePathMenuBudget *menuBudget,
+                             bool *refused) {
+    if (refused != nullptr) *refused = false;
     if (path == nullptr || path[0] == '\0') return nullptr;
     if (path[0] == '/') return path;
     if (hasPrefixIgnoringCase(path, kFileScheme, sizeof kFileScheme - 1)) return path;
@@ -40,8 +42,10 @@ const char *intakeNativePath(const char *path, pfc::string_base &scratch, Native
 
     SlowVolumeGuard &guard = slowVolumes();
     const std::string_view uuid = macVolumeUuid(path);
-    if (guard.isSlow(uuid)) return nullptr;
-    if (menuBudget != nullptr && !menuBudget->allows(uuid)) return nullptr;
+    if (guard.isSlow(uuid) || (menuBudget != nullptr && !menuBudget->allows(uuid))) {
+        if (refused != nullptr) *refused = true;
+        return nullptr;
+    }
     const uint64_t generation = guard.generation();
     const auto start = std::chrono::steady_clock::now();
     // g_get_native_path catches the filesystem service's exceptions itself

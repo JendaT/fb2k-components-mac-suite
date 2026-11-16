@@ -211,6 +211,7 @@ const char *swapSkipText(SwapSkip skip) {
         case SwapSkip::LibraryMissing: return "library file missing";
         case SwapSkip::ShareUnreachable: return "library share unreachable";
         case SwapSkip::NoMatchingMount: return "no matching mount";
+        case SwapSkip::SlowConversion: return "path conversion too slow";
         case SwapSkip::PlaylistGone: return "playlist gone";
         case SwapSkip::PlaylistLocked: return "playlist locked";
         case SwapSkip::RowGone: return "row no longer in the playlist";
@@ -348,6 +349,63 @@ std::string canonicalVolumePrefix(std::string_view path) {
 
 bool sameVolumePrefix(std::string_view a, std::string_view b) {
     return !a.empty() && equalsIgnoringAsciiCase(a, b);
+}
+
+std::string owningMountPoint(const std::vector<MountEntry> &mounts, std::string_view path) {
+    const std::string clean = lexicalAbsolutePath(path);
+    if (clean.empty()) return std::string();
+    std::string owner;
+    bool found = false;
+    for (const MountEntry &m : mounts) {
+        const std::string point = lexicalAbsolutePath(m.mountPoint);
+        if (point.empty() || !underMount(clean, point)) continue;
+        if (!found || point.size() >= owner.size()) {
+            owner = point;
+            found = true;
+        }
+    }
+    return owner;
+}
+
+bool pathUnderMountPoint(std::string_view path, std::string_view mountPoint) {
+    static constexpr std::string_view kFile = "file://";
+    if (path.size() >= kFile.size() && equalsIgnoringAsciiCase(path.substr(0, kFile.size()), kFile)) {
+        path.remove_prefix(kFile.size());
+    }
+    const std::string clean = lexicalAbsolutePath(path);
+    const std::string point = lexicalAbsolutePath(mountPoint);
+    return !clean.empty() && !point.empty() && underMount(clean, point);
+}
+
+void noteVolumeForm(std::vector<std::string> &forms, std::string_view path) {
+    std::string form = canonicalVolumePrefix(path);
+    if (form.empty()) return;
+    for (const std::string &have : forms) {
+        if (sameVolumePrefix(have, form)) return;
+    }
+    forms.push_back(std::move(form));
+}
+
+bool hasVolumeForm(const std::vector<std::string> &forms, std::string_view path) {
+    const std::string form = canonicalVolumePrefix(path);
+    if (form.empty()) return false;
+    for (const std::string &have : forms) {
+        if (sameVolumePrefix(have, form)) return true;
+    }
+    return false;
+}
+
+long chooseCanonicalCandidate(const std::vector<CanonicalCandidate> &candidates,
+                              const std::vector<std::string> &playlistForms) {
+    for (size_t i = 0; i < candidates.size(); i++) {
+        if (hasVolumeForm(playlistForms, candidates[i].form)) return static_cast<long>(i);
+    }
+    for (size_t i = 0; i < candidates.size(); i++) {
+        if (candidates[i].roundTrips && !canonicalVolumePrefix(candidates[i].form).empty()) {
+            return static_cast<long>(i);
+        }
+    }
+    return -1;
 }
 
 size_t SwapTally::skippedTotal() const {

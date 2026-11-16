@@ -20,6 +20,7 @@
 #include "../Core/IntakeView.h"
 
 #include <cerrno>
+#include <chrono>
 #include <strings.h>
 #include <sys/stat.h>
 #include <unordered_map>
@@ -28,18 +29,23 @@ namespace intake {
 
 namespace {
 
+// The main thread's allowance for one swap's SDK path conversions (step 3).
+constexpr uint64_t kConvertBudgetMicros = 200000;
+
 struct SwapState {
     SwapState() {
         dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
             DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
         attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_USER_INITIATED, 0);
         queue = dispatch_queue_create("com.foobar2000.intake.swap", attr);
+        readQueue = dispatch_queue_create("com.foobar2000.intake.swap-read", attr);
     }
     // main
     bool stopped = false;
     bool running = false;
     // set once
-    dispatch_queue_t queue = nil;
+    dispatch_queue_t queue = nil;      // the swap's reads and stats
+    dispatch_queue_t readQueue = nil;  // swapReadPlacedFiles (the Delete confirmation)
 };
 
 // Leaked on purpose (like the actions' state): a queue result may come back
@@ -49,18 +55,23 @@ SwapState &swapState() {
     return *state;
 }
 
+// A library file that exists, and the mount point it is under.
+struct MountedPath {
+    std::string path;
+    std::string mount;  // owningMountPoint
+};
+
 // One captured row through the queue.
 struct PlannedRow {
     SwapRow row;
     SwapSkip skip = SwapSkip::None;
-    std::string libraryPath;              // the spelling that exists
-    std::vector<std::string> candidates;  // that path under each mount of the share, it first
+    std::string libraryPath;               // the spelling found first
+    std::vector<MountedPath> candidates;   // that spelling under each mount of the share where it exists, it first
 };
 
 struct SwapJob {
-    t_size playlistIndex = SIZE_MAX;
-    GUID playlistGuid = {};
-    bool hasGuid = false;
+    PlaylistRef playlist;
+    std::vector<std::string> playlistForms;  // the volume forms of the playlist's items at the click
     std::vector<PlannedRow> rows;
     std::shared_ptr<const IntakeView> view;
     LibraryPrefix prefix;
@@ -103,6 +114,7 @@ void planOnQueue(SwapJob &job) {
     ViewScratch scratch;
     std::string key;
     bool libraryGone = false;
+    std::unordered_set<std::string> deadMounts;  // alias mounts whose stat said the share is gone
     for (PlannedRow &p : job.rows) {
         auto rec = job.records.find(p.row.rootId);
         if (rec == job.records.end()) {
@@ -153,28 +165,148 @@ void planOnQueue(SwapJob &job) {
             continue;
         }
         p.libraryPath = found;
-        p.candidates = aliasMountPaths(mounts, found);
+        // That spelling under every other mount of the share: only the
+        // mounts where it exists stay candidates.
+        for (const std::string &path : aliasMountPaths(mounts, found)) {
+            const std::string mount = owningMountPoint(mounts, path);
+            if (path != found) {
+                if (deadMounts.count(mount)) continue;
+                struct stat st;
+                if (::stat(path.c_str(), &st) != 0) {
+                    if (isShareUnreachableError(errno)) deadMounts.insert(mount);
+                    continue;
+                }
+                if (!S_ISREG(st.st_mode)) continue;
+            }
+            p.candidates.push_back({path, mount});
+        }
     }
 }
 
-// Main: the canonical path of `row`'s library file on the mount whose
-// volume form is the row's, or "".
-std::string canonicalFor(const PlannedRow &p) {
-    const std::string wanted = canonicalVolumePrefix(p.row.path);
-    if (wanted.empty()) return std::string();
-    pfc::string8 canonical;
-    for (const std::string &candidate : p.candidates) {
-        try {
-            filesystem::g_get_canonical_path(("file://" + candidate).c_str(), canonical);
-        } catch (...) {
-            continue;
+// Main: step 3's conversions for one swap. Each mount's volume form is
+// worked out once (g_get_canonical_path of the first file seen under it,
+// then g_get_native_path of that back); every SDK call is timed and the
+// total kept under kConvertBudgetMicros.
+class SwapConverter {
+public:
+    explicit SwapConverter(const std::vector<std::string> &playlistForms) : playlistForms_(playlistForms) {}
+
+    // The canonical path `p` is swapped to, or "" with `skip` set.
+    std::string canonicalFor(const PlannedRow &p, SwapSkip &skip) {
+        if (spent()) {
+            skip = SwapSkip::SlowConversion;
+            return std::string();
         }
-        const std::string out = canonical.c_str();
-        if (sameVolumePrefix(canonicalVolumePrefix(out), wanted)) return out;
-        logDebug("swap: " + candidate + " is " + out + " in foobar2000, not on the row's volume " + wanted);
+        std::vector<CanonicalCandidate> candidates;
+        for (const MountedPath &m : p.candidates) {
+            const Form &f = formOf(m);
+            CanonicalCandidate c;
+            c.path = m.path;
+            c.form = f.form;
+            c.roundTrips = f.roundTrips;
+            candidates.push_back(std::move(c));
+        }
+        const long pick = chooseCanonicalCandidate(candidates, playlistForms_);
+        if (pick < 0) {
+            skip = spent() ? SwapSkip::SlowConversion : SwapSkip::NoMatchingMount;
+            if (skip == SwapSkip::NoMatchingMount) {
+                std::string seen;
+                for (const CanonicalCandidate &c : candidates) {
+                    seen += (seen.empty() ? "" : ", ") + c.path + " is " +
+                            (c.form.empty() ? std::string("not converted") : c.form) +
+                            (c.roundTrips ? "" : " (resolved to another mount)");
+                }
+                logDebug("swap: no playlist item uses a volume form of " + p.libraryPath + " and none maps back to its mount: " +
+                         seen);
+            }
+            return std::string();
+        }
+        const CanonicalCandidate &chosen = candidates[static_cast<size_t>(pick)];
+        std::string out;
+        auto cached = canonical_.find(chosen.path);
+        if (cached != canonical_.end()) {
+            out = cached->second;
+        } else if (spent()) {
+            skip = SwapSkip::SlowConversion;
+            return std::string();
+        } else {
+            out = convert(chosen.path);
+        }
+        if (!sameVolumePrefix(canonicalVolumePrefix(out), chosen.form)) {
+            skip = spent() ? SwapSkip::SlowConversion : SwapSkip::NoMatchingMount;
+            logDebug("swap: " + chosen.path + " converted to \"" + out + "\", not on " + chosen.form);
+            return std::string();
+        }
+        if (!hasVolumeForm(playlistForms_, chosen.form)) {
+            logDebug("swap: no playlist item is on " + chosen.form + "; " + chosen.path +
+                     " uses it, the form foobar2000 resolves to its mount");
+        }
+        return out;
     }
-    return std::string();
-}
+
+    bool spent() const { return micros_ > kConvertBudgetMicros; }
+
+private:
+    struct Form {
+        std::string form;
+        bool roundTrips = false;
+    };
+
+    // Timed: g_get_canonical_path("file://" + path), "" when it threw.
+    std::string convert(const std::string &path) {
+        const auto start = std::chrono::steady_clock::now();
+        std::string out;
+        try {
+            pfc::string8 canonical;
+            filesystem::g_get_canonical_path(("file://" + path).c_str(), canonical);
+            out = canonical.c_str();
+        } catch (...) {
+            out.clear();
+        }
+        note(start);
+        return out;
+    }
+
+    // Timed: g_get_native_path(canonical) lies under `mount`.
+    bool nativeUnder(const std::string &canonical, const std::string &mount) {
+        const auto start = std::chrono::steady_clock::now();
+        bool under = false;
+        try {
+            pfc::string8 native;
+            under = filesystem::g_get_native_path(canonical.c_str(), native) &&
+                    pathUnderMountPoint(native.c_str(), mount);
+        } catch (...) {
+            under = false;
+        }
+        note(start);
+        return under;
+    }
+
+    void note(std::chrono::steady_clock::time_point start) {
+        micros_ += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    }
+
+    // The volume form of `m`'s mount, worked out from `m.path` the first
+    // time (no form once the budget is spent).
+    const Form &formOf(const MountedPath &m) {
+        auto known = forms_.find(m.mount);
+        if (known != forms_.end()) return known->second;
+        Form f;
+        if (!spent()) {
+            const std::string canonical = convert(m.path);
+            canonical_[m.path] = canonical;
+            f.form = canonicalVolumePrefix(canonical);
+            if (!f.form.empty() && !spent()) f.roundTrips = nativeUnder(canonical, m.mount);
+        }
+        return forms_.emplace(m.mount, std::move(f)).first->second;
+    }
+
+    const std::vector<std::string> &playlistForms_;
+    std::unordered_map<std::string, Form> forms_;           // mount point -> its form
+    std::unordered_map<std::string, std::string> canonical_;  // path -> canonical, from formOf
+    uint64_t micros_ = 0;
+};
 
 void finish(SwapJob &job, SwapResult &result) {
     SwapState &st = swapState();
@@ -205,21 +337,13 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
     };
 
     auto pm = playlist_manager::get();
-    t_size playlist = SIZE_MAX;
-    if (job->hasGuid) {
-        auto v5 = playlist_manager_v5::tryGet();
-        if (v5.is_valid()) playlist = v5->find_playlist_by_guid(job->playlistGuid);
-    } else if (job->playlistIndex < pm->get_playlist_count()) {
-        playlist = job->playlistIndex;
-    }
-    if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) {
+    const t_size playlist = findPlaylist(job->playlist);
+    if (playlist == SIZE_MAX) {
         skipAll(SwapSkip::PlaylistGone, "the playlist was closed");
         finish(*job, result);
         return;
     }
-    result.playlist = playlist;
     if (pm->playlist_lock_get_filter_mask(playlist) & playlist_lock::filter_replace) {
-        result.playlistLocked = true;
         pfc::string8 name;
         pm->playlist_get_name(playlist, name);
         skipAll(SwapSkip::PlaylistLocked, std::string("\"") + name.c_str() + "\" does not allow replacing items");
@@ -246,6 +370,7 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
     };
     std::vector<Replacement> replacements;
     auto db = metadb::get();
+    SwapConverter converter(job->playlistForms);
     for (const PlannedRow &p : job->rows) {
         if (p.skip != SwapSkip::None) {
             result.tally.skip(p.skip);
@@ -258,15 +383,19 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
             logDebug("swap: " + p.row.native + ": " + swapSkipText(SwapSkip::RowGone));
             continue;
         }
-        const std::string canonical = canonicalFor(p);
+        SwapSkip why = SwapSkip::None;
+        const std::string canonical = converter.canonicalFor(p, why);
         if (canonical.empty()) {
-            for (size_t k = 0; k < indices.size(); k++) result.tally.skip(SwapSkip::NoMatchingMount);
-            logDebug("swap: " + p.row.native + ": " + swapSkipText(SwapSkip::NoMatchingMount) + " for " +
-                     p.libraryPath + " (the row is on " + canonicalVolumePrefix(p.row.path) + ")");
+            for (size_t k = 0; k < indices.size(); k++) result.tally.skip(why);
+            logDebug("swap: " + p.row.native + ": " + swapSkipText(why) + " for " + p.libraryPath);
             continue;
         }
         const metadb_handle_ptr handle = db->handle_create(canonical.c_str(), p.row.subsong);
         for (t_size index : indices) replacements.push_back({index, handle, &p});
+    }
+    if (result.tally.skippedFor(SwapSkip::SlowConversion) > 0) {
+        logInfo("swap: the path conversions took over " + std::to_string(kConvertBudgetMicros / 1000) + " ms; " +
+                std::to_string(result.tally.skippedFor(SwapSkip::SlowConversion)) + " row(s) left as they are");
     }
     if (!replacements.empty()) {
         pm->playlist_undo_backup(playlist);
@@ -286,9 +415,108 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
 
 } // anonymous namespace
 
+PlaylistRef playlistRefFor(t_size playlist) {
+    PlaylistRef ref;
+    auto pm = playlist_manager::get();
+    if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return ref;
+    ref.index = playlist;
+    auto v5 = playlist_manager_v5::tryGet();
+    if (v5.is_valid()) {
+        ref.guid = v5->playlist_get_guid(playlist);
+        ref.hasGuid = !(ref.guid == pfc::guid_null);
+    }
+    return ref;
+}
+
+t_size findPlaylist(const PlaylistRef &ref) {
+    auto pm = playlist_manager::get();
+    t_size playlist = SIZE_MAX;
+    if (ref.hasGuid) {
+        auto v5 = playlist_manager_v5::tryGet();
+        if (v5.is_valid()) playlist = v5->find_playlist_by_guid(ref.guid);
+    } else {
+        playlist = ref.index;
+    }
+    return playlist < pm->get_playlist_count() ? playlist : SIZE_MAX;
+}
+
+namespace {
+
+// What one handle maps to.
+enum class RowMatch { None, Income, Unchecked };
+
+RowMatch matchRow(const metadb_handle_ptr &handle, const std::unordered_set<std::string> &rootIds,
+                  const IntakeView &view, NativePathMenuBudget *budget, pfc::string8 &native, ViewScratch &scratch,
+                  SwapRow &out) {
+    bool refused = false;
+    const char *path = intakeNativePath(handle->get_path(), native, budget, &refused);
+    if (path == nullptr) return refused ? RowMatch::Unchecked : RowMatch::None;
+    const IntakeRecord *record = view.recordFor(path, scratch);
+    if (record == nullptr || !rootIds.count(record->id)) return RowMatch::None;
+    out.handle = handle;
+    out.path = handle->get_path();
+    out.subsong = handle->get_subsong_index();
+    out.native = stripFileScheme(path);
+    out.rootId = record->id;
+    return RowMatch::Income;
+}
+
+// One playlist's income rows: each handle once, with its entries.
+struct PlaylistScan {
+    std::vector<SwapRow> rows;
+    std::vector<size_t> entries;  // per row
+    std::vector<t_size> indices;  // every income entry, ascending
+    size_t unchecked = 0;         // entries not converted
+};
+
+PlaylistScan scanPlaylist(t_size playlist, const std::unordered_set<std::string> &rootIds, const IntakeView &view,
+                          NativePathMenuBudget *budget) {
+    PlaylistScan out;
+    auto pm = playlist_manager::get();
+    if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return out;
+    metadb_handle_list items;
+    pm->playlist_get_all_items(playlist, items);
+    // Per handle: the row index, or -1 (no match), or -2 (unchecked).
+    std::unordered_map<const metadb_handle *, long> seen;
+    pfc::string8 native;
+    ViewScratch scratch;
+    for (t_size i = 0; i < items.get_count(); i++) {
+        @autoreleasepool {
+            const metadb_handle_ptr handle = items[i];
+            if (!handle.is_valid()) continue;
+            auto known = seen.find(handle.get_ptr());
+            long state;
+            if (known != seen.end()) {
+                state = known->second;
+            } else {
+                SwapRow row;
+                const RowMatch match = matchRow(handle, rootIds, view, budget, native, scratch, row);
+                if (match == RowMatch::Income) {
+                    state = static_cast<long>(out.rows.size());
+                    out.rows.push_back(std::move(row));
+                    out.entries.push_back(0);
+                } else {
+                    state = match == RowMatch::Unchecked ? -2 : -1;
+                }
+                seen.emplace(handle.get_ptr(), state);
+            }
+            if (state >= 0) {
+                out.entries[static_cast<size_t>(state)]++;
+                out.indices.push_back(i);
+            } else if (state == -2) {
+                out.unchecked++;
+            }
+        }
+    }
+    return out;
+}
+
+} // anonymous namespace
+
 std::vector<SwapRow> swapRowsFromHandles(metadb_handle_list_cref handles, const std::unordered_set<std::string> &rootIds,
-                                         const IntakeView &view, NativePathMenuBudget *budget) {
+                                         const IntakeView &view, NativePathMenuBudget *budget, size_t *unchecked) {
     std::vector<SwapRow> out;
+    if (unchecked) *unchecked = 0;
     std::unordered_set<const metadb_handle *> seen;
     pfc::string8 native;
     ViewScratch scratch;
@@ -296,38 +524,59 @@ std::vector<SwapRow> swapRowsFromHandles(metadb_handle_list_cref handles, const 
         @autoreleasepool {
             const metadb_handle_ptr handle = handles[i];
             if (!handle.is_valid() || !seen.insert(handle.get_ptr()).second) continue;
-            const char *path = intakeNativePath(handle->get_path(), native, budget);
-            if (path == nullptr) continue;
-            const IntakeRecord *record = view.recordFor(path, scratch);
-            if (record == nullptr || !rootIds.count(record->id)) continue;
             SwapRow row;
-            row.handle = handle;
-            row.path = handle->get_path();
-            row.subsong = handle->get_subsong_index();
-            row.native = stripFileScheme(path);
-            row.rootId = record->id;
-            out.push_back(std::move(row));
+            const RowMatch match = matchRow(handle, rootIds, view, budget, native, scratch, row);
+            if (match == RowMatch::Income) {
+                out.push_back(std::move(row));
+            } else if (match == RowMatch::Unchecked && unchecked) {
+                (*unchecked)++;
+            }
         }
     }
     return out;
 }
 
 std::vector<SwapRow> swapIncomeRows(t_size playlist, const std::unordered_set<std::string> &rootIds,
-                                    const IntakeView &view, NativePathMenuBudget *budget, std::vector<t_size> *indices) {
-    if (indices) indices->clear();
+                                    const IntakeView &view, NativePathMenuBudget *budget, std::vector<t_size> *indices,
+                                    size_t *unchecked) {
+    PlaylistScan scan = scanPlaylist(playlist, rootIds, view, budget);
+    if (indices) *indices = std::move(scan.indices);
+    if (unchecked) *unchecked = scan.unchecked;
+    return std::move(scan.rows);
+}
+
+IncomeRowCensus incomeRowCensus(const std::unordered_set<std::string> &rootIds, const IntakeView &view,
+                                const PlaylistRef &first) {
+    IncomeRowCensus out;
     auto pm = playlist_manager::get();
-    if (playlist == SIZE_MAX || playlist >= pm->get_playlist_count()) return {};
-    metadb_handle_list items;
-    pm->playlist_get_all_items(playlist, items);
-    std::vector<SwapRow> rows = swapRowsFromHandles(items, rootIds, view, budget);
-    if (indices && !rows.empty()) {
-        std::unordered_set<const metadb_handle *> wanted;
-        for (const SwapRow &r : rows) wanted.insert(r.handle.get_ptr());
-        for (t_size i = 0; i < items.get_count(); i++) {
-            if (wanted.count(items[i].get_ptr())) indices->push_back(i);
+    const t_size count = pm->get_playlist_count();
+    const t_size firstIndex = findPlaylist(first);
+    std::vector<t_size> order;
+    if (firstIndex != SIZE_MAX) order.push_back(firstIndex);
+    for (t_size p = 0; p < count; p++) {
+        if (p != firstIndex) order.push_back(p);
+    }
+    NativePathMenuBudget budget;
+    std::unordered_map<const metadb_handle *, size_t> rowOf;
+    for (t_size p : order) {
+        PlaylistScan scan = scanPlaylist(p, rootIds, view, &budget);
+        out.unchecked += scan.unchecked;
+        if (scan.indices.empty()) continue;
+        out.playlists.push_back(playlistRefFor(p));
+        out.total += scan.indices.size();
+        if (p == firstIndex) out.inFirst = scan.indices.size();
+        for (size_t r = 0; r < scan.rows.size(); r++) {
+            auto known = rowOf.find(scan.rows[r].handle.get_ptr());
+            if (known != rowOf.end()) {
+                out.entries[known->second] += scan.entries[r];
+                continue;
+            }
+            rowOf.emplace(scan.rows[r].handle.get_ptr(), out.rows.size());
+            out.rows.push_back(std::move(scan.rows[r]));
+            out.entries.push_back(scan.entries[r]);
         }
     }
-    return rows;
+    return out;
 }
 
 bool swapStart(t_size playlist, std::vector<SwapRow> rows, std::shared_ptr<const IntakeView> view, LibraryPrefix prefix,
@@ -351,11 +600,13 @@ bool swapStart(t_size playlist, std::vector<SwapRow> rows, std::shared_ptr<const
         return false;
     }
     auto job = std::make_shared<SwapJob>();
-    job->playlistIndex = playlist;
-    auto v5 = playlist_manager_v5::tryGet();
-    if (v5.is_valid()) {
-        job->playlistGuid = v5->playlist_get_guid(playlist);
-        job->hasGuid = !(job->playlistGuid == pfc::guid_null);
+    job->playlist = playlistRefFor(playlist);
+    {
+        metadb_handle_list items;
+        pm->playlist_get_all_items(playlist, items);
+        for (t_size i = 0; i < items.get_count(); i++) {
+            if (items[i].is_valid()) noteVolumeForm(job->playlistForms, items[i]->get_path());
+        }
     }
     for (SwapRow &row : rows) {
         if (!job->records.count(row.rootId)) {
@@ -391,7 +642,7 @@ void swapReadPlacedFiles(std::vector<IntakeRecord> records,
     if (st.stopped) return;
     auto input = std::make_shared<std::vector<IntakeRecord>>(std::move(records));
     auto callback = std::make_shared<std::function<void(std::vector<PlacedFilesReply>)>>(std::move(done));
-    dispatch_async(st.queue, ^{
+    dispatch_async(st.readQueue, ^{
         auto replies = std::make_shared<std::vector<PlacedFilesReply>>();
         bool shareGone = false;
         for (const IntakeRecord &record : *input) {

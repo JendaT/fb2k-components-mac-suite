@@ -94,6 +94,15 @@ static void testPaths() {
     CHECK(!gcConfirmRoot(a, nullptr, std::string()).filesError.empty(), "a default reason");
 }
 
+// `rows` income rows, all in the playlist Delete was opened from.
+static GcIncomeRows inActive(size_t rows) {
+    GcIncomeRows r;
+    r.rows = rows;
+    r.inFirst = rows;
+    r.playlists = rows > 0 ? 1 : 0;
+    return r;
+}
+
 static void testText() {
     g_context = "text";
     CHECK(gcConfirmTitle(1) == "Delete the local copy of this album?", "title, one album");
@@ -104,7 +113,7 @@ static void testText() {
     const PlacedRootFiles fa = filesOf(a, 8);
     const PlacedRootFiles fb = filesOf(b, 4, false);
     std::vector<GcConfirmRoot> roots = {gcConfirmRoot(a, &fa, ""), gcConfirmRoot(b, &fb, "")};
-    const std::string text = gcConfirmText(roots, 0);
+    const std::string text = gcConfirmText(roots, inActive(0));
     CHECK(countOf(text, ".wav\n") == 10 && text.find(a.rootPath + "/01 - Track.wav") == 0,
           "the paths come first, one per line, ten of them");
     CHECK(text.find(b.rootPath + "/02 - Track.wav") != std::string::npos &&
@@ -115,25 +124,59 @@ static void testText() {
     CHECK(text.find("Swap, then delete") == std::string::npos, "no income rows: no mention of the swap");
     CHECK(text.find("The library copies stay.") != std::string::npos, "the library copies stay");
 
-    const std::string withRows = gcConfirmText(roots, 3);
+    const std::string withRows = gcConfirmText(roots, inActive(3));
     CHECK(withRows.find("3 rows in the active playlist still play these files. \"Swap, then delete\" points them at "
                         "the library copies first.") != std::string::npos,
           "income rows: the swap is offered in the text");
-    CHECK(gcConfirmText(roots, 1).find("1 row in the active playlist still plays these files") != std::string::npos,
+    CHECK(gcConfirmText(roots, inActive(1)).find("1 row in the active playlist still plays these files") != std::string::npos,
           "one row: singular");
 
     std::vector<GcConfirmRoot> exact = {gcConfirmRoot(a, &fa, "")};
-    CHECK(gcConfirmText(exact, 0).find("more") == std::string::npos, "8 paths: all listed, no \"more\"");
+    CHECK(gcConfirmText(exact, inActive(0)).find("more") == std::string::npos, "8 paths: all listed, no \"more\"");
     std::vector<GcConfirmRoot> virtualOnly = {gcConfirmRoot(b, &fb, "")};
-    CHECK(gcConfirmText(virtualOnly, 0).find("covers, cues") == std::string::npos,
+    CHECK(gcConfirmText(virtualOnly, inActive(0)).find("covers, cues") == std::string::npos,
           "a virtual root has no artifacts: no whole-folder note");
     std::vector<GcConfirmRoot> unreadable = {gcConfirmRoot(a, nullptr, "no sidecar for itk_00000012")};
-    const std::string none = gcConfirmText(unreadable, 0);
+    const std::string none = gcConfirmText(unreadable, inActive(0));
     CHECK(none.find("No local file list could be read.") == 0 &&
               none.find("The file list of Fixture Artist \xE2\x80\x93 Placed Album could not be read: no sidecar for "
                         "itk_00000012.") != std::string::npos,
           "an unreadable root is named with the reason");
-    CHECK(gcConfirmText(roots, 0, 3).find("\nand 9 more") != std::string::npos, "the cap is a parameter");
+    CHECK(gcConfirmText(roots, inActive(0), 3).find("\nand 9 more") != std::string::npos, "the cap is a parameter");
+
+    // Rows in other playlists too: counted and named, the swap still offered.
+    GcIncomeRows spread = inActive(2);
+    spread.rows = 5;
+    spread.playlists = 3;
+    CHECK(gcConfirmText(roots, spread).find("5 rows in 3 playlists still play these files. \"Swap, then delete\" "
+                                            "points them at the library copies first.") != std::string::npos,
+          "rows outside the active playlist: every playlist is counted");
+    CHECK(spread.offerSwap(), "offered across playlists");
+
+    // A row Swap never moves: the swap is not offered, the row is named.
+    GcIncomeRows stuck = inActive(3);
+    stuck.noLibraryCopy = 1;
+    const std::string stuckText = gcConfirmText(roots, stuck);
+    CHECK(!stuck.offerSwap() && stuckText.find("3 rows in the active playlist still play these files. 1 of them has "
+                                               "no library copy") != std::string::npos &&
+              stuckText.find("\"Swap, then delete\" points") == std::string::npos,
+          "a shadow or unlisted row: named, and no swap offered (it could never end in gc)");
+
+    // Rows whose volume could not be checked.
+    GcIncomeRows unknown = inActive(2);
+    unknown.unchecked = 4;
+    const std::string unknownText = gcConfirmText(roots, unknown);
+    CHECK(unknownText.find("4 playlist rows on a slow volume could not be checked. \"Swap, then delete\" deletes "
+                           "nothing while a row is unchecked.") != std::string::npos,
+          "unchecked rows are named");
+    CHECK(unknown.offerSwap() && !unknown.clear() && inActive(0).clear() && !inActive(1).clear(),
+          "clear only with no income row and nothing unchecked");
+    GcIncomeRows onlyUnknown;
+    onlyUnknown.unchecked = 1;
+    CHECK(!onlyUnknown.offerSwap() && !onlyUnknown.clear() &&
+              gcConfirmText(roots, onlyUnknown).find("1 playlist row on a slow volume could not be checked.") !=
+                  std::string::npos,
+          "unchecked rows alone: named, no swap offered, not clear");
 }
 
 static void testSummary() {
@@ -141,20 +184,37 @@ static void testSummary() {
     const ActionRoot a = actionRoot("itk_00000012", "Placed Album");
     const PlacedRootFiles fa = filesOf(a, 2);
     std::vector<GcConfirmRoot> roots = {gcConfirmRoot(a, &fa, "")};
-    CHECK(gcConfirmSummary(roots, 2) == "2 path(s): " + a.rootPath + "/01 - Track.wav | " + a.rootPath +
+    CHECK(gcConfirmSummary(roots, inActive(2)) == "2 path(s): " + a.rootPath + "/01 - Track.wav | " + a.rootPath +
                                             "/02 - Track.wav; Swap, then delete offered (2 income row(s))",
           "paths, then the swap offered with the income rows");
-    CHECK(gcConfirmSummary(roots, 0).find("; Swap, then delete not offered (no income row)") != std::string::npos,
+    CHECK(gcConfirmSummary(roots, inActive(0)).find("; Swap, then delete not offered (no income row)") != std::string::npos,
           "no income row: not offered");
     const PlacedRootFiles many = filesOf(a, 5);
     std::vector<GcConfirmRoot> five = {gcConfirmRoot(a, &many, "")};
-    CHECK(gcConfirmSummary(five, 0).find("5 path(s): ") == 0 &&
-              gcConfirmSummary(five, 0).find(" (+2 more)") != std::string::npos,
+    CHECK(gcConfirmSummary(five, inActive(0)).find("5 path(s): ") == 0 &&
+              gcConfirmSummary(five, inActive(0)).find(" (+2 more)") != std::string::npos,
           "three paths, then (+N more)");
     std::vector<GcConfirmRoot> mixed = {gcConfirmRoot(a, &fa, ""), gcConfirmRoot(actionRoot("itk_00000016", "X"), nullptr, "e")};
-    CHECK(gcConfirmSummary(mixed, 0).find("; 1 root(s) without a file list") != std::string::npos,
+    CHECK(gcConfirmSummary(mixed, inActive(0)).find("; 1 root(s) without a file list") != std::string::npos,
           "roots without a file list are counted");
     CHECK(gcAllPaths(mixed).size() == 2, "all paths, in order");
+
+    GcIncomeRows spread = inActive(2);
+    spread.rows = 3;
+    spread.playlists = 2;
+    CHECK(gcConfirmSummary(roots, spread).find("; Swap, then delete offered (3 income row(s) in 2 playlist(s))") !=
+              std::string::npos,
+          "rows in other playlists: the playlists are counted");
+    GcIncomeRows stuck = inActive(2);
+    stuck.noLibraryCopy = 1;
+    CHECK(gcConfirmSummary(roots, stuck).find("; Swap, then delete not offered (2 income row(s), 1 without a library "
+                                              "copy)") != std::string::npos,
+          "rows Swap never moves: not offered");
+    GcIncomeRows unknown = inActive(2);
+    unknown.unchecked = 3;
+    CHECK(gcConfirmSummary(roots, unknown).find("offered (2 income row(s)); 3 row(s) not checked (slow volume)") !=
+              std::string::npos,
+          "unchecked rows are counted");
 }
 
 static void testRecheck() {

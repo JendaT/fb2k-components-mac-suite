@@ -19,8 +19,13 @@
 //  sidecar could not be read is named with the reason; Delete still runs gc
 //  on it (gc re-verifies against the journal before it deletes anything).
 //
-//  "Swap, then delete" is offered while rows of these roots in the active
-//  playlist still point at their income paths (incomeRows > 0).
+//  "Swap, then delete" is offered while playlist rows of these roots, in any
+//  playlist, still point at their income paths and Swap can move every one
+//  of them (GcIncomeRows::offerSwap). Rows Swap never moves (a quality
+//  shadow, a file files[] does not list: no library copy) are named
+//  instead, and rows whose mac-volume path could not be converted (a slow
+//  volume) are named as not checked: "Swap, then delete" deletes nothing
+//  while any is left.
 //
 //  Recheck on confirm (recheckGcRoots): the lane was free while the alert
 //  was open, so every captured root must still be in the current snapshot,
@@ -43,6 +48,20 @@
 #include "IntakeSwapPlanner.h"
 
 namespace intake {
+
+// The playlist rows that still point at the income paths of the roots,
+// across every playlist (IntakeActions counts them).
+struct GcIncomeRows {
+    size_t rows = 0;           // playlist entries on an income path of these roots
+    size_t inFirst = 0;        // of them, in the playlist Delete was opened from
+    size_t playlists = 0;      // playlists holding them
+    size_t noLibraryCopy = 0;  // of them, entries Swap never moves (shadow, not in files[])
+    size_t unchecked = 0;      // mac-volume entries whose path was not converted: unknown
+    // "Swap, then delete" can end in gc: income rows, and Swap moves each.
+    bool offerSwap() const { return rows > 0 && noLibraryCopy == 0; }
+    // No entry points at an income path, and none was left unchecked.
+    bool clear() const { return rows == 0 && unchecked == 0; }
+};
 
 // One root of the confirmation.
 struct GcConfirmRoot {
@@ -68,14 +87,20 @@ std::string gcConfirmTitle(size_t roots);
 
 // The alert's text: up to `maxListed` paths, one per line, then "and N
 // more"; the whole-folder note; the unreadable roots; the rows that still
-// play these files (when incomeRows > 0); then that the library copies
-// stay.
-std::string gcConfirmText(const std::vector<GcConfirmRoot> &roots, size_t incomeRows, size_t maxListed = 10);
+// play these files ("in the active playlist" when all are in the playlist
+// Delete was opened from, else "in N playlists"), those without a library
+// copy, the unchecked ones; then that the library copies stay.
+std::string gcConfirmText(const std::vector<GcConfirmRoot> &roots, const GcIncomeRows &income,
+                          size_t maxListed = 10);
 
 // The test aid's summary: "N path(s): a | b | c (+K more); Swap, then
-// delete offered (R income row(s))" or "...; Swap, then delete not offered
-// (no income row)". Up to `maxListed` paths.
-std::string gcConfirmSummary(const std::vector<GcConfirmRoot> &roots, size_t incomeRows, size_t maxListed = 3);
+// delete offered (R income row(s)[ in P playlist(s)])", "...; Swap, then
+// delete not offered (R income row(s), K without a library copy)" or
+// "...; Swap, then delete not offered (no income row)", then
+// "; U row(s) not checked (slow volume)" when U > 0. Up to `maxListed`
+// paths.
+std::string gcConfirmSummary(const std::vector<GcConfirmRoot> &roots, const GcIncomeRows &income,
+                             size_t maxListed = 3);
 
 struct GcRecheck {
     std::vector<ActionRoot> keep;                             // still placed and verified

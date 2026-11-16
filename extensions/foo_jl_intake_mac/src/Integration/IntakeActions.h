@@ -94,24 +94,31 @@
 //     no lane (enabled while an execute runs). One swap at a time.
 //   - Delete local copy… (B9): `gc <ids> --json` on the mutation lane (class
 //     Mutating: reported at 10 s, not killed before 15 minutes), only on
-//     roots captured as placed (the permanent guard, IntakeActionTable
-//     gcEligibleRoots, in requestForEntry). With confirm_gc on (default):
-//     the sheet's window is chosen at the click; the roots' sidecars are
-//     read afresh off the main thread (IntakeSwap swapReadPlacedFiles);
-//     then an NSAlert (IntakeGcPlan: up to 10 local paths, shadows
-//     included, "and N more"; the whole-folder note; unreadable roots) as a
+//     roots captured as placed with placed.verified (the permanent guard,
+//     IntakeActionTable gcEligibleRoots, in requestForEntry), never while
+//     the view is inert. With confirm_gc on (default): the sheet's window
+//     and the active playlist are captured at the click; the roots'
+//     sidecars are read afresh off the main thread (IntakeSwap
+//     swapReadPlacedFiles; no answer within 10 s ends the flow with one
+//     Error line); then the entries of every playlist that still point at
+//     income paths of these roots are counted (fail closed: a mac-volume
+//     row whose path was not converted counts as unchecked), with those
+//     Swap never moves (shadows, files files[] does not list); then an
+//     NSAlert (IntakeGcPlan: up to 10 local paths, shadows included, "and N
+//     more"; the whole-folder note; unreadable roots; the income rows) as a
 //     sheet on that window (or the main, key or foobar2000 main window,
 //     else app-modal from a run-loop callout), buttons Delete, Cancel and,
-//     while rows of these roots in the active playlist still point at their
-//     income paths, "Swap, then delete". Delete rechecks the captured roots
-//     against the current snapshot (placed with placed.verified; one Error
-//     line per root dropped), then the lane and the configuration, then
-//     runs gc. "Swap, then delete" swaps those rows first (IntakeSwap) and
-//     runs gc only when no row of these roots in that playlist still points
-//     at an income path afterwards; otherwise one Error line naming the
-//     count and nothing is deleted. One delete flow at a time. With
-//     confirm_gc off: gc at once (the item then has no ellipsis). Results
-//     as for every mutating call (per-root E_NO_JOURNAL, E_VERIFY,
+//     while income rows remain and Swap can move every one,
+//     "Swap, then delete". Delete rechecks the captured roots against the
+//     current snapshot (placed with placed.verified; one Error line per
+//     root dropped), then the lane and the configuration, then runs gc.
+//     "Swap, then delete" swaps those rows first (IntakeSwap), in the
+//     captured playlist and then in every other playlist holding them, and
+//     runs gc only when no entry of any playlist still points at an income
+//     path afterwards and none was unchecked; otherwise one Error line
+//     naming the counts and nothing is deleted. One delete flow at a time.
+//     With confirm_gc off: gc at once (the item then has no ellipsis).
+//     Results as for every mutating call (per-root E_NO_JOURNAL, E_VERIFY,
 //     E_BAD_STATUS tooltips; "gc: done for N roots" / "gc failed for ...").
 //  A click (or a confirmed Reject or Execute) that starts nothing, because
 //  the lane is busy or the CLI path is gone, logs one Error line.
@@ -203,9 +210,10 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
 // Swap, which copies the rows it needs before returning.
 void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel);
 
-// Main thread: the table the menu builds for `handles` (rows matched by
-// income path or, for Delete, through the library index), with the live
-// context; for the test aid's `rows` step.
+// Temporary acceptance aid (IntakeTestActions.mm, removed with it): main
+// thread, the table the menu builds for `handles` (rows matched by income
+// path or, for Delete, through the library index), with the live context;
+// for the test aid's `rows` and `swap` steps.
 ActionTable actionsTableForHandles(metadb_handle_list_cref handles);
 
 // Main thread: the table for `roots` (records of a view the caller holds)

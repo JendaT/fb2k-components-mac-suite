@@ -71,7 +71,8 @@
 //  b6Actions() is the B6 subset, kept for tests.
 //
 //  The gc guard (PERMANENT, PLAN.md 3.8: stays after CR-004.14): a gc
-//  request only ever names roots whose captured status is placed, each once
+//  request only ever names roots whose captured status is placed with
+//  placed.verified (doc 04 v1.2's enable rule for Delete), each once
 //  (gcEligibleRoots, applied by requestForEntry whatever the entry holds),
 //  and none at all is refused (as IntakeCommandArgs refuses a mutating call
 //  with no ids); there is no all-roots form (`gc --all`, a bare `gc`).
@@ -213,7 +214,7 @@ ActionTable buildActionTable(const std::vector<const IntakeRecord *> &roots, con
 const ActionEntry *findEntry(const ActionTable &table, IntakeAction action);
 
 // The permanent gc guard (see the top of this file): the roots whose
-// captured status is placed, each once, in order.
+// captured status is placed with placed.verified, each once, in order.
 std::vector<ActionRoot> gcEligibleRoots(const std::vector<ActionRoot> &roots);
 
 // The CLI request an entry runs (ids in table order, the reason for Reject,
