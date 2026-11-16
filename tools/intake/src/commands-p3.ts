@@ -3,8 +3,8 @@
 // income files — deletion is gc's job, after journal re-verification.
 
 import {
-  closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync,
-  readFileSync, readdirSync, renameSync, rmSync,
+  chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync,
+  readFileSync, readdirSync, renameSync, rmSync, statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHashAs } from "./audioHash.ts";
@@ -489,10 +489,21 @@ export async function cmdExecute(
         const dest = join(tmp, item.to);
         mkdirSync(dirname(dest), { recursive: true });
         copyFileSync(item.from, dest);
+        // copyFileSync keeps the original's mode, and a 0444 copy cannot be
+        // tagged (metaflac: "ERROR: writing FLAC file"). u+w on the copy
+        // only; the income original is never changed.
+        chmodSync(dest, (statSync(dest).mode & 0o7777) | 0o200);
       }
       for (const a of plan.audio) {
         const r = await writeProvenance(join(tmp, a.to), tags, a.hash);
-        if (r.issue) issues.push(r.issue);
+        if (r.issue) {
+          // A skipped write (no tags to an fsha1:-keyed FLAC, a format with
+          // no writer) is an issue on a placed root. A failed one
+          // (metaflac_missing, metaflac_failed, provenance_write_failed)
+          // fails the root before the commit point: step 2 writes the tags.
+          if (!r.issue.startsWith("provenance_tags_skipped:")) throw new Error(`tag write failed: ${a.to} (${r.issue})`);
+          issues.push(r.issue);
+        }
         fsyncFile(join(tmp, a.to));
       }
       // 3. Verify hashes + count on the copies.

@@ -4,7 +4,10 @@
 // blocks (STREAMINFO MD5 untouched); for mp3 a fresh ID3v2.3 block is
 // prepended, which mp3sha1 strips. A FLAC keyed by the `fsha1:` fallback
 // (whole-file SHA1) gets no tags, since any tag write changes that key. Other
-// formats are skipped with an issue.
+// formats are skipped with an issue. A skip is reported as
+// `provenance_tags_skipped:<why>`; any other issue (metaflac_missing,
+// metaflac_failed, provenance_write_failed) is a failed write, which fails
+// the root at execute.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { ext } from "./util.ts";

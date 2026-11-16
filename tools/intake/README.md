@@ -108,10 +108,19 @@ Execute/gc need `journal.path` in structure.yaml (the Amunet location is
 pending confirmation; nothing runs without it). Execute copies and verifies —
 income originals are only ever removed by `gc`, which re-verifies both the
 journal record and the placed files' audio hashes first, then leaves the
-sidecar behind as a `gc_done` tombstone. `propose --all-resolved` never picks
-up `needs_review` roots — offline (no Discogs confirmation) that is every
-root, so unattended auto-proposing effectively requires network identify.
-`needs_review` is sticky: only `approve` clears it.
+sidecar behind as a `gc_done` tombstone. Each copy gets u+w (a 0444
+original copies as 0444 and could not be tagged); the original is never
+changed. Provenance tags are part of the placement: a failed tag write
+(`metaflac_missing`, `metaflac_failed`, `provenance_write_failed`) fails the
+root before the rename, so nothing is placed or journaled, the temp dir is
+removed and the root goes back to `approved` with a per-root `E_VERIFY`. A
+skipped write (`provenance_tags_skipped:*`: an `fsha1:`-keyed FLAC, a format
+with no writer) stays an issue on the placed root.
+
+`propose --all-resolved` never picks up `needs_review` roots — offline (no
+Discogs confirmation) that is every root, so unattended auto-proposing
+effectively requires network identify. `needs_review` is sticky: only
+`approve` clears it.
 
 Targets follow the library layout (doc 02, amendment 003), read from the
 target collection dir when proposing: `<Collection>/<Artist>/` when the
