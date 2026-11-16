@@ -7,7 +7,7 @@ JSON envelope, exit codes, status lifecycle, audio_hash).
 
 Self-contained Bun package; no fb2k SDK or Xcode dependency. External tools:
 `flac` (resolve: decodes FLACs whose STREAMINFO MD5 is unset), `metaflac`
-(execute: provenance tags), `unzip`, optionally `7z` (archives).
+(execute: provenance tags), `unzip`, optionally `7zz` or `7z` (archives).
 
 ## Usage
 
@@ -143,10 +143,13 @@ public artist/label names as test literals only, no personal data. Tests copy
 it to a temp dir; the committed tree never receives sidecars. Junk files
 (`.DS_Store`, `._*`, `Thumbs.db`) are injected by the test helper because the
 repo `.gitignore` excludes those names. Archive fixtures cover zip only
-(`unzip` ships with macOS); rar/7z go through `7z` when available, else the
-scan reports `E_ARCHIVE_TOOL` — that surface is covered in
+(`unzip` ships with macOS); rar/7z go through `7zz`, else `7z`, when
+available, else the scan reports `E_ARCHIVE_TOOL` — that surface is covered in
 `test/archive.test.ts` by re-running the CLI with `PATH` stripped, since
-`Bun.which()` reads the environment at process start.
+`Bun.which()` reads the environment at process start. An unpack tool run is
+killed after 30 minutes (`UNPACK_TIMEOUT_MS` in `src/archive.ts`) and the
+archive reported `failed`; SIGTERM, SIGINT or SIGHUP during a run kill the
+tool and remove the partial dir before intake exits.
 
 One fixture (`todo/Bluetech [2011] Cosmic Dubwise`) carries a zeroed FLAC
 STREAMINFO MD5 on two of three files, so the decoded-audio key (`flacmd5:`
