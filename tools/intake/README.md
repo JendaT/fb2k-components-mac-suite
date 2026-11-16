@@ -56,7 +56,13 @@ beets, identification degrades to `unconfirmed` and flags review.
 ### beets hard path
 
 `identify` runs `shim/beets_identify.py` when the fast path has no single
-Discogs confirmation. The shim must run on the Python interpreter beets is
+Discogs confirmation, as `beets_identify.py <root_dir> <file>... --json`.
+The files are the root's own audio, its sidecar `files[].path` without
+quality shadows, so a multi-disc root's `cd1/`, `cd2/` tracks are included
+and a virtual root's neighbours are not. The shim never lists the dir. It
+refuses a file that is absolute, has a `..` component, resolves outside the
+root dir or is not a regular file. Candidates' `track_mapping` is keyed by
+that relative path. The shim must run on the Python interpreter beets is
 installed in. By default it follows `beet`'s interpreter: the CLI finds `beet`
 on PATH and reads its shebang (`head -1 "$(which beet)"`). An absolute
 `#!/path/to/python3.10` runs the shim under that path; `#!/usr/bin/env

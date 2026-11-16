@@ -36,11 +36,21 @@ uses beets internals (autotag candidate search, discogs plugin, chroma/fpcalc
 fingerprinting) **without** the import flow. Interface:
 
 ```
-beets_identify.py <release_dir> --json
+beets_identify.py <release_dir> <file>... --json
 → { "candidates": [ { "source": "discogs|mb", "release_id": …,
      "artist": …, "album": …, "year": …, "label": …, "catno": …,
-     "distance": 0.08, "track_mapping": {...} } ] }
+     "distance": 0.08, "track_mapping": { "<file>": "<track title>", … } } ] }
 ```
+
+`<release_dir>` is the root's sidecar dir and each `<file>` is one entry of
+its `files[].path`, relative to that dir, quality shadows excluded. The root's
+own file list, not a listing of the dir, is what beets sees: a multi-disc
+root's tracks sit in its disc dirs (`cd1/01 x.flac`), and a virtual root's dir
+holds other roots' files too. The shim refuses a file that is absolute, has a
+`..` component, resolves outside `<release_dir>` or is not an existing regular
+file (exit 2), and skips files without an audio extension. `track_mapping` is
+keyed by the `<file>` argument as given, so `cd1/01 x.flac` and `cd2/01
+x.flac` stay apart; for a flat root that is the file name.
 
 Invoked as subprocess by the CLI only when fast path fails or its Discogs
 confirmation is ambiguous. Distance ≤0.15 → accept top candidate; else attach

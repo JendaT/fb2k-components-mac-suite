@@ -5,7 +5,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { identifyRoot, type IdentifyDeps } from "../src/identify.ts";
-import { subprocessShim } from "../src/providers.ts";
+import { subprocessShim, type ShimProvider, type ShimResult } from "../src/providers.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
 import type { DiscogsProvider, DiscogsSearchResult } from "../src/providers.ts";
@@ -13,6 +13,8 @@ import { cmdScan } from "../src/commands.ts";
 import { setupCorpus, type Corpus } from "./helpers.ts";
 
 const FAKE_SHIM = join(import.meta.dir, "fakes", "fake-shim.ts");
+const SHIM = join(import.meta.dir, "..", "shim", "beets_identify.py");
+const STUBS = join(import.meta.dir, "fakes");
 
 let corpus: Corpus;
 let pollenDir: string;
@@ -133,4 +135,95 @@ test("iso stub (no files): unidentified, needs_review", async () => {
   const out = await identifyRoot(isoSidecarPath, iso, deps({ discogs: discogsReturning([POLLEN_HIT]) }));
   expect(out.identification.status).toBe("unidentified");
   expect(out.needs_review).toBe(true);
+});
+
+// ---- what the shim is given: the root's own audio files ---------------------
+
+interface ShimCall {
+  dir: string;
+  files: string[] | undefined;
+  result: ShimResult;
+}
+
+/** Wraps a shim (default: one that finds nothing) and records every call. */
+function recording(inner: ShimProvider = { identify: async () => ({ candidates: [] }) }) {
+  const calls: ShimCall[] = [];
+  const shim: ShimProvider = {
+    identify: async (dir, files) => {
+      const result = await inner.identify(dir, files);
+      calls.push({ dir, files, result });
+      return result;
+    },
+  };
+  return { shim, calls };
+}
+
+const VA_FILES = [
+  "cd1/01 Artist One - First Song.mp3",
+  "cd1/02 Artist Two - Second Song.mp3",
+  "cd1/03 Artist Three - Third Song.mp3",
+  "cd1/04 Artist Four - Fourth Song.mp3",
+  "cd2/01 Artist Five - Fifth Song.mp3",
+  "cd2/02 Artist Two - Sixth Song.mp3",
+  "cd2/03 Artist Six - Seventh Song.mp3",
+  "cd2/04 Artist Seven - Eighth Song.mp3",
+  "cd2/05 Artist Eight - Ninth Song.mp3",
+];
+
+test("multi-disc root: the real shim gets both discs' audio and nothing else (stub beets)", async () => {
+  // Audio only in cd1/ and cd2/; Artwork/cover.pdf and contest01.htm at the top.
+  const dir = join(corpus.income, "todo", "VA_-_Example_Compilation_(Web_Version_2CD)");
+  const va = readSidecar(join(dir, ".intake.json"))!;
+  const prev = { PYTHONPATH: process.env.PYTHONPATH, PYTHONDONTWRITEBYTECODE: process.env.PYTHONDONTWRITEBYTECODE };
+  process.env.PYTHONPATH = join(STUBS, "beets-1.6");
+  process.env.PYTHONDONTWRITEBYTECODE = "1";
+  try {
+    const { shim, calls } = recording(subprocessShim(["python3", "-S", SHIM]));
+    const out = await identifyRoot(dir, va, deps({ shim }));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.dir).toBe(dir);
+    expect(calls[0]!.files).toEqual(VA_FILES);
+    // What reached beets: the stub maps every item it was given.
+    const result = calls[0]!.result;
+    if (!("candidates" in result)) throw new Error(`shim failed: ${result.error}`);
+    expect(Object.keys(result.candidates[0]!.track_mapping!).sort()).toEqual(VA_FILES);
+    expect(out.identification.status).toBe("shim");
+    expect(out.issues).toEqual([]);
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
+test("the shim never gets a quality shadow", async () => {
+  const dir = join(corpus.income, "todo", "Ott - Blumenkraft (2003)");
+  const ott = readSidecar(join(dir, ".intake.json"))!;
+  expect(ott.files.filter((f) => f.quality_shadow).map((f) => f.path)).toEqual([
+    "01 - Jack's Cheese and Bread Snack.mp3",
+    "02 - Splitting an Atom.mp3",
+    "03 - Smoked Glass and Chrome.mp3",
+  ]);
+  const { shim, calls } = recording();
+  await identifyRoot(dir, ott, deps({ shim }));
+  expect(calls.map((c) => c.files)).toEqual([
+    ["01 - Jack's Cheese and Bread Snack.flac", "02 - Splitting an Atom.flac", "03 - Smoked Glass and Chrome.flac"],
+  ]);
+});
+
+test("virtual roots: each shim call carries only that root's own cluster", async () => {
+  // Three virtual roots share one dir: two clusters and one single.
+  const dir = join(corpus.income, "slsk", "random_mix");
+  const names = readdirSync(dir).filter((n) => /^\.intake\..*\.json$/.test(n)).sort();
+  const roots = names.map((n) => readSidecar(join(dir, n))!);
+  expect(roots.map((r) => r.virtual)).toEqual([true, true, true]);
+  const { shim, calls } = recording();
+  for (const r of roots) await identifyRoot(dir, r, deps({ shim }));
+  expect(calls.map((c) => c.dir)).toEqual([dir, dir, dir]);
+  expect(calls.map((c) => c.files)).toEqual([
+    ["zero_cult_breathe.mp3"],
+    ["emantra_1_arcana.flac", "emantra_2_nocturne.flac"],
+    ["koan_1_argonautica.mp3", "koan_2_silent_hero.mp3", "koan_3_athena.mp3"],
+  ]);
 });

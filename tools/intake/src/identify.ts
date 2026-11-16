@@ -128,8 +128,12 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
   }
 
   // Hard path — beets shim, when fast path failed or confirmation ambiguous.
-  if (deps.shim) {
-    const result = await deps.shim.identify(dir);
+  // The shim gets the root's own audio: a virtual root's dir holds other
+  // roots' files too, and a multi-disc root's files sit in disc subdirs.
+  // Quality shadows are another copy of a primary track, not more tracks.
+  const audio = sidecar.files.filter((f) => !f.quality_shadow).map((f) => f.path);
+  if (deps.shim && audio.length > 0) {
+    const result = await deps.shim.identify(dir, audio);
     if ("error" in result) {
       shimError = result.error;
       issues.push(result.error);

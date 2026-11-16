@@ -39,7 +39,12 @@ export type SimilarProvider = (artist: string) => Promise<SimilarArtist[] | null
 export type ShimResult = { candidates: IdentCandidate[] } | { error: string };
 
 export interface ShimProvider {
-  identify(dir: string): Promise<ShimResult>;
+  /**
+   * `files`: the root's audio files, relative to `dir` (the sidecar's
+   * `files[].path`, quality shadows excluded). Disc subdirs come along this
+   * way; the shim never lists `dir` itself.
+   */
+  identify(dir: string, files: string[]): Promise<ShimResult>;
 }
 
 // ---- Discogs ---------------------------------------------------------------
@@ -226,10 +231,11 @@ export function shimCommand(
 
 export function subprocessShim(cmd: string[] = shimCommand()): ShimProvider {
   return {
-    async identify(dir) {
+    async identify(dir, files) {
       let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
       try {
-        proc = Bun.spawn([...cmd, dir, "--json"], {
+        // Files as arguments, not stdin: the shim gives beets no stdin.
+        proc = Bun.spawn([...cmd, dir, ...files, "--json"], {
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
