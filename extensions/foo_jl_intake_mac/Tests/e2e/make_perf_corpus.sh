@@ -13,13 +13,13 @@
 #                  gc_done, rejected (25 each), one 0.1 s silent .wav per root
 #                  except gc_done (175 intake rows). The same layout as the
 #                  default scenario (root/, responses/, the marker), so the
-#                  usual wrapper and test_playlist flow works unchanged.
+#                  usual wrapper works unchanged.
 #   state/root/archive/, state/root/shelf/
 #                  filler: silent .wav files in no intake root, so the whole
 #                  tree under state/root holds exactly PERF_TOTAL (5,000)
 #                  audio files. Half of the filler sorts before income/ and
-#                  half after it, so in the sorted test playlist the intake
-#                  rows sit in the middle.
+#                  half after it, so in a playlist of state/root sorted by
+#                  path the intake rows sit in the middle.
 #   bin/intake-perf
 #                  the wrapper for the component's cli_path: exports
 #                  INTAKE_MOCK_STATE=<dest>/state and runs the frozen mock.
@@ -189,9 +189,11 @@ $E2E_SELF: corpus ready in $REAL
   $FILLER filler rows in $ALBUMS albums under state/root/archive and state/root/shelf
   $TOTAL audio files in all
 
-Component settings (write them with sqlite3 while foobar2000 is quit; see
+Component setting (write it with sqlite3 while foobar2000 is quit; see
 Tests/e2e/README.md "Perf corpus"):
-  foo_jl_intake.cli_path           $REAL/bin/intake-perf
-  foo_jl_intake.test_playlist_dir  $ROOT
-  foo_jl_intake.test_playlist      1
+  foo_jl_intake.cli_path  $REAL/bin/intake-perf
+
+Then add this folder to a playlist by hand (File > Add Folder), by its
+resolved path exactly as printed, never a /var/... spelling of it:
+  $ROOT
 EOF

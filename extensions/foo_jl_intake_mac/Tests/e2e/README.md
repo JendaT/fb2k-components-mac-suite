@@ -210,7 +210,7 @@ before changing either side.
 ## Perf corpus (B10)
 
 `make_perf_corpus.sh <dest>` builds a synthetic state for the mock CLI
-(`Tests/mock-cli/intake-mock`) that fills one test playlist with 5,000 rows.
+(`Tests/mock-cli/intake-mock`) that fills a playlist with 5,000 rows.
 It is for the decor_stats cache-hit gate (`docs/hidden-options.md`,
 `decor_stats`) and for watching decorate times on a large playlist. It runs
 no real CLI and needs no ffmpeg, bun or network.
@@ -245,11 +245,12 @@ REAL=$(sed -n 's/^dest=//p' "$DEST/.intake-perf-corpus")   # the resolved destin
 ```
 
 Use `$REAL`, the resolved path the script prints, never `$DEST` itself, in
-the settings. `$TMPDIR` is under `/var`, a symlink to `/private/var`: the
-script builds the corpus at the realpath, so the mock reports root paths
-under `/private/var/...`. A `test_playlist_dir` spelled `/var/...` gives
-rows whose paths match no root (paths are matched byte for byte, nothing
-resolves symlinks), and the playlist shows no tints and no badges.
+the settings and for the folder you add. `$TMPDIR` is under `/var`, a
+symlink to `/private/var`: the script builds the corpus at the realpath, so
+the mock reports root paths under `/private/var/...`. Files added through a
+path spelled `/var/...` give rows whose paths match no root (paths are
+matched byte for byte, nothing resolves symlinks), and the playlist shows no
+tints and no badges.
 
 Then, with foobar2000 quit (ask the user first, as for every in-app run),
 save the current values of the keys below so they can be put back, and
@@ -259,22 +260,16 @@ write:
 sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.cli_path','$REAL/bin/intake-perf')
      ON CONFLICT(name) DO UPDATE SET value=excluded.value;
-   INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_playlist_dir','$REAL/state/root')
-     ON CONFLICT(name) DO UPDATE SET value=excluded.value;
-   INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_playlist',1)
-     ON CONFLICT(name) DO UPDATE SET value=1;
    INSERT INTO configInts(name,value) VALUES('foo_jl_intake.decor_stats',1)
      ON CONFLICT(name) DO UPDATE SET value=1;"
 ```
 
-About 4 s after start the component builds the "JL intake test" playlist
-with all 5,000 files (the `test_playlist` aid takes up to 10,000) and logs
-`test playlist "JL intake test" built with 5000 files (replaced N)`, then
-`test playlist: tags read for 5000 files (success)`.
+Start foobar2000 and add `$REAL/state/root` to a new playlist by hand
+(File > Add Folder, the path exactly as the script printed it): all 5,000
+files.
 
-Clean up afterwards, with foobar2000 quit: `test_playlist` 2 removes the
-playlist at the next start; restore `cli_path` and `test_playlist_dir`, set
-`decor_stats` back to 0, and only then delete `<dest>`. Otherwise the
-component keeps pointing at a wrapper that no longer exists and reports
-`E_NO_CLI`.
+Clean up afterwards: remove that playlist, then, with foobar2000 quit,
+restore `cli_path`, set `decor_stats` back to 0, and only then delete
+`<dest>`. Otherwise the component keeps pointing at a wrapper that no longer
+exists and reports `E_NO_CLI`.
 
