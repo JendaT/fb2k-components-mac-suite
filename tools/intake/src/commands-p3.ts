@@ -18,7 +18,7 @@ import { clearImmutableTree, immutablePaths, setImmutable } from "./fflags.ts";
 import { CLI_VERSION, type JsonError, type Status, type StructureSlot, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
-import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
+import { loadGenreMap, loadLabelMap, loadStyleMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
 import { targetTierProblem, type MountFs } from "./tierroot.ts";
 import {
@@ -169,6 +169,15 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
   const library = deps.library ?? diskLibraryProbe();
   const p2deps: P2Deps = { ...deps, library };
   const assignCfg = loadAssignConfig();
+  const rdir = rulesDir();
+  // The maps assign reads, read before any root is touched: a malformed one
+  // fails the command (E_BAD_RULES) before identify writes a sidecar or an
+  // earlier root is proposed. assignRoots reads them again for each root.
+  if (rdir) {
+    loadGenreMap(rdir);
+    loadLabelMap(rdir);
+    loadStyleMap(rdir);
+  }
   for (const root of roots) {
     if (root.sidecar.status !== "resolved") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot propose from status ${root.sidecar.status}`, path: root.dir });
@@ -179,7 +188,6 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     // where nothing is written to read back. Sub-stage errors stay internal:
     // the outcome is reported as E_NO_TARGET below, as before.
     if (!root.sidecar.identification || !root.sidecar.proposal) {
-      const rdir = rulesDir();
       if (!root.sidecar.identification) shimErrors.push(...(await identifyRoots([root], opts, p2deps)).shimErrors);
       if (!root.sidecar.proposal && rdir) {
         await assignRoots([root], { ...opts, collection: null, by: null }, rdir, p2deps);

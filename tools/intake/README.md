@@ -51,8 +51,19 @@ keys: `id`, `status`, `needs_review`, `income_folder`, `source_type`, `tier`
 `root_path`; an unknown, malformed or repeated key is `E_BAD_ARGS`. A rules
 file the command loads that it cannot use (a YAML syntax error in
 income.yaml, structure.yaml, genre-map.yaml, label-map.yaml or styles.yaml,
-or a bad `archive_code_pages`) fails that command with `E_BAD_RULES`, exit 2,
-`path` the file, the message naming the file and, where known, the key.
+a malformed genre-map.yaml or label-map.yaml entry, or a bad
+`archive_code_pages`) fails that command with `E_BAD_RULES`, exit 2, `path`
+the file, the message naming the file and, where known, the key.
+
+genre-map.yaml and label-map.yaml are rewritten whole by assign (user
+feedback, learned aliases), execute (placement counts) and bootstrap; hand
+comments do not survive. So their entries are checked on load, and anything
+the CLI cannot represent is refused rather than dropped: an artist or label
+must map to `{collection: count}` with counts that are finite numbers of 0
+or more, `aliases:` values and `exceptions:` items must be strings, and each
+section must have its type (`null` is refused). Such a command changes
+nothing. A rewrite keeps top-level keys the CLI does not know, in place, and
+keeps zero counts and empty distributions, which carry no evidence.
 
 Identify/assign run fully offline by default; network evidence is opt-in via
 `DISCOGS_TOKEN` and `LASTFM_API_KEY` (similar-artist cache under

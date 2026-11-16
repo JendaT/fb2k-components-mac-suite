@@ -456,6 +456,9 @@ export function cmdBootstrap(opts: BootstrapOpts): CommandResult {
   for (const t of opts.trees) {
     if (!existsSync(t.path) || !statSync(t.path).isDirectory())
       return fail("E_NOT_FOUND", "tree is not a directory", t.path);
+    // A negative or infinite weight would write counts the map loader refuses.
+    if (!Number.isFinite(t.weight) || t.weight <= 0)
+      return fail("E_BAD_ARGS", `--prior-weight must be a number above 0, got ${t.weight}`, t.path);
   }
   const out = opts.out ?? rulesDir();
   if (!out) return fail("E_NO_RULES", "no output dir (--out or rules dir)");

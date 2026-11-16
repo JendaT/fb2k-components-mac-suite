@@ -300,9 +300,17 @@ Decisions made during implementation; normative for schema v1 consumers.
 - **Ties** break deterministically by collection name (ascending) after score.
 - **Feedback** lives in a separate `feedback:` section of `genre-map.yaml`
   (same artist→{collection: count} shape, merged with `artists:` at prior
-  computation). Programmatic writes (feedback, learned `aliases:`) rewrite the
-  file via YAML serializer — hand comments are not preserved; keep curated
-  notes in the rules repo's git history instead.
+  computation). Programmatic writes (feedback, learned `aliases:`, execute's
+  placement counts) rewrite the file via YAML serializer — hand comments are
+  not preserved; keep curated notes in the rules repo's git history instead.
+  Because of that rewrite, `genre-map.yaml` and `label-map.yaml` are checked
+  on load and a malformed entry is refused, never dropped: `E_BAD_RULES`
+  naming the file and the key, and the command changes nothing. Malformed is
+  a section or entry of the wrong type (`null` included), a count that is not
+  a finite number of 0 or more, and an alias value or `exceptions:` item that
+  is not a string. A count of 0 and an empty distribution are accepted, carry
+  no evidence, and a rewrite keeps them; top-level keys the CLI does not know
+  survive a rewrite unchanged, in place.
 - **Singles**: `target_path: null` — the singles slot is still pending
   ("Library layout and credit rules (amendment 003)", Still pending);
   propose reports it as pending. Tier `reject`, a tier missing from
@@ -336,7 +344,8 @@ Decisions made during implementation; normative for schema v1 consumers.
   TTL 90 d), shim command override via `INTAKE_BEETS_SHIM`. Without
   credentials the engine runs fully offline on priors alone.
 - **Bootstrap**: `--tree <path>` repeatable, `--prior-weight <w>` applies to
-  the most recent `--tree`, `--out <dir>` (default: rules dir), refuses to
+  the most recent `--tree` (a number above 0, else `E_BAD_ARGS`),
+  `--out <dir>` (default: rules dir), refuses to
   overwrite existing maps without `--force`. Collection dirs are the tree
   root's children; inside them, release-grammar dirs are flat releases,
   `[Slot]`-style dirs hold flat releases, a dir whose subdirs are mostly disc
