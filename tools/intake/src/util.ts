@@ -49,6 +49,17 @@ export function isJunkDir(name: string): boolean {
   return JUNK_DIRS.has(name.toLowerCase());
 }
 
+/**
+ * Suffix of the temp dir an archive is extracted into (src/archive.ts). It is
+ * renamed to `<name>.unpacked` only after a clean extraction, so a dir with
+ * this suffix is a crashed or failed extraction: never walked, never resolved.
+ */
+export const PARTIAL_UNPACK_SUFFIX = ".unpacked.partial";
+
+export function isPartialUnpackDir(name: string): boolean {
+  return name.endsWith(PARTIAL_UNPACK_SUFFIX);
+}
+
 export function isSidecarName(name: string): boolean {
   return name === ".intake.json" || /^\.intake\.[a-z0-9_]+\.json$/i.test(name);
 }
@@ -82,9 +93,14 @@ export interface DirEntry {
   subdirs: string[]; // names of non-junk subdirectories
 }
 
-/** Depth-first walk; returns entries bottom-up (children before parents). */
+/**
+ * Depth-first walk; returns entries bottom-up (children before parents).
+ * A half-extracted archive (`*.unpacked.partial`) is skipped, and a root
+ * inside one yields nothing.
+ */
 export function walkDirs(root: string): DirEntry[] {
   const out: DirEntry[] = [];
+  if (root.split("/").some(isPartialUnpackDir)) return out;
   const visit = (dir: string, name: string) => {
     let names: string[];
     try {
@@ -103,7 +119,7 @@ export function walkDirs(root: string): DirEntry[] {
       }
       if (st.isSymbolicLink()) continue; // never follow symlinks (traversal / recursion-cycle guard)
       if (st.isDirectory()) {
-        if (isJunkDir(n)) continue;
+        if (isJunkDir(n) || isPartialUnpackDir(n)) continue;
         entry.subdirs.push(n);
         visit(p, n);
       } else {
