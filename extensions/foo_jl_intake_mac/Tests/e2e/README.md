@@ -1,9 +1,12 @@
-# Intake end-to-end scripts (B8/B9)
+# Intake end-to-end scripts (B8/B9/B10)
 
-These scripts run the **real** intake CLI (`feature/intake-cli`, run through
-`bun run`) against a **synthetic** corpus in scratch. They exist so B8
-(Execute/Resume) and B9 (Swap / Delete local copy) can be checked against
-real CLI behaviour, both from the shell and in foobar2000.
+`make_corpus.sh` and `run_flow.sh` run the **real** intake CLI
+(`feature/intake-cli`, run through `bun run`) against a **synthetic** corpus
+in scratch. They exist so B8 (Execute/Resume) and B9 (Swap / Delete local
+copy) can be checked against real CLI behaviour, both from the shell and in
+foobar2000. `make_perf_corpus.sh` (B10) builds a mock-CLI state of about
+5,000 rows for the performance checks; it never runs the real CLI (see
+[Perf corpus](#perf-corpus-b10)).
 
 **Only the orchestrator runs them.** They are not a build gate: `build.sh`
 and `run_tests.sh` never call them. Agents check them statically only
@@ -14,7 +17,8 @@ and `run_tests.sh` never call them. Agents check them statically only
 | `make_corpus.sh <dest>` | Builds the synthetic corpus inside `<dest>`. Never runs the CLI. |
 | `run_flow.sh <dest> [steps]` | Runs scan, reject, assign, identify, propose, approve, execute, resume and gc through the wrapper, checking each status with `--json` and `jq`. |
 | `run_flow.sh <dest> --cli-wrapper` | Writes `<dest>/bin/intake-e2e`, saves the component settings it replaces (read only) and prints the new ones and how to restore the old. |
-| `e2e_lib.sh` | The shared guards and the wrapper generator. It is sourced by both scripts. |
+| `make_perf_corpus.sh <dest>` | B10. Builds a mock-CLI state with 5,000 audio files, 200 intake roots among them, plus a wrapper for `cli_path`. Runs only the mock's own setup. |
+| `e2e_lib.sh` | The shared guards and the wrapper generator. It is sourced by all three scripts. |
 
 ## Safety rules
 
@@ -199,3 +203,67 @@ The expectations come from reading the CLI source at 0.3.0
 (`feature/intake-cli` d00daff8). If a check fails, read the logged reply in
 `<dest>/logs/run-*/NNN-<label>.json` (with `.cmd` and `.err` beside it)
 before changing either side.
+
+## Perf corpus (B10)
+
+`make_perf_corpus.sh <dest>` builds a synthetic state for the mock CLI
+(`Tests/mock-cli/intake-mock`) that fills one test playlist with 5,000 rows.
+It is for the decor_stats cache-hit gate (`docs/hidden-options.md`,
+`decor_stats`) and for watching decorate times on a large playlist. It runs
+no real CLI and needs no ffmpeg, bun or network.
+
+What it builds in `<dest>`:
+
+| Path | What it is |
+|---|---|
+| `mock-cli/` | A frozen copy of `Tests/mock-cli`: later edits in the worktree do not change a running check. |
+| `state/` | The mock's `INTAKE_MOCK_STATE`, set up with the `perf-200` scenario. It has the same layout as the `default` scenario (`root/`, `responses/`, the marker). |
+| `state/root/income/perf/` | 200 roots, statuses cycling new, resolved, proposed, approved, placing, placed, gc_done, rejected (25 each; `needs_review` on some resolved and proposed ones). Each root has one 0.1 s silent `.wav`, except the gc_done roots, which keep only their sidecar as the real gc leaves them: 175 intake rows. |
+| `state/root/archive/`, `state/root/shelf/` | 4,825 filler `.wav` files (193 albums of up to 25 tracks, "Perf Artist 001" and so on) in no intake root. `archive` sorts before `income` and `shelf` after it, so the intake rows sit in the middle of the sorted playlist. |
+| `bin/intake-perf` | The wrapper for `cli_path`: exports `INTAKE_MOCK_STATE=<dest>/state` and runs the frozen mock. |
+| `.intake-perf-corpus` | A marker with the destination and the counts. |
+
+The WAVs are tagged like the mock's (album = folder name, title = file name),
+so SimPlaylist groups them by album once their tags are read.
+
+Guards: the same as `make_corpus.sh` (`e2e_lib.sh`): `<dest>` must resolve
+below `$TMPDIR` or a session scratchpad, never under or naming `/Volumes` or
+`/volume1`, no `..`, not a symlink, only `[A-Za-z0-9._/-]` in its realpath,
+and new or empty (exit 64 otherwise, before anything is written). Afterwards
+the script refuses a tree with any symlink and checks the counts.
+
+How to run it and point foobar2000 at it:
+
+```bash
+E2E=extensions/foo_jl_intake_mac/Tests/e2e
+DEST=$TMPDIR/intake-perf-$(date +%s)        # or a dir under the session scratchpad
+$E2E/make_perf_corpus.sh "$DEST"            # a few seconds; prints the settings below
+```
+
+Then, with foobar2000 quit (ask the user first, as for every in-app run),
+save the current values of the keys below so they can be put back, and
+write:
+
+```bash
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.cli_path','$DEST/bin/intake-perf')
+     ON CONFLICT(name) DO UPDATE SET value=excluded.value;
+   INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_playlist_dir','$DEST/state/root')
+     ON CONFLICT(name) DO UPDATE SET value=excluded.value;
+   INSERT INTO configInts(name,value) VALUES('foo_jl_intake.test_playlist',1)
+     ON CONFLICT(name) DO UPDATE SET value=1;
+   INSERT INTO configInts(name,value) VALUES('foo_jl_intake.decor_stats',1)
+     ON CONFLICT(name) DO UPDATE SET value=1;"
+```
+
+About 4 s after start the component builds the "JL intake test" playlist
+with all 5,000 files (the `test_playlist` aid takes up to 10,000) and logs
+`test playlist "JL intake test" built with 5000 files (replaced N)`, then
+`test playlist: tags read for 5000 files (success)`.
+
+Clean up afterwards, with foobar2000 quit: `test_playlist` 2 removes the
+playlist at the next start; restore `cli_path` and `test_playlist_dir`, set
+`decor_stats` back to 0, and only then delete `<dest>`. Otherwise the
+component keeps pointing at a wrapper that no longer exists and reports
+`E_NO_CLI`.
+

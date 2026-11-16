@@ -36,7 +36,7 @@ namespace {
 const char *const kSwitchKey = "foo_jl_intake.test_playlist";
 const char *const kDirKey = "foo_jl_intake.test_playlist_dir";
 const char *const kPlaylistName = "JL intake test";
-constexpr size_t kMaxFiles = 2000;
+constexpr size_t kMaxFiles = 10000;  // B10: the perf corpus has 5,000 (Tests/e2e/make_perf_corpus.sh)
 
 bool startsWith(const std::string &s, const char *prefix) {
     return s.rfind(prefix, 0) == 0;

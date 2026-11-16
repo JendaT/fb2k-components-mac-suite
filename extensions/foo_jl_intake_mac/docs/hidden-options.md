@@ -273,7 +273,7 @@ through foobar2000 during those runs.
 | Value | Meaning |
 |---|---|
 | `0` | Off (default). |
-| `1` | About 4 s after start: remove every playlist named `JL intake test`, create a fresh one holding the `.wav`, `.flac` and `.mp3` files under `test_playlist_dir` (sorted, at most 2,000), and make it active. |
+| `1` | About 4 s after start: remove every playlist named `JL intake test`, create a fresh one holding the `.wav`, `.flac` and `.mp3` files under `test_playlist_dir` (sorted, at most 10,000), and make it active. |
 | `2` | About 4 s after start: remove every playlist named `JL intake test`. |
 
 The component sets the value back to `0` after acting, and foobar2000 writes
