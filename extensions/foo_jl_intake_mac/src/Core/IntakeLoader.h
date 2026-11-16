@@ -110,6 +110,14 @@
 //  rebuilds it with the new aliases; setLibraryPrefix() rebuilds it with
 //  the new pair (no I/O) and publishes the view again.
 //
+//  Row colours (B10): setPalette() replaces LoaderSettings::palette. The
+//  last successful load is rebuilt with it (IntakeSnapshot::build over the
+//  same records and members, as a remount does) and published again; the
+//  invalidate-all follows rendersAlike, so a colour no root uses changes
+//  nothing on screen, and an inert view (no tints shown) is not
+//  invalidated. The decorate path never reads the settings: it sees the
+//  colours only through the visuals of the published snapshot.
+//
 //  Shutdown (on_quit, PLAN.md 3.2): sets the cancel flag, kills the
 //  read-lane processes and closes the lane (ProcessRunner::closeReadLane),
 //  so a call already on its way to the runner is never spawned. It never
@@ -155,6 +163,7 @@ enum class PublishReason {
                 // the last load, no longer inert (state Stale)
     Reconfigured, // reconfigure(): the last load is forgotten (an empty view)
     Library,    // setLibraryPrefix(): the same view with the library index rebuilt
+    Palette,    // setPalette(): the last load's visuals and badges in the new colours
 };
 
 using PublishHandler =
@@ -250,6 +259,12 @@ public:
     // B9: the swap prefix pair; rebuilds the library index (see the top of
     // this file). Nothing happens when it is the pair in use.
     void setLibraryPrefix(LibraryPrefix prefix);
+    // B10: the row colours (the tint_* settings, IntakeTint.h). Rebuilds the
+    // last load's visuals and badges with them (no CLI call, no I/O) and
+    // publishes the view again, with one invalidate-all when a row or badge
+    // now renders differently and the view is not inert. Later loads use
+    // them. Nothing happens when it is the palette in use.
+    void setPalette(IntakePalette palette);
     // See the top of this file. Idempotent.
     void shutdown();
 

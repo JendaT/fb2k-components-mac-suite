@@ -588,6 +588,27 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
                 PublishReason::Library);
     }
 
+    // B10 (see the header).
+    void applyPalette(IntakePalette palette) {
+        if (stopped || palette == settings.palette) return;
+        settings.palette = palette;
+        if (!lastGood || !published) {
+            logDebug("row colours changed; nothing loaded yet, the next load uses them");
+            return;
+        }
+        auto rebuilt = IntakeSnapshot::build(lastGood->records(), lastGood->members(), settings.palette);
+        const bool rowsChange = !rendersAlike(*lastGood, *rebuilt);
+        lastGood = rebuilt;
+        const bool inert = published->isInert();
+        // The published view shows lastGood whenever there is one (a load,
+        // a remount, the inert view after a load, GatePassed).
+        publish(IntakeView::make(rebuilt, aliases, published->inertReason(), library), rowsChange && !inert,
+                PublishReason::Palette);
+        logDebug(std::string("row colours changed: ") +
+                 (!rowsChange ? "no root uses them, no invalidation"
+                              : inert ? "rows rebuilt; inactive, so no invalidation" : "rows rebuilt, invalidate-all"));
+    }
+
     // A partial `status` met half-written sidecars: their roots kept the
     // last record (carryOverUnreadable); one retry 1 s later, unless this
     // load is that retry.
@@ -940,6 +961,13 @@ void IntakeLoader::setLibraryPrefix(LibraryPrefix prefix) {
     auto pair = std::make_shared<LibraryPrefix>(std::move(prefix));
     dispatch_async(impl->queue, ^{
         impl->applyLibraryPrefix(std::move(*pair));
+    });
+}
+
+void IntakeLoader::setPalette(IntakePalette palette) {
+    std::shared_ptr<Impl> impl = impl_;
+    dispatch_async(impl->queue, ^{
+        impl->applyPalette(palette);
     });
 }
 

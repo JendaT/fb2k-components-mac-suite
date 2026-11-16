@@ -7,6 +7,7 @@
 
 #include "../Core/IntakeLog.h"
 #include "../Core/IntakeSettingsParse.h"
+#include "../Core/IntakeTint.h"
 
 namespace intake {
 namespace config {
@@ -17,6 +18,10 @@ pfc::string8 fullKey(const char *key) {
     pfc::string8 out;
     out << kPrefix << key;
     return out;
+}
+
+PaletteSettings readPalette() {
+    return paletteFromSettings([](const char *key) { return getInt(key, kTintSettingAbsent); });
 }
 
 } // anonymous namespace
@@ -60,6 +65,15 @@ void setString(const char *key, const std::string &value) {
     }
 }
 
+void deleteInt(const char *key) {
+    try {
+        auto store = fb2k::configStore::get();
+        if (store.is_valid()) store->deleteConfigInt(fullKey(key).c_str());
+    } catch (...) {
+        logError(std::string("could not reset the setting ") + key);
+    }
+}
+
 int defaultLogLevel() {
 #ifdef DEBUG
     return static_cast<int>(LogLevel::Debug);
@@ -86,7 +100,14 @@ IntakeSettings load() {
     s.swapPrefixTo = normalizedPrefix(getString(kSwapPrefixTo, ""));
     s.confirmReject = confirmSetting(getInt(kConfirmReject, kConfirmSettingDefault));
     s.confirmGc = confirmSetting(getInt(kConfirmGc, kConfirmSettingDefault));
+    PaletteSettings tints = readPalette();
+    s.palette = tints.palette;
+    s.tintProblems = std::move(tints.problems);
     return s;
+}
+
+IntakePalette loadPalette() {
+    return readPalette().palette;
 }
 
 } // namespace config

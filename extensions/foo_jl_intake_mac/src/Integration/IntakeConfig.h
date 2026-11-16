@@ -23,9 +23,14 @@
 //   - confirm_reject (int, 0 or 1, B6): Reject… asks first (the albums it
 //     affects, an optional reason); 0 rejects at once, with no reason.
 //     Default 1.
-//  Not on the page yet (B10 adds the checkbox; docs/hidden-options.md):
-//   - confirm_gc (int, 0 or 1, B9): Delete local copy… asks first (the
-//     local paths, "Swap, then delete"); 0 runs gc at once. Default 1.
+//   - confirm_gc (int, 0 or 1, B9; on the page since B10): Delete local
+//     copy… asks first (the local paths, "Swap, then delete"); 0 runs gc at
+//     once. Default 1.
+//   - tint_new, tint_review, tint_proposed, tint_approved, tint_placed,
+//     tint_rejected (ints, B10): the row colours, sRGB 0xRRGGBBAA; absent:
+//     the IntakePalette default, 0: no tint, out of range: the default
+//     (IntakeTint.h). They reach the rows only through the loader's
+//     palette (IntakeLoader::setPalette).
 //  Hidden (docs/hidden-options.md):
 //   - decor_stats (int, 0 or 1): the hidden decorate counters (B3
 //     "INTAKE_DECOR_STATS"); default 0.
@@ -42,6 +47,8 @@
 #pragma once
 
 #import "../fb2k_sdk.h"
+
+#include "../Core/IntakeDecorationMap.h"
 
 #include <cstdint>
 #include <string>
@@ -62,6 +69,8 @@ struct IntakeSettings {
     std::string swapPrefixTo;
     bool confirmReject = true;   // B6: Reject… shows its confirmation
     bool confirmGc = true;       // B9: Delete local copy… shows its confirmation
+    IntakePalette palette;       // B10: the tint_* keys (IntakeTint.h)
+    std::vector<std::string> tintProblems;  // one line per malformed tint_* key
 };
 
 namespace config {
@@ -89,15 +98,21 @@ int64_t getInt(const char *key, int64_t defaultValue);
 std::string getString(const char *key, const char *defaultValue);
 void setInt(const char *key, int64_t value);
 void setString(const char *key, const std::string &value);
+// Removes the key, so it reads as its default again.
+void deleteInt(const char *key);
 
 // 1 (Info), or 2 (Debug) in DEBUG builds (PLAN.md 3.9).
 int defaultLogLevel();
 
 // Every key, with surrounding whitespace trimmed from the strings
 // (trimmedSetting), the swap prefixes lexically cleaned (normalizedPrefix),
-// log_level clamped to 0-2 and watch_folders split into lines
-// (parseWatchFolders).
+// log_level clamped to 0-2, watch_folders split into lines
+// (parseWatchFolders) and the tint_* keys read into a palette
+// (paletteFromSettings).
 IntakeSettings load();
+
+// The tint_* keys alone (the preferences page).
+IntakePalette loadPalette();
 
 } // namespace config
 

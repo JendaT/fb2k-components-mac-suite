@@ -31,6 +31,9 @@
 //  only; their sidecars read once and reused while root and target stay
 //  the same), setLibraryPrefix republishing without invalidation, and the
 //  placed-unverified scenario and a gc_done root leaving it empty.
+//  B10: setPalette() rebuilding the last load in the new colours (rows,
+//  icons and badges; invalidate-all only when something changes and the
+//  view is not inert; no CLI call) and reaching later loads.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -1523,6 +1526,101 @@ static void testLibraryIndex() {
           "no library index entry without placed.verified");
 }
 
+// B10: setPalette() rebuilds the last load in the new colours: one publish,
+// invalidate-all only when a row or badge changes and the view is not
+// inert, no CLI call; a palette set earlier reaches the first load.
+static void testPalette() {
+    g_context = "palette-before-load";
+    clearLog();
+    std::string state = mock::setupState("default");
+    auto h = std::make_shared<Harness>();
+    IntakeLoader loader(settingsFor(state, h));
+    IntakePalette magenta;
+    magenta.tintPlaced = 0xFF00FFFF;
+    loader.setPalette(magenta);
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load");
+    CHECK(h->publishCount() == 1 && h->lastPublished().reason == PublishReason::Load,
+          "nothing loaded yet: no publish of its own");
+    const IntakeRecord *placed = h->lastPublished().view->snapshot().recordForId("itk_00000012");
+    CHECK(placed && placed->visual.bgTint == 0xFF00FFFF && placed->visual.iconColor == 0xFF00FFFF,
+          "the first load uses the palette set before it");
+
+    g_context = "palette-off";
+    IntakePalette off = magenta;
+    off.tintPlaced = 0;
+    size_t before = h->publishCount();
+    loader.setPalette(off);
+    CHECK(mock::waitUntil([&h, before] { return h->publishCount() > before; }, 10), "a palette change publishes");
+    Published p = h->lastPublished();
+    CHECK(p.reason == PublishReason::Palette && p.invalidate && p.view && !p.view->isInert(),
+          "reason Palette, one invalidate-all");
+    placed = p.view ? p.view->snapshot().recordForId("itk_00000012") : nullptr;
+    CHECK(placed && placed->visual.bgTint == 0 && placed->visual.iconColor == 0 &&
+              placed->visual.icon == IntakeIcon::CircleFilled,
+          "tint 0: no background, the host's icon colour, the icon kept");
+    const IntakeRecord *fresh = p.view ? p.view->snapshot().recordForId("itk_0000000a") : nullptr;
+    CHECK(fresh && fresh->visual.bgTint == 0x4A90D938, "the other statuses keep their colours");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "no CLI call for a colour change");
+    CHECK(logCount("row colours changed: rows rebuilt, invalidate-all") == 1, "one Debug line");
+
+    loader.setPalette(off);
+    loader.reload(false);
+    CHECK(waitFinished(*h, 2), "a reload");
+    CHECK(h->publishCount() == before + 2 && h->lastPublished().reason == PublishReason::Load &&
+              !h->lastPublished().invalidate,
+          "the same palette again publishes nothing; the reload in it changes no row");
+
+    g_context = "palette-review";
+    IntakePalette review = off;
+    review.tintReview = 0x11223344;
+    before = h->publishCount();
+    loader.setPalette(review);
+    CHECK(mock::waitUntil([&h, before] { return h->publishCount() > before; }, 10), "published");
+    p = h->lastPublished();
+    const IntakeRecord *overridden = p.view ? p.view->snapshot().recordForId("itk_0000000f") : nullptr;
+    CHECK(overridden && overridden->visual.bgTint == 0x11223344 && overridden->visual.iconColor == 0x112233FF &&
+              overridden->badge.amber && overridden->badge.color == 0x112233FF,
+          "the review tint reaches the amber row, its icon and its group badge");
+
+    g_context = "palette-inert";
+    CHECK(mock::runSync({mock::mockPath(), "--mock-setup", "schema2"}, mock::mockEnv(state)) == 0, "schema2 set up");
+    loader.reload(true);
+    CHECK(waitFinished(*h, 3) && h->lastFinished().state == LoaderState::Inert, "the gate fails: inert");
+    before = h->publishCount();
+    IntakePalette inertColours = review;
+    inertColours.tintPlaced = 0x00FF00FF;
+    loader.setPalette(inertColours);
+    CHECK(mock::waitUntil([&h, before] { return h->publishCount() > before; }, 10), "published while inert");
+    p = h->lastPublished();
+    CHECK(p.reason == PublishReason::Palette && !p.invalidate && p.view && p.view->isInert(),
+          "still inert, rows show no tints: no invalidation");
+    CHECK(mock::runSync({mock::mockPath(), "--mock-setup", "default"}, mock::mockEnv(state)) == 0, "default again");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 4) && h->lastFinished().state == LoaderState::Ready, "the gate passes again");
+    placed = h->lastPublished().view->snapshot().recordForId("itk_00000012");
+    CHECK(placed && placed->visual.bgTint == 0x00FF00FF && h->lastPublished().invalidate,
+          "back from inert in the colours set meanwhile");
+
+    g_context = "palette-unloaded";
+    CliConfig none = mockCli(state);
+    none.cliPath.clear();
+    loader.reconfigure(none);
+    CHECK(waitFinished(*h, 5) && h->lastFinished().state == LoaderState::NotConfigured, "not configured");
+    before = h->publishCount();
+    loader.setPalette(IntakePalette());
+    loader.reconfigure(mockCli(state));
+    CHECK(waitFinished(*h, 6) && h->lastFinished().state == LoaderState::Ready, "loaded again");
+    std::vector<Published> all = h->publishedCopy();
+    CHECK(all.size() == before + 2 && all[before].reason == PublishReason::Reconfigured &&
+              all[before + 1].reason == PublishReason::Load,
+          "with nothing loaded the palette change publishes nothing");
+    placed = all.back().view->snapshot().recordForId("itk_00000012");
+    CHECK(placed && placed->visual.bgTint == IntakePalette().tintPlaced, "the next load uses it");
+    loader.shutdown();
+    mock::killLeftovers();
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -1555,6 +1653,7 @@ int main(void) {
         testWatchEventIds();
         testAnnotateAndBadges();
         testLibraryIndex();
+        testPalette();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

@@ -20,6 +20,7 @@
 #include "../Core/IntakeCommandArgs.h"
 #include "../Core/IntakeLoader.h"
 #include "../Core/IntakeLog.h"
+#include "../Core/IntakeTint.h"
 #include "../Core/IntakeVersionGate.h"
 #include "../Core/IntakeWatcher.h"
 
@@ -99,6 +100,14 @@ void logIgnoredWatchFolders(const std::vector<std::string> &ignored) {
     }
 }
 
+// B10: the tint_* keys that are not 0 or a colour (each falls back to its
+// default), then the colours that differ from the defaults.
+void logPalette(const IntakeSettings &settings) {
+    for (const std::string &problem : settings.tintProblems) logDebug(problem);
+    const std::string changes = describePaletteChanges(settings.palette);
+    if (!changes.empty()) logDebug("row colours: " + changes + "; the rest default");
+}
+
 class Service {
 public:
     explicit Service(const IntakeSettings &settings) : settings_(settings) {
@@ -110,6 +119,7 @@ public:
 
     void start() {
         logIgnoredWatchFolders(settings_.ignoredWatchFolders);
+        logPalette(settings_);
         // The handler runs on the watcher's queue; stop() in on_quit clears
         // it (waiting out a running call) before the loader goes, so the raw
         // pointer never outlives the loader.
@@ -126,6 +136,9 @@ public:
         };
         ls.watchFolders = settings_.watchFolders;
         ls.libraryPrefix = makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo);
+        // B10: the row colours reach the rows only through the snapshot's
+        // visuals; decorate never reads a setting.
+        ls.palette = settings_.palette;
         ls.onStatusChanged = [](const LoaderStatus &) { postStatusChanged(); };
         // B6: per-root command errors reach the records before the snapshot.
         ls.annotateRecords = [](std::vector<IntakeRecord> &records, std::chrono::steady_clock::time_point started) {
@@ -250,6 +263,8 @@ public:
         const bool watchChanged = next.watchFolders != settings_.watchFolders;
         const bool prefixChanged =
             next.swapPrefixFrom != settings_.swapPrefixFrom || next.swapPrefixTo != settings_.swapPrefixTo;
+        const bool paletteChanged = !(next.palette == settings_.palette);
+        const bool tintProblemsChanged = next.tintProblems != settings_.tintProblems;
         // Hidden options (decor_stats, log_file) keep their startup values.
         next.decorStats = settings_.decorStats;
         next.logFile = settings_.logFile;
@@ -261,6 +276,9 @@ public:
             loader_->setWatchFolders(settings_.watchFolders);
         }
         if (prefixChanged) loader_->setLibraryPrefix(makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo));
+        // One rebuild and at most one invalidate-all per colour change.
+        if (paletteChanged || tintProblemsChanged) logPalette(settings_);
+        if (paletteChanged) loader_->setPalette(settings_.palette);
         if (cliChanged) loader_->reconfigure(cliConfig());
     }
 

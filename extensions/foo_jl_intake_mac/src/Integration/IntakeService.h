@@ -26,7 +26,10 @@
 //  folders go to IntakeLoader::setWatchFolders (a new watch set); a new log
 //  level applies at once; a new library mapping goes to
 //  IntakeLoader::setLibraryPrefix (B9: the library index is rebuilt) and to
-//  the next Swap (serviceActionInfo).
+//  the next Swap (serviceActionInfo); new row colours (B10, the tint_*
+//  keys) go to IntakeLoader::setPalette (the last load rebuilt in them, at
+//  most one invalidate-all); confirm_reject and confirm_gc reach the next
+//  menu (serviceActionInfo: the ellipsis and the confirmation).
 //  After every loader status change it posts
 //  IntakeStatusDidChangeNotification on the main thread, so the page
 //  refreshes its status block while visible (no polling).

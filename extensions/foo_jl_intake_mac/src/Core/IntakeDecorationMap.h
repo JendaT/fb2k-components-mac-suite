@@ -71,8 +71,9 @@ enum class IntakeIcon : uint32_t {
 using IntakeRgba = uint32_t;
 
 // Row background tints. Defaults are the colours of SimPlaylist's
-// DebugDummyDecorator (PLAN.md 3.9); the `tint_*` preferences (B5) override
-// them, so the caller passes the palette in.
+// DebugDummyDecorator (PLAN.md 3.9); the `tint_*` settings (B10,
+// IntakeTint.h) override them, so the caller passes the palette in. A tint
+// of 0 draws no background.
 struct IntakePalette {
     IntakeRgba tintNew = 0x4A90D938;      // intake blue: new, resolved
     IntakeRgba tintReview = 0xE5A50A38;   // amber: needs review
@@ -80,6 +81,8 @@ struct IntakePalette {
     IntakeRgba tintApproved = 0x2AA19838; // teal: approved, placing
     IntakeRgba tintPlaced = 0x3FB95038;   // green: placed and verified
     IntakeRgba tintRejected = 0x80808028; // grey: rejected
+
+    bool operator==(const IntakePalette &other) const = default;
 };
 
 struct IntakeRowVisual {
