@@ -2844,7 +2844,9 @@ provideDataForType:(NSPasteboardType)type {
                 return;
             }
 
-            if (report.totalCreated == 0 && report.totalUpdated == 0 &&
+            // Moves count: a pull that only moves playlists into their TIDAL
+            // folders still has to show its preview.
+            if (report.totalCreated == 0 && report.totalUpdated == 0 && report.totalRenamed == 0 &&
                 (!includesDeletions || report.totalDeleted == 0)) {
                 finish(emptyMessage);
                 return;
@@ -2886,11 +2888,16 @@ provideDataForType:(NSPasteboardType)type {
         NSString *action;
         switch (change.changeType) {
             case JLTidalSyncChangeTypeCreate: action = @"Create"; break;
+            case JLTidalSyncChangeTypeRename: action = @"Move"; break;
             case JLTidalSyncChangeTypeUpdate: action = @"Update"; break;
             case JLTidalSyncChangeTypeDelete: action = @"Remove"; break;
             default: continue;
         }
-        [details appendFormat:@"%@: %@", action, change.playlistName];
+        if (change.changeType == JLTidalSyncChangeTypeRename) {
+            [details appendFormat:@"%@: %@ -> %@", action, change.previousName, change.playlistName];
+        } else {
+            [details appendFormat:@"%@: %@", action, change.playlistName];
+        }
         if (change.tracksAdded > 0) [details appendFormat:@" (+%ld)", (long)change.tracksAdded];
         if (change.tracksRemoved > 0) [details appendFormat:@" (-%ld)", (long)change.tracksRemoved];
         [details appendString:@"\n"];

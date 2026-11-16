@@ -65,8 +65,15 @@ typedef NS_ENUM(NSInteger, TreeModelChangeType) {
 // Migration generation counter (increments on batch rename operations)
 @property (nonatomic, assign) NSUInteger migrationGeneration;
 
+// Renames a foobar2000 playlist on the organizer's behalf. Every organizer
+// rename goes through here, so the rename callback can tell them apart.
+- (BOOL)renameFoobarPlaylistAtIndex:(NSUInteger)index toName:(NSString *)name;
+// YES while renameFoobarPlaylistAtIndex:toName: is inside playlist_rename
+@property (nonatomic, readonly) BOOL ownRenameInProgress;
+
 // Playlist sync
 - (void)handlePlaylistCreated:(NSString *)name;
+// A playlist renamed outside the organizer: moves its node to the new name
 - (void)handlePlaylistRenamed:(NSString *)oldName to:(NSString *)newName;
 - (void)handlePlaylistDeleted:(NSString *)name;
 - (void)syncWithFoobarPlaylists;  // Add any missing playlists from foobar2000

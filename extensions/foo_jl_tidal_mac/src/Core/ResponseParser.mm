@@ -22,6 +22,24 @@ static BOOL JLTidalIsString(id obj) {
     return [obj isKindOfClass:[NSString class]];
 }
 
+@implementation JLTidalFolderListing
+
+- (instancetype)initWithFolders:(NSArray<JLTidalPlaylistFolder *> *)folders
+                  playlistUUIDs:(NSArray<NSString *> *)playlistUUIDs
+                         cursor:(NSString *)cursor
+             malformedItemCount:(NSInteger)malformedItemCount {
+    self = [super init];
+    if (self) {
+        _folders = [folders copy];
+        _playlistUUIDs = [playlistUUIDs copy];
+        _cursor = [cursor copy];
+        _malformedItemCount = malformedItemCount;
+    }
+    return self;
+}
+
+@end
+
 @implementation JLTidalResponseParser
 
 + (NSArray<NSString *> *)trackIDsFromJSONAPIData:(id)data {
@@ -169,19 +187,84 @@ static BOOL JLTidalIsString(id obj) {
     return [albums copy];
 }
 
+#pragma mark - v2 folders listing
+
+static BOOL JLTidalItemHasType(NSDictionary *item, NSString *itemType) {
+    id type = item[@"itemType"];
+    return JLTidalIsString(type) && [type isEqualToString:itemType];
+}
+
+// UUID of a PLAYLIST listing item: data.uuid, else the "trn:playlist:<uuid>"
+// suffix. A playlist item's data keys were not captured live, hence the
+// fallback. nil when neither yields a value.
+static NSString *JLTidalPlaylistUUIDFromFolderItem(NSDictionary *item) {
+    id data = item[@"data"];
+    if (JLTidalIsDictionary(data)) {
+        id uuid = ((NSDictionary *)data)[@"uuid"];
+        if (JLTidalIsString(uuid) && [uuid length] > 0) return uuid;
+    }
+    static NSString * const kPlaylistTRNPrefix = @"trn:playlist:";
+    id trn = item[@"trn"];
+    if (JLTidalIsString(trn) && [trn hasPrefix:kPlaylistTRNPrefix] &&
+        [trn length] > kPlaylistTRNPrefix.length) {
+        return [trn substringFromIndex:kPlaylistTRNPrefix.length];
+    }
+    return nil;
+}
+
 + (NSArray<JLTidalPlaylistFolder *> *)foldersFromItems:(NSArray *)items {
     NSMutableArray<JLTidalPlaylistFolder *> *folders = [NSMutableArray array];
     for (NSDictionary *item in JLTidalSafeItemsArray(items)) {
-        if (!JLTidalIsDictionary(item)) continue;
-        NSString *type = item[@"type"];
-        if ([type isKindOfClass:[NSString class]] && [type isEqualToString:@"FOLDER"]) {
-            JLTidalPlaylistFolder *folder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
-            if (folder) {
-                [folders addObject:folder];
-            }
+        if (!JLTidalIsDictionary(item) || !JLTidalItemHasType(item, @"FOLDER")) continue;
+        JLTidalPlaylistFolder *folder = [[JLTidalPlaylistFolder alloc] initWithDictionary:item];
+        if (folder) {
+            [folders addObject:folder];
         }
     }
     return [folders copy];
+}
+
++ (NSArray<NSString *> *)playlistUUIDsFromFolderItems:(NSArray *)items {
+    NSMutableArray<NSString *> *uuids = [NSMutableArray array];
+    for (NSDictionary *item in JLTidalSafeItemsArray(items)) {
+        if (!JLTidalIsDictionary(item) || !JLTidalItemHasType(item, @"PLAYLIST")) continue;
+        NSString *uuid = JLTidalPlaylistUUIDFromFolderItem(item);
+        if (uuid) [uuids addObject:uuid];
+    }
+    return [uuids copy];
+}
+
++ (JLTidalFolderListing *)folderListingFromResponse:(id)json {
+    if (!JLTidalIsDictionary(json)) return nil;
+    id items = ((NSDictionary *)json)[@"items"];
+    if (![items isKindOfClass:[NSArray class]]) return nil;
+
+    NSArray<JLTidalPlaylistFolder *> *folders = [self foldersFromItems:items];
+    NSArray<NSString *> *uuids = [self playlistUUIDsFromFolderItems:items];
+
+    NSInteger folderItems = 0, playlistItems = 0;
+    for (id item in (NSArray *)items) {
+        if (!JLTidalIsDictionary(item)) continue;
+        if (JLTidalItemHasType(item, @"FOLDER")) folderItems++;
+        else if (JLTidalItemHasType(item, @"PLAYLIST")) playlistItems++;
+    }
+    NSInteger malformed = (folderItems - (NSInteger)folders.count) +
+                          (playlistItems - (NSInteger)uuids.count);
+
+    // A number cursor is still a cursor; NSNull, "" and absence end the list.
+    id rawCursor = ((NSDictionary *)json)[@"cursor"];
+    NSString *cursor = nil;
+    if (JLTidalIsString(rawCursor)) {
+        cursor = rawCursor;
+    } else if ([rawCursor isKindOfClass:[NSNumber class]]) {
+        cursor = [rawCursor stringValue];
+    }
+    if (cursor.length == 0) cursor = nil;
+
+    return [[JLTidalFolderListing alloc] initWithFolders:folders
+                                           playlistUUIDs:uuids
+                                                  cursor:cursor
+                                      malformedItemCount:malformed];
 }
 
 + (NSArray<JLTidalTrack *> *)tracksFromItems:(NSArray *)items

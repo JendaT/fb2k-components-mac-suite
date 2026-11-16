@@ -174,16 +174,22 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
-/// Playlist folder model (from v2 API)
+/// Playlist folder model (from v2 API). A listing returns one level only, so
+/// subfolders and playlistUUIDs are filled in by JLTidalFolderTreeWalker as
+/// it lists each folder.
 @interface JLTidalPlaylistFolder : NSObject
 
 @property (nonatomic, copy, readonly) NSString *folderID;
 @property (nonatomic, copy, readonly) NSString *name;
-@property (nonatomic, copy, readonly, nullable) NSString *parentFolderID;
 @property (nonatomic, strong, readonly) NSMutableArray<JLTidalPlaylistFolder *> *subfolders;
 @property (nonatomic, strong, readonly) NSMutableArray<NSString *> *playlistUUIDs;
 
-- (instancetype)initWithDictionary:(NSDictionary *)dict;
+- (instancetype)initWithFolderID:(NSString *)folderID name:(NSString *)name;
+
+/// One item of a v2 folders listing (`itemType` FOLDER): id from `data.id`,
+/// else the suffix of `trn`; name from `data.name`, else `name`. Returns nil
+/// when no id can be derived.
+- (nullable instancetype)initWithDictionary:(NSDictionary *)dict;
 
 @end
 

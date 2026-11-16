@@ -267,6 +267,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Playlist Organizer
 
+### [1.5.2] - 2026-11-15
+
+#### Fixed
+- **Outside renames**: playlists renamed elsewhere move into the right folder instead of leaving a dead entry
+
 ### [1.5.1] - 2026-11-09
 
 #### Changed
@@ -858,6 +863,14 @@ Display P3 colors contributed by @Scannou (#55).
 - **Appearance**: 11 color presets with light/dark colors, glass background.
 
 ## Tidal Integration
+
+### [0.4.1] - 2026-11-15
+
+#### Added
+- **Playlist folders**: Pull mirrors TIDAL playlist folders and renames already-pulled playlists in place instead of recreating them.
+
+#### Fixed
+- **Pull from TIDAL**: Works again; in 0.4.0 it stopped with an error on every run.
 
 ### [0.4.0] - 2026-11-06
 

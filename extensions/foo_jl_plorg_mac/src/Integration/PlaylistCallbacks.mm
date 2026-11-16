@@ -6,7 +6,52 @@
 #include "PlaylistCallbacks.h"
 #import "../Core/TreeModel.h"
 
+#include <map>
+#include <string>
+
 namespace {
+
+// GUID -> current foobar2000 name of every playlist. The rename callback only
+// reports the new name, so this is where the previous one comes from.
+// Built in plorg_init::on_init, kept current on create and rename.
+// Main thread only. Stays empty without playlist_manager_v5.
+std::map<GUID, std::string, pfc::predicateGUID> g_playlistNames;
+
+void rebuildPlaylistNameCache() {
+    g_playlistNames.clear();
+    auto pm = playlist_manager_v5::tryGet();
+    if (pm.is_empty()) return;
+
+    const t_size count = pm->get_playlist_count();
+    for (t_size i = 0; i < count; i++) {
+        pfc::string8 name;
+        if (pm->playlist_get_name(i, name)) {
+            g_playlistNames[pm->playlist_get_guid(i)] = name.c_str();
+        }
+    }
+}
+
+enum class CachedName { unavailable, unknown, known };
+
+// Stores the name the playlist at index has now. Returns known and fills
+// previousName when the cache had that playlist under a name already.
+CachedName rememberPlaylistName(t_size index, const char *name, std::string &previousName) {
+    if (!name) return CachedName::unavailable;
+    auto pm = playlist_manager_v5::tryGet();
+    if (pm.is_empty() || index >= pm->get_playlist_count()) return CachedName::unavailable;
+
+    const GUID guid = pm->playlist_get_guid(index);
+    if (guid == pfc::guid_null) return CachedName::unavailable;
+
+    auto it = g_playlistNames.find(guid);
+    if (it == g_playlistNames.end()) {
+        g_playlistNames.emplace(guid, name);
+        return CachedName::unknown;
+    }
+    previousName = it->second;
+    it->second = name;
+    return CachedName::known;
+}
 
 // Tells the tree which playlist is playing so it can mark that row.
 // No name means nothing is playing.
@@ -84,6 +129,9 @@ public:
                                                     encoding:NSUTF8StringEncoding];
             if (!name) return;
 
+            std::string unusedPreviousName;
+            rememberPlaylistName(p_index, name.UTF8String, unusedPreviousName);
+
             NSUInteger generation = [TreeModel shared].migrationGeneration;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if ([TreeModel shared].migrationGeneration != generation) return;
@@ -101,15 +149,33 @@ public:
                                                        encoding:NSUTF8StringEncoding];
             if (!newName) return;
 
+            // Read the previous name and store the new one now. A deferred block
+            // cannot do it: p_index can point at another playlist by then (a sync
+            // loop may rename and remove playlists in the same pass).
+            std::string previousNameStr;
+            CachedName cached = rememberPlaylistName(p_index, newName.UTF8String, previousNameStr);
+
             // Renaming the playing playlist changes the name the tree matches on
             if (p_index == playlist_manager::get()->get_playing_playlist()) {
                 postPlayingPlaylistChanged(playback_control::get()->is_playing());
             }
 
+            // The organizer's own renames already match the tree
+            if ([TreeModel shared].ownRenameInProgress) return;
+
+            if (cached == CachedName::unknown) {
+                FB2K_console_formatter() << "[Plorg] Rename not followed, previous name unknown: "
+                                          << [newName UTF8String];
+            }
+            if (cached != CachedName::known) return;
+
+            NSString *previousName = [NSString stringWithUTF8String:previousNameStr.c_str()];
+            if (!previousName || [previousName isEqualToString:newName]) return;
+
             NSUInteger generation = [TreeModel shared].migrationGeneration;
             dispatch_async(dispatch_get_main_queue(), ^{
                 if ([TreeModel shared].migrationGeneration != generation) return;
-                FB2K_console_formatter() << "[Plorg] Playlist renamed to: " << [newName UTF8String];
+                [[TreeModel shared] handlePlaylistRenamed:previousName to:newName];
             });
         } @catch (...) {
             FB2K_console_formatter() << "[Plorg] Exception in on_playlist_renamed";
@@ -154,6 +220,9 @@ public:
     void on_init() override {
         [[TreeModel shared] loadFromConfig];
         [[TreeModel shared] repairCorruptedFoobarNames];
+        // Here rather than on first use: inside a rename callback fb2k already
+        // reports the new name, so the old one would be lost
+        rebuildPlaylistNameCache();
         console::info("[Plorg] Playlist Organizer initialized");
     }
 
