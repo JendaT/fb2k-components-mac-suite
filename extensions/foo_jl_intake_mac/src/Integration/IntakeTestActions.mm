@@ -102,6 +102,22 @@
 //                                   buttons), then it is ended as Cancel
 //                                   after <seconds> (at most 30): nothing is
 //                                   deleted
+//    show <id>                      B10, for screenshots: in the active
+//                                   playlist, clears the selection, sets the
+//                                   focus on that root's last row, then on
+//                                   its first (SimPlaylist scrolls a row into
+//                                   view when the focus moves from outside,
+//                                   so the whole root ends up on screen when
+//                                   it fits) and calls playlist_ensure_visible
+//                                   on the first. One line: "N row(s), #A to
+//                                   #B; selection cleared, focus on #A"
+//    tint <slot> <value>            B10: writes tint_<slot> as the
+//                                   preferences page does (0xRRGGBBAA, off:
+//                                   0, default: the key deleted), then posts
+//                                   IntakeSettingsDidChangeNotification like
+//                                   the page. Returns at once: the re-tint
+//                                   runs on the loader queue and logs its own
+//                                   lines, so put a wait after it
 //    wait <seconds>                 at most 30
 //  Every step logs one line starting "test_actions:" (Info, so log_level 0
 //  hides them; log_file mirrors them). Ids that are not in the snapshot,
@@ -121,6 +137,7 @@
 #include "IntakeActions.h"
 #include "IntakeConfig.h"
 #include "IntakeDecoratorProvider.h"
+#include "IntakeService.h"
 #include "IntakeSwap.h"
 
 #include "../Core/IntakeLog.h"
@@ -328,7 +345,8 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
         case TestStepKind::Runs:
             logInfo(label + actionsRunsDescription());
             break;
-        case TestStepKind::Rows: {
+        case TestStepKind::Rows:
+        case TestStepKind::Show: {
             const std::shared_ptr<const IntakeView> view = providerCurrentView();
             if (!view) {
                 logInfo(label + "skipped (no intake data yet)");
@@ -344,9 +362,51 @@ void runStep(std::shared_ptr<const std::vector<TestActionStep>> steps, size_t in
                 break;
             }
             const std::vector<PlaylistRootRow> rows = playlistRowsOfRoot(playlist, step.ids[0], *view);
-            metadb_handle_list handles;
-            for (const PlaylistRootRow &r : rows) handles.add_item(r.handle);
-            logInfo(label + rowsText(rows, actionsTableForHandles(handles)));
+            if (step.kind == TestStepKind::Rows) {
+                metadb_handle_list handles;
+                for (const PlaylistRootRow &r : rows) handles.add_item(r.handle);
+                logInfo(label + rowsText(rows, actionsTableForHandles(handles)));
+                break;
+            }
+            if (rows.empty()) {
+                logInfo(label + "skipped (no row of " + step.ids[0] + " in the active playlist)");
+                break;
+            }
+            // Rows come in playlist order. No selection, so its highlight does
+            // not cover the tints; the focus moves last then first, because
+            // SimPlaylist scrolls each focus change from outside into view.
+            const t_size first = rows.front().index;
+            const t_size last = rows.back().index;
+            auto pm = playlist_manager::get();
+            pm->playlist_clear_selection(playlist);
+            pm->playlist_set_focus_item(playlist, last);
+            pm->playlist_set_focus_item(playlist, first);
+            pm->playlist_ensure_visible(playlist, first);
+            logInfo(label + std::to_string(rows.size()) + " row(s), #" + std::to_string(first) + " to #" +
+                    std::to_string(last) + "; selection cleared, focus on #" + std::to_string(first));
+            break;
+        }
+        case TestStepKind::Tint: {
+            const char *key = tintKey(step.tintSlot);
+            std::string what;
+            switch (step.tintValue) {
+                case TestTintValue::Colour:
+                    config::setInt(key, static_cast<int64_t>(step.tintRgba));
+                    what = "written";
+                    break;
+                case TestTintValue::Off:
+                    config::setInt(key, 0);
+                    what = "wrote 0";
+                    break;
+                case TestTintValue::Default:
+                    config::deleteInt(key);
+                    what = "key deleted";
+                    break;
+            }
+            // As the preferences page does after a write (main thread):
+            // IntakeService::applySettings re-reads the keys and re-tints.
+            [[NSNotificationCenter defaultCenter] postNotificationName:IntakeSettingsDidChangeNotification object:nil];
+            logInfo(label + what + "; settings change posted");
             break;
         }
         case TestStepKind::Swap: {

@@ -75,6 +75,70 @@ bool parseBoundedSeconds(const std::string &text, const char *what, double &out,
     return true;
 }
 
+// "new" ... "rejected": the tintKey names without "tint_".
+bool parseTintSlot(const std::string &word, TintSlot &out) {
+    for (TintSlot slot : kTintSlots) {
+        if (word == tintKey(slot) + 5) {
+            out = slot;
+            return true;
+        }
+    }
+    return false;
+}
+
+int hexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// "0xRRGGBBAA" (1 to 8 hex digits, any case, not 0), "off" or "default".
+bool parseTintValue(const std::string &word, TestActionStep &step) {
+    if (word == "off") {
+        step.tintValue = TestTintValue::Off;
+        return true;
+    }
+    if (word == "default") {
+        step.tintValue = TestTintValue::Default;
+        return true;
+    }
+    if (word.size() < 2 || word[0] != '0' || (word[1] != 'x' && word[1] != 'X')) {
+        step.error = "tint value must be 0xRRGGBBAA, off or default, not \"" + word + "\"";
+        return false;
+    }
+    const std::string digits = word.substr(2);
+    if (digits.empty()) {
+        step.error = "tint value " + word + " needs 1 to 8 hex digits after 0x";
+        return false;
+    }
+    int64_t value = 0;
+    for (char c : digits) {
+        const int d = hexDigit(c);
+        if (d < 0) {
+            step.error = "tint value " + word + " is not hex";
+            return false;
+        }
+        if (value <= kTintSettingMax) value = value * 16 + d;
+    }
+    if (digits.size() > 8) {
+        step.error = "tint value " + word + " has more than 8 hex digits";
+        return false;
+    }
+    if (value == 0) {
+        step.error = "tint value " + word + " is 0: use off for no tint";
+        return false;
+    }
+    // 8 digits at most, so this holds; kept as the setting's own bound.
+    if (value > kTintSettingMax) {
+        step.error = "tint value " + word + " is more than 0xFFFFFFFF";
+        return false;
+    }
+    step.tintValue = TestTintValue::Colour;
+    step.tintRgba = static_cast<IntakeRgba>(value);
+    return true;
+}
+
 TestActionStep parseStep(const std::string &raw) {
     TestActionStep step;
     std::string body = trim(raw);
@@ -155,6 +219,32 @@ TestActionStep parseStep(const std::string &raw) {
         return step;
     }
 
+    if (verb == "tint") {
+        if (step.hasReason) {
+            step.error = "tint takes no reason";
+            return step;
+        }
+        if (step.hasCollection) {
+            step.error = "tint takes no collection";
+            return step;
+        }
+        if (rest.size() < 2) {
+            step.error = "tint needs a slot and a value: tint <slot> 0xRRGGBBAA|off|default";
+            return step;
+        }
+        if (rest.size() > 2) {
+            step.error = "tint takes only a slot and a value";
+            return step;
+        }
+        if (!parseTintSlot(rest[0], step.tintSlot)) {
+            step.error = "unknown tint slot \"" + rest[0] + "\" (new, review, proposed, approved, placed or rejected)";
+            return step;
+        }
+        if (!parseTintValue(rest[1], step)) return step;
+        step.kind = TestStepKind::Tint;
+        return step;
+    }
+
     TestStepKind kind = TestStepKind::Invalid;
     IntakeAction action = IntakeAction::Refresh;
     if (verb == "menu") {
@@ -196,6 +286,8 @@ TestActionStep parseStep(const std::string &raw) {
         action = IntakeAction::Swap;
     } else if (verb == "rows") {
         kind = TestStepKind::Rows;
+    } else if (verb == "show") {
+        kind = TestStepKind::Show;
     } else if (verb == "delete") {
         kind = TestStepKind::Delete;
         action = IntakeAction::DeleteLocal;
@@ -242,8 +334,8 @@ TestActionStep parseStep(const std::string &raw) {
         for (const std::string &have : step.ids) seen = seen || have == id;
         if (!seen) step.ids.push_back(id);
     }
-    if (kind == TestStepKind::Rows && step.ids.size() != 1) {
-        step.error = "rows takes exactly one id";
+    if ((kind == TestStepKind::Rows || kind == TestStepKind::Show) && step.ids.size() != 1) {
+        step.error = verb + " takes exactly one id";
         return step;
     }
     const bool refresh = kind == TestStepKind::Dispatch && action == IntakeAction::Refresh;

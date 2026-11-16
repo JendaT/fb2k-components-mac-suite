@@ -6,7 +6,7 @@
 //  foo_jl_intake.test_actions acceptance aid (removed with it before the
 //  merge to main).
 //
-// TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm
+// TEST_DEPS: src/Core/IntakeCommandArgs.mm src/Core/IntakeSemver.mm src/Core/IntakeSettingsParse.mm src/Core/IntakeTint.mm
 //
 
 #import <Foundation/Foundation.h>
@@ -263,11 +263,90 @@ static void testLibrarySteps() {
     CHECK(invalid("delete-local itk_00000012", "unknown step"), "the verb is exact");
 }
 
+static void testShowSteps() {
+    g_context = "show-steps";
+    std::vector<TestActionStep> s = parseTestActions("show itk_00000012; show\titk_00000011 itk_00000011");
+    CHECK(s.size() == 2, "two steps");
+    CHECK(s[0].kind == TestStepKind::Show && s[0].ids == v({"itk_00000012"}) && s[0].text == "show itk_00000012",
+          "show <id>");
+    CHECK(s[1].kind == TestStepKind::Show && s[1].ids == v({"itk_00000011"}), "show: a repeated id is one id");
+
+    CHECK(invalid("show", "show takes exactly one id"), "show needs an id");
+    CHECK(invalid("show itk_00000012 itk_00000011", "show takes exactly one id"), "show takes one id");
+    CHECK(invalid("show /income/dump/Placed", "not a sidecar id"), "show takes an id, not a path");
+    CHECK(invalid("show itk_00000012 reason=x", "only reject"), "show takes no reason");
+    CHECK(invalid("show itk_00000012 collection=X", "only assign"), "show takes no collection");
+    CHECK(invalid("show itk_00000012 close=3", "only picker, execute-sheet and delete-sheet"), "show takes no close=");
+    CHECK(invalid("shows itk_00000012", "unknown step"), "the verb is exact");
+}
+
+static void testTintSteps() {
+    g_context = "tint-steps";
+    std::vector<TestActionStep> s = parseTestActions(
+        "tint placed 0xFF00FFFF; tint new 0x4a90d938; tint review 0X1; tint proposed off; tint approved default;"
+        "tint rejected 0xffffffff");
+    CHECK(s.size() == 6, "six steps");
+    CHECK(s[0].kind == TestStepKind::Tint && s[0].tintSlot == TintSlot::Placed &&
+              s[0].tintValue == TestTintValue::Colour && s[0].tintRgba == 0xFF00FFFFu,
+          "tint placed 0xFF00FFFF");
+    CHECK(s[0].text == "tint placed 0xFF00FFFF" && s[0].ids.empty(), "the step text; no ids");
+    CHECK(s[1].tintSlot == TintSlot::New && s[1].tintValue == TestTintValue::Colour && s[1].tintRgba == 0x4A90D938u,
+          "lower-case hex digits");
+    CHECK(s[2].tintSlot == TintSlot::Review && s[2].tintValue == TestTintValue::Colour && s[2].tintRgba == 1u,
+          "one digit, 0X prefix");
+    CHECK(s[3].kind == TestStepKind::Tint && s[3].tintSlot == TintSlot::Proposed && s[3].tintValue == TestTintValue::Off,
+          "off");
+    CHECK(s[4].kind == TestStepKind::Tint && s[4].tintSlot == TintSlot::Approved &&
+              s[4].tintValue == TestTintValue::Default,
+          "default");
+    CHECK(s[5].tintSlot == TintSlot::Rejected && s[5].tintRgba == 0xFFFFFFFFu, "0xffffffff is the largest colour");
+    CHECK(parseTestActions("  tint\tplaced   0x0000FF00  ")[0].tintRgba == 0x0000FF00u, "tabs and spaces; leading zeros");
+
+    bool everySlot = true;
+    for (TintSlot slot : kTintSlots) {
+        std::vector<TestActionStep> one = parseTestActions(std::string("tint ") + (tintKey(slot) + 5) + " off");
+        everySlot = everySlot && one.size() == 1 && one[0].kind == TestStepKind::Tint && one[0].tintSlot == slot;
+    }
+    CHECK(everySlot, "every slot by its tintKey name without tint_");
+}
+
+static void testTintInvalid() {
+    g_context = "tint-invalid";
+    CHECK(invalid("tint", "tint needs a slot and a value"), "tint needs words");
+    CHECK(invalid("tint placed", "tint needs a slot and a value"), "tint needs a value");
+    CHECK(invalid("tint placed off now", "only a slot and a value"), "an extra word");
+    CHECK(invalid("tint blue 0xFF00FFFF", "unknown tint slot \"blue\""), "unknown slot");
+    CHECK(invalid("tint tint_placed 0xFF00FFFF", "unknown tint slot"), "the slot is without tint_");
+    CHECK(invalid("tint Placed 0xFF00FFFF", "unknown tint slot"), "slots are lowercase");
+    CHECK(invalid("tint placed 0x0", "is 0: use off"), "0x0 points at off");
+    CHECK(invalid("tint placed 0x00000000", "is 0: use off"), "0x00000000 points at off");
+    CHECK(invalid("tint placed 0x123456789", "more than 8 hex digits"), "nine digits");
+    CHECK(invalid("tint placed 0x000000001", "more than 8 hex digits"), "nine digits, even with leading zeros");
+    CHECK(invalid("tint placed 0x", "needs 1 to 8 hex digits"), "0x without digits");
+    CHECK(invalid("tint placed 0xFF00FFGG", "is not hex"), "a digit that is not hex");
+    CHECK(invalid("tint placed 0x-1", "is not hex"), "no sign");
+    CHECK(invalid("tint placed FF00FFFF", "must be 0xRRGGBBAA, off or default"), "hex needs 0x");
+    CHECK(invalid("tint placed red", "must be 0xRRGGBBAA, off or default"), "a word that is not hex");
+    CHECK(invalid("tint placed 4278255615", "must be 0xRRGGBBAA, off or default"), "no decimal");
+    CHECK(invalid("tint placed OFF", "must be 0xRRGGBBAA, off or default"), "off is lowercase");
+    CHECK(invalid("tint placed off reason=x", "tint takes no reason"), "tint takes no reason");
+    CHECK(invalid("tint placed off collection=X", "tint takes no collection"), "tint takes no collection");
+    CHECK(invalid("tint placed off close=3", "only picker, execute-sheet and delete-sheet"), "tint takes no close=");
+    CHECK(invalid("tints placed off", "unknown step"), "the verb is exact");
+
+    std::vector<TestActionStep> mixed = parseTestActions("tint placed 0x0; tint placed off");
+    CHECK(mixed.size() == 2 && mixed[0].kind == TestStepKind::Invalid && mixed[1].kind == TestStepKind::Tint,
+          "an invalid tint step does not stop the others");
+}
+
 int main() {
     @autoreleasepool {
         testSteps();
         testExecuteSteps();
         testLibrarySteps();
+        testShowSteps();
+        testTintSteps();
+        testTintInvalid();
         testBadge();
         testAssignSteps();
         testAssignInvalid();

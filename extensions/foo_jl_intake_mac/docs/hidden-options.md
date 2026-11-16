@@ -323,7 +323,7 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 
 ## foo_jl_intake.test_actions
 
-Temporary acceptance aid (B6, extended in B7, B8 and B9), removed before the
+Temporary acceptance aid (B6, extended in B7, B8, B9 and B10), removed before the
 merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
 `src/Core/IntakeTestActionScript.*` and its tests, the `PickerTestHooks`,
 `ExecuteTestHooks`, `SwapTestHooks`, `DeleteTestHooks` and
@@ -331,7 +331,8 @@ merge to main with the other aids (`src/Integration/IntakeTestActions.mm`,
 `playlistRowsOfRoot` in `src/Integration/IntakeSwap.*`). It lets an in-app check drive the intake
 context menu, the collection picker, the execute sheet and the delete
 confirmation included, and read the group header badges, the tracked execute
-runs and the playlist rows of a release, without clicking.
+runs and the playlist rows of a release, bring a release's rows on screen and
+set the row colours (B10), without clicking.
 
 `configStrings`, default empty. Read once per foobar2000 session, right after
 the first successful `status` load (and after the check for execute runs an
@@ -357,6 +358,8 @@ words by spaces:
 | `delete <id...>` | B9. **Delete local copy…** through the real flow: the menu item for those roots, the sidecars read afresh, the income rows counted, then, instead of the sheet, the confirmation is answered **Delete** (the roots rechecked against the current snapshot, the lane and the configuration checked again), which runs `gc <ids> --json`. One line once gc was started or could not start: `confirmation: N path(s): <first three> (+K more); Swap, then delete offered (R income row(s)); answered Delete; gc: started for 1 root` (the income rows of every playlist: `(R income row(s) in P playlist(s))` when some are outside the active one; `Swap, then delete not offered (no income row)` when no row points at an income file, `not offered (R income row(s), K without a library copy)` when Swap could not move them all; then `; U row(s) not checked (slow volume)` when some rows could not be checked). No answer from the sidecar reads within 10 s: `not run: the sidecars could not be read within 10 s ...`. With `confirm_gc` 0: `no confirmation (confirm_gc 0); gc: started for ...`. The gc result follows as its own console line (`gc: done for 1 root`, `gc failed for 1 root: ...`). |
 | `delete-swap <id...>` | B9. The same, answered **Swap, then delete**: the rows of those roots that still point at income paths are swapped first, in the active playlist, then in every other playlist that has such rows (one `swap: ...` part per playlist); gc runs only when none is left in any playlist: `...; answered Swap, then delete; swap: 2 row(s) swapped to library paths, 0 skipped; gc: started for 1 root`, or `...; not run: N row(s) in P playlist(s) still point at the income paths of these roots; nothing deleted` (also `K playlist row(s) on a slow volume could not be checked`). When the confirmation did not offer it (no income row, or a row without a library copy): `...; not run: "Swap, then delete" was not offered; nothing deleted`. With `confirm_gc` 0: `no confirmation: confirm_gc is 0, so "Swap, then delete" is not offered; nothing deleted`. |
 | `delete-sheet <id...> close=<seconds>` | B9. The real confirmation for a screenshot: the window under the pointer when the step starts, else the main, key or foobar2000 main window, else app-modal. One line when it is up: `sheet shown: "<title>"; <the paths and the swap offer, as for delete>; buttons Delete, Cancel[, Swap, then delete]; closing as Cancel in <seconds> s`. It is then ended as **Cancel** after `<seconds>` (more than 0, at most 30; required): nothing is deleted. With `confirm_gc` 0 there is no confirmation: `no confirmation: confirm_gc is 0; nothing deleted`. |
+| `show <id>` | B10, for screenshots. In the active playlist: clears the selection (so its highlight does not cover the tints), sets the focus on the last row of that root (by income path or through the library index, as for `rows`), then on its first row, then calls `playlist_ensure_visible` on the first. SimPlaylist scrolls a row into view when the focus moves from outside, so the whole root ends up on screen when it fits. One line: `N row(s), #<first> to #<last>; selection cleared, focus on #<first>`, or `skipped (no row of <id> in the active playlist)` (also `skipped (no intake data yet)`, `skipped (not in the snapshot: <id>)`, `skipped (no active playlist)`, as for `rows`). |
+| `tint <slot> <value>` | B10. Writes the row colour `tint_<slot>` as the preferences page does, then posts the page's settings-change notification, so the service re-reads the keys and re-tints from the last load (no CLI call). `<slot>`: `new`, `review`, `proposed`, `approved`, `placed` or `rejected`. `<value>`: `0xRRGGBBAA` (1 to 8 hex digits, any case, not 0) is written as it is; `off` writes 0 (no tint); `default` deletes the key. One line: `written; settings change posted`, `wrote 0; settings change posted` or `key deleted; settings change posted`. The step returns at once; the re-tint runs on the loader queue and logs its own lines (at `log_level` 2: `row colours: ...` while a colour differs from its default, then `row colours changed: ...`), so put a `wait` after it before a screenshot or a `badge`. `0x0` is refused (use `off`), as are an unknown slot, a missing or extra word, more than 8 digits and a value that is not hex. |
 | `wait <seconds>` | Waits before the next step; more than 0, at most 30, decimals allowed. |
 
 Ids must be sidecar ids (`itk_` and 8 hex digits) present in the snapshot;
@@ -387,8 +390,9 @@ lines) include **Swap to library paths** and **Delete local copy…** since B9,
 disabled unless a selected root is `placed` with `placed.verified`. The steps
 start after the first successful load, which can come before `test_playlist`
 has built its playlist (about 4 s after start): begin with `wait 8` when a
-step needs the playlist (`rows`, `swap`, `delete-swap`, and the income-row
-count of `delete` and `delete-sheet`).
+step needs the playlist (`rows`, `show`, `swap`, `delete-swap`, and the
+income-row count of `delete` and `delete-sheet`). `show` and `tint` (B10) run
+synchronously.
 
 ```bash
 # quit foobar2000 first
@@ -435,6 +439,19 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
   "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
      'wait 8; rows itk_00000012; swap itk_00000012; rows itk_00000012; delete-sheet itk_00000012 close=8;
       delete itk_00000012; wait 4; menu itk_00000012')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+B10 example (a screenshot of `itk_00000012`'s rows in its default colour,
+then in magenta, then untinted; the colour is written back to the default at
+the end):
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.test_actions',
+     'wait 8; show itk_00000012; wait 6; tint placed 0xFF00FFFF; wait 6; tint placed off; wait 6;
+      tint placed default')
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 

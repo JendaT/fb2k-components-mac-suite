@@ -54,6 +54,19 @@
 //                                        B9: the real confirmation, ended as
 //                                        Cancel after <seconds> (0 < seconds
 //                                        <= 30, required); nothing deleted
+//    show <id>                           B10: in the active playlist, the
+//                                        selection cleared and that one
+//                                        root's rows brought on screen
+//                                        (focus on its last row, then its
+//                                        first)
+//    tint <slot> <value>                 B10: writes a row colour as the
+//                                        preferences page does. <slot>:
+//                                        new, review, proposed, approved,
+//                                        placed or rejected (the tintKey
+//                                        names without "tint_"). <value>:
+//                                        0xRRGGBBAA (1 to 8 hex digits,
+//                                        any case, not 0), off (writes 0)
+//                                        or default (deletes the key)
 //    wait <seconds>                      0 < seconds <= 30, decimals allowed
 //  "reason=" and "collection=" count only at the start of a word; the first
 //  one in the step takes the rest of it (so a collection name may contain
@@ -72,6 +85,7 @@
 #include <vector>
 
 #include "IntakeActionTable.h"
+#include "IntakeTint.h"
 
 namespace intake {
 
@@ -93,7 +107,16 @@ enum class TestStepKind {
     DeleteSwap,   // delete-swap (B9): answered "Swap, then delete"
     DeleteSheet,  // delete-sheet (B9): the real confirmation, closed as
                   // Cancel after closeSeconds
+    Show,         // show (B10): one root's rows on screen, no selection
+    Tint,         // tint (B10): write one tint_* key, then notify
     Wait,
+};
+
+// What a tint step writes.
+enum class TestTintValue {
+    Colour,   // tintRgba
+    Off,      // 0: no tint
+    Default,  // the key deleted
 };
 
 struct TestActionStep {
@@ -112,6 +135,9 @@ struct TestActionStep {
     bool hasCollection = false;
     double seconds = 0;   // Wait
     double closeSeconds = 0;  // Picker, ExecuteSheet, DeleteSheet
+    TintSlot tintSlot = TintSlot::New;               // Tint
+    TestTintValue tintValue = TestTintValue::Colour; // Tint
+    IntakeRgba tintRgba = 0;  // Tint with Colour: 1..kTintSettingMax
     std::string text;     // the step as written, trimmed (for the log)
     std::string error;    // Invalid: why
 };
