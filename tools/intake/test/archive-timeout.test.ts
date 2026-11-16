@@ -95,10 +95,15 @@ async function waitFor(cond: () => boolean, ms: number): Promise<boolean> {
   return cond();
 }
 
+// The limit must leave the fake time to start sh, write its file, start sleep
+// and record both PIDs; at 400 ms a loaded machine killed it before the PID
+// file existed, and the children check had nothing to check.
+const LIMIT_MS = 2000;
+
 test("a tool past the time limit is killed with its children: failed, no .partial or .unpacked", async () => {
   const code = [
     `import { unpackArchive } from ${JSON.stringify(ARCHIVE_TS)};`,
-    `console.log(JSON.stringify(await unpackArchive(${JSON.stringify(archive)}, false, { timeoutMs: 400 })));`,
+    `console.log(JSON.stringify(await unpackArchive(${JSON.stringify(archive)}, false, { timeoutMs: ${LIMIT_MS} })));`,
   ].join("\n");
   const started = Date.now();
   const proc = Bun.spawn([process.execPath, "-e", code], { env: env(), stdout: "pipe", stderr: "pipe" });
@@ -110,7 +115,7 @@ test("a tool past the time limit is killed with its children: failed, no .partia
       archive,
       target: `${stem}.unpacked`,
       action: "failed",
-      error: "7zz timed out after 400 ms",
+      error: "7zz timed out after 2 s",
     });
     const pids = fakePids();
     expect(pids).toHaveLength(2);
