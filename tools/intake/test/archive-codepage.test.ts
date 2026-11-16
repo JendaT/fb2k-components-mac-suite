@@ -415,15 +415,15 @@ test("non-ASCII UTF-8 names with no 7-Zip on PATH: failed with a clear message, 
   expect(readdirSync(income)).toEqual(["Synthetic - Flagged (2023).zip"]);
 });
 
-test("archive_code_pages: [cp999] fails scan as a malformed income.yaml does (E_INTERNAL, exit 2), nothing unpacked", () => {
+test("archive_code_pages: [cp999] fails scan as a malformed income.yaml does (E_BAD_RULES, exit 2), nothing unpacked", () => {
   writeIncome("archive_code_pages: [cp999]");
   const zip = join(income, TIE_ZIP);
   writeFileSync(zip, buildZip(TIE_ENTRIES.map((e, i) => ({ name: new Uint8Array([...TIE_TOP, 0x2f, ...e]), data: FLACS[i]! }))));
   const { code, envelope } = scanWithPath();
   expect(envelope.errors).toEqual([{
-    code: "E_INTERNAL",
+    code: "E_BAD_RULES",
     msg: `${join(corpus.rules, "income.yaml")}: archive_code_pages: unknown code page "cp999" (allowed: cp437, cp852, cp1252, cp1250)`,
-    path: null,
+    path: join(corpus.rules, "income.yaml"),
   }]);
   expect(envelope.data).toBeNull();
   expect(code).toBe(2);

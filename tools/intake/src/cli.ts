@@ -3,9 +3,10 @@
 // docs/intake/intake-03-contract-spec.md; scan/resolve/status per doc 01.
 
 import {
-  cmdIncome, cmdResolve, cmdScan, cmdStatus, cmdVersion,
+  cmdIncome, cmdResolve, cmdScan, cmdStatus, cmdVersion, finish,
   type CommandResult, type CommonOpts, type IncomeRow, type ResolveData, type ScanBlock,
 } from "./commands.ts";
+import { RulesError } from "./config.ts";
 import type { SidecarSummary } from "./sidecar.ts";
 import { cmdAssign, cmdBootstrap, cmdCollections, cmdIdentify } from "./commands-p2.ts";
 import { cmdApprove, cmdExecute, cmdGc, cmdPropose, cmdReject } from "./commands-p3.ts";
@@ -213,7 +214,13 @@ async function main(): Promise<number> {
   if (handler && argErrors.length > 0) {
     result = { data: null, errors: argErrors, exitCode: 2 };
   } else if (handler) {
-    result = await handler(args, opts);
+    try {
+      result = await handler(args, opts);
+    } catch (e) {
+      // A rules file the command loaded is unusable (config.ts RulesError).
+      if (!(e instanceof RulesError)) throw e;
+      result = finish([], [{ code: "E_BAD_RULES", msg: e.message, path: e.file }]);
+    }
   } else {
     if (!opts.json) {
       console.error(USAGE);
@@ -232,9 +239,10 @@ async function main(): Promise<number> {
 
 /**
  * Doc 03: every `--json` invocation emits exactly one envelope. An uncaught
- * throw (a malformed rules file, an I/O error) must not leave stdout empty,
- * so it becomes `E_INTERNAL` with exit 2. Nothing is printed before main()
- * returns, so there is no partial output to collide with.
+ * throw (an I/O error; a malformed rules file is E_BAD_RULES, in main) must
+ * not leave stdout empty, so it becomes `E_INTERNAL` with exit 2. Nothing is
+ * printed before main() returns, so there is no partial output to collide
+ * with.
  */
 async function run(): Promise<number> {
   try {

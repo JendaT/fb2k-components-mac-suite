@@ -28,9 +28,40 @@ export function rulesDir(): string | null {
   return null;
 }
 
+/**
+ * A rules file the CLI cannot use: a YAML syntax error, or a value the CLI
+ * checks and refuses (income.yaml `archive_code_pages`). The message names
+ * the file and, when known, the key. cli.ts reports it as `E_BAD_RULES`
+ * (exit 2, `path` = the file) for the command that loaded the file.
+ */
+export class RulesError extends Error {
+  constructor(
+    readonly file: string,
+    readonly key: string | null,
+    detail: string,
+  ) {
+    super(`${file}: ${key === null ? "" : `${key}: `}${detail}`);
+    this.name = "RulesError";
+  }
+}
+
+/**
+ * Parse a rules file (income.yaml, structure.yaml, the maps); undefined when
+ * it does not exist. A YAML syntax error throws a RulesError naming the file;
+ * a read error (I/O) is thrown as it is.
+ */
+export function parseRulesYaml(path: string): unknown {
+  if (!existsSync(path)) return undefined;
+  const text = readFileSync(path, "utf8");
+  try {
+    return Bun.YAML.parse(text);
+  } catch (e) {
+    throw new RulesError(path, null, e instanceof Error ? e.message : String(e));
+  }
+}
+
 function readYaml(path: string): Record<string, unknown> | null {
-  if (!existsSync(path)) return null;
-  const parsed = Bun.YAML.parse(readFileSync(path, "utf8"));
+  const parsed = parseRulesYaml(path);
   return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : null;
 }
 
@@ -129,13 +160,14 @@ export interface IncomeConfig {
 
 /**
  * `archive_code_pages` checked: a list of distinct names from cp437, cp852,
- * cp1252, cp1250. Anything else throws, the path a malformed income.yaml
- * takes (cli.ts reports it as E_INTERNAL, exit 2), so a typo is never ignored.
+ * cp1252, cp1250. Anything else throws a RulesError, as a YAML syntax error
+ * in income.yaml does (cli.ts reports it as E_BAD_RULES, exit 2), so a typo
+ * is never ignored.
  */
 function archiveCodePages(value: unknown, file: string): CodePage[] {
   if (value === undefined) return [];
   const allowed = DEFAULT_CODE_PAGE_ORDER.map(codePageName).join(", ");
-  const bad = (what: string) => new Error(`${file}: archive_code_pages: ${what} (allowed: ${allowed})`);
+  const bad = (what: string) => new RulesError(file, "archive_code_pages", `${what} (allowed: ${allowed})`);
   if (!Array.isArray(value)) throw bad("must be a list of code page names");
   const out: CodePage[] = [];
   for (const item of value) {

@@ -4,8 +4,9 @@
 // increments, alias cache, bootstrap output) re-serialize the whole file —
 // hand comments are not preserved (noted in doc 02).
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseRulesYaml } from "./config.ts";
 import { normKey } from "./util.ts";
 
 export type FolderCounts = Record<string, number>; // collection -> count
@@ -34,9 +35,9 @@ export interface OverrideEvent {
   by: string;
 }
 
+/** A map file's top-level mapping; {} when absent. A YAML syntax error throws a RulesError (E_BAD_RULES). */
 function readYamlFile(path: string): Record<string, unknown> {
-  if (!existsSync(path)) return {};
-  const doc = Bun.YAML.parse(readFileSync(path, "utf8"));
+  const doc = parseRulesYaml(path);
   return typeof doc === "object" && doc !== null ? (doc as Record<string, unknown>) : {};
 }
 

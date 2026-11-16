@@ -410,11 +410,12 @@ export async function cmdExecute(
 
   const batch = "b" + sha1Hex(isoLocal() + ":" + process.pid).slice(0, 10);
   const data: ExecuteRow[] = [];
-  // Read the genre map at most once per command (it was re-read and re-parsed
-  // for every placed root); still saved per placement, so a crash mid-batch
-  // cannot lose the counts of releases already in the library.
+  // Read the genre map once per command, before anything is placed (it was
+  // re-read and re-parsed for every placed root, and a malformed map then
+  // failed a root after its commit point); still saved per placement, so a
+  // crash mid-batch cannot lose the counts of releases already in the library.
   const rdir = rulesDir();
-  let genre: GenreMap | null = null;
+  const genre: GenreMap | null = rdir ? loadGenreMap(rdir) : null;
 
   for (const root of roots) {
     const sc = root.sidecar;
@@ -534,8 +535,7 @@ export async function cmdExecute(
       // No count for a Various Artists credit (doc 02, amendment 003): it would
       // build the artist prior that assign ignores for VA, as assign's
       // feedback does not record one either.
-      if (rdir && artist && !isVariousArtists(artist) && sc.proposal) {
-        genre ??= loadGenreMap(rdir);
+      if (rdir && genre && artist && !isVariousArtists(artist) && sc.proposal) {
         recordPlacement(genre, artist, sc.proposal.target_collection);
         saveGenreMap(rdir, genre);
       }

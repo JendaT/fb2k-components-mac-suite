@@ -6,12 +6,13 @@
 //   - ok is true iff the exit code is 0
 //   - exit 2 carries data: null; exit 1 carries the successful subset
 //   - reserved host-synthesized codes are never emitted by the CLI
-//   - an uncaught throw still yields one envelope (E_INTERNAL, exit 2)
+//   - an uncaught throw still yields one envelope (E_INTERNAL, exit 2); a
+//     malformed rules file is E_BAD_RULES instead (test/bad-rules.test.ts)
 //
 // If doc 03 is amended differently, this file is the thing to change.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setupCorpus, type Corpus } from "./helpers.ts";
@@ -111,12 +112,14 @@ test("host-synthesized codes are reserved: the CLI never emits them", () => {
 });
 
 test("an uncaught throw still emits one envelope: E_INTERNAL, data null, exit 2", () => {
-  // A malformed rules file makes the YAML loader throw before any command
-  // logic runs; stdout must still carry exactly one envelope.
+  // income.yaml is a directory: reading it throws EISDIR (an I/O error, not
+  // a malformed file) before any command logic runs; stdout must still carry
+  // exactly one envelope.
   const rules = mkdtempSync(join(tmpdir(), "intake-badrules-"));
   try {
     cpSync(corpus.rules, rules, { recursive: true });
-    writeFileSync(join(rules, "income.yaml"), "income: [unclosed\n");
+    rmSync(join(rules, "income.yaml"));
+    mkdirSync(join(rules, "income.yaml"));
     for (const json of [true, false]) {
       const proc = Bun.spawnSync([process.execPath, "run", CLI, "status", ...(json ? ["--json"] : [])], {
         env: { ...process.env, INTAKE_RULES_DIR: rules },

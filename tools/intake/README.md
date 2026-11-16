@@ -15,8 +15,10 @@ macOS), optionally `7zz` or `7z` (7z, non-ASCII zip names, rar without bsdtar).
 ```bash
 bun install
 
-# Rules dir (income.yaml, structure.yaml) — real maps live in the private
-# music-rules repo; this repo ships only schema docs and fixtures:
+# Rules dir (income.yaml, structure.yaml, genre-map.yaml, label-map.yaml,
+# styles.yaml) — real maps live in the private music-rules repo; this repo
+# ships only schema docs and fixtures. A rules file with a YAML syntax error
+# fails the command that loads it with E_BAD_RULES:
 export INTAKE_RULES_DIR=/path/to/music-rules   # or ~/.config/intake/config.toml
 
 bun run src/cli.ts scan --all          # discover, unpack archives, resolve
@@ -46,7 +48,11 @@ all-roots forms (`propose --all-resolved`, `execute --approved`,
 `execute --resume`, `gc --all`) skip such roots silently. `status --filter`
 keys: `id`, `status`, `needs_review`, `income_folder`, `source_type`, `tier`
 (alias `tier_eligible`), `virtual`, `singles`, `albumartist`, `album`,
-`root_path`; an unknown, malformed or repeated key is `E_BAD_ARGS`.
+`root_path`; an unknown, malformed or repeated key is `E_BAD_ARGS`. A rules
+file the command loads that it cannot use (a YAML syntax error in
+income.yaml, structure.yaml, genre-map.yaml, label-map.yaml or styles.yaml,
+or a bad `archive_code_pages`) fails that command with `E_BAD_RULES`, exit 2,
+`path` the file, the message naming the file and, where known, the key.
 
 Identify/assign run fully offline by default; network evidence is opt-in via
 `DISCOGS_TOKEN` and `LASTFM_API_KEY` (similar-artist cache under
@@ -93,7 +99,7 @@ income:
 It only orders ties: all four pages are always scored. Allowed names are
 `cp437`, `cp852`, `cp1252` and `cp1250`. An unknown name, a duplicate or a
 value that is not a list fails every command that reads income.yaml, the way
-a malformed income.yaml does (`E_INTERNAL`, exit 2). There is no setting per
+a malformed income.yaml does (`E_BAD_RULES`, exit 2). There is no setting per
 income folder.
 
 ### beets hard path
