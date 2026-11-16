@@ -155,8 +155,7 @@
 //  finished as above when it ends; a dead one is finished at once (one Info
 //  line, then its console line); orphan files are deleted (one Info line
 //  with the count). Until the scan is done no mutating call starts (the
-//  menu shows mutating items disabled), and the test_actions aid waits for
-//  it (actionsAfterRunScan).
+//  menu shows mutating items disabled).
 //
 //  Mutation lane (IntakeMutationLane, main thread): one mutating call at a
 //  time. A call that finds the lane busy is not started (one Error line).
@@ -210,116 +209,31 @@ void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action
 // Swap, which copies the rows it needs before returning.
 void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel);
 
-// Temporary acceptance aid (IntakeTestActions.mm, removed with it): main
-// thread, the table the menu builds for `handles` (rows matched by income
-// path or, for Delete, through the library index), with the live context;
-// for the test aid's `rows` and `swap` steps.
-ActionTable actionsTableForHandles(metadb_handle_list_cref handles);
-
-// Main thread: the table for `roots` (records of a view the caller holds)
-// with the live context, exactly as the menu builds it.
-ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, const IntakeView *view);
-
-// Main thread: runs `entry` as a click on its menu item does. `skipDialog`
-// (the test aid) runs Reject without its confirmation, with `reason`.
-// Returns what happened, for a log line.
-std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std::string &reason);
-
-// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
-// how the picker flow runs for a test_actions step.
-struct PickerTestHooks {
-    enum class Mode {
-        Headless,   // no sheet: after `collections`, assign `collection` when
-                    // it is listed, through the same code as the sheet's OK
-        AutoClose,  // the real sheet, ended as Cancel after closeSeconds
-    };
-    Mode mode = Mode::Headless;
-    std::string collection;   // Headless
-    double closeSeconds = 0;  // AutoClose
-    // Main thread, each at most once and `report` first: `report` gets the
-    // step's one line (Headless: once the assign was started or skipped;
-    // AutoClose: when the sheet is up; both: when the flow ends early),
-    // `done` runs when the flow has ended. Neither runs after on_quit.
-    std::function<void(const std::string &line)> report;
-    std::function<void()> done;
-};
+// Main thread: runs `entry` as a click on its menu item does. Returns what
+// happened, for a log line.
+std::string actionsDispatch(const ActionEntry &entry);
 
 // Main thread: the "Assign to other collection…" flow for `entry` (see the
-// top of this file); `test` null runs it as a click does. Returns what
-// happened so far, for a log line.
-std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test);
+// top of this file). Returns what happened so far, for a log line.
+std::string actionsAssignOther(const ActionEntry &entry);
 
-// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
-// how Execute placement… and Resume placement run for a test_actions step.
-struct ExecuteTestHooks {
-    enum class Mode {
-        Headless,   // execute: no sheet; after the dry run, confirm at once
-        AutoClose,  // execute: the real sheet, ended as Cancel after closeSeconds
-    };
-    Mode mode = Mode::Headless;  // ignored by resume
-    double closeSeconds = 0;     // AutoClose
-    // Main thread, each at most once and `report` first: `report` gets the
-    // step's one line (Headless and resume: once the run was spawned or
-    // could not start, the dry run's summary first for Headless; AutoClose:
-    // when the sheet is up; all: when the flow ends early), `done` runs
-    // when the step may go on (spawned, sheet closed, or ended early).
-    // Neither runs after on_quit.
-    std::function<void(const std::string &line)> report;
-    std::function<void()> done;
-};
+// Main thread: Execute placement… for `entry` (see the top of this file).
+// Returns what happened so far.
+std::string actionsExecutePlacement(const ActionEntry &entry);
 
-// Main thread: Execute placement… for `entry` (see the top of this file);
-// `test` null runs it as a click does. Returns what happened so far.
-std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test);
-
-// Main thread: Resume placement for `entry`; `test` null runs it as a click
-// does. Returns what happened so far.
-std::string actionsResume(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test);
-
-// Temporary acceptance aid hooks (IntakeTestActions.mm, removed with it):
-// Swap and Delete local copy… for a test_actions step. Main thread, each at
-// most once and `report` first; neither runs after on_quit.
-struct SwapTestHooks {
-    std::function<void(const std::string &line)> report;  // the swap's console line, or why nothing ran
-    std::function<void()> done;
-};
-
-struct DeleteTestHooks {
-    enum class Mode {
-        Delete,          // no sheet: the confirmation answered "Delete"
-        SwapThenDelete,  // no sheet: answered "Swap, then delete"
-        AutoClose,       // the real sheet, ended as Cancel after closeSeconds
-    };
-    Mode mode = Mode::Delete;
-    double closeSeconds = 0;  // AutoClose
-    // `report` gets the step's line: what the confirmation lists and what
-    // followed (gc started, not run, the swap's line); AutoClose: when the
-    // sheet is up. `done` runs when the step may go on.
-    std::function<void(const std::string &line)> report;
-    std::function<void()> done;
-};
+// Main thread: Resume placement for `entry`. Returns what happened so far.
+std::string actionsResume(const ActionEntry &entry);
 
 // Main thread: Swap to library paths for `entry` on the rows of `handles`
-// (see the top of this file); `test` null runs it as a click does.
-std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles,
-                        std::shared_ptr<const SwapTestHooks> test);
+// (see the top of this file).
+std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles);
 
-// Main thread: Delete local copy… for `entry`; `test` null runs it as a
-// click does. Returns what happened so far.
-std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const DeleteTestHooks> test);
-
-// Main thread: the test aid's `runs` line: the tracked runs (command, pid,
-// state, ids) and the lane, e.g. "1 live: execute pid 4242 adopted
-// (itk_00000010); lane busy (execute)" or "none; lane free".
-std::string actionsRunsDescription();
+// Main thread: Delete local copy… for `entry`. Returns what happened so far.
+std::string actionsDeleteLocal(const ActionEntry &entry);
 
 // Main thread (on_init, after the service started): the leftover-run scan,
 // once per session (see the top of this file).
 void actionsStartRunScan();
-
-// Main thread: runs `fn` once the leftover-run scan is done (at once when
-// it is); never after on_quit.
-void actionsAfterRunScan(std::function<void()> fn);
 
 // Any thread: the per-root command errors (the loader's annotator).
 RootErrorStore &actionsErrorStore();
@@ -330,10 +244,5 @@ bool actionsLaneBusy();
 // Main thread (on_quit): later results are dropped; nothing is killed
 // (detached runs and their files stay for the next session).
 void actionsShutdown();
-
-// Temporary acceptance aid (IntakeTestActions.mm, docs/hidden-options.md):
-// main thread, after each successful load; runs foo_jl_intake.test_actions
-// once per session.
-void testActionsAfterLoad();
 
 } // namespace intake

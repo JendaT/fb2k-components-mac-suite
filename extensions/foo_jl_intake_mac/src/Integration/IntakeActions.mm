@@ -45,8 +45,6 @@
 @interface JLIntakeCollectionPicker : NSObject <NSComboBoxDelegate>
 @property(nonatomic, weak) NSComboBox *combo;
 @property(nonatomic, weak) NSButton *okButton;
-@property(nonatomic, weak) NSButton *cancelButton;
-@property(nonatomic) BOOL closed;  // the alert has ended
 - (instancetype)initWithNames:(const std::vector<std::string> &)names;
 - (BOOL)isListed:(NSString *)text;
 - (void)update;
@@ -123,12 +121,6 @@ struct PickerFlow;
 struct ExecuteFlow;
 struct DeleteFlow;
 
-// A test_actions step waiting for a detached run's spawn (B8).
-struct RunTestReport {
-    std::shared_ptr<const ExecuteTestHooks> hooks;
-    std::string prefix;  // the step's text so far (execute: the dry run's summary)
-};
-
 // Leaked on purpose (like the provider's state): a CLI completion may come
 // back after on_quit, and static destructors run at exit.
 struct ActionsState {
@@ -161,7 +153,6 @@ struct ActionsState {
     ExecuteTracker tracker;
     uint64_t runLaneToken = 0;
     std::unordered_map<std::string, std::shared_ptr<ProcessExitWatch>> exitWatches;  // adopted runs, by stem
-    std::unordered_map<std::string, RunTestReport> runReports;                        // by stem
     // B9: the Delete local copy… flow in progress (sidecars being read, the
     // sheet open, or its swap running), or null: at most one.
     std::shared_ptr<DeleteFlow> deleteFlow;
@@ -170,7 +161,6 @@ struct ActionsState {
     // starts before it is done.
     bool runScanStarted = false;
     bool runScanDone = false;
-    std::vector<std::function<void()>> afterRunScan;
 
     // Set once above, then read on the queue.
     dispatch_queue_t queue = nil;
@@ -188,7 +178,6 @@ struct ActionsState {
 struct PickerFlow {
     uint64_t serial = 0;
     ActionEntry entry;  // as the menu captured it
-    std::shared_ptr<const PickerTestHooks> test;
     // The sheet's window, chosen at the click (sheetHostWindow): the sheet
     // comes up to 10 s later, when the pointer may be elsewhere.
     __weak NSWindow *hostWindow = nil;
@@ -468,14 +457,6 @@ void confirmReject(const ActionEntry &entry) {
 
 // --- Assign to other collection… (B7, main unless noted) ---
 
-void pickerReport(const std::shared_ptr<const PickerTestHooks> &test, const std::string &line) {
-    if (test && test->report) test->report(line);
-}
-
-void pickerDone(const std::shared_ptr<const PickerTestHooks> &test) {
-    if (test && test->done) test->done();
-}
-
 // Ends the flow `flow` if it is still the current one. Its alert and helper
 // are released on a later main-queue turn, never inside the alert's own
 // completion handler. By value: callers pass st.picker itself, which the
@@ -495,44 +476,16 @@ void endPicker(std::shared_ptr<PickerFlow> flow) {
 void pickerFailed(std::shared_ptr<PickerFlow> flow, const std::string &cause) {
     logError("assign-other: no picker shown: " + cause);
     endPicker(flow);
-    pickerReport(flow->test, "no picker: " + cause + "; nothing assigned");
-    pickerDone(flow->test);
 }
 
-// The sheet's OK, and the test aid's headless choice: the lane and the
-// configuration again, then the assign on the captured roots.
+// The sheet's OK: the lane and the configuration again, then the assign on
+// the captured roots.
 std::string assignChosen(const ActionEntry &entry, const std::string &collection) {
     const std::string why = whyNotStartable();
     if (!why.empty()) return notRun(entry.action, why);
     ActionEntry chosen = entry;
     chosen.collection = collection;
     return runMutation(chosen, std::string());
-}
-
-std::string pickerSheetDescription(const PickerFlow &flow, NSComboBox *combo, NSButton *ok, bool sheet) {
-    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
-    line += std::to_string(static_cast<long>(combo.numberOfItems)) + " collection(s), preselected \"" +
-            StdStr(combo.stringValue) + "\", OK " + (ok.enabled ? "enabled" : "disabled");
-    if (flow.test && flow.test->mode == PickerTestHooks::Mode::AutoClose) {
-        char seconds[32];
-        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
-        line += std::string("; closing as Cancel in ") + seconds + " s";
-    }
-    return line;
-}
-
-// The test aid's AutoClose: Cancel after `seconds`. Common modes include
-// the modal panel mode, so this also fires while the app-modal fallback
-// runs.
-void scheduleAutoCancel(JLIntakeCollectionPicker *helper, double seconds) {
-    __weak JLIntakeCollectionPicker *weakHelper = helper;
-    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
-                                            repeats:NO
-                                              block:^(NSTimer *) {
-                                                  JLIntakeCollectionPicker *h = weakHelper;
-                                                  if (h != nil && !h.closed) [h.cancelButton performClick:nil];
-                                              }];
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
 }
 
 void showPicker(const std::shared_ptr<PickerFlow> &flow) {
@@ -548,7 +501,7 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
     }
     alert.informativeText = NSStr(info);
     NSButton *ok = [alert addButtonWithTitle:@"Assign"];
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
 
     NSMutableArray<NSString *> *items = [NSMutableArray arrayWithCapacity:flow->names.size()];
     for (const std::string &name : flow->names) [items addObject:NSStr(name)];
@@ -563,7 +516,6 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
     JLIntakeCollectionPicker *helper = [[JLIntakeCollectionPicker alloc] initWithNames:flow->names];
     helper.combo = combo;
     helper.okButton = ok;
-    helper.cancelButton = cancel;
     combo.delegate = helper;
     alert.accessoryView = combo;
     [alert layout];
@@ -574,8 +526,6 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
 
     std::shared_ptr<PickerFlow> current = flow;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        JLIntakeCollectionPicker *h = current->helper;
-        h.closed = YES;
         const std::string text = StdStr(combo.stringValue);
         endPicker(current);
         if (actionsState().stopped) return;  // quit started: drop it
@@ -589,20 +539,14 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
             // name to --collection.
             notRun(current->entry.action, "\"" + text + "\" is not a listed collection");
         }
-        pickerDone(current->test);
     };
 
-    const bool autoClose = flow->test && flow->test->mode == PickerTestHooks::Mode::AutoClose;
     // The window chosen at the click; if it can no longer take a sheet, the
     // main or key window as they are now.
     NSWindow *host = flow->hostWindow;
     if (!usableSheetHost(host)) host = activeSheetHost();
     if (host != nil) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
-        if (autoClose) {
-            pickerReport(flow->test, pickerSheetDescription(*flow, combo, ok, true));
-            scheduleAutoCancel(helper, flow->test->closeSeconds);
-        }
         return;
     }
     // App-modal, but not from here: this runs inside a main-queue block,
@@ -615,10 +559,6 @@ void showPicker(const std::shared_ptr<PickerFlow> &flow) {
         if (actionsState().stopped) {  // quit started meanwhile: no alert
             endPicker(current);
             return;
-        }
-        if (autoClose) {
-            pickerReport(current->test, pickerSheetDescription(*current, combo, ok, false));
-            scheduleAutoCancel(helper, current->test->closeSeconds);
         }
         finish([alert runModal]);
     });
@@ -673,17 +613,6 @@ void onCollections(uint64_t serial, CollectionsReply &reply) {
         pickerFailed(flow, parsed.skipped > 0 ? "the CLI lists no usable collection" : "the CLI lists no collections");
         return;
     }
-    if (flow->test && flow->test->mode == PickerTestHooks::Mode::Headless) {
-        const std::string &name = flow->test->collection;
-        const std::string *listed = listedCollectionFor(flow->names, name);
-        std::string line = "collections: " + std::to_string(flow->names.size()) + "; \"" + name + "\" " +
-                           (listed ? "listed" : "not listed");
-        endPicker(flow);
-        line += "; " + (listed ? assignChosen(flow->entry, *listed) : std::string("nothing assigned"));
-        pickerReport(flow->test, line);
-        pickerDone(flow->test);
-        return;
-    }
     showPicker(flow);
 }
 
@@ -729,23 +658,13 @@ void startCollectionsOnQueue(uint64_t serial, std::shared_ptr<const CliConfig> c
 struct ExecuteFlow {
     uint64_t serial = 0;
     ActionEntry entry;  // as the menu captured it
-    std::shared_ptr<const ExecuteTestHooks> test;
     // The sheet's window, chosen at the click (as for the picker).
     __weak NSWindow *hostWindow = nil;
     uint64_t laneToken = 0;  // the dry run's
     ExecutePlan plan;
     // While the sheet is up (released on a later main-queue turn).
     NSAlert *alert = nil;
-    bool closed = false;
 };
-
-void execReport(const std::shared_ptr<const ExecuteTestHooks> &test, const std::string &line) {
-    if (test && test->report) test->report(line);
-}
-
-void execDone(const std::shared_ptr<const ExecuteTestHooks> &test) {
-    if (test && test->done) test->done();
-}
 
 // Ends `flow` if it is still the current one; its alert is released on a
 // later main-queue turn. By value, as endPicker.
@@ -756,13 +675,6 @@ void endExecuteFlow(std::shared_ptr<ExecuteFlow> flow) {
     dispatch_async(dispatch_get_main_queue(), ^{
         flow->alert = nil;
     });
-}
-
-// Ends `flow` early with the test aid's line.
-void endExecuteFlowWith(std::shared_ptr<ExecuteFlow> flow, const std::string &line) {
-    endExecuteFlow(flow);
-    execReport(flow->test, line);
-    execDone(flow->test);
 }
 
 // The lane token every run holds together.
@@ -842,17 +754,6 @@ void deleteRunFilesLater(const std::string &stem) {
     });
 }
 
-RunTestReport takeRunReport(const std::string &stem) {
-    ActionsState &st = actionsState();
-    RunTestReport report;
-    auto it = st.runReports.find(stem);
-    if (it != st.runReports.end()) {
-        report = std::move(it->second);
-        st.runReports.erase(it);
-    }
-    return report;
-}
-
 // A tracked run has ended (own or adopted) with `envelope`: apply it,
 // forget the run, release the lane when it was the last, delete its files.
 void finishRun(const std::string &stem, const EnvelopeResult &envelope) {
@@ -862,16 +763,10 @@ void finishRun(const std::string &stem, const EnvelopeResult &envelope) {
     if (found == nullptr) return;
     const TrackedRun run = *found;
     st.exitWatches.erase(stem);
-    RunTestReport report = takeRunReport(stem);
-    const std::string line = applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope);
+    applyRunResult(run.command, runRoots(run.ids, run.rootPaths), envelope);
     st.tracker.remove(stem);
     releaseRunLaneIfIdle();
     deleteRunFilesLater(stem);
-    if (report.hooks) {
-        // Never spawned (a configuration that cannot run, a spawn failure).
-        execReport(report.hooks, report.prefix + "not started: " + line);
-        execDone(report.hooks);
-    }
 }
 
 void onRunSpawned(const std::string &stem, pid_t pid, bool startKnown, const ProcessStartTime &start,
@@ -893,11 +788,6 @@ void onRunSpawned(const std::string &stem, pid_t pid, bool startKnown, const Pro
     }
     logInfo(name + ": started for " + rootCountText(run->ids.size()) + ": " + idList(run->ids) + " (pid " +
             std::to_string(pid) + ", " + where + ")");
-    RunTestReport report = takeRunReport(stem);
-    if (report.hooks) {
-        execReport(report.hooks, report.prefix + "started: pid " + std::to_string(pid) + ", " + where);
-        execDone(report.hooks);
-    }
 }
 
 void onOwnRunEnded(const std::string &stem, const CliResult &result) {
@@ -914,14 +804,9 @@ void onRunRefused(const std::string &stem, const std::string &refusal) {
     const std::string name = run != nullptr ? cliCommandName(run->command) : "execute";
     st.tracker.remove(stem);
     releaseRunLaneIfIdle();
-    RunTestReport report = takeRunReport(stem);
     if (st.stopped) return;
     // A caller bug, not a root's error: no tooltip (as onRefused).
     logError(name + ": not started (" + refusal + ")");
-    if (report.hooks) {
-        execReport(report.hooks, report.prefix + "not started: " + refusal);
-        execDone(report.hooks);
-    }
 }
 
 // Queue: writes the provisional run file (no pid yet), builds and spawns the
@@ -990,17 +875,13 @@ void startRunOnQueue(const std::string &stem, std::shared_ptr<const CliConfig> c
 }
 
 // Starts `command` (Execute or Resume) on `roots` as a detached run: the
-// lane and the configuration first. `hooks` (the test aid) get the spawn
-// line, after `prefix`.
-std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &roots,
-                             std::shared_ptr<const ExecuteTestHooks> hooks, const std::string &prefix) {
+// lane and the configuration first.
+std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &roots) {
     ActionsState &st = actionsState();
     const IntakeAction action = command == CliCommand::Resume ? IntakeAction::Resume : IntakeAction::Execute;
     auto refuse = [&](const std::string &why) {
         const std::string what = notRun(action, why);
         logDebug(std::string(cliCommandName(command)) + ": " + what);
-        execReport(hooks, prefix + what);
-        execDone(hooks);
         return what;
     };
     if (st.stopped) return refuse("intake is not running");
@@ -1020,7 +901,6 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     if (!holdRunLane()) return refuse("another intake command is still running");
     const std::string stem = uniqueRunStem(st.outputDirectory, std::chrono::system_clock::now());
     st.tracker.begin(stem, command, request->ids, *rootPaths);
-    if (hooks) st.runReports[stem] = RunTestReport{hooks, prefix};
     logInfo(std::string(cliCommandName(command)) + ": starting for " + rootCountText(request->ids.size()) + ": " +
             idList(request->ids));
     std::shared_ptr<const CliConfig> sharedConfig = config;
@@ -1032,57 +912,25 @@ std::string startDetachedRun(CliCommand command, const std::vector<ActionRoot> &
     return "starting for " + rootCountText(request->ids.size());
 }
 
-// The sheet's Execute, and the test aid's headless confirmation. The lane
-// was free while the sheet was up, so roots that changed meanwhile (no
-// longer approved, another target) are left out first, one Error line each
-// (IntakeExecutePlan recheckPlaceable); then the lane and the configuration
-// again (startDetachedRun).
-void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow, std::shared_ptr<const ExecuteTestHooks> hooks,
-                    const std::string &prefix) {
+// The sheet's Execute. The lane was free while the sheet was up, so roots
+// that changed meanwhile (no longer approved, another target) are left out
+// first, one Error line each (IntakeExecutePlan recheckPlaceable); then the
+// lane and the configuration again (startDetachedRun).
+void confirmExecute(const std::shared_ptr<ExecuteFlow> &flow) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     const ExecuteRecheck recheck =
         recheckPlaceable(flow->plan, [&view](const std::string &id) -> const IntakeRecord * {
             return view ? view->snapshot().recordForId(id) : nullptr;
         });
-    std::string pre = prefix;
     for (const auto &dropped : recheck.dropped) {
         logError("execute: " + dropped.first + " left out: " + dropped.second);
-        pre += dropped.first + " left out: " + dropped.second + "; ";
     }
     if (recheck.keep.empty()) {
         const std::string what = notRun(IntakeAction::Execute, "every root changed while the sheet was open");
-        execReport(hooks, pre + what);
-        execDone(hooks);
         logDebug("execute: " + what);
         return;
     }
-    startDetachedRun(CliCommand::Execute, recheck.keep, hooks, pre);  // logs its start or refusal
-}
-
-std::string executeSheetDescription(const ExecuteFlow &flow, bool sheet) {
-    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
-    line += "\"" + executeSheetTitle(flow.plan) + "\"; " + executeSheetSummary(flow.plan) +
-            "; buttons Execute, Cancel";
-    if (flow.test && flow.test->mode == ExecuteTestHooks::Mode::AutoClose) {
-        char seconds[32];
-        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
-        line += std::string("; closing as Cancel in ") + seconds + " s";
-    }
-    return line;
-}
-
-// The test aid's AutoClose: Cancel after `seconds` (common modes include
-// the modal panel mode, so this also fires while the app-modal fallback
-// runs).
-void scheduleExecuteCancel(std::shared_ptr<ExecuteFlow> flow, NSButton *cancel, double seconds) {
-    __weak NSButton *weakCancel = cancel;
-    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
-                                            repeats:NO
-                                              block:^(NSTimer *) {
-                                                  NSButton *button = weakCancel;
-                                                  if (button != nil && !flow->closed) [button performClick:nil];
-                                              }];
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    startDetachedRun(CliCommand::Execute, recheck.keep);  // logs its start or refusal
 }
 
 void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
@@ -1091,22 +939,19 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
     alert.messageText = NSStr(executeSheetTitle(flow->plan));
     alert.informativeText = NSStr(executeSheetText(flow->plan));
     [alert addButtonWithTitle:@"Execute"];
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
     flow->alert = alert;
 
     std::shared_ptr<ExecuteFlow> current = flow;
-    const bool autoClose = flow->test && flow->test->mode == ExecuteTestHooks::Mode::AutoClose;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        current->closed = true;
         endExecuteFlow(current);
         if (actionsState().stopped) return;  // quit started: drop it
         if (response != NSAlertFirstButtonReturn) {
             logDebug("execute: cancelled in the sheet");
         } else {
             // The lane and the configuration again (startDetachedRun).
-            confirmExecute(current, nullptr, std::string());
+            confirmExecute(current);
         }
-        execDone(current->test);
     };
     // The window chosen at the click; if it can no longer take a sheet, the
     // main or key window as they are now.
@@ -1114,10 +959,6 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
     if (!usableSheetHost(host)) host = activeSheetHost();
     if (host != nil) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
-        if (autoClose) {
-            execReport(flow->test, executeSheetDescription(*flow, true));
-            scheduleExecuteCancel(flow, cancel, flow->test->closeSeconds);
-        }
         return;
     }
     // App-modal from a run-loop callout, never inside this main-queue block
@@ -1126,10 +967,6 @@ void showExecuteSheet(const std::shared_ptr<ExecuteFlow> &flow) {
         if (actionsState().stopped) {
             endExecuteFlow(current);
             return;
-        }
-        if (autoClose) {
-            execReport(current->test, executeSheetDescription(*current, false));
-            scheduleExecuteCancel(current, cancel, current->test->closeSeconds);
         }
         finish([alert runModal]);
     });
@@ -1149,11 +986,6 @@ void onExecuteDryRunBudget(uint64_t serial, uint64_t token, const std::vector<Mu
     std::shared_ptr<ExecuteFlow> flow = st.executeFlow;
     flow->plan = planUnchecked(flow->entry.roots);
     logDebug(std::string(kExecuteDryRunName) + ": " + executeSheetSummary(flow->plan));
-    if (flow->test && flow->test->mode == ExecuteTestHooks::Mode::Headless) {
-        endExecuteFlow(flow);
-        confirmExecute(flow, flow->test, "dry run: " + executeSheetSummary(flow->plan) + "; confirmed; ");
-        return;
-    }
     showExecuteSheet(flow);
 }
 
@@ -1189,16 +1021,10 @@ void onExecuteDryRun(uint64_t serial, uint64_t token, const CliResult &result) {
         if (!reported) {
             logError(std::string(kExecuteDryRunName) + ": no root can be placed (the dry run listed none of them)");
         }
-        endExecuteFlowWith(flow, "dry run: " + executeSheetSummary(plan) + "; no sheet, nothing executed");
+        endExecuteFlow(flow);
         return;
     }
     logDebug(std::string(kExecuteDryRunName) + ": " + executeSheetSummary(plan));
-    if (flow->test && flow->test->mode == ExecuteTestHooks::Mode::Headless) {
-        // The test aid: what the sheet would list, then Execute.
-        endExecuteFlow(flow);
-        confirmExecute(flow, flow->test, "dry run: " + executeSheetSummary(plan) + "; confirmed; ");
-        return;
-    }
     showExecuteSheet(flow);
 }
 
@@ -1229,7 +1055,7 @@ void startExecuteDryRunOnQueue(uint64_t serial, uint64_t token, std::shared_ptr<
             onRefused(token, CliCommand::Execute, refusal);
             ActionsState &main = actionsState();
             if (!main.stopped && main.executeFlow && main.executeFlow->serial == serial) {
-                endExecuteFlowWith(main.executeFlow, "not started: " + refusal);
+                endExecuteFlow(main.executeFlow);
             }
         });
     }
@@ -1305,7 +1131,6 @@ GcIncomeRows countIncomeRows(const IntakeView &view, const std::unordered_set<st
 struct DeleteFlow {
     uint64_t serial = 0;
     ActionEntry entry;  // its roots: gcEligibleRoots of the menu's
-    std::shared_ptr<const DeleteTestHooks> test;
     // The sheet's window, chosen at the click (as for the picker).
     __weak NSWindow *hostWindow = nil;
     // The playlist the click came from (the active one then): counted first
@@ -1317,16 +1142,7 @@ struct DeleteFlow {
     GcIncomeRows income;
     // While the sheet is up (released on a later main-queue turn).
     NSAlert *alert = nil;
-    bool closed = false;
 };
-
-void deleteReport(const std::shared_ptr<const DeleteTestHooks> &test, const std::string &line) {
-    if (test && test->report) test->report(line);
-}
-
-void deleteDone(const std::shared_ptr<const DeleteTestHooks> &test) {
-    if (test && test->done) test->done();
-}
 
 // Ends `flow` if it is still the current one; its alert is released on a
 // later main-queue turn. By value, as endPicker.
@@ -1339,56 +1155,50 @@ void endDeleteFlow(std::shared_ptr<DeleteFlow> flow) {
     });
 }
 
-void endDeleteFlowWith(std::shared_ptr<DeleteFlow> flow, const std::string &line) {
-    endDeleteFlow(flow);
-    deleteReport(flow->test, line);
-    deleteDone(flow->test);
-}
-
-// Delete confirmed (or the test aid's answer): the captured roots against
-// the current snapshot (IntakeGcPlan recheckGcRoots, one Error line per
-// root dropped), then the lane and the configuration, then gc.
-void deleteConfirmed(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
+// Delete confirmed: the captured roots against the current snapshot
+// (IntakeGcPlan recheckGcRoots, one Error line per root dropped), then the
+// lane and the configuration, then gc.
+void deleteConfirmed(std::shared_ptr<DeleteFlow> flow) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     // An inert view keeps the last snapshot: nothing goes to a CLI the
     // version gate (or a failed load) has set aside.
     if (view && view->isInert()) {
-        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "intake is inert: " + view->inertReason()));
+        notRun(IntakeAction::DeleteLocal, "intake is inert: " + view->inertReason());
+        endDeleteFlow(flow);
         return;
     }
     const GcRecheck recheck = recheckGcRoots(flow->entry.roots, [&view](const std::string &id) -> const IntakeRecord * {
         return view ? view->snapshot().recordForId(id) : nullptr;
     });
-    std::string pre = prefix;
     for (const auto &dropped : recheck.dropped) {
         logError("delete-local: " + dropped.first + " left out: " + dropped.second);
-        pre += dropped.first + " left out: " + dropped.second + "; ";
     }
     if (recheck.keep.empty()) {
-        endDeleteFlowWith(flow, pre + notRun(IntakeAction::DeleteLocal,
-                                             "every root changed while the confirmation was open"));
+        notRun(IntakeAction::DeleteLocal, "every root changed while the confirmation was open");
+        endDeleteFlow(flow);
         return;
     }
     const std::string why = whyNotStartable();
     if (!why.empty()) {
-        endDeleteFlowWith(flow, pre + notRun(IntakeAction::DeleteLocal, why));
+        notRun(IntakeAction::DeleteLocal, why);
+        endDeleteFlow(flow);
         return;
     }
     ActionEntry kept = flow->entry;
     kept.roots = recheck.keep;
     const std::string what = runMutation(kept, std::string());
     logDebug("delete-local: " + what);
-    endDeleteFlowWith(flow, pre + "gc: " + what);
+    endDeleteFlow(flow);
 }
 
 // "Swap, then delete", the end: gc only when no entry of any playlist still
 // points at an income path of these roots and none was left unchecked
 // (deleting files that rows still point at would leave dead entries).
-void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
+void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow) {
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     if (!view) {
-        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "no intake data to check the playlists; "
-                                                                           "nothing deleted"));
+        notRun(IntakeAction::DeleteLocal, "no intake data to check the playlists; nothing deleted");
+        endDeleteFlow(flow);
         return;
     }
     const GcIncomeRows left = countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, nullptr);
@@ -1402,17 +1212,18 @@ void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow, const std::string &p
             why += (why.empty() ? "" : "; ") + std::to_string(left.unchecked) +
                    " playlist row(s) on a slow volume could not be checked";
         }
-        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, why + "; nothing deleted"));
+        notRun(IntakeAction::DeleteLocal, why + "; nothing deleted");
+        endDeleteFlow(flow);
         return;
     }
-    deleteConfirmed(flow, prefix);
+    deleteConfirmed(flow);
 }
 
 // "Swap, then delete", one step: swaps the income rows of the next playlist
 // in `pending` (found again; gone or without such rows: skipped), then the
 // next; at the end, deleteAfterSwapCheck.
 void deleteSwapNext(std::shared_ptr<DeleteFlow> flow, std::shared_ptr<std::vector<PlaylistRef>> pending,
-                    size_t next, const std::string &prefix) {
+                    size_t next) {
     if (actionsState().stopped) return;
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     const std::unordered_set<std::string> ids = rootIdSet(flow->entry.roots);
@@ -1425,27 +1236,28 @@ void deleteSwapNext(std::shared_ptr<DeleteFlow> flow, std::shared_ptr<std::vecto
         std::string why;
         const bool started = swapStart(
             playlist, std::move(rows), view, serviceActionInfo().libraryPrefix,
-            [flow, pending, next, prefix](const SwapResult &result) {
+            [flow, pending, next](const SwapResult &) {
                 if (actionsState().stopped) return;
-                deleteSwapNext(flow, pending, next, prefix + result.line + "; ");
+                deleteSwapNext(flow, pending, next);
             },
             why);
         if (!started) {
-            endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why));
+            notRun(IntakeAction::DeleteLocal, "the swap did not start: " + why);
+            endDeleteFlow(flow);
         }
         return;
     }
-    deleteAfterSwapCheck(flow, prefix);
+    deleteAfterSwapCheck(flow);
 }
 
 // "Swap, then delete": the rows of these roots that still point at income
 // paths are swapped, in the playlist the click came from first, then in
 // every other playlist that holds such rows (a locked one keeps them); gc
 // runs only when none is left anywhere afterwards and none was unchecked.
-void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow, const std::string &prefix) {
+void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow) {
     if (!flow->income.offerSwap()) {
-        endDeleteFlowWith(flow, prefix + notRun(IntakeAction::DeleteLocal,
-                                                "\"Swap, then delete\" was not offered; nothing deleted"));
+        notRun(IntakeAction::DeleteLocal, "\"Swap, then delete\" was not offered; nothing deleted");
+        endDeleteFlow(flow);
         return;
     }
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
@@ -1455,31 +1267,7 @@ void deleteAfterSwap(std::shared_ptr<DeleteFlow> flow, const std::string &prefix
         countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, nullptr, &census);
         *pending = std::move(census.playlists);
     }
-    deleteSwapNext(flow, pending, 0, pending->empty() ? prefix + "no income row to swap; " : prefix);
-}
-
-std::string deleteSheetDescription(const DeleteFlow &flow, bool sheet) {
-    std::string line = sheet ? "sheet shown: " : "shown app-modal (no window could take a sheet): ";
-    line += "\"" + gcConfirmTitle(flow.entry.roots.size()) + "\"; " + gcConfirmSummary(flow.confirm, flow.income) +
-            "; buttons Delete, Cancel" + (flow.income.offerSwap() ? ", Swap, then delete" : "");
-    if (flow.test && flow.test->mode == DeleteTestHooks::Mode::AutoClose) {
-        char seconds[32];
-        snprintf(seconds, sizeof seconds, "%g", flow.test->closeSeconds);
-        line += std::string("; closing as Cancel in ") + seconds + " s";
-    }
-    return line;
-}
-
-// The test aid's AutoClose (as scheduleExecuteCancel).
-void scheduleDeleteCancel(std::shared_ptr<DeleteFlow> flow, NSButton *cancel, double seconds) {
-    __weak NSButton *weakCancel = cancel;
-    NSTimer *timer = [NSTimer timerWithTimeInterval:seconds
-                                            repeats:NO
-                                              block:^(NSTimer *) {
-                                                  NSButton *button = weakCancel;
-                                                  if (button != nil && !flow->closed) [button performClick:nil];
-                                              }];
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    deleteSwapNext(flow, pending, 0);
 }
 
 void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
@@ -1489,26 +1277,23 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     alert.informativeText = NSStr(gcConfirmText(flow->confirm, flow->income));
     NSButton *deleteButton = [alert addButtonWithTitle:@"Delete"];
     if ([deleteButton respondsToSelector:@selector(setHasDestructiveAction:)]) deleteButton.hasDestructiveAction = YES;
-    NSButton *cancel = [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
+    [alert addButtonWithTitle:@"Cancel"];  // Escape (NSAlert's Cancel rule)
     if (flow->income.offerSwap()) [alert addButtonWithTitle:@"Swap, then delete"];
     flow->alert = alert;
 
     std::shared_ptr<DeleteFlow> current = flow;
-    const bool autoClose = flow->test && flow->test->mode == DeleteTestHooks::Mode::AutoClose;
     void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
-        current->closed = true;
         if (actionsState().stopped) {  // quit started: drop it
             endDeleteFlow(current);
             return;
         }
         if (response == NSAlertFirstButtonReturn) {
-            deleteConfirmed(current, std::string());
+            deleteConfirmed(current);
         } else if (response == NSAlertThirdButtonReturn && current->income.offerSwap()) {
-            deleteAfterSwap(current, std::string());
+            deleteAfterSwap(current);
         } else {
             logDebug("delete-local: cancelled in the confirmation");
             endDeleteFlow(current);
-            deleteDone(current->test);
         }
     };
     // The window chosen at the click; if it can no longer take a sheet, the
@@ -1517,10 +1302,6 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
     if (!usableSheetHost(host)) host = activeSheetHost();
     if (host != nil) {
         [alert beginSheetModalForWindow:host completionHandler:finish];
-        if (autoClose) {
-            deleteReport(flow->test, deleteSheetDescription(*flow, true));
-            scheduleDeleteCancel(flow, cancel, flow->test->closeSeconds);
-        }
         return;
     }
     // App-modal from a run-loop callout, never inside this main-queue block
@@ -1529,10 +1310,6 @@ void showDeleteSheet(const std::shared_ptr<DeleteFlow> &flow) {
         if (actionsState().stopped) {
             endDeleteFlow(current);
             return;
-        }
-        if (autoClose) {
-            deleteReport(current->test, deleteSheetDescription(*current, false));
-            scheduleDeleteCancel(current, cancel, current->test->closeSeconds);
         }
         finish([alert runModal]);
     });
@@ -1564,15 +1341,6 @@ void onDeleteFilesRead(uint64_t serial, std::vector<PlacedFilesReply> &replies) 
     flow->income = view ? countIncomeRows(*view, rootIdSet(flow->entry.roots), flow->playlist, &flow->files)
                         : GcIncomeRows();
     logDebug("delete-local: confirmation: " + gcConfirmSummary(flow->confirm, flow->income));
-    if (flow->test && flow->test->mode != DeleteTestHooks::Mode::AutoClose) {
-        const std::string prefix = "confirmation: " + gcConfirmSummary(flow->confirm, flow->income) + "; ";
-        if (flow->test->mode == DeleteTestHooks::Mode::Delete) {
-            deleteConfirmed(flow, prefix + "answered Delete; ");
-        } else {
-            deleteAfterSwap(flow, prefix + "answered Swap, then delete; ");
-        }
-        return;
-    }
     showDeleteSheet(flow);
 }
 
@@ -1646,38 +1414,29 @@ void onRunScan(const std::shared_ptr<RunScanResult> &result) {
         deleteRunFilesLater(run.stem);
     }
     st.runScanDone = true;
-    std::vector<std::function<void()>> waiting = std::move(st.afterRunScan);
-    st.afterRunScan.clear();
-    for (std::function<void()> &fn : waiting) fn();
 }
 
 } // anonymous namespace
 
-std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const PickerTestHooks> test) {
+std::string actionsAssignOther(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
-    auto endNow = [&test](const std::string &what) {
-        pickerReport(test, what);
-        pickerDone(test);
-        return what;
-    };
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     if (st.picker) {
         logInfo("assign-other: the collection picker is already open or loading; this request is ignored");
-        return endNow("ignored: the collection picker is already open or loading");
+        return "ignored: the collection picker is already open or loading";
     }
     // No collections call (and no sheet) for an assign that could not start.
     const std::string why = whyNotStartable();
-    if (!why.empty()) return endNow(notRun(entry.action, why));
+    if (!why.empty()) return notRun(entry.action, why);
     CliConfig config;
     if (!serviceMutationConfig(config)) {
-        return endNow(notRun(entry.action, "intake is not running or has no CLI path"));
+        return notRun(entry.action, "intake is not running or has no CLI path");
     }
     auto flow = std::make_shared<PickerFlow>();
     flow->serial = ++st.pickerSerial;
     flow->entry = entry;
-    flow->test = std::move(test);
     flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
     st.picker = flow;
     logDebug("assign-other: loading the collections for " + rootCountText(entry.roots.size()));
@@ -1689,37 +1448,31 @@ std::string actionsAssignOther(const ActionEntry &entry, std::shared_ptr<const P
     return "loading the collections";
 }
 
-std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test) {
+std::string actionsExecutePlacement(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
-    auto endNow = [&test](const std::string &what) {
-        execReport(test, what);
-        execDone(test);
-        return what;
-    };
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     if (st.executeFlow) {
         logInfo("execute: the execute sheet is already open or its dry run is running; this request is ignored");
-        return endNow("ignored: the execute sheet is already open or its dry run is running");
+        return "ignored: the execute sheet is already open or its dry run is running";
     }
     // No dry run (and no sheet) for a run that could not start.
     const std::string why = whyNotStartable();
-    if (!why.empty()) return endNow(notRun(entry.action, why));
+    if (!why.empty()) return notRun(entry.action, why);
     CliRequest request;
     std::string refusal;
-    if (!requestForEntry(entry, std::string(), request, &refusal)) return endNow(notRun(entry.action, refusal));
+    if (!requestForEntry(entry, std::string(), request, &refusal)) return notRun(entry.action, refusal);
     request.dryRun = true;
     CliConfig config;
     if (!serviceMutationConfig(config)) {
-        return endNow(notRun(entry.action, "intake is not running or has no CLI path"));
+        return notRun(entry.action, "intake is not running or has no CLI path");
     }
     const uint64_t token = st.lane.acquire(laneHolderFor(request));
-    if (token == 0) return endNow(notRun(entry.action, "another intake command is still running"));
+    if (token == 0) return notRun(entry.action, "another intake command is still running");
     auto flow = std::make_shared<ExecuteFlow>();
     flow->serial = ++st.executeSerial;
     flow->entry = entry;
-    flow->test = std::move(test);
     flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
     flow->laneToken = token;
     st.executeFlow = flow;
@@ -1737,31 +1490,23 @@ std::string actionsExecutePlacement(const ActionEntry &entry, std::shared_ptr<co
     return "checking " + rootCountText(request.ids.size()) + " with a dry run";
 }
 
-std::string actionsResume(const ActionEntry &entry, std::shared_ptr<const ExecuteTestHooks> test) {
+std::string actionsResume(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
     if (!entry.enabled || entry.roots.empty()) {
         const std::string what = !entry.enabled ? "not run: the item is disabled" : "not run: no qualifying root";
-        execReport(test, what);
-        execDone(test);
         return what;
     }
-    return startDetachedRun(CliCommand::Resume, entry.roots, std::move(test), std::string());
+    return startDetachedRun(CliCommand::Resume, entry.roots);
 }
 
-std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles,
-                        std::shared_ptr<const SwapTestHooks> test) {
+std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handles) {
     ActionsState &st = actionsState();
-    auto endNow = [&test](const std::string &what) {
-        if (test && test->report) test->report(what);
-        if (test && test->done) test->done();
-        return what;
-    };
-    if (st.stopped) return endNow("not run: intake is not running");
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.stopped) return "not run: intake is not running";
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    if (!view) return endNow(notRun(entry.action, "no intake data yet"));
+    if (!view) return notRun(entry.action, "no intake data yet");
     // The host frees `handles` when this returns: the rows are copied now.
     NativePathMenuBudget budget;
     size_t unchecked = 0;
@@ -1771,55 +1516,40 @@ std::string actionsSwap(const ActionEntry &entry, metadb_handle_list_cref handle
                 " selected row(s) on a slow volume could not be checked and are left as they are");
     }
     if (rows.empty()) {
-        return endNow(notRun(entry.action, "none of the selected rows points at an income path of these roots"));
+        return notRun(entry.action, "none of the selected rows points at an income path of these roots");
     }
     std::string why;
     const size_t count = rows.size();
     const bool started = swapStart(
         activePlaylist(), std::move(rows), view, serviceActionInfo().libraryPrefix,
-        [test](const SwapResult &result) {
-            if (test && test->report) test->report(result.line);
-            if (test && test->done) test->done();
-        },
+        [](const SwapResult &) {},
         why);
-    if (!started) return endNow(notRun(entry.action, why));
+    if (!started) return notRun(entry.action, why);
     return "swapping " + std::to_string(count) + " row(s)";
 }
 
-std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const DeleteTestHooks> test) {
+std::string actionsDeleteLocal(const ActionEntry &entry) {
     ActionsState &st = actionsState();
-    auto endNow = [&test](const std::string &what) {
-        deleteReport(test, what);
-        deleteDone(test);
-        return what;
-    };
-    if (st.stopped) return endNow("not run: intake is not running");
-    if (!entry.enabled) return endNow("not run: the item is disabled");
-    if (entry.roots.empty()) return endNow("not run: no qualifying root");
+    if (st.stopped) return "not run: intake is not running";
+    if (!entry.enabled) return "not run: the item is disabled";
+    if (entry.roots.empty()) return "not run: no qualifying root";
     // The permanent guard first: placed, verified roots only
     // (requestForEntry applies it again to whatever finally runs).
     ActionEntry eligible = entry;
     eligible.roots = gcEligibleRoots(entry.roots);
-    if (eligible.roots.empty()) return endNow(notRun(entry.action, "no placed root with placed.verified"));
+    if (eligible.roots.empty()) return notRun(entry.action, "no placed root with placed.verified");
     if (st.deleteFlow) {
         logInfo("delete-local: the confirmation is already open or being prepared; this request is ignored");
-        return endNow("ignored: the delete confirmation is already open or being prepared");
+        return "ignored: the delete confirmation is already open or being prepared";
     }
     // No confirmation for a call that could not start anyway.
     const std::string why = whyNotStartable();
-    if (!why.empty()) return endNow(notRun(entry.action, why));
+    if (!why.empty()) return notRun(entry.action, why);
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
-    if (view && view->isInert()) return endNow(notRun(entry.action, "intake is inert: " + view->inertReason()));
+    if (view && view->isInert()) return notRun(entry.action, "intake is inert: " + view->inertReason());
     if (!serviceActionInfo().confirmGc) {
-        if (test && test->mode == DeleteTestHooks::Mode::AutoClose) {
-            return endNow("no confirmation: confirm_gc is 0; nothing deleted");
-        }
-        if (test && test->mode == DeleteTestHooks::Mode::SwapThenDelete) {
-            // "Swap, then delete" exists only in the confirmation.
-            return endNow("no confirmation: confirm_gc is 0, so \"Swap, then delete\" is not offered; nothing deleted");
-        }
         const std::string what = runMutation(eligible, std::string());
-        return endNow("no confirmation (confirm_gc 0); gc: " + what);
+        return "no confirmation (confirm_gc 0); gc: " + what;
     }
     std::vector<IntakeRecord> records;
     for (const ActionRoot &r : eligible.roots) {
@@ -1830,7 +1560,6 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
     auto flow = std::make_shared<DeleteFlow>();
     flow->serial = ++st.deleteSerial;
     flow->entry = eligible;
-    flow->test = std::move(test);
     flow->hostWindow = sheetHostWindow();  // now, while the pointer is where the menu was
     flow->playlist = playlistRefFor(activePlaylist());
     st.deleteFlow = flow;
@@ -1847,20 +1576,12 @@ std::string actionsDeleteLocal(const ActionEntry &entry, std::shared_ptr<const D
                        std::shared_ptr<DeleteFlow> late = weakFlow.lock();
                        ActionsState &now = actionsState();
                        if (!late || now.stopped || now.deleteFlow != late || late->filesRead) return;
-                       endDeleteFlowWith(late, notRun(IntakeAction::DeleteLocal,
-                                                      "the sidecars could not be read within 10 s (the share is "
-                                                      "not answering); no confirmation, nothing deleted"));
+                       notRun(IntakeAction::DeleteLocal,
+                              "the sidecars could not be read within 10 s (the share is "
+                              "not answering); no confirmation, nothing deleted");
+                       endDeleteFlow(late);
                    });
     return "reading the file lists of " + rootCountText(eligible.roots.size());
-}
-
-std::string actionsRunsDescription() {
-    ActionsState &st = actionsState();
-    std::string lane = st.lane.busy() ? std::string("busy (") + laneHolderName(st.lane.holder()) + ")" : "free";
-    if (!st.runScanDone) return "the check for leftover runs has not finished; lane " + lane;
-    std::string runs = st.tracker.empty() ? std::string("none")
-                                          : std::to_string(st.tracker.size()) + " live: " + st.tracker.describe();
-    return runs + "; lane " + lane;
 }
 
 void actionsStartRunScan() {
@@ -1884,17 +1605,6 @@ void actionsStartRunScan() {
     });
 }
 
-void actionsAfterRunScan(std::function<void()> fn) {
-    if (!fn) return;
-    ActionsState &st = actionsState();
-    if (st.stopped) return;
-    if (st.runScanDone) {
-        fn();
-        return;
-    }
-    st.afterRunScan.push_back(std::move(fn));
-}
-
 RootErrorStore &actionsErrorStore() {
     static RootErrorStore *store = new RootErrorStore();  // leaked: read by the loader queue
     return *store;
@@ -1902,10 +1612,6 @@ RootErrorStore &actionsErrorStore() {
 
 bool actionsLaneBusy() {
     return actionsState().lane.busy();
-}
-
-ActionTable actionsTableFor(const std::vector<const IntakeRecord *> &roots, const IntakeView *view) {
-    return buildActionTable(roots, liveContext(view), menuActions());
 }
 
 // The menu's table for `sel` (main thread): each row by its income path,
@@ -1948,11 +1654,6 @@ static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t *rootCount) 
     return buildActionTable(roots, context, menuActions(), libraryRoots);
 }
 
-ActionTable actionsTableForHandles(metadb_handle_list_cref handles) {
-    if (actionsState().stopped) return ActionTable();
-    return menuTableFor(handles, nullptr);
-}
-
 void actionsBuildMenu(metadb_handle_list_cref sel, pfc::list_t<jl_context_action> &out) {
     out.remove_all();
     ActionsState &st = actionsState();
@@ -1989,12 +1690,11 @@ void actionsExecute(uint32_t actionId, metadb_handle_list_cref sel) {
     const ActionEntry entry = st.menuTable.entries[index];
     // Swap is the one action that works on rows: they are copied now (the
     // host frees `sel` when this returns).
-    const std::string what = entry.action == IntakeAction::Swap ? actionsSwap(entry, sel, nullptr)
-                                                                : actionsDispatch(entry, false, std::string());
+    const std::string what = entry.action == IntakeAction::Swap ? actionsSwap(entry, sel) : actionsDispatch(entry);
     logDebug("menu: " + entry.title + ": " + what);
 }
 
-std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std::string &reason) {
+std::string actionsDispatch(const ActionEntry &entry) {
     ActionsState &st = actionsState();
     if (st.stopped) return "not run: intake is not running";
     if (entry.action == IntakeAction::Refresh) {
@@ -2005,20 +1705,20 @@ std::string actionsDispatch(const ActionEntry &entry, bool skipDialog, const std
     if (!entry.enabled) return "not run: the item is disabled";
     if (entry.roots.empty()) return "not run: no qualifying root";
     if (entry.action == IntakeAction::Reject) {
-        if (!skipDialog && serviceActionInfo().confirmReject) {
+        if (serviceActionInfo().confirmReject) {
             // No confirmation for a call that could not start anyway.
             const std::string why = whyNotStartable();
             if (!why.empty()) return notRun(entry.action, why);
             confirmReject(entry);
             return "asking for confirmation";
         }
-        // confirm_reject 0: no dialog, no reason; the test aid passes one.
-        return runMutation(entry, skipDialog ? reason : std::string());
+        // confirm_reject 0: no dialog, no reason.
+        return runMutation(entry, std::string());
     }
-    if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry, nullptr);
-    if (entry.action == IntakeAction::Execute) return actionsExecutePlacement(entry, nullptr);
-    if (entry.action == IntakeAction::Resume) return actionsResume(entry, nullptr);
-    if (entry.action == IntakeAction::DeleteLocal) return actionsDeleteLocal(entry, nullptr);
+    if (entry.action == IntakeAction::AssignOther) return actionsAssignOther(entry);
+    if (entry.action == IntakeAction::Execute) return actionsExecutePlacement(entry);
+    if (entry.action == IntakeAction::Resume) return actionsResume(entry);
+    if (entry.action == IntakeAction::DeleteLocal) return actionsDeleteLocal(entry);
     if (entry.action == IntakeAction::Swap) return "not run: Swap needs the selected rows (actionsSwap)";
     // Propose, Approve, Assign to X (its collection is in the entry).
     return runMutation(entry, std::string());
@@ -2037,7 +1737,6 @@ void actionsShutdown() {
     // adopts or finishes them); only the watching stops.
     for (auto &watch : st.exitWatches) watch.second->cancel();
     st.exitWatches.clear();
-    st.afterRunScan.clear();
 }
 
 } // namespace intake

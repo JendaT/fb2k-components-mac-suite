@@ -119,7 +119,7 @@ std::vector<std::string> placeableIds(const ExecutePlan &plan);
 std::string executeSheetRow(const ActionRoot &root, const DryRunRow &row);
 std::string executeSheetTitle(const ExecutePlan &plan);
 std::string executeSheetText(const ExecutePlan &plan, size_t maxListed = 10);
-// One line for logs and the test aid: "N placeable, M excluded: <row> |
+// One line for logs: "N placeable, M excluded: <row> |
 // <row> | excluded: <label>: <why>" with the sheet's caps; for an unchecked
 // plan "N unchecked (the check did not finish in 10 s): <label> | ...".
 std::string executeSheetSummary(const ExecutePlan &plan, size_t maxListed = 10);

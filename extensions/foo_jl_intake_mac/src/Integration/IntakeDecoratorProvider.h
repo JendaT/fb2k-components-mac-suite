@@ -40,13 +40,11 @@ void providerSetStatsEnabled(bool enabled);
 // publish). B6: the context menu maps its selection through it.
 std::shared_ptr<const IntakeView> providerCurrentView();
 
-// Any thread (the host's decorate queues; the main thread for the temporary
-// test_actions `badge` step): the provider's whole decorate_group answer
-// for `members` from the current view. False, with `out` untouched, when
-// there is no badge: no view, an inert view, members of two roots, or a
-// root that is not proposed or approved. No I/O beyond IntakeNativePath.
-// `amber`, when given, receives the badge's amber state (IntakeBadge::amber)
-// on true: the colour alone cannot tell, as tint_review sets it (0 when off).
-bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out, bool *amber = nullptr);
+// Any thread (the host's decorate queues): the provider's whole
+// decorate_group answer for `members` from the current view. False, with
+// `out` untouched, when there is no badge: no view, an inert view, members
+// of two roots, or a root that is not proposed or approved. No I/O beyond
+// IntakeNativePath.
+bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out);
 
 } // namespace intake

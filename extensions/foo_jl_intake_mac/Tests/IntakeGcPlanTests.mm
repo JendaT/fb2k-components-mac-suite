@@ -6,7 +6,7 @@
 //  (root_path + files[].path, shadows included), the confirmation's title
 //  and text (at most 10 paths, then "and N more"; the whole-folder note;
 //  unreadable roots; "Swap, then delete" while income rows remain), the
-//  test aid's summary, and the recheck of the captured roots on confirm
+//  log summary, and the recheck of the captured roots on confirm
 //  (placed with placed.verified kept; gone, gc_done, rejected and
 //  unverified roots dropped with a reason). Synthetic paths only.
 //

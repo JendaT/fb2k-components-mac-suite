@@ -119,12 +119,11 @@ std::vector<SwapRow> swapRowsFromHandles(metadb_handle_list_cref handles, const 
                                          size_t *unchecked = nullptr);
 
 // The rows of playlist `playlist` that map by income path to one of
-// `rootIds`, each handle once, in playlist order. `indices` (optional)
-// gets every playlist index such a row is at; `unchecked` (optional) the
-// number of entries whose mac-volume path was not converted.
+// `rootIds`, each handle once, in playlist order. `unchecked` (optional)
+// gets the number of entries whose mac-volume path was not converted.
 std::vector<SwapRow> swapIncomeRows(t_size playlist, const std::unordered_set<std::string> &rootIds,
                                     const IntakeView &view, NativePathMenuBudget *budget,
-                                    std::vector<t_size> *indices = nullptr, size_t *unchecked = nullptr);
+                                    size_t *unchecked = nullptr);
 
 // The entries of every playlist that still point at an income path of
 // `rootIds` (main thread; one NativePathMenuBudget for all of them, so at
@@ -165,16 +164,6 @@ struct PlacedFilesReply {
 };
 void swapReadPlacedFiles(std::vector<IntakeRecord> records,
                          std::function<void(std::vector<PlacedFilesReply> replies)> done);
-
-// The test aid's `rows` step: the rows of `playlist` that belong to root
-// `id`, by income path or through the library index.
-struct PlaylistRootRow {
-    t_size index = 0;
-    metadb_handle_ptr handle;
-    std::string native;
-    bool library = false;  // through the library index
-};
-std::vector<PlaylistRootRow> playlistRowsOfRoot(t_size playlist, const std::string &id, const IntakeView &view);
 
 // on_quit (actionsShutdown): later results are dropped.
 void swapShutdown();

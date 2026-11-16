@@ -199,7 +199,7 @@ static void testUnchecked() {
     CHECK(text.find("keeps running if foobar2000 quits") != std::string::npos, "and keeps the background note");
     CHECK(executeSheetSummary(p) == "2 unchecked (the check did not finish in 10 s): Fixture Artist" + kDash +
                                         "Approved Album | Fixture Artist" + kDash + "Second Album",
-          "the summary for logs and the test aid");
+          "the summary for logs");
     ExecutePlan checked = planExecute({roots[0]}, parseEnvelope(R"({"ok":true,"data":[{"id":"itk_00000010"}],"errors":[]})", 0));
     CHECK(!checked.unchecked && executeSheetText(checked).find("did not finish") == std::string::npos,
           "a plan from a reply is checked");

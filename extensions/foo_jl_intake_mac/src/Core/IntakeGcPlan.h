@@ -93,7 +93,7 @@ std::string gcConfirmTitle(size_t roots);
 std::string gcConfirmText(const std::vector<GcConfirmRoot> &roots, const GcIncomeRows &income,
                           size_t maxListed = 10);
 
-// The test aid's summary: "N path(s): a | b | c (+K more); Swap, then
+// One line for logs: "N path(s): a | b | c (+K more); Swap, then
 // delete offered (R income row(s)[ in P playlist(s)])", "...; Swap, then
 // delete not offered (R income row(s), K without a library copy)" or
 // "...; Swap, then delete not offered (no income row)", then

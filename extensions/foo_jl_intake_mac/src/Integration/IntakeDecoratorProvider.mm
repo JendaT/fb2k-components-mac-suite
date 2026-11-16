@@ -28,8 +28,7 @@
 //  belongs to one root, that root's badge (IntakeGroupBadge, computed when
 //  the snapshot was built) fills the jl_group_decoration; no badge for mixed
 //  groups, an inert view, or a root that is not proposed or approved. No
-//  I/O, like decorate(). The test_actions `badge` step (temporary) calls the
-//  same function on the main thread.
+//  I/O, like decorate().
 //
 //  context_actions / execute_context_action (main thread) go to
 //  IntakeActions, which keeps the table the menu was built from.
@@ -252,7 +251,7 @@ std::shared_ptr<const IntakeView> providerCurrentView() {
     return currentView(providerState());
 }
 
-bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out, bool *amber) {
+bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration &out) {
     const std::shared_ptr<const IntakeView> view = currentView(providerState());
     if (!view || view->rendersNothing() || view->isInert()) return false;
     const t_size count = members.get_count();
@@ -278,7 +277,6 @@ bool providerDecorateGroup(metadb_handle_list_cref members, jl_group_decoration 
     out.badge_text.set_string(badge->text.data(), badge->text.size());
     out.badge_color = badge->color;
     out.icon = jl_icon_none;
-    if (amber != nullptr) *amber = badge->amber;
     return true;
 }
 
