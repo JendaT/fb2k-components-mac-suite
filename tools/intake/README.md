@@ -108,7 +108,17 @@ Execute/gc need `journal.path` in structure.yaml (the Amunet location is
 pending confirmation; nothing runs without it). Execute copies and verifies —
 income originals are only ever removed by `gc`, which re-verifies both the
 journal record and the placed files' audio hashes first, then leaves the
-sidecar behind as a `gc_done` tombstone. Each copy gets u+w (a 0444
+sidecar behind as a `gc_done` tombstone. gc deletes a root's local files (or
+with `--relocate-dj` moves its audio to the dj zone) all or none: it first
+renames every file into `.intake-gc-<id>/` inside the root's dir (or to its
+dj destination) and deletes the staged files only once every rename worked.
+If one fails (an immutable flag, an existing dj file, ...) the renames are
+reversed, the root stays `placed` with no journal line, and a per-root
+`E_VERIFY` (`E_TARGET_EXISTS` for an existing dj file) names the file. A
+read-only dir inside the root's dir gets u+w while gc works and its mode
+back afterwards; nothing outside the root's dir is chmodded. For an
+archive-sourced root gc removes the root's files inside `<name>.unpacked/`;
+the archive and the `.unpacked` dir stay. Each copy gets u+w (a 0444
 original copies as 0444 and could not be tagged); the original is never
 changed. Provenance tags are part of the placement: a failed tag write
 (`metaflac_missing`, `metaflac_failed`, `provenance_write_failed`) fails the

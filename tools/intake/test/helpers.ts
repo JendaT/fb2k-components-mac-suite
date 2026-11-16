@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAssignConfig } from "../src/config.ts";
@@ -114,4 +114,24 @@ export function normalizeSidecar(doc: Record<string, unknown>): Record<string, u
     if (h.by === `intake@${CLI_VERSION}`) h.by = "intake@<cli>";
   }
   return copy;
+}
+
+/**
+ * u+rwx on every dir and u+rw on every file under `p` (lstat; symlinks left
+ * alone), so a test tree with read-only entries can be removed.
+ */
+export function makeTreeWritable(p: string): void {
+  let st;
+  try {
+    st = lstatSync(p);
+  } catch {
+    return;
+  }
+  if (st.isSymbolicLink()) return;
+  if (st.isDirectory()) {
+    chmodSync(p, (st.mode & 0o7777) | 0o700);
+    for (const n of readdirSync(p)) makeTreeWritable(join(p, n));
+  } else {
+    chmodSync(p, (st.mode & 0o7777) | 0o600);
+  }
 }

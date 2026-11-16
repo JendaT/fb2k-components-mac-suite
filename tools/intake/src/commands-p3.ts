@@ -3,8 +3,8 @@
 // income files — deletion is gc's job, after journal re-verification.
 
 import {
-  chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync,
-  readFileSync, readdirSync, renameSync, rmSync, statSync,
+  chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { audioHashAs } from "./audioHash.ts";
@@ -596,6 +596,185 @@ export interface GcOpts extends CommonOpts {
   relocateDj: boolean;
 }
 
+/** Whether something (a symlink included) is at `p`. */
+function present(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A path counts as inside `rootReal` (a realpath) when its own realpath is it or under it. */
+function insideDir(p: string, rootReal: string): boolean {
+  try {
+    const real = realpathSync(p);
+    return real === rootReal || real.startsWith(rootReal + "/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete a placed root's local files, or relocate them into `destDir` (the
+ * dj zone; artifacts are still deleted), all of them or none.
+ *
+ * Every file is first renamed: an audio file to its dj destination when
+ * relocating, everything else into the stage dir `.intake-gc-<id>/` inside
+ * the root's dir, keeping its path relative to the root (flattening to
+ * basename() collides across discs that number tracks independently). A
+ * rename fails for every cause a deletion would (no write on the parent dir,
+ * an immutable or append-only flag, ...), so when one fails the renames
+ * already done are reversed and the dirs this run created are removed:
+ * nothing of the root is deleted or moved, and the error names the file. A
+ * dj destination that already exists fails the same way, as a rename would
+ * replace it. Only after every rename succeeded are the staged files deleted;
+ * that runs in a dir this run made, where those causes do not apply. If a
+ * delete still fails (an I/O error), the files not yet deleted are renamed
+ * back and the error says how many were deleted.
+ *
+ * A dir inside the root's dir without u+w (a read-only disc dir, e.g. from
+ * an archive) gets u+w while gc works, and its mode back afterwards if it
+ * still exists. Nothing outside the root's dir is chmodded.
+ *
+ * Then, for a whole-dir root, the now-empty disc dirs (junk files included)
+ * go; that is cleanup after the files are gone and does not fail the root.
+ * The archive and the `.unpacked` dir of an archive-sourced root are not
+ * touched: only the root's own files are.
+ */
+function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): JsonError | null {
+  const sc = root.sidecar;
+  const stage = join(root.dir, `.intake-gc-${sc.id}`);
+  const moves: { from: string; to: string; rel: string; relocated: boolean }[] = [];
+  // Shadows included: all local copies go.
+  for (const f of sc.files) {
+    const from = join(root.dir, f.path);
+    if (present(from)) moves.push({ from, to: join(destDir ?? stage, f.path), rel: f.path, relocated: destDir !== null });
+  }
+  if (!sc.virtual) {
+    // Whole-dir root: its artifacts were copied at execute.
+    for (const a of plan.artifacts) {
+      const from = join(root.dir, a.to);
+      if (present(from)) moves.push({ from, to: join(stage, a.to), rel: a.to, relocated: false });
+    }
+  }
+
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(root.dir);
+  } catch (e) {
+    return { code: "E_VERIFY", msg: `cannot read the root dir (${errCode(e)}); nothing of the root was changed`, path: root.dir };
+  }
+  const chmodded: { dir: string; mode: number }[] = [];
+  const ensureWritable = (dir: string): void => {
+    if (chmodded.some((c) => c.dir === dir) || !insideDir(dir, rootReal)) return;
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || st.mode & 0o200) return;
+      chmodSync(dir, (st.mode & 0o7777) | 0o200);
+      chmodded.push({ dir, mode: st.mode & 0o7777 });
+    } catch {
+      // the rename below then fails and reports it
+    }
+  };
+  const created: string[] = [];
+  const mkdirTracked = (dir: string): void => {
+    const missing: string[] = [];
+    for (let d = dir; !present(d); d = dirname(d)) missing.push(d);
+    if (missing.length === 0) return;
+    mkdirSync(dir, { recursive: true });
+    created.push(...missing.reverse());
+  };
+  const done: typeof moves = [];
+  /** Rename back what is still staged or relocated; drop the dirs this run created. Returns the files left out. */
+  const rollback = (): string[] => {
+    const stuck: string[] = [];
+    for (const m of [...done].reverse()) {
+      try {
+        renameSync(m.to, m.from);
+      } catch {
+        stuck.push(m.to);
+      }
+    }
+    for (const d of [...created].reverse()) {
+      try {
+        rmdirSync(d);
+      } catch {
+        // not empty: something could not be renamed back
+      }
+    }
+    return stuck;
+  };
+  const failure = (verb: string, m: { from: string; rel: string }, why: string, code = "E_VERIFY", deleted = 0): JsonError => {
+    const stuck = rollback();
+    const state = deleted === 0
+      ? `nothing of the root was ${destDir ? "moved or deleted" : "deleted"}`
+      : `${deleted} staged file(s) were already deleted, the rest renamed back`;
+    const left = stuck.length > 0 ? `; renaming back failed for ${stuck.map((p) => `"${p}"`).join(", ")}` : "";
+    return { code, msg: `cannot ${verb} "${m.rel}" (${why}); ${state}${left}`, path: m.from };
+  };
+
+  try {
+    if (moves.some((m) => !m.relocated)) ensureWritable(root.dir);
+    for (const m of moves) ensureWritable(dirname(m.from));
+    for (const m of moves) {
+      const verb = m.relocated ? "relocate" : "delete";
+      if (m.relocated && present(m.to)) return failure(verb, m, `"${m.to}" already exists`, "E_TARGET_EXISTS");
+      try {
+        mkdirTracked(dirname(m.to));
+        renameSync(m.from, m.to);
+      } catch (e) {
+        return failure(verb, m, errCode(e));
+      }
+      done.push(m);
+    }
+    // Every file is staged or relocated: delete the staged ones.
+    const staged = moves.filter((x) => !x.relocated);
+    for (const [i, m] of staged.entries()) {
+      try {
+        rmSync(m.to);
+      } catch (e) {
+        const gone = new Set(staged.slice(0, i).map((x) => x.to));
+        done.splice(0, done.length, ...done.filter((x) => !gone.has(x.to)));
+        return failure("delete", m, errCode(e), "E_VERIFY", i);
+      }
+    }
+    try {
+      rmSync(stage, { recursive: true, force: true });
+    } catch {
+      // only empty stage dirs are left
+    }
+    if (!sc.virtual) {
+      // Now-empty disc dirs (junk files included); the sidecar stays as a
+      // gc_done tombstone in the root's dir.
+      for (const e of walkDirs(root.dir)) {
+        if (e.path === root.dir) continue;
+        try {
+          if (readdirSync(e.path).filter((n) => !isJunkFile(n)).length > 0) continue;
+          ensureWritable(e.path);
+          ensureWritable(dirname(e.path));
+          rmSync(e.path, { recursive: true, force: true });
+        } catch {
+          // an empty dir left behind; the root's files are gone
+        }
+      }
+    }
+    return null;
+  } finally {
+    for (const c of chmodded.reverse()) {
+      try {
+        if (present(c.dir)) chmodSync(c.dir, c.mode);
+      } catch {
+        // left owner-writable
+      }
+    }
+  }
+}
+
+const errCode = (e: unknown): string =>
+  (e as NodeJS.ErrnoException)?.code ?? (e instanceof Error ? e.message : String(e));
+
 export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult<GcRow[] | null>> {
   // Doc 03 `gc` semantics: roots or --all; an empty ref list never means
   // every root. Named roots are the whole work set, with or without --all.
@@ -663,30 +842,11 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
       });
       continue;
     }
-    let destDir: string | null = null;
-    if (relocate) {
-      destDir = join(cfg.gc.dj_zone!, basename(placed.target_path));
-      // Keep each file's path relative to the release root. Flattening to
-      // basename() collides whenever discs number tracks independently
-      // (CD1/01.flac + CD2/01.flac), and renameSync overwrites in silence.
-      for (const f of sc.files) {
-        const from = join(root.dir, f.path);
-        if (!existsSync(from)) continue;
-        const to = join(destDir, f.path);
-        mkdirSync(dirname(to), { recursive: true });
-        renameSync(from, to);
-      }
-    } else {
-      for (const p of localAudio.filter(existsSync)) rmSync(p);
-    }
-    if (!sc.virtual) {
-      // Whole-dir root: artifacts were copied at execute; clear them and any
-      // now-empty disc dirs. The sidecar stays as a gc_done tombstone.
-      for (const a of plan.artifacts) rmSync(join(root.dir, a.to), { force: true });
-      for (const e of walkDirs(root.dir)) {
-        if (e.path !== root.dir && readdirSync(e.path).filter((n) => !isJunkFile(n)).length === 0)
-          rmSync(e.path, { recursive: true, force: true });
-      }
+    const destDir = relocate ? join(cfg.gc.dj_zone!, basename(placed.target_path)) : null;
+    const problem = disposeLocal(root, plan, destDir);
+    if (problem) {
+      errors.push(problem);
+      continue;
     }
     const event = relocate ? "gc_relocated" : "gc_done";
     appendJournal(cfg.journal_path, {

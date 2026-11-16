@@ -15,6 +15,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unpackArchive } from "../src/archive.ts";
+import { makeTreeWritable } from "./helpers.ts";
 import { buildRar5 } from "./rarbuild.ts";
 import { buildZip } from "./zipbuild.ts";
 
@@ -24,23 +25,6 @@ const TRACK = new TextEncoder().encode("synthetic payload\n".repeat(64));
 
 let work: string;
 let income: string;
-
-/** u+rwx on every dir, u+rw on every file (lstat; symlinks left alone), so the tree can be removed. */
-function forceWritable(p: string): void {
-  let st;
-  try {
-    st = lstatSync(p);
-  } catch {
-    return;
-  }
-  if (st.isSymbolicLink()) return;
-  if (st.isDirectory()) {
-    chmodSync(p, 0o755);
-    for (const n of readdirSync(p)) forceWritable(join(p, n));
-  } else {
-    chmodSync(p, 0o644);
-  }
-}
 
 /** Every dir and file under `dir` (dir included) whose mode lacks u+rwx (dirs) or u+rw (files). */
 function notOwnerWritable(dir: string): string[] {
@@ -68,12 +52,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  forceWritable(income);
+  makeTreeWritable(income);
   rmSync(income, { recursive: true, force: true });
 });
 
 afterAll(() => {
-  forceWritable(work);
+  makeTreeWritable(work);
   rmSync(work, { recursive: true, force: true });
 });
 
