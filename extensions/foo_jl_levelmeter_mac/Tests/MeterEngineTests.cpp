@@ -112,6 +112,15 @@ void testClipAndTruePeak() {
     e.resetPeaks();
     CHECK(!e.snapshot().ch[0].clip, "reset clears clip");
 
+    g_context = "clip at full scale";
+    // Clipped PCM sits exactly at full scale; it never goes over.
+    MeterEngine f;
+    f.configure(s);
+    std::vector<float> full(800 * 2, -1.0f);
+    f.process(full.data(), 800, kSR, 2);
+    f.advance(kFrame);
+    CHECK(f.snapshot().ch[0].clip, "full-scale samples light the clip");
+
     g_context = "true peak over";
     // fs/4 at 45 degrees, samples at 0.99 of a waveform peaking near 1.4:
     // sample peak stays under 0 dBFS, true peak goes over.
