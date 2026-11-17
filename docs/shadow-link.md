@@ -12,6 +12,7 @@ The shadow link removes the volume from foobar2000's view. foobar2000 stores one
 - Re-pointing the link (atomic swap, see below) during playback is safe.
 - Tags are re-read only for files whose mtime changed, so a mirror must keep mtimes (`rsync -a`).
 - The Media Library ignores a live re-point and rescans at startup. Tracks missing from a partial mirror drop out of the library and come back when the share returns, without touching their metadb rows.
+- If the link target does not exist at startup (share not mounted), the library drops every track under the link. The next start with the target present re-adds them (tested 2026-11-17: 10 tracks, then 0, then 10; metadb rows kept throughout). No link target avoids this, since an empty local folder empties the library just the same. So the agent points the link at the usual mount point while unmounted, and the share has to be mounted before foobar2000 starts to keep the library filled.
 
 ## Mount agent rule
 
