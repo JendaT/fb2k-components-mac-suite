@@ -972,3 +972,17 @@ First release, contributed by @Scannou (#45).
 - **Full screen**: Double-click, with its own orientation setting.
 - **Colours**: Nine colormaps, one ramp per Spectrum Analyzer theme, custom ramp.
 - **Readout**: Click and hold for frequency and nearest note.
+
+## Level Meter
+
+### [0.1.0] - 2026-11-17
+
+First release, contributed by @Scannou (#56).
+
+#### Added
+- **Level meter**: Peak, RMS, loudness and VU in one panel; layout element `level_meter`.
+- **Digital bars**: RMS with peak above it, peak hold, clip lights; true or sample peak; dBFS or K-system scales.
+- **Loudness**: BS.1770 / EBU R128 momentary, short-term, integrated and loudness range, with a target marker.
+- **Stereo**: Phase correlation and balance bars.
+- **Analog VU**: Needle faces with VU or PPM ballistics and a peak LED.
+- **Colours and layout**: Shared visualiser themes in Display P3, glass background, vertical/horizontal/automatic layout, text size.
