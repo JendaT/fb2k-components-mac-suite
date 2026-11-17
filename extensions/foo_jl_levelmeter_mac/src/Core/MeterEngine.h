@@ -89,6 +89,8 @@ private:
     void setSampleRate(double sr);
     void runDetectors(const float *lr, size_t frames);
     void notePsrPeak(float peak, size_t frames);
+    // `lr`, or a copy with non-finite samples set to 0 when it has any.
+    const float *finiteSamples(const float *lr, size_t frames);
 
     EngineSettings _settings;
     double _sampleRate = 0;
@@ -115,6 +117,7 @@ private:
     size_t _psrFill = 0;
 
     std::vector<float> _silence;
+    std::vector<float> _finite;
     Snapshot _snap;
 };
 

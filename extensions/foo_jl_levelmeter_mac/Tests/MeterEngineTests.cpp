@@ -10,6 +10,7 @@
 #include "../src/Core/MeterEngine.h"
 
 #include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace meter;
@@ -112,6 +113,15 @@ void testClipAndTruePeak() {
     e.resetPeaks();
     CHECK(!e.snapshot().ch[0].clip, "reset clears clip");
 
+    g_context = "clip at full scale";
+    // Clipped PCM sits exactly at full scale; it never goes over.
+    MeterEngine f;
+    f.configure(s);
+    std::vector<float> full(800 * 2, -1.0f);
+    f.process(full.data(), 800, kSR, 2);
+    f.advance(kFrame);
+    CHECK(f.snapshot().ch[0].clip, "full-scale samples light the clip");
+
     g_context = "true peak over";
     // fs/4 at 45 degrees, samples at 0.99 of a waveform peaking near 1.4:
     // sample peak stays under 0 dBFS, true peak goes over.
@@ -203,6 +213,31 @@ void testSampleRateChange() {
     CHECK(std::fabs(e.snapshot().ch[0].rmsDb + 12.04) < 0.1, "RMS valid after the switch");
 }
 
+void testNonFinite() {
+    g_context = "non-finite samples";
+    MeterEngine e;
+    e.configure(EngineSettings());
+    run(e, 0.5, 0.5, 0.5);
+    std::vector<float> bad(800 * 2, 0.25f);
+    bad[100] = std::numeric_limits<float>::quiet_NaN();
+    bad[301] = std::numeric_limits<float>::infinity();
+    bad[502] = -std::numeric_limits<float>::infinity();
+    e.process(bad.data(), 800, kSR, 2);
+    e.advance(kFrame);
+    // An inverted pair afterwards: every reading follows the audio again.
+    run(e, 3.5, 0.5, 0.5, 1000.0, kPi);
+    const Snapshot &snap = e.snapshot();
+    CHECK(std::fabs(snap.ch[0].peakDb + 6.02) < 0.1, "peak");
+    CHECK(std::fabs(snap.ch[1].maxDb + 6.02) < 0.1, "max");
+    CHECK(!snap.ch[0].clip && !snap.ch[1].clip, "no clip");
+    CHECK(std::fabs(snap.ch[0].rmsDb + 9.03) < 0.1, "RMS");
+    CHECK(std::isfinite(snap.ch[0].needleDb) && snap.ch[0].needleDb > 0, "needle");
+    CHECK(snap.correlation < -0.99f, "correlation");
+    CHECK(std::fabs(snap.balanceDb) < 0.1, "balance");
+    CHECK(std::isfinite(snap.momentary) && std::isfinite(snap.integrated), "loudness");
+    CHECK(std::fabs(snap.truePeakMaxDb + 6.02f) < 0.5f, "measurement true peak");
+}
+
 } // namespace
 
 int main() {
@@ -212,5 +247,6 @@ int main() {
     testNeedle();
     testLoudnessAndStereo();
     testSampleRateChange();
+    testNonFinite();
     TEST_MAIN_END();
 }
