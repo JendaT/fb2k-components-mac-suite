@@ -24,6 +24,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace intake {
 
@@ -399,15 +400,40 @@ void applyOnMain(std::shared_ptr<SwapJob> job) {
     }
     if (!replacements.empty()) {
         pm->playlist_undo_backup(playlist);
+        // A library copy that nothing in foobar2000 has read yet gets a
+        // handle with no info: SimPlaylist then groups its rows under an
+        // empty header until playback reads the tags (UAT check 4). Those
+        // handles are read below, in the background.
+        metadb_handle_list unread;
+        std::unordered_set<const metadb_handle *> seen;
         for (const Replacement &r : replacements) {
             if (pm->playlist_replace_item(playlist, r.index, r.handle)) {
                 result.tally.swapped++;
                 logDebug("swap: row " + std::to_string(r.index) + ": " + r.row->row.native + " -> " +
                          r.handle->get_path());
+                metadb_info_container::ptr info;
+                if (seen.insert(r.handle.get_ptr()).second && !r.handle->get_info_ref(info)) unread.add_item(r.handle);
             } else {
                 result.tally.skip(SwapSkip::ReplaceRefused);
                 logDebug("swap: row " + std::to_string(r.index) + ": " + swapSkipText(SwapSkip::ReplaceRefused));
             }
+        }
+        if (unread.get_count() > 0) {
+            // No dialog, no error popups; foobar2000 reads on its own
+            // threads, so neither the main thread nor the decorate path
+            // waits on the library volume.
+            const size_t count = unread.get_count();
+            logDebug("swap: reading tags of " + std::to_string(count) + " swapped file(s) with no info");
+            metadb_io_v2::get()->load_info_async(
+                unread, metadb_io::load_info_default, core_api::get_main_window(),
+                metadb_io_v2::op_flag_background | metadb_io_v2::op_flag_delay_ui | metadb_io_v2::op_flag_no_errors,
+                fb2k::makeCompletionNotify([count](unsigned code) {
+                    logDebug("swap: tags read for " + std::to_string(count) + " file(s) (" +
+                             (code == metadb_io::load_info_success   ? "success"
+                              : code == metadb_io::load_info_aborted ? "aborted"
+                                                                     : "errors") +
+                             ")");
+                }));
         }
     }
     finish(*job, result);
