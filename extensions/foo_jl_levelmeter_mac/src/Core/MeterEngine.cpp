@@ -137,7 +137,7 @@ void MeterEngine::advance(double dt) {
         }
 
         r.maxDb = std::max(r.maxDb, db);
-        if (db > _settings.clipDbfs) r.clip = true;
+        if (db >= _settings.clipDbfs) r.clip = true;
         r.rmsDb = linearToDb(_rms[c].rms() * rmsGain);
         const double needle = vu ? _vu[c].value() : _ppm[c].value();
         r.needleDb = linearToDb(needle / ref);
