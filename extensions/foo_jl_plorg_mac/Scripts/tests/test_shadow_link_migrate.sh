@@ -78,8 +78,8 @@ PY
 
 # Independent check of every unpack:// value: the archive span is everything up
 # to the last '|' of its level (the inner names here hold no '|'), and its
-# stored length must equal the span's length in characters and in bytes.
-# Prints "<levels checked> <bad>".
+# stored length must equal the span's length in UTF-8 bytes, which is how
+# foobar2000 counts. Prints "<levels checked> <bad> <non-ASCII levels>".
 unpack_counts() {
     "$PY" - "$1/metadb.sqlite" <<'PY'
 import re, sqlite3, sys
@@ -88,7 +88,7 @@ vals = [r[0] for r in db.execute("SELECT name FROM metadb")]
 for (t,) in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
                        "AND name GLOB 'metadb_index_*' AND NOT name GLOB '*_data'"):
     vals += [r[0] for r in db.execute('SELECT filename FROM "%s"' % t)]
-n = bad = 0
+n = bad = wide = 0
 for v in vals:
     loc = v.split("+", 1)[1]
     while loc.startswith("unpack://"):
@@ -96,10 +96,12 @@ for v in vals:
         rest = loc[m.end():]
         span = rest[:rest.rindex("|")]
         n += 1
-        if not (int(m.group(1)) == len(span) == len(span.encode("utf-8"))):
+        if int(m.group(1)) != len(span.encode("utf-8")):
             bad += 1
+        if len(span) != len(span.encode("utf-8")):
+            wide += 1
         loc = span
-print(n, bad)
+print(n, bad, wide)
 PY
 }
 
@@ -118,11 +120,11 @@ ORIG="$(treesum "$P")"; STRICT="$(treesum "$P" strict)"
 OUT="$(migrate "$P" --dry-run)"; rc=$?
 ck "exit 0" "$rc" "0"
 ck "final OK line" "$(last "$OUT" | grep -c '^OK: dry run')" "1"
-ck "playlist plan"  "$(has "$OUT" 'playlists: 3 scanned, 2 to change, 7 lines rewritten')" "1"
-ck "metadb plan"    "$(has "$OUT" 'metadb: 16 rows, 12 under --from (9 direct, 3 archive): rewrite 10, conflicts 2')" "1"
-ck "BPM plan"       "$(has "$OUT" 're-key 9 rows; grids: 9 stored, move 6, keep 1 in place')" "1"
-ck "BPM formula verified on every row" "$(has "$OUT" 'key formula verified on 13 of 13 rows')" "1"
-ck "archive self-check" "$(has "$OUT" 'archive self-check: 3 rewritten rows ok')" "2"
+ck "playlist plan"  "$(has "$OUT" 'playlists: 3 scanned, 2 to change, 8 lines rewritten')" "1"
+ck "metadb plan"    "$(has "$OUT" 'metadb: 18 rows, 14 under --from (9 direct, 5 archive): rewrite 12, conflicts 2')" "1"
+ck "BPM plan"       "$(has "$OUT" 're-key 11 rows; grids: 10 stored, move 7, keep 1 in place')" "1"
+ck "BPM formula verified on every row" "$(has "$OUT" 'key formula verified on 15 of 15 rows')" "1"
+ck "archive self-check" "$(has "$OUT" 'archive self-check: 5 rewritten rows ok')" "2"
 ck "unknown index reported" "$(has "$OUT" 'index 11111111-2222-3333-4444-555555555555 (unknown index)')" "1"
 ck "every conflict listed" "$(has "$OUT" 'conflicts: 7')" "1"
 ck "tie conflict explained" "$(has "$OUT" 'same file under an earlier --from kept')" "3"
@@ -131,7 +133,7 @@ ck "tree untouched (contents + mtimes)" "$(treesum "$P" strict)" "$STRICT"
 echo "=== 2. apply (copy profile, foobar2000 'running' elsewhere) ==="
 OUT="$(FAKE='^foobar2000$' migrate "$P" --apply)"; rc=$?
 ck "exit 0" "$rc" "0"
-ck "final OK line" "$(last "$OUT" | grep -c '^OK: migrated 7 playlist lines, 37 metadb values')" "1"
+ck "final OK line" "$(last "$OUT" | grep -c '^OK: migrated 8 playlist lines, 43 metadb values')" "1"
 for f in aaa bbb ccc; do
     cmp -s "$P/playlists-v2.0/playlist-$f.fplite" "$T/exp/playlists/playlist-$f.fplite"; ck "playlist-$f as expected (BOM, endings, other lines)" "$?" "0"
 done
@@ -151,7 +153,15 @@ ck "BPM grids moved / kept" "$(q "$P" "SELECT key||'|'||lower(hex(value)) FROM $
 ck "unknown index: filenames rewritten, keys kept" \
    "$(q "$P" "SELECT key||'|'||filename FROM $UNKT" | sorted)" "$(sorted < "$T/exp/unknown_rows.txt")"
 ck "unknown index data untouched" "$(q "$P" "SELECT count(*) FROM ${UNKT}_data")" "3"
-ck "unpack counts = chars = bytes, every level" "$(unpack_counts "$P")" "11 0"
+ck "unpack counts = UTF-8 bytes, every level (9 non-ASCII)" "$(unpack_counts "$P")" "20 0 9"
+span="${PL}music.local/Dvořák/Šárka.rar"; loc="unpack://rar|$(printf '%s' "$span" | wc -c | tr -d ' ')|$span|(04) Píseň.flac"
+ck "non-ASCII archive path: byte count (wc -c)" "$(q "$P" "SELECT count(*) FROM metadb WHERE name='0+$loc'")" "1"
+ck "non-ASCII archive path: grid at its new key (md5 in bash)" \
+   "$(q "$P" "SELECT value FROM ${BPMT}_data WHERE key=$(bpm_key_sh "$loc|0")")" "grid-rar_cz"
+inner="${PL}music.local/Žluťoučký kůň/outer.zip"
+mid="unpack://zip|$(printf '%s' "$inner" | wc -c | tr -d ' ')|$inner|vnitřní.rar"
+loc="unpack://rar|$(printf '%s' "$mid" | wc -c | tr -d ' ')|$mid|(05) Hluboko.flac"
+ck "nested non-ASCII archive paths: byte counts (wc -c)" "$(q "$P" "SELECT count(*) FROM $STATT WHERE filename='0+$loc'")" "1"
 loc="${PL}music.hq/Artist/one.flac"
 ck "BPM key of one.flac (md5 in bash)" "$(q "$P" "SELECT key FROM $BPMT WHERE filename='0+$loc'")" "$(bpm_key_sh "$loc|0")"
 loc="${PL}music.hq/Artist/both.flac"
@@ -282,15 +292,18 @@ span="mac-volume://$A/music.local/x/__prep.rar"; n=${#span}
 q "$P" "UPDATE metadb SET name = replace(name, 'rar|$n|', 'rar|$((n + 1))|') WHERE name LIKE '%(02) Track.flac'"
 OUT="$(migrate "$P" --dry-run)"; rc=$?
 ck "wrong length: exit 1" "$rc|$(last "$OUT" | grep -c 'unpack self-check failed .* does not end on a')" "1|1"
+# A length that fits only when counted in characters (non-ASCII archive path):
+# foobar2000 counts bytes, so such a row is malformed.
+chars() { "$PY" -c 'import sys; print(len(sys.argv[1]))' "$1"; }
 P="$T/p8"; fresh "$P"
 other="mac-volume://$B/Dvořák/a.rar"
-q "$P" "INSERT INTO metadb (name) VALUES ('0+unpack://rar|$(printf '%s' "$other" | wc -c | tr -d ' ')|$other|t.flac')"
+q "$P" "INSERT INTO metadb (name) VALUES ('0+unpack://rar|$(chars "$other")|$other|t.flac')"
 OUT="$(migrate "$P" --dry-run)"; rc=$?
-ck "non-ASCII archive path outside --from: warning only" "$rc|$(has "$OUT" 'warning: 1 archive rows outside the --from prefixes')" "0|1"
+ck "character count outside --from: warning only" "$rc|$(has "$OUT" 'warning: 1 archive rows outside the --from prefixes')" "0|1"
 mine="mac-volume://$A/music.local/Dvořák/a.rar"
-q "$P" "INSERT INTO metadb (name) VALUES ('0+unpack://rar|$(printf '%s' "$mine" | wc -c | tr -d ' ')|$mine|t.flac')"
+q "$P" "INSERT INTO metadb (name) VALUES ('0+unpack://rar|$(chars "$mine")|$mine|t.flac')"
 OUT="$(migrate "$P" --dry-run)"; rc=$?
-ck "non-ASCII archive path under --from: exit 1" "$rc|$(last "$OUT" | grep -c 'non-ASCII archive path')" "1|1"
+ck "character count under --from: refused" "$rc|$(last "$OUT" | grep -c 'fits only when counted as characters, but foobar2000 counts UTF-8 bytes')" "1|1"
 
 echo "=== 14. WAL-mode metadb (empty -wal/-shm left behind, as macOS SQLite does) ==="
 mkwal() { fresh "$1"; "$PY" -c "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=wal'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()" "$1/metadb.sqlite"; }

@@ -12,9 +12,10 @@ tool rewrites an existing profile to that path, once, with foobar2000 quit:
   playlists-v2.0/*.fplite   lines under a --from prefix (top level only)
   metadb.sqlite             metadb.name and every metadb_index_* filename,
                             including archive rows (unpack://...|<len>|...),
-                            whose length fields are corrected. BPM beat-grid
-                            keys are a hash of the path: they are recomputed
-                            and the grids moved to the new keys.
+                            whose length fields (in UTF-8 bytes) are
+                            corrected. BPM beat-grid keys are a hash of the
+                            path: they are recomputed and the grids moved to
+                            the new keys.
   library-v2.0/folders      one Media Library root: the link
 
 config.sqlite is backed up but never written. Waveform caches and plorg's own
@@ -160,31 +161,28 @@ def parse_unpack(loc):
 
     Returns (head, count, span, rest): head is 'unpack://<type>|', span the
     counted archive location, rest what follows the span's closing '|'.
-    Self-check: the count must be the span's length in characters AND in UTF-8
-    bytes, and must land on a '|'. Raises UnpackError otherwise.
+    foobar2000 counts the span in UTF-8 bytes: on a real profile, every
+    non-ASCII archive path fits only that way (ASCII ones fit both ways).
+    Self-check: the count, taken as UTF-8 bytes, must land on a '|'. Raises
+    UnpackError otherwise, saying whether it would fit as characters.
     """
     m = UNPACK_HEAD_RE.match(loc)
     if not m:
         raise UnpackError("no 'unpack://<type>|<length>|' header")
     count = int(m.group(2))
     start = m.end()
-    by_chars = loc[start:start + count] if loc[start + count:start + count + 1] == "|" else None
     raw = loc.encode("utf-8")
     bstart = len(loc[:start].encode("utf-8"))
-    by_bytes = None
-    if raw[bstart + count:bstart + count + 1] == b"|":
-        try:
-            by_bytes = raw[bstart:bstart + count].decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-    if by_chars is not None and by_chars == by_bytes:
-        return loc[:m.start(2)], count, by_chars, loc[start + count + 1:]
-    if by_chars is None and by_bytes is None:
-        raise UnpackError("length %d does not end on a '|', counted as characters or as UTF-8 bytes"
-                          % count)
-    raise UnpackError("length %d fits only when counted as %s: non-ASCII archive path, so the "
-                      "unit (bytes or characters) cannot be confirmed"
-                      % (count, "characters" if by_chars is not None else "UTF-8 bytes"))
+    end = bstart + count
+    if raw[end:end + 1] == b"|":
+        # '|' never occurs inside a multi-byte UTF-8 sequence, so both halves decode.
+        span = raw[bstart:end].decode("utf-8")
+        return loc[:m.start(2)], count, span, raw[end + 1:].decode("utf-8")
+    if loc[start + count:start + count + 1] == "|":
+        raise UnpackError("length %d fits only when counted as characters, but foobar2000 "
+                          "counts UTF-8 bytes" % count)
+    raise UnpackError("length %d does not end on a '|' (counted as UTF-8 bytes, nor as characters)"
+                      % count)
 
 
 def check_unpack(loc):
@@ -239,10 +237,7 @@ class Rewriter:
             new_span, i = self.rewrite_location(span)
             if new_span is None:
                 return None, None
-            if len(new_span.encode("utf-8")) != len(new_span):
-                raise UnpackError("the rewritten archive path is not ASCII, so its length would "
-                                  "differ as characters and as bytes")
-            return "%s%d|%s|%s" % (head, len(new_span), new_span, rest), i
+            return "%s%d|%s|%s" % (head, len(new_span.encode("utf-8")), new_span, rest), i
         return None, None
 
     def rewrite_value(self, value):

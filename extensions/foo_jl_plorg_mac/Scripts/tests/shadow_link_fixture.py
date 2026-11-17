@@ -33,6 +33,7 @@ PB = "mac-volume://%s/" % B
 
 
 def unpack(typ, span, rest):
+    """foobar2000 counts the archive span in UTF-8 bytes."""
     return "unpack://%s|%d|%s|%s" % (typ, len(span.encode("utf-8")), span, rest)
 
 
@@ -45,6 +46,11 @@ def key_of(location, subsong):
 def nested(prefix):
     inner = unpack("zip", prefix + "music.local/y/outer.zip", "inner.rar")
     return unpack("rar", inner, "(01) Deep.flac")
+
+
+def nested_cz(prefix):
+    inner = unpack("zip", prefix + "music.local/Žluťoučký kůň/outer.zip", "vnitřní.rar")
+    return unpack("rar", inner, "(05) Hluboko.flac")
 
 
 # (label, subsong, old location, new location or None (unchanged), fate)
@@ -61,6 +67,10 @@ REC = [
     ("rar_utf8", 0, unpack("rar", PA + "music.local/x/__prep.rar", "(03) Píseň č. 3.flac"),
      unpack("rar", PL + "music.local/x/__prep.rar", "(03) Píseň č. 3.flac"), "rename"),
     ("nested", 0, nested(PA), nested(PL), "rename"),
+    # non-ASCII archive paths: counts in bytes differ from counts in characters
+    ("rar_cz", 0, unpack("rar", PA + "music.local/Dvořák/Šárka.rar", "(04) Píseň.flac"),
+     unpack("rar", PL + "music.local/Dvořák/Šárka.rar", "(04) Píseň.flac"), "rename"),
+    ("nested_cz", 0, nested_cz(PA), nested_cz(PL), "rename"),
     ("other_vol", 0, PB + "other/x.flac", None, "keep"),
     ("tidal", 0, "tidal://track/123456", None, "keep"),
     ("other_file", 0, "file:///Users/test/Other/y.flac", None, "keep"),
@@ -127,9 +137,10 @@ for k in sorted(set(stats_keys.values())):
 
 # BPM grids: keyed by path hash
 bt = "metadb_index_" + BPM.replace("-", "_")
-bpm_labels = ["one", "cue1", "cue2", "dvorak", "lower", "rar", "nested", "other_vol",
-              "dup_old", "dup_link", "md", "both_a", "both_md"]
-grids = ["one", "cue1", "lower", "rar", "nested", "other_vol", "dup_old", "dup_link", "both_md"]
+bpm_labels = ["one", "cue1", "cue2", "dvorak", "lower", "rar", "nested", "rar_cz", "nested_cz",
+              "other_vol", "dup_old", "dup_link", "md", "both_a", "both_md"]
+grids = ["one", "cue1", "lower", "rar", "nested", "rar_cz", "other_vol", "dup_old", "dup_link",
+         "both_md"]
 for lab in bpm_labels:
     _, sub, old, _, _ = R[lab]
     db.execute('INSERT INTO "%s" VALUES (?, ?)' % bt, (key_of(old, sub), name(lab)))
@@ -191,7 +202,8 @@ def playlist(labels_or_lines, eol, final_eol, new):
 
 pl = os.path.join(PROFILE, "playlists-v2.0")
 specs = {
-    "playlist-aaa.fplite": (["one", "tidal", "dvorak", "other_file", "lower", "other_vol", "nested"], b"\n", True),
+    "playlist-aaa.fplite": (["one", "tidal", "dvorak", "other_file", "lower", "other_vol", "nested",
+                             "rar_cz"], b"\n", True),
     "playlist-bbb.fplite": (["tidal", "other_file", "other_vol"], b"\n", True),
     "playlist-ccc.fplite": (["md", "both_a", "both_md", "tidal"], b"\r\n", False),
 }
