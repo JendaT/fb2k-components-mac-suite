@@ -39,12 +39,13 @@ chmod +x "$T/bin/pgrep"
 "$PY" "$FIXTURE" "$T/base" "$T/exp" "$LINK" "$MDROOT" || { echo "fixture build failed"; exit 1; }
 
 fresh() { rm -rf "$1"; cp -R "$T/base" "$1"; }
-# tool PROFILE ARGS... ; LIVE=<dir treated as the live profile>, FAKE=<pgrep match>, FAILSWAP=<n>
+# tool PROFILE ARGS... ; LIVE=<dir treated as the live profile>, FAKE=<pgrep match>,
+# FAILSWAP=<n> (swap step n fails), CRASH=<n> (the process dies at apply swap step n)
 tool() {
     local p="$1"; shift
     PATH="$T/bin:$PATH" FAKE_PGREP_MATCH="${FAKE:-}" SHADOW_LINK_LIVE_PROFILE="${LIVE:-$T/nolive}" \
         SHADOW_LINK_MIGRATOR_DIRS="$T/mig" SHADOW_LINK_TEST_FAIL_SWAP="${FAILSWAP:-}" \
-        "$PY" "$TOOL" --profile "$p" "$@" 2>&1
+        SHADOW_LINK_TEST_CRASH_SWAP="${CRASH:-}" "$PY" "$TOOL" --profile "$p" "$@" 2>&1
 }
 migrate() { local p="$1" m="$2"; shift 2; tool "$p" "$m" --link "$LINK" --from "$FROM_A" --from "$FROM_MD" "$@"; }
 q() { sqlite3 "$1/metadb.sqlite" "$2"; }
@@ -205,10 +206,19 @@ ck "not-ours volume not drift" "$(has "$OUT" "drift under mac-volume://$E/")" "0
 ck "FAILED line suggests the fold" "$(last "$OUT" | grep -c "^FAILED: drift found: 3 values under 1 prefix.*--from 'mac-volume://$D/'")" "1"
 
 echo "=== 5. rollback restores byte-identical files ==="
+ck "manifest records the rewritten playlists" \
+   "$("$PY" -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))["rewritten"]))' "$B1/manifest.json")" \
+   "playlists-v2.0/playlist-aaa.fplite playlists-v2.0/playlist-ccc.fplite"
 OUT="$(tool "$P" --rollback "$B1")"; rc=$?
 ck "exit 0" "$rc" "0"
 ck "final OK line" "$(last "$OUT" | grep -c '^OK: rolled back')" "1"
-ck "profile = pre-apply state" "$(treesum "$P")" "$ORIG"
+ck "warns: metadb changed since the migration" "$(has "$OUT" 'WARNING: changed since the migration: metadb.sqlite.')" "1"
+ck "unchanged rewritten playlists not in the warning" "$(printf '%s\n' "$OUT" | grep WARNING | grep -c "playlist-")" "0"
+ck "only the rewritten playlists restored" "$(has "$OUT" 'restoring the 2 playlists the migration rewrote; the other 1 are left')" "1"
+ck "untouched playlist keeps its post-migration edit" \
+   "$(tail -1 "$P/playlists-v2.0/playlist-bbb.fplite")" "mac-volume://$D/music.hq/new.flac"
+cp "$T/base/playlists-v2.0/playlist-bbb.fplite" "$P/playlists-v2.0/playlist-bbb.fplite"   # drop that edit
+ck "everything else = pre-apply state" "$(treesum "$P")" "$ORIG"
 ASIDE="$(ls -d "$P"/shadow-link-pre-rollback-* 2>/dev/null)"
 ck "replaced files kept aside" "$(sqlite3 "$ASIDE/metadb.sqlite" "SELECT count(*) FROM metadb WHERE name LIKE '%new.flac'")" "1"
 ck "no staged leftovers" "$(leftovers "$P")" "0"
@@ -233,6 +243,7 @@ ck "profile = post-apply state" "$(treesum "$P")" "$POST"
 ck "no staged leftovers" "$(leftovers "$P")" "0"
 OUT="$(tool "$P" --rollback "$B3")"; rc=$?
 ck "retry succeeds" "$rc" "0"
+ck "nothing changed since the migration: no warning" "$(has "$OUT" 'WARNING')" "0"
 ck "profile = pre-apply state" "$(treesum "$P")" "$ORIG"
 
 echo "=== 8. live profile: refused while foobar2000 runs ==="
@@ -322,7 +333,47 @@ P="$T/p10"; mkwal "$P"; rm -f "$P/metadb.sqlite-wal" "$P/metadb.sqlite-shm"
 OUT="$(migrate "$P" --apply)"; rc=$?
 ck "WAL database without sidecars: apply exit 0" "$rc" "0"
 
-echo "=== 15. argument checks ==="
+echo "=== 15. rollback after config.sqlite changed (volume registry pruned) ==="
+prune_a() { sqlite3 "$1/config.sqlite" "DELETE FROM configStrings WHERE name LIKE 'mac.volume.$A.%';
+                                          DELETE FROM configBlobs WHERE name LIKE 'mac.volume.$A.%';"; }
+P="$T/p11"; fresh "$P"; migrate "$P" --apply >/dev/null; B="$(ls -d "$P"/shadow-link-backup-*)"
+prune_a "$P"; PRUNED="$(/sbin/md5 -q "$P/config.sqlite")"; STRICT="$(treesum "$P" strict)"
+OUT="$(tool "$P" --rollback "$B")"; rc=$?
+ck "no flag: refused" "$rc|$(last "$OUT" | grep -c 'config.sqlite differs from the backup.*--restore-config.*--keep-config')" "1|1"
+ck "no flag: nothing written" "$(treesum "$P" strict)" "$STRICT"
+OUT="$(tool "$P" --rollback "$B" --keep-config)"; rc=$?
+ck "--keep-config: exit 0 with a WARNING" "$rc|$(has "$OUT" 'WARNING: config.sqlite differs from the backup and is kept')" "0|1"
+ck "--keep-config: config untouched" "$(/sbin/md5 -q "$P/config.sqlite")" "$PRUNED"
+cmp -s "$P/metadb.sqlite" "$T/base/metadb.sqlite"; ck "--keep-config: metadb restored" "$?" "0"
+P="$T/p12"; fresh "$P"; migrate "$P" --apply >/dev/null; B="$(ls -d "$P"/shadow-link-backup-*)"
+prune_a "$P"
+printf 'tidal://track/999\n' >> "$P/playlists-v2.0/playlist-aaa.fplite"   # a rewritten playlist, edited since
+OUT="$(tool "$P" --rollback "$B" --restore-config)"; rc=$?
+ck "--restore-config: exit 0" "$rc|$(last "$OUT" | grep -c '^OK: rolled back')" "0|1"
+ck "warns: edited rewritten playlist" "$(has "$OUT" 'WARNING: changed since the migration: playlists-v2.0/playlist-aaa.fplite.')" "1"
+ck "its current version kept aside" "$(tail -1 "$P"/shadow-link-pre-rollback-*/playlists-v2.0/playlist-aaa.fplite)" "tidal://track/999"
+cmp -s "$P/config.sqlite" "$T/base/config.sqlite"; ck "--restore-config: config byte-identical to the backup" "$?" "0"
+ck "--restore-config: pruned config kept aside" \
+   "$(sqlite3 "$P"/shadow-link-pre-rollback-*/config.sqlite "SELECT count(*) FROM configStrings WHERE name LIKE 'mac.volume.$A.%'")" "0"
+ck "--restore-config: profile = pre-apply state" "$(treesum "$P")" "$ORIG"
+tool "$P" --dry-run --link "$LINK" --from "$FROM_A" --keep-config >/dev/null; rc=$?
+ck "config flag without --rollback is a usage error" "$rc" "2"
+
+echo "=== 16. crash during the swap: --apply refuses, --rollback cleans up and restores ==="
+P="$T/p13"; fresh "$P"
+OUT="$(CRASH=3 migrate "$P" --apply)"; rc=$?
+ck "process died mid-swap" "$rc" "70"
+ck "it left staged files" "$(leftovers "$P")" "2"
+B="$(ls -d "$P"/shadow-link-backup-*)"
+OUT="$(migrate "$P" --apply)"; rc=$?
+ck "apply refuses and names the rollback" "$rc|$(last "$OUT" | grep -c "Run --rollback '$B': it removes them")" "1|1"
+OUT="$(tool "$P" --rollback "$B")"; rc=$?
+ck "rollback removes the leftovers and succeeds" "$rc|$(has "$OUT" 'removed leftover of an unfinished run')" "0|2"
+ck "no post-swap record: says so" "$(has "$OUT" 'no record of the profile right after the migration')" "1"
+ck "profile byte-identical to before" "$(treesum "$P")" "$ORIG"
+ck "no staged leftovers" "$(leftovers "$P")" "0"
+
+echo "=== 17. argument checks ==="
 OUT="$(tool "$T/p1" --dry-run --link "$LINK" --from "mac-volume://$A")"; rc=$?
 ck "prefix without trailing slash refused" "$rc|$(last "$OUT" | grep -c 'must be mac-volume')" "1|1"
 OUT="$(tool "$T/p1" --dry-run --link "$LINK" --from "file://$T/home/")"; rc=$?

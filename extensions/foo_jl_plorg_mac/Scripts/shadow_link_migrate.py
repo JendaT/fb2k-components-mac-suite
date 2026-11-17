@@ -27,7 +27,10 @@ Modes (exactly one):
   --check          drift report: values still under the share's volume IDs
                    (registry originalPath /Volumes/<share> or /Volumes/<share>-N,
                    the rule volume_registry_prune.sh uses) or a --from prefix
-  --rollback DIR   restore playlists, metadb and library-v2.0 from a backup
+  --rollback DIR   restore metadb, library-v2.0 and the playlists the migration
+                   rewrote from a backup. If config.sqlite changed since the
+                   backup (volume_registry_prune.sh --apply removes the old
+                   volume ID), add --restore-config or --keep-config.
 
 Safety (apply and rollback):
   - refuses while foobar2000 runs, when --profile is its live profile
@@ -92,6 +95,7 @@ CHUNK = 8 << 20
 ENV_LIVE_PROFILE = "SHADOW_LINK_LIVE_PROFILE"    # path treated as the live profile
 ENV_MIGRATOR_DIRS = "SHADOW_LINK_MIGRATOR_DIRS"  # ':'-separated dirs holding plorg's staged SQL
 ENV_FAIL_SWAP = "SHADOW_LINK_TEST_FAIL_SWAP"     # make swap step N (1-based) fail
+ENV_CRASH_SWAP = "SHADOW_LINK_TEST_CRASH_SWAP"   # exit at once at apply swap step N
 
 UUID = r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
 MAC_VOLUME_PREFIX_RE = re.compile(r"mac-volume://" + UUID + r"/\Z")
@@ -372,6 +376,8 @@ class Paths:
                   self.staged_db + "-journal", self.folders + STAGE_SUFFIX,
                   self.folders + RESTORE_SUFFIX, self.metadb + RESTORE_SUFFIX,
                   self.metadb + "-wal" + RESTORE_SUFFIX, self.metadb + "-shm" + RESTORE_SUFFIX,
+                  self.config + RESTORE_SUFFIX, self.config + "-wal" + RESTORE_SUFFIX,
+                  self.config + "-shm" + RESTORE_SUFFIX,
                   os.path.join(self.profile, LIBRARY + RESTORE_SUFFIX)):
             if os.path.lexists(p):
                 found.append(p)
@@ -500,8 +506,10 @@ def stale_check(paths):
     if stale:
         for p in stale:
             say("  leftover: %s" % p)
-        raise Failure("files from an unfinished run exist (listed above). If it stopped during "
-                      "the swap, run --rollback with its backup; otherwise delete them.")
+        backups = sorted(n for n in os.listdir(paths.profile) if n.startswith(BACKUP_PREFIX))
+        target = "'%s'" % os.path.join(paths.profile, backups[-1]) if backups else "<backup folder>"
+        raise Failure("files from an unfinished run exist (listed above). Run --rollback %s: "
+                      "it removes them and restores the backup." % target)
 
 
 # --------------------------------------------------------------------------
@@ -1039,7 +1047,14 @@ def backup_set(paths, playlists, sidecars):
     return rels, dirs
 
 
-def make_backup(paths, rels, dirs, link_url, froms):
+def write_manifest(bdir, manifest):
+    tmp = os.path.join(bdir, MANIFEST + ".tmp")
+    remove_quietly(tmp)
+    write_new(tmp, json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8"))
+    os.replace(tmp, os.path.join(bdir, MANIFEST))
+
+
+def make_backup(paths, rels, dirs, link_url, froms, rewritten):
     ts = time.strftime("%Y%m%d-%H%M%S")
     bdir = os.path.join(paths.profile, BACKUP_PREFIX + ts)
     n = 2
@@ -1057,13 +1072,15 @@ def make_backup(paths, rels, dirs, link_url, froms):
         if sha256_file(dst) != (size, digest):
             raise Failure("backup copy of %s does not read back identical" % rel)
         files[rel] = {"size": size, "sha256": digest}
+    # "rewritten": the playlists this run replaces; --rollback restores only
+    # those. "post_swap" (added after a successful swap): size and mtime of
+    # the files as swapped in, so --rollback can tell what changed since.
     manifest = {"tool": "shadow_link_migrate", "format": 1,
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "profile": os.path.realpath(paths.profile), "link": link_url,
-                "from": [p.text for p in froms], "dirs": dirs, "files": files}
-    tmp = os.path.join(bdir, MANIFEST + ".tmp")
-    write_new(tmp, json.dumps(manifest, indent=1, sort_keys=True).encode("utf-8"))
-    os.rename(tmp, os.path.join(bdir, MANIFEST))
+                "from": [p.text for p in froms], "dirs": dirs, "files": files,
+                "rewritten": sorted(rewritten)}
+    write_manifest(bdir, manifest)
     return bdir, manifest
 
 
@@ -1167,7 +1184,8 @@ def run_apply(paths, rw, link):
 
     say("backing up ...")
     try:
-        bdir, manifest = make_backup(paths, rels, dirs, rw.link, rw.froms)
+        bdir, manifest = make_backup(paths, rels, dirs, rw.link, rw.froms,
+                                     [PLAYLISTS + "/" + os.path.basename(p) for p, _, _ in pl.changes])
     except OSError as e:
         raise Failure("backup failed (%s); nothing was changed" % e)
     say("backup: %s (%d files)" % (bdir, len(manifest["files"])))
@@ -1240,9 +1258,12 @@ def run_apply(paths, rw, link):
     ops += [("remove", None, paths.metadb + s, METADB + s) for s in sidecars]
     ops += [("replace", tmp, target, rel) for tmp, target, rel in staged[1:]]
     fail_at = int(os.environ.get(ENV_FAIL_SWAP) or 0)
+    crash_at = int(os.environ.get(ENV_CRASH_SWAP) or 0)
     say("swapping %d files ..." % len(ops))
     try:
         for n, (kind, tmp, target, _) in enumerate(ops, 1):
+            if n == crash_at:
+                os._exit(70)
             if n == fail_at:
                 raise OSError("injected failure at swap step %d (%s)" % (n, ENV_FAIL_SWAP))
             if kind == "replace":
@@ -1280,8 +1301,17 @@ def run_apply(paths, rw, link):
     if n != plans[0].before - len(plans[0].deletes):
         raise Failure("swapped metadb has %d rows, expected %d; roll back with --rollback %s"
                       % (n, plans[0].before - len(plans[0].deletes), bdir))
+    manifest["post_swap"] = {rel: list(fingerprint(os.path.join(paths.profile, rel)))
+                             for rel in [METADB] + manifest["rewritten"]}
+    try:
+        write_manifest(bdir, manifest)
+    except OSError as e:
+        say("warning: could not record the post-swap state in the manifest (%s); --rollback "
+            "will not be able to list changes made after the migration" % e)
     say("backup: %s" % bdir)
     say("undo:   %s --profile '%s' --rollback '%s'" % (sys.argv[0], paths.profile, bdir))
+    say("        (if config.sqlite changes before then, e.g. volume_registry_prune.sh --apply, "
+        "add --restore-config or --keep-config)")
     say("OK: migrated %d playlist lines, %d metadb values, folders %s"
         % (pl.lines, plan_changes(plans), "rewritten" if fp.new_bytes is not None else "unchanged"))
     return 0
@@ -1308,37 +1338,117 @@ def load_manifest(bdir, paths):
     return manifest
 
 
-def run_rollback(paths, bdir):
+def config_state(paths, files):
+    """'absent' (no config.sqlite in the backup), 'same' or 'changed'."""
+    if CONFIG not in files:
+        return "absent"
+    if not os.path.isfile(paths.config) or \
+            sha256_file(paths.config) != (files[CONFIG]["size"], files[CONFIG]["sha256"]):
+        return "changed"
+    wal = paths.config + "-wal"
+    if os.path.exists(wal) and os.path.getsize(wal) > 0:
+        return "changed"
+    return "same"
+
+
+def new_dir_name(paths, prefix):
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    d = os.path.join(paths.profile, prefix + ts)
+    n = 2
+    while os.path.lexists(d):
+        d = os.path.join(paths.profile, "%s%s-%d" % (prefix, ts, n))
+        n += 1
+    return d
+
+
+def run_rollback(paths, bdir, config_choice):
     live = is_live(paths.profile)
     header("rollback from %s" % bdir, paths, live)
     if not os.path.isdir(bdir):
         raise Failure("%s is not a directory" % bdir)
     guard(paths, live, "rollback", strict=True)
-    stale_check(paths)
     paths.metadb_sidecars(strict=True)
     manifest = load_manifest(bdir, paths)
     files = manifest["files"]
     say("backup verified against its manifest (%d files)" % len(files))
 
+    # config.sqlite holds the volume registry. volume_registry_prune.sh, run
+    # after a migration, deletes the old volume ID, and the mac-volume:// paths
+    # this rollback brings back cannot resolve without it.
+    restore_config = False
+    cfg = config_state(paths, files)
+    if cfg == "changed":
+        if config_choice is None:
+            raise Failure("config.sqlite differs from the backup (volume_registry_prune.sh --apply or "
+                          "foobar2000 changed it since). The restored mac-volume:// paths need the "
+                          "volume registry it holds. Re-run with --restore-config to restore it from "
+                          "the backup too, or --keep-config to keep it as it is.")
+        if config_choice == "restore":
+            w = paths.config + "-wal"
+            if os.path.exists(w) and os.path.getsize(w) > 0:
+                raise Failure("%s is not empty (foobar2000 running or not shut down cleanly)" % w)
+            restore_config = True
+            say("config.sqlite differs from the backup: restoring it too (--restore-config)")
+        else:
+            say("WARNING: config.sqlite differs from the backup and is kept (--keep-config). The restored "
+                "mac-volume:// paths may not resolve until their volume registry entry is restored "
+                "(the backup copy is %s)." % os.path.join(bdir, CONFIG))
+    elif config_choice:
+        say("note: config.sqlite %s; --%s-config has nothing to do"
+            % ("matches the backup" if cfg == "same" else "is not in the backup", config_choice))
+
+    # Leftovers of an interrupted apply or rollback: only names this tool
+    # creates. The backup is verified, so they are not needed.
+    for p in paths.stale_staging():
+        remove_quietly(p)
+        say("removed leftover of an unfinished run: %s" % p)
+
     db_rels = [r for r in (METADB, METADB + "-wal", METADB + "-shm") if r in files]
-    pl_rels = sorted(r for r in files if r.startswith(PLAYLISTS + "/"))
+    cfg_rels = [r for r in (CONFIG, CONFIG + "-wal", CONFIG + "-shm") if r in files] if restore_config else []
+    all_pl = sorted(r for r in files if r.startswith(PLAYLISTS + "/"))
+    if "rewritten" in manifest:
+        pl_rels = sorted(r for r in manifest["rewritten"] if r in files)
+        if len(pl_rels) < len(all_pl):
+            say("restoring the %d playlists the migration rewrote; the other %d are left as they are"
+                % (len(pl_rels), len(all_pl) - len(pl_rels)))
+    else:
+        pl_rels = all_pl
+        say("note: this backup does not record which playlists the migration rewrote; "
+            "restoring all %d" % len(pl_rels))
     lib_rels = sorted(r for r in files if r.startswith(LIBRARY + "/"))
     has_lib = LIBRARY in manifest.get("dirs", [])
+    file_rels = db_rels + cfg_rels + pl_rels
 
-    need = sum(files[r]["size"] for r in db_rels + pl_rels + lib_rels) + (64 << 20)
+    need = sum(files[r]["size"] for r in file_rels + lib_rels) + (64 << 20)
     avail = free_bytes(paths.profile)
     if avail < need:
         raise Failure("not enough free space: need %s, have %s" % (human(need), human(avail)))
 
-    watched = sorted(set([os.path.join(paths.profile, r) for r in db_rels + pl_rels]
-                         + [paths.metadb, paths.metadb + "-wal", paths.folders]))
+    aside = new_dir_name(paths, ASIDE_PREFIX)
+    post = manifest.get("post_swap")
+    if post is None:
+        say("note: the backup has no record of the profile right after the migration (the apply did "
+            "not finish, or an older version made it); changes made since cannot be listed")
+    else:
+        since = [rel for rel, fp in sorted(post.items())
+                 if fingerprint(os.path.join(paths.profile, rel)) != tuple(fp)]
+        if since:
+            say("WARNING: changed since the migration: %s. The rollback replaces them with the "
+                "pre-migration backup, so those changes (play counts, playlist edits) are undone; "
+                "the current versions are moved to %s." % (", ".join(since), aside))
+
+    watched = [os.path.join(paths.profile, r) for r in file_rels]
+    watched += [paths.metadb, paths.metadb + "-wal", paths.folders]
+    if restore_config:
+        watched += [paths.config, paths.config + "-wal"]
+    watched = sorted(set(watched))
     prints = {p: fingerprint(p) for p in watched}
 
     lib_tmp = os.path.join(paths.profile, LIBRARY + RESTORE_SUFFIX)
     items = []    # (staged, target)
     try:
         say("staging restore copies ...")
-        for rel in db_rels + pl_rels:
+        for rel in file_rels:
             target = os.path.join(paths.profile, rel)
             if not os.path.isdir(os.path.dirname(target)):
                 os.makedirs(os.path.dirname(target))
@@ -1350,7 +1460,7 @@ def run_rollback(paths, bdir):
             for rel in lib_rels:
                 copy_file(os.path.join(bdir, rel), os.path.join(lib_tmp, os.path.relpath(rel, LIBRARY)))
             items.append((lib_tmp, paths.library))
-        for rel in db_rels + pl_rels:
+        for rel in file_rels:
             p = os.path.join(paths.profile, rel) + RESTORE_SUFFIX
             if sha256_file(p) != (files[rel]["size"], files[rel]["sha256"]):
                 raise Failure("restore copy %s does not match the backup" % p)
@@ -1371,20 +1481,17 @@ def run_rollback(paths, bdir):
         raise
 
     # Current files are moved aside, not deleted: a rollback can be undone too.
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    aside = os.path.join(paths.profile, ASIDE_PREFIX + ts)
-    n = 2
-    while os.path.lexists(aside):
-        aside = os.path.join(paths.profile, "%s%s-%d" % (ASIDE_PREFIX, ts, n))
-        n += 1
-    os.mkdir(aside)
     extra = [paths.metadb + s for s in ("-wal", "-shm")
              if os.path.exists(paths.metadb + s) and METADB + s not in files]
+    if restore_config:
+        extra += [paths.config + s for s in ("-wal", "-shm")
+                  if os.path.exists(paths.config + s) and CONFIG + s not in files]
     done = []     # (src, dst) renames, undone in reverse on failure
     fail_at = int(os.environ.get(ENV_FAIL_SWAP) or 0)
     step = 0
     say("swapping ...")
     try:
+        os.mkdir(aside)
         for target in extra:
             step += 1
             if step == fail_at:
@@ -1417,14 +1524,11 @@ def run_rollback(paths, bdir):
             for p in problems:
                 say("  NOT undone: %s" % p)
             raise Failure("rollback swap failed and could not be fully undone; files are in %s" % aside)
-        try:
-            os.rmdir(aside)
-        except OSError:
-            pass
+        shutil.rmtree(aside, ignore_errors=True)
         raise Failure("rollback swap failed; the profile is as it was before the rollback")
 
     bad = []
-    for rel in db_rels + pl_rels + lib_rels:
+    for rel in file_rels + lib_rels:
         p = os.path.join(paths.profile, rel)
         if not os.path.isfile(p) or sha256_file(p) != (files[rel]["size"], files[rel]["sha256"]):
             bad.append(rel)
@@ -1435,8 +1539,9 @@ def run_rollback(paths, bdir):
         bad += sorted(present - set(lib_rels))
     if bad:
         raise Failure("restored files differ from the backup: %s" % ", ".join(bad))
-    say("restored %d metadb file(s), %d playlists, %s"
-        % (len(db_rels), len(pl_rels), "library-v2.0 (%d files)" % len(lib_rels) if has_lib else "no library-v2.0"))
+    say("restored %d metadb file(s), %s%d playlist(s), %s"
+        % (len(db_rels), "%d config file(s), " % len(cfg_rels) if cfg_rels else "", len(pl_rels),
+           "library-v2.0 (%d files)" % len(lib_rels) if has_lib else "no library-v2.0"))
     say("the files they replaced are in %s; delete it once foobar2000 works" % aside)
     say("OK: rolled back; restored files are byte-identical to the backup")
     return 0
@@ -1606,9 +1711,16 @@ def main(argv=None):
                     help="prefix to rewrite: mac-volume://<UUID>/ or file:///.../ (repeatable)")
     ap.add_argument("--share-name", default="music",
                     help="share mountpoint name for --check (default: %(default)s)")
+    cfg = ap.add_mutually_exclusive_group()
+    cfg.add_argument("--restore-config", dest="config_choice", action="store_const", const="restore",
+                     help="--rollback: also restore config.sqlite when it differs from the backup")
+    cfg.add_argument("--keep-config", dest="config_choice", action="store_const", const="keep",
+                     help="--rollback: keep the current config.sqlite when it differs from the backup")
     args = ap.parse_args(argv)
     if (args.dry_run or args.apply) and (not args.link or not args.froms):
         ap.error("--dry-run and --apply need --link and at least one --from")
+    if args.config_choice and not args.rollback:
+        ap.error("--restore-config and --keep-config go with --rollback")
 
     try:
         profile = os.path.abspath(os.path.expanduser(args.profile))
@@ -1620,7 +1732,8 @@ def main(argv=None):
             link, link_url = link_to_url(args.link)
         froms = parse_froms(args.froms, link_url)
         if args.rollback:
-            return run_rollback(paths, os.path.abspath(os.path.expanduser(args.rollback)))
+            return run_rollback(paths, os.path.abspath(os.path.expanduser(args.rollback)),
+                                args.config_choice)
         if args.check:
             return run_check(paths, froms, link_url, link, args.share_name)
         rw = Rewriter(froms, link_url)
