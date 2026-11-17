@@ -89,8 +89,23 @@ void MeterEngine::notePsrPeak(float peak, size_t frames) {
     }
 }
 
+const float *MeterEngine::finiteSamples(const float *lr, size_t frames) {
+    const size_t n = frames * 2;
+    size_t i = 0;
+    while (i < n && std::isfinite(lr[i])) ++i;
+    if (i == n) return lr;
+    // A NaN or infinity would stay in the recursive detectors until restart:
+    // read it as silence instead.
+    _finite.assign(lr, lr + n);
+    for (; i < n; ++i) {
+        if (!std::isfinite(_finite[i])) _finite[i] = 0.0f;
+    }
+    return _finite.data();
+}
+
 void MeterEngine::process(const float *lr, size_t frames, double sampleRate, int channels) {
     if (!lr || frames == 0 || sampleRate <= 0) return;
+    lr = finiteSamples(lr, frames);
     channels = channels == 1 ? 1 : 2;
     if (channels != _channels) {
         _channels = channels;
