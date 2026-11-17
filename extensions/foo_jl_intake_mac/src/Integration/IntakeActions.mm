@@ -1659,8 +1659,8 @@ static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t &rootCount) 
     const std::shared_ptr<const IntakeView> view = providerCurrentView();
     std::vector<const IntakeRecord *> rows;
     std::vector<const IntakeRecord *> libraryRows;
-    // Main thread: at most one slow mac-volume conversion per menu
-    // (IntakeSlowVolumeGuard.h, NativePathMenuBudget).
+    // Main thread: at most 3 slow mac-volume conversions per volume in this
+    // menu (IntakeSlowVolumeGuard.h, NativePathMenuBudget).
     NativePathMenuBudget budget;
     if (view && !view->rendersNothing()) {
         const t_size count = sel.get_count();
@@ -1680,9 +1680,9 @@ static ActionTable menuTableFor(metadb_handle_list_cref sel, size_t &rootCount) 
         }
     }
     if (budget.spent()) {
-        logInfo("menu: a mac-volume path conversion took over " + std::to_string(kSlowNativePathMicros / 1000) +
-                " ms; " + std::to_string(budget.skipped()) +
-                " row(s) on volumes not yet converted in this menu were left out");
+        logInfo("menu: " + std::to_string(kSlowCallsToMark) + " mac-volume path conversions took over " +
+                std::to_string(kSlowNativePathMicros / 1000) + " ms on one volume; " + std::to_string(budget.skipped()) +
+                " row(s) on that volume were left out");
     }
     const std::vector<const IntakeRecord *> roots = selectionRoots(rows);
     const std::vector<const IntakeRecord *> libraryRoots = libraryOnlyRoots(roots, libraryRows);

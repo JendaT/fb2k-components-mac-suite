@@ -127,7 +127,7 @@ std::vector<SwapRow> swapIncomeRows(t_size playlist, const std::unordered_set<st
 
 // The entries of every playlist that still point at an income path of
 // `rootIds` (main thread; one NativePathMenuBudget for all of them, so at
-// most one slow conversion). Fail closed: an entry whose mac-volume path was
+// most 3 slow conversions per volume, and a slow volume never stops another). Fail closed: an entry whose mac-volume path was
 // not converted counts as unchecked, never as "no income row". An entry
 // whose conversion was tried and failed (foobar2000 cannot resolve its
 // volume, e.g. a stale volume id) is not counted: it already points at no

@@ -60,30 +60,44 @@ inline bool isSlowNativePathCall(uint64_t micros) {
     return micros > kSlowNativePathMicros;
 }
 
-// The main thread's allowance while one context menu is built (PLAN.md 3.2
-// and risk 6: no I/O-like stall in menu building). The menu maps every
-// selected row, rows decorate() never saw included, and the guard above
-// stops a stale UUID only after kSlowCallsToMark slow calls. So a menu
-// makes at most one slow conversion of its own: after it, the rest of that
-// menu converts only UUIDs that already converted fast in it, and the rows
-// of any other UUID get no match (as a marked UUID's do). Every call is
-// still reported to the guard, so a stale UUID gets marked over a few
-// menus. One per menu; not thread-safe (the main thread only).
+// The main thread's allowance for one pass that maps many rows at once: a
+// context menu, or the Delete sheet's census over every playlist (PLAN.md
+// 3.2 and risk 6: no I/O-like stall on the main thread). Per UUID: after
+// kSlowCallsToMark slow conversions of one UUID in this pass (counted, not
+// necessarily in a row), the rest of the pass makes no call for that UUID,
+// and its rows get no match (the census counts them unchecked). Other UUIDs
+// are not affected: a stale volume met first no longer stops a fast one
+// (UAT 2026-11-17: one slow conversion used to refuse every UUID not yet
+// converted, 84,139 NAS rows on each Delete). Each stale UUID thus costs at
+// most kSlowCallsToMark slow calls per pass, and every call is still
+// reported to the guard above, which marks a UUID after kSlowCallsToMark
+// slow calls in a row, so later passes skip it from the start. One per
+// pass; not thread-safe (the main thread only).
 class NativePathMenuBudget {
 public:
-    // The menu may call the SDK for a row of `uuid` (exact bytes).
+    // The pass may call the SDK for a row of `uuid` (exact bytes).
     bool allows(std::string_view uuid) const;
-    // A conversion for `uuid` took `micros`.
-    void note(std::string_view uuid, uint64_t micros);
-    // A slow call happened in this menu.
-    bool spent() const { return spent_; }
-    // Rows refused by allows() since the budget was spent (for a log line).
+    // A conversion for `uuid` took `micros`. True only when this call makes
+    // the pass refuse `uuid` from now on (for one Debug line).
+    bool note(std::string_view uuid, uint64_t micros);
+    // Some UUID is refused in this pass.
+    bool spent() const { return refusedCount_ > 0; }
+    // Rows refused by allows() (for a log line).
     size_t skipped() const { return skipped_; }
+    // Slow calls of `uuid` in this pass, and their total time.
+    int slowCalls(std::string_view uuid) const;
+    uint64_t slowMicros(std::string_view uuid) const;
 
 private:
-    bool spent_ = false;
+    struct Volume {
+        std::string uuid;
+        int slow = 0;
+        uint64_t slowMicros = 0;
+    };
+    const Volume *find(std::string_view uuid) const;
+    std::vector<Volume> volumes_;  // UUIDs with a slow call in this pass
+    size_t refusedCount_ = 0;
     mutable size_t skipped_ = 0;
-    std::vector<std::string> fast_;  // UUIDs converted fast in this menu
 };
 
 class SlowVolumeGuard {

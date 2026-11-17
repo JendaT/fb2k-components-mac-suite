@@ -117,25 +117,63 @@ static void testMenuBudget() {
     g_context = "menu-budget";
     static const char *const kUuidC = "00000000-CCCC-4000-8000-000000000003";
     NativePathMenuBudget b;
-    CHECK(b.allows(kUuidA) && b.allows(kUuidB) && !b.spent(), "a fresh menu allows every UUID");
-    b.note(kUuidA, 4);
-    b.note(kUuidA, 6);
+    CHECK(b.allows(kUuidA) && b.allows(kUuidB) && !b.spent(), "a fresh pass allows every UUID");
+    CHECK(!b.note(kUuidA, 4) && !b.note(kUuidA, 6), "fast calls never refuse");
     CHECK(b.allows(kUuidA) && b.allows(kUuidB) && !b.spent(), "fast calls do not spend it");
-    b.note(kUuidB, 45000);
-    CHECK(b.spent(), "one slow call spends it");
-    CHECK(!b.allows(kUuidB), "the slow UUID gets no second call in this menu");
-    CHECK(!b.allows(kUuidC), "nor a UUID this menu has not converted yet");
-    CHECK(b.allows(kUuidA), "a UUID that converted fast in this menu still converts");
-    CHECK(b.skipped() == 2, "refused rows are counted");
-    b.note(kUuidA, 20000);
-    CHECK(b.allows(kUuidA), "exactly 20 ms is not slow");
+    CHECK(!b.note(kUuidB, 45000) && !b.note(kUuidB, 30000), "two slow calls do not refuse yet");
+    CHECK(b.allows(kUuidB) && !b.spent() && b.slowCalls(kUuidB) == 2, "the UUID still converts after two");
+    CHECK(b.note(kUuidB, 25000), "the third slow call refuses it, and says so once");
+    CHECK(b.spent() && !b.allows(kUuidB), "3 slow calls on one UUID refuse it for the rest of the pass");
+    CHECK(b.slowCalls(kUuidB) == 3 && b.slowMicros(kUuidB) == 100000, "count and total time are kept");
+    CHECK(!b.note(kUuidB, 25000), "a fourth slow call does not report again");
+    CHECK(b.allows(kUuidA) && b.allows(kUuidC), "other UUIDs are not affected, converted or not");
+    CHECK(b.skipped() == 1, "refused rows are counted");
+    CHECK(!b.note(kUuidA, 20000) && b.slowCalls(kUuidA) == 0, "exactly 20 ms is not slow");
 
-    NativePathMenuBudget first;
-    first.note(kUuidC, 30000);
-    CHECK(first.spent() && !first.allows(kUuidC) && !first.allows(kUuidA),
-          "slow on the first call: every later mac-volume row of the menu is skipped");
+    // UAT 2026-11-17: a stale volume met first must not refuse a fast one.
+    NativePathMenuBudget census;
+    census.note(kUuidC, 30000);
+    CHECK(census.allows(kUuidA) && census.allows(kUuidC) && !census.spent(),
+          "one slow call on the first UUID refuses nothing");
+    census.note(kUuidC, 30000);
+    census.note(kUuidC, 30000);
+    CHECK(!census.allows(kUuidC) && census.allows(kUuidA),
+          "the stale UUID is refused after 3; a UUID never converted before still converts");
+    CHECK(!census.note(kUuidA, 3) && census.allows(kUuidA), "and keeps converting fast");
+
+    NativePathMenuBudget spread;
+    spread.note(kUuidA, 30000);
+    spread.note(kUuidA, 5);
+    spread.note(kUuidA, 30000);
+    CHECK(spread.allows(kUuidA), "slow calls with fast ones between: two so far");
+    CHECK(spread.note(kUuidA, 30000) && !spread.allows(kUuidA),
+          "the pass counts slow calls, not a streak (the guard counts streaks)");
+
     NativePathMenuBudget next;
-    CHECK(next.allows(kUuidC), "the next menu starts over (the guard decides what stays skipped)");
+    CHECK(next.allows(kUuidB) && next.allows(kUuidC), "the next pass starts over (the guard decides what stays skipped)");
+}
+
+// The guard is unchanged by the per-pass budget: it still marks a UUID after
+// kSlowCallsToMark slow calls in a row and keeps it until reset.
+static void testGuardUnchangedByBudget() {
+    g_context = "guard-and-budget";
+    SlowVolumeGuard g;
+    NativePathMenuBudget b;
+    const uint64_t gen = g.generation();
+    for (int i = 0; i < kSlowCallsToMark; i++) {
+        b.note(kUuidA, 30000);
+        g.noteCall(kUuidA, 30000, gen);
+    }
+    CHECK(g.isSlow(kUuidA) && !b.allows(kUuidA), "both refuse the UUID after 3 slow calls in a row");
+    NativePathMenuBudget fresh;
+    CHECK(g.isSlow(kUuidA) && fresh.allows(kUuidA), "a new pass allows it, the guard still marks it");
+    g.reset();
+    CHECK(!g.isSlow(kUuidA), "until reset");
+    g.noteCall(kUuidB, 30000, g.generation());
+    g.noteCall(kUuidB, 5, g.generation());
+    g.noteCall(kUuidB, 30000, g.generation());
+    g.noteCall(kUuidB, 30000, g.generation());
+    CHECK(!g.isSlow(kUuidB), "a fast call breaks the guard's streak");
 }
 
 int main(void) {
@@ -145,6 +183,7 @@ int main(void) {
         testMarking();
         testConcurrent();
         testMenuBudget();
+        testGuardUnchangedByBudget();
     }
     TEST_MAIN_END();
 }

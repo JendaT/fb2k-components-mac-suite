@@ -17,9 +17,9 @@
 //  a row already swapped) adds that root for Delete local copy… only. Each
 //  item's action_id encodes the menu serial and its index, so a click on an
 //  item of an older menu does nothing. The rows may include ones decorate()
-//  never saw, so mac-volume conversions run under a per-menu budget: at
-//  most one slow conversion per menu (NativePathMenuBudget), after which
-//  rows on volumes not yet converted in that menu map to nothing (one Info
+//  never saw, so mac-volume conversions run under a per-menu budget
+//  (NativePathMenuBudget): a volume with 3 slow conversions in the menu
+//  makes no more calls, and its remaining rows map to nothing (one Info
 //  line). Such a menu has no quick assign (ActionContext
 //  selectionIncomplete): the rows left out may be other roots.
 //

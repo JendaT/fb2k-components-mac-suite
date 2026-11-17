@@ -36,7 +36,8 @@ class NativePathMenuBudget;
 // or `scratch` and is valid until either changes. `menuBudget` (the context
 // menu, main thread): also skips the SDK call for a mac-volume row the
 // budget refuses, and tells it how long each call took
-// (IntakeSlowVolumeGuard.h: at most one slow call per menu). `refused`
+// (IntakeSlowVolumeGuard.h: a volume is refused after 3 slow calls in the
+// pass). `refused`
 // (optional) is set to true when nullptr comes from a mac-volume row whose
 // conversion was not tried (its volume is marked slow, or the budget
 // refused it): unknown rather than no match. A conversion that was tried

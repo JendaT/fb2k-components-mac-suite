@@ -24,21 +24,46 @@ std::string_view macVolumeUuid(std::string_view path) {
     return slash == std::string_view::npos ? rest : rest.substr(0, slash);
 }
 
+const NativePathMenuBudget::Volume *NativePathMenuBudget::find(std::string_view uuid) const {
+    for (const Volume &v : volumes_) {
+        if (v.uuid == uuid) return &v;
+    }
+    return nullptr;
+}
+
 bool NativePathMenuBudget::allows(std::string_view uuid) const {
-    if (!spent_) return true;
-    if (std::find(fast_.begin(), fast_.end(), uuid) != fast_.end()) return true;
+    if (refusedCount_ == 0) return true;
+    const Volume *v = find(uuid);
+    if (v == nullptr || v->slow < kSlowCallsToMark) return true;
     skipped_++;
     return false;
 }
 
-void NativePathMenuBudget::note(std::string_view uuid, uint64_t micros) {
-    if (isSlowNativePathCall(micros)) {
-        spent_ = true;
-        return;
+bool NativePathMenuBudget::note(std::string_view uuid, uint64_t micros) {
+    if (!isSlowNativePathCall(micros)) return false;
+    Volume *v = nullptr;
+    for (Volume &candidate : volumes_) {
+        if (candidate.uuid == uuid) v = &candidate;
     }
-    if (fast_.empty() || fast_.back() != uuid) {
-        if (std::find(fast_.begin(), fast_.end(), uuid) == fast_.end()) fast_.emplace_back(uuid);
+    if (v == nullptr) {
+        volumes_.push_back(Volume{std::string(uuid), 0, 0});
+        v = &volumes_.back();
     }
+    v->slow++;
+    v->slowMicros += micros;
+    if (v->slow != kSlowCallsToMark) return false;
+    refusedCount_++;
+    return true;
+}
+
+int NativePathMenuBudget::slowCalls(std::string_view uuid) const {
+    const Volume *v = find(uuid);
+    return v == nullptr ? 0 : v->slow;
+}
+
+uint64_t NativePathMenuBudget::slowMicros(std::string_view uuid) const {
+    const Volume *v = find(uuid);
+    return v == nullptr ? 0 : v->slowMicros;
 }
 
 bool SlowVolumeGuard::isSlow(std::string_view uuid) const {

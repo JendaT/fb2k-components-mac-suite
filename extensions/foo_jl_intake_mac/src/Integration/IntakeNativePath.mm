@@ -59,7 +59,17 @@ const char *intakeNativePath(const char *path, pfc::string_base &scratch, Native
     }
     const uint64_t micros = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
-    if (menuBudget != nullptr) menuBudget->note(uuid, micros);
+    if (menuBudget != nullptr && menuBudget->note(uuid, micros)) {
+        char line[256];
+        snprintf(line, sizeof line,
+                 "native path: mac-volume %.*s refused for the rest of this menu or census after %d conversions over "
+                 "%llu ms (%llu ms in all, the last %llu ms)",
+                 static_cast<int>(uuid.size()), uuid.data(), menuBudget->slowCalls(uuid),
+                 static_cast<unsigned long long>(kSlowNativePathMicros / 1000),
+                 static_cast<unsigned long long>(menuBudget->slowMicros(uuid) / 1000),
+                 static_cast<unsigned long long>(micros / 1000));
+        logDebug(line);
+    }
     if (guard.noteCall(uuid, micros, generation)) {
         char line[256];
         snprintf(line, sizeof line,
