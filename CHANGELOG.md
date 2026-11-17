@@ -267,6 +267,11 @@ Sort and Remove in the right-click menu, album list drops, and a large bug-fix p
 
 ## Playlist Organizer
 
+### [Unreleased]
+
+#### Added
+- **Shadow link migration tool**: moves a profile from volume-ID paths to a fixed link path, with backup and rollback
+
 ### [1.5.2] - 2026-11-15
 
 #### Fixed
