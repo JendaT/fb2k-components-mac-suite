@@ -2,6 +2,12 @@
 
 All notable changes to Level Meter will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- **Non-finite samples**: A NaN or infinite sample is read as silence, so it can no longer freeze the needle, correlation, balance and loudness until foobar2000 restarts.
+- **Clip light at full scale**: Samples that reach exactly 0 dBFS light the clip light, so clipped PCM shows in sample-peak mode.
+
 ## [0.1.0] - 2026-11-17
 
 First release, contributed by @Scannou (#56).
