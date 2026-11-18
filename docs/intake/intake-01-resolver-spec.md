@@ -24,16 +24,55 @@ tracknumber, disc, date, plus codec/bitrate/samplerate/bitdepth.
 
 ### Pass 2 — merge upward (multi-disc)
 Merge sibling candidates into their parent when:
-- child dir names match disc patterns: `/^(cd|disc|disk|vinyl|side|lp)\s*[-_ ]?\w+$/i`, AND
+- child dir names match the disc pattern: a prefix `cd|disc|disk|vinyl|side|lp`
+  (any case) followed by a numeric index (`CD1`, `cd 2`, `disk-2`, `Disc 07`),
+  optionally followed by a disc title after whitespace, a dash or a bracket
+  (`CD1 - Disc Title`, `CD1 Disc Title`, `Disc 2 - X`); or by a single letter
+  after a separator (`Side A`); or by a spelled-out number one–ten
+  (`Disc One`). Any other word after the prefix is not a disc dir ("Disk
+  Jockey", "Side Projects", "Discography"), AND
 - children share one (albumartist, album) cluster (album name may differ only
   by a disc suffix), OR children are untagged but parent name parses as a
-  release per the naming convention.
+  release per the naming convention, OR the children's files (with the
+  parent's own, if any) form one Various Artists release (below).
+
+The disc number comes from the numeric or spelled index, else the files' disc
+tags, else sibling order. Bootstrap (doc 2) uses the same disc-dir detector.
 
 ### Pass 3 — split downward (dump folders)
 Within one candidate, cluster files by normalized (albumartist|artist, album).
 If >1 cluster with ≥2 files each → split into virtual roots (sidecar per
 cluster, files enumerated explicitly; no file moves). Files not fitting any
-cluster (singletons) → `singles` queue entries.
+cluster (singletons) → `singles` queue entries. A candidate whose files form
+one Various Artists release is not split: it is one root.
+
+### Various Artists releases
+Some compilations set each track's album artist to the track's own artist,
+so the (albumartist, album) clusters split one release into per-artist roots
+or singles. A file set is one VA release when all of these hold:
+- every file has the same normalized album tag;
+- the album-artist tags disagree (≥2 distinct values; a set whose album
+  artist is absent or uniform already forms one cluster);
+- ≥3 distinct lead credits (album artist, else artist, with a `feat.`/`ft.`/
+  `featuring` guest suffix dropped), none on half the files or more, so an
+  artist album with a few guest-credited tracks stays that artist's album;
+- every file has a track position and no (disc, track) position is claimed
+  twice, except by copies of the same track (same artist and title: quality
+  shadows). This keeps two artists' same-titled albums apart (both have a
+  track 1).
+
+A VA root gets `cluster.albumartist` "Various Artists" and its purity signal
+clusters by album alone. Doc 2 routes an artist of Various Artists (also
+Various, VA, V.A., V/A) to `structure_slot: "compilations"`.
+
+### Disc in the track number
+When no file of a candidate has a disc tag, every file has a track number,
+each is ≥101 and not a multiple of 100, and the hundreds present are 1..k
+with no gap (101.., 201.., …), the resolver reads disc = ⌊n/100⌋, track =
+n mod 100. Files merged from disc dirs must decode to their dir's disc
+number, else the numbers stay plain. The decoded positions feed the track
+sequence signal, the quality-shadow pairing and the VA position check only;
+`files[].tags` keep the track numbers as read.
 
 ### Pass 4 — signals & confidence
 Per root, compute confidence 0–1 from weighted signals:
@@ -56,10 +95,29 @@ never auto-proposed).
 filename pattern parse (`NN - Title`, `NN. Title`, `Artist - Title`) →
 parent dir name parse → fingerprint via identify stage (doc 2), not here.
 
+### Cluster display values
+`cluster.albumartist` and `cluster.album` come from tags (majority), the dir
+name parse (doc 2 grammars) is the fallback. One narrow correction: a trailing
+scene source token in the tag album (WEB, CD, VINYL, TAPE, FLAC, MP3, as in
+"Album WEB") is dropped only when the dir name parse gives the same album
+without it (normalized comparison). Any other tag album is kept as is. A
+Various Artists release (above) is credited "Various Artists".
+`files[].tags` record the tags as read, with one exception: a file merged
+from a disc dir that has no disc tag gets the dir's disc number as `disc`.
+
 ## Edge cases (must-handle list)
 
 - Archives (`zip,rar,7z`): `scan` unpacks to `<name>.unpacked/`; resolver
   treats unpacked dir; original archive referenced in sidecar `source.archive`.
+  rar entries are verified against their header CRC32; encrypted,
+  BLAKE2-only and multi-volume archives are refused. A solid RAR4 is
+  extracted with `unar` when it is on PATH (bsdtar cannot extract one), else
+  refused. Entry names in no recorded encoding (zip names without the UTF-8
+  flag, plain RAR4 names) are decoded with the best-scoring of cp437, cp852,
+  cp1252 and cp1250 (tools/intake README); when a tie between them was
+  broken by the fixed order, every root from that archive gets
+  `archive_name_code_page_guessed:<cp>` in `quality.issues` and
+  `needs_review: true`.
 - `iso/bin+cue`: flag `needs_review`, never auto-unpack.
 - Mixed-quality duplicates in one dir (mp3 + flac of same tracks): cluster by
   (album, tracknumber); prefer lossless set as primary, mark each file of the
@@ -70,12 +128,20 @@ parent dir name parse → fingerprint via identify stage (doc 2), not here.
   dir is its own root; artist dir is never a root if ≥2 children resolved.
 - Hidden/system junk: skip `@eaDir`, `.DS_Store`, `._*`, `Thumbs.db`.
 - Pre-existing sidecar: re-resolve only with `--force`; otherwise trust it.
-- FLAC with unset STREAMINFO MD5: `resolve` is pure and never fixes the file;
-  the sidecar records an `fsha1:` fallback hash plus a `flac_md5_unset`
-  quality issue. Whether the repair happens at execute (on the copies) at all
-  is **open** — it conflicts with doc 3's verify step and with hash
-  immutability; filed as CR-001.4 in `CHANGE-REQUESTS.md`. Execute does not
-  repair today.
+- FLAC with unset STREAMINFO MD5 (doc 3 v1.2, CR-003 option d): keyed
+  `flacmd5:` + MD5 of the decoded audio (`flac -d --force-raw-format
+  --endian=little --sign=signed`, streamed into the hasher), the value a
+  correct STREAMINFO MD5 holds, so tag writes and a later repair keep the
+  key. `flac_md5_unset` in `quality.issues` marks the value as computed. No
+  repair at any stage: `resolve` never mutates inputs and `execute` never
+  rewrites the audio of the copies. Without a usable decoder (`flac` not on
+  PATH, or decoding fails, which often means a corrupt file) the file is
+  keyed `fsha1:` (whole-file SHA1) with `flac_decoder_missing` or
+  `flac_decode_failed` beside `flac_md5_unset`, the root gets
+  `needs_review: true`, and execute writes no provenance tags to that file
+  (issue `provenance_tags_skipped:flac_fsha1`). Verify re-checks each file
+  against the key it was recorded with, so an `fsha1:` file still verifies
+  after `flac` is installed. `flac` is a resolve-time dependency.
 
 ## Tier eligibility (normative)
 
@@ -141,6 +207,13 @@ integer kbps (lossy only, null for lossless); `discs` is
 
 `identification` and `proposal` objects are defined in doc 2; `status`
 lifecycle and `audio_hash` algorithm are normative in doc 3.
+
+`history[]` is append-only, one entry per transition or stage:
+`{ "ts", "event", "by" }`. `by` is `intake@<CLI semver>`, the CLI that made
+the transition (the resolver's own version is `resolver_version`, the
+engine's is `proposal.engine_version`). A `rejected` entry (`intake reject`, doc 3) also
+carries `"reason"` (free-form text) when `--reason` was given:
+`{ "ts": "…", "event": "rejected", "by": "intake@0.2.0", "reason": "…" }`.
 
 ## CLI surface (this doc's commands)
 

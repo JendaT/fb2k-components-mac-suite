@@ -16,8 +16,9 @@ resolver:
     bit_depth_over: 16
     sample_rate_over: 48000
 
-# Tier routing (doc 02). Roots are synthetic fixture paths; assign only
-# computes target strings, it never touches these locations.
+# Tier routing (doc 02). Roots are synthetic fixture paths that do not exist:
+# the library layout lists the target collection dir (read only) and finds
+# nothing, so every non-VA release goes to [Releases]. Nothing is written here.
 tiers:
   music.uhq: { root: /library/music.uhq, gate: hires, growth: active }
   music.hq: { root: /library/music.hq, gate: lossless-first, growth: primary }

@@ -1,11 +1,13 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { unpackArchive, type UnpackResult } from "./archive.ts";
-import { incomeFor, loadConfig, loadIncome, rulesDir } from "./config.ts";
+import { ENGINE_VERSION } from "./assign.ts";
+import { incomeFor, loadConfig, loadIncome, loadIncomeConfig, rulesDir } from "./config.ts";
 import { Resolver, type ResolveContext } from "./resolver.ts";
 import { readSidecar, summarize, writeRoot, type SidecarSummary } from "./sidecar.ts";
-import type { IncomeFolder, JsonError, Sidecar } from "./types.ts";
+import { CLI_VERSION, type IncomeFolder, type JsonError, type Sidecar } from "./types.ts";
 import { ARCHIVE_EXTS, ext, isSidecarName, walkDirs } from "./util.ts";
+import { codePageName, type CodePage, type CodePageBy } from "./zipnames.ts";
 
 /**
  * `data` is the JSON envelope's payload (doc 03). It is generic so each command
@@ -18,6 +20,12 @@ export interface CommandResult<T = unknown> {
   data: T;
   errors: JsonError[];
   exitCode: 0 | 1 | 2;
+  /**
+   * One-line hints for a person at the terminal (e.g. the beets shim failed).
+   * Human mode prints them to stderr; they are never part of the `--json`
+   * envelope, whose shape doc 03 fixes.
+   */
+  notices?: string[];
 }
 
 /** One release resolved and (unless --dry-run) written during scan/resolve. */
@@ -42,11 +50,25 @@ export interface ResolveData {
   kept: string[];
 }
 
+/**
+ * One archive of a scan. `code_page` is the code page the entry names were
+ * decoded with (zip names that are not UTF-8, plain RAR4 names) and how it
+ * was chosen: `score` (lowest penalty), `name_match` (a tie broken by the
+ * archive's own name) or `order` (a tie broken by the tie order, a guess the
+ * resolver flags); null when the names needed none or nothing was decided.
+ */
+export interface ScanArchive {
+  archive: string;
+  target: string;
+  action: UnpackResult["action"];
+  code_page: { cp: string; by: CodePageBy } | null;
+}
+
 export interface ScanBlock {
   income: string | null;
   path: string;
   dry_run: boolean;
-  archives: { archive: string; target: string; action: UnpackResult["action"] }[];
+  archives: ScanArchive[];
   written: WrittenRoot[];
   kept: string[];
 }
@@ -58,22 +80,46 @@ export interface CommonOpts {
   filters: Record<string, string>;
 }
 
+/**
+ * Doc 03 exit codes: 0 ok / 1 partial / 2 error. Keeps two envelope invariants
+ * the component relies on (CR-EXT-001 CR-1): `ok` is true iff the exit code is
+ * 0, and a command that produced nothing reports `data: null` rather than an
+ * empty collection — exit 2 previously emitted `null` from fail() but `[]` from
+ * the "nothing matched" paths, for no reason a consumer could predict.
+ */
+export function finish<T>(rows: T[], errors: JsonError[]): CommandResult<T[] | null> {
+  if (errors.length === 0) return { data: rows, errors, exitCode: 0 };
+  return rows.length > 0 ? { data: rows, errors, exitCode: 1 } : { data: null, errors, exitCode: 2 };
+}
+
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
 }
 
+/**
+ * Resolve `target` and write its sidecars (unless --dry-run). With --force, a
+ * root whose status forbids a rebuild (doc 03: placing, placed, gc_done) keeps
+ * its sidecar untouched and comes back as an E_BAD_STATUS error carrying the
+ * root dir as `path`; `verb` names the command in that message.
+ */
 async function resolveInto(
   target: string,
   income: IncomeFolder | null,
+  archiveCodePages: readonly CodePage[],
   opts: CommonOpts,
-): Promise<{ written: WrittenRoot[]; kept: string[] }> {
+  verb: string,
+): Promise<{ written: WrittenRoot[]; kept: string[]; errors: JsonError[] }> {
   const ctx: ResolveContext = {
     config: loadConfig(),
     income: income ? { name: income.name, source_type: income.source_type, root: income.path } : null,
+    archiveCodePages,
     force: opts.force,
     now: () => new Date(),
   };
-  const { roots, kept } = await new Resolver(ctx).resolveTree(target);
+  const { roots, kept, blocked } = await new Resolver(ctx).resolveTree(target);
+  const errors: JsonError[] = blocked.map((b) => ({
+    code: "E_BAD_STATUS", msg: `cannot ${verb} --force from status ${b.status}`, path: b.dir,
+  }));
   const written: WrittenRoot[] = [];
   for (const root of roots) {
     let sidecarPath = join(root.dir, root.sidecarName);
@@ -93,7 +139,7 @@ async function resolveInto(
       album: s.cluster.album,
     });
   }
-  return { written, kept };
+  return { written, kept, errors };
 }
 
 export async function cmdResolve(args: string[], opts: CommonOpts): Promise<CommandResult<ResolveData | null>> {
@@ -102,13 +148,14 @@ export async function cmdResolve(args: string[], opts: CommonOpts): Promise<Comm
   const target = resolve(targetArg);
   if (!existsSync(target) || !statSync(target).isDirectory())
     return fail("E_NOT_FOUND", "not a directory", target);
-  const income = incomeFor(target, loadIncome());
-  const { written, kept } = await resolveInto(target, income, opts);
-  return {
-    data: { target, dry_run: opts.dryRun, written, kept },
-    errors: [],
-    exitCode: 0,
-  };
+  const config = loadIncomeConfig();
+  const income = incomeFor(target, config.income);
+  const { written, kept, errors } = await resolveInto(target, income, config.archiveCodePages, opts, "resolve");
+  const data: ResolveData = { target, dry_run: opts.dryRun, written, kept };
+  // Doc 03 legal source statuses: refused roots are errors, the rest proceed
+  // (exit 1 when some root was written, 2 when none was).
+  if (errors.length === 0) return { data, errors, exitCode: 0 };
+  return written.length > 0 ? { data, errors, exitCode: 1 } : { data: null, errors, exitCode: 2 };
 }
 
 function findArchives(root: string): string[] {
@@ -121,7 +168,7 @@ function findArchives(root: string): string[] {
 }
 
 export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean }): Promise<CommandResult<ScanBlock[] | null>> {
-  const income = loadIncome();
+  const { income, archiveCodePages } = loadIncomeConfig();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
 
@@ -145,44 +192,78 @@ export async function cmdScan(args: string[], opts: CommonOpts & { all: boolean 
     }
     const archives: UnpackResult[] = [];
     for (const arc of findArchives(inc.path)) {
-      const r = await unpackArchive(arc, opts.dryRun);
+      const r = await unpackArchive(arc, opts.dryRun, { codePages: archiveCodePages });
       archives.push(r);
       if (r.action === "failed")
         errors.push({ code: "E_ARCHIVE", msg: r.error ?? "unpack failed", path: r.archive });
       if (r.action === "tool_missing")
         errors.push({ code: "E_ARCHIVE_TOOL", msg: r.error ?? "tool missing", path: r.archive });
     }
-    const { written, kept } = await resolveInto(inc.path, inc, opts);
+    const resolved = await resolveInto(inc.path, inc, archiveCodePages, opts, "scan");
+    errors.push(...resolved.errors);
+    const { written, kept } = resolved;
     data.push({
       income: inc.name,
       path: inc.path,
       dry_run: opts.dryRun,
-      archives: archives.map((a) => ({ archive: a.archive, target: a.target, action: a.action })),
+      archives: archives.map((a) => ({
+        archive: a.archive,
+        target: a.target,
+        action: a.action,
+        code_page: a.codePage ? { cp: codePageName(a.codePage.cp), by: a.codePage.by } : null,
+      })),
       written,
       kept,
     });
   }
-  const exitCode = errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
-  return { data, errors, exitCode };
+  return finish(data, errors);
 }
 
-function sidecarField(s: Sidecar, dir: string, key: string): string {
-  switch (key) {
-    case "status": return s.status;
-    case "needs_review": return String(s.cluster.needs_review);
-    case "income_folder": return s.source.income_folder ?? "";
-    case "source_type": return s.source.source_type;
-    case "tier": case "tier_eligible": return s.quality.tier_eligible;
-    case "virtual": return String(s.virtual);
-    case "singles": return String(s.singles === true);
-    case "albumartist": return s.cluster.albumartist ?? "";
-    case "album": return s.cluster.album ?? "";
-    case "root_path": return dir;
-    default: return "";
+/**
+ * Doc 03 `status --filter` keys, each the sidecar value compared as a string:
+ * `true`/`false` for the flags, "" for an absent value. `tier_eligible` is an
+ * alias of `tier` (one key, so giving both is giving one key twice).
+ */
+const FILTER_KEYS: Record<string, (s: Sidecar, dir: string) => string> = {
+  id: (s) => s.id,
+  status: (s) => s.status,
+  needs_review: (s) => String(s.cluster.needs_review),
+  income_folder: (s) => s.source.income_folder ?? "",
+  source_type: (s) => s.source.source_type ?? "",
+  tier: (s) => s.quality.tier_eligible,
+  virtual: (s) => String(s.virtual),
+  singles: (s) => String(s.singles === true),
+  albumartist: (s) => s.cluster.albumartist ?? "",
+  album: (s) => s.cluster.album ?? "",
+  root_path: (_s, dir) => dir,
+};
+const FILTER_ALIASES: Record<string, string> = { tier_eligible: "tier" };
+
+/** Resolve filter keys to their field readers; an unknown or repeated key is E_BAD_ARGS. */
+function compileFilters(filters: Record<string, string>): { tests: [(s: Sidecar, dir: string) => string, string][]; errors: JsonError[] } {
+  const tests: [(s: Sidecar, dir: string) => string, string][] = [];
+  const errors: JsonError[] = [];
+  const seen = new Map<string, string>();
+  for (const [key, value] of Object.entries(filters)) {
+    const canonical = Object.hasOwn(FILTER_ALIASES, key) ? FILTER_ALIASES[key]! : key;
+    if (!Object.hasOwn(FILTER_KEYS, canonical)) {
+      errors.push({ code: "E_BAD_ARGS", msg: `unknown --filter key: ${key}`, path: null });
+      continue;
+    }
+    const prior = seen.get(canonical);
+    if (prior !== undefined) {
+      errors.push({ code: "E_BAD_ARGS", msg: `--filter key given twice: ${prior} and ${key}`, path: null });
+      continue;
+    }
+    seen.set(canonical, key);
+    tests.push([FILTER_KEYS[canonical]!, value]);
   }
+  return { tests, errors };
 }
 
 export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<SidecarSummary[] | null> {
+  const filters = compileFilters(opts.filters);
+  if (filters.errors.length > 0) return { data: null, errors: filters.errors, exitCode: 2 };
   const income = loadIncome();
   if (income.length === 0)
     return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
@@ -205,7 +286,7 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
           errors.push({ code: "E_PARSE", msg: "unreadable sidecar", path: p });
           continue;
         }
-        const match = Object.entries(opts.filters).every(([k, v]) => sidecarField(sc, e.path, k) === v);
+        const match = filters.tests.every(([field, v]) => field(sc, e.path) === v);
         if (match) summaries.push({ ...summarize(sc, e.path), _sort: p });
       }
     }
@@ -215,6 +296,42 @@ export function cmdStatus(_args: string[], opts: CommonOpts): CommandResult<Side
   return { data, errors, exitCode: errors.length === 0 ? 0 : 1 };
 }
 
-export function cmdVersion(): CommandResult<{ cli: string; schema: number; engine: string }> {
-  return { data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [], exitCode: 0 };
+/** One configured income folder (doc 03 `income --json`). */
+export interface IncomeRow {
+  name: string;
+  path: string;
+  exists: boolean;
+}
+
+/**
+ * The income folders from income.yaml, in file order. `path` is the absolute
+ * path every other command walks (loadIncome: `~` expanded, relative paths
+ * against the rules dir), so status `root_path`s start with it. Read-only.
+ */
+export function cmdIncome(): CommandResult<IncomeRow[] | null> {
+  const income = loadIncome();
+  if (income.length === 0)
+    return fail("E_NO_RULES", `no income folders configured (rules dir: ${rulesDir() ?? "not found"})`);
+  const data = income.map((inc) => {
+    let exists = false;
+    try {
+      exists = statSync(inc.path).isDirectory();
+    } catch {
+      // missing or unreadable: exists stays false
+    }
+    return { name: inc.name, path: inc.path, exists };
+  });
+  return { data, errors: [], exitCode: 0 };
+}
+
+export interface VersionData {
+  cli: string;
+  schema: number;
+  engine: string;
+  commands: string[];
+}
+
+/** `commands` is the dispatch table's key list (cli.ts), passed in so the two cannot drift. */
+export function cmdVersion(commands: readonly string[]): CommandResult<VersionData> {
+  return { data: { cli: CLI_VERSION, schema: 1, engine: ENGINE_VERSION, commands: [...commands] }, errors: [], exitCode: 0 };
 }

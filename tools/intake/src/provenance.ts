@@ -2,7 +2,12 @@
 // INTAKE_BATCH written to the COPIES only, via TXXX (mp3) / VorbisComment
 // (flac). Writers must not change audio_hash: metaflac edits only metadata
 // blocks (STREAMINFO MD5 untouched); for mp3 a fresh ID3v2.3 block is
-// prepended, which mp3sha1 strips. Other formats are skipped with an issue.
+// prepended, which mp3sha1 strips. A FLAC keyed by the `fsha1:` fallback
+// (whole-file SHA1) gets no tags, since any tag write changes that key. Other
+// formats are skipped with an issue. A skip is reported as
+// `provenance_tags_skipped:<why>`; any other issue (metaflac_missing,
+// metaflac_failed, provenance_write_failed) is a failed write, which fails
+// the root at execute.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { ext } from "./util.ts";
@@ -62,11 +67,16 @@ function mp3PrependTags(path: string, tags: ProvenanceTags): TagWriteResult {
   return { written: true, issue: null };
 }
 
-/** Write provenance tags to one copied file. Never throws. */
-export async function writeProvenance(path: string, tags: ProvenanceTags): Promise<TagWriteResult> {
+/**
+ * Write provenance tags to one copied file; `key` is its sidecar audio_hash.
+ * Never throws.
+ */
+export async function writeProvenance(path: string, tags: ProvenanceTags, key: string): Promise<TagWriteResult> {
   try {
     switch (ext(path)) {
       case "flac":
+        // doc 03 execute step 2: none to a FLAC keyed by the fsha1: fallback.
+        if (key.startsWith("fsha1:")) return { written: false, issue: "provenance_tags_skipped:flac_fsha1" };
         return await metaflacSetTags(path, tags);
       case "mp3":
         return mp3PrependTags(path, tags);

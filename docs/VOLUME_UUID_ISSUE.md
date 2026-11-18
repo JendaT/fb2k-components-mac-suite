@@ -27,6 +27,10 @@ Implemented in `UUIDRemappingWindowController`. Scans `.fplite` files, identifie
 
 Automatic startup and runtime UUID synchronization. See [deep research](research/volume-uuid-instability-deep-research.md) for comprehensive analysis covering macOS internals, foobar SDK, industry solutions, and design patterns.
 
+### Shadow link (2026-11)
+
+Takes the volume out of the paths entirely: foobar2000 stores a fixed `file://` path under a symlink that a mount agent keeps pointing at the current mount. Includes a one-time migration tool. See [shadow-link.md](shadow-link.md).
+
 This affects playlist management globally - any component storing `mac-volume://` URLs faces this issue. The Playlist Organizer (plorg) would be the appropriate place for such a cleanup tool since it already handles cross-playlist operations.
 
 ## Impact on SimPlaylist Cover Art (Fixed 2026-05-24)

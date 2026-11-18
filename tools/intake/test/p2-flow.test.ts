@@ -58,8 +58,10 @@ test("assign (engine): proposal with tier-routed target path", async () => {
   expect(sc.proposal?.target_collection).toBe(PCP);
   expect(sc.proposal?.confidence).toBe(0.95); // unique artist prior short-circuit
   expect(sc.proposal?.assigned_by).toBe("engine");
+  // The fixture tier roots do not exist, so the collection holds no release
+  // by the artist: the [Releases] slot (doc 02, amendment 003).
   expect(sc.proposal?.target_path).toBe(
-    `/library/music.hq/${PCP}/Aes Dana/Aes Dana [2012] Pollen (Ultimae Records; inre042)`,
+    `/library/music.hq/${PCP}/[Releases]/Aes Dana [2012] Pollen (Ultimae Records; inre042)`,
   );
   expect(sc.history.at(-1)?.event).toBe("assigned");
 
@@ -74,7 +76,7 @@ test("assign routes uhq releases into the uhq tier root", async () => {
   expect(result.exitCode).toBe(0);
   const sc = readSidecar(join(dir, ".intake.json"))!;
   expect(sc.proposal?.target_path).toBe(
-    "/library/music.uhq/[Downtempo & Electronica]/Sync24/Sync24 [2024] Omnimotion Remixed",
+    "/library/music.uhq/[Downtempo & Electronica]/[Releases]/Sync24 [2024] Omnimotion Remixed",
   );
 });
 
@@ -97,7 +99,7 @@ test("user override: feedback loop appends override log and genre-map counts", a
   expect(sc.proposal?.target_collection).toBe("[Ambient]");
   expect(sc.proposal?.assigned_by).toBe("user");
   expect(sc.proposal?.target_path).toBe(
-    "/library/music.hq/[Ambient]/Solar Fields/Solar Fields [2009] Movements",
+    "/library/music.hq/[Ambient]/[Releases]/Solar Fields [2009] Movements",
   );
 
   const overrides = readFileSync(join(corpus.rules, "overrides.log.yaml"), "utf8");
@@ -148,7 +150,9 @@ test("bootstrap: read-only tree scan produces maps and naming report", () => {
   };
   expect(labels.labels["Ultimae Records"]?.[PCP]).toBe(2);
 
-  const report = readFileSync(join(out, "naming-variants-report.md"), "utf8");
+  // The report goes to docs/ (the rules repo layout), not the --out root.
+  expect(existsSync(join(out, "naming-variants-report.md"))).toBe(false);
+  const report = readFileSync(join(out, "docs", "naming-variants-report.md"), "utf8");
   expect(report).toContain("bracket_year_paren_label | 2");
   expect(report).toContain("completely unparseable dirname");
 

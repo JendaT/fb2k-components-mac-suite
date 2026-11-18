@@ -15,7 +15,7 @@ import { cmdResolve } from "../src/commands.ts";
 import { cmdApprove, cmdExecute, cmdGc, cmdPropose } from "../src/commands-p3.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {},
@@ -52,6 +52,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
 
   // Two discs whose files share basenames: copied from the multi-disc fixture
   // (distinct audio, disc tags 1 and 2 intact) but renamed to bare numbers, as

@@ -64,7 +64,7 @@ test("mp3: ID3v2 rewrite does not change audio_hash", async () => {
   // real tag editor does: replace only the ID3v2 block, keep audio bytes.
   const orig = new Uint8Array(readFileSync(MP3));
   expect(String.fromCharCode(...orig.subarray(0, 3))).toBe("ID3");
-  const before = audioHashBuffer("x.mp3", orig);
+  const before = await audioHashBuffer("x.mp3", orig);
 
   const oldSize =
     ((orig[6]! & 0x7f) << 21) | ((orig[7]! & 0x7f) << 14) | ((orig[8]! & 0x7f) << 7) | (orig[9]! & 0x7f);
@@ -73,19 +73,19 @@ test("mp3: ID3v2 rewrite does not change audio_hash", async () => {
   const header = new Uint8Array([0x49, 0x44, 0x33, 4, 0, 0, 0, 0, (300 >> 7) & 0x7f, 300 & 0x7f]);
   const retag = new Uint8Array([...header, ...newTagBody, ...audio]);
 
-  const after = audioHashBuffer("x.mp3", retag);
+  const after = await audioHashBuffer("x.mp3", retag);
   expect(after.hash).toBe(before.hash);
 });
 
 test("mp3: appended ID3v1 and APEv2 tails are excluded", async () => {
   const orig = readFileSync(MP3);
-  const { hash } = audioHashBuffer("x.mp3", new Uint8Array(orig));
+  const { hash } = await audioHashBuffer("x.mp3", new Uint8Array(orig));
 
   // ID3v1: 128-byte "TAG" block at the end.
   const id3v1 = new Uint8Array(128);
   id3v1.set([0x54, 0x41, 0x47]); // "TAG"
   const withV1 = new Uint8Array([...orig, ...id3v1]);
-  expect(audioHashBuffer("x.mp3", withV1).hash).toBe(hash);
+  expect((await audioHashBuffer("x.mp3", withV1)).hash).toBe(hash);
 
   // APEv2: footer-only empty tag (32 bytes, size=32, no header flag).
   const ape = new Uint8Array(32);
@@ -93,15 +93,16 @@ test("mp3: appended ID3v1 and APEv2 tails are excluded", async () => {
   new DataView(ape.buffer).setUint32(8, 2000, true); // version
   new DataView(ape.buffer).setUint32(12, 32, true); // size incl footer
   const withApe = new Uint8Array([...orig, ...ape]);
-  expect(audioHashBuffer("x.mp3", withApe).hash).toBe(hash);
+  expect((await audioHashBuffer("x.mp3", withApe)).hash).toBe(hash);
 });
 
-test("flac with unset STREAMINFO MD5 falls back to fsha1 + issue", () => {
+test("flac buffer with unset STREAMINFO MD5: keyed by the decoded audio (CR-003)", async () => {
+  const { hash: original } = await audioHash(FLAC);
   const buf = new Uint8Array(readFileSync(FLAC));
   buf.fill(0, 8 + 18, 8 + 34); // zero the MD5 inside STREAMINFO
-  const { hash, issues } = audioHashBuffer("x.flac", buf);
+  const { hash, issues } = await audioHashBuffer("x.flac", buf); // decoded via stdin
   expect(issues).toEqual(["flac_md5_unset"]);
-  expect(hash).toBe("fsha1:" + sha1Hex(buf));
+  expect(hash).toBe(original); // what the STREAMINFO held before it was zeroed
 });
 
 test("wav: hash is over the data chunk only", async () => {
@@ -123,7 +124,7 @@ test("wav: hash is over the data chunk only", async () => {
   expect(hash).toBe(`pcmsha1:${found}`);
 });
 
-test("dsf: hash is over the data chunk payload (synthetic)", () => {
+test("dsf: hash is over the data chunk payload (synthetic)", async () => {
   const payload = new TextEncoder().encode("dsd-bitstream-payload");
   const fmt = new Uint8Array(52); // fmt chunk: id+size+content
   fmt.set(new TextEncoder().encode("fmt "));
@@ -136,7 +137,7 @@ test("dsf: hash is over the data chunk payload (synthetic)", () => {
   head.set(new TextEncoder().encode("DSD "));
   new DataView(head.buffer).setUint32(4, 28, true);
   const file = new Uint8Array([...head, ...fmt, ...data]);
-  const { hash, issues } = audioHashBuffer("x.dsf", file);
+  const { hash, issues } = await audioHashBuffer("x.dsf", file);
   expect(issues).toEqual([]);
   expect(hash).toBe("pcmsha1:" + sha1Hex(payload));
 });

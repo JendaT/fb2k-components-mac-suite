@@ -2,7 +2,9 @@
 // (status lifecycle and audio_hash per docs/intake/intake-03-contract-spec.md).
 
 export const SCHEMA_VERSION = 1;
-export const RESOLVER_VERSION = "0.1.0";
+export const RESOLVER_VERSION = "0.2.0";
+/** CLI semver (doc 03 Versioning): `intake version` and journal records. */
+export const CLI_VERSION = "0.3.0";
 
 export type Status =
   | "new"
@@ -13,6 +15,19 @@ export type Status =
   | "placed"
   | "gc_done"
   | "rejected";
+
+/**
+ * Doc 03 "Legal source statuses": nothing has reached the library yet. The
+ * legal sources of `identify` and `assign`.
+ */
+export const PRE_LIBRARY_STATUSES: ReadonlySet<Status> = new Set<Status>(["new", "resolved", "proposed", "approved"]);
+
+/**
+ * Doc 03 "Legal source statuses": a rebuild (`resolve --force`, and `scan
+ * --force`, which resolves the same way) is refused on these, since it would
+ * drop the placement record and its journal link.
+ */
+export const NO_REBUILD_STATUSES: ReadonlySet<Status> = new Set<Status>(["placing", "placed", "gc_done"]);
 
 export type Tier = "uhq" | "hq" | "reject";
 
@@ -59,6 +74,7 @@ export interface HistoryEvent {
   ts: string;
   event: string;
   by: string;
+  reason?: string; // `rejected` entries only, when `intake reject --reason` was given
 }
 
 // ---- identification (doc 02, identify stage) ------------------------------
@@ -92,6 +108,13 @@ export interface Identification {
   grammar: string | null; // which folder-name grammar matched (fast path)
   candidates: IdentCandidate[] | null; // top 3 when ambiguous
   identified_at: string;
+  /**
+   * Each evidence source that failed, e.g. `discogs_unreachable` or the beets
+   * shim's error text (`beets_unavailable`, `shim_unavailable`), so an
+   * `unconfirmed` status is not read as checked and not found. Present only
+   * when non-empty.
+   */
+  issues?: string[];
 }
 
 // ---- proposal (doc 02, assign stage) ---------------------------------------
@@ -115,10 +138,17 @@ export interface Proposal {
   target_collection: string;
   confidence: number;
   margin: number;
-  target_path: string | null; // null when tier is reject (no legal target)
-  structure_slot: StructureSlot;
+  target_path: string | null; // null when no target can be built (assign.noTargetReason)
+  structure_slot: StructureSlot | null; // null when target_path is null, except "singles" (pending slot, doc 02)
   assigned_by: "engine" | "user";
   alternates_shown: boolean;
+  /**
+   * Doc 02 "Existing library folders": the artist's existing releases in
+   * `[Releases]` or loose in the collection that this placement makes belong
+   * in an artist folder, relative to the tier root. Present only when
+   * non-empty; nothing is moved. Not part of the `status` summary.
+   */
+  restructure_candidates?: string[];
 }
 
 export interface Sidecar {

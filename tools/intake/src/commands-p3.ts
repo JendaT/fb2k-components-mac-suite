@@ -1,25 +1,30 @@
-// P3 commands: propose, approve, execute, gc (doc 03 execute protocol +
-// status lifecycle). Execute copies and verifies; it never moves or deletes
+// P3 commands: propose, approve, reject, execute, gc (doc 03 execute protocol
+// + status lifecycle). Execute copies and verifies; it never moves or deletes
 // income files — deletion is gc's job, after journal re-verification.
 
 import {
-  closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync,
-  readFileSync, readdirSync, renameSync, rmSync,
+  chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
+  readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { audioHash } from "./audioHash.ts";
-import type { CommandResult, CommonOpts } from "./commands.ts";
-import { assignRoots, identifyRoots, rootsFromRefs, writeSidecarWithEvent, type P2Deps, type RootRef } from "./commands-p2.ts";
+import { noTargetReason } from "./assign.ts";
+import { audioHashAs } from "./audioHash.ts";
+import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
+import {
+  assignInput, assignRoots, diskLibraryProbe, identifyRoots, refreshTarget, rootsFromRefs, shimNotice,
+  writeSidecarWithEvent, type P2Deps, type RootRef,
+} from "./commands-p2.ts";
 import { loadAssignConfig, loadIncome, loadP3Config, rulesDir } from "./config.ts";
-import type { TierDef } from "./types.ts";
+import { clearImmutableTree, immutablePaths, setImmutable } from "./fflags.ts";
+import { CLI_VERSION, type JsonError, type Status, type StructureSlot, type TierDef } from "./types.ts";
 import { appendJournal, findPlacedRecord, findRecord, nextSeq } from "./journal.ts";
 import { writeProvenance, type ProvenanceTags } from "./provenance.ts";
-import { loadGenreMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
+import { loadGenreMap, loadLabelMap, loadStyleMap, recordPlacement, saveGenreMap, type GenreMap } from "./rules.ts";
 import { readSidecar } from "./sidecar.ts";
-import type { JsonError } from "./types.ts";
-import { IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, mapLimit, sha1Hex, walkDirs } from "./util.ts";
-
-const CLI_VERSION = "0.1.0";
+import { targetTierProblem, type MountFs } from "./tierroot.ts";
+import {
+  GC_STAGE_PREFIX, IO_CONCURRENCY, isJunkFile, isoLocal, isSidecarName, isVariousArtists, mapLimit, sha1Hex, walkDirs,
+} from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -65,17 +70,17 @@ function allRoots(errors: JsonError[]): RootRef[] {
   return out;
 }
 
-function exitFor(errors: JsonError[], data: unknown[]): 0 | 1 | 2 {
-  return errors.length === 0 ? 0 : data.length > 0 ? 1 : 2;
-}
-
 /** Row shapes for the P3 command payloads (doc 03 `--json` data). */
 export interface ProposeRow {
   id: string;
   root_path: string;
   status?: "proposed";
   target_path?: string;
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path. */
+  structure_slot?: StructureSlot | null;
   confidence?: number;
+  /** Proposal's restructure_candidates (existing releases now due an artist folder); only when non-empty. */
+  restructure_candidates?: string[];
   skipped?: "needs_review";
 }
 
@@ -83,6 +88,13 @@ export interface ApproveRow {
   id: string;
   root_path: string;
   status: "approved";
+}
+
+export interface RejectRow {
+  id: string;
+  root_path: string;
+  status: "rejected";
+  dry_run?: true;
 }
 
 export interface ExecuteRow {
@@ -106,6 +118,7 @@ export interface GcRow {
   files?: number;
   skipped?: "too_young";
   dry_run?: true;
+  issues?: string[]; // on a delete/relocate row: `cleared_readonly_flag: <n> file(s)`
 }
 
 // ---- propose ------------------------------------------------------------------
@@ -114,21 +127,58 @@ export interface ProposeOpts extends CommonOpts {
   allResolved: boolean;
 }
 
+/**
+ * Human-mode notices for a propose run: the beets shim failures (shimNotice),
+ * and in auto mode the resolved roots skipped for review. `reviewSkipped`
+ * counts both kinds: roots flagged before the run (never picked up) and roots
+ * whose identify/assign raised the flag during it (`skipped` rows). Only clean
+ * resolved roots are auto-eligible (doc 01 "Thresholds"), so these wait for an
+ * explicit `propose <id>`.
+ */
+function proposeNotices(shimErrors: string[], reviewSkipped: number): string[] | undefined {
+  const notices: string[] = [];
+  const shim = shimNotice(shimErrors);
+  if (shim) notices.push(shim);
+  if (reviewSkipped > 0) notices.push(`skipped ${reviewSkipped} resolved root(s) that need review; propose them by id`);
+  return notices.length > 0 ? notices : undefined;
+}
+
 export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps = {}): Promise<CommandResult<ProposeRow[] | null>> {
   const errors: JsonError[] = [];
   let roots: RootRef[];
+  let flaggedBefore = 0; // auto mode: resolved roots already needs_review, never picked up
   if (opts.allResolved) {
     // Auto mode: only clean resolved roots (never needs_review, never reject).
-    roots = allRoots(errors).filter(
-      (r) => r.sidecar.status === "resolved" && !r.sidecar.cluster.needs_review,
-    );
+    const resolved = allRoots(errors).filter((r) => r.sidecar.status === "resolved");
+    roots = resolved.filter((r) => !r.sidecar.cluster.needs_review);
+    flaggedBefore = resolved.length - roots.length;
   } else {
     if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake propose <root...>|--all-resolved");
     roots = rootsFromRefs(args, errors);
   }
-  if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
+  if (roots.length === 0) {
+    const result: CommandResult<ProposeRow[] | null> =
+      { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
+    const notices = proposeNotices([], flaggedBefore);
+    if (notices) result.notices = notices;
+    return result;
+  }
 
   const data: ProposeRow[] = [];
+  const shimErrors: string[] = [];
+  // One library probe for the run: its listings are shared by every root.
+  const library = deps.library ?? diskLibraryProbe();
+  const p2deps: P2Deps = { ...deps, library };
+  const assignCfg = loadAssignConfig();
+  const rdir = rulesDir();
+  // The maps assign reads, read before any root is touched: a malformed one
+  // fails the command (E_BAD_RULES) before identify writes a sidecar or an
+  // earlier root is proposed. assignRoots reads them again for each root.
+  if (rdir) {
+    loadGenreMap(rdir);
+    loadLabelMap(rdir);
+    loadStyleMap(rdir);
+  }
   for (const root of roots) {
     if (root.sidecar.status !== "resolved") {
       errors.push({ code: "E_BAD_STATUS", msg: `cannot propose from status ${root.sidecar.status}`, path: root.dir });
@@ -139,16 +189,30 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     // where nothing is written to read back. Sub-stage errors stay internal:
     // the outcome is reported as E_NO_TARGET below, as before.
     if (!root.sidecar.identification || !root.sidecar.proposal) {
-      const rdir = rulesDir();
-      if (!root.sidecar.identification) await identifyRoots([root], opts, deps);
+      if (!root.sidecar.identification) shimErrors.push(...(await identifyRoots([root], opts, p2deps)).shimErrors);
       if (!root.sidecar.proposal && rdir) {
-        await assignRoots([root], { ...opts, collection: null, by: null }, rdir, deps);
+        await assignRoots([root], { ...opts, collection: null, by: null }, rdir, p2deps);
       }
     }
+    // The layout is read at propose time (doc 02), also for a proposal that an
+    // earlier `assign` built: same collection, target from the library now.
+    refreshTarget(root, library, assignCfg);
     const target = root.sidecar.proposal?.target_path;
     if (!target) {
-      const why = root.sidecar.singles ? "singles slot pending" : !root.sidecar.proposal ? "no assignment evidence" : "no target path (tier reject?)";
+      // The reason assign gives in its notice (no artist or album name, tier
+      // reject, tier not configured, singles slot pending); a singles root
+      // says so even without a proposal.
+      const why = root.sidecar.proposal || root.sidecar.singles
+        ? noTargetReason(assignInput(root), assignCfg) ?? "no target path"
+        : "no assignment evidence";
       errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${why}`, path: root.dir });
+      continue;
+    }
+    // A missing or unmounted tier root reads as an empty library, so the
+    // layout above cannot be trusted: refuse this root, the others proceed.
+    const tierProblem = targetTierProblem(target, assignCfg.tiers, deps.mountFs);
+    if (tierProblem) {
+      errors.push({ code: "E_NO_TARGET", msg: `cannot propose: ${tierProblem}`, path: root.dir });
       continue;
     }
     if (opts.allResolved && root.sidecar.cluster.needs_review) {
@@ -158,12 +222,20 @@ export async function cmdPropose(args: string[], opts: ProposeOpts, deps: P2Deps
     }
     root.sidecar.status = "proposed";
     writeSidecarWithEvent(root, "proposed", opts.dryRun);
-    data.push({
+    const row: ProposeRow = {
       id: root.sidecar.id, root_path: root.dir, status: "proposed",
-      target_path: target, confidence: root.sidecar.proposal!.confidence,
-    });
+      target_path: target, structure_slot: root.sidecar.proposal!.structure_slot,
+      confidence: root.sidecar.proposal!.confidence,
+    };
+    const restructure = root.sidecar.proposal!.restructure_candidates;
+    if (restructure && restructure.length > 0) row.restructure_candidates = restructure;
+    data.push(row);
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  const result: CommandResult<ProposeRow[] | null> = finish(data, errors);
+  const skippedRows = data.filter((r) => r.skipped === "needs_review").length;
+  const notices = proposeNotices(shimErrors, flaggedBefore + skippedRows);
+  if (notices) result.notices = notices;
+  return result;
 }
 
 // ---- approve ------------------------------------------------------------------
@@ -172,12 +244,22 @@ export interface ApproveOpts extends CommonOpts {
   batch: string | null;
 }
 
-export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<ApproveRow[] | null> {
+/**
+ * Positional refs plus `--batch <file>` (one id or path per line; blank lines
+ * and `#` comments skipped), or `{missing}` naming a batch file that is absent.
+ */
+function refsWithBatch(args: string[], batch: string | null): string[] | { missing: string } {
   const refs = [...args];
-  if (opts.batch) {
-    if (!existsSync(opts.batch)) return fail("E_NOT_FOUND", "batch file not found", opts.batch);
-    refs.push(...readFileSync(opts.batch, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")));
+  if (batch) {
+    if (!existsSync(batch)) return { missing: batch };
+    refs.push(...readFileSync(batch, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#")));
   }
+  return refs;
+}
+
+export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<ApproveRow[] | null> {
+  const refs = refsWithBatch(args, opts.batch);
+  if (!Array.isArray(refs)) return fail("E_NOT_FOUND", "batch file not found", refs.missing);
   if (refs.length === 0) return fail("E_BAD_ARGS", "usage: intake approve <root...>|--batch <file>");
 
   const errors: JsonError[] = [];
@@ -189,10 +271,58 @@ export function cmdApprove(args: string[], opts: ApproveOpts): CommandResult<App
       continue;
     }
     root.sidecar.status = "approved";
+    // Doc 03: needs_review is sticky and approve is the one command that
+    // clears it (a user approval is the review).
+    root.sidecar.cluster.needs_review = false;
     writeSidecarWithEvent(root, "approved", opts.dryRun);
     data.push({ id: root.sidecar.id, root_path: root.dir, status: "approved" });
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
+}
+
+// ---- reject -------------------------------------------------------------------
+
+export interface RejectOpts extends CommonOpts {
+  batch: string | null;
+  reason: string | null;
+}
+
+/**
+ * Doc 03 "reject semantics": legal before anything reaches the library. A
+ * placing/placed/gc_done release is (or may be) in the library, and withdrawing
+ * it is un-specced; `rejected` itself is terminal.
+ */
+const REJECTABLE: ReadonlySet<Status> = new Set<Status>(["new", "resolved", "proposed", "approved"]);
+
+/**
+ * State change only: flips the sidecar to `rejected` and appends a history
+ * entry carrying the reason. No tags, no audio, no journal, no deletion — the
+ * local bytes stay put and are not gc-eligible (gc touches only `placed`).
+ */
+export function cmdReject(args: string[], opts: RejectOpts): CommandResult<RejectRow[] | null> {
+  const refs = refsWithBatch(args, opts.batch);
+  if (!Array.isArray(refs)) return fail("E_NOT_FOUND", "batch file not found", refs.missing);
+  if (refs.length === 0) return fail("E_BAD_ARGS", 'usage: intake reject <root...>|--batch <file> [--reason "<text>"]');
+
+  const errors: JsonError[] = [];
+  const data: RejectRow[] = [];
+  // The same root may be named twice (id and path, or a repeated batch line):
+  // reject it once rather than append a second history entry or refuse it.
+  const seen = new Set<string>();
+  for (const root of rootsFromRefs(refs, errors)) {
+    if (seen.has(root.sidecarPath)) continue;
+    seen.add(root.sidecarPath);
+    if (!REJECTABLE.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot reject from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
+    root.sidecar.status = "rejected";
+    writeSidecarWithEvent(root, "rejected", opts.dryRun, opts.reason ?? undefined);
+    const row: RejectRow = { id: root.sidecar.id, root_path: root.dir, status: "rejected" };
+    if (opts.dryRun) row.dry_run = true;
+    data.push(row);
+  }
+  return finish(data, errors);
 }
 
 // ---- execute ------------------------------------------------------------------
@@ -243,7 +373,11 @@ async function verifyTree(base: string, audio: { to: string; hash: string }[]): 
   const results = await mapLimit(audio, IO_CONCURRENCY, async (a) => {
     const p = join(base, a.to);
     if (!existsSync(p)) return `missing: ${a.to}`;
-    return (await audioHash(p)).hash !== a.hash ? `hash mismatch: ${a.to}` : null;
+    const r = await audioHashAs(p, a.hash);
+    if (r.hash === a.hash) return null;
+    // An unset-MD5 FLAC keyed by its decoded audio cannot be re-checked
+    // without the decoder; say so instead of reporting a corrupt copy.
+    return r.issues.includes("flac_decoder_missing") ? `flac decoder missing: ${a.to}` : `hash mismatch: ${a.to}`;
   });
   return results.find((r) => r !== null) ?? null;
 }
@@ -257,36 +391,63 @@ function fsyncFile(path: string): void {
   }
 }
 
-export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<CommandResult<ExecuteRow[] | null>> {
+export interface ExecuteDeps {
+  /** Filesystem facts for the tier root check; defaults to the real disk. */
+  mountFs?: MountFs;
+}
+
+export async function cmdExecute(
+  args: string[],
+  opts: ExecuteOpts,
+  deps: ExecuteDeps = {},
+): Promise<CommandResult<ExecuteRow[] | null>> {
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
   const errors: JsonError[] = [];
   const wantStatus = opts.resume ? "placing" : "approved";
   let roots: RootRef[];
-  if (opts.approved || opts.resume) {
+  if (args.length > 0) {
+    // Named roots are the whole work set, with or without --resume/--approved:
+    // `execute <ids> --resume` must not touch other placing roots (resume
+    // reverts an interrupted root, which would clobber an execute still
+    // running elsewhere).
+    roots = rootsFromRefs(args, errors);
+  } else if (opts.approved || opts.resume) {
     roots = allRoots(errors).filter((r) => r.sidecar.status === wantStatus);
   } else {
-    if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake execute <root...>|--approved [--resume]");
-    roots = rootsFromRefs(args, errors);
+    return fail("E_BAD_ARGS", "usage: intake execute <root...>|--approved [--resume]");
   }
-  if (roots.length === 0) return { data: [], errors, exitCode: errors.length ? 2 : 0 };
+  if (roots.length === 0) return { data: errors.length ? null : [], errors, exitCode: errors.length ? 2 : 0 };
 
   const batch = "b" + sha1Hex(isoLocal() + ":" + process.pid).slice(0, 10);
   const data: ExecuteRow[] = [];
-  // Read the genre map at most once per command (it was re-read and re-parsed
-  // for every placed root); still saved per placement, so a crash mid-batch
-  // cannot lose the counts of releases already in the library.
+  // Read the genre map once per command, before anything is placed (it was
+  // re-read and re-parsed for every placed root, and a malformed map then
+  // failed a root after its commit point); still saved per placement, so a
+  // crash mid-batch cannot lose the counts of releases already in the library.
   const rdir = rulesDir();
-  let genre: GenreMap | null = null;
+  const genre: GenreMap | null = rdir ? loadGenreMap(rdir) : null;
 
   for (const root of roots) {
     const sc = root.sidecar;
     const target = sc.proposal?.target_path;
 
-    if (opts.resume && sc.status === "placing") {
-      const outcome = await resumeRoot(root, cfg.journal_path, opts);
-      data.push(outcome);
+    if (opts.resume) {
+      // Crash recovery only (doc 03): a named root that is not `placing` is
+      // refused, never executed fresh under --resume.
+      if (sc.status !== "placing") {
+        errors.push({ code: "E_BAD_STATUS", msg: `cannot resume from status ${sc.status}`, path: root.dir });
+        continue;
+      }
+      // An unmounted share would read as "copy missing" and revert a root
+      // whose copy may be complete on the share: leave it `placing`.
+      const resumeProblem = target ? targetTierProblem(target, tiers, deps.mountFs) : null;
+      if (resumeProblem) {
+        errors.push({ code: "E_NO_TARGET", msg: `cannot resume: ${resumeProblem}`, path: root.dir });
+        continue;
+      }
+      data.push(await resumeRoot(root, cfg.journal_path, opts));
       continue;
     }
     if (sc.status !== "approved") {
@@ -299,6 +460,13 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     }
     if (!targetUnderTierRoot(target, tiers)) {
       errors.push({ code: "E_NO_TARGET", msg: "target_path is outside all configured tier roots", path: target });
+      continue;
+    }
+    // Never write the library copy onto a missing tier root or a stale mount
+    // point dir on the local disk (share not mounted).
+    const tierProblem = targetTierProblem(target, tiers, deps.mountFs);
+    if (tierProblem) {
+      errors.push({ code: "E_NO_TARGET", msg: `cannot execute: ${tierProblem}`, path: root.dir });
       continue;
     }
     if (existsSync(target)) {
@@ -325,21 +493,39 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
     let committed = false;
     try {
       // 1+2. Copy into a temp dir on the target volume, tag the copies, fsync.
-      rmSync(tmp, { recursive: true, force: true });
+      removeTemp(tmp);
       mkdirSync(tmp, { recursive: true });
       const tags: ProvenanceTags = {
         INTAKE_DATE: isoLocal().slice(0, 10),
         INTAKE_SOURCE: sc.source.source_type,
         INTAKE_BATCH: batch,
       };
-      for (const item of [...plan.audio, ...plan.artifacts]) {
-        const dest = join(tmp, item.to);
-        mkdirSync(dirname(dest), { recursive: true });
-        copyFileSync(item.from, dest);
+      const copies = [...plan.audio, ...plan.artifacts].map((item) => ({ from: item.from, dest: join(tmp, item.to) }));
+      for (const c of copies) {
+        mkdirSync(dirname(c.dest), { recursive: true });
+        copyFileSync(c.from, c.dest);
+      }
+      // copyFileSync clones a file over 128 KiB on APFS, flags included, so a
+      // uchg original (an SMB share's read-only attribute) gives a uchg copy,
+      // which cannot be chmodded or tagged. uchg off on the copies, one spawn
+      // for the temp dir; the income original is never changed.
+      clearImmutableTree(tmp);
+      for (const c of copies) {
+        // copyFileSync keeps the original's mode, and a 0444 copy cannot be
+        // tagged (metaflac: "ERROR: writing FLAC file"). u+w on the copy
+        // only; the income original is never changed.
+        chmodSync(c.dest, (statSync(c.dest).mode & 0o7777) | 0o200);
       }
       for (const a of plan.audio) {
-        const r = await writeProvenance(join(tmp, a.to), tags);
-        if (r.issue) issues.push(r.issue);
+        const r = await writeProvenance(join(tmp, a.to), tags, a.hash);
+        if (r.issue) {
+          // A skipped write (no tags to an fsha1:-keyed FLAC, a format with
+          // no writer) is an issue on a placed root. A failed one
+          // (metaflac_missing, metaflac_failed, provenance_write_failed)
+          // fails the root before the commit point: step 2 writes the tags.
+          if (!r.issue.startsWith("provenance_tags_skipped:")) throw new Error(`tag write failed: ${a.to} (${r.issue})`);
+          issues.push(r.issue);
+        }
         fsyncFile(join(tmp, a.to));
       }
       // 3. Verify hashes + count on the copies.
@@ -358,8 +544,10 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
         audio_hashes: plan.audio.map((a) => a.hash), target_path: target, cli_version: CLI_VERSION,
       });
       const artist = sc.identification?.artist ?? sc.cluster.albumartist;
-      if (rdir && artist && sc.proposal) {
-        genre ??= loadGenreMap(rdir);
+      // No count for a Various Artists credit (doc 02, amendment 003): it would
+      // build the artist prior that assign ignores for VA, as assign's
+      // feedback does not record one either.
+      if (rdir && genre && artist && !isVariousArtists(artist) && sc.proposal) {
         recordPlacement(genre, artist, sc.proposal.target_collection);
         saveGenreMap(rdir, genre);
       }
@@ -385,14 +573,31 @@ export async function cmdExecute(args: string[], opts: ExecuteOpts): Promise<Com
           path: root.dir,
         });
       } else {
-        rmSync(tmp, { recursive: true, force: true });
+        removeTemp(tmp);
         sc.status = "approved";
         writeSidecarWithEvent(root, "execute_failed", false);
         errors.push({ code: "E_VERIFY", msg, path: root.dir });
       }
     }
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
+}
+
+/**
+ * Remove execute's temp dir. A copy that still carries uchg from its original
+ * (a copy loop that failed, or a run that died, before the flags were cleared)
+ * makes the removal fail with EPERM: then uchg is cleared on the temp dir's
+ * tree and the removal runs again.
+ */
+function removeTemp(tmp: string): void {
+  try {
+    rmSync(tmp, { recursive: true, force: true });
+    return;
+  } catch (e) {
+    if (errCode(e) !== "EPERM") throw e;
+  }
+  clearImmutableTree(tmp);
+  rmSync(tmp, { recursive: true, force: true });
 }
 
 /** Crash recovery: placing -> placed (target verifies) or back to approved. */
@@ -415,7 +620,7 @@ async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts):
     writeSidecarWithEvent(root, "placed", opts.dryRun);
     return { id: sc.id, root_path: root.dir, resumed: "completed", target_path: target };
   }
-  if (target) rmSync(join(dirname(target), `.intake-tmp-${sc.id}`), { recursive: true, force: true });
+  if (target) removeTemp(join(dirname(target), `.intake-tmp-${sc.id}`));
   sc.status = "approved";
   writeSidecarWithEvent(root, "execute_reverted", opts.dryRun);
   return { id: sc.id, root_path: root.dir, resumed: "reverted_to_approved" };
@@ -424,18 +629,323 @@ async function resumeRoot(root: RootRef, journalPath: string, opts: CommonOpts):
 // ---- gc -----------------------------------------------------------------------
 
 export interface GcOpts extends CommonOpts {
+  all?: boolean; // --all: every placed root in every income folder
   age: number | null; // days
   relocateDj: boolean;
 }
 
+/** Whether something (a symlink included) is at `p`. */
+function present(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A path counts as inside `rootReal` (a realpath) when its own realpath is it or under it. */
+function insideDir(p: string, rootReal: string): boolean {
+  try {
+    const real = realpathSync(p);
+    return real === rootReal || real.startsWith(rootReal + "/");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Delete a placed root's local files, or relocate them into `destDir` (the
+ * dj zone; artifacts are still deleted), all of them or none.
+ *
+ * Every file is first renamed: an audio file to its dj destination when
+ * relocating, everything else into the stage dir `.intake-gc-<id>/` inside
+ * the root's dir, keeping its path relative to the root (flattening to
+ * basename() collides across discs that number tracks independently). A
+ * rename fails for every cause a deletion would (no write on the parent dir,
+ * an immutable or append-only flag, ...), so when one fails the renames
+ * already done are reversed and the dirs this run created are removed:
+ * nothing of the root is deleted or moved, and the error names the file. A
+ * dj destination that already exists fails the same way, as a rename would
+ * replace it. Only after every rename succeeded are the staged files deleted;
+ * that runs in a dir this run made, where those causes do not apply. If a
+ * delete still fails (an I/O error), the files not yet deleted are renamed
+ * back and the error says how many were deleted.
+ *
+ * A dir inside the root's dir without u+w (a read-only disc dir, e.g. from
+ * an archive) gets u+w while gc works, and its mode back afterwards if it
+ * still exists. Nothing outside the root's dir is chmodded.
+ *
+ * The user-immutable flag (uchg: an SMB share's DOS read-only attribute,
+ * src/fflags.ts) is cleared first on the files gc renames and on the dirs
+ * inside the root's dir that a rename or the cleanup goes through (the root's
+ * dir, the files' dirs, a whole-dir root's disc dirs): one stat spawn reads
+ * them all, one chflags spawn clears the flagged ones. When gc fails, every
+ * one still there gets uchg back (after the modes), so the root is left as it
+ * was; when it succeeds, the dirs still there do. The row's `issues` counts
+ * the files cleared (`cleared_readonly_flag: <n> file(s)`). No other flag is
+ * changed (uappnd, schg and sappnd still fail the rename), and nothing
+ * outside the root's dir: a relocated file arrives in the dj zone unflagged.
+ *
+ * Then, for a whole-dir root, the now-empty disc dirs (junk files included)
+ * go; that is cleanup after the files are gone and does not fail the root.
+ * The archive and the `.unpacked` dir of an archive-sourced root are not
+ * touched: only the root's own files are.
+ */
+function disposeLocal(root: RootRef, plan: PlacePlan, destDir: string | null): { error: JsonError } | { issues: string[] } {
+  const sc = root.sidecar;
+  const stage = join(root.dir, `${GC_STAGE_PREFIX}${sc.id}`); // never walked (walkDirs)
+  const moves: { from: string; to: string; rel: string; relocated: boolean }[] = [];
+  // Shadows included: all local copies go.
+  for (const f of sc.files) {
+    const from = join(root.dir, f.path);
+    if (present(from)) moves.push({ from, to: join(destDir ?? stage, f.path), rel: f.path, relocated: destDir !== null });
+  }
+  if (!sc.virtual) {
+    // Whole-dir root: its artifacts were copied at execute.
+    for (const a of plan.artifacts) {
+      const from = join(root.dir, a.to);
+      if (present(from)) moves.push({ from, to: join(stage, a.to), rel: a.to, relocated: false });
+    }
+  }
+
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(root.dir);
+  } catch (e) {
+    return { error: { code: "E_VERIFY", msg: `cannot read the root dir (${errCode(e)}); nothing of the root was changed`, path: root.dir } };
+  }
+  const isKind = (p: string, dir: boolean): boolean => {
+    try {
+      const st = lstatSync(p);
+      return dir ? st.isDirectory() : st.isFile();
+    } catch {
+      return false;
+    }
+  };
+  let flaggedFiles: string[] = [];
+  let flaggedDirs: string[] = [];
+  if (moves.length > 0) {
+    const files = moves.map((m) => m.from).filter((p) => isKind(p, false) && insideDir(dirname(p), rootReal));
+    const dirs = [...new Set([
+      root.dir, ...moves.map((m) => dirname(m.from)), ...(sc.virtual ? [] : walkDirs(root.dir).map((e) => e.path)),
+    ])].filter((d) => isKind(d, true) && insideDir(d, rootReal));
+    const flagged = new Set(immutablePaths([...files, ...dirs]));
+    flaggedFiles = files.filter((p) => flagged.has(p));
+    flaggedDirs = dirs.filter((d) => flagged.has(d));
+    // A clear that fails shows as the rename's EPERM below.
+    setImmutable([...flaggedFiles, ...flaggedDirs], false);
+  }
+  const chmodded: { dir: string; mode: number }[] = [];
+  const ensureWritable = (dir: string): void => {
+    if (chmodded.some((c) => c.dir === dir) || !insideDir(dir, rootReal)) return;
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || st.mode & 0o200) return;
+      chmodSync(dir, (st.mode & 0o7777) | 0o200);
+      chmodded.push({ dir, mode: st.mode & 0o7777 });
+    } catch {
+      // the rename below then fails and reports it
+    }
+  };
+  const created: string[] = [];
+  const mkdirTracked = (dir: string): void => {
+    const missing: string[] = [];
+    for (let d = dir; !present(d); d = dirname(d)) missing.push(d);
+    if (missing.length === 0) return;
+    mkdirSync(dir, { recursive: true });
+    created.push(...missing.reverse());
+  };
+  const done: typeof moves = [];
+  /** Rename back what is still staged or relocated; drop the dirs this run created. Returns the files left out. */
+  const rollback = (): string[] => {
+    const stuck: string[] = [];
+    for (const m of [...done].reverse()) {
+      try {
+        renameSync(m.to, m.from);
+      } catch {
+        stuck.push(m.to);
+      }
+    }
+    for (const d of [...created].reverse()) {
+      try {
+        rmdirSync(d);
+      } catch {
+        // not empty: something could not be renamed back
+      }
+    }
+    return stuck;
+  };
+  const failure = (verb: string, m: { from: string; rel: string }, why: string, code = "E_VERIFY", deleted = 0) => {
+    const stuck = rollback();
+    const state = deleted === 0
+      ? `nothing of the root was ${destDir ? "moved or deleted" : "deleted"}`
+      : `${deleted} staged file(s) were already deleted, the rest renamed back`;
+    const left = stuck.length > 0 ? `; renaming back failed for ${stuck.map((p) => `"${p}"`).join(", ")}` : "";
+    return { error: { code, msg: `cannot ${verb} "${m.rel}" (${why}); ${state}${left}`, path: m.from } };
+  };
+
+  let disposed = false;
+  try {
+    if (moves.some((m) => !m.relocated)) ensureWritable(root.dir);
+    for (const m of moves) ensureWritable(dirname(m.from));
+    for (const m of moves) {
+      const verb = m.relocated ? "relocate" : "delete";
+      if (m.relocated && present(m.to)) return failure(verb, m, `"${m.to}" already exists`, "E_TARGET_EXISTS");
+      try {
+        mkdirTracked(dirname(m.to));
+        renameSync(m.from, m.to);
+      } catch (e) {
+        return failure(verb, m, errCode(e));
+      }
+      done.push(m);
+    }
+    // Every file is staged or relocated: delete the staged ones.
+    const staged = moves.filter((x) => !x.relocated);
+    for (const [i, m] of staged.entries()) {
+      try {
+        rmSync(m.to);
+      } catch (e) {
+        const gone = new Set(staged.slice(0, i).map((x) => x.to));
+        done.splice(0, done.length, ...done.filter((x) => !gone.has(x.to)));
+        return failure("delete", m, errCode(e), "E_VERIFY", i);
+      }
+    }
+    try {
+      rmSync(stage, { recursive: true, force: true });
+    } catch {
+      // only empty stage dirs are left
+    }
+    if (!sc.virtual) {
+      // Now-empty disc dirs (junk files included); the sidecar stays as a
+      // gc_done tombstone in the root's dir.
+      for (const e of walkDirs(root.dir)) {
+        if (e.path === root.dir) continue;
+        try {
+          if (readdirSync(e.path).filter((n) => !isJunkFile(n)).length > 0) continue;
+          ensureWritable(e.path);
+          ensureWritable(dirname(e.path));
+          rmSync(e.path, { recursive: true, force: true });
+        } catch {
+          // an empty dir left behind; the root's files are gone
+        }
+      }
+    }
+    disposed = true;
+    const n = flaggedFiles.length;
+    return { issues: n > 0 ? [`cleared_readonly_flag: ${n} file(s)`] : [] };
+  } finally {
+    for (const c of chmodded.reverse()) {
+      try {
+        if (present(c.dir)) chmodSync(c.dir, c.mode);
+      } catch {
+        // left owner-writable
+      }
+    }
+    // After the modes: a uchg dir cannot be chmodded. The tombstone write
+    // that follows a success is unaffected: it rewrites the existing sidecar
+    // in place, which neither the root dir's mode nor its uchg blocks (the
+    // sidecar's own uchg and mode: prepareGcBookkeeping).
+    setImmutable((disposed ? flaggedDirs : [...flaggedFiles, ...flaggedDirs]).filter(present), true);
+  }
+}
+
+const errCode = (e: unknown): string =>
+  (e as NodeJS.ErrnoException)?.code ?? (e instanceof Error ? e.message : String(e));
+
+/**
+ * Check, before disposeLocal moves anything, that gc can write what follows
+ * a disposal: the journal line and the gc_done tombstone, which rewrites the
+ * sidecar in place. Either failing after the files are gone would leave a
+ * disposal with no journal line, or a journal and a sidecar that disagree.
+ *
+ * The sidecar is inside the root's dir, so gc's scope rules apply: a regular
+ * file (lstat; a symlink is left alone) gets uchg cleared (an SMB share's DOS
+ * read-only attribute, src/fflags.ts) and u+w added if it lacks them. Then it
+ * must open read-write. The journal is outside the root: it is never
+ * chmodded or unflagged, only opened for append (not created). Neither check
+ * writes anything. On failure the sidecar's mode and flag are restored and
+ * the root's error is returned: `E_VERIFY` for the sidecar, `E_NO_JOURNAL`
+ * for the journal. On success `restore` does that; cmdGc calls it after the
+ * tombstone write, or when the disposal fails.
+ */
+function prepareGcBookkeeping(
+  root: RootRef,
+  journalPath: string,
+  relocating: boolean,
+): { error: JsonError } | { restore: () => void } {
+  const path = root.sidecarPath;
+  let flagged = false;
+  let mode: number | null = null;
+  const restore = (): void => {
+    try {
+      if (mode !== null) chmodSync(path, mode);
+    } catch {
+      // left owner-writable
+    }
+    // After the mode: a uchg file cannot be chmodded.
+    if (flagged) setImmutable([path], true);
+  };
+  let isFile = false;
+  try {
+    isFile = lstatSync(path).isFile();
+  } catch {
+    // the open below reports it
+  }
+  if (isFile) {
+    flagged = immutablePaths([path]).length > 0;
+    // A clear that fails shows as the open's EPERM below.
+    if (flagged) setImmutable([path], false);
+    try {
+      const m = lstatSync(path).mode & 0o7777;
+      if (!(m & 0o200)) {
+        chmodSync(path, m | 0o200);
+        mode = m;
+      }
+    } catch {
+      // the open below reports it
+    }
+  }
+  const opens = (p: string, flags: number): string | null => {
+    try {
+      closeSync(openSync(p, flags));
+      return null;
+    } catch (e) {
+      return errCode(e);
+    }
+  };
+  const nothing = `nothing of the root was ${relocating ? "moved or deleted" : "deleted"}`;
+  const sidecarWhy = opens(path, constants.O_RDWR);
+  const journalWhy = sidecarWhy === null ? opens(journalPath, constants.O_WRONLY | constants.O_APPEND) : null;
+  if (sidecarWhy === null && journalWhy === null) return { restore };
+  restore();
+  return sidecarWhy !== null
+    ? { error: { code: "E_VERIFY", msg: `cannot write the sidecar (${sidecarWhy}); ${nothing}`, path } }
+    : { error: { code: "E_NO_JOURNAL", msg: `cannot append to the journal (${journalWhy}); ${nothing}`, path: journalPath } };
+}
+
 export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult<GcRow[] | null>> {
+  // Doc 03 `gc` semantics: roots or --all; an empty ref list never means
+  // every root. Named roots are the whole work set, with or without --all.
+  if (args.length === 0 && !opts.all)
+    return fail("E_BAD_ARGS", "usage: intake gc <root...>|--all [--age <days>] [--relocate-dj]");
   const cfg = loadP3Config();
   if (!cfg.journal_path) return fail("E_NO_JOURNAL", "structure.yaml journal.path is not configured");
   const tiers = loadAssignConfig().tiers;
   const errors: JsonError[] = [];
-  const roots = (args.length > 0 ? rootsFromRefs(args, errors) : allRoots(errors)).filter(
-    (r) => r.sidecar.status === "placed",
-  );
+  let roots: RootRef[];
+  if (args.length > 0) {
+    // Doc 03 legal source statuses: a named root that is not `placed`
+    // (`rejected` included) is refused, not skipped.
+    roots = [];
+    for (const r of rootsFromRefs(args, errors)) {
+      if (r.sidecar.status === "placed") roots.push(r);
+      else errors.push({ code: "E_BAD_STATUS", msg: `cannot gc from status ${r.sidecar.status}`, path: r.dir });
+    }
+  } else {
+    // --all selects `placed` roots and skips the rest silently.
+    roots = allRoots(errors).filter((r) => r.sidecar.status === "placed");
+  }
   const data: GcRow[] = [];
 
   for (const root of roots) {
@@ -481,39 +991,34 @@ export async function cmdGc(args: string[], opts: GcOpts): Promise<CommandResult
       });
       continue;
     }
-    let destDir: string | null = null;
-    if (relocate) {
-      destDir = join(cfg.gc.dj_zone!, basename(placed.target_path));
-      // Keep each file's path relative to the release root. Flattening to
-      // basename() collides whenever discs number tracks independently
-      // (CD1/01.flac + CD2/01.flac), and renameSync overwrites in silence.
-      for (const f of sc.files) {
-        const from = join(root.dir, f.path);
-        if (!existsSync(from)) continue;
-        const to = join(destDir, f.path);
-        mkdirSync(dirname(to), { recursive: true });
-        renameSync(from, to);
-      }
-    } else {
-      for (const p of localAudio.filter(existsSync)) rmSync(p);
+    const destDir = relocate ? join(cfg.gc.dj_zone!, basename(placed.target_path)) : null;
+    // The journal line and the tombstone must be writable before any file goes.
+    const bookkeeping = prepareGcBookkeeping(root, cfg.journal_path, relocate);
+    if ("error" in bookkeeping) {
+      errors.push(bookkeeping.error);
+      continue;
     }
-    if (!sc.virtual) {
-      // Whole-dir root: artifacts were copied at execute; clear them and any
-      // now-empty disc dirs. The sidecar stays as a gc_done tombstone.
-      for (const a of plan.artifacts) rmSync(join(root.dir, a.to), { force: true });
-      for (const e of walkDirs(root.dir)) {
-        if (e.path !== root.dir && readdirSync(e.path).filter((n) => !isJunkFile(n)).length === 0)
-          rmSync(e.path, { recursive: true, force: true });
+    try {
+      const disposal = disposeLocal(root, plan, destDir);
+      if ("error" in disposal) {
+        errors.push(disposal.error);
+        continue;
       }
+      const event = relocate ? "gc_relocated" : "gc_done";
+      appendJournal(cfg.journal_path, {
+        seq: nextSeq(cfg.journal_path), ts: isoLocal(), event, sidecar_id: sc.id,
+        audio_hashes: plan.audio.map((a) => a.hash), target_path: placed.target_path, cli_version: CLI_VERSION,
+      });
+      sc.status = "gc_done";
+      writeSidecarWithEvent(root, event, false);
+      data.push({
+        id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir,
+        issues: disposal.issues,
+      });
+    } finally {
+      // The sidecar's flag and mode back: after the tombstone, or at once on failure.
+      bookkeeping.restore();
     }
-    const event = relocate ? "gc_relocated" : "gc_done";
-    appendJournal(cfg.journal_path, {
-      seq: nextSeq(cfg.journal_path), ts: isoLocal(), event, sidecar_id: sc.id,
-      audio_hashes: plan.audio.map((a) => a.hash), target_path: placed.target_path, cli_version: CLI_VERSION,
-    });
-    sc.status = "gc_done";
-    writeSidecarWithEvent(root, event, false);
-    data.push({ id: sc.id, root_path: root.dir, action: relocate ? "relocate_dj" : "delete", dj_dest: destDir });
   }
-  return { data, errors, exitCode: exitFor(errors, data) };
+  return finish(data, errors);
 }

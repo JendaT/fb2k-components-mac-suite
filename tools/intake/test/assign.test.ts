@@ -5,7 +5,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { artistPrior, assign, buildTargetPath, similarVote, styleHint, type AssignInput, type AssignRules } from "../src/assign.ts";
+import {
+  artistPrior, assign, buildTargetPath, similarVote, styleHint, type AssignInput, type AssignRules, type SimilarArtist,
+} from "../src/assign.ts";
 import { loadAssignConfig, loadConfig } from "../src/config.ts";
 import { loadGenreMap, loadLabelMap, loadStyleMap } from "../src/rules.ts";
 import { FIXTURES } from "./helpers.ts";
@@ -116,28 +118,321 @@ test("no evidence at all: null proposal", async () => {
   expect(outcome.needs_review).toBe(true);
 });
 
+// ---- Various Artists: the artist tier is unavailable, not evidence -----------
+
+const COLL_X = "[Collection X]";
+const COLL_Y = "[Collection Y]";
+const COLL_Z = "[Collection Z]";
+
+/** Synthetic rules where VA credits hold large priors, as a raw bootstrap left them. */
+function vaRules(): AssignRules {
+  return {
+    genre: {
+      artists: {
+        "Various Artists": { [COLL_X]: 40, [COLL_Y]: 5 },
+        VA: { [COLL_X]: 12 },
+        "Example Artist": { [COLL_Y]: 3 },
+        "Example Mixed": { [COLL_X]: 1, [COLL_Y]: 1 },
+      },
+      feedback: { "Various Artists": { [COLL_X]: 7 } },
+      aliases: {},
+      exceptions: [],
+    },
+    labels: { labels: { "Example Label": { [COLL_Y]: 3, [COLL_Z]: 1 } } },
+    styles: { styles: { "Example Style": [COLL_Z] }, genres: {} },
+    config: loadAssignConfig(RULES_DIR),
+  };
+}
+
+function spyProviders(similarResult: SimilarArtist[] | null = [{ name: "Various Artists", match: 1 }]) {
+  const calls = { similar: [] as string[], aliases: [] as string[] };
+  const providers = {
+    similar: async (a: string) => {
+      calls.similar.push(a);
+      return similarResult;
+    },
+    aliases: async (a: string) => {
+      calls.aliases.push(a);
+      return ["Various Artists"];
+    },
+  };
+  return { calls, providers };
+}
+
+test("VA input: ranked by label alone, no artist prior, no short-circuit", async () => {
+  for (const artist of ["Various Artists", "VA", "Various", "V.A.", "V/A"]) {
+    const outcome = await assign(input({ artist, label: "Example Label" }), vaRules());
+    expect(outcome.short_circuited).toBe(false);
+    const ranked = outcome.proposal!.ranked;
+    expect(ranked.map((f) => f.collection)).toEqual([COLL_Y, COLL_Z]);
+    for (const f of ranked) expect(f.evidence.artist_prior).toBe(0);
+    // Renormalized over the label tier alone: score = P(folder|label).
+    expect(ranked[0]!.score).toBe(0.75);
+    expect(ranked[1]!.score).toBe(0.25);
+    expect(outcome.proposal!.confidence).toBe(0.75);
+    expect(outcome.proposal!.structure_slot).toBe("compilations");
+  }
+});
+
+test("VA input: label and style renormalize over the tiers that spoke", async () => {
+  const outcome = await assign(
+    input({ artist: "Various Artists", label: "Example Label", styles: ["Example Style"] }),
+    vaRules(),
+  );
+  // label 0.25 + style 0.10 = 0.35; Y = 0.75*0.25/0.35, Z = (0.25*0.25 + 1*0.10)/0.35.
+  expect(outcome.proposal!.ranked.map((f) => [f.collection, f.score])).toEqual([[COLL_Y, 0.54], [COLL_Z, 0.46]]);
+});
+
+test("VA input without label or style evidence: no proposal, needs review", async () => {
+  for (const artist of ["Various Artists", "VA"]) {
+    const outcome = await assign(input({ artist }), vaRules());
+    expect(outcome.proposal).toBeNull();
+    expect(outcome.needs_review).toBe(true);
+    expect(outcome.short_circuited).toBe(false);
+  }
+});
+
+test("VA input: similar and alias providers are never called", async () => {
+  for (const artist of ["Various Artists", "Various", "V/A"]) {
+    const { calls, providers } = spyProviders();
+    const outcome = await assign(input({ artist, label: "Example Label" }), vaRules(), providers);
+    expect(calls).toEqual({ similar: [], aliases: [] });
+    expect(outcome.learned_aliases).toEqual({});
+    expect(outcome.proposal!.ranked.every((f) => f.evidence.similar_vote === 0)).toBe(true);
+  }
+});
+
+test("non-VA artist still uses its prior (short-circuit and scored path)", async () => {
+  const strong = await assign(input({ artist: "Example Artist" }), vaRules());
+  expect(strong.short_circuited).toBe(true);
+  expect(strong.proposal?.target_collection).toBe(COLL_Y);
+  expect(strong.proposal?.confidence).toBe(0.95);
+
+  const { calls, providers } = spyProviders(null);
+  const mixed = await assign(input({ artist: "Example Mixed", label: "Example Label" }), vaRules(), providers);
+  expect(mixed.short_circuited).toBe(false);
+  expect(calls.similar).toEqual(["Example Mixed"]);
+  // artist 0.5 + label 0.25 = 0.75; Y = (0.5*0.5 + 0.75*0.25)/0.75, X = 0.5*0.5/0.75.
+  expect(mixed.proposal!.ranked.map((f) => [f.collection, f.score, f.evidence.artist_prior])).toEqual([
+    [COLL_Y, 0.58, 0.5],
+    [COLL_X, 0.33, 0.5],
+    [COLL_Z, 0.08, 0],
+  ]);
+});
+
+// ---- No-label credits: the label tier is unavailable, not evidence ----------
+
+/** Synthetic rules where no-label credits hold large label priors, as a raw bootstrap left them. */
+function noLabelRules(): AssignRules {
+  const r = vaRules();
+  r.labels = {
+    labels: {
+      "Self-Released": { [COLL_X]: 60, [COLL_Y]: 5 },
+      "Not On Label": { [COLL_X]: 9 },
+      "Example Label": { [COLL_Y]: 3, [COLL_Z]: 1 },
+    },
+  };
+  return r;
+}
+
+// "Self-Released" exercises the prior lookup (the map holds it); the Discogs
+// spelling is not a map key and exercises the denominator.
+const NO_LABEL_INPUTS = ["Self-Released", "self released", "Not On Label (Example Artist Self-released)", "No Label"];
+
+test("no-label input label: no label prior, same scores as a null label", async () => {
+  for (const label of NO_LABEL_INPUTS) {
+    // Scored path: artist plus style evidence.
+    const base = { artist: "Example Mixed", styles: ["Example Style"] };
+    const withLabel = await assign(input({ ...base, label }), noLabelRules());
+    const without = await assign(input({ ...base, label: null }), noLabelRules());
+    expect(withLabel.proposal!.ranked.every((f) => f.evidence.label_prior === 0)).toBe(true);
+    expect(withLabel.proposal!.ranked).toEqual(without.proposal!.ranked);
+    expect(withLabel.proposal!.confidence).toBe(without.proposal!.confidence);
+    expect(withLabel.needs_review).toBe(without.needs_review);
+    // artist 0.5 + style 0.10 = 0.6; X = Y = 0.5*0.5/0.6, Z = 1*0.10/0.6.
+    expect(withLabel.proposal!.ranked.map((f) => [f.collection, f.score])).toEqual([
+      [COLL_X, 0.42], [COLL_Y, 0.42], [COLL_Z, 0.17],
+    ]);
+
+    // An unknown artist and the no-label credit as the only other evidence:
+    // no proposal, as with a null label.
+    const alone = await assign(input({ artist: "Nobody Known", label }), noLabelRules());
+    expect(alone.proposal).toBeNull();
+    expect(alone.needs_review).toBe(true);
+  }
+});
+
+test("a real label still votes beside no-label keys in the map", async () => {
+  const outcome = await assign(input({ artist: "Example Mixed", label: "Example Label" }), noLabelRules());
+  // artist 0.5 + label 0.25 = 0.75; Y = (0.5*0.5 + 0.75*0.25)/0.75, X = 0.5*0.5/0.75.
+  expect(outcome.proposal!.ranked.map((f) => [f.collection, f.score, f.evidence.label_prior])).toEqual([
+    [COLL_Y, 0.58, 0.75],
+    [COLL_X, 0.33, 0],
+    [COLL_Z, 0.08, 0.25],
+  ]);
+});
+
+test("no-label input label still appears in the target folder name", async () => {
+  const outcome = await assign(
+    input({ artist: "Example Artist", album: "Example Album", label: "Self-Released", catno: "none" }),
+    noLabelRules(),
+  );
+  expect(outcome.proposal!.target_path).toContain("Self-Released");
+});
+
 test("target path: tier routing + naming template (doc 02 example shape)", () => {
   const cfg = loadAssignConfig(RULES_DIR);
+  // No library probe: every collection dir reads as absent, so a non-VA
+  // release goes to the [Releases] slot (doc 02, amendment 003).
   const full = buildTargetPath(
     input({ artist: "Aes Dana", album: "Pollen", year: "2012", label: "Ultimae Records", catno: "inre042" }),
     PCP, cfg,
   );
-  expect(full.target_path).toBe(`/library/music.hq/${PCP}/Aes Dana/Aes Dana [2012] Pollen (Ultimae Records; inre042)`);
-  expect(full.structure_slot).toBe("artist");
+  expect(full.target_path).toBe(`/library/music.hq/${PCP}/[Releases]/Aes Dana [2012] Pollen (Ultimae Records; inre042)`);
+  expect(full.structure_slot).toBe("releases");
 
   const uhq = buildTargetPath(
     input({ artist: "Sync24", album: "Omnimotion Remixed", year: "2024", tier_eligible: "uhq" }),
     "[Downtempo & Electronica]", cfg,
   );
-  expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/Sync24/Sync24 [2024] Omnimotion Remixed");
+  expect(uhq.target_path).toBe("/library/music.uhq/[Downtempo & Electronica]/[Releases]/Sync24 [2024] Omnimotion Remixed");
 
-  expect(buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg).target_path).toBeNull();
+  // No target, no structure slot: a reject tier, no artist or album name. A
+  // singles root keeps the pending "singles" slot (doc 02, amendment 003).
+  const reject = buildTargetPath(input({ artist: "X", album: "Y", tier_eligible: "reject" }), AMB, cfg);
+  expect(reject).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
   const single = buildTargetPath(input({ artist: "X", album: null, singles: true }), AMB, cfg);
-  expect(single.target_path).toBeNull();
-  expect(single.structure_slot).toBe("singles");
+  expect(single).toEqual({ target_path: null, structure_slot: "singles", restructure_candidates: [] });
+  for (const names of [{ artist: null, album: null }, { artist: "X", album: null }, { artist: null, album: "Y" }]) {
+    expect(buildTargetPath(input(names), AMB, cfg)).toEqual({ target_path: null, structure_slot: null, restructure_candidates: [] });
+  }
 
   const noYear = buildTargetPath(input({ artist: "X", album: "Y", year: null }), AMB, cfg);
-  expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/X/X Y`);
+  expect(noYear.target_path).toBe(`/library/music.hq/${AMB}/[Releases]/X Y`);
+
+  // Various Artists (the resolver's VA credit, or Discogs' "Various"): the
+  // [Compilations] slot, with a real target (amendment 003).
+  for (const artist of ["Various Artists", "Various", "VA"]) {
+    const comp = buildTargetPath(input({ artist, album: "Y", label: "Some Label", catno: "CAT1" }), AMB, cfg);
+    expect(comp).toEqual({
+      target_path: `/library/music.hq/${AMB}/[Compilations]/${artist} [2020] Y (Some Label; CAT1)`,
+      structure_slot: "compilations",
+      restructure_candidates: [],
+    });
+  }
+});
+
+// ---- Library layout (doc 02, amendment 003) through a fake library ----------
+
+const HQ = "/library/music.hq";
+const UHQ = "/library/music.uhq";
+
+/** A fake LibraryProbe over a dir -> subdir-names table; records every dir it is asked for. */
+function fakeLibrary(tree: Record<string, string[]>) {
+  const asked: string[] = [];
+  const probe = (dir: string): string[] | null => {
+    asked.push(dir);
+    return tree[dir] ?? null;
+  };
+  return { probe, asked };
+}
+
+const EXAMPLE = { artist: "Example Artist", album: "New Album", year: "2024", label: "Example Label", catno: "EX002" };
+const EXAMPLE_FOLDER = "Example Artist [2024] New Album (Example Label; EX002)";
+
+test("target path: the artist's existing dir in the collection, on-disk spelling reused", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({ [`${HQ}/${COLL_X}`]: ["[Releases]", "EXAMPLE ARTÍST"] });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/EXAMPLE ARTÍST/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [],
+  });
+});
+
+test("target path: a new artist in the collection goes to its existing [releases] dir", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_X}`]: ["Another Artist", "[releases]", "[Best Of]"],
+    [`${HQ}/${COLL_X}/[releases]`]: ["Another Artist [2020] Y"],
+    // A curated selection holding the artist: never read, never counted.
+    [`${HQ}/${COLL_X}/[Best Of]`]: ["Example Artist [2019] Old Album"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/[releases]/${EXAMPLE_FOLDER}`,
+    structure_slot: "releases",
+    restructure_candidates: [],
+  });
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`, `${HQ}/${COLL_X}/[releases]`]);
+});
+
+test("target path: releases in [Releases] or loose make an artist folder, reported relative to the tier root", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_X}`]: ["[Releases]", "Example Artist - Loose Album (2015)"],
+    [`${HQ}/${COLL_X}/[Releases]`]: ["Example Artist [2019] Old Album"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/Example Artist/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [
+      `${COLL_X}/Example Artist - Loose Album (2015)`,
+      `${COLL_X}/[Releases]/Example Artist [2019] Old Album`,
+    ],
+  });
+});
+
+test("target path: only the target tier's collection dir counts", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  // The artist has a dir in another collection of the same tier and in the
+  // same collection of the other tier: neither counts.
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_Y}`]: ["Example Artist"],
+    [`${UHQ}/${COLL_X}`]: ["Example Artist"],
+  });
+  expect(buildTargetPath(input(EXAMPLE), COLL_X, cfg, lib.probe).target_path).toBe(`${HQ}/${COLL_X}/[Releases]/${EXAMPLE_FOLDER}`);
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]);
+});
+
+test("target path: Various Artists get [Compilations] (existing [compilations] reused); singles and reject stay null", () => {
+  const cfg = loadAssignConfig(RULES_DIR);
+  const lib = fakeLibrary({ [`${HQ}/${COLL_X}`]: ["[compilations]", "[Releases]"] });
+  const va = { ...EXAMPLE, artist: "Various Artists" };
+  expect(buildTargetPath(input(va), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: `${HQ}/${COLL_X}/[compilations]/Various Artists [2024] New Album (Example Label; EX002)`,
+    structure_slot: "compilations",
+    restructure_candidates: [],
+  });
+  expect(lib.asked).toEqual([`${HQ}/${COLL_X}`]); // no artist lookup, so no [Releases] read
+
+  expect(buildTargetPath(input({ ...EXAMPLE, singles: true }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: "singles", restructure_candidates: [],
+  });
+  expect(buildTargetPath(input({ ...EXAMPLE, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: null, restructure_candidates: [],
+  });
+  expect(buildTargetPath(input({ ...va, tier_eligible: "reject" }), COLL_X, cfg, lib.probe)).toEqual({
+    target_path: null, structure_slot: null, restructure_candidates: [],
+  });
+});
+
+test("assign(): the library provider drives the layout; without one nothing is read", async () => {
+  const lib = fakeLibrary({
+    [`${HQ}/${COLL_Y}`]: ["Example Artist - Loose Album (2015)"],
+  });
+  const withLib = await assign(input(EXAMPLE), vaRules(), { library: lib.probe });
+  expect(withLib.short_circuited).toBe(true);
+  expect(withLib.proposal).toMatchObject({
+    target_collection: COLL_Y,
+    target_path: `${HQ}/${COLL_Y}/Example Artist/${EXAMPLE_FOLDER}`,
+    structure_slot: "artist",
+    restructure_candidates: [`${COLL_Y}/Example Artist - Loose Album (2015)`],
+  });
+
+  const without = await assign(input(EXAMPLE), vaRules());
+  expect(without.proposal!.target_path).toBe(`${HQ}/${COLL_Y}/[Releases]/${EXAMPLE_FOLDER}`);
+  expect(without.proposal!.structure_slot).toBe("releases");
+  expect("restructure_candidates" in without.proposal!).toBe(false); // present only when non-empty
 });
 
 test("resolver config unaffected by assign sections in structure.yaml", () => {

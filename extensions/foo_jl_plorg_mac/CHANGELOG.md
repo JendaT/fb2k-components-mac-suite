@@ -2,6 +2,11 @@
 
 All notable changes to Playlist Organizer will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Shadow link migration tool**: `Scripts/shadow_link_migrate.py` moves playlists, track cache, play statistics, BPM grids and the Media Library root from volume-ID paths to a fixed link path, with dry run, backup, drift check and rollback.
+
 ## [1.5.2] - 2026-11-15
 
 ### Fixed

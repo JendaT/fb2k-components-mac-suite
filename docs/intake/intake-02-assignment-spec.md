@@ -22,7 +22,9 @@ cache feature in the tidal integration plugin, and by future downloaders.
 1. Parse folder name against known conventions (ordered grammar):
    `Artist [YYYY] Title (Label; Cat#)`, `Artist [YYYY] Title [Label, Cat#]`,
    Discogs-block variant, scene pattern `Artist-Title-(CAT)-WEB-YYYY-GRP`,
-   underscore variants. Emit parsed fields + which grammar matched.
+   dash variants (`Artist - Title`, `(YYYY) Artist - Title`), underscore
+   variants. Emit parsed fields + which grammar matched (order and rules under
+   Implementation notes, "Folder-name grammars").
 2. Merge with embedded tags (tags win for artist/title, folder wins for
    label/cat# when tags lack them).
 3. Confirm against Discogs API (search by artist+title+cat#). One confirmed
@@ -34,15 +36,36 @@ uses beets internals (autotag candidate search, discogs plugin, chroma/fpcalc
 fingerprinting) **without** the import flow. Interface:
 
 ```
-beets_identify.py <release_dir> --json
+beets_identify.py <release_dir> <file>... --json
 → { "candidates": [ { "source": "discogs|mb", "release_id": …,
      "artist": …, "album": …, "year": …, "label": …, "catno": …,
-     "distance": 0.08, "track_mapping": {...} } ] }
+     "distance": 0.08, "track_mapping": { "<file>": "<track title>", … } } ] }
 ```
+
+`<release_dir>` is the root's sidecar dir and each `<file>` is one entry of
+its `files[].path`, relative to that dir, quality shadows excluded. The root's
+own file list, not a listing of the dir, is what beets sees: a multi-disc
+root's tracks sit in its disc dirs (`cd1/01 x.flac`), and a virtual root's dir
+holds other roots' files too. The shim refuses a file that is absolute, has a
+`..` component, resolves outside `<release_dir>` or is not an existing regular
+file (exit 2), and skips files without an audio extension. `track_mapping` is
+keyed by the `<file>` argument as given, so `cd1/01 x.flac` and `cd2/01
+x.flac` stay apart; for a flat root that is the file name.
 
 Invoked as subprocess by the CLI only when fast path fails or its Discogs
 confirmation is ambiguous. Distance ≤0.15 → accept top candidate; else attach
 top 3 as `identification.candidates` and set `needs_review`.
+
+*beets versions:* the shim supports beets 1.6 and 2.x and detects the API
+shape. beets ≥ 2.14 takes a `Source` and returns `Proposal(candidates,
+recommendation)`; older versions take the items and return
+`(artist, album, Proposal)`. From 2.4 every metadata source, MusicBrainz
+included, is a plugin: the shim loads the beets config's `plugins` list
+(beets' default `[musicbrainz]`) and never adds to it. Only MusicBrainz and
+Discogs candidates are emitted. In practice chroma/fpcalc adds nothing
+(beets fingerprints only in its import flow), and the discogs plugin adds
+candidates only on beets ≥ 2.4 with a configured token. The shim must run on
+beets' own interpreter (`INTAKE_BEETS_SHIM`, see `tools/intake/README.md`).
 
 ## Tier routing (precedes collection choice)
 
@@ -126,7 +149,8 @@ priors sharpen with use.
 `intake bootstrap --tree /volume1/music/music.hq [--tree …uhq]` — read-only
 scan producing: `genre-map.yaml` (artist → per-collection release counts, from
 artist dirs and parsed release-folder names in `[Releases]`/flat dirs),
-`label-map.yaml` (from `(Label; Cat#)`/`[Label, Cat#]` parses), and
+`label-map.yaml` (from `(Label; Cat#)`/`[Label, Cat#]` parses, label-block
+rules under Implementation notes), and
 `naming-variants-report.md` (evidence for the TBD decisions).
 Optional `--tree /volume1/music/music --prior-weight 0.3`: the legacy mp3
 tree can contribute artist priors at reduced weight (hoarding-era assignments
@@ -254,26 +278,63 @@ Decisions made during implementation; normative for schema v1 consumers.
 
 - **`identification` object** (sidecar): `{ status, source, release_id,
   artist, album, year, label, catno, styles[], genres[], distance, grammar,
-  candidates, identified_at }`. `status` ∈ `fast_path` (Discogs-confirmed) |
+  candidates, identified_at, issues? }`. `issues` (optional, present only
+  when non-empty) names each evidence source that failed, e.g.
+  `shim_unavailable`, `beets_unavailable` (the beets shim's error text) or
+  `discogs_unreachable`, so `unconfirmed` is not read as checked and not
+  found. `status` ∈ `fast_path` (Discogs-confirmed) |
   `shim` (beets candidate accepted, distance ≤ threshold) | `unconfirmed`
   (parse+tags merged, no external confirmation — offline or ambiguous;
   ambiguous Discogs hits and rejected shim candidates land in `candidates`,
   max 3) | `unidentified` (no usable artist/album). Anything except
   `fast_path`/`shim` sets `needs_review`. `needs_review` is sticky: identify/
-  assign can raise it, never clear it (clearing is approve's job, P3).
+  assign can raise it, never clear it; only `approve` clears it (doc 03
+  v1.2), and `assign --by user` does not.
 - **Score normalization**: `score = Σ wᵢ·eᵢ / Σ wᵢ over available tiers`, so
   absent network tiers don't deflate confidence. Artist/label tiers count as
   available whenever the input carries a value (an unknown artist is evidence
-  of absence); similar/style tiers only when they produced votes.
+  of absence), except a Various Artists credit (artist and similar tiers
+  unavailable) and a no-label credit (label tier unavailable), see "Library
+  layout and credit rules (amendment 003)"; similar/style tiers only when
+  they produced votes.
 - **Ties** break deterministically by collection name (ascending) after score.
 - **Feedback** lives in a separate `feedback:` section of `genre-map.yaml`
   (same artist→{collection: count} shape, merged with `artists:` at prior
-  computation). Programmatic writes (feedback, learned `aliases:`) rewrite the
-  file via YAML serializer — hand comments are not preserved; keep curated
-  notes in the rules repo's git history instead.
-- **Singles**: `structure_slot: "singles"`, `target_path: null` — the singles
-  slot layout is one of the five pending structure TBDs; propose (P3) fills it
-  once decided. Tier `reject` likewise gets `target_path: null`.
+  computation). Programmatic writes (feedback, learned `aliases:`, execute's
+  placement counts) rewrite the file via YAML serializer — hand comments are
+  not preserved; keep curated notes in the rules repo's git history instead.
+  Because of that rewrite, `genre-map.yaml` and `label-map.yaml` are checked
+  on load and a malformed entry is refused, never dropped: `E_BAD_RULES`
+  naming the file and the key, and the command changes nothing. Malformed is
+  a section or entry of the wrong type (`null` included), a count that is not
+  a finite number of 0 or more, and an alias value or `exceptions:` item that
+  is not a string. A count of 0 and an empty distribution are accepted, carry
+  no evidence, and a rewrite keeps them; top-level keys the CLI does not know
+  survive a rewrite unchanged, in place.
+- **Singles**: `target_path: null` — the singles slot is still pending
+  ("Library layout and credit rules (amendment 003)", Still pending);
+  propose reports it as pending. Tier `reject`, a tier missing from
+  `structure.yaml`, and a release with no artist or album name likewise get
+  `target_path: null`. Without a target there is no slot: `structure_slot`
+  is `null` in the proposal and the assign row, except that a singles root
+  keeps `structure_slot: "singles"` as "Still pending" specifies; `assign`
+  says why there is no target on stderr in human mode.
+- **Library layout** (implements "Library layout for new placements"): the
+  target collection dir in the target tier is listed once per command run
+  (symlinks not followed; a missing dir reads as empty, any other read error
+  stops the command). An artist dir is a non-bracketed subdir whose
+  normalized name equals the artist's; it is reused with its on-disk
+  spelling. Otherwise releases parsed from folder names in `[Releases]` (any
+  case) or loose in the collection dir count, and the new release opens an
+  artist folder spelled as the input artist. Those earlier releases are
+  listed, relative to the tier root, in the optional proposal field
+  `restructure_candidates` and in the propose row; nothing is moved. Names
+  are compared as the map-key normalization of the name after path
+  sanitizing (so "AC/DC" matches the "AC-DC" dir intake creates). A Various
+  Artists release goes to `[Compilations]` (an existing dir reused whatever
+  its case) with the usual release-folder template. `assign` builds the
+  target, and `propose` rebuilds it from the library at propose time for the
+  proposal's collection.
 - **Config** (`structure.yaml`): `assign.weights{artist,label,similar,style}`,
   `assign.short_circuit{min_releases,confidence}`,
   `assign.needs_review{confidence,margin}`, `assign.shim_accept_distance`,
@@ -283,10 +344,51 @@ Decisions made during implementation; normative for schema v1 consumers.
   TTL 90 d), shim command override via `INTAKE_BEETS_SHIM`. Without
   credentials the engine runs fully offline on priors alone.
 - **Bootstrap**: `--tree <path>` repeatable, `--prior-weight <w>` applies to
-  the most recent `--tree`, `--out <dir>` (default: rules dir), refuses to
+  the most recent `--tree` (a number above 0, else `E_BAD_ARGS`),
+  `--out <dir>` (default: rules dir), refuses to
   overwrite existing maps without `--force`. Collection dirs are the tree
   root's children; inside them, release-grammar dirs are flat releases,
-  `[Slot]`-style dirs hold flat releases, anything else is an artist dir.
-- `intake bootstrap` is not (yet) in the doc 03 command surface — filed as
-  CR-001.2 in `CHANGE-REQUESTS.md` for the next contract bump; the component
-  never calls it.
+  `[Slot]`-style dirs hold flat releases, a dir whose subdirs are mostly disc
+  dirs (doc 1 pass 2 pattern, e.g. `Title/CD1`…`CD8`, extras such as `Scans`
+  tolerated) is one release with no artist level, and anything else is an
+  artist dir (its subdirs are releases; disc dirs inside those are not
+  looked at). A release with no artist level gets its artist only from a name
+  parse, never from its dir name; unparsed, it counts as a release with no
+  artist and is listed in the report. `releases` in the stats counts every
+  release dir, with or without an artist. VA-like names are never recorded as
+  artists and no-label credits never as labels (amendment 003 section). The
+  maps go to `--out`, the naming report to `<out>/docs/`.
+- **Folder-name grammars**, tried in order, first match wins (score = the
+  resolver's `name_parse` signal):
+  `bracket_year_paren_label` `Artist [YYYY] Title (Label; Cat#)` 1.0;
+  `bracket_year_bracket_label` `Artist [YYYY] Title [Label, Cat#]` 1.0;
+  `bracket_year` `Artist [YYYY] Title` 0.75;
+  `scene` `Artist_Name-Album_Title[-(CAT)]-WEB-YYYY-GRP` 1.0 ("-" separates
+  fields, "_" separates words inside a field, the catno field is optional,
+  source token WEB/CD/VINYL/TAPE/FLAC/MP3, extra fields may follow it, the
+  group may be mixed case);
+  `paren_year_dash` `(YYYY) Artist - Title` 0.75;
+  `dash_year` `Artist - Title (YYYY)` / `[YYYY]` 0.75;
+  `dash` `Artist - Title` 0.5;
+  `paren_year` `(YYYY) Title` 0.5 (no artist; the artist sits in a parent
+  dir, as in discography dumps).
+  The dash grammars accept a spaced hyphen, en dash (U+2013) or em dash
+  (U+2014) between artist and title. A name with no spaces that contains
+  `_-_` is read with underscores as spaces by the dash grammars (after the
+  scene grammar was tried on the original), so `VA_-_Compilation_Title` gives
+  artist "VA". Whitespace runs inside every parsed field collapse to one
+  space.
+- **Label blocks** (`(…; …)` after `[YYYY] Title`, `[…, …]` likewise): the
+  block is split into fields; fields that are a 4-digit year, a format token
+  (WEB, CD, 2CD, 2xLP, Vinyl, Cass, Cassette, DVD, SACD, File, FLAC, MP3, 12"
+  …), a release descriptor (Comp, RM, RE, Ltd, Promo, EP, Single, Album, Mixed
+  …) or a country (US, UK, Europe, Germany, Japan …) are skipped. The first
+  remaining field is the label; a `#CAT` suffix on it is the catno, otherwise
+  the fields after it are. So `(1984; Label; CAT01)` and `[1984, Label]` give label
+  "Label", and Discogs-style `[2CD, Comp, RM, US, Label #CAT290]` gives label
+  "Label", catno "CAT290". Nothing left: label and catno are null. A
+  single-field block (`[LABEL CD 97]`) is not split (label and catno cannot be
+  told apart safely); the name parses as `bracket_year` with the block kept
+  in the title.
+- `intake bootstrap` is in the doc 03 command surface, marked human-only
+  (CR-001.2, amendment 002); the component never calls it.

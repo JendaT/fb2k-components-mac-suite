@@ -13,7 +13,7 @@ import { readJournal } from "../src/journal.ts";
 import { loadGenreMap } from "../src/rules.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, treeHash, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, treeHash, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {},
@@ -56,6 +56,7 @@ beforeAll(async () => {
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   await cmdScan([], { ...OPTS, all: true });
   pristineIncome = treeHash(corpus.income);
 });
@@ -82,8 +83,10 @@ test("explicit propose runs identify+assign and flips to proposed", async () => 
   const doc = sc(pollen);
   expect(doc.status).toBe("proposed");
   expect(doc.identification?.status).toBe("unconfirmed");
+  // The temp library is empty: no release by the artist in the collection,
+  // so the [Releases] slot (doc 02, amendment 003).
   expect(doc.proposal?.target_path).toBe(
-    `${library}/music.hq/${PCP}/Aes Dana/Aes Dana [2012] Pollen (Ultimae Records; inre042)`,
+    `${library}/music.hq/${PCP}/[Releases]/Aes Dana [2012] Pollen (Ultimae Records; inre042)`,
   );
   expect(doc.history.at(-1)?.event).toBe("proposed");
 });
@@ -147,7 +150,7 @@ test("execute: copy, tag, verify, atomic place, journal, genre-map count", async
   const journal = readJournal(journalPath);
   expect(journal.length).toBe(1);
   expect(journal[0]).toMatchObject({
-    seq: 1, event: "placed", sidecar_id: doc.id, target_path: target, cli_version: "0.1.0",
+    seq: 1, event: "placed", sidecar_id: doc.id, target_path: target, cli_version: "0.3.0",
   });
   expect(journal[0]!.audio_hashes).toEqual(doc.files.map((f) => f.audio_hash));
   expect(loadGenreMap(corpus.rules).artists["Aes Dana"]![PCP]).toBe(before + 1);
@@ -198,7 +201,7 @@ test("execute virtual root places only the cluster's files", async () => {
   const result = await cmdExecute([emantra.id], OPTS);
   expect(result.errors).toEqual([]);
 
-  const target = `${library}/music.hq/[Psytrance]/E-Mantra/E-Mantra [2010] Arcana`;
+  const target = `${library}/music.hq/[Psytrance]/[Releases]/E-Mantra [2010] Arcana`;
   expect(readdirSync(target).sort()).toEqual(["emantra_1_arcana.flac", "emantra_2_nocturne.flac"]);
   // Dump-dir neighbours untouched.
   expect(existsSync(join(mix, "koan_1_argonautica.mp3"))).toBe(true);
@@ -209,7 +212,7 @@ test("execute refuses an existing target and stays approved", async () => {
   const sync24 = dirOf("downloads", "Sync24 [2024] Omnimotion Remixed");
   await cmdPropose([sync24], OPTS);
   cmdApprove([sync24], OPTS);
-  const target = `${library}/music.uhq/${DTE}/Sync24/Sync24 [2024] Omnimotion Remixed`;
+  const target = `${library}/music.uhq/${DTE}/[Releases]/Sync24 [2024] Omnimotion Remixed`;
   mkdirSync(target, { recursive: true });
   const blocked = await cmdExecute([sync24], OPTS);
   expect(blocked.errors[0]?.code).toBe("E_TARGET_EXISTS");

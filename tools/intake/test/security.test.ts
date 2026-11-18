@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,13 +6,29 @@ import { isSafeRelPath, walkDirs } from "../src/util.ts";
 import { readSidecar, serializeSidecar } from "../src/sidecar.ts";
 import { cmdScan } from "../src/commands.ts";
 import { cmdApprove, cmdExecute, cmdPropose } from "../src/commands-p3.ts";
-import { setupCorpus } from "./helpers.ts";
+import type { Providers } from "../src/providers.ts";
+import { makeTierRoots, setupCorpus } from "./helpers.ts";
+
+// No network and no beets: the default shim would run the beets on PATH.
+const OFFLINE: { providers: Providers } = { providers: { discogs: null, similar: null, shim: null } };
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {}, all: false,
   allResolved: false, batch: null, approved: false, resume: false,
   age: null, relocateDj: false, collection: null, by: null,
 };
+
+// Temp dirs made by a test, removed after it, also when it fails. rmSync
+// removes a symlink inside without following it (walkDirs' `loop` points
+// back at its own root).
+const tempDirs: string[] = [];
+const tempDir = (dir: string): string => {
+  tempDirs.push(dir);
+  return dir;
+};
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 test("isSafeRelPath: accepts real release-relative paths, rejects escapes", () => {
   // Legitimate: plain names, spaces, and multi-disc subfolders.
@@ -28,7 +44,7 @@ test("isSafeRelPath: accepts real release-relative paths, rejects escapes", () =
 });
 
 test("readSidecar: rejects a sidecar whose file path escapes the release root", () => {
-  const dir = mkdtempSync(join(tmpdir(), "intake-sec-"));
+  const dir = tempDir(mkdtempSync(join(tmpdir(), "intake-sec-")));
   const good = {
     schema: 1, id: "itk_00000000", files: [{ path: "01 - x.flac", audio_hash: "fsha1:00" }],
   };
@@ -43,7 +59,7 @@ test("readSidecar: rejects a sidecar whose file path escapes the release root", 
 });
 
 test("walkDirs: does not follow symlinks (traversal / cycle guard)", () => {
-  const root = mkdtempSync(join(tmpdir(), "intake-sec-"));
+  const root = tempDir(mkdtempSync(join(tmpdir(), "intake-sec-")));
   const real = join(root, "real");
   mkdirSync(real);
   writeFileSync(join(real, "track.flac"), new Uint8Array(4));
@@ -62,11 +78,11 @@ test("walkDirs: does not follow symlinks (traversal / cycle guard)", () => {
 
 test("execute: refuses a target_path outside the configured tier roots", async () => {
   const corpus = setupCorpus();
+  tempDir(corpus.dir);
   const library = join(corpus.dir, "library");
   const journalPath = join(corpus.dir, "journal", "intake-journal.ndjson");
   delete process.env.DISCOGS_TOKEN;
   delete process.env.LASTFM_API_KEY;
-  delete process.env.INTAKE_BEETS_SHIM;
   writeFileSync(
     join(corpus.rules, "structure.yaml"),
     [
@@ -77,9 +93,10 @@ test("execute: refuses a target_path outside the configured tier roots", async (
       "",
     ].join("\n"),
   );
+  makeTierRoots(corpus.rules);
   const pollen = join(corpus.income, "downloads", "Aes Dana [2012] Pollen (Ultimae Records; inre042)");
   await cmdScan([], { ...OPTS, all: true });
-  await cmdPropose([pollen], OPTS);
+  await cmdPropose([pollen], OPTS, OFFLINE);
   await cmdApprove([pollen], OPTS);
 
   // Tamper: point the approved target outside every tier root (as a crafted or
@@ -91,9 +108,7 @@ test("execute: refuses a target_path outside the configured tier roots", async (
   writeFileSync(scPath, serializeSidecar(doc));
 
   const result = await cmdExecute([pollen], OPTS);
-  expect(result.errors.some((e) => e.code === "E_NO_TARGET")).toBe(true);
+  expect(result.errors.some((e) => e.code === "E_NO_TARGET" && e.msg.includes("outside all configured tier roots"))).toBe(true);
   expect(existsSync(escaped)).toBe(false);
   expect(readSidecar(scPath)!.status).toBe("approved"); // unchanged
-
-  rmSync(corpus.dir, { recursive: true, force: true });
 });

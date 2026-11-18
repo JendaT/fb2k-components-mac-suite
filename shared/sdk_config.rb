@@ -88,6 +88,7 @@ module Fb2kVersions
     "spectrum" => "SPECTRUM_VERSION",
     "vectorscope" => "VECTORSCOPE_VERSION",
     "spectrogram" => "SPECTROGRAM_VERSION",
+    "levelmeter" => "LEVELMETER_VERSION",
     "intake" => "INTAKE_VERSION"
   }
 

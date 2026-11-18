@@ -18,7 +18,9 @@ export interface IdentifyDeps {
 export interface IdentifyOutcome {
   identification: Identification;
   needs_review: boolean;
-  issues: string[]; // e.g. shim_unavailable
+  issues: string[]; // e.g. shim_unavailable; also on identification.issues when non-empty
+  /** The beets shim's error when it ran and failed (it is in `issues` too), else null. */
+  shim_error: string | null;
 }
 
 function majorityDate(sidecar: Sidecar): string | null {
@@ -38,6 +40,13 @@ function majorityDate(sidecar: Sidecar): string | null {
 export async function identifyRoot(dir: string, sidecar: Sidecar, deps: IdentifyDeps): Promise<IdentifyOutcome> {
   const ts = isoLocal(deps.now());
   const issues: string[] = [];
+  let shimError: string | null = null;
+  // Every outcome records its issues on the identification itself, so the
+  // sidecar shows which evidence sources failed.
+  const done = (identification: Identification, needs_review: boolean): IdentifyOutcome => {
+    if (issues.length > 0) identification.issues = [...issues];
+    return { identification, needs_review, issues, shim_error: shimError };
+  };
   const base: Identification = {
     status: "unidentified",
     source: null,
@@ -69,7 +78,7 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
   }
   if (sidecar.files.length === 0) {
     // iso stubs and the like: nothing to identify until unpacked manually
-    return { identification: base, needs_review: true, issues };
+    return done(base, true);
   }
 
   // Fast path step 3 — Discogs confirmation.
@@ -87,23 +96,19 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
       );
       const hit = matches.length === 1 ? matches[0]! : results.length === 1 ? results[0]! : null;
       if (hit) {
-        return {
-          identification: {
-            ...base,
-            status: "fast_path",
-            source: "discogs",
-            release_id: hit.release_id,
-            artist: hit.artist ?? base.artist,
-            album: hit.album ?? base.album,
-            year: hit.year ?? base.year,
-            label: hit.label ?? base.label,
-            catno: hit.catno ?? base.catno,
-            styles: hit.styles,
-            genres: hit.genres,
-          },
-          needs_review: false,
-          issues,
-        };
+        return done({
+          ...base,
+          status: "fast_path",
+          source: "discogs",
+          release_id: hit.release_id,
+          artist: hit.artist ?? base.artist,
+          album: hit.album ?? base.album,
+          year: hit.year ?? base.year,
+          label: hit.label ?? base.label,
+          catno: hit.catno ?? base.catno,
+          styles: hit.styles,
+          genres: hit.genres,
+        }, false);
       }
       if (results.length > 1) {
         // Ambiguous confirmation: keep the top hits as candidates for review.
@@ -123,9 +128,14 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
   }
 
   // Hard path — beets shim, when fast path failed or confirmation ambiguous.
-  if (deps.shim) {
-    const result = await deps.shim.identify(dir);
+  // The shim gets the root's own audio: a virtual root's dir holds other
+  // roots' files too, and a multi-disc root's files sit in disc subdirs.
+  // Quality shadows are another copy of a primary track, not more tracks.
+  const audio = sidecar.files.filter((f) => !f.quality_shadow).map((f) => f.path);
+  if (deps.shim && audio.length > 0) {
+    const result = await deps.shim.identify(dir, audio);
     if ("error" in result) {
+      shimError = result.error;
       issues.push(result.error);
     } else {
       const candidates = [...result.candidates].sort(
@@ -133,22 +143,18 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
       );
       const top = candidates[0];
       if (top && top.distance != null && top.distance <= deps.acceptDistance) {
-        return {
-          identification: {
-            ...base,
-            status: "shim",
-            source: top.source,
-            release_id: top.release_id,
-            artist: top.artist ?? base.artist,
-            album: top.album ?? base.album,
-            year: top.year ?? base.year,
-            label: top.label ?? base.label,
-            catno: top.catno ?? base.catno,
-            distance: top.distance,
-          },
-          needs_review: false,
-          issues,
-        };
+        return done({
+          ...base,
+          status: "shim",
+          source: top.source,
+          release_id: top.release_id,
+          artist: top.artist ?? base.artist,
+          album: top.album ?? base.album,
+          year: top.year ?? base.year,
+          label: top.label ?? base.label,
+          catno: top.catno ?? base.catno,
+          distance: top.distance,
+        }, false);
       }
       if (candidates.length > 0) {
         base.candidates = candidates.slice(0, 3) as IdentCandidate[];
@@ -158,5 +164,5 @@ export async function identifyRoot(dir: string, sidecar: Sidecar, deps: Identify
 
   // Degraded outcomes: parse+tags without external confirmation.
   const status = base.artist && base.album ? "unconfirmed" : "unidentified";
-  return { identification: { ...base, status }, needs_review: true, issues };
+  return done({ ...base, status }, true);
 }

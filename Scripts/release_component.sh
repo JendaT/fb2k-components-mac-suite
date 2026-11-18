@@ -50,6 +50,8 @@ typeset -A COMPONENT_MAP=(
     ["vectorscope"]="foo_jl_vectorscope_mac"
     ["jl_vectorscope"]="foo_jl_vectorscope_mac"
     ["jl_spectrogram"]="foo_jl_spectrogram_mac"
+    ["levelmeter"]="foo_jl_levelmeter_mac"
+    ["jl_levelmeter"]="foo_jl_levelmeter_mac"
 )
 
 # Version constant mapping in shared/version.h
@@ -81,6 +83,8 @@ typeset -A VERSION_MAP=(
     ["vectorscope"]="VECTORSCOPE_VERSION"
     ["jl_vectorscope"]="VECTORSCOPE_VERSION"
     ["jl_spectrogram"]="SPECTROGRAM_VERSION"
+    ["levelmeter"]="LEVELMETER_VERSION"
+    ["jl_levelmeter"]="LEVELMETER_VERSION"
 )
 
 # Display names for release titles
@@ -112,6 +116,8 @@ typeset -A DISPLAY_NAME_MAP=(
     ["vectorscope"]="Vectorscope"
     ["jl_vectorscope"]="Vectorscope"
     ["jl_spectrogram"]="Spectrogram"
+    ["levelmeter"]="Level Meter"
+    ["jl_levelmeter"]="Level Meter"
 )
 
 show_help() {
@@ -129,6 +135,7 @@ show_help() {
     echo "  spectrum      - Spectrum Analyzer"
     echo "  vectorscope   - Vectorscope (goniometer + correlation meter)"
     echo "  spectrogram   - Spectrogram"
+    echo "  levelmeter    - Level Meter (peak / RMS / loudness / VU)"
     echo ""
     echo "Options:"
     echo "  --draft       Create as draft release (not published)"
@@ -274,6 +281,11 @@ fi
 if [ "$COMPONENT" = "spectrogram" ] || [ "$COMPONENT" = "jl_spectrogram" ]; then
     COMPONENT_FILE="foo_jl_spectrogram.fb2k-component"
     TAG_NAME="spectrogram-v${VERSION}"
+fi
+
+if [ "$COMPONENT" = "levelmeter" ] || [ "$COMPONENT" = "jl_levelmeter" ]; then
+    COMPONENT_FILE="foo_jl_levelmeter.fb2k-component"
+    TAG_NAME="levelmeter-v${VERSION}"
 fi
 
 echo "=== Releasing $DISPLAY_NAME v$VERSION ==="

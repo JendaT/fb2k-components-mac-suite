@@ -16,7 +16,11 @@ Status values: `open` | `accepted` | `rejected` | `superseded`.
 **From:** tools worker (`feature/intake-cli`, HEAD `6fb6d32`)
 **Against:** `docs/intake/intake-03-contract-spec.md` (draft v1, 2026-07-11)
 **Spec basis:** main@3d146d7 + amendment 001
-**Status:** open
+**Status:** accepted (amendment 002, 2026-08-26, contract v1.1). CR-001.1
+accepted with modification, CR-001.2 and CR-001.3 accepted, CR-001.4
+option B accepted (superseded by CR-003 option d, amendment 003), CR-001.5
+option (b). Implemented on this branch: `reject` (0533e25); CR-001.4 by
+CR-003 (4cec147).
 
 Five items surfaced by implementing docs 01–03 in `tools/intake/`. None of
 them blocks the CLI today: the package is feature-complete against the
@@ -755,3 +759,240 @@ never runs `gc` without ids either way.
 
 **Component fallback.** A mutating command is never spawned with zero ids
 (unit-tested).
+
+---
+
+## TR-001 — tools-worker response to CR-EXT-001
+
+**Filed:** 2026-08-13
+**From:** tools worker (`feature/intake-cli`)
+**Re:** `docs/intake/CR-EXT-001-doc03.md` (extension worker, 2026-07-25)
+**Status:** closed (amendment 003, 2026-11-15). The CR-1, CR-2 and CR-4
+positions were accepted in amendment 002 (CR-002.1, CR-002.2, CR-002.4);
+the CR-3 schema-to-semver proposal is superseded by the integer `schema`
+(CR-002.3 option A).
+
+CR-EXT-001 asks the tools worker one direct question (CR-1: "check current
+implementation") and three that carry implementation consequences. Answers
+below are from the shipped CLI at `tools/intake/`, verified by running it, not
+from reading the spec.
+
+Summary of positions: **CR-1 accept** (nothing to change — one correction to
+the proposed text, already implemented), **CR-2 accept** (cheap; four
+precision notes), **CR-3 accept-with-changes** (as written it conflicts with
+what `intake version` emits today, in two ways), **CR-4 accept** (no tools
+work; one preference offered).
+
+### On CR-1 — envelope vs. bare array
+
+**No bare arrays exist.** `src/cli.ts` wraps every `--json` invocation in
+`{ok, data, errors}` and prints exactly one line; `status --json` has always
+returned the array under `data`. The "if the tools worker has already shipped
+bare arrays" branch does not apply, and the sniff-the-first-byte fallback is
+unnecessary. Envelope-everywhere can be pinned at zero cost to this side.
+
+Two notes on the proposed replacement text:
+
+- *"`ok` is `true` iff the exit code is 0"* — holds today at every return
+  site. `ok` is computed as `errors.length === 0`, and every command's exit
+  code is 0 exactly when it has no errors. Safe to pin.
+- *"On exit 2 `data` is `null`"* — did **not** hold. `fail()` emitted `null`,
+  but the "nothing matched" paths emitted `[]` (`identify`/`assign`/`propose`/
+  `approve`/`execute`/`gc` with no resolvable refs, `scan` with every income
+  path missing). Same exit code, two payload types. This was a defect on our
+  side regardless of how doc 03 is worded, so it is **fixed** (commit
+  `04a9a1d`): a shared `finish()` now yields 0 + rows, 1 + subset, or 2 +
+  `null`. The proposed sentence can therefore stand as written.
+
+Suggested addition while this section is open, since it is what a consumer
+actually needs to detect "no envelope": **in `--json` mode the CLI writes
+exactly one JSON object to stdout and nothing else** — human-readable output
+is only produced without `--json`, and diagnostics go to stderr. A crash
+yields empty stdout with a non-zero exit, which CR-4's `E_NO_CLI` definition
+already covers.
+
+`test/envelope.test.ts` now pins all of the above across 11 invocations, so a
+future change cannot silently break the component's parser.
+
+### On CR-2 — `proposal.ranked` in the status summary
+
+Accept. The data exists and needs no recomputation; the summary is built by
+`summarize()` in `src/sidecar.ts` and this is one field. Four points of
+precision for the amendment text:
+
+1. **`score`, not `confidence`, is the stored name.** The sidecar holds
+   `ranked: [{collection, score, evidence:{artist_prior, label_prior,
+   similar_vote, style_hint}}]`. It is the same quantity on the same scale:
+   the proposal's top-level `confidence` *is* `ranked[0].score`, both floats
+   in `[0,1]` rounded to 2 decimals. Exposing it as `confidence` in the
+   summary is a rename, not a conversion — worth stating so nobody later
+   assumes two different numbers.
+2. **Ordering is deterministic**: score descending, ties broken by collection
+   name ascending. Guaranteeing "best first" in the spec is safe.
+3. **Membership**: `ranked` holds only collections with at least one piece of
+   evidence (artist prior, label prior, similar-artist vote, or style hint),
+   so it is normally short. Two shapes worth knowing: when the engine
+   short-circuits on a strong single-folder artist prior, `ranked` has exactly
+   one entry; when there is no evidence at all there is no proposal, so the
+   `proposal` member is `null` and the question does not arise.
+4. **After `assign --by user`**: if an engine proposal existed, `ranked`
+   retains engine order and the user's pick may be absent — exactly as the
+   proposed rule says. If the user assigned a release the engine could not
+   rank, `ranked` is `[{collection: <user's pick>, score: 1}]`. So `ranked` is
+   never empty when a proposal exists, and `alternates_shown` (already in the
+   sidecar) records whether there was more than one candidate.
+
+Truncation at 5 is fine. We will emit `min(5, n)` in stored order.
+
+### On CR-3 — schema version
+
+Accept the intent; the current text cannot be adopted verbatim because
+`intake version --json` today emits:
+
+```json
+{"ok":true,"data":{"cli":"0.1.0","schema":1,"engine":"0.1.0"},"errors":[]}
+```
+
+Two conflicts:
+
+1. **`schema` is an integer, not a semver string.** Adopting "all three are
+   semver strings, starting at 1.0.0" changes the type of a field doc 03
+   already specifies. It is the right change and now is the moment — no
+   consumer parses it yet — but it should be called out in the amendment as a
+   type change rather than a clarification, and it is a CLI change on our
+   side.
+2. **The sidecar carries its own `"schema": 1`** (integer, doc 01). If doc
+   03's `schema` becomes semver, the two must be related explicitly or they
+   will drift. Proposal: the sidecar's integer stays and is defined as *the
+   major*; `version.schema`'s major MUST equal it. Doc 01 is worker-owned and
+   we will state that there once the amendment lands.
+
+Also: `engine` is currently a hardcoded `"0.1.0"` and does not reflect whether
+the beets shim is actually present. CR-3's "`engine` MAY be `null` when the
+beets shim is absent" is the better contract; we will implement probe-based
+reporting with it. Note the shim remains **untested against a real beets
+install** — only against a fake shim in tests — so whatever `engine` reports
+is the adapter's version, not a verified backend.
+
+### On CR-4 — reserved host-synthesized codes
+
+Accept; no tools work. The CLI emits 13 codes and neither `E_NO_CLI` nor
+`E_CLI_TIMEOUT` is among them (full list in CR-001.5). The MUST-NOT-emit rule
+is now enforced mechanically by `test/envelope.test.ts`, which fails if either
+string appears as an emitted code anywhere in `src/`.
+
+On the open question — "CLI ran but stdout is unparseable": weak preference
+for folding it into `E_NO_CLI` rather than adding `E_BAD_OUTPUT`. A CLI whose
+output cannot be understood is functionally absent, the consumer's remedy is
+identical, and it keeps the reserved set at two.
+
+**Overlap:** CR-4 and our CR-001.5 are the same section from opposite sides —
+they want the two host codes named and fenced off, we want the CLI-emitted
+vocabulary declared open rather than frozen as a table. The two are
+compatible and would be cleanest resolved in one amendment.
+
+---
+
+## CR-003 — unset-MD5 FLAC can never be placed: tag write breaks the `fsha1:` verify
+
+**Filed:** 2026-11-14
+**From:** tools worker (`feature/intake-cli`, HEAD `9fbcd2c`)
+**Against:** `docs/intake/intake-03-contract-spec.md` v1.1 (2026-08-26)
+**Spec basis:** main@c712783 + amendment 002
+**Status:** accepted, option (d) (amendment 003, 2026-11-15, contract v1.2),
+with the fallback chosen by the user: without a usable decoder `fsha1:` +
+`flac_decoder_missing`/`flac_decode_failed`, `needs_review` on the root, no
+provenance tags on that file. Implemented in 4cec147 with both regression
+tests; 12/20-bit FLAC still to be checked against a re-encode on the first
+real file.
+**Severity:** A (the contract as written cannot be satisfied)
+
+**Contract says.** Doc 03 "audio_hash": a FLAC whose STREAMINFO MD5 is unset
+is keyed `"fsha1:" + SHA1(whole file)` for life, with `flac_md5_unset` as the
+permanent marker and no repair at any stage (CR-001.4 option B). Execute
+protocol step 2 writes the final tags (provenance `INTAKE_*`, VorbisComment)
+into the copies; step 3 requires audio_hash of every copy == sidecar hash.
+Doc 03 also says tag edits MUST NOT change audio_hash for flac.
+
+**Implementation is.** Execute does exactly that: copy, `metaflac` tag write
+(`src/provenance.ts`), then `verifyTree` re-hashes every copy
+(`src/commands-p3.ts`). A tag write rewrites bytes inside the file, so the
+whole-file SHA1 of an unset-MD5 FLAC changes by construction. Verify fails
+and the release reverts to `approved`. Any release containing one such file
+can never be placed.
+
+**Repro (2026-11-14, synthetic fixture, metaflac 1.5.0).** Copies of the
+three FLACs in the repo's unset-MD5 fixture root
+(`fixtures/income/todo/Bluetech [2011] Cosmic Dubwise`), `writeProvenance`,
+then `audioHash` again: both unset-MD5 files change hash, the normal FLAC
+stays stable. `bun test` does not catch it.
+
+**Correction to CR-001.4 / amendment 002.** CR-001.4 stated "today the file
+lands in the library with its MD5 still unset", and amendment 002 accepted
+option B partly on that premise. That holds only where `metaflac` is absent
+(the tag write is then skipped with `metaflac_missing` and the hash stays
+put). With `metaflac` installed, which is the normal setup, it does not land.
+
+**Options considered.**
+
+- **(a) Skip provenance tags on `fsha1:`-keyed files** and record an issue
+  such as `provenance_tags_skipped:flac_md5_unset`. Keeps the for-life key.
+  Conflicts with step 2 for those files, which then reach the library
+  without `INTAKE_*` tags. Smallest code change.
+- **(b) Hash the copy before tagging.** Rejected: the placed file no longer
+  matches the sidecar/journal hash, so `gc` re-verify (which re-hashes the
+  target) refuses to delete, and the journal key is wrong.
+- **(c) A tag-immune fallback over the FLAC frame bytes** (e.g. SHA1 of the
+  bytes after the last metadata block). A new hash kind that nothing else
+  produces, and it changes if the file is ever re-encoded.
+- **(d) Key unset-MD5 FLACs by the MD5 a correct STREAMINFO would hold:**
+  `"flacmd5:" + MD5(decoded audio)`, computed as
+  `flac -d --force-raw-format --endian=little --sign=signed` → MD5
+  (interleaved samples, little-endian signed, whole bytes per sample).
+  `flac_md5_unset` stays in `quality.issues` as the marker that the value
+  was computed, not read. **Chosen.**
+
+**Premise check for (d)** (user's condition: computed MD5 == embedded MD5
+for normal FLACs, including at least one 24-bit file). Run 2026-11-14 on
+copies of the repo fixtures, flac 1.5.0:
+1. **Holds.** 28 of 28 normal FLACs: computed MD5 == embedded STREAMINFO MD5.
+   25 are 16-bit and 3 are 24-bit.
+2. **Tag-immune.** Both unset-MD5 copies decode to the same MD5 after the
+   provenance tag write as before it.
+3. **Repair-stable.** Re-encoding an unset-MD5 file with `flac -f` writes
+   exactly the computed value into STREAMINFO, so the key survives a later
+   repair.
+4. **Not verified: bit depths that are not a multiple of 8** (12/20-bit).
+   I tried to generate one with sox and ffmpeg; both stored 24-bit, so no
+   true fixture exists. Such files are rare. The implementation treats them
+   like any other depth (whole bytes per sample), and the first real sample
+   should be checked against a re-encode.
+
+**Decided in amendment 003, my proposals:**
+- **Decoder missing or decode fails** (no `flac` on PATH, corrupt frames):
+  fall back to `fsha1:` plus an issue (`flac_decoder_missing` /
+  `flac_decode_failed`), and skip provenance tags on that file as in (a), so
+  the release stays placeable. `flac` becomes a resolve-time dependency;
+  today `audioHash` parses STREAMINFO itself and needs no binary.
+- **Schema stays 1, CLI minor** (agreeing with the overseer's planned
+  position). The shape and type of `audio_hash` are unchanged; only which
+  algorithm produces the value for one rare file class changes. No consumer
+  compares hashes: `feature/intake-extension` has no reference to
+  `audio_hash`, `flacmd5` or `fsha1` (checked 2026-11-14), and doc 04 has
+  none. Doc 05 step 1 mentions a "hash-metadata lookup" for the producer's
+  in-collection marker. P5 is not built, and a tag-immune key only helps
+  it.
+- **Migration: none.** No sidecars or journal exist anywhere, production or
+  test. The Amunet test environment (`music.intake-test`) has only ever seen
+  a `scan --dry-run` (verified by the overseer, 2026-11-14).
+
+**Regression gate.** A test that runs `execute` on a release containing an
+unset-MD5 FLAC with `metaflac` on PATH. It asserts the release reaches
+`placed` with `verified: true`, the copy carries the `INTAKE_*` tags, the
+sidecar key is `flacmd5:` with `flac_md5_unset` present, and `gc`
+re-verify passes. A second test runs with `flac` absent and asserts the
+`fsha1:` fallback, the issue, and still `placed`. Both land with the
+implementation commit; the first fails on the current code.
+
+**Impact.** Doc 03 "audio_hash" (FLAC bullet), plus the fallback wording.
+Doc 01 hash notes (worker-owned, with the implementation). CLI minor.

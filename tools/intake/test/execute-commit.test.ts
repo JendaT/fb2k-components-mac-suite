@@ -15,7 +15,7 @@ import { cmdApprove, cmdExecute, cmdPropose } from "../src/commands-p3.ts";
 import { readJournal } from "../src/journal.ts";
 import { readSidecar } from "../src/sidecar.ts";
 import type { Sidecar } from "../src/types.ts";
-import { setupCorpus, type Corpus } from "./helpers.ts";
+import { makeTierRoots, setupCorpus, type Corpus } from "./helpers.ts";
 
 const OPTS = {
   json: true, dryRun: false, force: false, filters: {},
@@ -58,6 +58,7 @@ beforeAll(async () => {
   const blocker = join(corpus.dir, "blocker");
   writeFileSync(blocker, "not a directory\n");
   writeStructure(join(blocker, "nested", "intake-journal.ndjson"));
+  makeTierRoots(corpus.rules);
 
   release = join(corpus.income, "downloads", "Aes Dana [2012] Pollen (Ultimae Records; inre042)");
   expect((await cmdResolve([release], OPTS)).errors).toEqual([]);

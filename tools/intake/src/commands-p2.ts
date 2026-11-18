@@ -2,20 +2,22 @@
 
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { assign, buildTargetPath, type AssignInput, type AssignProviders } from "./assign.ts";
+import { assign, buildTargetPath, noTargetReason, type AssignInput, type AssignProviders } from "./assign.ts";
 import { bootstrapTrees, type TreeSpec } from "./bootstrap.ts";
-import type { CommandResult, CommonOpts } from "./commands.ts";
+import { finish, type CommandResult, type CommonOpts } from "./commands.ts";
 import { loadAssignConfig, loadIncome, rulesDir } from "./config.ts";
 import { identifyRoot } from "./identify.ts";
+import type { LibraryProbe } from "./layout.ts";
+import type { MountFs } from "./tierroot.ts";
 import { buildProviders, type Providers } from "./providers.ts";
 import {
   appendOverride, loadGenreMap, loadLabelMap, loadStyleMap, recordFeedback,
   saveGenreMap, saveLabelMap,
 } from "./rules.ts";
 import { readSidecar, serializeSidecar } from "./sidecar.ts";
-import type { JsonError, Proposal, Sidecar } from "./types.ts";
-import { RESOLVER_VERSION } from "./types.ts";
-import { isSidecarName, isoLocal, round2, walkDirs } from "./util.ts";
+import type { AssignConfig, HistoryEvent, JsonError, Proposal, Sidecar, StructureSlot } from "./types.ts";
+import { CLI_VERSION, PRE_LIBRARY_STATUSES } from "./types.ts";
+import { isSidecarName, isVariousArtists, isoLocal, round2, walkDirs } from "./util.ts";
 
 function fail(code: string, msg: string, path: string | null = null): CommandResult<null> {
   return { data: null, errors: [{ code, msg, path }], exitCode: 2 };
@@ -82,8 +84,10 @@ export function rootsFromRefs(refs: string[], errors: JsonError[]): RootRef[] {
   return out;
 }
 
-export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean): void {
-  root.sidecar.history.push({ ts: isoLocal(), event, by: `intake@${RESOLVER_VERSION}` });
+export function writeSidecarWithEvent(root: RootRef, event: string, dryRun: boolean, reason?: string): void {
+  const entry: HistoryEvent = { ts: isoLocal(), event, by: `intake@${CLI_VERSION}` };
+  if (reason) entry.reason = reason;
+  root.sidecar.history.push(entry);
   if (!dryRun) writeFileSync(root.sidecarPath, serializeSidecar(root.sidecar));
 }
 
@@ -107,6 +111,8 @@ export interface AssignRow {
   confidence?: number;
   margin?: number;
   target_path?: string | null;
+  /** The proposal's structure_slot (doc 02 layout), alongside target_path; null when it is (a singles root keeps "singles"). */
+  structure_slot?: StructureSlot | null;
   assigned_by?: "user" | "engine";
   short_circuited?: boolean;
   needs_review?: boolean;
@@ -121,6 +127,59 @@ export interface AssignRow {
  */
 export interface P2Deps {
   providers?: Providers;
+  /** Collection dir listings for the library layout; defaults to diskLibraryProbe(). */
+  library?: LibraryProbe;
+  /** Filesystem facts for the tier root check (propose); defaults to the real disk. */
+  mountFs?: MountFs;
+}
+
+/**
+ * The disk-reading LibraryProbe: immediate subdirectory names (symlinks not
+ * followed), null when the dir does not exist. Listings are cached for the
+ * probe's lifetime, one command run: nothing in propose/assign writes to the
+ * library. Any other read error is thrown rather than read as an empty
+ * collection, which would silently send an artist's release to `[Releases]`.
+ */
+export function diskLibraryProbe(): LibraryProbe {
+  const cache = new Map<string, string[] | null>();
+  return (dir) => {
+    if (cache.has(dir)) return cache.get(dir)!;
+    let names: string[] | null;
+    try {
+      names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw e;
+      names = null;
+    }
+    cache.set(dir, names);
+    return names;
+  };
+}
+
+/**
+ * Shim errors that INTAKE_BEETS_SHIM can fix: the shim did not start
+ * (`shim_unavailable`), ran under a Python without beets
+ * (`beets_unavailable`), died without a JSON error (`shim_exit_<n>`),
+ * printed no usable JSON (`shim_bad_output`) or was invoked wrongly (its
+ * `usage: ...`). Errors from a shim that ran (`beets_error: ...`,
+ * `no_audio_files`, `file_not_found: ...`, `file_outside_release_dir: ...`)
+ * are about beets or the release, and a different command does not help.
+ */
+const SHIM_LAUNCH_ERROR = /^(shim_unavailable|beets_unavailable|shim_bad_output)$|^shim_exit_|^usage: /;
+
+/**
+ * The human-mode notice for a run in which the beets shim failed on some
+ * roots (`shimErrors`: one error per such root, in run order), or null when
+ * it never failed. Those roots were identified without MusicBrainz, which
+ * their `unconfirmed` status alone does not say. It shows the first error,
+ * and points at INTAKE_BEETS_SHIM only when that error is a launch failure.
+ */
+export function shimNotice(shimErrors: string[]): string | null {
+  if (shimErrors.length === 0) return null;
+  const first = shimErrors[0]!.split("\n")[0]!.trim();
+  const hint = SHIM_LAUNCH_ERROR.test(first) ? "; see INTAKE_BEETS_SHIM" : "";
+  return `beets shim failed for ${shimErrors.length} root(s): ${first}${hint}`;
 }
 
 /**
@@ -128,18 +187,26 @@ export interface P2Deps {
  * so `propose` can drive it on the RootRef it already holds instead of
  * re-resolving by id and re-reading the sidecar from disk — a round-trip that
  * silently made `propose --dry-run` a no-op, since the sub-command had written
- * nothing for it to read back.
+ * nothing for it to read back. `shimErrors` holds the beets shim's error for
+ * each root it failed on (see shimNotice).
  */
 export async function identifyRoots(
   roots: RootRef[],
   opts: CommonOpts,
   deps: P2Deps = {},
-): Promise<{ data: IdentifyRow[]; errors: JsonError[] }> {
+): Promise<{ data: IdentifyRow[]; errors: JsonError[]; shimErrors: string[] }> {
   const errors: JsonError[] = [];
+  const shimErrors: string[] = [];
   const providers = deps.providers ?? buildProviders();
   const cfg = loadAssignConfig();
   const data: IdentifyRow[] = [];
   for (const root of roots) {
+    // Doc 03 legal source statuses: never on a rejected root or one that has
+    // reached the library.
+    if (!PRE_LIBRARY_STATUSES.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot identify from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
     if (root.sidecar.identification && !opts.force) {
       data.push({ id: root.sidecar.id, root_path: root.dir, kept: true, status: root.sidecar.identification.status });
       continue;
@@ -150,6 +217,7 @@ export async function identifyRoots(
       acceptDistance: cfg.shim_accept_distance,
       now: () => new Date(),
     });
+    if (outcome.shim_error !== null) shimErrors.push(outcome.shim_error);
     root.sidecar.identification = outcome.identification;
     root.sidecar.cluster.needs_review = root.sidecar.cluster.needs_review || outcome.needs_review;
     writeSidecarWithEvent(root, "identified", opts.dryRun);
@@ -164,17 +232,19 @@ export async function identifyRoots(
       issues: outcome.issues,
     });
   }
-  return { data, errors };
+  return { data, errors, shimErrors };
 }
 
 export async function cmdIdentify(args: string[], opts: CommonOpts, deps: P2Deps = {}): Promise<CommandResult<IdentifyRow[] | null>> {
   if (args.length === 0) return fail("E_BAD_ARGS", "usage: intake identify <root...>");
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
-  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
-  const { data, errors } = await identifyRoots(roots, opts, deps);
-  const all = [...refErrors, ...errors];
-  return { data, errors: all, exitCode: all.length === 0 ? 0 : 1 };
+  if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
+  const { data, errors, shimErrors } = await identifyRoots(roots, opts, deps);
+  const result: CommandResult<IdentifyRow[] | null> = finish(data, [...refErrors, ...errors]);
+  const notice = shimNotice(shimErrors);
+  if (notice) result.notices = [notice];
+  return result;
 }
 
 // ---- assign -----------------------------------------------------------------
@@ -184,7 +254,8 @@ export interface AssignOpts extends CommonOpts {
   by: string | null;
 }
 
-function assignInput(root: RootRef): AssignInput {
+/** The assign engine's input for a root: its identification, else its cluster. */
+export function assignInput(root: RootRef): AssignInput {
   const ident = root.sidecar.identification;
   return {
     artist: ident?.artist ?? root.sidecar.cluster.albumartist,
@@ -199,30 +270,61 @@ function assignInput(root: RootRef): AssignInput {
   };
 }
 
-/** Assign an already-resolved RootRef list in place (see identifyRoots). */
+/**
+ * Recompute a proposal's target from the library as it is now, keeping its
+ * collection (doc 02: "already has" is read from disk at propose time). A
+ * target built by an earlier `assign` may predate releases added to the
+ * collection since, or the layout itself (a compilation assigned before
+ * amendment 003 has no target).
+ */
+export function refreshTarget(root: RootRef, library: LibraryProbe, cfg: AssignConfig = loadAssignConfig()): void {
+  const p = root.sidecar.proposal;
+  if (!p) return;
+  const plan = buildTargetPath(assignInput(root), p.target_collection, cfg, library);
+  p.target_path = plan.target_path;
+  p.structure_slot = plan.structure_slot;
+  if (plan.restructure_candidates.length > 0) p.restructure_candidates = plan.restructure_candidates;
+  else delete p.restructure_candidates;
+}
+
+/**
+ * Assign an already-resolved RootRef list in place (see identifyRoots).
+ * `notices` says, for a person at the terminal, why a root got no target.
+ */
 export async function assignRoots(
   roots: RootRef[],
   opts: AssignOpts,
   rdir: string,
   deps: P2Deps = {},
-): Promise<{ data: AssignRow[]; errors: JsonError[] }> {
+): Promise<{ data: AssignRow[]; errors: JsonError[]; notices: string[] }> {
   const errors: JsonError[] = [];
+  const notices: string[] = [];
   const genre = loadGenreMap(rdir);
   const rules = { genre, labels: loadLabelMap(rdir), styles: loadStyleMap(rdir), config: loadAssignConfig() };
+  const noTarget = (root: RootRef, input: AssignInput) =>
+    notices.push(`no target path for ${root.dir}: ${noTargetReason(input, rules.config) ?? "unknown reason"}`);
   const providers = deps.providers ?? buildProviders();
+  const library = deps.library ?? diskLibraryProbe();
   const assignProviders: AssignProviders = {
     similar: providers.similar,
     aliases: providers.discogs ? (name) => providers.discogs!.artistAliases(name) : null,
+    library,
   };
 
   const data: AssignRow[] = [];
   let genreDirty = false;
   for (const root of roots) {
+    // Doc 03 legal source statuses, as for identify.
+    if (!PRE_LIBRARY_STATUSES.has(root.sidecar.status)) {
+      errors.push({ code: "E_BAD_STATUS", msg: `cannot assign from status ${root.sidecar.status}`, path: root.dir });
+      continue;
+    }
     const input = assignInput(root);
     if (opts.collection) {
       // User override: authoritative pick + feedback loop (doc 02).
       const prior = root.sidecar.proposal;
-      const { target_path, structure_slot } = buildTargetPath(input, opts.collection, rules.config);
+      const { target_path, structure_slot, restructure_candidates } =
+        buildTargetPath(input, opts.collection, rules.config, library);
       const proposal: Proposal = {
         engine_version: prior?.engine_version ?? "user",
         ranked: prior?.ranked ?? [{
@@ -238,6 +340,7 @@ export async function assignRoots(
         assigned_by: "user",
         alternates_shown: prior?.alternates_shown ?? false,
       };
+      if (restructure_candidates.length > 0) proposal.restructure_candidates = restructure_candidates;
       root.sidecar.proposal = proposal;
       writeSidecarWithEvent(root, "assigned", opts.dryRun);
       if (!opts.dryRun) {
@@ -248,15 +351,18 @@ export async function assignRoots(
           collection: opts.collection,
           by: "user",
         });
-        if (input.artist) {
+        // No feedback for a VA credit: it would rebuild, under feedback:, the
+        // artist prior that assign() ignores for Various Artists.
+        if (input.artist && !isVariousArtists(input.artist)) {
           recordFeedback(genre, input.artist, opts.collection);
           genreDirty = true;
         }
       }
       data.push({
         id: root.sidecar.id, root_path: root.dir, target_collection: opts.collection,
-        confidence: 1, margin: 1, target_path, assigned_by: "user", kept: false,
+        confidence: 1, margin: 1, target_path, structure_slot, assigned_by: "user", kept: false,
       });
+      if (target_path === null) noTarget(root, input);
       continue;
     }
 
@@ -286,14 +392,16 @@ export async function assignRoots(
       confidence: outcome.proposal.confidence,
       margin: outcome.proposal.margin,
       target_path: outcome.proposal.target_path,
+      structure_slot: outcome.proposal.structure_slot,
       assigned_by: "engine",
       short_circuited: outcome.short_circuited,
       needs_review: root.sidecar.cluster.needs_review,
       kept: false,
     });
+    if (outcome.proposal.target_path === null) noTarget(root, input);
   }
   if (genreDirty && !opts.dryRun) saveGenreMap(rdir, genre);
-  return { data, errors };
+  return { data, errors, notices };
 }
 
 export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps = {}): Promise<CommandResult<AssignRow[] | null>> {
@@ -305,11 +413,12 @@ export async function cmdAssign(args: string[], opts: AssignOpts, deps: P2Deps =
 
   const refErrors: JsonError[] = [];
   const roots = rootsFromRefs(args, refErrors);
-  if (roots.length === 0) return { data: [], errors: refErrors, exitCode: 2 };
+  if (roots.length === 0) return { data: null, errors: refErrors, exitCode: 2 };
 
-  const { data, errors } = await assignRoots(roots, opts, rdir, deps);
-  const all = [...refErrors, ...errors];
-  return { data, errors: all, exitCode: all.length === 0 ? 0 : data.length > 0 ? 1 : 2 };
+  const { data, errors, notices } = await assignRoots(roots, opts, rdir, deps);
+  const result: CommandResult<AssignRow[] | null> = finish(data, [...refErrors, ...errors]);
+  if (notices.length > 0) result.notices = notices;
+  return result;
 }
 
 // ---- collections -------------------------------------------------------------
@@ -348,6 +457,9 @@ export function cmdBootstrap(opts: BootstrapOpts): CommandResult {
   for (const t of opts.trees) {
     if (!existsSync(t.path) || !statSync(t.path).isDirectory())
       return fail("E_NOT_FOUND", "tree is not a directory", t.path);
+    // A negative or infinite weight would write counts the map loader refuses.
+    if (!Number.isFinite(t.weight) || t.weight <= 0)
+      return fail("E_BAD_ARGS", `--prior-weight must be a number above 0, got ${t.weight}`, t.path);
   }
   const out = opts.out ?? rulesDir();
   if (!out) return fail("E_NO_RULES", "no output dir (--out or rules dir)");
@@ -362,7 +474,10 @@ export function cmdBootstrap(opts: BootstrapOpts): CommandResult {
     mkdirSync(out, { recursive: true });
     saveGenreMap(out, result.genre);
     saveLabelMap(out, result.labels);
-    writeFileSync(join(out, "naming-variants-report.md"), result.report);
+    // The rules repo keeps reports under docs/, next to the structure notes.
+    const docsDir = join(out, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSync(join(docsDir, "naming-variants-report.md"), result.report);
   }
   return {
     data: { out, dry_run: opts.dryRun, ...result.stats, trees: opts.trees.map((t) => ({ ...t, path: resolve(t.path) })) },

@@ -256,9 +256,9 @@ async function main(): Promise<void> {
   });
 
   // FLAC with unset STREAMINFO MD5 — rippers/encoders that skip the signature.
-  // audio_hash must fall back to `fsha1:` and the root must carry a
-  // `flac_md5_unset` quality issue. Two of the three files are unset so one
-  // root exercises both the fallback and the normal `flacmd5:` path.
+  // audio_hash must be `flacmd5:` over the decoded audio (CR-003) and the root
+  // must carry a `flac_md5_unset` quality issue. Two of the three files are
+  // unset so one root exercises both the computed and the embedded MD5 path.
   const bluetech = "todo/Bluetech [2011] Cosmic Dubwise";
   for (const [i, title] of ["Rainmaker", "Prima Materia", "Dawn Chorus"].entries()) {
     const file = join(INCOME, bluetech, `${String(i + 1).padStart(2, "0")} - ${title}.flac`);
@@ -269,6 +269,59 @@ async function main(): Promise<void> {
     );
     if (i < 2 && wanted(file)) zeroFlacMd5(file);
   }
+
+  // Scene rip whose tags carry the source token in the album ("Album WEB")
+  // and no album artist; the dir name gives the album without it, so
+  // cluster.album must come out "Album". Placeholder names only.
+  const scene = "todo/Artist_Name-Album-(CAT123)-WEB-2011-ExampleGroup";
+  const sceneStem = "00-artist_name-album-(cat123)-web-2011";
+  const sceneFiles: string[] = [];
+  for (const [i, title] of ["First Track", "Second Track", "Third Track"].entries()) {
+    const name = `${String(i + 1).padStart(2, "0")}-artist_name-${title.toLowerCase().replace(/ /g, "_")}.mp3`;
+    sceneFiles.push(name);
+    await genAudio(
+      join(INCOME, scene, name), "mp3-320",
+      { artist: "Artist Name", album: "Album WEB", title, track: i + 1, date: "2011", genre: "Electronic" },
+      { freq: 1300 + i * 37 },
+    );
+  }
+  if (wanted(join(INCOME, scene, `${sceneStem}.m3u`))) {
+    const at = (ext: string) => join(INCOME, scene, `${sceneStem}.${ext}`);
+    const crc = (n: string) => Bun.hash.crc32(readFileSync(join(INCOME, scene, n))).toString(16).padStart(8, "0");
+    writeFileSync(at("m3u"), sceneFiles.join("\n") + "\n");
+    writeFileSync(at("nfo"), "Artist Name - Album\nWEB 2011\nExample Group\n");
+    writeFileSync(at("sfv"), sceneFiles.map((n) => `${n} ${crc(n)}`).join("\n") + "\n");
+  }
+
+  // Two-disc Various Artists web compilation: lowercase disc dirs, each
+  // track's album artist is its own artist (one artist on both discs), one
+  // album tag, no disc tag, the disc encoded in the track number (101..,
+  // 201..), plus a non-audio Artwork/ dir and a web page beside the discs.
+  // Must resolve to one root at the VA dir. Placeholder names only.
+  const va = "todo/VA_-_Example_Compilation_(Web_Version_2CD)";
+  const vaAlbum = "Example Compilation - An Example Site compilation (2CD Web Edition)";
+  const vaDiscs = [
+    [["Artist One", "First Song"], ["Artist Two", "Second Song"], ["Artist Three", "Third Song"], ["Artist Four", "Fourth Song"]],
+    [["Artist Five", "Fifth Song"], ["Artist Two", "Sixth Song"], ["Artist Six", "Seventh Song"], ["Artist Seven", "Eighth Song"], ["Artist Eight", "Ninth Song"]],
+  ];
+  let vaFreq = 2600;
+  for (const [d, tracks] of vaDiscs.entries()) {
+    for (const [i, [artist, title]] of tracks.entries()) {
+      await genAudio(
+        join(INCOME, va, `cd${d + 1}`, `${String(i + 1).padStart(2, "0")} ${artist} - ${title}.mp3`), "mp3-320",
+        { album_artist: artist!, artist: artist!, album: vaAlbum, title: title!, track: (d + 1) * 100 + i + 1, date: "2011" },
+        { freq: vaFreq },
+      );
+      vaFreq += 37;
+    }
+  }
+  const vaPdf = join(INCOME, va, "Artwork", "cover.pdf");
+  if (wanted(vaPdf)) {
+    mkdirSync(dirname(vaPdf), { recursive: true });
+    writeFileSync(vaPdf, "%PDF-1.4\n%%EOF\n");
+  }
+  const vaHtm = join(INCOME, va, "contest01.htm");
+  if (wanted(vaHtm)) writeFileSync(vaHtm, "<html><body>Example page</body></html>\n");
 
   // NAS thumbnail dir junk (committable; .DS_Store/._*/Thumbs.db junk is
   // injected by the test helper instead, since the repo .gitignore excludes

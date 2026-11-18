@@ -1,13 +1,24 @@
 // Bootstrap (doc 02): one-off read-only scan of an existing canonical tree
 // producing genre-map.yaml, label-map.yaml and naming-variants-report.md.
 // Layout assumption: <tree>/<[Collection]>/<Artist>/<release dirs> with flat
-// release dirs (or slot dirs like "[Releases]") parsed by grammar.
+// release dirs (or slot dirs like "[Releases]") parsed by grammar. A release
+// dir may hold disc dirs (CD1, CD2 …): under an artist dir they are never
+// looked at; directly under a collection (no artist level) the entry is one
+// release, not an artist dir.
+// Various Artists is never an artist entry: a VA credit (parsed from a release
+// name, an artist dir named VA, or a flat-files dir) would otherwise vote in
+// the assign engine's artist tier for every compilation. A VA release still
+// counts as a release, in the grammar table, and for its label.
+// Likewise a self-released or no-label credit (isNoLabel: "Self-Released",
+// "Not On Label (…)", "No Label") is never a label entry: it would vote in the
+// label tier for every self-released release. The release still counts as a
+// release, in the grammar table, and for its artist.
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseDirName } from "./naming.ts";
 import type { GenreMap, LabelMap } from "./rules.ts";
-import { isJunkDir, round2 } from "./util.ts";
+import { DISC_DIR_RE, hasVariousArtistsPrefix, isJunkDir, isNoLabel, isVariousArtists, round2 } from "./util.ts";
 
 export interface TreeSpec {
   path: string;
@@ -29,6 +40,17 @@ function subdirs(dir: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** A release holding disc dirs: most of its subdirs are disc dirs (the rest may be scans, artwork …). */
+function isDiscSet(subs: string[]): boolean {
+  const discs = subs.filter((n) => DISC_DIR_RE.test(n)).length;
+  return discs > 0 && discs * 2 > subs.length;
+}
+
+/** A VA credit, plain ("VA", "Various Artists") or as a scene-name prefix ("VA  Title (2013) FLAC"). */
+function isVaName(name: string): boolean {
+  return isVariousArtists(name) || hasVariousArtistsPrefix(name);
 }
 
 function hasFiles(dir: string): boolean {
@@ -57,11 +79,11 @@ export function bootstrapTrees(trees: TreeSpec[]): BootstrapResult {
     const parsed = parseDirName(dirName);
     if (parsed) grammarCounts[parsed.grammar] = (grammarCounts[parsed.grammar] ?? 0) + 1;
     else if (unparsed.length < 30) unparsed.push(dirName);
+    releaseCount++;
     const who = artist ?? parsed?.artist;
     if (!who) return;
-    releaseCount++;
-    bump(artists, who, collection, w);
-    if (parsed?.label) bump(labels, parsed.label, collection, w);
+    if (!isVaName(who)) bump(artists, who, collection, w);
+    if (parsed?.label && !isNoLabel(parsed.label)) bump(labels, parsed.label, collection, w);
   };
 
   for (const tree of trees) {
@@ -78,12 +100,18 @@ export function bootstrapTrees(trees: TreeSpec[]): BootstrapResult {
           // Slot dir ([Releases], [Compilations], ...) holding flat releases.
           for (const rel of subdirs(entryDir)) countRelease(collection, null, rel, tree.weight);
         } else {
-          // Artist dir: subdirs are releases; flat files count as one release.
           const releases = subdirs(entryDir);
+          if (isDiscSet(releases)) {
+            // Release with disc dirs and no artist level: one release. Its
+            // artist comes only from a name parse, never from the dir name.
+            countRelease(collection, null, entry, tree.weight);
+            continue;
+          }
+          // Artist dir: subdirs are releases; flat files count as one release.
           for (const rel of releases) countRelease(collection, entry, rel, tree.weight);
           if (releases.length === 0 && hasFiles(entryDir)) {
             releaseCount++;
-            bump(artists, entry, collection, tree.weight);
+            if (!isVaName(entry)) bump(artists, entry, collection, tree.weight);
           }
         }
       }

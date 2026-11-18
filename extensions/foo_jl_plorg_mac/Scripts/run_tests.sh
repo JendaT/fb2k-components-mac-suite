@@ -73,3 +73,7 @@ echo "==> Running unit tests..."
 "$TEST_BUILD_DIR/treenode_tests"
 "$TEST_BUILD_DIR/treeops_tests"
 "$TEST_BUILD_DIR/volumesync_tests"
+
+# Offline profile tool (Python, stdlib only): runs against synthetic profiles.
+echo "==> Running shadow link migration tool tests..."
+"$SCRIPT_DIR/tests/test_shadow_link_migrate.sh"

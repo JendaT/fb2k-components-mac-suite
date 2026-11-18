@@ -7,9 +7,10 @@
 import type { AssignConfig, Proposal, RankedFolder, StructureSlot, Tier } from "./types.ts";
 import type { FolderCounts, GenreMap, LabelMap, StyleMap } from "./rules.ts";
 import { findKey } from "./rules.ts";
-import { normKey, round2 } from "./util.ts";
+import { libraryLayout, NO_LIBRARY, readCollection, sanitizeComponent, type LibraryProbe } from "./layout.ts";
+import { isNoLabel, isVariousArtists, normKey, round2 } from "./util.ts";
 
-export const ENGINE_VERSION = "0.1.0";
+export const ENGINE_VERSION = "0.2.0";
 
 export interface AssignRules {
   genre: GenreMap;
@@ -38,6 +39,11 @@ export interface SimilarArtist {
 export interface AssignProviders {
   similar?: ((artist: string) => Promise<SimilarArtist[] | null>) | null;
   aliases?: ((artist: string) => Promise<string[] | null>) | null;
+  /**
+   * Collection dir listings for the library layout (doc 02, amendment 003).
+   * Absent: no library is read, so every non-VA release lands in `[Releases]`.
+   */
+  library?: LibraryProbe | null;
 }
 
 export interface AssignOutcome {
@@ -176,10 +182,6 @@ export function styleHint(input: AssignInput, styles: StyleMap): FolderCounts {
   return hint;
 }
 
-function sanitizeComponent(s: string): string {
-  return s.replace(/[/\\:]/g, "-").replace(/[\u0000-\u001f]/g, "").replace(/^[\s.]+|[\s.]+$/g, "");
-}
-
 function fillTemplate(tpl: string, fields: Record<string, string | null>): string {
   let out = tpl;
   for (const [k, v] of Object.entries(fields)) out = out.replaceAll(`{${k}}`, v ?? "");
@@ -190,26 +192,65 @@ function fillTemplate(tpl: string, fields: Record<string, string | null>): strin
     .trim();
 }
 
-/** Tier routing + naming: compute target_path within the eligible tier. */
+export interface TargetPlan {
+  target_path: string | null;
+  /**
+   * null when target_path is null (no target, no slot), except for a singles
+   * root, which keeps the pending "singles" slot (doc 02, amendment 003,
+   * Still pending).
+   */
+  structure_slot: StructureSlot | null;
+  /** Existing releases that now belong in the artist folder, relative to the tier root (see Layout). */
+  restructure_candidates: string[];
+}
+
+/** Why buildTargetPath builds no target for `input`, or null when it builds one. */
+export function noTargetReason(input: AssignInput, cfg: AssignConfig): string | null {
+  if (input.singles) return "the singles slot is still pending"; // doc 02, Still pending
+  if (input.tier_eligible === "reject") return "the release's quality tier is reject";
+  if (!cfg.tiers[`music.${input.tier_eligible}`]) return `tier music.${input.tier_eligible} is not configured`;
+  if (!input.artist || !input.album) return "the release has no artist or album name";
+  return null;
+}
+
+/**
+ * Tier routing + naming + library layout: compute target_path within the
+ * eligible tier. The layout (artist folder, `[Releases]`, `[Compilations]`)
+ * depends on what the collection dir already holds, read through `library`;
+ * the default reads nothing (every collection dir is absent). With no target
+ * (noTargetReason) there is no structure slot either, except the pending
+ * "singles" slot of a singles root.
+ */
 export function buildTargetPath(
   input: AssignInput,
   collection: string,
   cfg: AssignConfig,
-): { target_path: string | null; structure_slot: StructureSlot } {
-  if (input.singles) return { target_path: null, structure_slot: "singles" }; // slot layout is a pending TBD
-  if (input.tier_eligible === "reject") return { target_path: null, structure_slot: "artist" };
-  const tier = cfg.tiers[`music.${input.tier_eligible}`];
-  if (!tier || !input.artist || !input.album) return { target_path: null, structure_slot: "artist" };
+  library: LibraryProbe = NO_LIBRARY,
+): TargetPlan {
+  // Doc 02 (amendment 003, Still pending): a singles root keeps
+  // `structure_slot: "singles"` with `target_path: null` until the slot is decided.
+  if (input.singles) return { target_path: null, structure_slot: "singles", restructure_candidates: [] };
+  if (noTargetReason(input, cfg) !== null) return { target_path: null, structure_slot: null, restructure_candidates: [] };
+  // Past noTargetReason the tier is configured and artist and album are set.
+  const artist = input.artist!;
+  const tier = cfg.tiers[`music.${input.tier_eligible}`]!;
+  const va = isVariousArtists(artist);
   const tpl = input.label && input.catno ? cfg.naming.release : cfg.naming.release_no_label;
-  const folder = fillTemplate(tpl, {
-    artist: input.artist,
+  // For a Various Artists release the {artist} field is the VA credit.
+  const folder = sanitizeComponent(fillTemplate(tpl, {
+    artist,
     year: input.year,
     album: input.album,
     label: input.label,
     catno: input.catno,
-  });
-  const parts = [collection, input.artist, folder].map(sanitizeComponent);
-  return { target_path: `${tier.root}/${parts.join("/")}`, structure_slot: "artist" };
+  }));
+  const coll = sanitizeComponent(collection);
+  const layout = libraryLayout(artist, readCollection(library, `${tier.root}/${coll}`, va));
+  return {
+    target_path: `${tier.root}/${coll}/${layout.parent}/${folder}`,
+    structure_slot: layout.structure_slot,
+    restructure_candidates: layout.restructure_candidates.map((p) => `${coll}/${p}`),
+  };
 }
 
 /**
@@ -223,8 +264,13 @@ export async function assign(
 ): Promise<AssignOutcome> {
   const cfg = rules.config;
   const learned: Record<string, string> = {};
-  const prior = input.artist
-    ? await artistPrior(input.artist, rules.genre, providers.aliases ?? null, learned)
+  // A Various Artists credit says nothing about where a compilation belongs:
+  // the artist tier is unavailable, not evidence of absence. No prior lookup
+  // (so no alias provider call), no short-circuit, and w.artist stays out of
+  // the denominator; label and style decide.
+  const artist = isVariousArtists(input.artist) ? null : input.artist;
+  const prior = artist
+    ? await artistPrior(artist, rules.genre, providers.aliases ?? null, learned)
     : null;
 
   const finish = (ranked: RankedFolder[], shortCircuited: boolean): AssignOutcome => {
@@ -234,18 +280,19 @@ export async function assign(
     const top = ranked[0]!;
     const margin = round2(ranked.length > 1 ? top.score - ranked[1]!.score : top.score);
     const needsReview = top.score < cfg.needs_review.confidence || margin < cfg.needs_review.margin;
-    const { target_path, structure_slot } = buildTargetPath(input, top.collection, cfg);
+    const plan = buildTargetPath(input, top.collection, cfg, providers.library ?? NO_LIBRARY);
     const proposal: Proposal = {
       engine_version: ENGINE_VERSION,
       ranked,
       target_collection: top.collection,
       confidence: top.score,
       margin,
-      target_path,
-      structure_slot,
+      target_path: plan.target_path,
+      structure_slot: plan.structure_slot,
       assigned_by: "engine",
       alternates_shown: ranked.length > 1,
     };
+    if (plan.restructure_candidates.length > 0) proposal.restructure_candidates = plan.restructure_candidates;
     return { proposal, needs_review: needsReview, learned_aliases: learned, short_circuited: shortCircuited };
   };
 
@@ -262,8 +309,18 @@ export async function assign(
     );
   }
 
-  const label = labelPrior(input.label, rules.labels);
-  const similar = await similarVote(input.artist, rules.genre, providers.similar ?? null);
+  // A self-released or no-label credit ("Self-Released", Discogs' "Not On
+  // Label (X Self-released)") names no label, so it says nothing about where
+  // the release belongs: the label tier is unavailable, as for a null label,
+  // not evidence of absence. No prior lookup (a map left with such a key by an
+  // older bootstrap would pull every self-released release toward one
+  // collection), and w.label stays out of the denominator. buildTargetPath
+  // still gets input.label for the folder name.
+  const inputLabel = isNoLabel(input.label) ? null : input.label;
+  const label = labelPrior(inputLabel, rules.labels);
+  // Skipped for VA as well (artist is null): the similar artists of "Various
+  // Artists" would be a Last.fm query that says nothing about this release.
+  const similar = await similarVote(artist, rules.genre, providers.similar ?? null);
   const style = styleHint(input, rules.styles);
   const artistDist = prior?.dist ?? {};
 
@@ -278,10 +335,11 @@ export async function assign(
   // so absent network tiers do not deflate confidence (doc 02 example: artist
   // 0.95 + label 0.88 -> ~0.9, not 0.7). An artist/label present in the input
   // but unknown to the maps IS evidence of absence and stays in the
-  // denominator; similar/style only count when they produced votes.
+  // denominator (a VA credit or a no-label credit is not: see above);
+  // similar/style only count when they produced votes.
   const denom =
-    (input.artist ? w.artist : 0) +
-    (input.label ? w.label : 0) +
+    (artist ? w.artist : 0) +
+    (inputLabel ? w.label : 0) +
     (Object.keys(similar).length > 0 ? w.similar : 0) +
     (Object.keys(style).length > 0 ? w.style : 0);
   const ranked: RankedFolder[] = [...folders]

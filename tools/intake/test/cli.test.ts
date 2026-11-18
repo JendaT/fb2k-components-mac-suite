@@ -25,11 +25,15 @@ afterAll(() => {
   rmSync(corpus.dir, { recursive: true, force: true });
 });
 
-test("version --json returns {cli, schema, engine} in an envelope", () => {
+test("version --json returns {cli, schema, engine, commands} in an envelope", () => {
   const r = run(["version", "--json"]);
   expect(r.code).toBe(0);
   const env = JSON.parse(r.stdout);
-  expect(env).toEqual({ ok: true, data: { cli: "0.1.0", schema: 1, engine: "0.1.0" }, errors: [] });
+  expect(env).toEqual({
+    ok: true,
+    data: { cli: "0.3.0", schema: 1, engine: "0.2.0", commands: expect.any(Array) },
+    errors: [],
+  });
 });
 
 test("unknown command exits 2 with E_BAD_ARGS envelope", () => {
@@ -66,7 +70,7 @@ test("scan + status --json round trip with doc 03 summary shape", () => {
   const env = JSON.parse(status.stdout);
   expect(env.ok).toBe(true);
   expect(Array.isArray(env.data)).toBe(true);
-  expect(env.data.length).toBe(20);
+  expect(env.data.length).toBe(22);
   for (const s of env.data) {
     expect(Object.keys(s).sort()).toEqual(["cluster", "id", "needs_review", "placed", "proposal", "root_path", "status"]);
     expect(s.id).toMatch(/^itk_[0-9a-f]{8}$/);
@@ -99,7 +103,7 @@ test("human output renders scan blocks, status rows and the dry-run note", () =>
   const status = run(["status"]);
   expect(status.code).toBe(0);
   expect(status.stdout).toMatch(/itk_[0-9a-f]{8}  resolved/);
-  expect(status.stdout.trim().endsWith("20 sidecar(s)")).toBe(true);
+  expect(status.stdout.trim().endsWith("22 sidecar(s)")).toBe(true);
 
   const resolveDry = run(["resolve", join(corpus.income, "todo"), "--force", "--dry-run"]);
   expect(resolveDry.code).toBe(0);
