@@ -15,6 +15,7 @@
 #import "../Integration/PlaylistCallbacks.h"
 #import "../fb2k_sdk.h"
 #import "../../../../shared/PreferencesCommon.h"
+#import "../../../../shared/ThemeColor.h"
 #include "../Integration/ComponentInfo.h"
 
 // Flipped view for top-to-bottom layout (unique class name per extension)
@@ -43,6 +44,8 @@
 @property (nonatomic, strong) NSPopUpButton *displaySizePopup;
 @property (nonatomic, strong) NSPopUpButton *headerSizePopup;
 @property (nonatomic, strong) NSPopUpButton *headerAccentPopup;
+@property (nonatomic, strong) NSPopUpButton *selectionColorPopup;
+@property (nonatomic, strong) NSColorWell *selectionColorWell;
 @property (nonatomic, strong) NSPopUpButton *groupHeaderSpacingPopup;
 @property (nonatomic, strong) NSTextField *groupHeaderSpacingLabel;
 @property (nonatomic, strong) NSPopUpButton *inlineAlbumSpacingPopup;  // shown instead of the above for Inline
@@ -71,12 +74,14 @@
     // performSelector:afterDelay: keeps a pending save or preview alive on the
     // run loop; firing it after the page closes would touch dead fields.
     [NSObject cancelPreviousPerformRequestsWithTarget:self];
+    // Unhook the shared color panel so it stops sending to a dead well.
+    [_selectionColorWell deactivate];
 }
 
 - (void)loadView {
     // Build the preferences inside a flipped container, then wrap it in a scroll view
     // so users can scroll if their preferences window is shorter than the content.
-    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 1045)];
+    NSView *container = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 820, 1075)];
     container.autoresizingMask = 0;  // Fixed size so side-by-side layout stays intact
 
     NSScrollView *scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 820, 600)];
@@ -243,12 +248,12 @@
     CGFloat displayBoxY = y;
     CGFloat displayContentY = 22;
 
-    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 425)];
+    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, displayBoxY, 460, 455)];
     displayBox.title = @"Display Settings";
     displayBox.titlePosition = NSAtTop;
     [container addSubview:displayBox];
 
-    NSView *displayContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 395)];
+    NSView *displayContent = [[SimPlaylistFlippedView alloc] initWithFrame:NSMakeRect(0, 0, 440, 425)];
     displayBox.contentView = displayContent;
 
     // Header Display Style
@@ -348,6 +353,25 @@
     [displayContent addSubview:_headerAccentPopup];
     displayContentY += rowHeight + 4;
 
+    // Selection Color
+    NSTextField *selectionColorLabel = [NSTextField labelWithString:@"Selection Color:"];
+    selectionColorLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
+    [displayContent addSubview:selectionColorLabel];
+
+    _selectionColorPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth, displayContentY, 150, 26) pullsDown:NO];
+    [_selectionColorPopup addItemWithTitle:@"System Accent"];
+    [_selectionColorPopup addItemWithTitle:@"Custom"];
+    _selectionColorPopup.target = self;
+    _selectionColorPopup.action = @selector(selectionColorModeChanged:);
+    [displayContent addSubview:_selectionColorPopup];
+
+    _selectionColorWell = [[NSColorWell alloc] initWithFrame:NSMakeRect(boxMargin + labelWidth + 160, displayContentY + 1, 40, 24)];
+    if (@available(macOS 13.0, *)) { _selectionColorWell.colorWellStyle = NSColorWellStyleMinimal; }
+    _selectionColorWell.target = self;
+    _selectionColorWell.action = @selector(selectionColorChanged:);
+    [displayContent addSubview:_selectionColorWell];
+    displayContentY += rowHeight + 4;
+
     // Group Header Spacing (Inline shows Album Spacing in the same place)
     _groupHeaderSpacingLabel = [NSTextField labelWithString:@"Group Header Spacing:"];
     _groupHeaderSpacingLabel.frame = NSMakeRect(boxMargin, displayContentY + 3, labelWidth, 20);
@@ -406,7 +430,7 @@
     dragWarning.lineBreakMode = NSLineBreakByWordWrapping;
     [displayContent addSubview:dragWarning];
 
-    y = displayBoxY + 455;
+    y = displayBoxY + 485;
 
     // ==================== BEHAVIOR SETTINGS ====================
     CGFloat behaviorBoxY = y;
@@ -642,6 +666,17 @@ static void selectClampedItem(NSPopUpButton *popup, int64_t index) {
         simplaylist_config::kHeaderAccentColor,
         simplaylist_config::kDefaultHeaderAccentColor);
     selectClampedItem(_headerAccentPopup, headerAccent);
+
+    // Load selection color (0=system accent, 1=custom)
+    int64_t selectionColorMode = simplaylist_config::getConfigInt(
+        simplaylist_config::kSelectionColorMode,
+        simplaylist_config::kDefaultSelectionColorMode);
+    selectClampedItem(_selectionColorPopup, selectionColorMode);
+    uint32_t selectionArgb = (uint32_t)simplaylist_config::getConfigInt(
+        simplaylist_config::kSelectionColor,
+        simplaylist_config::kDefaultSelectionColor);
+    _selectionColorWell.color = JLColorFromARGB(selectionArgb | 0xFF000000u);
+    _selectionColorWell.enabled = (_selectionColorPopup.indexOfSelectedItem == 1);
 
     // Load group header spacing (0=normal, 1=larger)
     int64_t groupHeaderSpacing = simplaylist_config::getConfigInt(
@@ -1091,6 +1126,25 @@ static const NSTimeInterval kPreviewDebounceSeconds = 0.4;
 
     // Needs redraw for header color change
     [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistSettingsChangedNotification
+                                                        object:nil];
+}
+
+- (void)selectionColorModeChanged:(id)sender {
+    NSInteger mode = _selectionColorPopup.indexOfSelectedItem;
+    simplaylist_config::setConfigInt(simplaylist_config::kSelectionColorMode, mode);
+    _selectionColorWell.enabled = (mode == 1);
+    if (mode != 1) [_selectionColorWell deactivate];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
+                                                        object:nil];
+}
+
+- (void)selectionColorChanged:(id)sender {
+    // Stored opaque: the text color is chosen against this color alone.
+    uint32_t argb = JLARGBFromColor(_selectionColorWell.color) | 0xFF000000u;
+    simplaylist_config::setConfigInt(simplaylist_config::kSelectionColor, (int64_t)argb);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:SimPlaylistRedrawNeededNotification
                                                         object:nil];
 }
 
