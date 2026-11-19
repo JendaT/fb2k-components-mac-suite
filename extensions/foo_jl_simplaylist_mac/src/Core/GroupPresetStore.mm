@@ -34,6 +34,7 @@
     GroupPreset *basic = [GroupPreset presetWithName:@"Album"];
     basic.sortingPattern = @"%path_sort%";
     basic.headerPattern = @"[$if2(%album artist%,%artist%) - ]['['%date%']' ][%album%]";
+    basic.groupingPattern = @"['['%date%']' ][%album%]";
     basic.groupColumnPattern = @"[%album%]";
     basic.groupColumnDisplayType = GroupDisplayTypeFront;
     basic.subgroups = @[
