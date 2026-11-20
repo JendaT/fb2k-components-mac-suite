@@ -15,7 +15,7 @@
 //  other Unicode form, finds it. Ties (two roots claiming one library path)
 //  go to the lowest id.
 //
-//  Use: only the context menu asks it, so a row swapped
+//  Use: only the context menu (and the test aid) asks it, so a row swapped
 //  to its library path still maps to its root for "Delete local copy…".
 //  decorate() never reads it: library rows are not intake rows and get no
 //  tint, no icon and no badge (doc 04 v1.2 "Row decorations").
