@@ -42,6 +42,7 @@ at once; nothing needs a restart.
 | bun | The bun to run a `cli.ts` with. Empty: found in `~/.bun/bin`, `/opt/homebrew/bin` or `/usr/local/bin`. |
 | Rules folder | Passed to the CLI as `INTAKE_RULES_DIR`. Empty: the CLI's own rules setting. |
 | Watched folders | Extra folders to watch for sidecar changes, one absolute path per line. The income folders and the folders of known releases are always watched. |
+| Share links | Local symlinks to the music share (such as the plorg shadow link), one absolute path per line. See [Share links](#share-links). Each line shows where the link points, or why it is not used. |
 | Library mapping | One prefix pair, NAS path prefix to Mac path prefix, for Swap to library paths when the CLI reports library paths as the NAS sees them. |
 | Row colours | One colour per status, with opacity, a "No tint" switch for each, and Reset colours. |
 | Confirmations | Ask before Delete local copy, Ask before Reject (both on by default). Execute placement always asks. |
@@ -81,6 +82,29 @@ Rows are matched to intake releases (roots) by their file path.
   Assign. The badge is amber when the release needs review or the
   confidence is below 0.6, with the next candidate as a hint:
   `→ [Collection A] · 0.61 (alt: [Collection B])`.
+
+## Share links
+
+foobar2000 can keep tracks of a network share under a local symlink, as
+`file:///Users/x/Music/NAS/music/...` with `/Users/x/Music/NAS/music`
+pointing at `/Volumes/music` ([`docs/shadow-link.md`](../../docs/shadow-link.md)).
+The intake CLI still reports the share's releases under `/Volumes/...`.
+Add the link under **Share links** and those rows match too.
+
+- While the link points at the mounted share (also a second mount such as
+  `/Volumes/music-1`), its rows match like rows on the share itself.
+- Pointed anywhere else, such as a local mirror, its rows match only
+  releases that lie under that folder. Pointed at `/Volumes/music` while
+  the share is unmounted, they keep the last tint.
+- The links are read when a load starts, when a share mounts or unmounts
+  (and 2 s and 10 s later), on Refresh and when the setting changes. They
+  are read without touching the share.
+- **Swap to library paths** keeps the link form in a playlist that uses a
+  link. A row whose link does not lead to the library copy is skipped
+  rather than given a second spelling.
+- **Delete local copy…** counts rows under a link that does not point at
+  the mounted share as not checked, so "Swap, then delete" deletes
+  nothing while such rows exist. Plain Delete still runs.
 
 ## Context menu
 

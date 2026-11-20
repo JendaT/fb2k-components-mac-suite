@@ -175,7 +175,8 @@ empty.
   sidecars keeps those roots' last record and retries once, 1 s later.
 - **Mount or unmount** (NSWorkspace notifications): the slow-volume marks
   are forgotten, the mount table is read again, one reload runs, and the
-  stream is restarted with the same paths.
+  stream is restarted with the same paths. The share links are read again
+  2 s and 10 s later (see Share links below).
 - **Changes made on the NAS** (not through this Mac) produce no FSEvents
   event. They need Refresh (doc 04 v1.2 "Refresh and invalidation"). Nothing
   polls.
@@ -228,3 +229,32 @@ probe, 2026-11-15). What the component does with them:
     `mac-volume` form the playlist's items already use. Failing that, it
     uses the mount whose form foobar2000 resolves back to that mount. If
     neither fits, the row is skipped ("no matching mount").
+
+## Share links
+
+[`src/Core/IntakeWatchSet.h` (readShareLink), `IntakeMountAliases.h`,
+`IntakeLoader.h`; doc 04 "Share links"]
+
+After the plorg migration ([`docs/shadow-link.md`](../../../docs/shadow-link.md))
+foobar2000 keeps share tracks as `file://<link>/<rel>` under a local
+symlink that a mount agent re-points. The `share_links` setting names the
+links; each maps to where it points.
+
+- **When they are read:** at the start of every load, before the CLI is
+  asked anything; on a mount or unmount notification, and again 2 s and
+  10 s after it, because the agent re-points the link once it sees the
+  mount; on Refresh and Reload now; and when the setting changes. Nothing
+  watches the link itself, so a re-point with none of these is picked up
+  at the next one.
+- **How:** on the loader queue, with the same fresh
+  `getmntinfo(MNT_NOWAIT)` table. `lstat`/`readlink` run only on paths
+  that table puts on a local filesystem, so nothing inside a network
+  mount is examined, the share's mount point included.
+- **Cost of a change:** an unchanged result publishes nothing. A changed
+  one rebuilds the last load's keys and publishes them (no CLI call), with
+  an invalidate-all only when a row can decorate differently. The next
+  load started by FSEvents still lists only the folders its batches named,
+  unless a root's own key moved (only a root spelled through a link can).
+- **Log:** each ignored link and each link off the share, one Info line
+  when it appears; `mount aliases changed: ...` at Info on every change of
+  the table (`docs/hidden-options.md`, `share_links`).

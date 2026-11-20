@@ -1004,7 +1004,10 @@ First release, contributed by @Scannou (#56).
 - **Background execute**: Execute and Resume keep running when foobar2000 quits and are picked up at the next start.
 - **Live updates**: Income folders are watched with FSEvents; a sidecar change or a finished command reloads the status.
 - **Network shares**: `mac-volume://` rows match, also when a share is mounted twice; a stalled volume is skipped instead of blocking.
-- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
+- **Share links**: Rows kept under a local symlink to the music share (`file://<link>/...`, the plorg shadow link) match the share's releases; the link is read without touching the share.
+- **Swap with share links**: A playlist that uses a share link gets library rows in the link form; a row whose link does not lead to the library copy is skipped.
+- **Delete with share links**: Rows under a link that does not point at the mounted share count as unchecked, so "Swap, then delete" deletes nothing.
+- **Preferences**: Tools > Intake sets the CLI, bun, rules folder, watched folders, share links, library mapping, row colours, confirmations and log level, with a status line, Test CLI and Reload now.
 
 #### Notes
 - **Changes only through the CLI**: Reads sidecars and CLI output; music files and sidecars change only through the intake command-line tool.

@@ -24,17 +24,19 @@ writes it back when it quits, so an edit made while it runs is overwritten.
 The component reads every key at startup.
 
 **On the preferences page (Tools > Intake, B5):** `cli_path`, `bun_path`,
-`rules_dir`, `watch_folders`, `swap_prefix_from`, `swap_prefix_to`,
-the row colours `tint_new`, `tint_review`, `tint_proposed`, `tint_approved`,
-`tint_placed` and `tint_rejected` (B10), `confirm_gc` (B9, on the page since
-B10), `confirm_reject` (B6) and `log_level`. These are no longer hidden: the
-page writes them and they apply at once, with no restart (a CLI, bun or rules
-change reloads with `version`; a watched-folders change rebuilds the watch
-set; a colour change rebuilds the rows' decorations from the last load, with
-at most one invalidate-all and no CLI call; the log level and the two
-confirmations apply immediately, from the next context menu). They are
-described below because in-app checks set them with `sqlite3` while
-foobar2000 is quit.
+`rules_dir`, `watch_folders`, `share_links` (B11), `swap_prefix_from`,
+`swap_prefix_to`, the row colours `tint_new`, `tint_review`,
+`tint_proposed`, `tint_approved`, `tint_placed` and `tint_rejected` (B10),
+`confirm_gc` (B9, on the page since B10), `confirm_reject` (B6) and
+`log_level`. These are no longer hidden: the page writes them and they
+apply at once, with no restart (a CLI, bun or rules change reloads with
+`version`; a watched-folders change rebuilds the watch set; a share-links
+change reads the links again and rebuilds the match keys of the last load,
+with no CLI call; a colour change rebuilds the rows' decorations from the
+last load, with at most one invalidate-all and no CLI call; the log level
+and the two confirmations apply immediately, from the next context menu).
+They are described below because in-app checks set them with `sqlite3`
+while foobar2000 is quit.
 
 **Hidden (config store only):** `decor_stats` and `log_file`.
 
@@ -105,6 +107,56 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
 At `log_level` 1 the console shows `[intake] watching N folder(s) for sidecar
 changes` whenever the watch set changes; at 2 also the folders (`watch: ...`)
 and one line per change batch (`watch: changes in N folder(s) ...`).
+
+## foo_jl_intake.share_links
+
+`configStrings`. Local symlinks to the music share (B11; the plorg shadow
+link, [`docs/shadow-link.md`](../../../docs/shadow-link.md)), one absolute
+path per line, with the line rules of `watch_folders` (a line that does not
+start with `/` is ignored with one console line). Each line is cleaned
+lexically, so a trailing `/` is dropped; `/` and repeated lines are
+dropped. Default: empty, which changes nothing.
+
+foobar2000 keeps a migrated share item as `file://<link>/<rel>`, e.g.
+`file:///Users/x/Music/NAS/music/income/a.wav` with
+`/Users/x/Music/NAS/music -> /Volumes/music`. While a configured link points
+at a mounted share (`/Volumes/music`, or `/Volumes/music-1` when it is
+mounted twice), such rows match the share's releases as `mac-volume://`
+rows do, and Swap to library paths writes the link form. A link pointed
+anywhere else (a mirror, or `/Volumes/music` while the share is unmounted)
+matches only releases that lie under its target, and its rows count as not
+checked in Delete local copy's playlist check. Swap never writes a
+`mac-volume://` row into a playlist that uses a link: a row whose link does
+not lead to the library copy is skipped. Doc 04 "Share links" has the
+rules.
+
+The links are read at the start of every load, on a mount or unmount and
+2 s and 10 s after it, on Refresh and Reload now, and when this key
+changes. A read uses `lstat`/`readlink` on local paths only, decided from
+the mount table first: it never examines anything inside a network mount.
+
+```bash
+# quit foobar2000 first
+sqlite3 ~/Library/foobar2000-v2/config.sqlite \
+  "INSERT INTO configStrings(name,value) VALUES('foo_jl_intake.share_links','/Users/x/Music/NAS/music')
+   ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
+```
+
+Console lines, at `log_level` 1. The first comes at startup and whenever
+the key changes; the next two (one per ignored link, one per link off the
+share) when they appear, and not again while they stay:
+
+```
+[intake] share_links: ignoring "Music/NAS/music" (not an absolute path)
+[intake] share link "/Users/x/Music/NAS/music": not a symlink; ignored
+[intake] share link "/Users/x/Music/NAS/music" points at "/Users/x/mirror", not at a mounted share: its rows match only intake roots there
+[intake] mount aliases changed: /Volumes/music -> /smbfs:music; link /Users/x/Music/NAS/music -> /smbfs:music (exact case, on a share)
+```
+
+The other reasons a link is ignored are `missing`, `on a network volume`,
+`a symlink loop` and `a mount point`. The `mount aliases changed` line
+comes with every change of the table after the first read (a mount, an
+unmount, a link added, removed or re-pointed).
 
 ## foo_jl_intake.swap_prefix_from and swap_prefix_to
 
