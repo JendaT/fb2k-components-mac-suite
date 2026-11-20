@@ -37,8 +37,11 @@
 //  without one; no CLI call) and reaching later loads.
 //  B11: share links (setShareLinks publishing and invalidating, an
 //  unchanged link publishing nothing, a re-point through relink() and
-//  through the next load's start, batches staying incremental, and links
-//  configured at start matching from the first load).
+//  through the next load's start, batches staying incremental, links
+//  configured at start matching from the first load, a root spelled
+//  through a link moving its key and so listing in full once), and with
+//  no links configured the mount table read for the aliases only by the
+//  first load and remount(), as before.
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -704,6 +707,28 @@ static void testMountAliases() {
           "and does not invalidate either");
     CHECK(logCount("mount aliases changed under no intake root") == 2, "one Debug line each");
     CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus}), "no CLI call for either");
+
+    // B11: with no share links configured, neither relink() nor a load's
+    // start reads the mount table for the aliases: a mount whose
+    // notification has not come yet is mapped by remount() only, as before
+    // share links existed.
+    g_context = "mount-no-links";
+    count = h->publishCount();
+    h->setMounts({lan, vpn});
+    loader.relink();
+    CHECK(!mock::waitUntil([&] { return h->publishCount() > count; }, 0.5), "relink() reads nothing with no links");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 3), "a reload after the mount table changed");
+    CHECK(h->publishCount() == count + 1 && h->lastPublished().reason == PublishReason::Load,
+          "its start publishes no remount: only the load");
+    CHECK(h->lastPublished().view && h->lastPublished().view->aliases().aliasCount() == 1,
+          "the load keeps the table remount() read");
+    loader.remount();
+    CHECK(mock::waitUntil([&] { return h->publishCount() > count + 1; }, 10), "remount() publishes");
+    CHECK(h->lastPublished().reason == PublishReason::Remount && h->lastPublished().view &&
+              h->lastPublished().view->aliases().aliasCount() == 2,
+          "and maps the new mount");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus}), "one status for the reload, none else");
 }
 
 static void testShutdown() {
@@ -1790,6 +1815,48 @@ static void testShareLinks() {
         h2->lastPublished().view ? h2->lastPublished().view->visualFor("file://" + newAlbum(link2), scratch) : nullptr;
     CHECK(first && first->icon == IntakeIcon::CircleOpen, "link-form rows match from the first load");
     CHECK(logCount("share link \"" + link2 + "\" points at") == 1, "the note is logged on the first read");
+
+    g_context = "share-links-root-key";
+    // The CLI spells its roots through a link (the CLI keeps /Volumes roots
+    // in practice): configuring that link moves the roots' own keys, so the
+    // members kept by root key no longer fit and the next batch lists in
+    // full, once.
+    // Set up through the link, so the mock's sidecars and replies spell the
+    // roots that way.
+    const std::string state3 = realOf(mock::newDir("state"));
+    const std::string stateLink = mock::newDir("links") + "/state-link";
+    CHECK(!state3.empty() && pointLink(stateLink, state3) &&
+              mock::runSync({mock::mockPath(), "--mock-setup", "default"}, mock::mockEnv(stateLink)) == 0,
+          "a mock state set up through a link");
+    const std::string loose3 = stateLink + "/root/income/shop/Loose Tracks";  // as the CLI spells it
+    const std::string album3 = state3 + "/root/income/dump/Fixture Artist - New Album";  // as FSEvents does
+    CountingAccess files3;
+    auto h3 = std::make_shared<Harness>();
+    auto w3 = std::make_shared<WatchHarness>();
+    h3->setMounts({kLocalRoot});
+    IntakeLoader loader3(watchSettingsFor(stateLink, h3, w3, &files3));
+    loader3.reload(true);
+    CHECK(waitFinished(*h3, 1) && h3->lastFinished().state == LoaderState::Ready, "first load, roots through the link");
+    CHECK_EQ(files3.listsOf(loose3), 1, "the first load lists the shared folder");
+    p = h3->lastPublished();
+    CHECK(p.view && p.view->visualFor(newAlbum(state3 + "/root"), scratch) == nullptr,
+          "a row spelled physically does not meet a root spelled through the link");
+    loader3.reloadForChanges({album3}, false);
+    CHECK(waitFinished(*h3, 2), "a batch before the link is configured");
+    CHECK_EQ(files3.listsOf(loose3), 1, "incremental (control)");
+    before = h3->publishCount();
+    loader3.setShareLinks({stateLink});
+    CHECK(mock::waitUntil([&] { return h3->publishCount() > before; }, 10), "setShareLinks publishes");
+    p = h3->lastPublished();
+    CHECK(p.reason == PublishReason::Remount && p.view && p.view->visualFor(newAlbum(state3 + "/root"), scratch),
+          "the roots' keys moved to the link's target: a physically spelled row matches now");
+    loader3.reloadForChanges({album3}, false);
+    CHECK(waitFinished(*h3, 3), "a batch after the root keys moved");
+    CHECK_EQ(files3.listsOf(loose3), 2, "a root's own key moved: the batch lists every member folder");
+    loader3.reloadForChanges({album3}, false);
+    CHECK(waitFinished(*h3, 4), "the next batch");
+    CHECK_EQ(files3.listsOf(loose3), 2, "incremental again");
+    loader3.shutdown();
     loader2.shutdown();
     loader.shutdown();
     mock::killLeftovers();

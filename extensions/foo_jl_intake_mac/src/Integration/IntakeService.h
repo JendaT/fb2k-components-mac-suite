@@ -111,7 +111,8 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
 void serviceRefreshAfterCommand();
 
 // Main thread. B11: reads the share links again (IntakeLoader::relink):
-// no CLI call, a publish only when a link moved. A no-op before on_init and
+// no CLI call, a publish only when a link moved, nothing at all while no
+// link is configured. A no-op before on_init and
 // after on_quit. The service runs it 2 s and 10 s after every mount or
 // unmount notification; serviceReload runs it too.
 void serviceRelink();

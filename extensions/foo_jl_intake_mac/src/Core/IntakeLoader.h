@@ -71,7 +71,8 @@
 //  folder), and onWatchSet gets the stream paths only when they differ from
 //  the last ones handed over. That fresh table decides local or network
 //  only; the aliases change only where the share links are read too
-//  (remount(), relink() and the start of every load). With no CLI path
+//  (remount(), and with share links configured relink() and the start of
+//  every load). With no CLI path
 //  (NotConfigured) the set is empty: nothing could reload.
 //
 //  Event ids (IntakeWatcher): just before each `status` call the loader
@@ -112,8 +113,9 @@
 //  the new pair (no I/O) and publishes the view again.
 //
 //  Share links (B11): LoaderSettings::shareLinks holds the share_links
-//  setting. Every read of the mount table for the aliases (the start of
-//  every load, remount(), relink()) reads each link with that fresh table
+//  setting. Every read of the mount table for the aliases (remount(), and
+//  with links configured the start of every load and relink()) reads each
+//  link with that fresh table
 //  (readShareLink, on the
 //  loader queue: local lstat/readlink only, never inside a network mount)
 //  and builds the aliases from both (MountAliases::build(mounts, links)).
@@ -126,8 +128,11 @@
 //  mount table itself changed. It runs at the start of every load, before
 //  the CLI is asked anything, so a link the mount agent re-pointed is
 //  picked up by the next load even with no event; IntakeService also calls
-//  it on Refresh and 2 s and 10 s after a mount or unmount.
-//  setShareLinks() replaces the setting, then relinks. Each line of
+//  it on Refresh and 2 s and 10 s after a mount or unmount. With no links
+//  configured neither runs the read: the table is read for the first load
+//  and by remount() only, exactly as before B11.
+//  setShareLinks() replaces the setting, then reads the links (also when
+//  the list is now empty, so the old links leave the table). Each line of
 //  MountAliases::notes() (a link that is ignored, or that points off the
 //  share) is logged at Info once: on the first read, and whenever it is
 //  new in a changed table.
@@ -273,7 +278,8 @@ public:
     void remount();
     // B11: reads the share links again with a fresh mount table and
     // publishes the keys only when the aliases changed; no CLI call, no
-    // full member listing (see the top of this file).
+    // full member listing (see the top of this file). Nothing happens while
+    // no link is configured.
     void relink();
     // Replaces the watch stream with the same paths, after a mount or
     // unmount; call it after reload(false) (see the top of this file).
@@ -286,8 +292,8 @@ public:
     void reconfigure(CliConfig cli);
     // B5: the watch_folders setting (absolute paths, parseWatchFolders).
     void setWatchFolders(std::vector<std::string> folders);
-    // B11: the share_links setting (parseShareLinks); stores it, then
-    // relink(). No CLI call.
+    // B11: the share_links setting (parseShareLinks); stores it, then reads
+    // the links as relink() does, even when the list is empty. No CLI call.
     void setShareLinks(std::vector<std::string> links);
     // B9: the swap prefix pair; rebuilds the library index (see the top of
     // this file). Nothing happens when it is the pair in use.

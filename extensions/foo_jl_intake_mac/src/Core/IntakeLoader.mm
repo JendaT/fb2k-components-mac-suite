@@ -239,7 +239,13 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         // table is published at once (the last load's keys, rebuilt): a
         // silent swap would leave stale tints, since the load's own diff
         // compares root keys only. The load's end recomputes the watch set.
-        readMounts(true);
+        // With no share links configured the table is read here only for
+        // the first load, as before B11 (remount() reads it on mount events).
+        if (!settings.shareLinks.empty()) {
+            readMounts(true);
+        } else if (!mountsRead) {
+            readMounts(false);
+        }
         // The requests made before this attempt are the ones it serves.
         for (LoadFinishedHandler &w : waitersNext) waitersInFlight.push_back(std::move(w));
         waitersNext.clear();
@@ -792,18 +798,24 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     // --- share links (B11) ---
 
+    // relink(): with no share links configured there is nothing to read,
+    // and the table changes only through remount(), as before B11.
     void applyRelink() {
-        if (stopped) return;
-        const bool tableChanged = readMounts(true);
-        // Only a new mount table can change what is local; a running load
-        // recomputes the set when it finishes.
-        if (tableChanged && !loading) updateWatchSet();
+        if (stopped || settings.shareLinks.empty()) return;
+        relinkNow();
     }
 
     void applyShareLinks(std::vector<std::string> links) {
         if (stopped) return;
         settings.shareLinks = std::move(links);
-        applyRelink();
+        relinkNow();  // also when emptied: the old links leave the table
+    }
+
+    void relinkNow() {
+        const bool tableChanged = readMounts(true);
+        // Only a new mount table can change what is local; a running load
+        // recomputes the set when it finishes.
+        if (tableChanged && !loading) updateWatchSet();
     }
 
     // --- watch set ---
