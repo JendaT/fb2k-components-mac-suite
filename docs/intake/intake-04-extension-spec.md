@@ -2,8 +2,11 @@
 
 **Repo destination:** `docs/intake/intake-04-extension-spec.md`
 **Owner:** extension worker · **Depends on:** doc 3 v1.2 (contract, normative), schema 1
-**Status:** v1.3 — 2026-11-16 (Part A implemented and review-hardened; Part B
-built and accepted in-app on the mock, user acceptance pending). v1.3 applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
+**Status:** v1.4 — 2026-11-20 (Part A implemented and review-hardened; Part B
+built and accepted in-app on the mock, user acceptance pending; share links
+built, in-app run pending). v1.4 adds share links (B11, the plorg shadow
+link, `docs/shadow-link.md`): path matching, preferences page, Swap, Delete
+local copy. v1.3 (2026-11-16) applies CR-EXT-002 (`docs/intake/CR-EXT-002-doc04.md`):
 Swap, Delete local copy, row colours, confirmations, cache gate, reload
 triggers, watch filter, sheet window. v1.2 (2026-11-15) aligns Part B with doc
 03 v1.2 (amendment 003), the Part B plan and the S0 path probe
@@ -160,8 +163,60 @@ commands, never writes files, tags, sidecars or the journal.
   two mounts of one SMB share (`/Volumes/<share>`, `/Volumes/<share>-1`)
   match each other. CLI root paths get the same mapping, rebuilt on mount and
   unmount. Then lexical normalisation and NFC; case-sensitive.
+- **Share links** (path matching, B11; `docs/shadow-link.md`): after the
+  plorg migration foobar2000 keeps share items as `file://<link>/<rel>`
+  under a local symlink that a mount agent points at the share's current
+  mount point (`/Volumes/music`, `/Volumes/music-1`), at `/Volumes/music`
+  while unmounted, or at a local mirror. The CLI keeps reporting
+  `/Volumes/...` roots. The `share_links` preference names the links.
+  - **When read:** on the loader queue at the start of every load (before
+    any CLI call), on a mount or unmount notification and again 2 s and
+    10 s after it, on Refresh and Reload now, and when the preference
+    changes. There is no watch on the link: a re-point with none of these
+    is seen at the next one.
+  - **Read rules:** the path is cleaned lexically; its parent is resolved
+    one component at a time (`lstat`/`readlink`), each component checked
+    against the mount table first, and the walk must finish locally; the
+    link itself must lie on a local filesystem by the mount table; only
+    then is that one path read. A symlink's target is resolved the same
+    way (a chain is followed, `..` is taken physically) and the walk stops
+    where it enters a network mount, keeping the rest as written. Nothing
+    inside a network mount is examined, the share's mount point included.
+    Outcomes: a symlink (also when its target does not exist, as the
+    unmounted placeholder), not a symlink, missing (the link or a folder
+    above it), on a network volume, a loop (more than 32 links).
+  - **Mapping:** only a link read as a symlink gets an entry. A link whose
+    path is `/`, equals a mount point (ASCII case ignored) or lies on a
+    network volume gets none, and neither does any other outcome: such a
+    path matches as it did before. Each of these links, and each link off
+    the share, gets one Info line when that state appears, not again
+    while it stays. The entry rewrites the link path to its target's key,
+    the target first mapped through the smbfs entries: a link to
+    `/Volumes/music` or to `/Volumes/music-1` turns
+    `/Users/x/Music/NAS/music/income/a.wav` into
+    `/smbfs:music/income/a.wav`, the key `/Volumes/music/income/a.wav`
+    gets. Link paths
+    match after lexical normalisation and NFC (an NFD link text meets an
+    NFC row), case-sensitively; one longest-prefix pass covers mount points
+    and links. Rows outside every link are unaffected.
+  - **Off the share:** a link whose target does not lie under a mounted
+    smbfs share maps to the target's own key, so its rows match only roots
+    that lie there. A link to the unmounted placeholder `/Volumes/music`
+    keeps matching the roots under `/Volumes/music`, which are unaliased
+    while the share is unmounted, so its rows keep the last load's tint; a
+    link to a mirror matches no `/Volumes` root (no tint).
+  - **Limits:** CLI roots are normalised lexically only, while a link's
+    target is resolved physically, so a root spelled through a local
+    symlink (`/tmp/...` for `/private/tmp/...`) does not meet a link that
+    leads to the physical path (roots under a share's `/Volumes` mount
+    point are not affected: the walk stops at the mount point). A target
+    through a symlink on the share, or with `..` past the share's mount
+    point, keeps its lexical spelling, which need not be the CLI's.
+    Archive items (`unpack://…|file://<link>/…`) match nothing, as before.
 - **Decorate path:** in-memory lookups only; no CLI call, `stat`, `realpath`
-  or other share access. An unmounted share means no tint, never a hang.
+  or other share access (share links included: the decorate path only
+  reads the table). An unmounted share means no tint (except rows under a
+  share link to the placeholder, see Share links), never a hang.
 
 ### Refresh and invalidation
 - **Watch:** FSEvents on the income folders from `intake income --json` (when
@@ -176,7 +231,8 @@ commands, never writes files, tags, sidecars or the journal.
   (with `version` first), a mount event, Refresh or the page's Reload now
   triggers one coalesced full `status --json` load, never a filtered one
   (doc 03 gives `--filter` no cost guarantee). Other preference changes
-  load nothing: watched folders rebuild the watch set, the library mapping
+  load nothing: watched folders rebuild the watch set, share links are
+  read again (see Share links and Invalidation), the library mapping
   rebuilds the library index, colours rebuild from the last load (see
   Invalidation), the log level and the confirmations apply at once.
   FSEvents sees only changes made through this Mac (Terminal runs
@@ -189,6 +245,11 @@ commands, never writes files, tags, sidecars or the journal.
   differently and the provider is not inert (none when no root uses the
   changed colour). The page writes a colour 0.25 s after the well's last
   change, so a drag rebuilds once.
+  A share link read that changes the alias table (a re-point, a link
+  added or removed) rebuilds the last load's keys on the loader queue,
+  with no CLI call, and fires one invalidate-all only when a row can now
+  decorate differently (the same diff as a mount change); an unchanged
+  table publishes nothing.
   A CLI, bun or rules change clears the view first (one invalidate-all when
   rows were shown); a library mapping change never invalidates (library
   rows decorate nothing).
@@ -295,10 +356,28 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   on a mount whose volume form an item of the playlist already uses, else on
   the mount whose form foobar2000 resolves back to that mount, so no
   duplicate metadb entries; neither: the row is skipped ("no matching
-  mount"). Main-thread conversions stop at 200 ms; later rows are skipped. A
-  playlist locked against replacing items (`playlist_lock::filter_replace`)
-  is refused whole. One undo backup, every occurrence of each handle
-  replaced, one console line with the count and the skip reasons.
+  mount"). Main-thread conversions stop at 200 ms; later rows are skipped.
+  **Share links** (B11): when items of the playlist lie under a share link
+  of the alias table the menu matched with (noted at the click; the links
+  are not read again), the volume form would be a second spelling of the
+  file, so the link form is used instead. It takes the first path of the
+  copy (the one found, then the same path under each other mount of the
+  share where it exists) that lies under a noted link's target, the
+  target prefix compared ignoring ASCII case (a path already spelled
+  through the link also counts), and writes `file://` + the link
+  (lexically clean) + that path's bytes past the target, as stat'ed, with
+  no conversion and outside the 200 ms budget. An item of the playlist
+  that already spells that path, in either Unicode form, lends its exact
+  spelling. When no noted link leads to any path of the copy (e.g. the
+  link points at a mirror), the row is skipped ("the share link does not
+  lead to the library copy"), never given a volume form. In a mixed
+  playlist the link form wins; a playlist with no link-form item keeps the
+  volume-form rule. A library on the unmounted share has no copy to find,
+  so rows under a link to the placeholder are then skipped as missing or
+  unreachable. A playlist locked against replacing items
+  (`playlist_lock::filter_replace`) is refused whole. One undo backup,
+  every occurrence of each handle replaced, one console line with the
+  count and the skip reasons.
 - **Delete local copy…** → `gc <ids> --json` on the mutation lane, only for
   roots captured as `placed` with `placed.verified` true and a non-empty
   `id`, each once: a permanent component-side guard that stays after
@@ -321,12 +400,20 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   root whose sidecar could not be read count as movable). With shadow or
   unlisted rows it is not offered: the sheet says Delete leaves them as dead
   entries, and plain Delete stays available (user decision 2026-11-16).
+  An entry under a share link off the share (B11) counts as unchecked too,
+  in any playlist and whatever it matches now: it could play an income
+  copy once the link points at the share again. It is never counted as an
+  income entry (the sheet adds it to the unconverted ones, in the same
+  "slow volume" wording), so when every income entry lies under such a
+  link, Swap, then delete is not offered; Swap itself still treats a
+  matching one as an income row and applies its share link rules.
   Swap, then delete swaps in the playlist the menu came from, then in every
   other playlist holding such rows, and runs gc only when afterwards no
   entry anywhere points at an income path and none is unchecked (slow
-  volume); otherwise one Error line and nothing is deleted. On confirm the
-  roots are rechecked against the current snapshot (still `placed` and
-  verified). `confirm_gc` 0 skips the sheet: gc at once.
+  volume, or under a share link off the share); otherwise one Error line
+  and nothing is deleted. On confirm the roots are rechecked against the
+  current snapshot (still `placed` and verified). `confirm_gc` 0 skips the
+  sheet: gc at once.
 
 The picker, Reject… and Delete local copy… sheets pick their window the same
 way.
@@ -356,7 +443,14 @@ way.
 ### Preferences page
 CLI path (empty by default: inert; a `.ts` path runs through bun), bun path
 (auto-detected), rules folder, watched income folders (added to those from
-`intake income`), library prefix mapping (one pair, for Swap), log level,
+`intake income`), share links (`share_links`, B11: one absolute symlink
+path per line, see State acquisition; under the field a hint, then one flag
+per line, up to 6 then "… and N more": `→ <target> (share <name>)` or
+`→ <target> (not on a share)`, or
+why the line is not used, such as "not a symlink", "missing" or "on a
+network volume: ignored"; read off the main thread with the loader's rules
+when the page loads or appears and after each edit), library prefix mapping
+(one pair, for Swap), log level,
 row colours: six configInts `tint_new` (new, resolved), `tint_review`
 (amber), `tint_proposed`, `tint_approved` (approved, placing), `tint_placed`
 (placed and verified) and `tint_rejected`, each a packed sRGB `0xRRGGBBAA`
