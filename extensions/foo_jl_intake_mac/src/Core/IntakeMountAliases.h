@@ -122,9 +122,13 @@ public:
 
     static std::shared_ptr<const MountAliases> build(const std::vector<MountEntry> &mounts);
     // B11: with share links. `links` are readShareLink's results for the
-    // configured links, read with the same mount table.
+    // configured links, read with the same mount table. `reasons`
+    // (optional) gets one entry per link, in order: "" when the table maps
+    // it, else why not, as in its note ("not a symlink", "a mount point",
+    // ...).
     static std::shared_ptr<const MountAliases> build(const std::vector<MountEntry> &mounts,
-                                                     const std::vector<ShareLinkRead> &links);
+                                                     const std::vector<ShareLinkRead> &links,
+                                                     std::vector<std::string> *reasons = nullptr);
     // A table with no mounts: rewrite() returns every key unchanged.
     static std::shared_ptr<const MountAliases> none();
 
@@ -191,5 +195,18 @@ private:
     std::vector<std::string> notes_;
     size_t aliasCount_ = 0;
 };
+
+// B11, the preferences page: what build(mounts, {read}) makes of one
+// configured link, as the flag shown beside it.
+struct ShareLinkSummary {
+    bool used = false;    // the table maps the link
+    bool onShare = false; // to a mounted smbfs share (LinkEntry::onShare)
+    // used: "→ <target> (share <name>)" or "→ <target> (not on a share)",
+    // <target> as read (rawTarget), <name> the share part of the alias key;
+    // otherwise why not: "not a symlink", "missing", "a symlink loop", "on
+    // a network volume: ignored", or another reason with ": ignored".
+    std::string text;
+};
+ShareLinkSummary summarizeShareLink(const ShareLinkRead &read, const std::vector<MountEntry> &mounts);
 
 } // namespace intake

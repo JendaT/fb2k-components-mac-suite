@@ -10,7 +10,8 @@
 //  to either mount point of a share, to a mirror and to the unmounted
 //  placeholder, path boundaries, NFD link text, exact case, a link-form
 //  root, nested links, a link to "/", changed bases on a re-point and on
-//  removal, order independence, and the rejected cases. Synthetic mount
+//  removal, order independence, the rejected cases, and the per-link
+//  reasons and flag text for the preferences page. Synthetic mount
 //  lists and link reads only: nothing here reads the real mount table or
 //  a real link.
 //
@@ -627,6 +628,50 @@ static void testShareLinkRejected() {
           "with no mount table nothing is known to be local: no entry");
 }
 
+// B11, the preferences page: build()'s per-link reasons and the flag text
+// summarizeShareLink makes of them.
+static void testShareLinkSummary() {
+    g_context = "link-reasons";
+    const std::vector<MountEntry> mounts = bothMounts();
+    std::vector<std::string> reasons;
+    auto t = MountAliases::build(mounts,
+                                 {linkRead(kLink, "/Volumes/music-1"), linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink),
+                                  linkRead("/Volumes/music", "/Users/x/mirror")},
+                                 &reasons);
+    CHECK(reasons == std::vector<std::string>({"", "not a symlink", "a mount point"}),
+          "one reason per link, in input order; empty for the mapped one");
+    CHECK(t->links().size() == 1, "the reasons change nothing in the table");
+    std::vector<std::string> none = {"stale"};
+    MountAliases::build(mounts, {}, &none);
+    CHECK(none.empty(), "no links: no reasons (the vector is reset)");
+
+    g_context = "link-summary";
+    const std::string arrow = "\xE2\x86\x92 ";
+    ShareLinkSummary s = summarizeShareLink(linkRead(kLink, "/Volumes/music-1"), mounts);
+    CHECK(s.used && s.onShare && s.text == arrow + "/Volumes/music-1 (share music)",
+          "on the share: the raw target and the share name");
+    s = summarizeShareLink(linkRead(kLink, "/Volumes/music-1/sub/dir"), mounts);
+    CHECK(s.used && s.onShare && s.text == arrow + "/Volumes/music-1/sub/dir (share music)",
+          "a folder inside the share: the share name alone");
+    s = summarizeShareLink(linkRead(kLink, "/Users/x/mirror/music"), mounts);
+    CHECK(s.used && !s.onShare && s.text == arrow + "/Users/x/mirror/music (not on a share)", "a mirror");
+    s = summarizeShareLink(linkRead(kLink, "/Volumes/music"), withSystem({}));
+    CHECK(s.used && !s.onShare && s.text == arrow + "/Volumes/music (not on a share)",
+          "the unmounted placeholder: used, not on a share");
+    s = summarizeShareLink(linkRead("/Users/x/plain", "", ShareLinkStatus::NotLink), mounts);
+    CHECK(!s.used && s.text == "not a symlink", "not a symlink");
+    s = summarizeShareLink(linkRead("/Users/x/none", "", ShareLinkStatus::Missing), mounts);
+    CHECK(!s.used && s.text == "missing", "missing");
+    s = summarizeShareLink(linkRead("/Users/x/loop", "", ShareLinkStatus::Loop), mounts);
+    CHECK(!s.used && s.text == "a symlink loop", "a loop");
+    s = summarizeShareLink(linkRead("/Users/x/NAS/music", "", ShareLinkStatus::OnNetwork), mounts);
+    CHECK(!s.used && s.text == "on a network volume: ignored", "on a network volume");
+    s = summarizeShareLink(linkRead("/Volumes/music", "/Users/x/mirror"), mounts);
+    CHECK(!s.used && s.text == "a mount point: ignored", "read as a link, rejected by the table");
+    s = summarizeShareLink(linkRead(kLink, "/Volumes/music"), {});
+    CHECK(!s.used && s.text == "on a network volume: ignored", "no mount table: nothing is known to be local");
+}
+
 int main(void) {
     @autoreleasepool {
         testShareKey();
@@ -648,6 +693,7 @@ int main(void) {
         testShareLinkRootAndView();
         testShareLinkChanges();
         testShareLinkRejected();
+        testShareLinkSummary();
     }
     TEST_MAIN_END();
 }

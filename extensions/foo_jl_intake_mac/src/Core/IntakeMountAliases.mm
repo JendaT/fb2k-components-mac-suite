@@ -113,8 +113,10 @@ std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountE
 }
 
 std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountEntry> &mounts,
-                                                        const std::vector<ShareLinkRead> &links) {
+                                                        const std::vector<ShareLinkRead> &links,
+                                                        std::vector<std::string> *reasons) {
     auto table = std::make_shared<MountAliases>(Token{});
+    if (reasons) reasons->assign(links.size(), std::string());
 
     // By normalized mount point. A later row for the same mount point is a
     // mount stacked on top of the earlier one (getmntinfo lists in mount
@@ -160,18 +162,23 @@ std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountE
     std::map<std::string, LinkEntry> byLink;  // by linkKey: one entry per link, in a fixed order
     std::string linkKey;
     std::string targetNorm;
-    for (const ShareLinkRead &read : links) {
+    for (size_t i = 0; i < links.size(); i++) {
+        const ShareLinkRead &read = links[i];
+        auto ignore = [&](const char *why) {
+            table->notes_.push_back(linkNote(read.linkPath, why));
+            if (reasons) (*reasons)[i] = why;
+        };
         if (read.status != ShareLinkStatus::Link) {
-            table->notes_.push_back(linkNote(read.linkPath, shareLinkStatusText(read.status)));
+            ignore(shareLinkStatusText(read.status));
             continue;
         }
         if (normalizePath(read.linkPath, linkKey) != PathStatus::Ok) {
-            table->notes_.push_back(linkNote(read.linkPath, "not an absolute path"));
+            ignore("not an absolute path");
             continue;
         }
         // "/" would put every key under the link.
         if (linkKey == "/") {
-            table->notes_.push_back(linkNote(read.linkPath, "the root folder"));
+            ignore("the root folder");
             continue;
         }
         // A mount point is no symlink; an entry for one would merge with or
@@ -184,17 +191,17 @@ std::shared_ptr<const MountAliases> MountAliases::build(const std::vector<MountE
             }
         }
         if (isMountPoint) {
-            table->notes_.push_back(linkNote(read.linkPath, "a mount point"));
+            ignore("a mount point");
             continue;
         }
         // readShareLink never reports Link there; a table built from other
         // reads still must not shadow a share's own entry with one.
         if (!mayResolvePath(read.linkPath, mounts)) {
-            table->notes_.push_back(linkNote(read.linkPath, "on a network volume"));
+            ignore("on a network volume");
             continue;
         }
         if (normalizePath(read.rawTarget, targetNorm) != PathStatus::Ok) {
-            table->notes_.push_back(linkNote(read.linkPath, "its target is not an absolute path"));
+            ignore("its target is not an absolute path");
             continue;
         }
         if (byLink.count(linkKey)) continue;  // the same link twice (NFC and NFD spellings): the first wins
@@ -320,6 +327,33 @@ bool MountAliases::underOffShareLink(std::string_view key) const {
         return !e.foldCase && !e.onShare;  // the entry rewrite() uses
     }
     return false;
+}
+
+ShareLinkSummary summarizeShareLink(const ShareLinkRead &read, const std::vector<MountEntry> &mounts) {
+    // The table the loader would build from this one read, so the flag
+    // follows exactly its rules.
+    std::vector<std::string> reasons;
+    const std::shared_ptr<const MountAliases> table = MountAliases::build(mounts, {read}, &reasons);
+    ShareLinkSummary out;
+    if (!table->links().empty()) {
+        const MountAliases::LinkEntry &link = table->links().front();
+        out.used = true;
+        out.onShare = link.onShare;
+        out.text = "\xE2\x86\x92 " + link.rawTarget;  // "→ "
+        if (link.onShare && link.targetKey.compare(0, kSmbAliasPrefix.size(), kSmbAliasPrefix) == 0) {
+            const std::string_view share = std::string_view(link.targetKey).substr(kSmbAliasPrefix.size());
+            out.text += " (share " + std::string(share.substr(0, share.find('/'))) + ")";
+        } else {
+            out.text += " (not on a share)";
+        }
+        return out;
+    }
+    out.text = reasons.empty() ? std::string(shareLinkStatusText(read.status)) : reasons.front();
+    // A plain status says it all; anything else read fine but is not used.
+    const bool plain = read.status == ShareLinkStatus::NotLink || read.status == ShareLinkStatus::Missing ||
+                       read.status == ShareLinkStatus::Loop;
+    if (!plain) out.text += ": ignored";
+    return out;
 }
 
 } // namespace intake

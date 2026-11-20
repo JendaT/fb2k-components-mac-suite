@@ -17,6 +17,16 @@
 //   - Watched folders: one absolute path per line; problem lines are
 //     highlighted in place and listed under the field (lexical checks
 //     only, no filesystem access: these folders are usually on a share).
+//   - Share links (B11): local symlinks to the music share (the plorg
+//     shadow link), one absolute path per line. Every line gets a flag
+//     under the field, after the hint: where the link points ("→ <target>
+//     (share <name>)" / "(not on a share)") or why it is not used ("not a
+//     symlink", "missing", "on a network volume: ignored", ...), with the
+//     unused lines highlighted. The links are read on the check queue with
+//     the same rules as the loader (readShareLink: the mount table first,
+//     lstat/readlink only on local paths, never inside a network mount;
+//     summarizeShareLink), when the page loads or appears and after every
+//     edit.
 //   - Library mapping: one prefix pair, NAS path prefix -> Mac path prefix,
 //     stored lexically clean (normalizedPrefix) and validated; Swap to
 //     library paths and the library index use it (B9).
@@ -51,13 +61,15 @@
 //  is posted and IntakeService applies it without a restart.
 //
 //  Keyboard: the key view order runs top to bottom through every control
-//  (Tab in the watched folders field moves on instead of inserting a tab);
+//  (Tab in the watched folders and share links fields moves on instead of
+//  inserting a tab);
 //  it joins the host's key view loop when there is one after the page's
 //  root view, else it closes inside the page (joinHostKeyViewLoop). Every
 //  control has an accessibility label.
 //
 //  Wrapping labels (status values, the Test CLI result, the folder
-//  problems, the hints under the path and mapping fields) wrap at their own
+//  problems, the share link flags, the hints under the path and mapping
+//  fields) wrap at their own
 //  width (IntakePrefsWrappingLabel), so they fit the column at any page
 //  width. A hint is a sentence, often with paths in it: cut in the middle it
 //  loses its point, so only the fields and table cells that hold a bare path
@@ -67,12 +79,15 @@
 #import "IntakePreferencesController.h"
 
 #include "../Integration/IntakeConfig.h"
+#include "../Integration/IntakeMounts.h"
 #include "../Integration/IntakeService.h"
 
 #include "../Core/IntakeCommandArgs.h"
 #include "../Core/IntakeLoadPolicy.h"
+#include "../Core/IntakeMountAliases.h"
 #include "../Core/IntakeSettingsParse.h"
 #include "../Core/IntakeTint.h"
+#include "../Core/IntakeWatchSet.h"
 
 #import "../../../../shared/PreferencesCommon.h"
 #include "../Integration/ComponentInfo.h"
@@ -167,6 +182,59 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     return out;
 }
 
+// B11: the line under the share links field before the flags.
+NSString *const kShareLinksHint = @"Symlinks to the music share, one per line. Their rows match the share's releases "
+                                  @"while the link points at a mounted share.";
+
+// One share links line and its flag (B11).
+struct ShareLinkFlag {
+    size_t line = 0;   // FolderLine::line
+    std::string text;  // the line as typed, trimmed
+    std::string flag;
+    // Neutral: the loader uses the link; Warning: it does not (or the line
+    // repeats an earlier one); Error: not a usable path.
+    StatusTone tone = StatusTone::Neutral;
+};
+
+// Check queue only: reads the links (readShareLink: lstat/readlink on local
+// paths only, decided from the mount table first) and says what the
+// loader's table makes of each (summarizeShareLink).
+std::vector<ShareLinkFlag> ComputeShareLinkFlags(const std::string &text) {
+    std::vector<ShareLinkFlag> out;
+    const std::vector<FolderLine> lines = parseFolderLines(text);
+    if (lines.empty()) return out;
+    const std::vector<MountEntry> mounts = readMountTable();
+    const LinkReader reader = &posixLinkReader;
+    for (const FolderLine &line : lines) {
+        ShareLinkFlag f;
+        f.line = line.line;
+        f.text = line.text;
+        switch (line.problem) {
+            case FolderLineProblem::NotAbsolute:
+                f.flag = folderLineProblemText(line.problem);
+                f.tone = StatusTone::Error;
+                break;
+            case FolderLineProblem::Root:
+                // parseShareLinks drops it (every path lies under "/").
+                f.flag = "the root folder (ignored)";
+                f.tone = StatusTone::Error;
+                break;
+            case FolderLineProblem::Duplicate:
+                f.flag = folderLineProblemText(line.problem);
+                f.tone = StatusTone::Warning;
+                break;
+            case FolderLineProblem::None: {
+                const ShareLinkSummary summary = summarizeShareLink(readShareLink(line.text, mounts, reader), mounts);
+                f.flag = summary.text;
+                f.tone = summary.used ? StatusTone::Neutral : StatusTone::Warning;
+                break;
+            }
+        }
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
 } // anonymous namespace
 
 // Flipped so the form starts at the top of the scroll view (unique class
@@ -242,6 +310,9 @@ static BOOL g_savedShowsAlpha = NO;
 @property (nonatomic, strong) NSTextView *foldersTextView;
 @property (nonatomic, strong) NSTextField *foldersHint;
 
+@property (nonatomic, strong) NSTextView *shareLinksTextView;  // B11
+@property (nonatomic, strong) NSTextField *shareLinksHint;
+
 @property (nonatomic, strong) NSTextField *prefixFromField;
 @property (nonatomic, strong) NSTextField *prefixToField;
 @property (nonatomic, strong) NSTextField *prefixHint;
@@ -274,16 +345,18 @@ static BOOL g_savedShowsAlpha = NO;
 @property (nonatomic, copy) NSString *savedBun;
 @property (nonatomic, copy) NSString *savedRules;
 @property (nonatomic, copy) NSString *savedFolders;
+@property (nonatomic, copy) NSString *savedShareLinks;
 @property (nonatomic, copy) NSString *savedPrefixFrom;
 @property (nonatomic, copy) NSString *savedPrefixTo;
 
 @property (nonatomic, assign) BOOL observingStatus;
 @property (nonatomic, assign) NSUInteger reloadToken;  // the latest Reload now click
 @property (nonatomic, assign) NSUInteger hintGeneration;
+@property (nonatomic, assign) NSUInteger linkFlagGeneration;  // the latest share link check
 @end
 
 @implementation IntakePreferencesController {
-    dispatch_queue_t _checkQueue;  // path checks (stat), off the main thread
+    dispatch_queue_t _checkQueue;  // path checks (stat) and share link reads, off the main thread
     IntakePalette _savedTints;     // the tint_* values last written (or read)
     IntakePalette _pendingTints;   // well colours not written yet
     uint32_t _pendingTintMask;     // bit i: kTintSlots[i] is pending
@@ -457,7 +530,9 @@ static BOOL g_savedShowsAlpha = NO;
 
     // ===== Watched folders =====
     [stack addArrangedSubview:JLCreateSectionHeader(@"Watched folders")];
-    NSScrollView *foldersScroll = [self buildFoldersTextView];
+    NSScrollView *foldersScroll =
+        [self buildPathListWithAccessibilityLabel:@"Watched folders, one absolute path per line"];
+    self.foldersTextView = foldersScroll.documentView;
     self.foldersHint = [self wrappingLabel];
     self.foldersHint.font = [NSFont systemFontOfSize:10];
     self.foldersHint.selectable = NO;
@@ -472,6 +547,26 @@ static BOOL g_savedShowsAlpha = NO;
     foldersRow.yPlacement = NSGridCellPlacementTop;
     addFullWidth(foldersGrid);
     [stack setCustomSpacing:JLPrefsSectionGap afterView:foldersGrid];
+
+    // ===== Share links (B11) =====
+    [stack addArrangedSubview:JLCreateSectionHeader(@"Share links")];
+    NSScrollView *linksScroll =
+        [self buildPathListWithAccessibilityLabel:@"Share links, one absolute symlink path per line"];
+    self.shareLinksTextView = linksScroll.documentView;
+    self.shareLinksHint = [self wrappingLabel];
+    self.shareLinksHint.font = [NSFont systemFontOfSize:10];
+    self.shareLinksHint.textColor = [NSColor tertiaryLabelColor];
+    self.shareLinksHint.selectable = NO;
+    self.shareLinksHint.stringValue = kShareLinksHint;  // the flags follow once the links are read
+    NSGridView *linksGrid = [self gridWithRows:@[
+        @[ JLCreateLabel(@"Links:"), linksScroll, [self empty] ],
+        @[ [self empty], self.shareLinksHint, [self empty] ],
+    ]];
+    NSGridRow *linksRow = [linksGrid rowAtIndex:0];
+    linksRow.rowAlignment = NSGridRowAlignmentNone;
+    linksRow.yPlacement = NSGridCellPlacementTop;
+    addFullWidth(linksGrid);
+    [stack setCustomSpacing:JLPrefsSectionGap afterView:linksGrid];
 
     // ===== Library mapping =====
     [stack addArrangedSubview:JLCreateSectionHeader(@"Library mapping (for Swap to library paths)")];
@@ -641,7 +736,9 @@ static BOOL g_savedShowsAlpha = NO;
     [self buildKeyViewLoop];
 }
 
-- (NSScrollView *)buildFoldersTextView {
+// A multi-line path list (watched folders, share links); the text view is
+// the scroll view's documentView.
+- (NSScrollView *)buildPathListWithAccessibilityLabel:(NSString *)label {
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 320, 78)];
     scroll.borderType = NSBezelBorder;
     scroll.hasVerticalScroller = YES;
@@ -672,9 +769,8 @@ static BOOL g_savedShowsAlpha = NO;
     textView.smartInsertDeleteEnabled = NO;
     textView.automaticLinkDetectionEnabled = NO;
     textView.delegate = self;
-    textView.accessibilityLabel = @"Watched folders, one absolute path per line";
+    textView.accessibilityLabel = label;
     scroll.documentView = textView;
-    self.foldersTextView = textView;
 
     scroll.translatesAutoresizingMaskIntoConstraints = NO;
     [scroll.heightAnchor constraintEqualToConstant:78].active = YES;
@@ -727,7 +823,7 @@ static BOOL g_savedShowsAlpha = NO;
     NSMutableArray<NSView *> *order = [NSMutableArray arrayWithArray:@[
         self.infoButton,      self.cliField,      self.cliBrowseButton, self.bunField,
         self.bunBrowseButton, self.rulesField,    self.rulesBrowseButton, self.foldersTextView,
-        self.prefixFromField, self.prefixToField,
+        self.shareLinksTextView, self.prefixFromField, self.prefixToField,
     ]];
     for (NSUInteger i = 0; i < self.tintWells.count; i++) {
         [order addObject:self.tintWells[i]];
@@ -748,6 +844,7 @@ static BOOL g_savedShowsAlpha = NO;
     [super viewDidLoad];
     [self loadSettings];
     [self refreshFolderFlags];
+    [self refreshShareLinkFlags];
     [self refreshPrefixHint];
     [self refreshPathHints];
     [self refreshStatus];
@@ -765,6 +862,8 @@ static BOOL g_savedShowsAlpha = NO;
     [self joinHostKeyViewLoop];
     [self refreshStatus];
     [self refreshPathHints];
+    // B11: the mount agent may have re-pointed a link meanwhile.
+    [self refreshShareLinkFlags];
 }
 
 // When the host's key view loop goes on after the page's root view, the
@@ -803,6 +902,7 @@ static BOOL g_savedShowsAlpha = NO;
     self.savedBun = NSStr(trimmedSetting(config::getString(config::kBunPath, "")));
     self.savedRules = NSStr(trimmedSetting(config::getString(config::kRulesDir, "")));
     self.savedFolders = NSStr(config::getString(config::kWatchFolders, ""));
+    self.savedShareLinks = NSStr(config::getString(config::kShareLinks, ""));
     self.savedPrefixFrom = NSStr(normalizedPrefix(config::getString(config::kSwapPrefixFrom, "")));
     self.savedPrefixTo = NSStr(normalizedPrefix(config::getString(config::kSwapPrefixTo, "")));
 
@@ -810,6 +910,7 @@ static BOOL g_savedShowsAlpha = NO;
     self.bunField.stringValue = self.savedBun;
     self.rulesField.stringValue = self.savedRules;
     self.foldersTextView.string = self.savedFolders;
+    self.shareLinksTextView.string = self.savedShareLinks;
     self.prefixFromField.stringValue = self.savedPrefixFrom;
     self.prefixToField.stringValue = self.savedPrefixTo;
 
@@ -883,6 +984,13 @@ static BOOL g_savedShowsAlpha = NO;
         self.savedFolders = folders;
         changed = YES;
     }
+    // B11: stored as typed, like watch_folders (parseShareLinks cleans
+    // each line when the settings are read).
+    NSString *links = [self.shareLinksTextView.string copy];
+    if ([self saveString:links key:config::kShareLinks saved:self.savedShareLinks]) {
+        self.savedShareLinks = links;
+        changed = YES;
+    }
     // The prefixes are stored lexically clean ("/a/" as "/a").
     NSString *from = NSStr(normalizedPrefix(StdStr(self.prefixFromField.stringValue)));
     if ([self saveString:from key:config::kSwapPrefixFrom saved:self.savedPrefixFrom]) {
@@ -931,15 +1039,18 @@ static BOOL g_savedShowsAlpha = NO;
 
 - (void)textDidChange:(NSNotification *)notification {
     if (notification.object == self.foldersTextView) [self refreshFolderFlags];
+    if (notification.object == self.shareLinksTextView) [self refreshShareLinkFlags];
 }
 
 - (void)textDidEndEditing:(NSNotification *)notification {
-    if (notification.object == self.foldersTextView) [self saveAllFields];
+    if (notification.object == self.foldersTextView || notification.object == self.shareLinksTextView) {
+        [self saveAllFields];
+    }
 }
 
 // Tab and Shift-Tab move through the form instead of inserting a tab.
 - (BOOL)textView:(NSTextView *)textView doCommandBySelector:(SEL)selector {
-    if (textView != self.foldersTextView) return NO;
+    if (textView != self.foldersTextView && textView != self.shareLinksTextView) return NO;
     if (selector == @selector(insertTab:)) {
         [textView.window selectNextKeyView:nil];
         return YES;
@@ -1129,6 +1240,72 @@ static BOOL g_savedShowsAlpha = NO;
         self.foldersHint.attributedStringValue = listing;
     }
     textView.accessibilityHelp = self.foldersHint.stringValue;
+}
+
+// B11: reads the share links on the check queue (the field may name a path
+// under a symlink into a share: readShareLink decides from the mount table
+// before it examines anything), then shows one flag per line. A newer edit
+// supersedes a check still running.
+- (void)refreshShareLinkFlags {
+    const std::string text = StdStr(self.shareLinksTextView.string ?: @"");
+    const NSUInteger generation = ++self.linkFlagGeneration;
+    __weak IntakePreferencesController *weakSelf = self;
+    dispatch_async(_checkQueue, ^{
+        auto flags = std::make_shared<std::vector<ShareLinkFlag>>(ComputeShareLinkFlags(text));
+        dispatch_async(dispatch_get_main_queue(), ^{
+            IntakePreferencesController *strongSelf = weakSelf;
+            if (strongSelf == nil || generation != strongSelf.linkFlagGeneration) return;
+            [strongSelf applyShareLinkFlags:*flags];
+        });
+    });
+}
+
+// The hint, then one line per link: unused links in orange (highlighted in
+// the field), lines that are not usable paths in red, used links in the
+// secondary colour. The text is the one the flags were read from: every
+// edit starts a newer check, which discards this one.
+- (void)applyShareLinkFlags:(const std::vector<ShareLinkFlag> &)flags {
+    NSTextView *textView = self.shareLinksTextView;
+    NSString *text = textView.string ?: @"";
+    NSLayoutManager *layout = textView.layoutManager;
+    [layout removeTemporaryAttribute:NSBackgroundColorAttributeName forCharacterRange:NSMakeRange(0, text.length)];
+    NSArray<NSValue *> *ranges = LineRanges(text);
+
+    NSFont *font = self.shareLinksHint.font ?: [NSFont systemFontOfSize:10];
+    NSMutableAttributedString *listing = [[NSMutableAttributedString alloc]
+        initWithString:kShareLinksHint
+            attributes:@{NSFontAttributeName : font, NSForegroundColorAttributeName : [NSColor tertiaryLabelColor]}];
+    size_t listed = 0;
+    for (const ShareLinkFlag &f : flags) {
+        NSColor *color = f.tone == StatusTone::Neutral ? [NSColor secondaryLabelColor] : ToneColor(f.tone);
+        if (f.tone != StatusTone::Neutral && f.line >= 1 && f.line <= ranges.count) {
+            const NSRange range = ranges[f.line - 1].rangeValue;
+            if (range.length > 0 && NSMaxRange(range) <= text.length) {
+                [layout addTemporaryAttribute:NSBackgroundColorAttributeName
+                                        value:[color colorWithAlphaComponent:0.22]
+                            forCharacterRange:range];
+            }
+        }
+        if (listed < kMaxListedProblems) {
+            NSString *entry =
+                [NSString stringWithFormat:@"\nLine %zu (%@): %@", f.line, NSStr(f.text), NSStr(f.flag)];
+            [listing appendAttributedString:[[NSAttributedString alloc]
+                                                initWithString:entry
+                                                    attributes:@{NSFontAttributeName : font,
+                                                                 NSForegroundColorAttributeName : color}]];
+            listed++;
+        }
+    }
+    if (flags.size() > listed) {
+        NSString *more = [NSString stringWithFormat:@"\n… and %zu more", flags.size() - listed];
+        [listing appendAttributedString:[[NSAttributedString alloc]
+                                            initWithString:more
+                                                attributes:@{NSFontAttributeName : font,
+                                                             NSForegroundColorAttributeName :
+                                                                 [NSColor secondaryLabelColor]}]];
+    }
+    self.shareLinksHint.attributedStringValue = listing;
+    textView.accessibilityHelp = self.shareLinksHint.stringValue;
 }
 
 #pragma mark - Actions
