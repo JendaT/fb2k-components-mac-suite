@@ -99,6 +99,9 @@ Add the link under **Share links** and those rows match too.
 - The links are read when a load starts, when a share mounts or unmounts
   (and 2 s and 10 s later), on Refresh and when the setting changes. They
   are read without touching the share.
+- Spell each link as foobar2000's items do, letter case included. Rows
+  that spell it differently match nothing, count as not checked in Delete
+  local copy, and Swap skips rather than write a second spelling.
 - **Swap to library paths** keeps the link form in a playlist that uses a
   link. A row whose link does not lead to the library copy is skipped
   rather than given a second spelling.

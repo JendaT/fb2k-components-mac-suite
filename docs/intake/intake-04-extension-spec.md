@@ -162,7 +162,10 @@ commands, never writes files, tags, sidecars or the journal.
   from `getmntinfo(MNT_NOWAIT)` (no network I/O; user and host ignored), so
   two mounts of one SMB share (`/Volumes/<share>`, `/Volumes/<share>-1`)
   match each other. CLI root paths get the same mapping, rebuilt on mount and
-  unmount. Then lexical normalisation and NFC; case-sensitive.
+  unmount and, with share links configured, whenever the links are read
+  (see Share links: also at the start of every load, so a mount whose
+  notification has not come yet is mapped then). Then lexical
+  normalisation and NFC; case-sensitive.
 - **Share links** (path matching, B11; `docs/shadow-link.md`): after the
   plorg migration foobar2000 keeps share items as `file://<link>/<rel>`
   under a local symlink that a mount agent points at the share's current
@@ -173,7 +176,10 @@ commands, never writes files, tags, sidecars or the journal.
     any CLI call), on a mount or unmount notification and again 2 s and
     10 s after it, on Refresh and Reload now, and when the preference
     changes. There is no watch on the link: a re-point with none of these
-    is seen at the next one.
+    is seen at the next one. With no link configured none of these reads
+    runs, apart from the one that drops the old links when the preference
+    is emptied (the alias table is read at the first load and on mount
+    events only, as before share links).
   - **Read rules:** the path is cleaned lexically; its parent is resolved
     one component at a time (`lstat`/`readlink`), each component checked
     against the mount table first, and the walk must finish locally; the
@@ -198,7 +204,13 @@ commands, never writes files, tags, sidecars or the journal.
     gets. Link paths
     match after lexical normalisation and NFC (an NFD link text meets an
     NFC row), case-sensitively; one longest-prefix pass covers mount points
-    and links. Rows outside every link are unaffected.
+    and links. Rows outside every link are unaffected. A row that spells a
+    link path in another letter case (`share_links` has
+    `/Users/x/Music/NAS/music`, the items `/Users/x/music/NAS/music/…`)
+    matches nothing, although on a case-insensitive volume it is the same
+    link: Delete local copy counts it as unchecked and Swap skips rather
+    than write a second spelling (see there). The page cannot see the
+    items' spelling, so its hint asks for it.
   - **Off the share:** a link whose target does not lie under a mounted
     smbfs share maps to the target's own key, so its rows match only roots
     that lie there. A link to the unmounted placeholder `/Volumes/music`
@@ -369,8 +381,10 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   no conversion and outside the 200 ms budget. An item of the playlist
   that already spells that path, in either Unicode form, lends its exact
   spelling. When no noted link leads to any path of the copy (e.g. the
-  link points at a mirror), the row is skipped ("the share link does not
-  lead to the library copy"), never given a volume form. In a mixed
+  link points at a mirror, or the playlist's items spell the link only in
+  another letter case, which one Info line names), the row is skipped
+  ("the share link does not lead to the library copy"), never given a
+  volume form. In a mixed
   playlist the link form wins; a playlist with no link-form item keeps the
   volume-form rule. A library on the unmounted share has no copy to find,
   so rows under a link to the placeholder are then skipped as missing or
@@ -400,17 +414,19 @@ A flat `jl_context_action` list (API v1: no submenus, no tooltip);
   root whose sidecar could not be read count as movable). With shadow or
   unlisted rows it is not offered: the sheet says Delete leaves them as dead
   entries, and plain Delete stays available (user decision 2026-11-16).
-  An entry under a share link off the share (B11) counts as unchecked too,
-  in any playlist and whatever it matches now: it could play an income
-  copy once the link points at the share again. It is never counted as an
-  income entry (the sheet adds it to the unconverted ones, in the same
-  "slow volume" wording), so when every income entry lies under such a
+  An entry under a share link off the share, or under a link path spelled
+  in another letter case (B11), counts as unchecked too, in any playlist
+  and whatever it matches now: it could play an income copy once the link
+  points at the share again (or through that same link). It is never
+  counted as an income entry (the sheet adds it to the unconverted ones:
+  "N playlist rows on a slow volume or under a share link could not be
+  checked"), so when every income entry lies under such a
   link, Swap, then delete is not offered; Swap itself still treats a
   matching one as an income row and applies its share link rules.
   Swap, then delete swaps in the playlist the menu came from, then in every
   other playlist holding such rows, and runs gc only when afterwards no
   entry anywhere points at an income path and none is unchecked (slow
-  volume, or under a share link off the share); otherwise one Error line
+  volume, or under a share link as above); otherwise one Error line
   and nothing is deleted. On confirm the roots are rechecked against the
   current snapshot (still `placed` and verified). `confirm_gc` 0 skips the
   sheet: gc at once.

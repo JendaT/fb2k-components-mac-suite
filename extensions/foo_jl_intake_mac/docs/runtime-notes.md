@@ -176,7 +176,11 @@ empty.
 - **Mount or unmount** (NSWorkspace notifications): the slow-volume marks
   are forgotten, the mount table is read again, one reload runs, and the
   stream is restarted with the same paths. The share links are read again
-  2 s and 10 s later (see Share links below).
+  2 s and 10 s later (see Share links below). With share links configured
+  the mount table is also read for the aliases at every load start, on
+  Refresh and when the setting changes, so a mount whose notification has
+  not come yet is mapped from the next load; with none, only here and at
+  the first load.
 - **Changes made on the NAS** (not through this Mac) produce no FSEvents
   event. They need Refresh (doc 04 v1.2 "Refresh and invalidation"). Nothing
   polls.
@@ -245,7 +249,9 @@ links; each maps to where it points.
   10 s after it, because the agent re-points the link once it sees the
   mount; on Refresh and Reload now; and when the setting changes. Nothing
   watches the link itself, so a re-point with none of these is picked up
-  at the next one.
+  at the next one. With no link configured none of these reads runs,
+  apart from the one that drops the old links when the setting is
+  emptied.
 - **How:** on the loader queue, with the same fresh
   `getmntinfo(MNT_NOWAIT)` table. `lstat`/`readlink` run only on paths
   that table puts on a local filesystem, so nothing inside a network

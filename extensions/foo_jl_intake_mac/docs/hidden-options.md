@@ -127,13 +127,17 @@ anywhere else (a mirror, or `/Volumes/music` while the share is unmounted)
 matches only releases that lie under its target, and its rows count as not
 checked in Delete local copy's playlist check. Swap never writes a
 `mac-volume://` row into a playlist that uses a link: a row whose link does
-not lead to the library copy is skipped. Doc 04 "Share links" has the
-rules.
+not lead to the library copy is skipped. Spell each link as foobar2000's
+items do, letter case included: a row that spells it in another case
+matches nothing, counts as not checked in that playlist check, and Swap
+skips rather than write a second spelling (one console line names the
+link). Doc 04 "Share links" has the rules.
 
-The links are read at the start of every load, on a mount or unmount and
-2 s and 10 s after it, on Refresh and Reload now, and when this key
-changes. A read uses `lstat`/`readlink` on local paths only, decided from
-the mount table first: it never examines anything inside a network mount.
+While at least one link is configured, the links are read at the start
+of every load, on a mount or unmount and 2 s and 10 s after it, on
+Refresh and Reload now, and when this key changes. A read uses
+`lstat`/`readlink` on local paths only, decided from the mount table
+first: it never examines anything inside a network mount.
 
 ```bash
 # quit foobar2000 first
@@ -142,9 +146,11 @@ sqlite3 ~/Library/foobar2000-v2/config.sqlite \
    ON CONFLICT(name) DO UPDATE SET value=excluded.value;"
 ```
 
-Console lines, at `log_level` 1. The first comes at startup and whenever
-the key changes; the next two (one per ignored link, one per link off the
-share) when they appear, and not again while they stay:
+Console lines, at `log_level` 1. The first comes at startup and, after an
+edit, only when the key's absolute paths changed (a relative line added
+on its own is reported at the next start); the next two (one per ignored
+link, one per link off the share) when they appear, and not again while
+they stay:
 
 ```
 [intake] share_links: ignoring "Music/NAS/music" (not an absolute path)
@@ -238,7 +244,8 @@ play a quality shadow or a file the sidecar does not list have no library
 copy: they are named instead, and the button is not offered). "Swap, then
 delete" swaps them in the playlist the menu was opened in, then in every
 other playlist, and runs gc only when no row anywhere still points at an
-income file (a row on a slow volume that could not be checked also stops
+income file (a row on a slow volume that could not be checked, or one
+under a share link that does not point at the mounted share, also stops
 it). With `0`, the item reads **Delete local copy** (no ellipsis) and runs
 `gc <ids> --json` at once. Either way gc runs only on roots that are
 `placed` with `placed.verified`, and never while intake is inert.
