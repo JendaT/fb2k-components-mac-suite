@@ -14,8 +14,10 @@
 //  links: the links a playlist's items use, the link form (a link to
 //  either mount of the share, a mirror, a link the playlist does not use,
 //  a mixed playlist, NFD bytes, a configured trailing slash, a candidate
-//  spelled through the link), the reuse of an item's existing spelling,
-//  and the Delete census decision. Synthetic paths only.
+//  spelled through the link), a link spelled in another letter case, the
+//  reuse of an item's existing spelling, Swap's decision per row (the
+//  volume-form rule, a skip, the link form) and the Delete census
+//  decision. Synthetic paths only.
 //
 // TEST_DEPS: src/Core/IntakeSidecarMembers.mm src/Core/IntakeEnvelope.mm src/Core/IntakePath.mm
 // TEST_DEPS: src/Core/IntakeSettingsParse.mm src/Core/IntakeMountAliases.mm src/Core/IntakeLog.mm
@@ -502,7 +504,16 @@ static void testLinkForms() {
           "no link form: volume forms, other local files, a name that only starts like the link, a raw path, other "
           "schemes");
     CHECK(noted(lan, {"FILE://" + kLink + "/a.wav"}).links.size() == 1, "the scheme ignoring ASCII case");
-    CHECK(noted(lan, {"file:///Users/x/music/NAS/music/a.wav"}).empty(), "the link byte-exact, never ignoring case");
+    const PlaylistLinkForms otherCase = noted(lan, {"file:///Users/x/music/NAS/music/a.wav",
+                                                    "file:///Users/x/MUSIC/nas/Music/b.wav"});
+    CHECK(otherCase.links.empty() && otherCase.items.empty(), "the link byte-exact, never ignoring case");
+    CHECK(otherCase.otherCase == std::vector<std::string>({kLink}) && !otherCase.empty(),
+          "a link spelled in another letter case: noted apart, once, and the playlist is in the link form");
+    const PlaylistLinkForms both = noted(lan, {"file:///Users/x/music/NAS/music/a.wav", item});
+    CHECK(both.links == std::vector<std::string>({kLink}) && both.otherCase == std::vector<std::string>({kLink}),
+          "both spellings in one playlist: each noted");
+    CHECK(noted(lan, {"file:///Users/x/music/NAS/music2/a.wav"}).empty(),
+          "another letter case still at a component boundary");
     CHECK(noted(MountAliases::build(mounts), {item}).empty(), "no link configured: nothing noted");
 
     auto nested = MountAliases::build(mounts, {linkRead("/Users/x/a", "/Users/x/mirror"),
@@ -640,6 +651,43 @@ static void testLinkSpelling() {
     CHECK(linkSpellingFor(noted(lan, {nfc, nfd}), nfd) == nfc, "both spellings in the playlist: the first one seen");
 }
 
+// Swap's decision for one row (planOnQueue): the volume-form rule, a skip,
+// or the link form.
+static void testLinkDecision() {
+    g_context = "link-decision";
+    const std::vector<MountEntry> mounts = shareMounts();
+    const std::vector<std::string> both = {"/Volumes/music/library/Fixture Artist - Album/01.wav",
+                                           "/Volumes/music-1/library/Fixture Artist - Album/01.wav"};
+    const std::string playlistItem = "file://" + kLink + "/library/Fixture Artist - Other/01.wav";
+    auto lan = MountAliases::build(mounts, {linkRead(kLink, "/Volumes/music")});
+
+    LinkDecision d = decideLinkForm(both, lan->links(), noted(lan, {"mac-volume://U1/library/x.wav"}));
+    CHECK(d.skip == SwapSkip::None && d.path.empty(), "rule 3, no link form in the playlist: the volume-form rule");
+    d = decideLinkForm(both, lan->links(), PlaylistLinkForms());
+    CHECK(d.skip == SwapSkip::None && d.path.empty(), "nothing noted: the volume-form rule");
+
+    d = decideLinkForm(both, lan->links(), noted(lan, {playlistItem}));
+    CHECK(d.skip == SwapSkip::None && d.path == "file://" + kLink + "/library/Fixture Artist - Album/01.wav",
+          "rule 1: the link form");
+    const std::string nfdItem = "file://" + kLink + "/library/" + kNfd + "/01.wav";
+    d = decideLinkForm({"/Volumes/music/library/" + kNfc + "/01.wav"}, lan->links(), noted(lan, {nfdItem}));
+    CHECK(d.skip == SwapSkip::None && d.path == nfdItem, "an item's existing spelling of the link form first");
+
+    auto mirror = MountAliases::build(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
+    d = decideLinkForm(both, mirror->links(), noted(mirror, {playlistItem}));
+    CHECK(d.skip == SwapSkip::LinkOffShare && d.path.empty(), "rule 2, link -> mirror: skipped, no volume form");
+    d = decideLinkForm({}, lan->links(), noted(lan, {playlistItem}));
+    CHECK(d.skip == SwapSkip::LinkOffShare && d.path.empty(), "no candidate at all: skipped");
+
+    const PlaylistLinkForms otherCase = noted(lan, {"file:///Users/x/music/NAS/music/a.wav"});
+    d = decideLinkForm(both, lan->links(), otherCase);
+    CHECK(d.skip == SwapSkip::LinkOffShare && d.path.empty(),
+          "the link spelled only in another letter case: skipped, never the volume form");
+    d = decideLinkForm(both, lan->links(), noted(lan, {"file:///Users/x/music/NAS/music/a.wav", playlistItem}));
+    CHECK(d.skip == SwapSkip::None && d.path == "file://" + kLink + "/library/Fixture Artist - Album/01.wav",
+          "with an item in the link's own spelling too: that link form");
+}
+
 static void testCensusEntry() {
     g_context = "census";
     CHECK(censusEntry(false, false, false) == CensusEntry::Clear, "no income path: clear");
@@ -666,6 +714,7 @@ int main() {
         testLinkForms();
         testLinkForm();
         testLinkSpelling();
+        testLinkDecision();
         testCensusEntry();
     }
     TEST_MAIN_END();

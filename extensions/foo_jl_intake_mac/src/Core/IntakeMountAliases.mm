@@ -324,7 +324,15 @@ std::string MountAliases::describe() const {
 bool MountAliases::underOffShareLink(std::string_view key) const {
     for (const Entry &e : entries_) {
         if (!isUnder(key, e.mountKey, e.foldCase)) continue;
-        return !e.foldCase && !e.onShare;  // the entry rewrite() uses
+        if (!e.foldCase) return !e.onShare;  // the link entry rewrite() uses
+        break;
+    }
+    // A link's path in another ASCII letter case (/Users/x/music for a link
+    // configured as /Users/x/Music): rewrite() maps it through no link, yet
+    // on a case-insensitive volume it is that same link, so what it plays
+    // is not known either.
+    for (const LinkEntry &link : links_) {
+        if (isUnder(key, link.linkKey)) return true;
     }
     return false;
 }

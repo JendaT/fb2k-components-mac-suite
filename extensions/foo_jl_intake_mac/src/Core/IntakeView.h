@@ -90,9 +90,10 @@ public:
     // aliased), or false (another scheme, a relative path).
     bool matchKey(std::string_view path, ViewScratch &scratch, std::string &out) const;
     // B11, the Delete census only (never on the decorate path): `path` lies
-    // under a share link whose target is off the share, by its key before
-    // the alias rewrite (MountAliases::underOffShareLink). False at once
-    // when the table has no links.
+    // under a share link whose target is off the share, or under a link's
+    // path spelled in another letter case, by its key before the alias
+    // rewrite (MountAliases::underOffShareLink). False at once when the
+    // table has no links.
     bool underOffShareLink(std::string_view path, ViewScratch &scratch) const;
 
     IntakeView(const IntakeView &) = delete;

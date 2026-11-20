@@ -182,9 +182,12 @@ NSArray<NSValue *> *LineRanges(NSString *text) {
     return out;
 }
 
-// B11: the line under the share links field before the flags.
-NSString *const kShareLinksHint = @"Symlinks to the music share, one per line. Their rows match the share's releases "
-                                  @"while the link points at a mounted share.";
+// B11: the line under the share links field before the flags. A flag can
+// only say what the link is: whether foobar2000's items spell it the same
+// way, letter case included, is not checked here, hence the second sentence.
+NSString *const kShareLinksHint = @"Symlinks to the music share, one per line. Spell each link as foobar2000's items "
+                                  @"do, letter case included. Their rows match the share's releases while the link "
+                                  @"points at a mounted share.";
 
 // One share links line and its flag (B11).
 struct ShareLinkFlag {

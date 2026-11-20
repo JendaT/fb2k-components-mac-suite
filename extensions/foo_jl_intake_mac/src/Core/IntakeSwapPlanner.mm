@@ -418,16 +418,21 @@ void noteLinkForm(PlaylistLinkForms &forms, const std::vector<MountAliases::Link
     }
     std::string_view key;
     if (normalizePath(path, buffer, key) != PathStatus::Ok) return;
-    const MountAliases::LinkEntry *holder = nullptr;
+    const MountAliases::LinkEntry *holder = nullptr;     // byte-exact, as rewrite() matches
+    const MountAliases::LinkEntry *caseHolder = nullptr; // only ignoring ASCII case
     for (const MountAliases::LinkEntry &link : links) {
         const std::string &l = link.linkKey;
-        if (l.empty() || l == "/" || (holder != nullptr && l.size() <= holder->linkKey.size())) continue;
-        if (key.size() >= l.size() && key.compare(0, l.size(), l) == 0 &&
-            (key.size() == l.size() || key[l.size()] == '/')) {
-            holder = &link;
-        }
+        if (l.empty() || l == "/" || !underMount(key, l)) continue;
+        const MountAliases::LinkEntry *&slot = key.compare(0, l.size(), l) == 0 ? holder : caseHolder;
+        if (slot == nullptr || l.size() > slot->linkKey.size()) slot = &link;
     }
-    if (holder == nullptr) return;
+    if (holder == nullptr) {
+        if (caseHolder != nullptr &&
+            std::find(forms.otherCase.begin(), forms.otherCase.end(), caseHolder->linkKey) == forms.otherCase.end()) {
+            forms.otherCase.push_back(caseHolder->linkKey);
+        }
+        return;
+    }
     if (std::find(forms.links.begin(), forms.links.end(), holder->linkKey) == forms.links.end()) {
         forms.links.push_back(holder->linkKey);
     }
@@ -480,6 +485,19 @@ std::string linkSpellingFor(const PlaylistLinkForms &forms, const std::string &p
     if (normalizePath(path, key) != PathStatus::Ok) return path;
     auto found = forms.items.find(key);
     return found == forms.items.end() ? path : found->second;
+}
+
+LinkDecision decideLinkForm(const std::vector<std::string> &candidates,
+                            const std::vector<MountAliases::LinkEntry> &links, const PlaylistLinkForms &forms) {
+    LinkDecision out;
+    if (forms.empty()) return out;  // rule 3: the volume-form rule
+    const LinkForm form = linkFormFor(candidates, links, forms.links);
+    if (form.candidateIndex < 0) {
+        out.skip = SwapSkip::LinkOffShare;  // rule 2: the volume form would be a second spelling
+        return out;
+    }
+    out.path = linkSpellingFor(forms, form.path);  // rules 1 and 4
+    return out;
 }
 
 CensusEntry censusEntry(bool refused, bool offShareLink, bool income) {

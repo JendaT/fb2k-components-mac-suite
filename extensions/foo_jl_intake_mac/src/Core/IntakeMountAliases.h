@@ -68,7 +68,9 @@
 //  keeps today's behaviour; each case, and each link off the share, leaves
 //  one line in notes() for the log. Link paths match byte-exact after
 //  IntakePath normalisation (NFC, so an NFD link text meets an NFC row),
-//  never ignoring case: they are local paths, not volume names. One
+//  never ignoring case: they are local paths, not volume names (a row
+//  that spells a link in another letter case matches nothing, and the
+//  Delete census counts it as unchecked: underOffShareLink). One
 //  longest-prefix pass covers mount points and links (each entry knows
 //  whether it folds case); the target key is final, never rewritten again.
 //  The links are read on the loader queue, never here: build() itself has
@@ -165,8 +167,10 @@ public:
     const std::vector<LinkEntry> &links() const { return links_; }
     // B11: `key` (an IntakePath key, before rewrite()) lies under a link
     // entry whose target is off the share (onShare false), and that link is
-    // the entry rewrite() would use. The Delete census counts such rows as
-    // unchecked.
+    // the entry rewrite() would use; or rewrite() maps it through no link,
+    // but it lies under a link's path ignoring ASCII case (the items spell
+    // the link in another letter case). The Delete census counts such rows
+    // as unchecked.
     bool underOffShareLink(std::string_view key) const;
     // B11: one line per configured link that got no entry (and why), and
     // per link off the share; sorted, for the log.

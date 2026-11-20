@@ -8,9 +8,11 @@
 //  itself, no mounts, NFD names, mount points in another case, the changed
 //  bases of two tables, and losing one mount point. B11 share links: a link
 //  to either mount point of a share, to a mirror and to the unmounted
-//  placeholder, path boundaries, NFD link text, exact case, a link-form
+//  placeholder, path boundaries, NFD link text, exact case (a row in
+//  another letter case counted as under an unusable link), a link-form
 //  root, nested links, a link to "/", the Delete census over a view (a
-//  link on the share, a mirror, the unmounted placeholder, no link),
+//  link on the share, a row spelling it in another letter case, a mirror,
+//  the unmounted placeholder, no link),
 //  changed bases on a re-point and on
 //  removal, order independence, the rejected cases, and the per-link
 //  reasons and flag text for the preferences page. Synthetic mount
@@ -476,6 +478,10 @@ static void testShareLinkMatching() {
     g_context = "link-case";
     CHECK(rw(*a, "/Users/x/Music/a.wav") == "/Users/x/Music/a.wav", "a link matches byte-exact, never ignoring case");
     CHECK(rw(*a, "/users/x/music/a.wav") == "/users/x/music/a.wav", "anywhere in the link path");
+    CHECK(a->underOffShareLink(key("/Users/x/Music/a.wav")) && a->underOffShareLink(key("/USERS/X/MUSIC")),
+          "but such a row counts as under an unusable link (the census: unchecked), though the link is on the share");
+    CHECK(!a->underOffShareLink(key("/Users/x/music/a.wav")) && !a->underOffShareLink(key("/Users/x/Music2/a.wav")),
+          "the link's own spelling does not, nor another name at the component boundary");
 
     g_context = "link-nfd";
     const std::string nfc = "/Users/x/M\xC3\xBAsica/NAS";   // "Música", precomposed
@@ -556,6 +562,13 @@ static void testShareLinkCensus() {
     auto onShare = viewWith(mounts, {linkRead(kLink, "/Volumes/music-1")});
     CHECK(census(*onShare, linkRow) == CensusEntry::Income, "link on the share: a link-form income row counts as income");
     CHECK(census(*onShare, libraryRow) == CensusEntry::Clear, "and a link-form library row is clear");
+    // share_links spelled /Users/x/Music/NAS/music, the items .../music/NAS/...:
+    // the same link on a case-insensitive volume, yet rewrite() maps no item.
+    const std::string otherCaseRow = "file:///Users/x/music/NAS/music/income/dump/Fixture Artist - Placed Album/01.wav";
+    ViewScratch caseScratch;
+    CHECK(onShare->recordFor(otherCaseRow, caseScratch) == nullptr &&
+              census(*onShare, otherCaseRow) == CensusEntry::Unchecked,
+          "a row spelling the link in another letter case matches nothing, and counts as unchecked, never clear");
 
     auto mirror = viewWith(mounts, {linkRead(kLink, "/Users/x/mirror/music")});
     CHECK(census(*mirror, linkRow) == CensusEntry::Unchecked,

@@ -18,7 +18,8 @@
 //      forms the playlist's items use (canonicalVolumePrefix of each path:
 //      mac-volume://<UUID>/ or file://), and (B11) the share links of the
 //      view's alias table that its file:// items lie under, with those
-//      items by match key (IntakeSwapPlanner noteLinkForm).
+//      items by match key (IntakeSwapPlanner noteLinkForm; a link they
+//      spell only in another letter case counts too, logged at Info).
 //   2. A private serial queue: the mount table (MNT_NOWAIT), each root's
 //      sidecar files[] read afresh (IntakeSwapPlanner readPlacedRootFiles;
 //      a read whose errno says the share is gone ends the reads), each row
@@ -34,11 +35,10 @@
 //      again in this swap). A stat whose errno says the share is gone ends
 //      the first stats: the remaining rows are skipped. B11: when the
 //      playlist uses a share link, the row's path is its link form
-//      (linkFormFor: a candidate under a noted link's target, from the
+//      (decideLinkForm: a candidate under a noted link's target, from the
 //      view's table, never read again here; an item's existing spelling
-//      of it first, linkSpellingFor), or the row is skipped ("the share
-//      link does not lead to the library copy"), never given a volume
-//      form.
+//      of it first), or the row is skipped ("the share link does not lead
+//      to the library copy"), never given a volume form.
 //   3. Main thread: the playlist is found again (by GUID, else the same
 //      index). Gone, or locked against replacing items
 //      (playlist_lock_get_filter_mask & playlist_lock::filter_replace):

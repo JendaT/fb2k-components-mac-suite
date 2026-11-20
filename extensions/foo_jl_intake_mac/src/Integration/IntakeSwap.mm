@@ -191,9 +191,9 @@ void planOnQueue(SwapJob &job) {
             std::vector<std::string> paths;
             paths.reserve(p.candidates.size());
             for (const MountedPath &m : p.candidates) paths.push_back(m.path);
-            const LinkForm form = linkFormFor(paths, job.view->aliases().links(), job.linkForms.links);
-            if (form.candidateIndex < 0) {
-                p.skip = SwapSkip::LinkOffShare;
+            const LinkDecision decision = decideLinkForm(paths, job.view->aliases().links(), job.linkForms);
+            if (decision.skip != SwapSkip::None) {
+                p.skip = decision.skip;
                 std::string targets;
                 for (const MountAliases::LinkEntry &link : job.view->aliases().links()) {
                     for (const std::string &noted : job.linkForms.links) {
@@ -201,11 +201,14 @@ void planOnQueue(SwapJob &job) {
                         targets += (targets.empty() ? "" : ", ") + link.rawLink + " -> " + link.rawTarget;
                     }
                 }
+                for (const std::string &other : job.linkForms.otherCase) {
+                    targets += (targets.empty() ? "" : ", ") + other + " in another letter case";
+                }
                 logDebug("swap: " + found + " lies under no target of the share links the playlist uses (" + targets +
                          ")");
                 continue;
             }
-            p.linkPath = linkSpellingFor(job.linkForms, form.path);
+            p.linkPath = decision.path;
         }
     }
 }
@@ -679,10 +682,18 @@ bool swapStart(t_size playlist, std::vector<SwapRow> rows, std::shared_ptr<const
             noteVolumeForm(job->playlistForms, path);
             if (!links.empty()) noteLinkForm(job->linkForms, links, path, buffer);
         }
-        if (!job->linkForms.empty()) {
+        if (!job->linkForms.links.empty()) {
             std::string used;
             for (const std::string &linkKey : job->linkForms.links) used += (used.empty() ? "" : ", ") + linkKey;
             logDebug("swap: the playlist uses share link(s) " + used + ": rows get the link form");
+        }
+        if (!job->linkForms.otherCase.empty()) {
+            // Their rows match nothing and the link form cannot be spelled
+            // as they spell it: say why, once per swap.
+            std::string other;
+            for (const std::string &linkKey : job->linkForms.otherCase) other += (other.empty() ? "" : ", ") + linkKey;
+            logInfo("swap: items of the playlist spell share link(s) " + other +
+                    " in another letter case; share_links must spell them as the items do");
         }
     }
     for (SwapRow &row : rows) {

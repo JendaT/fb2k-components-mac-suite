@@ -56,8 +56,9 @@
 //  link + the candidate's bytes past the target, with no conversion; an
 //  item of the playlist that already spells that path in another Unicode
 //  form lends its spelling (linkSpellingFor). No noted link leads to any
-//  candidate (a mirror, the unmounted placeholder): the row is skipped,
-//  never swapped to the volume form. A playlist with no link-form item
+//  candidate (a mirror, the unmounted placeholder, or items that spell the
+//  link only in another letter case): the row is skipped, never swapped
+//  to the volume form (decideLinkForm). A playlist with no link-form item
 //  keeps the volume-form rule above; in a mixed playlist the link form
 //  wins.
 //
@@ -256,15 +257,22 @@ long chooseCanonicalCandidate(const std::vector<CanonicalCandidate> &candidates,
 // The share links a playlist's items lie under, noted at the Swap click.
 struct PlaylistLinkForms {
     std::vector<std::string> links;  // LinkEntry::linkKey of each link an item lies under, each once, in playlist order
-    // Every such item: its IntakePath key -> its path as the playlist spells
-    // it (the first item with that key).
+    // LinkEntry::linkKey of each link an item lies under only ignoring ASCII
+    // case (share_links says /Users/x/Music, the items /Users/x/music), each
+    // once: rewrite() maps no such item, yet on a case-insensitive volume it
+    // is the same link, so the playlist is still in the link form. No noted
+    // link can spell its rows, so they are skipped, never given a volume form.
+    std::vector<std::string> otherCase;
+    // Every item under `links`: its IntakePath key -> its path as the
+    // playlist spells it (the first item with that key).
     std::unordered_map<std::string, std::string> items;
-    bool empty() const { return links.empty(); }
+    bool empty() const { return links.empty() && otherCase.empty(); }
 };
 
 // Notes `path` (a playlist item's path) when it is a file:// path under one
 // of `links`: by IntakePath key, byte-exact, the longest link winning, as
-// MountAliases::rewrite() matches links. Other schemes are never link
+// MountAliases::rewrite() matches links; under none byte-exact but under
+// one ignoring ASCII case: in `otherCase`. Other schemes are never link
 // forms. `buffer` is scratch.
 void noteLinkForm(PlaylistLinkForms &forms, const std::vector<MountAliases::LinkEntry> &links,
                   std::string_view path, std::string &buffer);
@@ -291,6 +299,21 @@ LinkForm linkFormFor(const std::vector<std::string> &candidates, const std::vect
 // the metadb entry that item uses; else `path` itself.
 std::string linkSpellingFor(const PlaylistLinkForms &forms, const std::string &path);
 
+// What Swap does with one row (planOnQueue), from the paths of its library
+// copy (the candidates, in order) and the playlist's link forms (rules 1-4
+// at the top of this file):
+//   - `forms` empty: neither field set; the volume-form rule applies;
+//   - no noted link leads to a candidate (also: only `otherCase` links):
+//     `skip` LinkOffShare, never the volume form;
+//   - otherwise `path`: the link form (linkFormFor), as an item of the
+//     playlist already spells it (linkSpellingFor).
+struct LinkDecision {
+    SwapSkip skip = SwapSkip::None;
+    std::string path;
+};
+LinkDecision decideLinkForm(const std::vector<std::string> &candidates,
+                            const std::vector<MountAliases::LinkEntry> &links, const PlaylistLinkForms &forms);
+
 // --- the Delete census ---
 
 // How the income-row census (IntakeSwap incomeRowCensus) counts one
@@ -302,9 +325,10 @@ enum class CensusEntry {
 };
 // `refused`: the entry's mac-volume path was not converted (a slow volume,
 // the budget). `offShareLink` (B11): it lies under a share link whose
-// target is off the share (MountAliases::underOffShareLink); whatever it
-// matches now, it could reach an income copy once the link points at the
-// share again, and Swap skips it while the link is off. `income`: its path
+// target is off the share, or under a link's path spelled in another
+// letter case (MountAliases::underOffShareLink); whatever it matches now,
+// it could reach an income copy once the link points at the share again
+// (or through the same link), and Swap skips it meanwhile. `income`: its path
 // maps to one of the roots. Either of the first two makes it unchecked,
 // even when it matches.
 CensusEntry censusEntry(bool refused, bool offShareLink, bool income);
