@@ -25,8 +25,9 @@
 //  shadow, a file files[] does not list: no library copy) are named
 //  instead, and rows whose mac-volume path could not be converted (a slow
 //  volume) are named as not checked: "Swap, then delete" deletes nothing
-//  while any is left. Rows under a share link off the share (B11) count as
-//  not checked too, and the text still names them as on a slow volume.
+//  while any is left. Rows under a share link off the share, or under a
+//  link spelled in another letter case (B11), count as not checked too:
+//  the text names both causes ("on a slow volume or under a share link").
 //
 //  Recheck on confirm (recheckGcRoots): the lane was free while the alert
 //  was open, so every captured root must still be in the current snapshot,
@@ -99,8 +100,8 @@ std::string gcConfirmText(const std::vector<GcConfirmRoot> &roots, const GcIncom
 // delete offered (R income row(s)[ in P playlist(s)])", "...; Swap, then
 // delete not offered (R income row(s), K without a library copy)" or
 // "...; Swap, then delete not offered (no income row)", then
-// "; U row(s) not checked (slow volume)" when U > 0. Up to `maxListed`
-// paths.
+// "; U row(s) not checked (slow volume or share link)" when U > 0. Up to
+// `maxListed` paths.
 std::string gcConfirmSummary(const std::vector<GcConfirmRoot> &roots, const GcIncomeRows &income,
                              size_t maxListed = 3);
 

@@ -166,7 +166,8 @@ static void testText() {
     GcIncomeRows unknown = inActive(2);
     unknown.unchecked = 4;
     const std::string unknownText = gcConfirmText(roots, unknown);
-    CHECK(unknownText.find("4 playlist rows on a slow volume could not be checked. \"Swap, then delete\" deletes "
+    CHECK(unknownText.find("4 playlist rows on a slow volume or under a share link could not be checked. \"Swap, then "
+                           "delete\" deletes "
                            "nothing while a row is unchecked.") != std::string::npos,
           "unchecked rows are named");
     CHECK(unknown.offerSwap() && !unknown.clear() && inActive(0).clear() && !inActive(1).clear(),
@@ -174,7 +175,8 @@ static void testText() {
     GcIncomeRows onlyUnknown;
     onlyUnknown.unchecked = 1;
     CHECK(!onlyUnknown.offerSwap() && !onlyUnknown.clear() &&
-              gcConfirmText(roots, onlyUnknown).find("1 playlist row on a slow volume could not be checked.") !=
+              gcConfirmText(roots, onlyUnknown)
+                      .find("1 playlist row on a slow volume or under a share link could not be checked.") !=
                   std::string::npos,
           "unchecked rows alone: named, no swap offered, not clear");
 }
@@ -212,8 +214,8 @@ static void testSummary() {
           "rows Swap never moves: not offered");
     GcIncomeRows unknown = inActive(2);
     unknown.unchecked = 3;
-    CHECK(gcConfirmSummary(roots, unknown).find("offered (2 income row(s)); 3 row(s) not checked (slow volume)") !=
-              std::string::npos,
+    CHECK(gcConfirmSummary(roots, unknown)
+                  .find("offered (2 income row(s)); 3 row(s) not checked (slow volume or share link)") != std::string::npos,
           "unchecked rows are counted");
 }
 

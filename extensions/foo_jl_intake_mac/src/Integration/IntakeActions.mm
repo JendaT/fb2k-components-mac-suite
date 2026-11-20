@@ -1220,7 +1220,7 @@ void deleteAfterSwapCheck(std::shared_ptr<DeleteFlow> flow) {
         }
         if (left.unchecked > 0) {
             why += (why.empty() ? "" : "; ") + std::to_string(left.unchecked) +
-                   " playlist row(s) on a slow volume could not be checked";
+                   " playlist row(s) on a slow volume or under a share link could not be checked";
         }
         notRun(IntakeAction::DeleteLocal, why + "; nothing deleted");
         endDeleteFlow(flow);

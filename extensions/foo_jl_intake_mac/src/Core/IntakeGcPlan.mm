@@ -94,7 +94,7 @@ std::string gcConfirmText(const std::vector<GcConfirmRoot> &roots, const GcIncom
     if (income.unchecked > 0) {
         const size_t u = income.unchecked;
         notes += "\n\n" + std::to_string(u) + (u == 1 ? " playlist row" : " playlist rows") +
-                 " on a slow volume could not be checked.";
+                 " on a slow volume or under a share link could not be checked.";
         if (income.offerSwap()) notes += " \"Swap, then delete\" deletes nothing while a row is unchecked.";
     }
     notes += "\n\nThe library copies stay. gc checks them against the journal before it deletes anything.";
@@ -120,7 +120,9 @@ std::string gcConfirmSummary(const std::vector<GcConfirmRoot> &roots, const GcIn
     } else {
         out += "; Swap, then delete not offered (no income row)";
     }
-    if (income.unchecked > 0) out += "; " + std::to_string(income.unchecked) + " row(s) not checked (slow volume)";
+    if (income.unchecked > 0) {
+        out += "; " + std::to_string(income.unchecked) + " row(s) not checked (slow volume or share link)";
+    }
     return out;
 }
 
