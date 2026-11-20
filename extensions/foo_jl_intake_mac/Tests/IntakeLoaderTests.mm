@@ -35,6 +35,10 @@
 //  icons and badges; invalidate-all only when something changes and the
 //  view is not inert: an inert view and a colour no root renders publish
 //  without one; no CLI call) and reaching later loads.
+//  B11: share links (setShareLinks publishing and invalidating, an
+//  unchanged link publishing nothing, a re-point through relink() and
+//  through the next load's start, batches staying incremental, and links
+//  configured at start matching from the first load).
 //  Hermetic: every state directory is a fresh temp directory; the mount
 //  tables are synthetic.
 //
@@ -334,6 +338,23 @@ bool writeParsePartial(const std::string &state, const std::string &omitId, cons
 void clearParsePartial(const std::string &state) {
     unlink((state + "/responses/status.envelope").c_str());
     unlink((state + "/responses/status.exit").c_str());
+}
+
+// --- B11: share links ---
+
+// A mock state at its physical path: a link's target is resolved
+// physically (/var -> /private/var), the CLI's root paths only lexically,
+// so the roots must be spelled the way the link resolves.
+std::string physicalState(const std::string &scenario = "default") {
+    const std::string dir = realOf(mock::newDir("state"));
+    if (dir.empty()) return dir;
+    return mock::runSync({mock::mockPath(), "--mock-setup", scenario}, mock::mockEnv(dir)) == 0 ? dir : std::string();
+}
+
+// `link` (re)created as a symlink to `target` (ln -sfn).
+bool pointLink(const std::string &link, const std::string &target) {
+    unlink(link.c_str());
+    return symlink(target.c_str(), link.c_str()) == 0;
 }
 
 } // anonymous namespace
@@ -1656,6 +1677,124 @@ static void testPalette() {
     mock::killLeftovers();
 }
 
+// B11: share links. Link-form rows (file://<link>/<rel>, the link spelled
+// through /var, a symlink to the mock's root) match once setShareLinks()
+// names the link: one Remount publish with invalidate-all and no CLI call.
+// An unchanged link publishes nothing; a re-point (picked up by relink()
+// or, with no call at all, by the next load's start) invalidates; neither
+// a link change nor a re-point makes the next FSEvents batch list every
+// member folder. Links configured at start match from the first load.
+static void testShareLinks() {
+    g_context = "share-links-set";
+    clearLog();
+    const std::string state = physicalState();
+    CHECK(!state.empty(), "physical mock state set up");
+    const std::string root = state + "/root";
+    const std::string loose = root + "/income/shop/Loose Tracks";
+    const std::string newAlbumDir = root + "/income/dump/Fixture Artist - New Album";
+    const std::string linkDir = mock::newDir("links");  // NSTemporaryDirectory: spelled through /var
+    const std::string link = linkDir + "/music-link";
+    const std::string empty = mock::newDir("empty");
+    CHECK(pointLink(link, root), "link -> the mock's root");
+    const std::string linkRow = "file://" + newAlbum(link);
+    CountingAccess files;
+    auto h = std::make_shared<Harness>();
+    auto w = std::make_shared<WatchHarness>();
+    h->setMounts({kLocalRoot});
+    IntakeLoader loader(watchSettingsFor(state, h, w, &files));
+    loader.reload(true);
+    CHECK(waitFinished(*h, 1) && h->lastFinished().state == LoaderState::Ready, "first load, no links");
+    CHECK_EQ(files.listsOf(loose), 1, "the first load lists the shared folder");
+    ViewScratch scratch;
+    CHECK(h->lastPublished().view && h->lastPublished().view->visualFor(linkRow, scratch) == nullptr,
+          "negative control: without the setting a link-form row matches nothing");
+    const IntakeRowVisual *direct = h->lastPublished().view->visualFor(newAlbum(root), scratch);
+    CHECK(direct && direct->icon == IntakeIcon::CircleOpen, "the root's own spelling matches");
+
+    size_t before = h->publishCount();
+    loader.setShareLinks({link});
+    CHECK(mock::waitUntil([&] { return h->publishCount() > before; }, 10), "setShareLinks publishes");
+    Published p = h->lastPublished();
+    CHECK(p.reason == PublishReason::Remount && p.invalidate, "the last load's keys rebuilt, invalidate-all");
+    const IntakeRowVisual *linked = p.view ? p.view->visualFor(linkRow, scratch) : nullptr;
+    CHECK(linked && linked->icon == IntakeIcon::CircleOpen && linked->bgTint == 0x4A90D938,
+          "the link-form row matches the root (new: blue, open circle)");
+    CHECK(p.view && p.view->aliases().links().size() == 1 && p.view->aliases().links()[0].rawTarget == root,
+          "the view carries the link entry, its target read physically");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus}), "no CLI call for a share link change");
+    CHECK(logCount("share link \"" + link + "\" points at \"" + root + "\"") == 1,
+          "one Info line: the link points off any mounted share (no smbfs here)");
+
+    g_context = "share-links-incremental";
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 2), "a batch after the link change");
+    CHECK_EQ(files.listsOf(loose), 1, "still incremental: the shared folder is not listed again");
+    CHECK(h->lastPublished().view && h->lastPublished().view->visualFor(linkRow, scratch) != nullptr,
+          "the load keeps matching link-form rows");
+
+    g_context = "share-links-unchanged";
+    before = h->publishCount();
+    loader.relink();
+    loader.setShareLinks({link});
+    CHECK(!mock::waitUntil([&] { return h->publishCount() > before; }, 0.5), "an unchanged link publishes nothing");
+    loader.reload(false);
+    CHECK(waitFinished(*h, 3), "a reload");
+    CHECK(h->publishCount() == before + 1 && h->lastPublished().reason == PublishReason::Load &&
+              !h->lastPublished().invalidate,
+          "its start reads the same link: only the unchanged load is published");
+    CHECK(logCount("share link \"" + link + "\" points at") == 1, "the same note is not logged again");
+
+    g_context = "share-links-repoint";
+    const size_t listed = static_cast<size_t>(files.listsOf(loose));
+    CHECK(pointLink(link, empty), "the link re-pointed at an empty folder");
+    before = h->publishCount();
+    loader.relink();
+    CHECK(mock::waitUntil([&] { return h->publishCount() > before; }, 10), "relink() publishes the re-point");
+    p = h->lastPublished();
+    CHECK(p.reason == PublishReason::Remount && p.invalidate, "invalidate-all: link-form rows change");
+    CHECK(p.view && p.view->visualFor(linkRow, scratch) == nullptr, "the link-form row matches nothing now");
+    CHECK(p.view && p.view->visualFor(newAlbum(root), scratch) != nullptr, "the root's own spelling still matches");
+    CHECK(logCount("points at \"" + realOf(empty) + "\"") == 1, "one Info line for the new target");
+    loader.reloadForChanges({newAlbumDir}, false);
+    CHECK(waitFinished(*h, 4), "a batch after the re-point");
+    CHECK_EQ(static_cast<size_t>(files.listsOf(loose)), listed, "still incremental after a re-point");
+
+    g_context = "share-links-load-start";
+    // No relink() call: the next load's start reads the link.
+    CHECK(pointLink(link, root), "the link points back at the root");
+    before = h->publishCount();
+    loader.reload(false);
+    CHECK(waitFinished(*h, 5), "a reload");
+    std::vector<Published> all = h->publishedCopy();
+    CHECK(all.size() == before + 2 && all[before].reason == PublishReason::Remount && all[before].invalidate &&
+              all[before + 1].reason == PublishReason::Load && !all[before + 1].invalidate,
+          "the load's start publishes the re-point (invalidate-all), then the unchanged load");
+    CHECK(all.back().view && all.back().view->visualFor(linkRow, scratch) != nullptr, "the row matches again");
+    CHECK(callsAre(state, {kVersion, kIncome, kStatus, kStatus, kStatus, kStatus, kStatus}),
+          "no CLI call of its own for any link change: one status per load");
+
+    g_context = "share-links-startup";
+    clearLog();
+    const std::string state2 = physicalState();
+    const std::string link2 = mock::newDir("links") + "/music-link";
+    CHECK(!state2.empty() && pointLink(link2, state2 + "/root"), "a second state and link");
+    auto h2 = std::make_shared<Harness>();
+    h2->setMounts({kLocalRoot});
+    LoaderSettings s2 = settingsFor(state2, h2);
+    s2.shareLinks = {link2};
+    IntakeLoader loader2(std::move(s2));
+    loader2.reload(true);
+    CHECK(waitFinished(*h2, 1) && h2->lastFinished().state == LoaderState::Ready, "first load with a link configured");
+    CHECK_EQ(h2->publishCount(), 1, "one publish: the load");
+    const IntakeRowVisual *first =
+        h2->lastPublished().view ? h2->lastPublished().view->visualFor("file://" + newAlbum(link2), scratch) : nullptr;
+    CHECK(first && first->icon == IntakeIcon::CircleOpen, "link-form rows match from the first load");
+    CHECK(logCount("share link \"" + link2 + "\" points at") == 1, "the note is logged on the first read");
+    loader2.shutdown();
+    loader.shutdown();
+    mock::killLeftovers();
+}
+
 int main(void) {
     @autoreleasepool {
         mock::trackedMutex();
@@ -1689,6 +1828,7 @@ int main(void) {
         testAnnotateAndBadges();
         testLibraryIndex();
         testPalette();
+        testShareLinks();
 
         setLogBackend(nullptr);
         mock::killLeftovers();

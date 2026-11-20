@@ -235,7 +235,11 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
     }
 
     void startLoad() {
-        if (!mountsRead) readMounts(false);
+        // B11: the relink, before any CLI call (see the header). A changed
+        // table is published at once (the last load's keys, rebuilt): a
+        // silent swap would leave stale tints, since the load's own diff
+        // compares root keys only. The load's end recomputes the watch set.
+        readMounts(true);
         // The requests made before this attempt are the ones it serves.
         for (LoadFinishedHandler &w : waitersNext) waitersInFlight.push_back(std::move(w));
         waitersNext.clear();
@@ -786,6 +790,22 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         if (!loading) updateWatchSet();
     }
 
+    // --- share links (B11) ---
+
+    void applyRelink() {
+        if (stopped) return;
+        const bool tableChanged = readMounts(true);
+        // Only a new mount table can change what is local; a running load
+        // recomputes the set when it finishes.
+        if (tableChanged && !loading) updateWatchSet();
+    }
+
+    void applyShareLinks(std::vector<std::string> links) {
+        if (stopped) return;
+        settings.shareLinks = std::move(links);
+        applyRelink();
+    }
+
     // --- watch set ---
 
     void updateWatchSet() {
@@ -850,19 +870,31 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
 
     // --- mounts ---
 
-    void readMounts(bool publishChange) {
+    // Returns whether the mount table differs from the last one read.
+    bool readMounts(bool publishChange) {
         std::vector<MountEntry> entries;
         if (settings.readMounts) entries = settings.readMounts();
-        if (!sameMountEntries(entries, mountEntries)) {
+        const bool tableChanged = !sameMountEntries(entries, mountEntries);
+        if (tableChanged) {
             mountEntries = entries;
             watchDirty = true;
         }
-        std::shared_ptr<const MountAliases> next = MountAliases::build(entries);
+        // B11: the links, read with this same table (see the header).
+        std::vector<ShareLinkRead> links;
+        if (!settings.shareLinks.empty()) {
+            const LinkReader &readLink = settings.readLink ? settings.readLink : posixLinkReaderFunction();
+            links.reserve(settings.shareLinks.size());
+            for (const std::string &link : settings.shareLinks) links.push_back(readShareLink(link, entries, readLink));
+        }
+        std::shared_ptr<const MountAliases> next = MountAliases::build(entries, links);
         const bool firstRead = !mountsRead;
         mountsRead = true;
         if (next->sameAs(*aliases)) {
-            if (firstRead) logDebug("mount aliases: " + next->describe());
-            return;
+            if (firstRead) {
+                logDebug("mount aliases: " + next->describe());
+                logNewNotes(*next, nullptr);
+            }
+            return tableChanged;
         }
         const std::shared_ptr<const MountAliases> previous = aliases;
         aliases = next;
@@ -871,10 +903,21 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         } else {
             logInfo("mount aliases changed: " + aliases->describe());
         }
-        if (!publishChange || !lastGood || stopped) return;
+        logNewNotes(*aliases, firstRead ? nullptr : previous.get());
+        if (!publishChange || !lastGood || stopped) return tableChanged;
 
         std::vector<IntakeRecord> records = lastGood->records();
         applyMountAliases(records, *aliases);
+        // Member reuse compares root keys, and the changed folders already
+        // queued were keyed with the old table: a root whose own key moved
+        // (only one spelled through a share link can, apart from a remount,
+        // which lists in full anyway) makes the next load list everything.
+        for (size_t i = 0; i < records.size(); i++) {
+            if (records[i].rootKey != lastGood->records()[i].rootKey) {
+                pendingFull = true;
+                break;
+            }
+        }
         auto rebuilt = IntakeSnapshot::build(std::move(records), lastGood->members(), settings.palette);
         // The new table is published either way (rows and roots must be
         // keyed with one table), but invalidated only when a row can change:
@@ -891,6 +934,16 @@ struct IntakeLoader::Impl : std::enable_shared_from_this<IntakeLoader::Impl> {
         const std::string reason = published ? published->inertReason() : std::string();
         publish(IntakeView::make(rebuilt, aliases, reason, library), rowsChange, PublishReason::Remount);
         if (!rowsChange) logDebug("mount aliases changed under no intake root: no row changes, no invalidation");
+        return tableChanged;
+    }
+
+    // B11: each note of `table` that `previous` (null: none) did not have,
+    // at Info, so an unchanged bad link is not logged again at every load.
+    static void logNewNotes(const MountAliases &table, const MountAliases *previous) {
+        for (const std::string &note : table.notes()) {
+            if (previous && std::binary_search(previous->notes().begin(), previous->notes().end(), note)) continue;
+            logInfo(note);
+        }
     }
 
     void publish(std::shared_ptr<const IntakeView> view, bool invalidate, PublishReason reason) {
@@ -933,6 +986,13 @@ void IntakeLoader::remount() {
     });
 }
 
+void IntakeLoader::relink() {
+    std::shared_ptr<Impl> impl = impl_;
+    dispatch_async(impl->queue, ^{
+        impl->applyRelink();
+    });
+}
+
 void IntakeLoader::restartWatch() {
     std::shared_ptr<Impl> impl = impl_;
     dispatch_async(impl->queue, ^{
@@ -953,6 +1013,14 @@ void IntakeLoader::setWatchFolders(std::vector<std::string> folders) {
     auto list = std::make_shared<std::vector<std::string>>(std::move(folders));
     dispatch_async(impl->queue, ^{
         impl->applyWatchFolders(std::move(*list));
+    });
+}
+
+void IntakeLoader::setShareLinks(std::vector<std::string> links) {
+    std::shared_ptr<Impl> impl = impl_;
+    auto list = std::make_shared<std::vector<std::string>>(std::move(links));
+    dispatch_async(impl->queue, ^{
+        impl->applyShareLinks(std::move(*list));
     });
 }
 

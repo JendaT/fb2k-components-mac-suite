@@ -142,6 +142,9 @@ public:
             providerPublish(std::move(view), invalidateAll, reason == PublishReason::Load);
         };
         ls.watchFolders = settings_.watchFolders;
+        // B11: read at the first load (and every load start), so link-form
+        // rows match from the first publish.
+        ls.shareLinks = settings_.shareLinks;
         ls.libraryPrefix = makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo);
         // B10: the row colours reach the rows only through the snapshot's
         // visuals; decorate never reads a setting.
@@ -232,6 +235,9 @@ public:
             if (finished) finished(status());
             return;
         }
+        // B11: the share links at once, even when this reload waits behind
+        // a running load (whose start read them before the re-point).
+        loader_->relink();
         LoadFinishedHandler served;
         if (finished) {
             // Loader queue: hand the status to the main thread.
@@ -248,6 +254,11 @@ public:
 
     void refreshAfterCommand() {
         if (loader_) loader_->reload(false);
+    }
+
+    // B11 (serviceRelink): no CLI call.
+    void relink() {
+        if (loader_) loader_->relink();
     }
 
     std::string statusLine() const { return loader_ ? loader_->statusLine() : std::string("Stopped"); }
@@ -286,7 +297,12 @@ public:
             logIgnoredWatchFolders(settings_.ignoredWatchFolders);
             loader_->setWatchFolders(settings_.watchFolders);
         }
-        if (shareLinksChanged) logIgnoredShareLinks(settings_.ignoredShareLinks);
+        if (shareLinksChanged) {
+            // B11: read on the loader queue, no CLI call; a changed table
+            // republishes the last load's keys.
+            logIgnoredShareLinks(settings_.ignoredShareLinks);
+            loader_->setShareLinks(settings_.shareLinks);
+        }
         if (prefixChanged) loader_->setLibraryPrefix(makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo));
         // One rebuild and at most one invalidate-all per colour change.
         if (paletteChanged || tintProblemsChanged) logPalette(settings_);
@@ -392,6 +408,18 @@ private:
 
 Service *g_service = nullptr;  // main thread only
 
+// B11: the mount agent re-points a share link after the share mounts or
+// unmounts, often after the notification has arrived. A one-shot relink on
+// the main queue `seconds` later catches that; it is a no-op once on_quit
+// has run (serviceRelink checks g_service) and publishes nothing when no
+// link moved.
+void scheduleRelink(int64_t seconds) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * static_cast<int64_t>(NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       serviceRelink();
+                   });
+}
+
 void Service::volumesChanged() {
     // Rows of a volume the guard marked were answered empty and the host
     // cached that; a reload that finds nothing changed would not repaint
@@ -405,6 +433,10 @@ void Service::volumesChanged() {
     // of that reload's `status` call when it already started, else from now;
     // the reload is the only `status` this costs.
     g_service->loader_->restartWatch();
+    // B11: the remount and the reload's start read the links now; these
+    // see where the agent points them once it has caught up.
+    scheduleRelink(2);
+    scheduleRelink(10);
 }
 
 class intake_initquit : public initquit {
@@ -449,6 +481,10 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
 
 void serviceRefreshAfterCommand() {
     if (g_service != nullptr) g_service->refreshAfterCommand();
+}
+
+void serviceRelink() {
+    if (g_service != nullptr) g_service->relink();
 }
 
 std::string serviceStatusLine() {

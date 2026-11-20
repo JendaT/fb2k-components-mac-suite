@@ -14,8 +14,9 @@
 //  watch_folders setting and the watcher as its watch-set target. It
 //  observes NSWorkspaceDidMount/DidUnmountNotification (each one forgets
 //  the slow mac-volumes, with one invalidate-all when one was marked,
-//  re-reads the mount table, reloads and restarts the watch stream), and
-//  starts the first load.
+//  re-reads the mount table, reloads and restarts the watch stream, then
+//  reads the share links again 2 s and 10 s later, B11), and starts the
+//  first load.
 //
 //  Settings (B5): the preferences page writes configStore and posts
 //  IntakeSettingsDidChangeNotification on the main thread. The service
@@ -23,7 +24,11 @@
 //  restart: a new CLI path, bun path or rules folder rebuilds the CLI
 //  configuration (a fresh environment snapshot, main thread) and hands it to
 //  IntakeLoader::reconfigure, which reloads with `version`; new watched
-//  folders go to IntakeLoader::setWatchFolders (a new watch set); a new log
+//  folders go to IntakeLoader::setWatchFolders (a new watch set); new
+//  share links (B11) go to IntakeLoader::setShareLinks (read on the loader
+//  queue, no CLI call, the last load's keys republished when a link maps
+//  differently; no vnode watch: a link re-pointed later is read at the next
+//  load start, Refresh or mount event); a new log
 //  level applies at once; a new library mapping goes to
 //  IntakeLoader::setLibraryPrefix (B9: the library index is rebuilt) and to
 //  the next Swap (serviceActionInfo); new row colours (B10, the tint_*
@@ -40,7 +45,9 @@
 //  only on change. The loader hands each watch set over with the FSEvents
 //  event id taken before its latest `status` call, so a new stream replays
 //  what that call missed instead of reloading once more. A mount or
-//  unmount runs remount(), reload(false) and restartWatch().
+//  unmount runs remount(), reload(false) and restartWatch(), then relink()
+//  2 s and 10 s later (one-shot timers on the main queue, no-ops after
+//  on_quit).
 //
 //  Context actions (B6, IntakeActions): the loader's annotator copies the
 //  per-root command errors (IntakeRootErrors) into each load's records
@@ -88,7 +95,8 @@ namespace intake {
 // before on_init and after on_quit. For Refresh (B6) and the preferences
 // page (B5). `recheckVersion` runs `version` (and `income`) again first.
 // Also forgets the slow mac-volumes (one invalidate-all when one was
-// marked), so Refresh brings their tints back. `finished` (optional) runs
+// marked), so Refresh brings their tints back, and reads the share links
+// at once (B11, serviceRelink). `finished` (optional) runs
 // once on the main thread with the loader's status when the load serving
 // this request has ended (IntakeLoader::reload), at once with state
 // Stopped before on_init and after on_quit; never after on_quit for a
@@ -101,6 +109,12 @@ void serviceReload(bool recheckVersion, std::function<void(const LoaderStatus &s
 // command may have moved or written sidecars anywhere), then the
 // fingerprint diff. A no-op before on_init and after on_quit.
 void serviceRefreshAfterCommand();
+
+// Main thread. B11: reads the share links again (IntakeLoader::relink):
+// no CLI call, a publish only when a link moved. A no-op before on_init and
+// after on_quit. The service runs it 2 s and 10 s after every mount or
+// unmount notification; serviceReload runs it too.
+void serviceRelink();
 
 // Main thread. The loader's status line; "Stopped" before on_init and
 // after on_quit.
