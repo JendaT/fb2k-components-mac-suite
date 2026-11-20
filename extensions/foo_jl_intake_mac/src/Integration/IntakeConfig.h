@@ -15,6 +15,11 @@
 //   - watch_folders (string, B4): extra folders to watch for sidecar
 //     changes, one absolute path per line (IntakeSettingsParse
 //     parseWatchFolders); default empty.
+//   - share_links (string, B11): local symlinks to the music share (the
+//     plorg shadow link), one absolute path per line (parseShareLinks:
+//     lexically clean, "/" dropped); default empty. Their link-form rows
+//     match the share's roots while the link points at a mounted share
+//     (IntakeWatchSet readShareLink, IntakeMountAliases).
 //   - swap_prefix_from / swap_prefix_to (strings): the library mapping, one
 //     prefix pair (NAS path prefix, Mac path prefix; PLAN.md decision 2),
 //     validated by validatePrefixPair; Swap and the library index (B9) use
@@ -65,6 +70,8 @@ struct IntakeSettings {
     bool logFile = false;  // hidden: mirror log lines to ~/Library/Logs/foobar2000/jl_intake.log
     std::vector<std::string> watchFolders;        // absolute paths, in order
     std::vector<std::string> ignoredWatchFolders; // lines that were not absolute paths
+    std::vector<std::string> shareLinks;          // B11: absolute, lexically clean, in order
+    std::vector<std::string> ignoredShareLinks;   // lines that were not absolute paths
     std::string swapPrefixFrom;  // normalizedPrefix; validatePrefixPair decides if it is usable
     std::string swapPrefixTo;
     bool confirmReject = true;   // B6: Reject… shows its confirmation
@@ -83,6 +90,7 @@ inline constexpr const char *kLogLevel = "log_level";
 inline constexpr const char *kDecorStats = "decor_stats";
 inline constexpr const char *kLogFile = "log_file";
 inline constexpr const char *kWatchFolders = "watch_folders";
+inline constexpr const char *kShareLinks = "share_links";
 inline constexpr const char *kSwapPrefixFrom = "swap_prefix_from";
 inline constexpr const char *kSwapPrefixTo = "swap_prefix_to";
 inline constexpr const char *kConfirmReject = "confirm_reject";
@@ -106,9 +114,9 @@ int defaultLogLevel();
 
 // Every key, with surrounding whitespace trimmed from the strings
 // (trimmedSetting), the swap prefixes lexically cleaned (normalizedPrefix),
-// log_level clamped to 0-2, watch_folders split into lines
-// (parseWatchFolders) and the tint_* keys read into a palette
-// (paletteFromSettings).
+// log_level clamped to 0-2, watch_folders and share_links split into
+// lines (parseWatchFolders, parseShareLinks) and the tint_* keys read into
+// a palette (paletteFromSettings).
 IntakeSettings load();
 
 // The tint_* keys alone (the preferences page).

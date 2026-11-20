@@ -96,6 +96,9 @@ IntakeSettings load() {
     WatchFolderList folders = parseWatchFolders(getString(kWatchFolders, ""));
     s.watchFolders = std::move(folders.folders);
     s.ignoredWatchFolders = std::move(folders.ignored);
+    ShareLinkList links = parseShareLinks(getString(kShareLinks, ""));
+    s.shareLinks = std::move(links.links);
+    s.ignoredShareLinks = std::move(links.ignored);
     s.swapPrefixFrom = normalizedPrefix(getString(kSwapPrefixFrom, ""));
     s.swapPrefixTo = normalizedPrefix(getString(kSwapPrefixTo, ""));
     s.confirmReject = confirmSetting(getInt(kConfirmReject, kConfirmSettingDefault));

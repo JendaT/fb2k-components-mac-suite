@@ -6,10 +6,11 @@
 //  the code that uses the same settings, so each rule has one
 //  implementation:
 //
-//   - Folder lists (watch_folders): one absolute path per line.
-//     parseFolderLines reports every non-blank line with its line number and
-//     what is wrong with it, for the page's inline flags; parseWatchFolders
-//     (IntakeConfig, IntakeWatchSet) keeps the usable folders.
+//   - Folder lists (watch_folders, share_links): one absolute path per
+//     line. parseFolderLines reports every non-blank line with its line
+//     number and what is wrong with it, for the page's inline flags;
+//     parseWatchFolders (IntakeConfig, IntakeWatchSet) keeps the usable
+//     folders, parseShareLinks (IntakeConfig, B11) the usable links.
 //   - Executables and folders: the CLI path, the bun path and the rules
 //     folder. IntakeCommandArgs uses isExecutableFile, isReadableFile and
 //     the bun search below when it builds a call.
@@ -78,6 +79,18 @@ struct WatchFolderList {
 // Root go to `folders` (watchCandidates leaves "/" out), NotAbsolute lines
 // to `ignored`, duplicates are dropped.
 WatchFolderList parseWatchFolders(std::string_view text);
+
+struct ShareLinkList {
+    std::vector<std::string> links;    // absolute, lexically clean, in order, each once
+    std::vector<std::string> ignored;  // non-empty lines that are not absolute paths
+};
+
+// The share_links setting (B11), from parseFolderLines: lines with no
+// problem go to `links` through lexicalAbsolutePath (no trailing '/', the
+// spelling foobar2000's file://<link>/<rel> items use), NotAbsolute lines
+// to `ignored`; Root lines (every path would lie under "/") and duplicates
+// are dropped.
+ShareLinkList parseShareLinks(std::string_view text);
 
 // --- executables and folders ---
 

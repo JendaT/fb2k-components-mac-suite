@@ -100,6 +100,12 @@ void logIgnoredWatchFolders(const std::vector<std::string> &ignored) {
     }
 }
 
+void logIgnoredShareLinks(const std::vector<std::string> &ignored) {
+    for (const std::string &line : ignored) {
+        logInfo("share_links: ignoring \"" + line + "\" (not an absolute path)");
+    }
+}
+
 // B10: the tint_* keys that are not 0 or a colour (each falls back to its
 // default), then the colours that differ from the defaults.
 void logPalette(const IntakeSettings &settings) {
@@ -119,6 +125,7 @@ public:
 
     void start() {
         logIgnoredWatchFolders(settings_.ignoredWatchFolders);
+        logIgnoredShareLinks(settings_.ignoredShareLinks);
         logPalette(settings_);
         // The handler runs on the watcher's queue; stop() in on_quit clears
         // it (waiting out a running call) before the loader goes, so the raw
@@ -264,6 +271,7 @@ public:
         const bool cliChanged = next.cliPath != settings_.cliPath || next.bunPath != settings_.bunPath ||
                                 next.rulesDir != settings_.rulesDir;
         const bool watchChanged = next.watchFolders != settings_.watchFolders;
+        const bool shareLinksChanged = next.shareLinks != settings_.shareLinks;
         const bool prefixChanged =
             next.swapPrefixFrom != settings_.swapPrefixFrom || next.swapPrefixTo != settings_.swapPrefixTo;
         const bool paletteChanged = !(next.palette == settings_.palette);
@@ -278,6 +286,7 @@ public:
             logIgnoredWatchFolders(settings_.ignoredWatchFolders);
             loader_->setWatchFolders(settings_.watchFolders);
         }
+        if (shareLinksChanged) logIgnoredShareLinks(settings_.ignoredShareLinks);
         if (prefixChanged) loader_->setLibraryPrefix(makeLibraryPrefix(settings_.swapPrefixFrom, settings_.swapPrefixTo));
         // One rebuild and at most one invalidate-all per colour change.
         if (paletteChanged || tintProblemsChanged) logPalette(settings_);

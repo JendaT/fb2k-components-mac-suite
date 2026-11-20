@@ -3,7 +3,8 @@
 //  foo_jl_intake_mac
 //
 //  The preferences page's checks (PLAN.md B5): the folder list with line
-//  numbers and problems (and parseWatchFolders built on it), the path
+//  numbers and problems (and parseWatchFolders and parseShareLinks, B11,
+//  built on it), the path
 //  checks on real files in a temp directory, the bun search directories and
 //  candidates, the environment lookup, and the library prefix pair.
 //  Hermetic: every file lives in a fresh temp directory, removed at the end.
@@ -18,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -246,6 +248,29 @@ static void testLexicalFolderLines() {
           "a lexical duplicate is dropped; a root line is kept (watchCandidates skips it)");
 }
 
+// B11: share_links. Root lines are dropped (a link at "/" would take every
+// path), and each link is stored lexically clean, the spelling of
+// file://<link>/<rel> items (no trailing slash).
+static void testShareLinks() {
+    g_context = "share-links";
+    ShareLinkList l = parseShareLinks(
+        "/Users/x/Music/NAS/music/\n  /Users/x/./link2 \r\n\nrelative/c\r/Users/x/Music/NAS/music\n~/d\n/\n/x/..\n"
+        "/Users//x/link3");
+    CHECK(l.links.size() == 3 && l.links[0] == "/Users/x/Music/NAS/music" && l.links[1] == "/Users/x/link2" &&
+              l.links[2] == "/Users/x/link3",
+          "absolute lines, trimmed and lexically cleaned (trailing slash, ., //), in order");
+    CHECK(l.ignored.size() == 2 && l.ignored[0] == "relative/c" && l.ignored[1] == "~/d",
+          "relative lines and ~ are reported as ignored");
+    CHECK(std::find(l.links.begin(), l.links.end(), "/") == l.links.end() && l.links.size() == 3,
+          "root lines (/ and /x/..) are dropped, not ignored");
+    ShareLinkList none = parseShareLinks("");
+    CHECK(none.links.empty() && none.ignored.empty(), "the default (empty): no links");
+    CHECK(parseShareLinks(" \n\t\n").links.empty(), "blank lines only");
+    const std::string nfd = "/Users/x/Mu\xCC\x81sica/NAS";
+    ShareLinkList bytes = parseShareLinks(nfd + "\n/Users/x/M\xC3\xBAsica/NAS");
+    CHECK(bytes.links.size() == 2 && bytes.links[0] == nfd, "bytes kept (no NFC): NFD and NFC lines are two lines");
+}
+
 // B9: confirm_gc (and confirm_reject, B6) as stored ints.
 static void testConfirmSettings() {
     g_context = "confirm";
@@ -271,6 +296,7 @@ int main(void) {
         testNormalizedPrefix();
         testLexicalFolderLines();
         testConfirmSettings();
+        testShareLinks();
         removeTree(g_tempRoot);
     }
     TEST_MAIN_END();

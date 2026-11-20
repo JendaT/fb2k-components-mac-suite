@@ -130,6 +130,24 @@ WatchFolderList parseWatchFolders(std::string_view text) {
     return out;
 }
 
+ShareLinkList parseShareLinks(std::string_view text) {
+    ShareLinkList out;
+    for (FolderLine &line : parseFolderLines(text)) {
+        switch (line.problem) {
+            case FolderLineProblem::None:
+                out.links.push_back(lexicalAbsolutePath(line.text));
+                break;
+            case FolderLineProblem::NotAbsolute:
+                out.ignored.push_back(std::move(line.text));
+                break;
+            case FolderLineProblem::Root:
+            case FolderLineProblem::Duplicate:
+                break;
+        }
+    }
+    return out;
+}
+
 // --- executables and folders ---
 
 const char *pathCheckText(PathCheck check) {
